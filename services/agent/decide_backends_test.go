@@ -203,6 +203,12 @@ func TestDecideRegistry_ClaudeBackendCached(t *testing.T) {
 	if other, _ := reg.Resolve(cfg); other == first {
 		t.Error("a capture flag change must build a new claude backend")
 	}
+	base, _ := reg.Resolve(decisionFlags(t, fullyConfigured(flags.DecisionBackendClaude)))
+	moved := fullyConfigured(flags.DecisionBackendClaude)
+	moved["decision.claude.base_url"] = "http://127.0.0.1:1"
+	if other, _ := reg.Resolve(decisionFlags(t, moved)); other == nil || other == base {
+		t.Error("a base_url flag change must build a new claude backend (#1900)")
+	}
 
 	cache := newClaudeCache(claudeCacheSize)
 	for i := 0; i < 3*claudeCacheSize; i++ {
@@ -347,6 +353,65 @@ func TestDecideRegistry_EmptyBaseURL(t *testing.T) {
 	strs["decision.jev.base_url"] = ""
 	if b, reason := reg.Resolve(decisionFlags(t, strs)); b == nil {
 		t.Errorf("jev with an empty base URL must default it, got fallback %q", reason)
+	}
+
+	// Claude, like jev: an empty base URL means claude.DefaultBaseURL (#1900).
+	strs = fullyConfigured(flags.DecisionBackendClaude)
+	strs["decision.claude.base_url"] = ""
+	if b, reason := reg.Resolve(decisionFlags(t, strs)); b == nil {
+		t.Errorf("claude with an empty base URL must default it, got fallback %q", reason)
+	}
+}
+
+// TestClaudeFlagDefaultsMatchBackend: the decision.claude.base_url default is the
+// claude package default in Go and in both flag files, with NO /v1 (the SDK
+// appends /v1/messages; a /v1 would post to /v1/v1/messages and 404 every call).
+// The `fake` variant exists only in ci/: a prod overlay must not be able to
+// select a dead loopback URL.
+// UC: UC-044 BR-002
+func TestClaudeFlagDefaultsMatchBackend(t *testing.T) {
+	if flags.DefaultDecisionClaudeBaseURL != claude.DefaultBaseURL {
+		t.Fatalf("flags default %q != claude.DefaultBaseURL %q", flags.DefaultDecisionClaudeBaseURL, claude.DefaultBaseURL)
+	}
+	if strings.HasSuffix(claude.DefaultBaseURL, "/v1") {
+		t.Fatal("claude base URL must not end in /v1")
+	}
+	for _, f := range shippedFlagFiles(t) {
+		if filepath.Base(f) != "agent.json" {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Flags map[string]struct {
+				Variants       map[string]any `json:"variants"`
+				DefaultVariant string         `json:"defaultVariant"`
+			} `json:"flags"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("parse %s: %v", f, err)
+		}
+		fl, ok := doc.Flags["decision.claude.base_url"]
+		if !ok {
+			t.Fatalf("%s: decision.claude.base_url missing", f)
+		}
+		if got, _ := fl.Variants[fl.DefaultVariant].(string); got != claude.DefaultBaseURL {
+			t.Errorf("%s: default = %q, want %q", f, got, claude.DefaultBaseURL)
+		}
+		fakeAny, hasFake := fl.Variants["fake"]
+		fake, _ := fakeAny.(string)
+		isCI := strings.Contains(filepath.ToSlash(f), "/ci/")
+		if hasFake != isCI {
+			t.Errorf("%s: fake variant present=%v, want %v (ci/ only)", f, hasFake, isCI)
+		}
+		if hasFake && fake != "http://127.0.0.1:1" {
+			t.Errorf("%s: fake = %q, want http://127.0.0.1:1 (no /v1)", f, fake)
+		}
+		if !isCI && len(fl.Variants) != 1 {
+			t.Errorf("%s: prod variants = %v, want only default", f, fl.Variants)
+		}
 	}
 }
 
@@ -589,13 +654,13 @@ func TestFlagFiles_BaseURLVariantsAreKeySafe(t *testing.T) {
 			}
 		}
 	}
-	// decision.openai.base_url and decision.jev.base_url, in the base set and in ci/.
-	if checked < 4 {
-		t.Fatalf("checked %d base_url flags, want at least 4 (the scan would pass vacuously)", checked)
+	// decision.openai/jev/claude.base_url, in the base set and in ci/.
+	if checked < 6 {
+		t.Fatalf("checked %d base_url flags, want at least 6 (the scan would pass vacuously)", checked)
 	}
 }
 
-// TestDecideRegistry_RefusesClearTextRemoteBaseURL: an openai or jev base URL that
+// TestDecideRegistry_RefusesClearTextRemoteBaseURL: an openai, jev or claude base URL that
 // is plain http to a non-loopback host resolves to backend_unavailable, so rules
 // decide and no backend (hence no request carrying the key) exists. Loopback http
 // stays available (the service tier's fakes).
@@ -603,9 +668,13 @@ func TestFlagFiles_BaseURLVariantsAreKeySafe(t *testing.T) {
 // UC: C-016
 func TestDecideRegistry_RefusesClearTextRemoteBaseURL(t *testing.T) {
 	reg := newDecideRegistry(allKeys, newDecideHTTPClient())
-	for _, backend := range []string{flags.DecisionBackendOpenAI, flags.DecisionBackendJev} {
+	for _, backend := range []string{flags.DecisionBackendOpenAI, flags.DecisionBackendJev, flags.DecisionBackendClaude} {
 		key := "decision." + backend + ".base_url"
-		for _, raw := range []string{"http://fake-openai:8080/v1", "http://192.168.1.5/v1", "https://u:p@api.example.test/v1"} {
+		suffix := "/v1" // claude's base URL has none: the SDK appends /v1/messages
+		if backend == flags.DecisionBackendClaude {
+			suffix = ""
+		}
+		for _, raw := range []string{"http://fake-openai:8080" + suffix, "http://192.168.1.5" + suffix, "https://u:p@api.example.test" + suffix} {
 			t.Run("UC-044/A1 "+backend+" refuses "+raw, func(t *testing.T) {
 				strs := fullyConfigured(backend)
 				strs[key] = raw
@@ -617,7 +686,7 @@ func TestDecideRegistry_RefusesClearTextRemoteBaseURL(t *testing.T) {
 		}
 		t.Run("UC-044/BR-003 "+backend+" accepts loopback http", func(t *testing.T) {
 			strs := fullyConfigured(backend)
-			strs[key] = "http://127.0.0.1:1/v1"
+			strs[key] = "http://127.0.0.1:1" + suffix
 			if b, reason := reg.Resolve(decisionFlags(t, strs)); b == nil {
 				t.Errorf("loopback http fell back: %q", reason)
 			}
@@ -652,8 +721,7 @@ func TestDecideHTTPClient_FollowsNoRedirect(t *testing.T) {
 	}))
 	defer redirector.Close()
 
-	client := newDecideHTTPClient()
-	reg := newDecideRegistry(allKeys, client)
+	reg := newDecideRegistry(allKeys, newDecideHTTPClient())
 	// A question every backend encodes and sends: a backend that errors before
 	// the network would otherwise pass this test vacuously (the hit count below).
 	req := decide.Request{Questions: []decide.Question{{
@@ -661,21 +729,19 @@ func TestDecideHTTPClient_FollowsNoRedirect(t *testing.T) {
 		Options: []string{"none", "boost"},
 	}}}
 
-	backends := map[string]func() decide.Backend{
-		// The claude factory sets no base URL from a flag, so the test builds
-		// claude.New by hand with the shared client, pointed at the redirector.
-		// That equals the factory, which passes the same client and no other
-		// transport setting (decide_backends.go).
-		flags.DecisionBackendClaude: func() decide.Backend {
-			return claude.New(claude.Config{APIKey: allKeys.AnthropicAPIKey, Model: "claude-haiku-4-5-20251001",
-				Timeout: 2 * time.Second, HTTPClient: client, BaseURL: redirector.URL})
-		},
-	}
-	for _, name := range []string{flags.DecisionBackendOpenAI, flags.DecisionBackendJev} {
+	backends := map[string]func() decide.Backend{}
+	// Every backend is resolved through the registry, so the test proves the
+	// factory passes the shared no-redirect client AND the flag's base URL
+	// (the hit-count check below). claude's URL has no /v1 (the SDK appends it).
+	for _, name := range []string{flags.DecisionBackendClaude, flags.DecisionBackendOpenAI, flags.DecisionBackendJev} {
 		backend := name
 		backends[backend] = func() decide.Backend {
 			strs := fullyConfigured(backend)
-			strs["decision."+backend+".base_url"] = redirector.URL + "/v1"
+			if backend == flags.DecisionBackendClaude {
+				strs["decision.claude.base_url"] = redirector.URL
+			} else {
+				strs["decision."+backend+".base_url"] = redirector.URL + "/v1"
+			}
 			b, reason := reg.Resolve(decisionFlags(t, strs))
 			if b == nil {
 				t.Fatalf("%s: Resolve fell back: %q", backend, reason)

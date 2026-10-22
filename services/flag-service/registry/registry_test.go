@@ -352,7 +352,7 @@ func TestCredentialBearingURLsAcceptOnlyDeclaredVariants(t *testing.T) {
 				}
 			}
 		}
-		for _, key := range []string{"decision.openai.base_url", "decision.jev.base_url"} {
+		for _, key := range []string{"decision.openai.base_url", "decision.jev.base_url", "decision.claude.base_url"} {
 			t.Run("UC-053/A5 "+dir+" "+key+" refuses an undeclared URL", func(t *testing.T) {
 				p := reg.Get("agent", key)
 				if p == nil {

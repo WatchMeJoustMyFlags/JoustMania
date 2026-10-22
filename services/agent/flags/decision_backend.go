@@ -28,6 +28,7 @@ const (
 	keyDecisionMinIntervalMs             = "decision.min_interval_ms"
 	keyDecisionClaudeModel               = "decision.claude.model"
 	keyDecisionClaudeTimeoutMs           = "decision.claude.timeout_ms"
+	keyDecisionClaudeBaseURL             = "decision.claude.base_url"
 	keyDecisionOpenAIBaseURL             = "decision.openai.base_url"
 	keyDecisionOpenAIModel               = "decision.openai.model"
 	keyDecisionOpenAITimeoutMs           = "decision.openai.timeout_ms"
@@ -86,6 +87,11 @@ const (
 	DefaultDecisionMinIntervalMs = 3000
 	// DefaultDecisionClaudeModel is the claude backend's model (variant "haiku").
 	DefaultDecisionClaudeModel = "claude-haiku-4-5-20251001"
+	// DefaultDecisionClaudeBaseURL is the claude backend's endpoint root (#1900).
+	// It has NO /v1: the Anthropic SDK appends /v1/messages itself, so a /v1 here
+	// would post to /v1/v1/messages (404, every call falls back to rules).
+	// Equals claude.DefaultBaseURL.
+	DefaultDecisionClaudeBaseURL = "https://api.anthropic.com"
 	// DefaultDecisionOpenAIBaseURL is the openai backend's endpoint.
 	DefaultDecisionOpenAIBaseURL = "https://api.openai.com/v1"
 	// DefaultDecisionOpenAIModel is empty: unset means the openai backend is
@@ -119,7 +125,7 @@ const (
 // RemoteBackendConfig is the flag-driven, non-secret part of one remote decision
 // backend's configuration. API keys are env secrets and never flags.
 type RemoteBackendConfig struct {
-	// BaseURL is the endpoint (empty for claude, which has no base_url flag).
+	// BaseURL is the endpoint (decision.<backend>.base_url).
 	BaseURL string
 	// Model is the model id sent to the backend.
 	Model string
@@ -210,6 +216,7 @@ func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
 		CaptureContent:         f.boolFlag(ctx, keyDecisionCaptureContent, DefaultDecisionCaptureContent),
 		MinInterval:            f.minIntervalFlag(ctx),
 		Claude: RemoteBackendConfig{
+			BaseURL: f.stringFlag(ctx, keyDecisionClaudeBaseURL, DefaultDecisionClaudeBaseURL),
 			Model:   f.stringFlag(ctx, keyDecisionClaudeModel, DefaultDecisionClaudeModel),
 			Timeout: f.timeoutMsFlag(ctx, keyDecisionClaudeTimeoutMs, DefaultDecisionClaudeTimeoutMs),
 		},

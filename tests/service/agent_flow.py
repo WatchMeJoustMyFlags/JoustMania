@@ -82,11 +82,13 @@ def configure_agent(
     allowed: str = INTERVENTIONS_ALLOWED_VARIANT,
     openai_model: str | None = FAKE_MODEL,
     jev_fake: bool = False,
+    claude_fake: bool = False,
 ) -> None:
     """Every agent-set flag a journey needs, as flag-service overlays.
 
     ``openai_model=None`` leaves ``decision.openai.model`` at its shipped empty default
-    (UC-044 A1); ``jev_fake`` points ``decision.jev.base_url`` at the stack's fake Jev.
+    (UC-044 A1); ``jev_fake`` points ``decision.jev.base_url`` at the stack's fake Jev and
+    ``claude_fake`` ``decision.claude.base_url`` at the stack's fake Claude.
     """
     fs = flag_service_default()
     fs.put(AGENT, "enabled", variant=_onoff(enabled))
@@ -98,6 +100,8 @@ def configure_agent(
         fs.put(AGENT, "decision.openai.model", value=openai_model)
     if jev_fake:
         fs.put(AGENT, "decision.jev.base_url", variant=FAKE_BASE_URL_VARIANT)
+    if claude_fake:
+        fs.put(AGENT, "decision.claude.base_url", variant=FAKE_BASE_URL_VARIANT)
     fs.put(AGENT, "decision.openai.timeout_ms", value=DECIDE_TIMEOUT_MS)
     fs.put(AGENT, "decision.min_interval_ms", value=DECIDE_MIN_INTERVAL_MS)
     # The remote-call budget: since #1788 the env AGENT_LLM_MAX_REQUESTS_PER_MINUTE is

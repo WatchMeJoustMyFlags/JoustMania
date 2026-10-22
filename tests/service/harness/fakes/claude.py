@@ -1,12 +1,21 @@
 """FakeClaude: a scriptable Anthropic Messages API server, one per stack (#1422 S10, TC-010).
 
-The agent's ``claude`` text backend (retro and proposer, ``services/agent/inference``)
-posts to ``<base>/v1/messages?beta=true``; ``AGENT_INFERENCE_BASE_URL`` points it
-here. The fake classifies each call by its system prompt, answers with a canned
-text (a real Messages API ``message`` object) and records what it was sent::
+The agent's ``claude`` decide backend (``decision.claude.base_url``, #1900, TC-008) and
+its ``claude`` text backend (retro and proposer, ``services/agent/inference``)
+post to ``<base>/v1/messages`` (the SDK appends the path; the decide base URL has no
+``/v1``). ``AGENT_INFERENCE_BASE_URL`` points the text backend here; the ``fake``
+variant of ``decision.claude.base_url`` points the decide backend. The fake classifies
+each call by its system prompt, answers with a canned text (a real Messages API
+``message`` object) and records what it was sent::
 
     stack.fake_claude.script(retro='{"session_assessment": "..."}', proposal='{"flag": ...}')
     calls = stack.fake_claude.requests("proposal")
+    stack.fake_claude.script(decide_mode="valid", intervention="adjust_volume", confidence=0.95)
+    calls = stack.fake_claude.requests("decide")
+
+A ``decide`` answer is BUILT FROM THE REQUEST (the shared builder of the fake OpenAI
+server), so every choice is an option the agent offered; ``decide_mode="garbage"``
+answers 200 with non-JSON text.
 
 An in-process threaded server (stdlib only, instance state): nothing is shared
 between stacks. The key check mirrors the real API (401 without the expected
@@ -19,6 +28,8 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from tests.integration.fake_openai.server import build_answer, parse_questions
+
 from ..processes import free_port
 
 # Dummy key the agent sends (ANTHROPIC_API_KEY) and the fake checks; never a real key.
@@ -26,6 +37,8 @@ API_KEY = "fake-claude-service-tier-key"
 MODEL = "fake-claude"
 # The proposer's system prompt (services/agent/experiment/proposer.go buildPrompt).
 PROPOSAL_MARKER = "propose EXACTLY ONE experiment"
+# The decide system prompt (services/agent/decide/llmio/llmio.go systemPrompt).
+DECIDE_MARKER = "in-game decision engine of JoustMania"
 
 
 class FakeClaude:
@@ -33,6 +46,7 @@ class FakeClaude:
         self.port = free_port()
         self._lock = threading.Lock()
         self._replies: dict[str, str] = {"retro": "{}", "proposal": "{}"}
+        self._decide: dict = {"mode": "valid", "intervention": "adjust_volume", "confidence": 0.95, "magnitude": 0.5}
         self._requests: list[dict] = []
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -80,9 +94,25 @@ class FakeClaude:
             )
 
     # ---------------------------------------------------------------- control
-    def script(self, *, retro: str | None = None, proposal: str | None = None) -> None:
-        """Set the reply text per call kind and clear the request log."""
+    def script(
+        self,
+        *,
+        retro: str | None = None,
+        proposal: str | None = None,
+        decide_mode: str | None = None,
+        intervention: str | None = None,
+        confidence: float | None = None,
+    ) -> None:
+        """Set the reply text per call kind (and the decide answer) and clear the request log."""
         with self._lock:
+            if decide_mode is not None:
+                if decide_mode not in ("valid", "garbage"):
+                    raise ValueError(f"decide_mode must be valid or garbage, not {decide_mode!r}")
+                self._decide["mode"] = decide_mode
+            if intervention is not None:
+                self._decide["intervention"] = intervention
+            if confidence is not None:
+                self._decide["confidence"] = confidence
             if retro is not None:
                 self._replies["retro"] = retro
             if proposal is not None:
@@ -90,7 +120,7 @@ class FakeClaude:
             self._requests.clear()
 
     def requests(self, kind: str | None = None) -> list[dict]:
-        """The calls so far (``kind`` = ``retro`` or ``proposal``), oldest first."""
+        """The calls so far (``kind`` = ``retro``, ``proposal`` or ``decide``), oldest first."""
         with self._lock:
             return [dict(r) for r in self._requests if kind is None or r["kind"] == kind]
 
@@ -104,13 +134,13 @@ class FakeClaude:
             for m in body.get("messages") or []
             for b in (m.get("content") if isinstance(m.get("content"), list) else [])
         )
-        kind = "proposal" if PROPOSAL_MARKER in system else "retro"
+        kind = "decide" if DECIDE_MARKER in system else ("proposal" if PROPOSAL_MARKER in system else "retro")
         key_ok = key == API_KEY
         with self._lock:
             self._requests.append(
                 {"kind": kind, "key_ok": key_ok, "model": body.get("model"), "system": system, "user": user}
             )
-            text = self._replies[kind]
+            text = self._decide_text(user) if kind == "decide" else self._replies[kind]
         if not key_ok:
             return 401, _error("authentication_error", "invalid x-api-key")
         return 200, {
@@ -123,6 +153,14 @@ class FakeClaude:
             "stop_sequence": None,
             "usage": {"input_tokens": 100, "output_tokens": 40},
         }
+
+    def _decide_text(self, user: str) -> str:
+        """The decide answer text; the caller holds the lock."""
+        if self._decide["mode"] == "garbage":
+            return "this is not the JSON you are looking for {"
+        answer, chosen = build_answer(parse_questions(user), self._decide)
+        self._requests[-1]["intervention"] = chosen
+        return json.dumps(answer)
 
 
 def _error(kind: str, message: str) -> dict:

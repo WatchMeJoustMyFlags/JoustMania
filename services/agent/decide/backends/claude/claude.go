@@ -85,7 +85,8 @@ const instrumentationName = "github.com/joustmania/agent/decide/backends/claude"
 type Config struct {
 	// APIKey is the Anthropic API key (ANTHROPIC_API_KEY). Empty = unavailable.
 	APIKey string
-	// BaseURL overrides DefaultBaseURL (tests, or a proxy).
+	// BaseURL overrides DefaultBaseURL (tests, or a proxy). The agent sets it from
+	// the decision.claude.base_url flag (#1900), key-safe checked in the factory.
 	BaseURL string
 	// Model is the model id, e.g. "claude-haiku-4-5". Empty = unavailable.
 	Model string

@@ -15,7 +15,17 @@ import time
 
 import pytest
 
-from tests.service.harness import AGENT, LOBBY, Composition, FlagPlane, ServiceStack, processes
+from tests.service.harness import (
+    AGENT,
+    AGENT_CLAUDE,
+    AGENT_CLAUDE_DECIDE,
+    LOBBY,
+    Composition,
+    FlagPlane,
+    ServiceStack,
+    processes,
+)
+from tests.service.harness.fakes.claude import API_KEY as FAKE_CLAUDE_API_KEY
 from tests.service.harness.flag_plane import _docker, fh, prune_binary_cache
 from tests.service.harness.processes import ManagedProcess, free_port
 
@@ -153,6 +163,30 @@ def test_agent_composition_wires_sink_agent_and_fake(tmp_path):
     assert ServiceStack(LOBBY, tmp_path).fake_openai is None
     with pytest.raises(ValueError, match="otlp=True"):
         Composition(("controller-manager", "game-coordinator"), agent=True)
+
+
+def test_claude_decide_composition_rewrites_its_variant_without_text_backend_env(tmp_path):
+    """AGENT_CLAUDE_DECIDE: the fake's URL (no /v1) lands in the claude base_url variant, and the
+    agent gets the dummy key but none of the text backend's env."""
+    stack = ServiceStack(AGENT_CLAUDE_DECIDE, tmp_path)
+    assert stack.fake_claude is not None
+    assert stack.flag_plane.variant_values[("agent", "decision.claude.base_url", "fake")] == (
+        f"http://127.0.0.1:{stack.fake_claude.port}"
+    )
+    assert stack._claude_decide_env() == {"ANTHROPIC_API_KEY": FAKE_CLAUDE_API_KEY}
+    assert stack._inference_env() == {}
+    assert ServiceStack(AGENT_CLAUDE, tmp_path)._claude_decide_env() == {}
+    with pytest.raises(ValueError, match="separate"):
+        Composition(AGENT_CLAUDE.services, otlp=True, agent=True, fake_claude=True, fake_claude_decide=True)
+
+
+def test_flag_plane_rewrites_claude_variant_in_ci_copy(tmp_path):
+    variant = ("agent", "decision.claude.base_url", "fake")
+    plane = FlagPlane(tmp_path / "a", variant_values={variant: "http://127.0.0.1:9"})
+    fh.copy_ci_flag_dir(plane.flag_dir)
+    plane._rewrite_variants()
+    flags = json.loads((plane.flag_dir / "agent.json").read_text())["flags"]
+    assert flags["decision.claude.base_url"]["variants"]["fake"] == "http://127.0.0.1:9"
 
 
 def test_flag_plane_rewrites_only_declared_variants(tmp_path):

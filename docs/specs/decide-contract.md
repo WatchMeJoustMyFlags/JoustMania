@@ -120,7 +120,7 @@ Source: `ffa.go:magnitudeBounds`.
 | Backend | Transport | Availability (else `backend_unavailable`) | Source |
 |---|---|---|---|
 | `rules` | in process | always | `decision/decide_rules.go` |
-| `claude` | Anthropic Messages API (official Go SDK), JSON-schema output; `max_tokens` 2048 where the model may think, 1024 where thinking is off (PR #1257); SDK retries 0 | `ANTHROPIC_API_KEY` + model | `decide/backends/claude/claude.go:69-77,142,233,283-308` |
+| `claude` | Anthropic Messages API (official Go SDK), `POST {decision.claude.base_url}/v1/messages` (the SDK appends the path; the flag has no `/v1`), JSON-schema output; `max_tokens` 2048 where the model may think, 1024 where thinking is off (PR #1257); SDK retries 0 | `ANTHROPIC_API_KEY` + model | `decide/backends/claude/claude.go:69-77,142,233,283-308` |
 | `openai` | `POST {base_url}/chat/completions`, `response_format: json_schema` (`strict`); on a 400/422 whose body says the schema / format is unsupported, one retry with `json_object` in the same budget; the downgrade is remembered for that base URL + model for 10 minutes only if that retry succeeds (2xx) | `DECISION_OPENAI_API_KEY` + `decision.openai.model` + `decision.openai.base_url` | `decide/backends/openai/openai.go:schemaDowngradeTTL`, `schemaUnsupportedBody`, `Backend.Available` |
 | `jev` | TypeSafe System One: `POST {decision.jev.base_url}/systemone`, `Authorization: Bearer`, typed body `{model, state, questions:{id:{type, instructions, criteria}}}`; plain HTTP, no retries on 429 / 529 | `JEV_API_KEY` only (base URL and model have defaults) | `decide/backends/jev/wire.go:wirePath`, `jev.go:Backend.Decide`, `stages.go`, `jev.go:Backend.Available`, `decide/backends/jev/README.md` |
 

@@ -9,9 +9,8 @@ the gate's p_yes, which is the acting confidence of the round; jev's act thresho
 (``decision.jev.act_confidence_threshold``, default 0.6), so 0.55 is a valid intervention
 answer below it.
 
-The Claude decide backend cannot be pointed at a fake from here: the agent does not pass a base
-URL to it (``decide_backends.go``), so only its missing key (UC-044 A1) is covered, in
-``test_tc008_remote_backend_routing.py``.
+The Claude decide backend has its own file, ``test_tc008_claude_backend.py`` (#1900); its missing
+key (UC-044 A1) is in ``test_tc008_remote_backend_routing.py``.
 """
 
 import pytest
