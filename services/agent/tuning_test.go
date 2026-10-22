@@ -272,9 +272,8 @@ func TestLLMBudgetCeiling(t *testing.T) {
 
 // TestTuningDefaults_IgnoreEnv: the removed env vars (#1907) have no effect. With every
 // one set to a non-default value, the compiled defaults are unchanged, a text backend
-// whose flag cannot be resolved is the stub, and a Claude client built without a
-// flag-resolved tuning uses the inference constants.
-// UC: UC-042 BR-003
+// whose flag cannot be resolved is the stub.
+// UC: UC-042 Pre-2
 func TestTuningDefaults_IgnoreEnv(t *testing.T) {
 	want := compiledTuningDefaults()
 	for k, v := range map[string]string{
@@ -327,7 +326,7 @@ func TestCompiledDefaultsMatchFlagDefaults(t *testing.T) {
 		"promotion.rewatch_interval_seconds": d.RewatchInterval.Seconds(),
 		"promotion.rewatch_timeout_seconds":  d.RewatchTimeout.Seconds(),
 		"promotion.revert_cooldown_seconds":  d.RevertCooldown.Seconds(),
-		"decision.probe_decisions":           false, // main.go SetProbeDefault(false)
+		"decision.probe_decisions":           false, // probeDecisions compiled fallback
 	}
 	for _, path := range []string{
 		filepath.Join("..", "flagd", "agent.json"),

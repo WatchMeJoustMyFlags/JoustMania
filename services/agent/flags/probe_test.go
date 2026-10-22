@@ -26,7 +26,6 @@ func TestProbeDecisions_Resolution(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := New(c.ev, nil)
-			f.SetProbeDefault(false)
 			if got := f.Evaluate(context.Background()).ProbeDecisions; got != c.want {
 				t.Fatalf("Snapshot.ProbeDecisions = %v, want %v", got, c.want)
 			}

@@ -539,7 +539,6 @@ func main() {
 	// effect.window_seconds flag (#1788; the compiled default while unresolved).
 	// Probe decisions (demo/verification, decision.probe_decisions, #1810): the flag
 	// is read per decision cycle through the snapshot; off while flagd cannot resolve it.
-	agentFlags.SetProbeDefault(false)
 	// Forward-declared so the per-game loop factory can close over it to wire the
 	// async re-validation source: each loop re-fetches its game's CURRENT context
 	// from this Multiplexer when a remote decide answer lands. It is

@@ -32,7 +32,7 @@ const (
 // InferenceBackend resolves inference.backend: the
 // text backend of the post-game retro and the shadow-experiment proposer, "stub" or
 // "claude". The value is lower-cased and trimmed; a blank value falls back to def
-// (main.go passes the deprecated env value, else "stub"). Choosing a value that is
+// (main.go passes the constant "stub"). Choosing a value that is
 // not usable (claude without a key) is the caller's job to degrade to the stub.
 func (f *Flags) InferenceBackend(ctx context.Context, def string) string {
 	if v := strings.ToLower(strings.TrimSpace(f.stringFlag(ctx, keyInferenceBackend, def))); v != "" {
@@ -96,15 +96,9 @@ func (f *Flags) secondsFlag(ctx context.Context, key string, def time.Duration) 
 	return time.Duration(secs) * time.Second
 }
 
-// SetProbeDefault sets the fallback for decision.probe_decisions when flagd cannot
-// resolve it (flagd down, flag missing, no first sync): main.go passes false (the
-// AGENT_PROBE_DECISIONS env fallback was removed, #1907). Call once at startup,
-// before the first Evaluate.
-func (f *Flags) SetProbeDefault(def bool) { f.probeDefault = def }
-
-// probeDecisions resolves decision.probe_decisions .
+// probeDecisions resolves decision.probe_decisions (false while flagd cannot resolve it).
 // Read per Evaluate (per decision cycle), so a flip changes the NEXT cycle. The
 // probe only narrows the agent (noop only), so it is tuning and never fails closed.
 func (f *Flags) probeDecisions(ctx context.Context) bool {
-	return f.boolFlag(ctx, keyProbeDecisions, f.probeDefault)
+	return f.boolFlag(ctx, keyProbeDecisions, false)
 }

@@ -400,7 +400,7 @@ if [[ "${docker_ok}" -eq 1 ]]; then
     if key_set DECISION_OPENAI_API_KEY; then pass "openai: DECISION_OPENAI_API_KEY present"; else info "openai: DECISION_OPENAI_API_KEY absent (only the optional second-vendor beat needs it)"; fi
     # The post-game text backend is the inference.backend flag only (the
     # AGENT_INFERENCE_BACKEND env was removed, #1907): read the effective value, so a
-    # stage overlay counts and a flagd outage (the agent then runs the stub) FAILs.
+    # stage overlay counts and an unreachable flag service FAILs.
     inference_flag="$(PYTHONPATH="${SCRIPT_DIR}" python3 -c '
 from flagservice import FlagService
 try:
