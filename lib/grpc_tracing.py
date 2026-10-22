@@ -5,7 +5,8 @@ The standard gRPC OpenTelemetry instrumentation doesn't reliably work with grpc.
 This module provides manual interceptors for both client and server:
 
 CLIENT INTERCEPTORS:
-- Inject W3C Trace Context (traceparent, tracestate) into outgoing gRPC metadata
+- Inject W3C Trace Context (traceparent, tracestate) into outgoing gRPC metadata: the CLIENT span
+  when the call has one, so the server's span is its child, else the caller's current span (#1897)
 - Optionally create client spans (disabled by default, enable with OTEL_GRPC_CLIENT_SPANS=true)
 - When grpc_rpc_spans flag is enabled, create CLIENT spans with full RPC semantic convention
   attributes for service topology in the trace backend. A CLIENT span covers the whole call:
@@ -150,11 +151,13 @@ async def _iterate_in_context(stream: Any, ctx: otel_context.Context):
                 otel_context.detach(token)
 
 
-def _prepare_metadata(existing_metadata: Any) -> tuple:
+def _prepare_metadata(existing_metadata: Any, context: otel_context.Context | None = None) -> tuple:
     """Prepare metadata with trace context injection.
 
     Args:
         existing_metadata: Existing metadata (can be None, tuple, list, or grpc.aio.Metadata)
+        context: Context whose span goes into ``traceparent``; None means the current context.
+            An existing ``traceparent`` in ``existing_metadata`` is overwritten.
 
     Returns:
         Tuple of (key, value) pairs with trace context injected
@@ -180,7 +183,7 @@ def _prepare_metadata(existing_metadata: Any) -> tuple:
             for key, value in existing_metadata.items():
                 metadata[str(key)] = str(value)
 
-    inject(metadata)
+    inject(metadata, context=context)
     return tuple(metadata.items())
 
 
@@ -336,8 +339,8 @@ class _ClientSpanFinisher:
 class _ClientSpanInterceptorBase:
     """Shared span setup for the async client interceptors.
 
-    Trace context is injected before the span starts (``_prepare_metadata``), so the server's
-    span keeps the caller's span as its parent, as before #1879.
+    The ``traceparent`` carries the CLIENT span when the call has one, so the server's span is its
+    child (telemetry.md §3.1, #1897); with no CLIENT span it carries the caller's current span.
     """
 
     def __init__(self, server_address: str | None = None, server_port: int | None = None):
@@ -362,11 +365,12 @@ class _ClientSpanInterceptorBase:
         """Unary response: await the call, so the span ends at its final status."""
         spec = self._span_spec(details.method)
         if spec is None:
-            return await continuation(details, request)
+            return await continuation(_with_trace_metadata(details), request)
         tracer, name, attrs, legacy = spec
         with tracer.start_as_current_span(name, kind=SpanKind.CLIENT, attributes=attrs) as span:
             try:
-                call = await continuation(details, request)
+                # Explicit context although the span is current: same code as the stream path.
+                call = await continuation(_with_trace_metadata(details, trace.set_span_in_context(span)), request)
                 await call
             except grpc.aio.AioRpcError as e:
                 _record_client_status(span, e.code(), e.details(), e if legacy else None)
@@ -386,13 +390,14 @@ class _ClientSpanInterceptorBase:
         """
         spec = self._span_spec(details.method)
         if spec is None:
-            return await continuation(details, request)
+            return await continuation(_with_trace_metadata(details), request)
         tracer, name, attrs, legacy = spec
-        finisher = _ClientSpanFinisher(
-            tracer.start_span(name, kind=SpanKind.CLIENT, attributes=attrs), asyncio.get_running_loop()
-        )
+        span = tracer.start_span(name, kind=SpanKind.CLIENT, attributes=attrs)
+        finisher = _ClientSpanFinisher(span, asyncio.get_running_loop())
+        # The span goes into the metadata only, never attach(): it must not become current (#1769).
+        span_ctx = trace.set_span_in_context(span)
         try:
-            call = await continuation(details, request)
+            call = await continuation(_with_trace_metadata(details, span_ctx), request)
         except grpc.aio.AioRpcError as e:
             finisher.finish(e.code(), e.details(), e if legacy else None)
             raise
@@ -413,11 +418,14 @@ class _ClientSpanInterceptorBase:
         return call
 
 
-def _with_trace_metadata(client_call_details: grpc.aio.ClientCallDetails) -> grpc.aio.ClientCallDetails:
+def _with_trace_metadata(
+    client_call_details: grpc.aio.ClientCallDetails, context: otel_context.Context | None = None
+) -> grpc.aio.ClientCallDetails:
+    """Copy of ``client_call_details`` with ``context``'s span (default: the current one) injected."""
     return grpc.aio.ClientCallDetails(
         method=client_call_details.method,
         timeout=client_call_details.timeout,
-        metadata=_prepare_metadata(client_call_details.metadata),
+        metadata=_prepare_metadata(client_call_details.metadata, context),
         credentials=client_call_details.credentials,
         wait_for_ready=client_call_details.wait_for_ready,
     )
@@ -427,8 +435,8 @@ class ContextPropagationInterceptor(_ClientSpanInterceptorBase, grpc.aio.UnaryUn
     """
     Async unary-unary client interceptor for trace context propagation.
 
-    Injects current trace context into gRPC metadata so server-side spans
-    are linked to the parent trace. Optionally creates client spans when
+    Injects trace context into gRPC metadata (the CLIENT span when there is one, else the
+    caller's span) so server-side spans are linked to the parent trace. Optionally creates client spans when
     OTEL_GRPC_CLIENT_SPANS=true or when the grpc_rpc_spans flag is enabled.
     ``continuation`` returns the call before the RPC finishes, so the call is awaited here: the
     span ends at the final status (#1879).
@@ -441,7 +449,7 @@ class ContextPropagationInterceptor(_ClientSpanInterceptorBase, grpc.aio.UnaryUn
         request: Any,
     ) -> Any:
         """Intercept unary-unary RPC calls to propagate trace context."""
-        return await self._intercept_unary_response(continuation, _with_trace_metadata(client_call_details), request)
+        return await self._intercept_unary_response(continuation, client_call_details, request)
 
 
 class ContextPropagationStreamUnaryInterceptor(_ClientSpanInterceptorBase, grpc.aio.StreamUnaryClientInterceptor):
@@ -458,9 +466,7 @@ class ContextPropagationStreamUnaryInterceptor(_ClientSpanInterceptorBase, grpc.
         request_iterator: Any,
     ) -> Any:
         """Intercept stream-unary RPC calls to propagate trace context."""
-        return await self._intercept_with_done_callback(
-            continuation, _with_trace_metadata(client_call_details), request_iterator
-        )
+        return await self._intercept_with_done_callback(continuation, client_call_details, request_iterator)
 
 
 class ContextPropagationUnaryStreamInterceptor(_ClientSpanInterceptorBase, grpc.aio.UnaryStreamClientInterceptor):
@@ -473,9 +479,7 @@ class ContextPropagationUnaryStreamInterceptor(_ClientSpanInterceptorBase, grpc.
         request: Any,
     ) -> Any:
         """Intercept unary-stream RPC calls to propagate trace context."""
-        return await self._intercept_with_done_callback(
-            continuation, _with_trace_metadata(client_call_details), request
-        )
+        return await self._intercept_with_done_callback(continuation, client_call_details, request)
 
 
 class ContextPropagationStreamStreamInterceptor(_ClientSpanInterceptorBase, grpc.aio.StreamStreamClientInterceptor):
@@ -488,9 +492,7 @@ class ContextPropagationStreamStreamInterceptor(_ClientSpanInterceptorBase, grpc
         request_iterator: Any,
     ) -> Any:
         """Intercept stream-stream RPC calls to propagate trace context."""
-        return await self._intercept_with_done_callback(
-            continuation, _with_trace_metadata(client_call_details), request_iterator
-        )
+        return await self._intercept_with_done_callback(continuation, client_call_details, request_iterator)
 
 
 def get_context_propagation_interceptors(
@@ -533,6 +535,7 @@ class SyncUnaryUnaryInterceptor(grpc.UnaryUnaryClientInterceptor):
     rust_adapter) to inject W3C traceparent into outgoing RPCs. The sync ``continuation``
     never raises: it returns an outcome that carries the status, so the span ends from the
     outcome's done callback (inline for a blocking call, on a grpc thread for ``.future()``) (#1879).
+    The ``traceparent`` carries the CLIENT span when the flag is on, else the caller's span (#1897).
     """
 
     def __init__(self, server_address: str | None = None, server_port: int | None = None):
@@ -540,23 +543,16 @@ class SyncUnaryUnaryInterceptor(grpc.UnaryUnaryClientInterceptor):
         self._server_port = server_port
 
     def intercept_unary_unary(self, continuation, client_call_details, request):
-        new_details = _ClientCallDetails(
-            client_call_details.method,
-            client_call_details.timeout,
-            _prepare_metadata(client_call_details.metadata),
-            client_call_details.credentials,
-            client_call_details.wait_for_ready,
-            client_call_details.compression,
-        )
-
         if not _rpc_spans_enabled():
-            return continuation(new_details, request)
+            return continuation(_sync_details_with_trace(client_call_details), request)
 
         service, method = _parse_method(client_call_details.method)
         tracer = trace.get_tracer(__name__)
         attrs = _build_rpc_attributes(service, method, self._server_address, self._server_port)
-        finisher = _ClientSpanFinisher(tracer.start_span(f"{service}/{method}", kind=SpanKind.CLIENT, attributes=attrs))
+        span = tracer.start_span(f"{service}/{method}", kind=SpanKind.CLIENT, attributes=attrs)
+        finisher = _ClientSpanFinisher(span)
         try:
+            new_details = _sync_details_with_trace(client_call_details, trace.set_span_in_context(span))
             outcome = continuation(new_details, request)
         except Exception as e:
             finisher.fail(e)
@@ -579,15 +575,8 @@ class SyncStreamStreamInterceptor(grpc.StreamStreamClientInterceptor):
         self._server_port = server_port
 
     def intercept_stream_stream(self, continuation, client_call_details, request_iterator):
-        new_details = _ClientCallDetails(
-            client_call_details.method,
-            client_call_details.timeout,
-            _prepare_metadata(client_call_details.metadata),
-            client_call_details.credentials,
-            client_call_details.wait_for_ready,
-            client_call_details.compression,
-        )
-        return continuation(new_details, request_iterator)
+        # No CLIENT span on this stream: the caller's span is sent (telemetry.md §3.1).
+        return continuation(_sync_details_with_trace(client_call_details), request_iterator)
 
 
 class _ClientCallDetails(
@@ -602,6 +591,18 @@ class _ClientCallDetails(
         self.credentials = credentials
         self.wait_for_ready = wait_for_ready
         self.compression = compression
+
+
+def _sync_details_with_trace(details: Any, context: otel_context.Context | None = None) -> "_ClientCallDetails":
+    """Copy of sync ``details`` with ``context``'s span (default: the current one) injected."""
+    return _ClientCallDetails(
+        details.method,
+        details.timeout,
+        _prepare_metadata(details.metadata, context),
+        details.credentials,
+        details.wait_for_ready,
+        details.compression,
+    )
 
 
 def get_sync_context_propagation_interceptors(
