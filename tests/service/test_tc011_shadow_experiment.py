@@ -69,7 +69,18 @@ TUNING = {
     "experiment.mock_archetypes": "quick_cascade",
     "experiment.max_game_seconds": 90,
 }
-DECLARE_TIMEOUT = 60.0
+# Served before the agent starts (Composition.agent_flags), so its first tick already reads them.
+SERVICE_COMPOSITION = replace(
+    SERVICE_COMPOSITION,
+    agent_flags={
+        "enabled": {"variant": "on"},
+        "experiments_enabled": {"variant": "on"},
+        "decision.backend": {"variant": "rules"},
+        **{key: {"value": value} for key, value in TUNING.items()},
+    },
+)
+# 90 s leaves room for one compiled 30 s first experiment tick before the live cadence.
+DECLARE_TIMEOUT = 90.0
 CONCLUDE_TIMEOUT = 300.0
 # Absence window after teardown: several experiment ticks (3 s each).
 NO_RESPAWN_WINDOW = 10.0
@@ -105,11 +116,6 @@ def experiment_stack(service_stack):
     """
     client = FlagService.from_compose(service_stack)
     bind_flag_service(client)
-    client.put("agent", "enabled", variant="on")
-    client.put("agent", "experiments_enabled", variant="on")
-    client.put("agent", "decision.backend", variant="rules")
-    for key, value in TUNING.items():
-        client.put("agent", key, value=value)
     try:
         yield service_stack
     finally:

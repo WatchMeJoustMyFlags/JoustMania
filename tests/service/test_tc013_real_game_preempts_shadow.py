@@ -69,9 +69,20 @@ TUNING = {
     "experiment_max_games": 6,
     "experiment.max_game_seconds": 90,
 }
+# Served before the agent starts (Composition.agent_flags), so its first tick already reads them.
+SERVICE_COMPOSITION = replace(
+    SERVICE_COMPOSITION,
+    agent_flags={
+        "enabled": {"variant": "on"},
+        "experiments_enabled": {"variant": "on"},
+        "decision.backend": {"variant": "rules"},
+        **{key: {"value": value} for key, value in TUNING.items()},
+    },
+)
 PREEMPTED = "preempted_by_real_game"
 BLOCKED = "Shadow games blocked while a real game is running"
-ASSIGN_TIMEOUT = 60.0
+# 90 s leaves room for one compiled 30 s first experiment tick before the live cadence.
+ASSIGN_TIMEOUT = 90.0
 EVENT_TIMEOUT = 20.0
 # Spawn ticks are 3 s apart: a refused start shows within a few ticks.
 BLOCKED_TIMEOUT = 20.0
@@ -110,15 +121,10 @@ def _journal(stack) -> tuple[list[dict], dict]:
 def preempt_stack(service_stack):
     client = FlagService.from_compose(service_stack)
     bind_flag_service(client)
-    client.put("agent", "enabled", variant="on")
-    client.put("agent", "experiments_enabled", variant="on")
-    client.put("agent", "decision.backend", variant="rules")
     # Baseline variant ``all``: its first archetype, ``calm_long``, has no player die on
     # its own, so S1 is still running when the real game starts (overlays take
     # declared variants only).
     client.put("agent", "experiment.mock_archetypes", variant="all")
-    for key, value in TUNING.items():
-        client.put("agent", key, value=value)
     client.put("game", "shadow_policy", variant="block")
     try:
         yield service_stack
