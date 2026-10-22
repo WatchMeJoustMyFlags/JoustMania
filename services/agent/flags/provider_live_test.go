@@ -78,7 +78,7 @@ func newLiveFlagPlane(t *testing.T, startupDelay time.Duration) *liveFlagPlane {
 // error), so a test never mistakes a code default (flagd not reached yet) for a served value.
 func waitResolvesFromFlagd(t *testing.T) {
 	t.Helper()
-	client := openfeature.GetApiInstance().GetNamedClient(Domain)
+	client := openfeature.NewClient(Domain)
 	deadline := time.Now().Add(liveSetupTimeout)
 	for {
 		d, err := client.BooleanValueDetails(context.Background(), keyEnabled, false, openfeature.EvaluationContext{})
@@ -97,7 +97,7 @@ func waitResolvesFromFlagd(t *testing.T) {
 // of instant could be the not-ready fallback.
 func waitGameDomainServes(t *testing.T) {
 	t.Helper()
-	client := openfeature.GetApiInstance().GetNamedClient(GameDomain)
+	client := openfeature.NewClient(GameDomain)
 	deadline := time.Now().Add(liveSetupTimeout)
 	for {
 		d, err := client.StringValueDetails(context.Background(), "shield.activation", "", shieldChargeContext("live-game"))
@@ -401,9 +401,9 @@ func TestLiveFlip_FlagdRestartMidRun(t *testing.T) {
 	})
 }
 
-// liveIdleStreamHold outlasts the GOAWAY that v0.6.0's own keepalive (30 s pings,
-// PermitWithoutStream) drew from flagd v0.16.0's default ping policy: the third ping
-// strike, about 120 s into an idle stream (#1768).
+// liveIdleStreamHold outlasts the GOAWAY that the provider's own keepalive (v0.6.0: 30 s
+// pings, v0.8.0: 10 s, both PermitWithoutStream) draws from flagd v0.16.0's default ping
+// policy: the third ping strike, at most about 120 s into an idle stream (#1768).
 const liveIdleStreamHold = 150 * time.Second
 
 // UC: UC-045 A3

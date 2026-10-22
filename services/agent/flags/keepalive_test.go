@@ -41,7 +41,8 @@ func TestSyncKeepalive_WithinFlagdPingPolicy(t *testing.T) {
 
 // UC: UC-045 A3 Pre-1
 // Every agent provider is built with the keepalive dial-option override (#1768): without
-// it v0.6.0 dials with its own 30 s keepalive and flagd drops the stream.
+// it the provider dials with its own keepalive (PermitWithoutStream, at least every 10 s)
+// and flagd drops the stream.
 func TestFlagdProviderOptions_CarryKeepaliveOverride(t *testing.T) {
 	t.Run("UC-045/A3 provider options carry the sync dial-option override", func(t *testing.T) {
 		for _, set := range []string{Domain, RolloutDomain} {
@@ -84,7 +85,7 @@ func (s *fakeSyncServer) SyncFlags(_ *syncv1.SyncFlagsRequest, stream grpc.Serve
 }
 
 // UC: UC-045 A3 Pre-1
-// The dial-option override (#1768) replaces all of v0.6.0's own dial options: the real
+// The dial-option override (#1768) replaces all of the provider's own dial options: the real
 // flagdFactory must still reach a plaintext sync server, send its flagSetId selector and
 // serve the synced flags. The server enforces flagd's ping policy explicitly.
 func TestFlagdFactory_SyncsOverKeepaliveDialOptions(t *testing.T) {

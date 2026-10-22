@@ -51,8 +51,8 @@ var defaultSyncTiming = syncTiming{
 var errProviderShutDown = errors.New("flagd provider shut down before its first sync")
 
 // syncedProvider keeps a flagd in-process provider syncing however late flagd answers
-// (#1713). go-sdk-contrib flagd v0.6.0 gives Init a single deadline (500 ms by default);
-// when it passes before the first sync the provider never starts its event loop, the
+// (#1713). go-sdk-contrib flagd v0.8.0 (as v0.6.0; re-checked in #1942) gives Init a
+// single deadline (500 ms by default); when it passes before the first sync the provider never starts its event loop, the
 // service's event buffer (5) fills after a few flag changes and the sync stops applying
 // data: later flips are lost, the in-process form of #1709. Init also fails at once on the
 // first STALE / ERROR event (flagd refusing the stream), with the same result. So:
@@ -66,11 +66,11 @@ var errProviderShutDown = errors.New("flagd provider shut down before its first 
 //     still-running service Init; after an error event it is ordered, so the timer is
 //     never used.)
 //
-// Residual leak: v0.6.0's service Init blocks in waitForInitialization, which ignores
+// Residual leak: v0.8.0's service Init blocks in waitForInitialization, which ignores
 // its context, so every FAILED build keeps ~1 goroutine and ~300 KB for good. The probe
 // keeps a down flagd from causing builds; a flagd that accepts TCP but refuses the
-// stream (e.g. a bad selector) costs at most one build per domain per 5 min (~7 MB/h
-// for the two domains).
+// stream (e.g. a bad selector) costs at most one build per domain per 5 min (~10 MB/h
+// for the three domains).
 //
 // Reads fail closed while the domain is not READY: before the first sync (the SDK keeps
 // the domain NOT_READY while Init runs) and while the sync stream is lost (STALE / ERROR

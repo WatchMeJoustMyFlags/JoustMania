@@ -38,10 +38,12 @@ const (
 // Sync-stream keepalive (flags.md §1.1, #1768). flagd v0.16.0 serves the sync stream from
 // a grpc-go server with no keepalive enforcement policy, so grpc-go's default applies: at
 // most one client ping per 5 min (flagdServerMinPingInterval), and none without an active
-// stream. go-sdk-contrib flagd v0.6.0 hard-codes a 30 s ping with PermitWithoutStream, so
+// stream. go-sdk-contrib flagd v0.6.0 hard-coded a 30 s ping with PermitWithoutStream, so
 // on an idle stream flagd counted ping strikes and sent GOAWAY too_many_pings every ~2-3
-// min; each drop made the agent fail closed for about a second. The agent pings every
-// 10 min (as lib/feature_flags.py does) and only while the stream is open.
+// min; each drop made the agent fail closed for about a second. v0.8.0 still hard-codes
+// PermitWithoutStream, and its default keepalive time 0 ("off") is raised to grpc's 10 s
+// minimum. The agent pings every 10 min (as lib/feature_flags.py does) and only while the
+// stream is open.
 const (
 	flagdServerMinPingInterval = 5 * time.Minute
 	syncKeepaliveTime          = 10 * time.Minute
@@ -55,8 +57,8 @@ var syncKeepaliveParams = keepalive.ClientParameters{
 	PermitWithoutStream: false,
 }
 
-// syncDialOptions replaces v0.6.0's dial options, whose keepalive cannot be set any
-// other way (WithGrpcDialOptionsOverride replaces them all). It keeps what the provider
+// syncDialOptions replaces the provider's own dial options, whose PermitWithoutStream
+// cannot be turned off any other way (WithGrpcDialOptionsOverride replaces them all). It keeps what the provider
 // would set for this config: plaintext transport (no TLS on the compose network), the
 // sync-service retry policy with the agent's backoff, and the selector interceptors
 // (which the provider appends to an override itself).
@@ -68,7 +70,8 @@ func syncDialOptions() []grpc.DialOption {
 	}
 }
 
-// syncRetryServiceConfig mirrors v0.6.0's buildRetryPolicy for the agent's backoff.
+// syncRetryServiceConfig mirrors v0.8.0's buildRetryPolicy (4 attempts) for the agent's
+// backoff (the provider's 1 s to 5 s default would hold the agent fail-closed longer).
 func syncRetryServiceConfig() string {
 	seconds := func(ms int) string {
 		return fmt.Sprint((time.Duration(ms) * time.Millisecond).Seconds()) + "s"
@@ -77,7 +80,7 @@ func syncRetryServiceConfig() string {
 		"methodConfig": []map[string]any{{
 			"name": []map[string]string{{"service": "flagd.sync.v1.FlagSyncService"}},
 			"retryPolicy": map[string]any{
-				"MaxAttempts":          3,
+				"MaxAttempts":          4,
 				"InitialBackoff":       seconds(syncRetryBackoffMs),
 				"MaxBackoff":           seconds(syncRetryBackoffMaxMs),
 				"BackoffMultiplier":    2.0,
@@ -191,7 +194,7 @@ func registerDomain(domain string, factory innerFactory, probe func() bool, timi
 	if err := openfeature.SetNamedProvider(domain, provider); err != nil {
 		return nil, err
 	}
-	client := openfeature.GetApiInstance().GetNamedClient(domain)
+	client := openfeature.NewClient(domain)
 	// Standard OpenFeature OTel hooks (#1427): evaluation metrics and span events. On the
 	// client, not the API, so a second SetupFlagd (tests) does not stack global hooks.
 	hooks, err := NewOTelHooks()

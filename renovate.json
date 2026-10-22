@@ -75,8 +75,8 @@
       "groupName": "github actions"
     },
     {
-      "description": "flagd image + flagd providers must move TOGETHER (flag-set selector coupling, #843: providers >= 0.3.0 silently default against flagd < flagd-selector-header support). Group them so Renovate proposes coordinated bumps; the integration suite is the gate (silent-defaults failure mode).",
-      "matchPackageNames": ["openfeature-provider-flagd", "/^ghcr\\.io\\/open-feature\\/flagd$/", "/go-sdk-contrib\\/providers\\/flagd/"],
+      "description": "flagd image + flagd providers must move TOGETHER (flag-set selector coupling, #843: providers >= 0.3.0 silently default against flagd < flagd-selector-header support). Group them so Renovate proposes coordinated bumps; the integration suite is the gate (silent-defaults failure mode). The Go provider requires matching go-sdk and flagd/core releases (provider v0.8.0 needs go-sdk v1.19.0 and core v0.19.0, #1942), so they join the group; any bump here must re-run tests/service/test_agent_flag_live.py (the service tier).",
+      "matchPackageNames": ["openfeature-provider-flagd", "/^ghcr\\.io\\/open-feature\\/flagd$/", "/go-sdk-contrib\\/providers\\/flagd/", "github.com/open-feature/go-sdk", "github.com/open-feature/flagd/core"],
       "groupName": "flagd + providers (coordinated)"
     },
     {
