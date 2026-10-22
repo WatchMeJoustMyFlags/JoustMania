@@ -85,6 +85,8 @@ class NonstopPlayer(Player):
     respawn_deadline: float | None = None  # Game clock time of the respawn; None = no respawn pending
     spawn_protected: bool = False
     spawn_protection_end: float = 0.0
+    # The controller disconnected: the death counts, no respawn, no revive (UC-026 A2, #1971)
+    disconnected: bool = False
 
 
 class NonstopJoustGame(BaseGameMode):
@@ -284,9 +286,14 @@ class NonstopJoustGame(BaseGameMode):
         player.alive = False
         player.deaths += 1
         player.current_streak = 0
-        player.respawn_timer = self.respawn_duration
-        # Wall-clock deadline, not a frame count (UC-026 step 2, #1963); 0 respawns on the next frame
-        player.respawn_deadline = self._clock() + self.respawn_duration
+        if player.disconnected:
+            # A disconnect is a death without respawn (UC-026 A2, #1971)
+            player.respawn_timer = 0.0
+            player.respawn_deadline = None
+        else:
+            player.respawn_timer = self.respawn_duration
+            # Wall-clock deadline, not a frame count (UC-026 step 2, #1963); 0 respawns on the next frame
+            player.respawn_deadline = self._clock() + self.respawn_duration
 
         logger.info(f"Player died: {serial} (kills: {player.kills}, deaths: {player.deaths}, score: {player.score})")
 
@@ -305,6 +312,27 @@ class NonstopJoustGame(BaseGameMode):
                 "score": player.score,
             },
         )
+
+    async def _handle_disconnect(self, serial: str) -> None:
+        """A disconnect is one death and the player does not respawn (UC-026 A2, #1591, #1971).
+
+        The flag is set before the base kill path runs, so ``_kill_player_impl``
+        starts no respawn. A player already waiting to respawn gets no second
+        death: the pending respawn is cancelled.
+        """
+        player = self.players.get(serial)
+        if player is None or player.disconnected:
+            return
+        player.disconnected = True
+        if player.alive:
+            await super()._handle_disconnect(serial)
+            return
+
+        logger.info(f"Player disconnected while waiting to respawn: {serial} (respawn cancelled)")
+        player.respawn_deadline = None
+        player.respawn_timer = 0.0
+        if player.span:
+            player.span.add_event("player_disconnected", attributes={"reason": "controller_disconnect"})
 
     def _build_initial_stream_control(self, update_frequency_hz: int):
         """Build the initial GameplayStreamControl for the dynamic-filter stream.
@@ -371,9 +399,21 @@ class NonstopJoustGame(BaseGameMode):
                 if callable(cancel):
                     cancel()
 
+            # Startup grace: residual spikes in the first frames cannot kill (UC-030 BR-003, #1591)
+            grace_until = time.time() + 0.3
+            for player in self.players.values():
+                if player.alive:
+                    player.grace_until = grace_until
+
             # Track current alive set for detecting changes (Phase 45)
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
             logger.info(f"Initial alive players: {len(last_alive_serials)}")
+
+            # Disconnects seen during the countdown or warm-up are deaths now, before the
+            # first frame (UC-026 A2, #1591). The time limit has not started, so no win check.
+            if self.running:
+                await self._handle_warmup_disconnects()
+                last_alive_serials = await self._send_alive_filter_update(last_alive_serials)
 
             # Frame metrics as in the base loop (#1963): game_loop_frames_dropped_total,
             # actual Hz, consistency, jitter
@@ -399,7 +439,10 @@ class NonstopJoustGame(BaseGameMode):
                 # this frame respawns on the next one at the earliest (UC-026 step 2)
                 await self._update_respawn_timers()
 
-                # Process each controller's gameplay data
+                # Disconnects first, then motion, as in the base loop (UC-026 A2, #1971); the
+                # time limit is checked once per frame below
+                for disconnect in gameplay_update.disconnects:
+                    await self._handle_disconnect(disconnect.serial)
                 for gameplay_data in gameplay_update.controllers:
                     await self._process_controller_state(gameplay_data)
 
@@ -522,7 +565,8 @@ class NonstopJoustGame(BaseGameMode):
         Respawn a dead player (Nonstop-specific).
 
         Refused once the game is no longer RUNNING, the outcome is latched or the
-        stream is closed (UC-026 BR-003, #1954): base ``revive_player`` propagates
+        stream is closed (UC-026 BR-003, #1954), and for a disconnected player
+        (UC-026 A2, #1971): base ``revive_player`` propagates
         the False, so a late agent revive changes nothing and writes nothing.
 
         Args:
@@ -538,6 +582,10 @@ class NonstopJoustGame(BaseGameMode):
             return False
 
         player = self.players[serial]
+        if player.disconnected:
+            # A disconnected controller never comes back as a live player (UC-026 A2, #1971)
+            logger.info(f"Respawn of {serial} refused: the controller disconnected")
+            return False
         player.alive = True
         metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
         self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
