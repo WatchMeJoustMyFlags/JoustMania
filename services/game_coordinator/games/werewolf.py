@@ -17,7 +17,7 @@ from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
 from lib.feature_flags import read_float_flag, read_object_flag
-from lib.types import Sound
+from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
@@ -379,8 +379,10 @@ class WerewolfGame(BaseGameMode):
                 winner = "humans"
                 winners = alive_humans
             else:
-                winner = "none"
-                winners = []
+                # Both sides eliminated at once: a tie, not a werewolf_winner (UC-022 A2, #1354)
+                logger.info("Tie: no humans and no werewolves survive")
+                await self.event_publisher(GameEvent.GAME_TIE, {})
+                return True
 
             logger.info(f"{winner.capitalize()} win! {len(winners)} survivors")
 
@@ -564,7 +566,6 @@ class WerewolfGame(BaseGameMode):
                 self.start_time = time.time()
 
                 # Emit game_started event (required for integration tests)
-                from lib.types import GameEvent
 
                 await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
