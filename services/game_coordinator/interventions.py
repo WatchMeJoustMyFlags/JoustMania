@@ -927,7 +927,16 @@ class InterventionManager:
                     effect=effect_enum,
                 )
             )
-            await stream.write(cmd)
+            try:
+                await stream.write(cmd)
+            except asyncio.CancelledError:
+                # The game end cancels the call under a write in flight (UC-030 BR-006):
+                # that is a closed stream, not a cancel of this task, which still propagates.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise
+                logger.debug("controller_effect: the gameplay stream closed during the write, stopping")
+                return
         logger.info(f"controller_effect: sent '{effect_name}' to {len(targets)} controller(s)")
 
     async def _handle_end_game(self, ctx: InterventionContext) -> None:

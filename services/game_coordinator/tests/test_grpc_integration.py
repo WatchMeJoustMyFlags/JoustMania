@@ -844,6 +844,48 @@ class TestGameplayStreamRelease:
             "the stream closed before the winner effect arrived"
         )
 
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    async def test_werewolf_natural_end_releases_the_stream_after_the_winner_effect(self, frame_server):
+        """A mode with its own run(): the call closes after the winner rainbow."""
+        from services.game_coordinator.games.werewolf import WerewolfGame
+
+        game = WerewolfGame(
+            controller_manager_client=frame_server.stub,
+            event_publisher=_async_noop,
+            game_id="test_stream_release_werewolf",
+            initial_players=[game_coordinator_pb2.Player(serial=s) for s in self.SERIALS],
+        )
+        game._get_additional_phases = list
+        game._countdown = _async_noop
+
+        async def short_rainbow():
+            await asyncio.sleep(0.2)
+            return True
+
+        game._wait_for_rainbow_effect = short_rainbow
+        frames = []
+        real_process = game._process_gameplay_update
+
+        async def process(update):
+            frames.append(update.timestamp)
+            if len(frames) == 3:
+                for serial in game.werewolf_serials:
+                    game.players[serial].alive = False
+            return await real_process(update)
+
+        game._process_gameplay_update = process
+        await asyncio.wait_for(game.run(), timeout=10)
+
+        assert game._winner_side == "humans"
+        assert len(frame_server.opened) == 1, "a natural end opened a second gameplay call"
+        assert await _wait_until(frame_server.all_closed), "the gameplay call stayed open after the game"
+        rainbow = controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        delivered = frame_server.received[: frame_server.received_at_release[0]]
+        assert any(m.HasField("game_effect") and m.game_effect.effect == rainbow for m in delivered), (
+            "the stream closed before the winner effect arrived"
+        )
+
     @pytest.mark.uc("UC-021", flow="A1")
     @pytest.mark.uc("UC-030", br=["BR-006"])
     @pytest.mark.asyncio
@@ -941,8 +983,11 @@ class TestGameplayStreamRelease:
             game.force_end("test")
 
         ender = asyncio.create_task(force_end_when_running())
-        await asyncio.wait_for(game.run(), timeout=15)
-        await ender
+        try:
+            await asyncio.wait_for(game.run(), timeout=15)
+            await ender
+        finally:
+            ender.cancel()
 
         assert game.game_outcome() == "force_ended"
         # NonStop's own loop opens a second stream after the warm-up and closes the first.

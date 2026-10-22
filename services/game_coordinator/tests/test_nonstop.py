@@ -11,6 +11,7 @@ Tests the core Nonstop mechanics:
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -996,3 +997,51 @@ class TestInitialStreamConfig:
         assert {c.serial for c in colors} == set(game.players.keys())
         # The removed field must never come back.
         assert not hasattr(control.config, "serials")
+
+
+class _OrderedCall:
+    """A gameplay call fake that records writes and cancels in one shared order list."""
+
+    def __init__(self, name, order):
+        self.name = name
+        self.order = order
+
+    async def write(self, _message):
+        self.order.append(f"{self.name}.write")
+
+    def cancel(self):
+        self.order.append(f"{self.name}.cancel")
+        return True
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+class TestNonstopStreamSwap:
+    """UC-030 BR-006 (#1914): NonStop's game loop replaces the countdown call."""
+
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    async def test_countdown_call_closes_only_after_the_new_call_sent_its_config(self):
+        order = []
+        game = NonstopJoustGame(
+            controller_manager_client=MockControllerManagerService(num_controllers=2, death_schedule={}),
+            event_publisher=async_noop,
+            audio_client=None,
+            game_id="test_nonstop_swap",
+        )
+        countdown_call = _OrderedCall("countdown", order)
+        game_call = _OrderedCall("game", order)
+        game.gameplay_stream = countdown_call
+        game.controller_client = SimpleNamespace(StreamGameplayData=lambda: game_call)
+        game.running = True
+
+        await game._game_loop()
+
+        # The new call claims the players with its config first; only then the
+        # countdown call closes; the game's own call closes when the loop ends.
+        assert order == ["game.write", "countdown.cancel", "game.cancel"]
+        assert game.gameplay_stream is None
