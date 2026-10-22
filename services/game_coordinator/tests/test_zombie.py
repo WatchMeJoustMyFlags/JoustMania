@@ -843,6 +843,7 @@ class TestZombieEndGame:
         ended_events = event_collector.get_events_of_type("game_ended")
         assert len(ended_events) == 1
         assert ended_events[0]["winner"] == "humans"
+        assert game.state.value == "ended"
 
     @pytest.mark.uc("UC-023", flow="A1")
     @pytest.mark.asyncio
@@ -1019,7 +1020,7 @@ class TestZombieForceEndWinner:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
-    @pytest.mark.uc("UC-023", br=["BR-003"])
+    @pytest.mark.uc("UC-023", br=["BR-003", "BR-005"])
     async def test_win_is_latched_and_published_once(self, setup):
         game, events = setup
         self._convert_all_humans(game)

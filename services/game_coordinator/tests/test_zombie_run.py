@@ -325,7 +325,7 @@ async def test_early_stream_is_not_reopened_when_the_intro_raises():
     assert log.events.count_events_of_type(GameEvent.COUNTDOWN_START) == 0
 
 
-@pytest.mark.uc("UC-023", cond=["Pre-1"])
+@pytest.mark.uc("UC-023", br=["BR-002"], cond=["Pre-1"])
 @pytest.mark.asyncio
 async def test_one_player_raises_before_the_stream_opens():
     log = RecordingLog()
