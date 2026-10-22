@@ -185,6 +185,10 @@ def test_agent_down_envoy_answers_experiments_with_its_own_error():
     subprocess.run(
         [
             "docker", "run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::80",
+            # No resolver: the STRICT_DNS `agent` cluster gets no hosts, so envoy answers
+            # "no healthy upstream" at once. Host DNS (WSL2) may otherwise resolve `agent`
+            # to an unroutable address and answer "connection timeout" (#1951).
+            "--dns", "127.0.0.1",
             "-v", f"{ic.ENVOY_FILE}:/etc/envoy/envoy.yaml:ro",
             ic.compose_image("envoy"), "-c", "/etc/envoy/envoy.yaml",
         ],
