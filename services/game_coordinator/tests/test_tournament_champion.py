@@ -197,7 +197,7 @@ def _ended(log) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.uc("UC-025", flow="main", steps=[3, 4, 5], br=["BR-005"])
+@pytest.mark.uc("UC-025", flow="main", steps=[3, 4, 5], br=["BR-005"], cond=["Post-S-1"])
 @pytest.mark.parametrize("num_players", [2, 3], ids=["two-players", "three-players-bye"])
 @pytest.mark.asyncio
 async def test_run_crowns_the_champion_once_with_rainbow_and_voice(num_players):

@@ -1577,7 +1577,7 @@ class TestFightClubForceEndWinner:
         assert game.round_number == round_before
         await game.cleanup()
 
-    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"])
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"], cond=["Post-S-1"])
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
     @pytest.mark.asyncio
     async def test_force_end_after_the_kill_decision_keeps_the_winner(self):

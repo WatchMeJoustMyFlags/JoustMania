@@ -299,7 +299,7 @@ async def test_a_natural_end_ends_each_player_span_once_with_the_mode_attributes
 
 
 @pytest.mark.uc("UC-030", br=["BR-007"])
-@pytest.mark.uc("UC-025", steps=[5], br=["BR-005"])
+@pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-005"])
 @pytest.mark.asyncio
 async def test_tournament_natural_end_closes_the_champion_span_with_tournament_ended(exporter, caplog):
     """The end step, not the run-end cleanup, closes the spans: the champion keeps ``tournament_ended``."""
