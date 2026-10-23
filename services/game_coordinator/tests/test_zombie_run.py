@@ -440,3 +440,73 @@ async def _run_shadow_zombie_context_check():
         assert ctx.attributes["controller_count"] == len(SERIALS), when
         assert ctx.attributes["game_kind"] == "shadow", when
         assert ctx.attributes["experiment_id"] == "exp_1", when
+
+
+def _spy_run_end_cleanup(game):
+    """Spy the shield-span close and the analytics clear, calling through."""
+    calls: list[str] = []
+    real_clear = base_mod.metrics.clear_session_player_analytics
+    real_close = game._close_shield_charge_spans
+
+    def clear(*args, **kwargs):
+        calls.append("clear_analytics")
+        return real_clear(*args, **kwargs)
+
+    def close(*args, **kwargs):
+        calls.append("close_shield_spans")
+        return real_close(*args, **kwargs)
+
+    return calls, [
+        patch.object(base_mod.metrics, "clear_session_player_analytics", side_effect=clear),
+        patch.object(game, "_close_shield_charge_spans", side_effect=close),
+    ]
+
+
+@pytest.mark.uc("UC-023", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_force_end_runs_the_shared_run_end_cleanup():
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _zombie(log, client)
+    calls, patches = _spy_run_end_cleanup(game)
+    for p in patches:
+        p.start()
+    try:
+        task = asyncio.create_task(game.run())
+        await _wait_for(lambda: log.events.count_events_of_type(GameEvent.GAME_STARTED) == 1)
+        await _stop(game, task, client)
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert "close_shield_spans" in calls, calls
+    assert "clear_analytics" in calls, calls
+    assert game.force_ended
+
+
+@pytest.mark.uc("UC-023", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_natural_end_runs_the_shared_run_end_cleanup_and_still_cancels_the_timer():
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _zombie(log, client)
+    calls, patches = _spy_run_end_cleanup(game)
+
+    async def instant_loop():
+        await asyncio.sleep(0.05)
+
+    for p in patches:
+        p.start()
+    try:
+        with patch.object(game, "_game_loop", side_effect=instant_loop):
+            await asyncio.wait_for(game.run(), timeout=10)
+    finally:
+        for p in patches:
+            p.stop()
+        for stream in client.streams:
+            if stream.producer:
+                stream.producer.cancel()
+
+    assert "close_shield_spans" in calls, calls
+    assert "clear_analytics" in calls, calls
+    assert game.timer_task is None or game.timer_task.done()
