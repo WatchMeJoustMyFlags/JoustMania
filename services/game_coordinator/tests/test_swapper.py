@@ -1034,6 +1034,8 @@ class TestSwapperForceEndWinner:
         spans = {}
         for serial, player in game.players.items():
             span = create_autospec(trace.Span, instance=True)
+            # A real (invalid) context, so trace propagation on the kill path works.
+            span.get_span_context.return_value = trace.INVALID_SPAN_CONTEXT
             player.span = span
             spans[serial] = span
         return spans
@@ -1193,4 +1195,67 @@ class TestSwapperForceEndWinner:
         game.running = False  # the celebration wait ends at once
         await game._end_game_impl()
         assert self._greys(game.gameplay_stream) == [target]
+        await game.cleanup()
+
+    @staticmethod
+    def _hold_explosion(game):
+        """Hold the base kill path at its explosion sound, before the swap impl runs."""
+        held, release = asyncio.Event(), asyncio.Event()
+
+        async def gated_sound(sound, *_args, **_kwargs):
+            game.sounds.append(sound)
+            if sound == Sound.SFX_EXPLOSION:
+                held.set()
+                await release.wait()
+
+        game._play_sound = gated_sound
+        return held, release
+
+    @pytest.mark.uc("UC-024", br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_kill_held_at_the_explosion_does_not_swap_a_latched_winner(self):
+        game, events = await self._game(3)
+        for player in game.players.values():
+            player.team = 0
+        game.last_death_serial = "mock_controller_2"
+        target = "mock_controller_1"
+        held, release = self._hold_explosion(game)
+
+        kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
+        await asyncio.wait_for(held.wait(), 2.0)
+        assert await game._check_win_condition()  # the loop latches the win meanwhile
+        winners = events.get_events_of_type("swapper_winner")[0]["winners"]
+
+        release.set()
+        await asyncio.wait_for(kill, 2.0)
+
+        assert game.players[target].team == 0 and game.players[target].alive is True
+        assert game.last_death_serial == "mock_controller_2"
+        assert game._latched_winners == winners
+        writes = TestSwapperLedAfterSwap._writes_for(game.gameplay_stream, target)
+        assert ("effect", controller_manager_pb2.GAME_EFFECT_FLASH) not in writes
+        assert ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH) not in writes
+        assert events.count_events_of_type("player_swapped") == 0
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_kill_held_at_the_explosion_does_not_swap_after_a_force_end(self):
+        game, events = await self._game(4)
+        target = "mock_controller_0"
+        old_team = game.players[target].team
+        held, release = self._hold_explosion(game)
+
+        kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
+        await asyncio.wait_for(held.wait(), 2.0)
+        game.force_end("operator")
+
+        release.set()
+        await asyncio.wait_for(kill, 2.0)
+
+        assert game.players[target].team == old_team and game.players[target].alive is True
+        assert game.last_death_serial is None
+        writes = TestSwapperLedAfterSwap._writes_for(game.gameplay_stream, target)
+        assert writes == []  # no flash, no colour, no death effect onto the ending stream
+        assert events.count_events_of_type("player_swapped") == 0
         await game.cleanup()
