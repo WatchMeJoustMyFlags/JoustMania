@@ -115,6 +115,14 @@ export function spanStartMs(span: JaegerSpan): number {
   return Math.floor(span.startTime / 1000);
 }
 
+/**
+ * Span start in epoch µs (agent clock), Jaeger's own resolution. Ordering uses
+ * it, not spanStartMs: two snapshots of one entity often fall in the same ms.
+ */
+export function spanStartUs(span: JaegerSpan): number {
+  return span.startTime;
+}
+
 /** The span events named `name`, each as a tag map. */
 export function spanEvents(span: JaegerSpan, name: string): Map<string, unknown>[] {
   const out: Map<string, unknown>[] = [];

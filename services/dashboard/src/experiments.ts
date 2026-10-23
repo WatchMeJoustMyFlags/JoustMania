@@ -20,7 +20,7 @@
  * a hint, never an error.
  */
 
-import { incrementalStartMs, searchTraces, spanEvents, spanStartMs, spanTags, spansNamed, tagNumber, tagString } from "./jaeger.js";
+import { incrementalStartMs, searchTraces, spanEvents, spanStartMs, spanStartUs, spanTags, spansNamed, tagNumber, tagString } from "./jaeger.js";
 import type { JaegerSpan, JaegerTracesResponse } from "./jaeger.js";
 
 /** Jaeger operation of the registry snapshot span. */
@@ -47,6 +47,24 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["done", "discarded", "ab
 /** Statuses that still accrue games: the verdict is not final yet. */
 const LIVE_STATUSES: ReadonlySet<string> = new Set(["proposed", "running", ""]);
 
+/**
+ * Statuses whose `verdict.outcome` is the final verdict. An aborted experiment's
+ * snapshot still carries the journal's INTERIM verdict (journal.go
+ * KindInterimVerdict), which is not its outcome.
+ */
+const VERDICT_STATUSES: ReadonlySet<string> = new Set(["concluded", "promoting", "done", "discarded"]);
+
+/**
+ * Lifecycle rank of a status, the tiebreak between two snapshots with the same
+ * span time: a later lifecycle state is the newer snapshot.
+ */
+function statusRank(status: string): number {
+  if (TERMINAL_STATUSES.has(status)) return 3;
+  if (status === "promoting") return 2;
+  if (status === "concluded") return 1;
+  return 0;
+}
+
 /** Per-arm values of the newest snapshot. */
 export interface ArmAggregate {
   arm: string;
@@ -72,6 +90,8 @@ export interface ExperimentView {
   reason: string;
   /** Span time of the snapshot (agent clock). */
   lastUpdatedMs: number;
+  /** Span time in µs (agent clock): the ordering key. */
+  startUs: number;
   /** True while the experiment is proposed or running. */
   live: boolean;
   traceId: string;
@@ -89,15 +109,16 @@ function armRank(arm: string): number {
 }
 
 /**
- * The rendered verdict, with the precedence the Loki fold had: the statistical
- * verdict (`verdict.outcome`) once the experiment stopped accruing games, else
- * its lifecycle status (`experiment.status`, e.g. aborted without a verdict),
- * else "running". While the experiment is proposed or running a `verdict.outcome`
- * is only the interim verdict, so it shows as "running".
+ * The rendered verdict, with the precedence the Loki fold had: "running" while
+ * the experiment is proposed or running; the statistical verdict
+ * (`verdict.outcome`) once it concluded (concluded, promoting, done, discarded),
+ * else its status. Any other status (aborted) shows the status: its
+ * `verdict.outcome` is only the interim verdict, shown as "(interim: <outcome>)".
  */
 export function resolveVerdict(outcome: string, status: string): string {
   if (LIVE_STATUSES.has(status)) return "running";
-  return outcome || status || "running";
+  if (VERDICT_STATUSES.has(status)) return outcome || status;
+  return outcome ? `${status} (interim: ${outcome})` : status;
 }
 
 /** Fold one experiment.progress span. */
@@ -130,6 +151,7 @@ export function experimentFrom(span: JaegerSpan): ExperimentView {
     verdict: resolveVerdict(tagString(tags, "verdict.outcome"), status),
     reason: tagString(tags, "experiment.end_reason"),
     lastUpdatedMs: spanStartMs(span),
+    startUs: spanStartUs(span),
     live: LIVE_STATUSES.has(status),
     traceId: span.traceID,
     spanId: span.spanID,
@@ -143,8 +165,11 @@ export function parseExperimentSnapshots(body: JaegerTracesResponse): Experiment
     .filter((e) => e.experimentId !== "");
 }
 
+/** Newest first: span time in µs, then the later lifecycle status, then span id. */
 function newestFirst(a: ExperimentView, b: ExperimentView): number {
-  return b.lastUpdatedMs - a.lastUpdatedMs || b.spanId.localeCompare(a.spanId);
+  return (
+    b.startUs - a.startUs || statusRank(b.status) - statusRank(a.status) || b.spanId.localeCompare(a.spanId)
+  );
 }
 
 /**

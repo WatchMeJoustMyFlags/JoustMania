@@ -27,6 +27,7 @@ import {
 } from "./agent.js";
 import type { FlagPanel, InterventionOverlay } from "./agent.js";
 import { createPoller } from "./poller.js";
+import { PageGate } from "./pageGate.js";
 import { ShieldStore } from "./shield.js";
 import { reduceGameEvent } from "./gameEvents.js";
 import { onAgentPollFailed, onDecidePollFailed, onExperimentsPollFailed } from "./degrade.js";
@@ -160,38 +161,27 @@ async function init() {
   // Start polling the agent.decide spans (Jaeger)
   startDecidePolling();
 
-  // A hidden page or a page left for the back/forward cache polls nothing.
-  const pausePollers = () => {
-    for (const p of [decidePoller, agentPoller, experimentsPoller]) p?.stop();
-  };
-  const resumePollers = () => {
-    for (const p of [decidePoller, agentPoller, experimentsPoller]) p?.poke();
-  };
-  document.addEventListener("visibilitychange", () => (document.hidden ? pausePollers() : resumePollers()));
-  globalThis.addEventListener("pagehide", pausePollers);
-  globalThis.addEventListener("pageshow", resumePollers);
-
   // Start following the live game (real, else the newest live shadow game)
   startFollowPolling();
 
   console.log("Dashboard initialized");
 }
 
-// The tab currently shown (setupTabs keeps it current). Pollers that only feed
-// one tab check it so a hidden tab costs no queries.
-let activeTab =
-  (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "";
 let decidePoller: Poller | null = null;
 let agentPoller: Poller | null = null;
 let experimentsPoller: Poller | null = null;
-// False between pagehide and pageshow (the page sits in the back/forward cache).
-let pageShown = true;
-globalThis.addEventListener("pagehide", () => (pageShown = false));
-globalThis.addEventListener("pageshow", () => (pageShown = true));
+// Pollers that only feed one tab run while it is shown and the page is visible
+// (pageGate.ts): a hidden tab, a hidden page or a page in the back/forward cache
+// costs no queries; coming back resumes them.
+const pageGate = new PageGate(
+  document,
+  globalThis,
+  (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
+  () => [decidePoller, agentPoller, experimentsPoller],
+);
 
-/** A tab's pollers run only while it is shown and the page is visible. */
 function tabActive(tab: string): boolean {
-  return activeTab === tab && !document.hidden && pageShown;
+  return pageGate.isActive(tab);
 }
 
 // Tab navigation
@@ -216,7 +206,7 @@ function setupTabs() {
         }
       });
 
-      activeTab = tabId;
+      pageGate.activeTab = tabId;
       if (tabId === "agent") {
         decidePoller?.poke();
         agentPoller?.poke();
@@ -307,16 +297,24 @@ function startAgentPolling() {
     isActive: () => tabActive("agent"),
     run: async (signal) => {
       const rolloutDue = tick % ROLLOUT_EVERY_TICKS === 0;
-      const flagsNeeded = needsFlagStateFallback(flagStore, decideStore.feed().current?.gameId ?? null);
-      const [counts, flags] = await Promise.all([
+      const flagsNeeded = needsFlagStateFallback(
+        flagStore,
+        decideStore.feed().current?.gameId ?? null,
+        decideStore.followState,
+      );
+      // Settled, not all: the VictoriaMetrics counts render even when a Jaeger
+      // leg fails (UC-035 A3 step 2); the Jaeger failure still marks the poll failed.
+      const [counts, flags, rollouts] = await Promise.allSettled([
         fetchInterventionCounts(signal),
         flagsNeeded ? fetchFlagStates(signal) : Promise.resolve([] as FlagPanel[]),
         rolloutDue ? fetchRollouts(rolloutStore, signal) : Promise.resolve(),
       ]);
       tick += 1;
-      interventionCounts = counts;
-      flagStore.merge(flags);
+      if (counts.status === "fulfilled") interventionCounts = counts.value;
+      if (flags.status === "fulfilled") flagStore.merge(flags.value);
       renderAgentPanels();
+      const failed = [counts, flags, rollouts].find((r) => r.status === "rejected");
+      if (failed) throw failed.reason;
     },
     onError: (error) => {
       console.error("Agent poll error:", error);
@@ -419,7 +417,11 @@ function followShadowEvents(gameId: string) {
 function applyFollow() {
   const follow = followTracker.state;
   if (follow.shadowGameId !== (shadowStream?.gameId ?? "")) followShadowEvents(follow.shadowGameId);
-  decideStore.setFollow({ realGameLive: follow.realGameLive, followGameId: follow.shadowGameId });
+  decideStore.setFollow({
+    realGameLive: follow.realGameLive,
+    followGameId: follow.shadowGameId,
+    primaryGameId: follow.primaryGameId,
+  });
   renderFollowBanner();
   if (state.isStreaming) updatePlayerCount(renderGrid());
 }

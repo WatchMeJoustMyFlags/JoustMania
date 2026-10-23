@@ -130,9 +130,40 @@ describe("UC-070: BR-005 the flag panel follows the stage game", () => {
   it("UC-070/BR-005 a newer flag state of the same game replaces the older one", () => {
     const store = new FlagStateStore();
     const [first] = parseFlagStates(games).filter((s) => s.gameId === "game_real000001");
-    store.merge([{ ...first, tsMs: first.tsMs + 5000, spanId: "later", trigger: "changed", enabled: false }]);
+    store.merge([
+      { ...first, tsMs: first.tsMs + 5000, startUs: first.startUs + 5_000_000, spanId: "later", trigger: "changed", enabled: false },
+    ]);
     store.merge([first]);
     expect(store.current()).toMatchObject({ spanId: "later", trigger: "changed", enabled: false });
+  });
+
+  it("UC-070/BR-005 a flag state later in the same ms replaces the older one, whatever the span ids", () => {
+    const store = new FlagStateStore();
+    const [first] = parseFlagStates(games).filter((s) => s.gameId === "game_real000001");
+    const older = { ...first, startUs: first.startUs + 100, spanId: "zzzz", trigger: "game_start" };
+    const newer = { ...first, startUs: first.startUs + 400, spanId: "aaaa", trigger: "changed" };
+    expect(older.tsMs).toBe(newer.tsMs);
+    store.merge([newer]);
+    store.merge([older]);
+    expect(store.current()).toMatchObject({ spanId: "aaaa", trigger: "changed" });
+  });
+
+  it("UC-070/BR-005 a new real game that has not decided yet: fallback search, never the old game's flags", () => {
+    const store = new FlagStateStore();
+    store.merge(parseFlagStates(games)); // game_real000001 (decided) + a newer shadow game
+    // Game 2 is live and quiet: the decide strip still shows game 1.
+    const follow = { realGameLive: true, followGameId: "", primaryGameId: "game_real000002" };
+    expect(needsFlagStateFallback(store, "game_real000001", follow)).toBe(true);
+    expect(store.current(follow)).toBeNull();
+    // Even with shadow_policy=allow, a live real game never shows a shadow game's flags.
+    const shadowOnly = new FlagStateStore();
+    shadowOnly.merge(parseFlagStates(games).filter((s) => s.gameKind === "shadow"));
+    expect(shadowOnly.current({ realGameLive: true, followGameId: "" })).toBeNull();
+    // Game 2's flag state arrives (the fallback search found it).
+    const [first] = parseFlagStates(games).filter((s) => s.gameId === "game_real000001");
+    store.merge([{ ...first, gameId: "game_real000002", spanId: "g2" }]);
+    expect(needsFlagStateFallback(store, "game_real000001", follow)).toBe(false);
+    expect(store.current(follow)?.gameId).toBe("game_real000002");
   });
 
   it("UC-035/main step 3 the fallback search runs only when the strip's game has no flag state", () => {

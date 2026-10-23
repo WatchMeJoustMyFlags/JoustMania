@@ -669,6 +669,138 @@
         }
       },
       "warnings": null
+    },
+    {
+      "traceID": "ee00000000000006",
+      "spans": [
+        {
+          "traceID": "ee00000000000006",
+          "spanID": "sp0006",
+          "operationName": "experiment.progress",
+          "references": [],
+          "startTime": 1760000010000000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "experiment.id",
+              "type": "string",
+              "value": "exp_epsilon"
+            },
+            {
+              "key": "experiment.status",
+              "type": "string",
+              "value": "aborted"
+            },
+            {
+              "key": "experiment.flag_key",
+              "type": "string",
+              "value": "game.ffa.sensitivity"
+            },
+            {
+              "key": "experiment.objective",
+              "type": "string",
+              "value": "engagement"
+            },
+            {
+              "key": "experiment.target_n",
+              "type": "int64",
+              "value": 6
+            },
+            {
+              "key": "experiment.arms",
+              "type": "string",
+              "value": "experimental,control"
+            },
+            {
+              "key": "experiment.progress.trigger",
+              "type": "string",
+              "value": "terminal"
+            },
+            {
+              "key": "experiment.end_reason",
+              "type": "string",
+              "value": "capacity_reclaim"
+            },
+            {
+              "key": "verdict.outcome",
+              "type": "string",
+              "value": "inconclusive"
+            }
+          ],
+          "logs": [
+            {
+              "timestamp": 1760000010000000,
+              "fields": [
+                {
+                  "key": "event",
+                  "type": "string",
+                  "value": "experiment.arm"
+                },
+                {
+                  "key": "experiment.arm",
+                  "type": "string",
+                  "value": "experimental"
+                },
+                {
+                  "key": "experiment.arm_stats.assigned",
+                  "type": "int64",
+                  "value": 0
+                },
+                {
+                  "key": "experiment.arm_stats.samples",
+                  "type": "int64",
+                  "value": 1
+                },
+                {
+                  "key": "experiment.arm_stats.mean_fitness",
+                  "type": "float64",
+                  "value": 0.3
+                }
+              ]
+            },
+            {
+              "timestamp": 1760000010000000,
+              "fields": [
+                {
+                  "key": "event",
+                  "type": "string",
+                  "value": "experiment.arm"
+                },
+                {
+                  "key": "experiment.arm",
+                  "type": "string",
+                  "value": "control"
+                },
+                {
+                  "key": "experiment.arm_stats.assigned",
+                  "type": "int64",
+                  "value": 0
+                },
+                {
+                  "key": "experiment.arm_stats.samples",
+                  "type": "int64",
+                  "value": 0
+                },
+                {
+                  "key": "experiment.arm_stats.mean_fitness",
+                  "type": "float64",
+                  "value": 0.0
+                }
+              ]
+            }
+          ],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        }
+      ],
+      "processes": {
+        "p1": {
+          "serviceName": "agent",
+          "tags": []
+        }
+      },
+      "warnings": null
     }
   ],
   "total": 0,

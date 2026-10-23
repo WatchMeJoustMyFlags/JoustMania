@@ -7,6 +7,8 @@
  *   exp_beta   discarded (terminal) with verdict discard and an end reason
  *   exp_gamma  aborted (terminal) without a verdict
  *   exp_delta  done (terminal) with verdict promote
+ *   exp_epsilon aborted (terminal) whose snapshot still carries the interim
+ *              `inconclusive` verdict (journal KindInterimVerdict)
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -60,8 +62,45 @@ describe("UC-035: main step 4, newest experiment.progress snapshot per experimen
     expect(byId(store, "exp_gamma")).toMatchObject({ verdict: "aborted", live: false, reason: "kill_switch" });
     expect(byId(store, "exp_delta")).toMatchObject({ verdict: "promote", live: false });
     expect(resolveVerdict("promote", "concluded")).toBe("promote");
+    expect(resolveVerdict("discard", "discarded")).toBe("discard");
     expect(resolveVerdict("", "promoting")).toBe("promoting");
     expect(resolveVerdict("", "")).toBe("running");
+  });
+
+  it("UC-035/main step 4 an aborted experiment shows aborted, its interim verdict only as a note", () => {
+    const store = new ExperimentStore();
+    store.merge(parseExperimentSnapshots(progress));
+    expect(byId(store, "exp_epsilon")).toMatchObject({
+      verdict: "aborted (interim: inconclusive)",
+      live: false,
+      reason: "capacity_reclaim",
+    });
+    expect(resolveVerdict("inconclusive", "aborted")).toBe("aborted (interim: inconclusive)");
+    expect(resolveVerdict("", "aborted")).toBe("aborted");
+  });
+
+  it("UC-035/main step 4 two snapshots in the same ms: the later one (µs) wins, whatever the span ids", () => {
+    const [beta] = parseExperimentSnapshots(progress).filter((e) => e.experimentId === "exp_beta");
+    // game_concluded then terminal: only a journal append lies between them.
+    const older = { ...beta, status: "running", verdict: "running", live: true, startUs: beta.startUs + 100, spanId: "zzzz" };
+    const newer = { ...beta, startUs: beta.startUs + 400, spanId: "aaaa" };
+    expect(older.lastUpdatedMs).toBe(newer.lastUpdatedMs);
+    for (const order of [[older, newer], [newer, older]]) {
+      const store = new ExperimentStore();
+      for (const snap of order) store.merge([snap]);
+      expect(byId(store, "exp_beta")).toMatchObject({ status: "discarded", verdict: "discard", spanId: "aaaa" });
+    }
+  });
+
+  it("UC-035/main step 4 two snapshots in the same µs: the later lifecycle status wins", () => {
+    const [beta] = parseExperimentSnapshots(progress).filter((e) => e.experimentId === "exp_beta");
+    const concluded = { ...beta, status: "concluded", spanId: "zzzz" };
+    const terminal = { ...beta, spanId: "aaaa" };
+    for (const order of [[concluded, terminal], [terminal, concluded]]) {
+      const store = new ExperimentStore();
+      for (const snap of order) store.merge([snap]);
+      expect(byId(store, "exp_beta")?.status).toBe("discarded");
+    }
   });
 
   it("UC-035/main step 4 keeps every live experiment and only the newest N finished ones", () => {

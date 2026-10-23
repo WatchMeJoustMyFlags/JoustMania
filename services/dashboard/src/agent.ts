@@ -30,6 +30,7 @@ import {
   searchParams,
   searchTraces,
   spanStartMs,
+  spanStartUs,
   spanTags,
   spansNamed,
   tagBool,
@@ -119,6 +120,8 @@ export interface DecisionFeedRow {
 export interface FlagPanel {
   /** Span start (agent clock). */
   tsMs: number;
+  /** Span start in µs (agent clock): the ordering key. */
+  startUs: number;
   traceId: string;
   spanId: string;
   gameId: string;
@@ -274,6 +277,7 @@ export function flagPanelFrom(span: JaegerSpan): FlagPanel {
   const tags = spanTags(span);
   return {
     tsMs: spanStartMs(span),
+    startUs: spanStartUs(span),
     traceId: span.traceID,
     spanId: span.spanID,
     gameId: tagString(tags, "game.id"),
@@ -295,8 +299,9 @@ export function parseFlagStates(body: JaegerTracesResponse): FlagPanel[] {
   return spansNamed(body, FLAG_STATE_OPERATION).map(flagPanelFrom);
 }
 
+/** Newest first by span time in µs (two flag states can share a ms), then span id. */
 function flagNewestFirst(a: FlagPanel, b: FlagPanel): number {
-  return b.tsMs - a.tsMs || b.spanId.localeCompare(a.spanId);
+  return b.startUs - a.startUs || b.spanId.localeCompare(a.spanId);
 }
 
 /**
@@ -329,8 +334,16 @@ export class FlagStateStore {
     return this.byGame.has(gameId);
   }
 
-  /** The followed game's flag state (null before any agent.flag_state span). */
+  /**
+   * The followed game's flag state (null before any agent.flag_state span).
+   * While a real game is live it is that game's (`primaryGameId`) or null (the
+   * hint until its flag state arrives), never an older game's or a shadow game's.
+   */
   current(follow?: DecideFollow): FlagPanel | null {
+    if (follow?.realGameLive === true) {
+      if (follow.primaryGameId) return this.byGame.get(follow.primaryGameId) ?? null;
+      return this.sorted().find((s) => !isShadowGame(s.gameKind)) ?? null;
+    }
     return pickAnchor(this.sorted(), follow) ?? null;
   }
 
@@ -341,13 +354,22 @@ export class FlagStateStore {
 
 /**
  * Whether the flag panel needs its own agent.flag_state search: no flag state is
- * held, or none for the game the decide strip describes (`decideGameId`, the
- * UC-070 BR-005 anchor), e.g. a quiet game with no agent.decide spans, whose game
- * trace the decide poll never fetched. While decides flow for a game whose flag
- * state is held, the decide poll's traces are enough.
+ * held, or none for the followed game. While a real game is live that is the
+ * primary game (`follow.primaryGameId`, follow.ts): a new game that has not
+ * decided yet still shows the previous game on the decide strip, so the strip's
+ * game is not enough. Otherwise it is the game the decide strip describes
+ * (`decideGameId`, the UC-070 BR-005 anchor), e.g. a quiet game with no
+ * agent.decide spans, whose game trace the decide poll never fetched. While
+ * decides flow for a game whose flag state is held, the decide poll's traces are
+ * enough.
  */
-export function needsFlagStateFallback(store: FlagStateStore, decideGameId: string | null): boolean {
+export function needsFlagStateFallback(
+  store: FlagStateStore,
+  decideGameId: string | null,
+  follow?: DecideFollow,
+): boolean {
   if (store.size === 0) return true;
+  if (follow?.realGameLive === true && follow.primaryGameId) return !store.has(follow.primaryGameId);
   return decideGameId === null || !store.has(decideGameId);
 }
 
@@ -796,11 +818,13 @@ export function isShadowGame(kind: string): boolean {
 
 /**
  * What the dashboard follows (UC-070 BR-005, follow.ts): whether a real game is
- * live (null = unknown) and the followed shadow game ("" = none).
+ * live (null = unknown), the followed shadow game ("" = none) and the primary
+ * (real) game's id ("" = unknown; only the flag panel uses it).
  */
 export interface DecideFollow {
   realGameLive: boolean | null;
   followGameId: string;
+  primaryGameId?: string;
 }
 
 /**
