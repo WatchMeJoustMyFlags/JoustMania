@@ -48,7 +48,7 @@ from collections.abc import Awaitable, Callable
 from opentelemetry import trace
 
 from lib.telemetry import get_tracer
-from lib.types import GameEvent
+from lib.types import GameEvent, Games
 from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
 from services.game_coordinator import metrics
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
@@ -670,9 +670,15 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             Tuple of (success, error_message_or_game_id)
         """
         try:
-            # Validate player count (cheap, no lock needed).
+            # Validate player count (cheap, no lock needed): at least two players,
+            # and at least the mode's minimum for every origin (UC-010 BR-001,
+            # #1862). An unknown mode keeps the two-player floor; the factory
+            # rejects it later.
             if len(config.players) < 2:
                 return False, "Need at least 2 players"
+            mode = Games.from_name(config.game_name)
+            if mode is not None and len(config.players) < mode.minimum_players:
+                return False, f"{mode.name} needs at least {mode.minimum_players} players"
 
             is_real = self._is_real_origin(config)
 

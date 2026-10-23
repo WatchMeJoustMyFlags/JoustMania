@@ -177,7 +177,7 @@ class TestStartGameValidation:
             await _advance_to_running(servicer, gid1)
 
             success2, error = await servicer._start_game_from_config(
-                _config(game_name="Teams", serials=("p3", "p4")), MockSpan()
+                _config(game_name="Teams", serials=("p3", "p4", "p5")), MockSpan()
             )
         assert success2 is False
         assert "already in progress" in error.lower()
@@ -210,6 +210,7 @@ class TestStartGameValidation:
         """Should store game configuration on start."""
         config = _config(
             game_name="JoustTeams",
+            serials=("p1", "p2", "p3"),
             sensitivity=3,
             teams_config=game_coordinator_pb2.TeamsConfig(num_teams=2, random_assignment=True),
         )
@@ -218,7 +219,7 @@ class TestStartGameValidation:
 
         session = servicer.sessions[game_id]
         assert session.game_name == "JoustTeams"
-        assert len(session.players) == 2
+        assert len(session.players) == 3
         assert session.game_config.sensitivity == 3
         assert session.game_config.teams_config.num_teams == 2
 
@@ -326,7 +327,9 @@ class TestGetGameState:
     async def test_get_state_with_players(self, servicer):
         """GetGameState should return player info when game has players."""
         with _NO_THREAD:
-            _, gid = await servicer._start_game_from_config(_config(game_name="Teams"), MockSpan())
+            _, gid = await servicer._start_game_from_config(
+                _config(game_name="Teams", serials=("p1", "p2", "p3")), MockSpan()
+            )
             await _advance_to_running(servicer, gid)
 
         mock_game = MagicMock()
@@ -438,7 +441,9 @@ class TestGameNameHandling:
         valid_names = ["FFA", "Teams", "Zombie", "Werewolf", "Tournament"]
         for name in valid_names:
             with _NO_THREAD:
-                success, gid = await servicer._start_game_from_config(_config(game_name=name), MockSpan())
+                # Enough players for every mode's minimum (UC-010 BR-001).
+                config = _config(game_name=name, serials=("p1", "p2", "p3", "p4"))
+                success, gid = await servicer._start_game_from_config(config, MockSpan())
             assert success is True, f"Game type {name} should be accepted"
             # Free the slot for the next iteration.
             await servicer.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="next"), MockGrpcContext())

@@ -103,7 +103,7 @@ A playable game type (`lib/types.py:23-35` `Games`, registry `services/game_coor
 | name | Enum name | String | 20 | Primary Key, Values: JoustFFA, JoustTeams, JoustRandomTeams, Traitor, Werewolf, Zombies, Swapper, FightClub, Tournament, NonStop |
 | id | Enum integer | Integer | 2 | Not Null, Unique, Min: 0, Max: 12 |
 | pretty_name | Display name, also the name of the game's root span | String | 30 | Not Null |
-| minimum_players | Declared minimum (not enforced; only ≥ 2 is, see D-G2) | Integer | 2 | Not Null, Min: 2, Max: 4 |
+| minimum_players | Minimum players to start the mode (UC-010 BR-001; enforced by the menu and the coordinator, #1862) | Integer | 2 | Not Null, Min: 2, Max: 4 |
 | config_message | Typed proto config for the mode | String | 30 | Optional, Values: FFAConfig, TeamsConfig, RandomTeamsConfig, NonstopConfig, TournamentConfig, FightClubConfig, WerewolfConfig, ZombieConfig, SwapperConfig, TraitorConfig |
 
 **Constraints:** `Commander`, `Ninja` and `Random` exist in the enum (ids 6, 11, 12) but have no implementation; the menu hides them and a direct start ends with `game_error`.
