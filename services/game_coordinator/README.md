@@ -66,14 +66,15 @@ grpcurl -plaintext localhost:50053 \
 | `JoustFFA` | Free-for-all joust - last player standing wins |
 | `JoustTeams` | Team-based joust |
 | `JoustRandomTeams` | Random team assignment |
-| `Werewolves` | Hidden role deduction game |
+| `Traitor` | Hidden traitors among the players |
+| `Werewolf` | Hidden role deduction game |
 | `Zombies` | Infection-style game |
-| `Commander` | Protect your commander |
 | `Swapper` | Role-swapping variant |
+| `FightClub` | Defender versus challengers, round by round |
 | `Tournament` | Bracket-style elimination |
 | `NonStop` | Continuous respawn mode |
-| `Ninja` | Stealth-based gameplay |
-| `Random` | Randomly selected mode |
+
+`Commander`, `Ninja` and `Random` exist only as `Games` enum names; they are not registered in `_GAME_CLASSES` and a start request answers `game_error` "not implemented" (D-G1 in `docs/specs-inventory.md`).
 
 ## Architecture
 
