@@ -1794,3 +1794,146 @@ class TestRunLifecycle:
         # game_started should NOT have been published since we stopped before gameplay
         started_events = event_collector.get_events_of_type("game_started")
         assert len(started_events) == 0
+
+
+# ---------------------------------------------------------------------------
+# Double hit in one frame (UC-025 BR-004, D-G30, #1991)
+# ---------------------------------------------------------------------------
+
+
+def _death_effect_serials(stream) -> list[str]:
+    """Serials that got GAME_EFFECT_PLAYER_DEATH on the recorded stream, in order."""
+    from proto import controller_manager_pb2 as cm
+
+    return [
+        m.game_effect.serial
+        for m in stream.messages
+        if m.HasField("game_effect") and m.game_effect.effect == cm.GAME_EFFECT_PLAYER_DEATH
+    ]
+
+
+class TestTournamentDoubleHit:
+    """Both fighters spike in the same frame: only the first one loses the match."""
+
+    def _make_game(self, num_controllers: int, game_id: str):
+        mock_cm = MockControllerManagerService(num_controllers=num_controllers, death_schedule={}, max_duration=10.0)
+        event_collector = EventCollector()
+        game = TournamentGame(
+            controller_manager_client=mock_cm,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id=game_id,
+            invincibility_seconds=0.0,
+        )
+        return game, mock_cm, event_collector
+
+    @staticmethod
+    def _double_hit_on_first_frame(game):
+        """Each match's first frame kills player1, then player2, through the base kill path."""
+        hit_matches: set[int] = set()
+
+        async def double_hit(_gameplay_data):
+            match = game.current_match
+            if match is None or match.match_id in hit_matches:
+                return
+            hit_matches.add(match.match_id)
+            await game._kill_player(match.player1_serial, accel_mag=5.0)
+            await game._kill_player(match.player2_serial, accel_mag=5.0)
+
+        return double_hit
+
+    @staticmethod
+    def _one_frame_stream():
+        stream = AsyncGameplayStreamMock(timeout_forever=True)
+
+        async def read_with_data():
+            from proto import controller_manager_pb2 as cm
+
+            update = cm.GameplayDataUpdate()
+            update.controllers.add(serial="tick")
+            return update
+
+        stream.read = read_with_data
+        return stream
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[3], br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_double_hit_eliminates_only_the_first_fighter(self):
+        """The winner stays in the bracket, advances and gets no death effect."""
+        from unittest.mock import AsyncMock
+
+        game, mock_cm, event_collector = self._make_game(4, "test_double_hit_match")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+        stream = self._one_frame_stream()
+        game.gameplay_stream = stream
+        game._process_controller_state = self._double_hit_on_first_frame(game)
+
+        first_match = [m for m in game.bracket if m.round_number == 1 and not m.is_bye][0]
+        loser_serial, winner_serial = first_match.player1_serial, first_match.player2_serial
+        game.current_match = first_match
+
+        await game._run_match(first_match)
+
+        assert first_match.winner_serial == winner_serial
+        assert game.players[loser_serial].tournament_state == TournamentState.ELIMINATED
+        assert game.players[winner_serial].tournament_state == TournamentState.WAITING
+        assert game.players[winner_serial].alive is True
+        assert game.players[winner_serial].wins == 1
+        round2 = [m for m in game.bracket if m.round_number == 2]
+        assert any(winner_serial in (m.player1_serial, m.player2_serial) for m in round2)
+        match_ends = event_collector.get_events_of_type("match_end")
+        assert [e["winner"] for e in match_ends] == [winner_serial]
+        # PLAYER_DEATH only for the kill that eliminated the player.
+        assert _death_effect_serials(stream) == [loser_serial]
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_two_player_double_hit_leaves_the_right_champion(self):
+        """2 players: the final's double hit leaves the second fighter as champion."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_cm, _ = self._make_game(2, "test_double_hit_final")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+        stream = self._one_frame_stream()
+        game.gameplay_stream = stream
+        game._process_controller_state = self._double_hit_on_first_frame(game)
+
+        final = [m for m in game.bracket if not m.is_bye][0]
+        loser_serial, winner_serial = final.player1_serial, final.player2_serial
+
+        with patch(
+            "services.game_coordinator.games.tournament.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await game._gameplay_loop()
+
+        survivors = [s for s, p in game.players.items() if p.tournament_state != TournamentState.ELIMINATED]
+        assert survivors == [winner_serial]
+        assert await game._check_win_condition() is True
+        assert game.players[winner_serial].tournament_state == TournamentState.CHAMPION
+        assert game.players[loser_serial].tournament_state == TournamentState.ELIMINATED
+        assert _death_effect_serials(stream) == [loser_serial]
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[3], br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_waiting_player_kill_sends_no_death_effect(self):
+        """A kill the mode ignores (waiting player) writes no PLAYER_DEATH."""
+        from unittest.mock import AsyncMock
+
+        game, mock_cm, _ = self._make_game(4, "test_waiting_no_effect")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game.gameplay_stream = stream
+        waiting_serial = next(iter(game.players))
+
+        await game._kill_player(waiting_serial, accel_mag=5.0)
+
+        assert game.players[waiting_serial].tournament_state == TournamentState.WAITING
+        assert game.players[waiting_serial].alive is True
+        assert _death_effect_serials(stream) == []

@@ -681,6 +681,12 @@ class TournamentGame(BaseGameMode):
         if serial not in (self.current_match.player1_serial, self.current_match.player2_serial):
             return
 
+        # One loser per match (UC-025 BR-004, #1991): a double hit in one frame
+        # reaches here for the winner too, who is still FIGHTING because the
+        # match is finalised only after the frame. The first kill decided it.
+        if self.current_match.is_complete:
+            return
+
         # Determine winner
         if serial == self.current_match.player1_serial:
             self.current_match.winner_serial = self.current_match.player2_serial
@@ -714,6 +720,15 @@ class TournamentGame(BaseGameMode):
                     "sensitivity": self.sensitivity.name,
                 },
             )
+
+    def _sends_death_effect(self, serial: str) -> bool:
+        """PLAYER_DEATH only when this kill eliminated the player (UC-025 BR-004, #1991).
+
+        ``_kill_player_impl`` sets ``alive`` False only for the match loser; a kill it
+        ignores (waiting player, grace, decided match) leaves the player alive, and
+        the base kill path must not paint that player dead.
+        """
+        return not self.players[serial].alive
 
     async def _end_game_impl(self):
         """Handle tournament ending."""
