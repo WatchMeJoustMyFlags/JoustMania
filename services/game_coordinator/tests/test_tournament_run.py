@@ -564,6 +564,55 @@ async def test_two_players_one_disconnects_ends_the_bracket():
     assert len(events.get_events_of_type("match_end")) == 1
 
 
+@pytest.mark.uc("UC-025", flow="main", steps=[3], br=["BR-003"])
+@pytest.mark.asyncio
+async def test_a_force_end_during_the_match_winner_effect_publishes_no_match_end():
+    game, events = await _bracket_game()
+    match = game.current_match
+    real_write = game._write_effect_guarded
+
+    async def write_then_force_end(message, label):
+        await real_write(message, label)
+        if "winner effect" in label:
+            game.force_end("test_done")
+
+    game._write_effect_guarded = write_then_force_end
+    await game._process_gameplay_update(_frame([match.player1_serial], spike=[match.player1_serial]))
+
+    assert match.is_complete and game.force_ended
+    assert events.get_events_of_type("match_end") == [], "a force-ended match published match_end"
+
+
+@pytest.mark.uc("UC-025", flow="A4")
+@pytest.mark.parametrize("num_players", [6, 8])
+@pytest.mark.asyncio
+async def test_both_players_of_a_pending_match_disconnect_and_the_bracket_still_finishes(num_players):
+    """The emptied match carries an out player forward; its next opponent gets the walkover (#2000)."""
+    game, events = await _bracket_game(num_players=num_players)
+    pending = next(m for m in game.bracket if m.round_number == 1 and not m.is_bye and m is not game.current_match)
+    leavers = [pending.player1_serial, pending.player2_serial]
+
+    finished = False
+    with patch.object(tournament_mod, "ROUND_PAUSE_S", 0.0):
+        await game._process_gameplay_update(_frame(disconnects=leavers))
+        for frame in range(3000):
+            match = game.current_match
+            if match is not None and not match.is_complete and frame % 3 == 0:
+                update = _frame([match.player1_serial], spike=[match.player1_serial])
+            else:
+                update = _frame()
+            if await game._process_gameplay_update(update):
+                finished = True
+                break
+
+    left = [s for s, p in game.players.items() if p.tournament_state != TournamentState.ELIMINATED]
+    assert finished, f"the bracket stalled with {len(left)} players left"
+    assert len(left) == 1
+    assert not game._stall_logged
+    played = {e[k] for e in events.get_events_of_type("match_start") for k in ("player1", "player2")}
+    assert not played & set(leavers), "a disconnected player played a match"
+
+
 # ---------------------------------------------------------------------------
 # Real grpc.aio stream: no read timeout, reopen restores colours, OK end (#1882)
 # ---------------------------------------------------------------------------
@@ -574,7 +623,8 @@ class _GameplayServer(controller_manager_pb2_grpc.ControllerManagerServiceServic
 
     ``fault`` ("abort" or "end") ends the first call once ``fault_trigger`` is set:
     UNAVAILABLE (a controller-manager restart) or status OK. ``received`` keeps the
-    game's messages of every call.
+    game's messages of every call. ``disconnect`` sends one disconnect event for
+    that serial on the first call.
     """
 
     def __init__(self, serials, fault=None):
@@ -585,6 +635,7 @@ class _GameplayServer(controller_manager_pb2_grpc.ControllerManagerServiceServic
         self.pause_trigger = asyncio.Event()
         self.paused = asyncio.Event()
         self.calls = 0
+        self.disconnect: str | None = None
         self.received: list = []
 
     async def StreamGameplayData(self, request_iterator, context):  # noqa: N802 - gRPC method name
@@ -605,6 +656,11 @@ class _GameplayServer(controller_manager_pb2_grpc.ControllerManagerServiceServic
                 if self.pause_trigger.is_set() and not self.paused.is_set():
                     self.paused.set()
                     await asyncio.sleep(self.pause_s)
+                if call == 1 and self.disconnect:
+                    serial, self.disconnect = self.disconnect, None
+                    yield controller_manager_pb2.GameplayDataUpdate(
+                        disconnects=[controller_manager_pb2.DisconnectEvent(serial=serial)]
+                    )
                 yield controller_manager_pb2.GameplayDataUpdate(
                     controllers=[
                         controller_manager_pb2.GameplayData(
@@ -674,7 +730,10 @@ async def test_a_frame_gap_in_a_match_keeps_the_match_on_one_call():
 @pytest.mark.uc("UC-025", flow="main", steps=[2])
 @pytest.mark.asyncio
 async def test_a_stream_that_fails_in_a_match_is_reopened_with_the_match_colours():
-    """UC-030 BR-006 reconnect; the new call's config carries red/blue for the fighters (O3)."""
+    """UC-030 BR-006 reconnect; the new call's config carries each player's current colour (O3).
+
+    Red/blue for the fighters, the waiting colour, and off for a player who left by a disconnect.
+    """
     server_impl = _GameplayServer(GRPC_SERIALS, fault="abort")
     log = RecordingLog()
     async with _served(server_impl) as stub:
@@ -694,6 +753,9 @@ async def test_a_stream_that_fails_in_a_match_is_reopened_with_the_match_colours
         task = asyncio.create_task(game.run())
         await _wait_for(lambda: _count(log, "match_start") == 1)
         match = game.current_match
+        leaver = next(s for s in GRPC_SERIALS if s not in (match.player1_serial, match.player2_serial))
+        server_impl.disconnect = leaver
+        await _wait_for(lambda: game.players[leaver].tournament_state == TournamentState.ELIMINATED)
         server_impl.fault_trigger.set()
         await asyncio.wait_for(task, timeout=15)
 
@@ -705,7 +767,8 @@ async def test_a_stream_that_fails_in_a_match_is_reopened_with_the_match_colours
     colors = {c.serial: _rgb(c.color) for c in configs[0].colors}
     assert colors[match.player1_serial] == MATCH_COLORS[0]
     assert colors[match.player2_serial] == MATCH_COLORS[1]
-    waiting = set(GRPC_SERIALS) - {match.player1_serial, match.player2_serial}
+    assert colors[leaver] == ELIMINATED_COLOR, "the eliminated player's LED came back on"
+    waiting = set(GRPC_SERIALS) - {match.player1_serial, match.player2_serial, leaver}
     assert {colors[s] for s in waiting} == {WAITING_COLOR}
 
 

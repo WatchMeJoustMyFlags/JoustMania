@@ -557,7 +557,9 @@ class TournamentGame(BaseGameMode):
         A match not yet played whose slot holds an eliminated player goes to the
         other player without a match. A slot still waiting for its feeder waits:
         the walkover happens once the feeder's winner is advanced. A match left
-        with two eliminated players ends with no winner.
+        with two eliminated players ends with no winner and carries one of them
+        (still eliminated) into the next round, so that match's other player
+        gets the walkover instead of waiting on an empty slot.
         """
         changed = True
         while changed:
@@ -579,6 +581,7 @@ class TournamentGame(BaseGameMode):
                 elif len(out) == 2:
                     match.is_complete = True
                     logger.warning(f"Match {match.match_id}: both players are out, no winner")
+                    self._advance_winner(out[0], match)
                     changed = True
 
     async def _bracket_tick(self) -> None:
@@ -616,7 +619,7 @@ class TournamentGame(BaseGameMode):
             elif not self._stall_logged:
                 # No playable match yet more than one player is left: the bracket is
                 # stuck (a bye that never advanced was #1990; a match with two
-                # disconnected players feeds an empty slot, UC-025 track T3).
+                # disconnected players used to feed an empty slot, #2000).
                 self._stall_logged = True
                 logger.error(f"Tournament bracket stalled with {len(left)} players left and no playable match")
             return
