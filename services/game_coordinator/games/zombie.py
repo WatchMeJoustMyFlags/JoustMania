@@ -42,6 +42,7 @@ INITIAL_ZOMBIES = 2  # Number of starting zombies
 ZOMBIE_RESPAWN_MIN = 2.0  # Minimum respawn delay for zombies
 ZOMBIE_RESPAWN_MAX = 10.0  # Maximum respawn delay for zombies
 ZOMBIE_INTRO_DURATION_S = 3.0  # Intro length; the stream is drained meanwhile (UC-023 step 1)
+CONVERSION_COLOUR_DELAY = 0.5  # Death flash before a converted human turns grey (UC-023 step 3)
 
 # Colors
 HUMAN_COLOR = Colors.White.value  # White for humans
@@ -135,6 +136,10 @@ class ZombieGame(BaseGameMode):
         # Pending zombie respawn timers by serial (#1342): a revive cancels the
         # timer, a new death replaces it. Also tracked via _track_task for cleanup.
         self._respawn_tasks: dict[str, asyncio.Task] = {}
+
+        # Pending zombie-colour writes after a conversion's death flash, by serial
+        # (#2023): the delay runs off the game loop. Also tracked via _track_task.
+        self._conversion_colour_tasks: dict[str, asyncio.Task] = {}
 
         # #766 F1: zombie threshold overrides promoted to ``game.zombie.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to ZOMBIE_THRESHOLDS.
@@ -479,15 +484,12 @@ class ZombieGame(BaseGameMode):
             )
             await self.gameplay_stream.write(flash_cmd)
 
-            await asyncio.sleep(0.5)
-
-            base_color_cmd = controller_manager_pb2.GameplayStreamControl(
-                base_color=controller_manager_pb2.ControllerColorConfig(
-                    serial=serial,
-                    color=controller_manager_pb2.RGB(r=ZOMBIE_COLOR[0], g=ZOMBIE_COLOR[1], b=ZOMBIE_COLOR[2]),
-                )
+            # The zombie colour follows the flash after CONVERSION_COLOUR_DELAY, in a
+            # tracked task: the kill handler runs inline in the game loop, which must
+            # not stall on the delay (UC-023 step 3, #2023).
+            self._conversion_colour_tasks[serial] = self._track_task(
+                asyncio.create_task(self._show_zombie_colour_after_flash(serial))
             )
-            await self.gameplay_stream.write(base_color_cmd)
 
             # The base kill path set the per-player gauge to 0; the converted
             # zombie is still in the game (#1342). Skipped after a force end, which
@@ -516,11 +518,36 @@ class ZombieGame(BaseGameMode):
                 },
             )
 
+    async def _show_zombie_colour_after_flash(self, serial: str) -> None:
+        """Set a converted human's zombie colour once the death flash has played (#2023).
+
+        Skipped when the game stopped or the zombie died meanwhile (its death effect
+        keeps the LED off). A guarded write: on a dead gameplay call it is skipped,
+        and the reopened stream restores the zombie colour (UC-030 BR-006).
+        """
+        try:
+            await asyncio.sleep(CONVERSION_COLOUR_DELAY)
+            player = self.players.get(serial)
+            if not self.running or player is None or not player.alive or not player.is_zombie:
+                return
+            await self._write_effect_guarded(
+                controller_manager_pb2.GameplayStreamControl(
+                    base_color=controller_manager_pb2.ControllerColorConfig(
+                        serial=serial,
+                        color=controller_manager_pb2.RGB(r=ZOMBIE_COLOR[0], g=ZOMBIE_COLOR[1], b=ZOMBIE_COLOR[2]),
+                    )
+                ),
+                "Zombie conversion colour",
+            )
+        finally:
+            if self._conversion_colour_tasks.get(serial) is asyncio.current_task():
+                del self._conversion_colour_tasks[serial]
+
     def _sends_death_effect(self, serial: str) -> bool:
         """No base death effect for a converted human, which stays in the game (#1342).
 
         A converted human is still alive after ``_kill_player_impl`` and already got
-        its own death flash and the zombie colour; a killed zombie is dead and gets
+        its own death flash (the zombie colour follows from a task, #2023); a killed zombie is dead and gets
         the base death effect (LED off until it respawns).
         """
         return not self.players[serial].alive
