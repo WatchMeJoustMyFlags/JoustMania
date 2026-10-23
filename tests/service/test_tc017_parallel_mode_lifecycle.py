@@ -116,16 +116,20 @@ async def end_tournament(mock_client, serials, game_client, game_id) -> None:
     await end_tournament_game(mock_client, game_client, serials, game_id=game_id, timeout=45.0)
 
 
-async def end_fight_club(mock_client, serials, game_client, game_id) -> None:  # noqa: ARG001
-    """FightClub: run minimum rounds to a winner. CI: invincibility=2.0s, min_rounds=5."""
-    # Pure SimulateDeath-driven (queued players ignored): game_id-agnostic.
+async def end_fight_club(mock_client, serials, game_client, game_id) -> None:
+    """FightClub: run rounds until the game ends. CI: invincibility=2.0s, min_rounds=5.
+
+    Follows GetGameState (game_id-scoped) instead of a fixed round count: a tie
+    after min_rounds adds a face-off round (UC-025 A2 step 3).
+    """
     await end_fight_club_game(
         mock_client,
         serials,
         game_client,
         delay=0.2,
         round_wait=3.5,  # 1.0s inter-round pause + 2.0s invincibility + 0.5 buffer
-        rounds=6,  # CI min_rounds=5 + 1 to ensure a clear winner
+        game_id=game_id,
+        timeout=60.0,
     )
 
 

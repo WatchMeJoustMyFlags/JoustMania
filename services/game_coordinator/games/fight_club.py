@@ -19,8 +19,10 @@ from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
 from lib.feature_flags import read_float_flag
+from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import metrics
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
     BaseGameMode,
@@ -38,6 +40,7 @@ DEFAULT_INVINCIBILITY_DURATION = 4.0  # Seconds of invincibility at round start
 DEFAULT_MIN_ROUNDS = 10  # Minimum rounds before game can end
 COUNTDOWN_BEEPS = 3  # Beeps in last 3 seconds of round
 FC_INTRO_DURATION_S = 2.0  # Intro length; the stream is drained meanwhile (UC-025 A2 step 1)
+ROUND_PAUSE_SECONDS = 1.0  # Pause between a round's kill and the next round
 
 # Colors
 DEFENDER_COLOR = Colors.Red.value  # Red for defender
@@ -120,7 +123,10 @@ class FightClubGame(BaseGameMode):
         self.round_end_time: float = 0.0
         self.round_task: asyncio.Task | None = None
         self.game_over: bool = False
+        # True while the current round is a face-off (UC-025 A2 step 3).
         self.face_off_mode: bool = False
+        # The tied leaders the next round pairs (set by _should_end_game, #1345).
+        self._face_off_pair: tuple[str, str] | None = None
         self.game_span: trace.Span | None = None
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
@@ -243,18 +249,28 @@ class FightClubGame(BaseGameMode):
         """
         self.round_number += 1
 
-        # If no defender, take first from queue
-        if self.current_defender is None and self.queue:
-            self.current_defender = self.queue.pop(0)
-
-        # Get challenger from queue
-        if self.queue:
-            self.current_fighter = self.queue.pop(0)
+        pair = self._face_off_pair
+        self._face_off_pair = None
+        self.face_off_mode = pair is not None
+        if pair is not None:
+            self._seat_face_off_pair(pair)
         else:
-            # No more challengers - game should end
-            logger.info("No challengers left, ending game")
-            self.game_over = True
-            return
+            # If no defender, take first from queue
+            if self.current_defender is None and self.queue:
+                self.current_defender = self.queue.pop(0)
+
+            # Never pair a player with itself (#1345)
+            while self.queue and self.queue[0] == self.current_defender:
+                self.queue.pop(0)
+
+            # Get challenger from queue
+            if self.queue:
+                self.current_fighter = self.queue.pop(0)
+            else:
+                # No more challengers - game should end
+                logger.info("No challengers left, ending game")
+                self.game_over = True
+                return
 
         defender = self.players[self.current_defender]
         fighter = self.players[self.current_fighter]
@@ -303,6 +319,31 @@ class FightClubGame(BaseGameMode):
         # Start round timer task (unless face-off)
         if not self.face_off_mode:
             self.round_task = self._track_task(asyncio.create_task(self._round_timer()))
+
+    def _seat_face_off_pair(self, pair: tuple[str, str]) -> None:
+        """Seat the tied leaders as this round's defender and fighter (UC-025 A2 step 3).
+
+        A defender who is one of the pair keeps the defender role. A combatant who
+        is not in the pair goes to the front of the queue (still in the rotation),
+        and both pair members leave the queue, so nobody fights itself (#1345).
+        """
+        defender_serial, fighter_serial = pair
+        if self.current_defender == fighter_serial:
+            defender_serial, fighter_serial = fighter_serial, defender_serial
+
+        displaced = [s for s in (self.current_defender, self.current_fighter) if s is not None and s not in pair]
+        for serial in pair:
+            while serial in self.queue:
+                self.queue.remove(serial)
+        for serial in reversed(displaced):
+            player = self.players[serial]
+            player.state = FightState.IN_LINE
+            player.color = WAITING_COLOR
+            self.queue.insert(0, serial)
+
+        self.current_defender = defender_serial
+        self.current_fighter = fighter_serial
+        logger.info(f"Starting face-off: {defender_serial} vs {fighter_serial}")
 
     async def _round_timer(self):
         """
@@ -393,14 +434,12 @@ class FightClubGame(BaseGameMode):
         scores.sort(key=lambda x: x[1], reverse=True)
 
         if len(scores) >= 2 and scores[0][1] == scores[1][1]:
-            # Top 2 are tied - continue or start face-off
-            if not self.face_off_mode:
-                # Start face-off between tied players
-                self.face_off_mode = True
-                self.current_defender = scores[0][0]
-                self.current_fighter = scores[1][0]
-                logger.info(f"Starting face-off: {self.current_defender} vs {self.current_fighter}")
-            # In face-off, continue until winner
+            # Top 2 are tied: the next round is a face-off between them. Only the
+            # pair is stored; _start_round seats it, so the current round's
+            # combatants stay in the rotation (#1345).
+            if self._face_off_pair is None:
+                self._face_off_pair = (scores[0][0], scores[1][0])
+                logger.info(f"Face-off next: {scores[0][0]} vs {scores[1][0]}")
             return False
 
         return True
@@ -463,7 +502,19 @@ class FightClubGame(BaseGameMode):
         self.queue.append(loser_serial)
         self.current_fighter = None
 
+        # The face-off round (if this was one) is over (#1345).
+        self.face_off_mode = False
+
         logger.info(f"Score update: {winner_serial}={winner.score}, {loser_serial}={loser.score}")
+
+        # The loser stays in the game: its death effect goes out now, before the
+        # pause, so the next round's colours land after it (D-G32); the base kill
+        # path skips its own trailing death effect (_sends_death_effect).
+        await self._write_loser_death_effect(loser_serial)
+        # The base kill path zeroed the gauge; the re-queued loser is still playing.
+        # Skipped after a force end, which cleared the player analytics.
+        if self.running:
+            metrics.player_alive.labels(serial=loser_serial, game_id=self.game_id).set(1)
 
         # Play victory sound for round
         await self._play_sound(Sound.SFX_BEEP, priority=1)
@@ -494,8 +545,47 @@ class FightClubGame(BaseGameMode):
             self.game_over = True
         else:
             # Start next round
-            await asyncio.sleep(1.0)  # Brief pause between rounds
+            await self._pause_between_rounds()
             await self._start_round()
+
+    async def _pause_between_rounds(self) -> None:
+        """Brief pause between a round's kill and the next round.
+
+        A seam: tests replace it on the instance instead of patching ``asyncio.sleep``.
+        """
+        await asyncio.sleep(ROUND_PAUSE_SECONDS)
+
+    def _sends_death_effect(self, serial: str) -> bool:  # noqa: ARG002
+        """No base death effect: a Fight Club loser stays in the game (D-G32, #1342 class).
+
+        ``_kill_player_impl`` writes the loser's death effect itself, before the pause
+        and the next round's colours. A declined kill (invincible or waiting player)
+        gets none.
+        """
+        return False
+
+    async def _write_loser_death_effect(self, serial: str) -> None:
+        """Send ``GAME_EFFECT_PLAYER_DEATH`` to the round loser, under its player span.
+
+        Runs before the next round starts, so a call that ended under it (UC-030
+        BR-006) skips the effect with a warning instead of aborting the round
+        transition (#1345, the #1985 guard).
+        """
+        if not self.gameplay_stream:
+            return
+        player = self.players[serial]
+        trace_parent, trace_state = inject_trace_context(player.span)
+        await self._write_effect_guarded(
+            controller_manager_pb2.GameplayStreamControl(
+                game_effect=controller_manager_pb2.GameEffectCommand(
+                    serial=serial,
+                    effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
+                    trace_parent=trace_parent,
+                    trace_state=trace_state,
+                )
+            ),
+            "Round loser death effect",
+        )
 
     async def _end_game_impl(self):
         """Handle game ending."""
