@@ -300,6 +300,28 @@ async def test_force_end_during_the_intro_stops_the_drain_without_a_reopen():
     assert game.gameplay_stream is None, "the stream is released"
 
 
+@pytest.mark.uc("UC-025", flow="A2", steps=[1, 2], br=["BR-003"])
+@pytest.mark.asyncio
+async def test_force_end_during_the_warmup_starts_no_round_and_declares_no_winner():
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _fight_club(log, client)
+    real_warmup = game._warmup_ema
+
+    async def warmup():
+        await real_warmup()
+        game.running = False  # a force-end that lands while the warm-up runs
+
+    game._warmup_ema = warmup
+    task = asyncio.create_task(game.run())
+    await _stop(game, task, client)
+
+    assert log.events.count_events_of_type("round_start") == 0
+    assert log.events.count_events_of_type(GameEvent.GAME_ENDED) == 0
+    assert game._game_outcome_attributes()["game.outcome"] == "force_ended"
+    assert game.gameplay_stream is None, "the stream is released"
+
+
 @pytest.mark.uc("UC-025", flow="A2", steps=[1], br=["BR-002"])
 @pytest.mark.asyncio
 async def test_shadow_fight_club_adds_the_game_attributes_to_the_session_context():
@@ -388,7 +410,7 @@ def _spy_run_end(game):
     ]
 
 
-@pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003"])
+@pytest.mark.uc("UC-025", flow="A2", steps=[1], br=["BR-002", "BR-003"])
 @pytest.mark.asyncio
 async def test_force_end_runs_the_shared_run_end_cleanup():
     log = RecordingLog()
