@@ -1340,6 +1340,8 @@ class TestZombieLedAfterKill:
         human = game.human_serials[0]
         with patch("services.game_coordinator.games.zombie.metrics") as zm:
             await game._kill_player(human, 3.0)
+            # The zombie colour follows from a task, off the game loop (#2023).
+            await game._conversion_colour_tasks[human]
 
         writes = _writes_for(game.gameplay_stream, human)
         assert writes.count(DEATH) == 1
@@ -1350,11 +1352,14 @@ class TestZombieLedAfterKill:
 
     @pytest.mark.uc("UC-023", flow="main", steps=[3])
     @pytest.mark.asyncio
-    async def test_conversion_after_force_end_does_not_recreate_the_gauge(self, game, monkeypatch):
-        async def end_game_during_sleep(_delay, *_args, **_kwargs):
-            game.running = False
+    async def test_conversion_after_force_end_does_not_recreate_the_gauge(self, game):
+        class EndGameOnWrite(RecordingGameplayStream):
+            async def write(self, message):
+                await super().write(message)
+                game.running = False
 
-        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", end_game_during_sleep)
+        # The force end lands during the death-flash write, the kill path's await (#2023).
+        game.gameplay_stream = EndGameOnWrite()
         human = game.human_serials[0]
         with patch("services.game_coordinator.games.zombie.metrics") as zm:
             await game._kill_player(human, 3.0)
@@ -1467,6 +1472,7 @@ class TestZombieLedAfterKill:
         game._winner_side = "zombies"
         gate.set()
         await kill
+        await game._conversion_colour_tasks[human]
 
         writes = _writes_for(game.gameplay_stream, human)
         assert writes[-1] == GREY
