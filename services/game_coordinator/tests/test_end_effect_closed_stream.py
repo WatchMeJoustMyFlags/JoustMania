@@ -52,10 +52,15 @@ class _EndedStream:
 def _make_winner(game, mode: Games) -> None:
     """Put the game in a state where ``_end_game_impl`` declares a winner (and writes the rainbow)."""
     serials = list(game.players)
-    if mode in (Games.JoustFFA, Games.FightClub):
+    if mode == Games.JoustFFA:
         for serial in serials[1:]:
             game.players[serial].alive = False
         game.players[serials[0]].score = 5
+    elif mode == Games.FightClub:
+        # The winner is latched when the game decides to end (UC-025 BR-005).
+        game.players[serials[0]].score = 5
+        game.round_number = game._min_rounds
+        assert game._decide_game_end()
     elif mode in (Games.JoustTeams, Games.JoustRandomTeams):
         winning_team = game.players[serials[0]].team
         for player in game.players.values():
