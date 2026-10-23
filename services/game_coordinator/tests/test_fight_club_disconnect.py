@@ -32,6 +32,7 @@ from services.game_coordinator.intervention_errors import InterventionNotApplied
 from services.game_coordinator.interventions import (  # noqa: E402
     BLOCK_ELIMINATE_REFUSED,
     INTERVENTION_SPECS,
+    MODE_CAPABILITY_DENY,
     InterventionContext,
 )
 from services.game_coordinator.lifecycle_handlers import handle_eliminate_player  # noqa: E402
@@ -316,6 +317,32 @@ class TestFightClubKillGate:
         assert game.current_fighter == fighter
         assert all(p.score == 0 for p in game.players.values())
         _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-005", "BR-006"])
+    @pytest.mark.uc("UC-040", flow="A22")
+    @pytest.mark.asyncio
+    async def test_eliminate_after_the_winner_is_latched_is_refused(self):
+        game, _ = await _round_on(3, "test_fc_gate_after_latch", min_rounds=1)
+        defender, fighter = game.current_defender, game.current_fighter
+
+        with patch(FC_METRICS):
+            await game._kill_player(fighter, 5.0)
+        assert game.game_over is True
+        counted = _counted(game)
+        scores = {s: p.score for s, p in game.players.items()}
+
+        with patch(FC_METRICS), pytest.raises(InterventionNotApplied) as refused:
+            await handle_eliminate_player(_eliminate_ctx(game, defender))
+
+        assert refused.value.reason == BLOCK_ELIMINATE_REFUSED
+        assert _counted(game) == counted
+        assert {s: p.score for s, p in game.players.items()} == scores
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", br=["BR-006"])
+    def test_revive_is_denied_by_the_capability_matrix(self):
+        assert "revive_player" in MODE_CAPABILITY_DENY["Fight Club"]
+        assert "eliminate_player" not in MODE_CAPABILITY_DENY["Fight Club"]
 
     @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-006"])
     @pytest.mark.uc("UC-040", flow="A22")

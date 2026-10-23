@@ -504,7 +504,7 @@ async def test_a_waiting_player_is_not_checked_but_its_name_is_read():
     assert player.name == "Alice", "the waiting player's controller name was not read"
 
 
-@pytest.mark.uc("UC-025", flow="A4")
+@pytest.mark.uc("UC-025", flow="A4", steps=[1])
 @pytest.mark.asyncio
 async def test_a_fighter_that_disconnects_during_invincibility_forfeits_the_match():
     game, events = await _bracket_game(invincibility_s=60.0)
@@ -520,7 +520,7 @@ async def test_a_fighter_that_disconnects_during_invincibility_forfeits_the_matc
     assert [(e["winner"], e["loser"]) for e in events.get_events_of_type("match_end")] == [(opponent, leaver)]
 
 
-@pytest.mark.uc("UC-025", flow="A4")
+@pytest.mark.uc("UC-025", flow="A4", steps=[2, 3])
 @pytest.mark.asyncio
 async def test_a_waiting_player_that_disconnects_gives_its_opponent_a_walkover():
     game, events = await _bracket_game()
@@ -547,7 +547,25 @@ async def test_a_waiting_player_that_disconnects_gives_its_opponent_a_walkover()
     assert {final.player1_serial, final.player2_serial} == {first.player2_serial, walkover}
 
 
-@pytest.mark.uc("UC-025", flow="A4")
+@pytest.mark.uc("UC-025", flow="A4", steps=[2])
+@pytest.mark.asyncio
+async def test_the_winner_of_a_match_decided_in_the_same_frame_that_disconnects_is_out():
+    game, events = await _bracket_game()
+    match = game.current_match
+    loser, winner = match.player1_serial, match.player2_serial
+
+    # The match is decided (the loser's kill), its winner has not advanced yet; then the winner disconnects.
+    assert await game._kill_player(loser, 0.0, reason="agent_intervention") is True
+    assert match.is_complete and match.winner_serial == winner
+    await game._process_gameplay_update(_frame(disconnects=[winner]))
+
+    for serial in (loser, winner):
+        assert game.players[serial].alive is False
+        assert game.players[serial].tournament_state == TournamentState.ELIMINATED
+    assert not events.get_events_of_type("game_error")
+
+
+@pytest.mark.uc("UC-025", flow="A4", steps=[1, 3])
 @pytest.mark.asyncio
 async def test_two_players_one_disconnects_ends_the_bracket():
     game, events = await _bracket_game(num_players=2, invincibility_s=60.0)
@@ -583,7 +601,7 @@ async def test_a_force_end_during_the_match_winner_effect_publishes_no_match_end
     assert events.get_events_of_type("match_end") == [], "a force-ended match published match_end"
 
 
-@pytest.mark.uc("UC-025", flow="A4")
+@pytest.mark.uc("UC-025", flow="A4", steps=[2, 3])
 @pytest.mark.parametrize("num_players", [6, 8])
 @pytest.mark.asyncio
 async def test_both_players_of_a_pending_match_disconnect_and_the_bracket_still_finishes(num_players):
@@ -789,3 +807,19 @@ async def test_a_stream_that_ends_ok_in_a_match_ends_the_game_once():
     assert _count(log, "match_start") == 1, "the match restarted after the stream end"
     assert _count(log, GameEvent.GAME_ENDED) == 1
     assert _count(log, GameEvent.GAME_ERROR) == 0
+
+
+@pytest.mark.uc("UC-025", flow="main", steps=[2, 4])
+def test_the_spec_defaults():
+    """Step 2 and 4: 4 s invincibility, 2 s round pause, 5 s between matches; A1: 22 s match limit."""
+    game = TournamentGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=2),
+        event_publisher=EventCollector().publish,
+        audio_client=None,
+        game_id="test_tournament_defaults",
+        initial_players=_players()[:2],
+    )
+    assert game._invincibility_duration == 4.0
+    assert tournament_mod.ROUND_PAUSE_S == 2.0
+    assert game._time_between_matches == 5.0
+    assert game._match_duration == 22.0

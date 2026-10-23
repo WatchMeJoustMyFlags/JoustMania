@@ -25,6 +25,7 @@ test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
 sys.path.insert(0, str(test_dir))
 
+from conftest import EventCollector, MockControllerManagerService
 from run_fakes import FirstStreamDeadControllerManager
 from run_fakes import event_order as _event_order
 from run_fakes import name as _name
@@ -526,3 +527,41 @@ async def test_buffered_disconnects_leaving_one_player_end_the_game_before_round
     assert ended[0]["total_rounds"] == 0
     assert ended[0]["outcome"] == "completed"
     assert game.gameplay_stream is None, "the stream is released"
+
+
+@pytest.mark.uc("UC-025", flow="A2", steps=[2, 3])
+def test_the_spec_defaults():
+    """A2 step 2 and 3: 22 s rounds with 4 s invincibility, 10 minimum rounds."""
+    game = FightClubGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=2),
+        event_publisher=EventCollector().publish,
+        audio_client=None,
+        game_id="test_fc_defaults",
+        initial_players=_players()[:2],
+    )
+    assert game._invincibility_duration == 4.0
+    assert game._round_duration == 22.0
+    assert game._min_rounds == 10
+
+
+@pytest.mark.uc("UC-025", br=["BR-002"])
+@pytest.mark.asyncio
+async def test_fight_club_plays_without_a_tempo_loop():
+    """BR-002: no tempo loop by design: the music plays at 1.0 and the slow threshold table applies all game."""
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _fight_club(log, client)
+
+    async def instant_loop():
+        await asyncio.sleep(0.05)
+
+    with patch.object(game, "_music_loop") as music_loop, patch.object(game, "_game_loop", side_effect=instant_loop):
+        try:
+            await asyncio.wait_for(game.run(), timeout=10)
+        finally:
+            for stream in client.streams:
+                if stream.producer:
+                    stream.producer.cancel()
+
+    music_loop.assert_not_called()
+    assert game.music_loop_task is None
