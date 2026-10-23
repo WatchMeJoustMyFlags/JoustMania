@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -117,6 +118,12 @@ func Create(root string, intent Intent, opts ...Option) (*Journal, error) {
 	return j, nil
 }
 
+// ErrSummaryWrite marks an AppendEvent error raised AFTER the event line was
+// appended and fsynced: the event is durable (Load replays it from the log) and
+// only the summary.json cache is behind. Callers that need write-ahead (UC-043
+// BR-007, #2042) treat it as a durable write.
+var ErrSummaryWrite = errors.New("journal: summary rewrite failed after the event was logged")
+
 // AppendEvent appends one event to the durable log and updates the rolling state.
 // It is the single write path for progression:
 //  1. assign the next monotonic Seq,
@@ -145,7 +152,7 @@ func (j *Journal) AppendEvent(e Event) error {
 	j.apply(e)
 
 	if err := j.writeSummary(); err != nil {
-		return fmt.Errorf("journal: rewrite summary: %w", err)
+		return fmt.Errorf("%w: %w", ErrSummaryWrite, err)
 	}
 	return nil
 }
@@ -190,6 +197,12 @@ func (j *Journal) apply(e Event) {
 			j.summary.Status = e.Status
 		}
 	case KindDecision:
+		// The concluded decision carries the final verdict (#2042); an older journal
+		// has none and keeps the last interim verdict.
+		if e.Verdict != nil {
+			v := *e.Verdict
+			j.summary.Verdict = &v
+		}
 		if e.Status != "" {
 			j.summary.Status = e.Status
 		}

@@ -691,3 +691,42 @@ func summariesEqual(a, b Summary) bool {
 		return *a.Verdict == *b.Verdict
 	}
 }
+
+// The final verdict rides on the concluded decision event (#2042): it becomes the
+// summary verdict live, and Load replays it to the same value.
+// UC: UC-043 BR-006
+func TestAppendEvent_DecisionVerdictFoldsAndReplays_2042(t *testing.T) {
+	t.Run("UC-043/BR-006 a decision verdict replaces the interim verdict, live and on replay", func(t *testing.T) {
+		dir := t.TempDir()
+		j, err := Create(dir, testIntent())
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		at := testIntent().CreatedAt
+		if err := j.AppendEvent(Event{At: at, Kind: KindInterimVerdict, Verdict: &Verdict{Outcome: "inconclusive", Reason: "interim"}}); err != nil {
+			t.Fatal(err)
+		}
+		final := Verdict{Outcome: "promote", Significant: true, Delta: 0.1, Reason: "final"}
+		if err := j.AppendEvent(Event{At: at, Kind: KindDecision, Status: "concluded", Verdict: &final}); err != nil {
+			t.Fatal(err)
+		}
+		if v := j.Summary().Verdict; v == nil || *v != final {
+			t.Fatalf("live summary verdict = %+v, want %+v", v, final)
+		}
+		loaded, err := Load(dir, testIntent().ExperimentID)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if v := loaded.Summary().Verdict; v == nil || *v != final {
+			t.Fatalf("replayed summary verdict = %+v, want %+v", v, final)
+		}
+		// A decision without a verdict (an older journal, or any other decision)
+		// keeps the summary verdict.
+		if err := j.AppendEvent(Event{At: at, Kind: KindDecision, Status: "promoting"}); err != nil {
+			t.Fatal(err)
+		}
+		if v := j.Summary().Verdict; v == nil || *v != final {
+			t.Fatalf("summary verdict after a verdict-less decision = %+v, want %+v", v, final)
+		}
+	})
+}

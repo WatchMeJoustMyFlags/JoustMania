@@ -193,7 +193,8 @@ type Event struct {
 	// retained for the audit trail; not folded into statistics.
 	DurationS float64 `json:"duration_s,omitempty"`
 
-	// Verdict is the rolling verdict carried on an interim_verdict or outcome event.
+	// Verdict is the rolling verdict carried on an interim_verdict or outcome event,
+	// or the final verdict on the concluded decision event (#2042).
 	Verdict *Verdict `json:"verdict,omitempty"`
 	// Status is the new status on a decision event (e.g. "running", "concluded").
 	Status string `json:"status,omitempty"`

@@ -71,6 +71,11 @@ const (
 // (UC-043 A8, UC-042 A4): it never stays PROPOSED holding its flag (#1700).
 const AbortReasonStartFailed = "start_failed"
 
+// AbortReasonPromotionInterrupted is the abort reason of an experiment restored
+// as promoting with no journaled promotion event (UC-043 A15, #2042): what its
+// promotion did is unknown, so it is never promoted again.
+const AbortReasonPromotionInterrupted = "promotion_interrupted"
+
 // IsTerminal reports whether a status is terminal (the experiment is finished and
 // its capacity + targeting have been released).
 func (s Status) IsTerminal() bool {
@@ -1461,7 +1466,16 @@ func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verd
 		}
 		verdict.Reason += summary
 	}
-	r.recordDecision(e.journal, StatusConcluded, "target N reached / verdict "+verdict.Outcome)
+	// The final verdict rides on the concluded decision (#2042): the journal
+	// summary, the promoter and a restart (UC-043 A15) read the verdict the
+	// experiment concluded on, also after a give-up or pattern-exhausted conclusion.
+	finalVerdict := verdict
+	r.appendEvent(e.journal, journal.Event{
+		Kind:    journal.KindDecision,
+		Status:  string(StatusConcluded),
+		Note:    "target N reached / verdict " + verdict.Outcome,
+		Verdict: &finalVerdict,
+	})
 	jrnl := e.journal
 	flagKey := e.flagKey
 	r.mu.Unlock()
@@ -1525,8 +1539,25 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 		r.mu.Unlock()
 		return PromotionResult{Outcome: PromotionDiscarded, Reason: "experiment " + string(st) + " before promotion"}
 	}
+	if e.status != StatusConcluded {
+		// UC-043 BR-006 / BR-007 (#2042): only a concluded experiment is promoted, so
+		// one already promoting is never promoted a second time.
+		st := e.status
+		r.mu.Unlock()
+		return PromotionResult{Outcome: PromotionDiscarded, Reason: "experiment " + string(st) + ", not concluded"}
+	}
 	e.status = StatusPromoting
-	r.recordDecision(e.journal, StatusPromoting, "routing to promoter")
+	// UC-043 BR-007 (#2042): write-ahead. The promoter acts only once the promoting
+	// decision is durable, so a restart never finds a promotion that acted without
+	// one (A15). A summary rewrite that fails after the line is durable still counts.
+	journalErr := r.appendEventErr(e.journal, journal.Event{
+		Kind:   journal.KindDecision,
+		Status: string(StatusPromoting),
+		Note:   "routing to promoter",
+	})
+	if errors.Is(journalErr, journal.ErrSummaryWrite) {
+		journalErr = nil
+	}
 	// #1188: re-parent the code_improvement.promote span as the experiment's TERMINAL
 	// child. The promote span is started from the ctx passed to Promoter.Promote, so
 	// installing the still-live experiment ROOT span on the ctx (an in-process
@@ -1542,7 +1573,12 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 	}
 
 	res := PromotionResult{Outcome: PromotionDiscarded, Reason: "no promoter wired"}
-	if r.promo != nil {
+	switch {
+	case journalErr != nil:
+		// Refused: nothing acted. The result is still journaled below, so a restart
+		// finds a promotion event and does not report promotion_interrupted.
+		res = PromotionResult{Outcome: PromotionDiscarded, Reason: "promotion not journaled: " + journalErr.Error()}
+	case r.promo != nil:
 		res = r.promo.Promote(ctx, jrnl.CompactView())
 	}
 	if !promotionActed(res) {
@@ -1711,7 +1747,8 @@ func (r *Registry) SetTerminalHook(f func(experimentID string)) { r.onTerminal =
 // restart semantics and keeps Rehydrate free of an event replay.
 func (r *Registry) Rehydrate(ids []string) error {
 	r.mu.Lock()
-	var lost, unstarted []string
+	var lost, unstarted, unfinished []string
+	var errs []error
 	defer func() {
 		r.mu.Unlock()
 		// UC-046 BR-015: a pattern experiment whose pin cannot be restored is discarded.
@@ -1724,6 +1761,11 @@ func (r *Registry) Rehydrate(ids []string) error {
 		for _, id := range unstarted {
 			r.teardown(context.Background(), id, r.flagKeyOf(id), StatusAborted, AbortReasonStartFailed)
 		}
+		// UC-043 A15 (#2042): a restored CONCLUDED or PROMOTING experiment is ended
+		// without a promotion; nothing else would ever finish it.
+		for _, id := range unfinished {
+			r.finishRestored(id)
+		}
 	}()
 	for _, id := range ids {
 		// #1731: an id this registry already holds was declared by this process
@@ -1734,7 +1776,12 @@ func (r *Registry) Rehydrate(ids []string) error {
 		}
 		jrnl, err := journal.Load(r.root, id)
 		if err != nil {
-			return fmt.Errorf("registry: rehydrate %q: %w", id, err)
+			// UC-043 A15 (#2042): one bad journal does not stop the restore of the
+			// others; every failure is logged and returned.
+			err = fmt.Errorf("registry: rehydrate %q: %w", id, err)
+			r.log.Error("experiment.rehydrate_failed", "experiment_id", id, "error", err)
+			errs = append(errs, err)
+			continue
 		}
 		view := jrnl.CompactView()
 		st := Status(view.Status)
@@ -1767,11 +1814,88 @@ func (r *Registry) Rehydrate(ids []string) error {
 			unstarted = append(unstarted, id)
 			continue
 		}
+		if st == StatusConcluded || st == StatusPromoting {
+			unfinished = append(unfinished, id)
+			continue
+		}
 		if r.patterns != nil && !r.restorePatternLocked(e) {
 			lost = append(lost, id)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// finishRestored ends an experiment restored as CONCLUDED or PROMOTING (UC-043
+// A15, #2042) without ever calling the promoter: its in-flight games are lost and
+// its evidence predates the restart. It needs only the local journal and the
+// targeting strip (teardown), so it is safe inside Rehydrate.
+//   - a promotion event after the last concluded decision (any status): the
+//     promotion ran, so end done / discarded from it (BR-006: once);
+//   - promoting without one: unknown outcome, abort promotion_interrupted + WARN;
+//   - concluded without one: discarded, "concluded before restart: <outcome>; not promoted".
+func (r *Registry) finishRestored(id string) {
+	r.mu.Lock()
+	e := r.entries[id]
+	if e == nil || (e.status != StatusConcluded && e.status != StatusPromoting) {
+		r.mu.Unlock()
+		return
+	}
+	jrnl, flagKey, st := e.journal, e.flagKey, e.status
+	r.mu.Unlock()
+
+	ctx := context.Background()
+	if res, ok := r.journaledPromotion(id, jrnl); ok {
+		final := StatusDiscarded
+		if promotionActed(res) {
+			final = StatusDone
+		}
+		note := "promotion " + res.Outcome
+		if res.Reason != "" {
+			note += ": " + res.Reason
+		}
+		r.teardown(ctx, id, flagKey, final, note+"; finished after an agent restart")
+		return
+	}
+	if st == StatusPromoting {
+		r.log.Warn("experiment.promotion_interrupted", "experiment_id", id, "flag_key", flagKey)
+		r.teardown(ctx, id, flagKey, StatusAborted, AbortReasonPromotionInterrupted)
+		return
+	}
+	outcome := "unknown"
+	if v := jrnl.CompactView().Verdict; v != nil && v.Outcome != "" {
+		outcome = v.Outcome
+	}
+	r.teardown(ctx, id, flagKey, StatusDiscarded, "concluded before restart: "+outcome+"; not promoted")
+}
+
+// journaledPromotion returns the first promotion event after the experiment's
+// last concluded decision: the result of its one promotion (later ones are
+// kill-switch or re-watch reverts of it). An unreadable log reports none.
+func (r *Registry) journaledPromotion(id string, jrnl *journal.Journal) (PromotionResult, bool) {
+	evs, err := jrnl.Events()
+	if err != nil {
+		r.log.Warn("experiment.rehydrate_events_unreadable", "experiment_id", id, "error", err)
+		return PromotionResult{}, false
+	}
+	start := -1
+	for i, ev := range evs {
+		if ev.Kind == journal.KindDecision && ev.Status == string(StatusConcluded) {
+			start = i
+		}
+	}
+	if start < 0 {
+		return PromotionResult{}, false
+	}
+	for _, ev := range evs[start+1:] {
+		if ev.Kind != journal.KindPromotion {
+			continue
+		}
+		if ev.Promotion != nil {
+			return *ev.Promotion, true
+		}
+		return PromotionResult{Outcome: ev.Status, Reason: ev.Note}, true
+	}
+	return PromotionResult{}, false
 }
 
 // --- read accessors (telemetry / tests) ---
@@ -2046,10 +2170,18 @@ func (r *Registry) recordDecision(jrnl *journal.Journal, status Status, note str
 // appends it to the journal, logging any error. Centralizes the time injection so
 // every registry-emitted event carries a timestamp.
 func (r *Registry) appendEvent(jrnl *journal.Journal, e journal.Event) {
+	_ = r.appendEventErr(jrnl, e)
+}
+
+// appendEventErr is appendEvent that also returns the error, for a caller that
+// must know whether the event is durable (UC-043 BR-007).
+func (r *Registry) appendEventErr(jrnl *journal.Journal, e journal.Event) error {
 	if e.At.IsZero() {
 		e.At = r.clock()
 	}
-	if err := jrnl.AppendEvent(e); err != nil {
+	err := jrnl.AppendEvent(e)
+	if err != nil {
 		r.log.Warn("experiment.journal_append_failed", "kind", string(e.Kind), "error", err)
 	}
+	return err
 }
