@@ -130,6 +130,11 @@ class FightClubGame(BaseGameMode):
         # The winner, latched when the game decides to end (UC-025 BR-005, #1343).
         self._win_latched: bool = False
         self._latched_winner: str | None = None
+        # True from a round's decision (kill or timeout) until the next round seats
+        # its pair: no round is fought, so no kill is taken (UC-025 BR-006).
+        self._round_ending: bool = False
+        # Serials whose controller disconnected: out of the rotation for good (A4).
+        self._disconnected: set[str] = set()
         self.game_span: trace.Span | None = None
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
@@ -258,6 +263,11 @@ class FightClubGame(BaseGameMode):
         if pair is not None:
             self._seat_face_off_pair(pair)
         else:
+            # A player who left (A4) never fights again.
+            self.queue = [s for s in self.queue if s not in self._disconnected]
+            if self.current_defender in self._disconnected:
+                self.current_defender = None
+
             # If no defender, take first from queue
             if self.current_defender is None and self.queue:
                 self.current_defender = self.queue.pop(0)
@@ -277,6 +287,8 @@ class FightClubGame(BaseGameMode):
 
         defender = self.players[self.current_defender]
         fighter = self.players[self.current_fighter]
+        # The pair is seated: from here a kill can decide this round (BR-006).
+        self._round_ending = False
 
         # Set states
         defender.state = FightState.DEFENDER
@@ -370,7 +382,11 @@ class FightClubGame(BaseGameMode):
     async def _handle_timeout(self):
         """
         Handle round timeout - both players go to back of queue.
+
+        The round is over before the first await: a kill in flight (awaiting its
+        explosion) is then declined by the kill gate (UC-025 BR-006).
         """
+        self._round_ending = True
         if self.current_defender:
             defender = self.players[self.current_defender]
             defender.state = FightState.IN_LINE
@@ -429,8 +445,13 @@ class FightClubGame(BaseGameMode):
         """
         Check if game should end after this round.
 
-        Game ends after minimum rounds if there's a clear winner.
+        Game ends after minimum rounds if there's a clear winner, and at once
+        when fewer than two connected players are left (UC-025 A4). A player who
+        left keeps its score, so it can still lead (and win).
         """
+        if self._connected_count() < 2:
+            return True
+
         if self.round_number < self._min_rounds:
             return False
 
@@ -439,20 +460,30 @@ class FightClubGame(BaseGameMode):
         scores.sort(key=lambda x: x[1], reverse=True)
 
         if len(scores) >= 2 and scores[0][1] == scores[1][1]:
-            # Top 2 are tied: the next round is a face-off between them. Only the
-            # pair is stored; _start_round seats it, so the current round's
-            # combatants stay in the rotation (#1345).
+            # The top is tied: the next round is a face-off between the first two
+            # connected tied leaders. Only the pair is stored; _start_round seats
+            # it, so the current round's combatants stay in the rotation (#1345).
+            tied = [s for s, score in scores if score == scores[0][1] and s not in self._disconnected]
+            if len(tied) < 2:
+                # A tied leader left: no face-off is possible, the game ends
+                # without a winner (_leader() sees the tie; A4).
+                return True
             if self._face_off_pair is None:
-                self._face_off_pair = (scores[0][0], scores[1][0])
-                logger.info(f"Face-off next: {scores[0][0]} vs {scores[1][0]}")
+                self._face_off_pair = (tied[0], tied[1])
+                logger.info(f"Face-off next: {tied[0]} vs {tied[1]}")
             return False
 
         return True
 
-    def _leader(self) -> str | None:
-        """The one top scorer; None without players.
+    def _connected_count(self) -> int:
+        """Players whose controller is still connected (UC-025 A4)."""
+        return sum(1 for serial in self.players if serial not in self._disconnected)
 
-        The tie branch is defensive: a tie never ends the game (a face-off is seated).
+    def _leader(self) -> str | None:
+        """The one top scorer, connected or not; None without players or on a tied top.
+
+        A tie ends the game only when no face-off is possible (a tied leader left,
+        or fewer than two connected players remain; UC-025 A4): no winner.
         """
         scores = sorted((p.score for p in self.players.values()), reverse=True)
         if not scores or (len(scores) >= 2 and scores[0] == scores[1]):
@@ -469,40 +500,126 @@ class FightClubGame(BaseGameMode):
         """
         if not self._should_end_game():
             return False
+        self._end_game_now()
+        return True
+
+    def _end_game_now(self) -> None:
+        """End the game and latch the leader, synchronously (BR-005)."""
         self.game_over = True
         if self.running and not self._win_latched:
             self._win_latched = True
             self._latched_winner = self._leader()
             self._latch_game_outcome()
-        return True
+
+    def _fights_current_round(self, serial: str) -> bool:
+        """Whether the player is the defender or the fighter of a round being fought."""
+        return (
+            not self.game_over
+            and not self._round_ending
+            and self.current_defender is not None
+            and self.current_fighter is not None
+            and serial in (self.current_defender, self.current_fighter)
+        )
+
+    def _accepts_kill(self, serial: str) -> bool:
+        """The Fight Club kill gate (UC-025 BR-006, UC-030 step 9; #1383).
+
+        No kill once the winner is latched (BR-005). A disconnected player is
+        taken while it is still in the game (A4: a combatant forfeits even in
+        grace, anyone else leaves the rotation); once it is out (``alive`` false)
+        a second kill of it, such as a disconnect kill still in flight, is
+        declined, so it is never counted twice. Otherwise only the defender or the
+        fighter of a round being fought, out of its grace, can lose: a waiting
+        player, a combatant in grace, the round winner during the pause between
+        rounds and anyone after the game decided are declined before the base
+        death accounting, so an ``eliminate_player`` on them is refused
+        (``eliminate_refused``). Grace is the unified effective grace (#817).
+        """
+        if self._win_latched:
+            return False
+        player = self.players.get(serial)
+        if player is None:
+            return False
+        if serial in self._disconnected:
+            return player.alive
+        return self._fights_current_round(serial) and not self.is_in_grace(player)
+
+    async def _handle_disconnect(self, serial: str) -> None:
+        """A disconnect is a forfeit and takes the player out for good (UC-025 A4).
+
+        Ignored once the winner is latched (BR-005). The serial is marked before
+        the base death path, so the kill handler knows: a combatant loses the round
+        even during invincibility (the opponent scores), anyone else leaves the
+        rotation. The base drops the kill while the player's own round-loss kill
+        is still in flight (the loser during the pause between rounds); the player
+        then leaves the rotation here, without a second death.
+        """
+        if self._win_latched:
+            return
+        player = self.players.get(serial)
+        if player is None or not player.alive:
+            return
+        self._disconnected.add(serial)
+        if serial in self._kills_in_progress and not self._fights_current_round(serial):
+            logger.info(f"Round loser {serial} disconnected during the round change: out of the rotation")
+            if player.span:
+                player.span.add_event("player_disconnected", attributes={"reason": "controller_disconnect"})
+            self._leave_rotation(serial)
+            if self.running:
+                self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
+            return
+        await super()._handle_disconnect(serial)
+
+    def _leave_rotation(self, serial: str) -> None:
+        """Take a disconnected player out of the rotation for good; it keeps its score (A4).
+
+        Ends the game when fewer than two connected players are left, or when the
+        player was one of the face-off pair still to be seated (no face-off).
+        """
+        player = self.players[serial]
+        player.alive = False
+        player.state = FightState.IN_LINE
+        while serial in self.queue:
+            self.queue.remove(serial)
+        if self.current_defender == serial:
+            self.current_defender = None
+        if self.current_fighter == serial:
+            self.current_fighter = None
+        if self.running and not self._win_latched:
+            metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(0)
+        logger.info(f"Player {serial} left Fight Club with score {player.score}")
+        if self._face_off_pair is not None and serial in self._face_off_pair:
+            self._face_off_pair = None
+            self._decide_game_end()
+        elif self._connected_count() < 2:
+            self._end_game_now()
 
     async def _kill_player_impl(self, serial: str, accel_mag: float):
         """
         Handle player death in a fight.
 
+        The base kill path calls this only for a kill ``_accepts_kill`` took,
+        synchronously after its second check; the check here keeps a direct call
+        to the same rule.
+
         Args:
             serial: Controller serial number
             accel_mag: Acceleration magnitude that caused death
         """
+        if not self._accepts_kill(serial):
+            return
         player = self.players[serial]
         fc_player = player
+        disconnected = serial in self._disconnected
 
-        # Check immunity via the unified effective-grace rule (#817):
-        # max(agent shield grace_until, admin invincible_until).
-        if self.is_in_grace(fc_player):
-            logger.debug(f"Player {serial} is invincible, ignoring death")
+        # A player who left and fights no round (waiting, or the round winner
+        # during the pause) leaves the rotation; no round is decided (A4).
+        if disconnected and not self._fights_current_round(serial):
+            self._leave_rotation(serial)
             return
 
-        # Only process if player is in active fight
-        if fc_player.state not in (FightState.DEFENDER, FightState.FIGHTER):
-            return
-
-        # Between rounds (the 1 s pause, or after the game decided) no round is
-        # fought: a kill of the round winner has no opponent to score (#1343).
-        if self.current_defender is None or self.current_fighter is None:
-            logger.debug(f"Player {serial} killed between rounds, ignoring")
-            return
-
+        # The round is decided: no further kill is taken until the next round.
+        self._round_ending = True
         fc_player.alive = False
 
         # Cancel round timer
@@ -533,12 +650,15 @@ class FightClubGame(BaseGameMode):
         winner.alive = True
         self.current_defender = winner_serial
 
-        # Loser goes to back of queue
+        # Loser goes to back of queue; a player who left forfeits and is out (A4)
         loser.state = FightState.IN_LINE
         loser.color = WAITING_COLOR
-        loser.alive = True
-        self.queue.append(loser_serial)
         self.current_fighter = None
+        if disconnected:
+            self._leave_rotation(loser_serial)
+        else:
+            loser.alive = True
+            self.queue.append(loser_serial)
 
         # The face-off round (if this was one) is over (#1345).
         self.face_off_mode = False
@@ -550,8 +670,9 @@ class FightClubGame(BaseGameMode):
         # path skips its own trailing death effect (_sends_death_effect).
         await self._write_loser_death_effect(loser_serial)
         # The base kill path zeroed the gauge; the re-queued loser is still playing.
-        # Skipped after a force end, which cleared the player analytics.
-        if self.running and not self._win_latched:
+        # Skipped after a force end, which cleared the player analytics, once the
+        # game is decided, and for a loser who left (A4).
+        if self.running and not self._win_latched and loser.alive:
             metrics.player_alive.labels(serial=loser_serial, game_id=self.game_id).set(1)
 
         # Play victory sound for round

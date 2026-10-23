@@ -55,6 +55,8 @@ async def _game_with_spans(mode: Games, num_players: int = 4):
         spans[serial] = player.span
     if mode == Games.Tournament:
         _seat_first_player_in_a_match(game)
+    if mode == Games.FightClub:
+        _seat_first_player_in_a_round(game)
     return game, spans
 
 
@@ -67,6 +69,17 @@ def _seat_first_player_in_a_match(game) -> None:
     game.current_match = match
     for fighter in (match.player1_serial, match.player2_serial):
         game.players[fighter].tournament_state = TournamentState.FIGHTING
+
+
+def _seat_first_player_in_a_round(game) -> None:
+    """Fight Club takes a kill only from a combatant of the round being fought (UC-025 BR-006)."""
+    from services.game_coordinator.games.fight_club import FightState
+
+    defender, fighter = list(game.players)[:2]
+    game.queue = [s for s in game.queue if s not in (defender, fighter)]
+    game.current_defender, game.current_fighter = defender, fighter
+    game.players[defender].state = FightState.DEFENDER
+    game.players[fighter].state = FightState.FIGHTER
 
 
 def _death_events(span):
