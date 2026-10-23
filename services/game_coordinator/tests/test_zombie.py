@@ -1052,6 +1052,34 @@ class TestZombieForceEndWinner:
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
     @pytest.mark.uc("UC-023", br=["BR-003"])
     @pytest.mark.parametrize("side", ["zombies", "humans"])
+    async def test_force_end_racing_the_outcome_latch_publishes_no_winner(self, setup, side):
+        """#1988: a force-end landing right before the outcome latch wins the race: no winner anywhere."""
+        game, events = setup
+        game.running = True
+        if side == "zombies":
+            self._convert_all_humans(game)
+        else:
+            game.time_remaining = 0
+        latch = game._latch_game_outcome
+
+        def force_end_then_latch():
+            game.force_end("operator")
+            latch()
+
+        game._latch_game_outcome = force_end_then_latch
+
+        assert await game._check_win_condition() is False
+        await game._end_game_impl()
+
+        assert events.get_events_of_type("zombie_winner") == []
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "none" and ended["outcome"] == "force_ended"
+        assert self._rainbow_writes(game) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-023", br=["BR-003"])
+    @pytest.mark.parametrize("side", ["zombies", "humans"])
     async def test_force_end_before_the_win_check_publishes_no_winner(self, setup, side):
         """#1988: a force-end that lands first declares no winner, even with the win condition met."""
         game, events = setup

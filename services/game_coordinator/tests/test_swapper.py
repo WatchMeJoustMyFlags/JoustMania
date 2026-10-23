@@ -1502,6 +1502,50 @@ class TestSwapperWinOutcomeLatch:
         assert sorted(rainbow) == sorted(winner["winners"])
         await game.cleanup()
 
+    @pytest.mark.uc("UC-024", br=["BR-003", "BR-004"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_racing_the_outcome_latch_publishes_no_winner(self):
+        """A force-end landing right before the outcome latch wins the race: no winner anywhere."""
+        game, events = await TestSwapperForceEndWinner._game(4)
+        for player in game.players.values():
+            player.team = 0
+        latch = game._latch_game_outcome
+
+        def force_end_then_latch():
+            game.force_end("operator")
+            latch()
+
+        game._latch_game_outcome = force_end_then_latch
+
+        assert await game._check_win_condition() is False
+        await game._end_game_impl()
+
+        assert events.get_events_of_type("swapper_winner") == []
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winning_team"] == "none" and ended["outcome"] == "force_ended"
+        assert ended["reason"] == "operator"
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_force_end_during_the_swap_publish_plays_no_beep(self):
+        """The swap event is out, but a force-end landing during its publish silences the beep."""
+        game, events = await TestSwapperForceEndWinner._game(3)
+        target = "mock_controller_1"
+
+        async def publish(kind, data):
+            if kind == "player_swapped":
+                game.force_end("operator")
+            await events.publish(kind, data)
+
+        game.event_publisher = publish
+        await game._kill_player(target, 0.0, reason="agent_intervention")
+
+        assert events.count_events_of_type("player_swapped") == 1
+        assert Sound.SFX_BEEP not in game.sounds
+        await game.cleanup()
+
     @pytest.mark.uc("UC-024", br=["BR-003"])
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
     @pytest.mark.asyncio

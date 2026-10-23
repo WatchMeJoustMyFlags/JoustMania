@@ -3456,7 +3456,8 @@ class BaseGameMode(ABC):
         by ``_run_kill`` after its awaits (shield charge end, explosion), right
         before the bookkeeping: a declined kill gets no ``dead_count``, ``player_alive``
         gauge, elimination order, ``player_deaths_total``, ``player_death`` span event
-        or death effect (nor an explosion when declined at the first check), and
+        or death effect (nor an explosion, nor the end of a held shield charge, when
+        declined at the first check), and
         ``_kill_player`` returns False. True means
         the kill passed the gate, not that the mode's handler applied it. Default:
         always (Swapper declines once its win is latched, UC-024 BR-004).

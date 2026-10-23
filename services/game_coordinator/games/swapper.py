@@ -445,7 +445,13 @@ class SwapperGame(TeamsGameBase):
             return True
 
         if len(teams) == 1:
-            # All remaining players on one team: latch before publishing (BR-004)
+            # All remaining players on one team: latch before publishing (BR-004).
+            # The outcome latches first, before the winner and the publish awaits: a
+            # force-end that won the race declares no winner (BR-003), one landing
+            # during the publish keeps this winner (BR-004, #1988).
+            self._latch_game_outcome()
+            if self.game_outcome() == "force_ended":
+                return False
             winning_team = next(iter(teams))
             winners = self._team_winners(winning_team)
             excluded = self._excluded_serial()
@@ -453,9 +459,6 @@ class SwapperGame(TeamsGameBase):
             self._latched_team = winning_team
             self._latched_winners = winners
             self._latched_excluded = excluded
-            # The outcome latches in the same step, before the publish awaits: a
-            # force-end landing during the publish keeps this winner (BR-004, #1988).
-            self._latch_game_outcome()
 
             team_name = self.team_colors[winning_team]["name"]
             logger.info(f"Team {winning_team} ({team_name}) wins! Winners: {len(winners)}, Excluded: {excluded}")

@@ -375,10 +375,8 @@ class ZombieGame(BaseGameMode):
         # Check if all humans converted
         if len(alive_humans) == 0:
             logger.info("All humans converted! Zombies win!")
-            self._winner_side = "zombies"
-            # The outcome latches in the same step, before the publish awaits: a
-            # force-end landing during the publish keeps this winner (BR-003, #1988).
-            self._latch_game_outcome()
+            if not self._latch_win("zombies"):
+                return False
             await self.event_publisher(
                 "zombie_winner",
                 {
@@ -391,10 +389,8 @@ class ZombieGame(BaseGameMode):
         # Check if time expired
         if self.time_remaining <= 0:
             logger.info(f"Time's up! Humans win with {len(alive_humans)} survivors!")
-            self._winner_side = "humans"
-            # The outcome latches in the same step, before the publish awaits: a
-            # force-end landing during the publish keeps this winner (BR-003, #1988).
-            self._latch_game_outcome()
+            if not self._latch_win("humans"):
+                return False
             await self.event_publisher(
                 "zombie_winner",
                 {
@@ -406,6 +402,18 @@ class ZombieGame(BaseGameMode):
             return True
 
         return False
+
+    def _latch_win(self, side: str) -> bool:
+        """Latch the outcome, then the winning side, before the publish awaits (BR-003, #1988).
+
+        The outcome latches first: a force-end that won the race declares no winner
+        (False, nothing latched), one landing during the publish keeps this winner.
+        """
+        self._latch_game_outcome()
+        if self.game_outcome() == "force_ended":
+            return False
+        self._winner_side = side
+        return True
 
     async def _kill_player_impl(self, serial: str, accel_mag: float):
         """
