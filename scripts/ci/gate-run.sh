@@ -14,7 +14,10 @@
 #   --logs      absolute log directory OUTSIDE the worktree (created if missing)
 #   --repeat    run the command N times in a row, 1-20 (default 1)
 #   --expect-fail  mutation check: the caller weakened the code and expects a test FAILURE
-#   --name      log slug, [a-z0-9-] (default "run"); logs are <logs>/<name>-<i>.log
+#   --name      log slug, [a-z0-9-] (default "run"); logs are
+#               <logs>/<worktree-basename>-<head8>/<name>-<i>.log, so runs of other
+#               worktrees or heads sharing one --logs dir never overwrite each other
+#               (#2036); the verdict header and the `Logs:` line show the exact paths
 #   --dir       working directory relative to the worktree (required for go / cargo:
 #               the directory holding go.mod / Cargo.toml)
 #
@@ -239,6 +242,9 @@ fi
 unset MAKEFLAGS MAKEFILES GNUMAKEFLAGS GOFLAGS PYTEST_ADDOPTS BASH_ENV ENV RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER
 
 HEAD_SHA="$(git -C "$WT_REAL" rev-parse HEAD)"
+# Namespace the logs per worktree and head: a shared --logs dir stays safe.
+LOGS="$LOGS/$(basename -- "$WT_REAL")-${HEAD_SHA:0:8}"
+mkdir -p -- "$LOGS" || refuse "cannot create logs dir: $LOGS"
 echo "gate-run $WT_REAL head ${HEAD_SHA:0:8} job $NAME"
 echo "cmd: ${RUN_DIR_REL:+(in $RUN_DIR_REL) }${CMD[*]}"
 

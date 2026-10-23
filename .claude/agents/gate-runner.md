@@ -35,7 +35,8 @@ From the caller:
     marks a mutation check: the caller already weakened the code and wants a test FAILURE. `in <dir>` is
     the directory relative to `WT` (required for `go` and `cargo`: the dir holding `go.mod` / `Cargo.toml`).
 - Optional `logs <dir>`: absolute, outside `WT`. Default: your session scratchpad directory from your
-  environment, subfolder `gate-runner`.
+  environment, subfolder `gate-runner`. The script writes into `<dir>/<worktree-basename>-<head8>/`
+  (#2036), so a dir shared with other worktrees or heads is safe; the `Logs:` line has the exact paths.
 
 ## The only command you run
 

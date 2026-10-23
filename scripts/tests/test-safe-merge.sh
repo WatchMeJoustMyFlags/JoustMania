@@ -8,11 +8,17 @@
 # Runs as part of `make lint` (needs bash, jq, python3-free), or directly:
 #   ./scripts/tests/test-safe-merge.sh
 set -euo pipefail
+# Hermetic: a fail-loud fake docker first on PATH, no COMPOSE / DOCKER override.
+unset COMPOSE DOCKER
+FAKE_DOCKER_DIR="$(mktemp -d)"
+printf '#!/bin/sh\necho "test reached docker: $*" >&2\nexit 99\n' >"${FAKE_DOCKER_DIR}/docker"
+chmod +x "${FAKE_DOCKER_DIR}/docker"
+export PATH="${FAKE_DOCKER_DIR}:${PATH}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="${SCRIPT_DIR}/../ci/safe-merge.sh"
 WORK="$(mktemp -d)"
-trap 'rm -rf "${WORK}"' EXIT
+trap 'rm -rf "${WORK}" "${FAKE_DOCKER_DIR}"' EXIT
 export STUB_DIR="${WORK}/stub"
 mkdir -p "${STUB_DIR}" "${WORK}/bin"
 export SAFE_MERGE_TEST=1 SAFE_MERGE_POLL=0 SAFE_MERGE_SETTLE=0 SAFE_MERGE_CONFIRM=0 SAFE_MERGE_MAX_WAIT=5
@@ -69,6 +75,7 @@ view() {  # checks...
 after_merge() {  # state head merge_sha
   printf '{"state":"%s","headRefOid":"%s","url":"https://github.com/o/r/pull/42","mergeCommit":%s}' \
     "$1" "$2" "$( [[ -n "$3" ]] && printf '{"oid":"%s"}' "$3" || echo null)" >"${STUB_DIR}/after-merge.json"
+  jq '. + {title: "fix: the title"}' "${STUB_DIR}/after-merge.json" >"${STUB_DIR}/am.tmp" && mv "${STUB_DIR}/am.tmp" "${STUB_DIR}/after-merge.json"
 }
 queue_fx() {  # n state in_queue entry_state merge_sha [auto_merge_enabled_at]
   printf '{"data":{"repository":{"pullRequest":{"state":"%s","headRefOid":"%s","isInMergeQueue":%s,"url":"https://github.com/o/r/pull/42","mergeQueueEntry":%s,"mergeCommit":%s,"autoMergeRequest":%s}}}}' \
@@ -162,8 +169,11 @@ ok
 reset
 run 42
 [[ $RC -eq 2 ]] || fail "usage: exit $RC"
-run 42 abcdef1 --close 7
-[[ $RC -eq 2 ]] || fail "--close without --comment-file: exit $RC"
+run 42 abcdef1 --comment-file "${WORK}/comment.md"
+[[ $RC -eq 2 ]] || fail "--comment-file without --close: exit $RC"
+# #2036: arguments are validated before any gh call (a wait would come first).
+run 42 abcdef1 --close 7 --note-issue 9
+[[ $RC -eq 2 && -z "$(calls)" ]] || fail "--note-issue without --note-file: rc=$RC calls=$(calls)"
 for bad in '7;id' '7,' '*' '7 8' '' ','; do
   run 42 abcdef1 --close "$bad" --comment-file "${WORK}/comment.md"
   [[ $RC -eq 2 ]] || fail "--close '$bad' must be rejected: exit $RC ($OUT)"
@@ -434,6 +444,14 @@ reset; view "$GREEN"; queue_fx 1 OPEN true QUEUED ""
 run 42 abcdef1 --wait-ci --wait-queue
 [[ $RC -eq 0 && "$OUT" == *"CI GREEN"* ]] || fail "--wait-ci with --wait-queue: rc=$RC $OUT"
 calls | grep -qE 'pr merge|api graphql' && fail "--wait-ci must not enqueue: $(calls)"
+ok
+
+# #2036: --close without --comment-file uses a default comment, no usage error.
+reset; view "$GREEN"
+run 42 abcdef1 --close 7,8
+[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* && "$OUT" == *"closed #7"* ]] || fail "default close comment: rc=$RC $OUT"
+calls | grep -qF 'issue close 7 --comment Done in #42: fix: the title' || fail "default comment text: $(calls)"
+calls | grep -qF 'issue close 8 --comment Done in #42: fix: the title' || fail "default comment text for 8: $(calls)"
 ok
 
 echo "test-safe-merge: ${pass} groups passed"
