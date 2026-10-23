@@ -28,6 +28,10 @@
 # up (`docker compose up -d`). For a decision comparison, keep interventions off or
 # stop the stack's own agent first so only the throwaway agent observes the game.
 #
+# The image is whatever `docker compose` resolves for the service: the stack's IMAGE_TAG
+# or, when unset, the release pin in .env. Export IMAGE_TAG=<the running stack's tag> to
+# replay on the same image as the stack.
+#
 # Environment: COMPOSE (default "docker compose"), PATTERN_REPLAY_TIMEOUT seconds
 # per run (default: the effective safety cap `experiment.max_game_seconds` read from
 # the flag service plus 120 s start-up margin, so 420 s for the default 300 s cap and
