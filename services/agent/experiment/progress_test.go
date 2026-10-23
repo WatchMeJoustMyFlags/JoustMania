@@ -9,6 +9,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/experiment/journal"
+	"github.com/joustmania/agent/patterngame"
 )
 
 // progress_test.go covers experiment.progress (#2059, docs/specs/telemetry.md §4.1):
@@ -322,4 +324,173 @@ func TestProgress_HeartbeatCoversLiveExperimentsOnly(t *testing.T) {
 	}
 	var nilRegistry *Registry
 	nilRegistry.ProgressHeartbeat() // nil-safe
+}
+
+// The concluded and promoting transitions each emit a snapshot, and the
+// game_concluded snapshot already carries the interim verdict of that game.
+// UC: UC-035 4
+func TestProgress_ConcludedAndPromotingSnapshots(t *testing.T) {
+	spawner := &fakeSpawner{}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 1},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2,
+	})
+	startedExperiment(t, r)
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		ProgressTriggerStarted,
+		ProgressTriggerGameAssigned, ProgressTriggerGameAssigned,
+		ProgressTriggerGameConcluded, ProgressTriggerConcluded, ProgressTriggerPromoting,
+		ProgressTriggerTerminal,
+	}
+	if got := progressTriggers(sr); !equalTriggers(got, want) {
+		t.Fatalf("UC-035/4 triggers = %v, want %v", got, want)
+	}
+	spans := progressSpans(sr)
+	for i, wantStatus := range map[int]Status{4: StatusConcluded, 5: StatusPromoting} {
+		if v, _ := rootSpanAttr(spans[i], decision.AttrExperimentStatus); v != string(wantStatus) {
+			t.Errorf("%s snapshot experiment.status = %q, want %q", progressTriggersOf(spans[i]), v, wantStatus)
+		}
+	}
+	if v, _ := rootSpanAttr(spans[3], decision.AttrVerdictOutcome); v != CohortOutcomePromote {
+		t.Errorf("game_concluded verdict.outcome = %q, want %q (the verdict of this game)", v, CohortOutcomePromote)
+	}
+}
+
+// verdict.* on a game_concluded snapshot is the interim verdict computed from that
+// game, never the previous game's.
+// UC: UC-035 4
+func TestProgress_GameConcludedVerdictDoesNotLag(t *testing.T) {
+	spawner := &fakeSpawner{}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{concludeAtN: 1000, alwaysReport: true},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2,
+	})
+	startedExperiment(t, r)
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.4, 60); err != nil {
+		t.Fatal(err)
+	}
+	spans := progressSpans(sr)
+	last := spans[len(spans)-1]
+	if progressTriggersOf(last) != ProgressTriggerGameConcluded {
+		t.Fatalf("last trigger = %q, want game_concluded", progressTriggersOf(last))
+	}
+	if v, ok := rootSpanAttr(last, decision.AttrVerdictOutcome); !ok || v != OutcomeInconclusive {
+		t.Fatalf("first game_concluded verdict.outcome = %q (set %v), want %q", v, ok, OutcomeInconclusive)
+	}
+}
+
+// abortingVerdict tears every experiment down from inside Evaluate, the window
+// between the fold and the game_concluded snapshot that a concurrent AbortAll
+// (kill switch, experiments_enabled off) can hit.
+type abortingVerdict struct{ r **Registry }
+
+func (v abortingVerdict) Evaluate(journal.Summary) (journal.Verdict, bool) {
+	(*v.r).AbortAll(context.Background(), "kill switch")
+	return journal.Verdict{Outcome: OutcomeInconclusive}, true
+}
+
+// An experiment torn down between the fold and the game_concluded snapshot has
+// already emitted its terminal snapshot: no game_concluded follows it.
+// UC: UC-035 4
+func TestProgress_TornDownDuringConcludeEmitsNoGameConcluded(t *testing.T) {
+	spawner := &fakeSpawner{}
+	var reg *Registry
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: abortingVerdict{r: &reg},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2,
+	})
+	reg = r
+	startedExperiment(t, r)
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		ProgressTriggerStarted,
+		ProgressTriggerGameAssigned, ProgressTriggerGameAssigned,
+		ProgressTriggerTerminal,
+	}
+	if got := progressTriggers(sr); !equalTriggers(got, want) {
+		t.Fatalf("UC-035/4 triggers = %v, want %v (no game_concluded after terminal)", got, want)
+	}
+}
+
+// A pattern experiment whose pin cannot be restored is discarded on rehydrate: it
+// emits only its terminal snapshot, never a rehydrate snapshot with status running.
+// UC: UC-046 BR-015
+func TestProgress_LostPinRehydrateEmitsOnlyTerminal(t *testing.T) {
+	root := t.TempDir()
+	r1 := newTestRegistry(t, RegistryConfig{Root: root, MaxShadowGames: 2, Spawner: &fakeSpawner{}})
+	id := startedExperiment(t, r1)
+	r1.AllocateAndSpawn(context.Background()) // a game assigned with no pin
+
+	r2, sr2 := rootSpanRegistry(t, RegistryConfig{Root: root, MaxShadowGames: 2, Spawner: &patternSpawner{},
+		Patterns: &queuePinner{pins: []patterngame.Pin{testPin(t, "a")}}})
+	if err := r2.Rehydrate([]string{id}); err != nil {
+		t.Fatal(err)
+	}
+	if got := progressTriggers(sr2); !equalTriggers(got, []string{ProgressTriggerTerminal}) {
+		t.Fatalf("UC-046/BR-015 triggers after a lost-pin rehydrate = %v, want [terminal]", got)
+	}
+}
+
+// hookSpawner runs onSpawn (once) inside its first Spawn call: after the pair's
+// slots are reserved, before any game is bound.
+type hookSpawner struct {
+	fakeSpawner
+	onSpawn func()
+}
+
+func (h *hookSpawner) Spawn(ctx context.Context, experimentID, arm string, seed uint64) (string, error) {
+	if f := h.onSpawn; f != nil {
+		h.onSpawn = nil
+		f()
+	}
+	return h.fakeSpawner.Spawn(ctx, experimentID, arm, seed)
+}
+
+// experiment.arm_stats.assigned counts bound in-flight games only: a pending spawn
+// reservation is not a game yet.
+// UC: UC-035 4
+func TestProgress_AssignedExcludesSpawnReservations(t *testing.T) {
+	spawner := &hookSpawner{}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{concludeAtN: 1000}, Targeting: &fakeTargeting{},
+		MaxShadowGames: 2,
+	})
+	id := startedExperiment(t, r)
+	reserved := 0
+	spawner.onSpawn = func() {
+		r.mu.Lock()
+		for gid := range r.entries[id].games {
+			if isReservation(gid) {
+				reserved++
+			}
+		}
+		r.mu.Unlock()
+		r.ProgressHeartbeat()
+	}
+	r.AllocateAndSpawn(context.Background())
+	if reserved == 0 {
+		t.Fatal("no spawn reservation pending inside Spawn; the test does not cover the exclusion")
+	}
+	var hb []sdktrace.ReadOnlySpan
+	for _, s := range progressSpans(sr) {
+		if progressTriggersOf(s) == ProgressTriggerHeartbeat {
+			hb = append(hb, s)
+		}
+	}
+	if len(hb) != 1 {
+		t.Fatalf("heartbeat snapshots = %d, want 1", len(hb))
+	}
+	for arm, a := range armEvents(t, hb[0]) {
+		if a.assigned != 0 {
+			t.Errorf("arm %s assigned = %d with only reservations pending, want 0", arm, a.assigned)
+		}
+	}
 }

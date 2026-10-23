@@ -62,11 +62,14 @@ func (t *flagStateTracker) claim(digest uint64) (string, bool) {
 }
 
 // flagStateDigest hashes the whole effective snapshot plus the partition's game mode
-// and kind. Every Snapshot field is a value, slice or map (fmt prints maps sorted),
-// so equal snapshots render equal.
-func flagStateDigest(snapshot flags.Snapshot, gameMode, gameKind string) uint64 {
+// and kind, and whether the in-game parent is known. Every Snapshot field is a value,
+// slice or map (fmt prints maps sorted), so equal snapshots render equal. The parent
+// bit re-emits the span once the game_trace_correlation ids arrive after the
+// partition's first cycle (a trace Export can open the partition first), so the
+// game trace gets its agent.flag_state even when the snapshot never changes.
+func flagStateDigest(snapshot flags.Snapshot, gameMode, gameKind string, inGameParent bool) uint64 {
 	h := fnv.New64a()
-	_, _ = fmt.Fprintf(h, "%+v\x00%s\x00%s", snapshot, gameMode, gameKind)
+	_, _ = fmt.Fprintf(h, "%+v\x00%s\x00%s\x00%t", snapshot, gameMode, gameKind, inGameParent)
 	return h.Sum64()
 }
 
@@ -81,18 +84,17 @@ func (l *Loop) evaluateFlags(ctx context.Context) (flags.Snapshot, *flagEventBuf
 }
 
 // emitFlagState emits agent.flag_state when the snapshot is the partition's first or
-// differs from the last one emitted. It runs before the kill-switch short-circuit so
+// differs from the last one emitted (including the in-game parent becoming known). It runs before the kill-switch short-circuit so
 // enabled=false is visible. Parent: remote child of the game's game_cycle with the
 // inGameRemoteParent fallback (UC-040 BR-013), else its own root.
 func (l *Loop) emitFlagState(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, events *flagEventBuffer) {
 	mode := derefStr(c.Session.GameMode)
-	trigger, emit := l.flagState.claim(flagStateDigest(snapshot, mode, c.GameKind))
+	parentCtx, inGameParent := inGameRemoteParent(ctx, c.GameTraceID, c.GameTraceSpanID, c.GameplayPhaseSpanID, c.GameCycleSpanID)
+	trigger, emit := l.flagState.claim(flagStateDigest(snapshot, mode, c.GameKind, inGameParent))
 	if !emit {
 		return
 	}
-	if parentCtx, ok := inGameRemoteParent(ctx, c.GameTraceID, c.GameTraceSpanID, c.GameplayPhaseSpanID, c.GameCycleSpanID); ok {
-		ctx = parentCtx
-	}
+	ctx = parentCtx // ctx itself when no in-game parent is known
 	_, span := l.Tracer.Start(ctx, SpanFlagState, trace.WithAttributes(flagStateAttributes(snapshot, c, mode, trigger)...))
 	events.replay(span)
 	span.End()

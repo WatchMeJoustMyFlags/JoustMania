@@ -28,13 +28,16 @@ const (
 	AttrExperimentProgressTrigger = "experiment.progress.trigger"
 	// AttrExperimentEndReason is the teardown reason, on the terminal snapshot only.
 	AttrExperimentEndReason = "experiment.end_reason"
-	// AttrExperimentArmAssigned is the number of games bound to the arm and still in
-	// flight (not concluded, not released; a spawn reservation does not count).
-	AttrExperimentArmAssigned = "experiment.arm.assigned"
+	// AttrExperimentArmAssigned is a point-in-time count of the games bound to the arm
+	// and still in flight (not concluded, not released; a spawn reservation does not
+	// count). Not cumulative: 0 on the terminal snapshot, teardown clears the in-flight
+	// map. The arm_stats namespace keeps experiment.arm a plain attribute, never also a
+	// prefix (OTel attribute naming).
+	AttrExperimentArmAssigned = "experiment.arm_stats.assigned"
 	// AttrExperimentArmSamples / AttrExperimentArmMeanFitness are the journal
 	// summary's per-arm count and mean: only games the journal folded count.
-	AttrExperimentArmSamples     = "experiment.arm.samples"
-	AttrExperimentArmMeanFitness = "experiment.arm.mean_fitness"
+	AttrExperimentArmSamples     = "experiment.arm_stats.samples"
+	AttrExperimentArmMeanFitness = "experiment.arm_stats.mean_fitness"
 
 	// attrLinkKind / linkKindExperiment label the Link to agent.experiment.
 	attrLinkKind       = "link.kind"
@@ -44,6 +47,8 @@ const (
 	ProgressTriggerGameAssigned  = "game_assigned"
 	ProgressTriggerGameConcluded = "game_concluded"
 	ProgressTriggerGameReleased  = "game_released"
+	ProgressTriggerConcluded     = "concluded"
+	ProgressTriggerPromoting     = "promoting"
 	ProgressTriggerTerminal      = "terminal"
 	ProgressTriggerRehydrate     = "rehydrate"
 	ProgressTriggerHeartbeat     = "heartbeat"

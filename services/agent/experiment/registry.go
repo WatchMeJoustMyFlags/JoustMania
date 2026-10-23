@@ -1236,8 +1236,6 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 		Fitness:   &f,
 		DurationS: durationS,
 	})
-	// #2059: after the fold, so the snapshot counts exactly the folded games.
-	r.emitProgressLocked(e, ProgressTriggerGameConcluded, "", e.spanCtx)
 	jrnl := e.journal
 	r.mu.Unlock()
 
@@ -1257,6 +1255,14 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 			})
 		}
 	}
+	// #2059: after the fold AND the interim verdict, so the snapshot counts exactly
+	// the folded games and its verdict.* is this game's. An experiment torn down in
+	// between (AbortAll) already emitted its terminal snapshot.
+	r.mu.Lock()
+	if e := r.entries[id]; e != nil && !e.status.IsTerminal() {
+		r.emitProgressLocked(e, ProgressTriggerGameConcluded, "", e.spanCtx)
+	}
+	r.mu.Unlock()
 
 	r.log.Info("experiment.game_concluded",
 		"experiment_id", id, "game_id", gameID, "arm", arm, "fitness", fitness)
@@ -1481,6 +1487,7 @@ func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verd
 		Note:    "target N reached / verdict " + verdict.Outcome,
 		Verdict: &finalVerdict,
 	})
+	r.emitProgressLocked(e, ProgressTriggerConcluded, "", e.spanCtx) // #2059
 	jrnl := e.journal
 	flagKey := e.flagKey
 	r.mu.Unlock()
@@ -1563,6 +1570,7 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 	if errors.Is(journalErr, journal.ErrSummaryWrite) {
 		journalErr = nil
 	}
+	r.emitProgressLocked(e, ProgressTriggerPromoting, "", e.spanCtx) // #2059
 	// #1188: re-parent the code_improvement.promote span as the experiment's TERMINAL
 	// child. The promote span is started from the ctx passed to Promoter.Promote, so
 	// installing the still-live experiment ROOT span on the ctx (an in-process

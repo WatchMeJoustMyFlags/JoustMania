@@ -219,3 +219,33 @@ func TestFlagState_EventsStillReachTheCallersSpan(t *testing.T) {
 		t.Fatalf("outer span events = %v, want the 2 evaluation events", o)
 	}
 }
+
+// The partition's first cycle can run before the game_trace_correlation ids arrive
+// (a trace Export opens it first): that span is its own root, and the span is emitted
+// again, under game_cycle, once the parent is known, even with an unchanged snapshot.
+// UC: UC-040 BR-013
+func TestFlagState_ReEmittedOnceTheGameParentIsKnown(t *testing.T) {
+	l, sr, _ := newTestLoop(t)
+	withParent := gameCycleCtx("game_fs08")
+	noParent := withParent
+	noParent.GameTraceID, noParent.GameTraceSpanID, noParent.GameplayPhaseSpanID, noParent.GameCycleSpanID = "", "", "", ""
+
+	l.OnEvaluate(context.Background(), noParent, testTrigger())
+	l.OnEvaluate(context.Background(), withParent, testTrigger())
+	l.OnEvaluate(context.Background(), withParent, testTrigger()) // unchanged: nothing more
+
+	spans := flagStateSpans(sr)
+	if len(spans) != 2 {
+		t.Fatalf("UC-040/BR-013 agent.flag_state = %d, want 2 (own root, then under game_cycle)", len(spans))
+	}
+	if spans[0].Parent().IsValid() {
+		t.Errorf("first span parent = %s, want its own root", spans[0].Parent().SpanID())
+	}
+	parent := spans[1].Parent()
+	if !parent.IsRemote() || parent.SpanID().String() != hubGameCycleSpanID || parent.TraceID().String() != withParent.GameTraceID {
+		t.Fatalf("second span parent = %s/%s (remote %v), want remote game_cycle %s", parent.TraceID(), parent.SpanID(), parent.IsRemote(), hubGameCycleSpanID)
+	}
+	if v, _ := attrValue(spans[1], AttrFlagStateTrigger); v.AsString() != FlagStateTriggerChanged {
+		t.Errorf("second trigger = %q, want %q", v.AsString(), FlagStateTriggerChanged)
+	}
+}
