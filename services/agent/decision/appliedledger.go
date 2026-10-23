@@ -97,7 +97,9 @@ func present(c gamecontext.GameContext, serial string) bool {
 
 // check reports whether d repeats the value recorded for its key at now, and whether
 // that is the first suppression against the entry. It drops every entry whose serial
-// left the game and the key's entry when it has expired. It reserves nothing.
+// left the game and the key's entry when it has expired. While a write to the key is
+// in flight the value on the flag service is unknown, so it never matches (a
+// different value may land last). It reserves nothing.
 func (al *appliedLedger) check(c gamecontext.GameContext, d Decision, now time.Time) (match, first bool) {
 	al.mu.Lock()
 	defer al.mu.Unlock()
@@ -107,6 +109,9 @@ func (al *appliedLedger) check(c gamecontext.GameContext, d Decision, now time.T
 		}
 	}
 	key := appliedKey(d)
+	if al.inflight[key] > 0 {
+		return false, false
+	}
 	e, ok := al.entries[key]
 	if !ok {
 		return false, false
@@ -165,13 +170,14 @@ func (al *appliedLedger) end(f *appliedFlight, wrote bool, err error, now time.T
 }
 
 // values returns the live (unexpired) entries at now as key -> normalised value, nil
-// when there are none. It takes only the ledger's own mutex.
+// when there are none. A key with a write in flight is left out, as in check. It
+// takes only the ledger's own mutex.
 func (al *appliedLedger) values(now time.Time) map[string]string {
 	al.mu.Lock()
 	defer al.mu.Unlock()
 	var out map[string]string
 	for k, e := range al.entries {
-		if !now.Before(e.at.Add(appliedLedgerTTL)) {
+		if !now.Before(e.at.Add(appliedLedgerTTL)) || al.inflight[k] > 0 {
 			continue
 		}
 		if out == nil {

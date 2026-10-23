@@ -158,14 +158,15 @@ func dangerNarrative(p PlayerState, ranked int) string {
 const ShieldWindow = 10 * time.Second
 
 // recentlyShielded returns the serials a grant_shield / toughness_boost was
-// dispatched to (not blocked) within ShieldWindow before c.UpdatedAt. A
+// dispatched to (not blocked, not already in place: UC-040 A35) within
+// ShieldWindow before c.UpdatedAt. A
 // grant_shield to a charged player does not count: in trigger mode it gave a
 // charge, which is no protection until the player activates it (#1870). A
 // toughness_boost is protection in either mode.
 func recentlyShielded(c gamecontext.GameContext, charged map[string]bool) map[string]bool {
 	out := map[string]bool{}
 	for _, e := range c.Timeline {
-		if e.Kind != gamecontext.EventIntervention || e.Blocked || e.Serial == "" ||
+		if e.Kind != gamecontext.EventIntervention || e.Blocked || e.InPlace || e.Serial == "" ||
 			(e.Detail != "grant_shield" && e.Detail != "toughness_boost") {
 			continue
 		}

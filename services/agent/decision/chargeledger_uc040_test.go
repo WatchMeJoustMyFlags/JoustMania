@@ -14,7 +14,7 @@ import (
 )
 
 // chargeledger_uc040_test.go covers the agent's shield-charge ledger (UC-040 A31 step 1,
-// BR-019, BR-020; decide-contract §4.5 step 3; #1837 PR-4a): in trigger mode the agent
+// BR-019, BR-020; decide-contract §4.5 step 4; #1837 PR-4a): in trigger mode the agent
 // gives a player at most one shield charge per window, blocks a second grant_shield
 // already_charged before the rate limit, keeps an entry only for an applied write, and
 // stays inert outside a real Free-for-All game in trigger mode.

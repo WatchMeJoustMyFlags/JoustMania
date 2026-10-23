@@ -267,6 +267,32 @@ func TestAlreadyApplied_OverlapDeletesEntry(t *testing.T) {
 		l.runDecision(context.Background(), snap, c, sens("WEAK", "0.8"), *clock, &next)
 		expectOutcome(t, next, "adjust_player_sensitivity/WEAK:dispatched")
 	})
+	t.Run("UC-040/A35 a recorded value is written again while a different value is in flight", func(t *testing.T) {
+		l, _, clock, _ := appliedLoop(t)
+		snap := l.Flags.Evaluate(context.Background())
+		c := budgetCtx()
+		var rec LayerState
+		l.runDecision(context.Background(), snap, c, sens("WEAK", "0.8"), *clock, &rec)
+		expectOutcome(t, rec, "adjust_player_sensitivity/WEAK:dispatched")
+		sink := &blockingSink{entered: make(chan struct{}), release: make(chan struct{})}
+		l.Actions = sink
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			var st LayerState
+			l.runDecision(context.Background(), snap, c, sens("WEAK", "1.5"), *clock, &st)
+		}()
+		<-sink.entered
+		if _, ok := l.AppliedValues()[appliedKey(sens("WEAK", "0.8"))]; ok {
+			t.Errorf("AppliedValues lists WEAK while 1.5 is in flight; the rules would drop 0.8")
+		}
+		// 1.5 may land after this decision: the value on the flag service is unknown.
+		var next LayerState
+		l.runDecision(context.Background(), snap, c, sens("WEAK", "0.8"), *clock, &next)
+		close(sink.release)
+		<-done
+		expectOutcome(t, next, "adjust_player_sensitivity/WEAK:dispatched")
+	})
 	t.Run("UC-040/A35 concurrent identical decisions are all safe under -race", func(t *testing.T) {
 		l, sink, clock, _ := appliedLoop(t)
 		snap := l.Flags.Evaluate(context.Background())

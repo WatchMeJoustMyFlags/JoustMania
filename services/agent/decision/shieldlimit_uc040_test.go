@@ -15,7 +15,7 @@ import (
 )
 
 // shieldlimit_uc040_test.go covers the agent's shield cap and cooldown per player per
-// game (UC-040 A33, BR-022; decide-contract §4.5 step 3; #2044): the merged shield
+// game (UC-040 A33, BR-022; decide-contract §4.5 step 4; #2044): the merged shield
 // ledger refuses a grant_shield shield_cap_reached or shield_cooldown before the rate
 // limit, releases every reservation that was not written, keeps a pending grant from
 // passing the cooldown, and refuses nothing at 0/0.
