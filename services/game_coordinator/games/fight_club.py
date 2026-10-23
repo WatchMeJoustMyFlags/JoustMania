@@ -515,7 +515,7 @@ class FightClubGame(BaseGameMode):
                     effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                 )
             )
-            await self.gameplay_stream.write(effect_cmd)
+            await self._write_end_effect(effect_cmd)
 
         # Play victory sound (audio service handles voice selection)
         await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)

@@ -265,8 +265,9 @@ class FFAGame(BaseGameMode):
                     trace_state=trace_state,
                 )
             )
-            await self.gameplay_stream.write(effect_cmd)
-            logger.info(f"WINNER_RAINBOW effect sent for {winner_serial}")
+            # Skipped with a warning when the server already ended the stream (UC-020 BR-003, #1956)
+            if await self._write_end_effect(effect_cmd):
+                logger.info(f"WINNER_RAINBOW effect sent for {winner_serial}")
             await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)
         else:
             logger.warning(

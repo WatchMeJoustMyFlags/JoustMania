@@ -852,6 +852,58 @@ class TestGameplayStreamRelease:
             "the stream closed before the winner effect arrived"
         )
 
+    @pytest.mark.uc("UC-020", flow="main", steps=[6], br=["BR-003"])
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("frame_server", ["end", "abort"], indirect=True)
+    async def test_server_ending_the_stream_after_the_win_keeps_the_winner(self, frame_server):
+        """The controller manager ends the call after the win: the outcome stays winner, no game_error (#1956)."""
+        from services.game_coordinator.games.ffa import FFAGame
+
+        events = []
+
+        async def publish(event_type, _data=None, *_args, **_kwargs):
+            events.append(str(event_type))
+
+        game = FFAGame(
+            controller_manager_client=frame_server.stub,
+            event_publisher=publish,
+            game_id="test_stream_ended_after_win_ffa",
+            initial_players=[game_coordinator_pb2.Player(serial=s) for s in self.SERIALS],
+        )
+        game._countdown = _async_noop
+        game._wait_for_rainbow_effect = _async_noop
+        frame_server.fault_trigger = asyncio.Event()
+        frames = []
+        real_process = game._process_gameplay_update
+
+        async def process(update):
+            frames.append(update.timestamp)
+            if len(frames) == 3:
+                for serial in self.SERIALS[1:]:
+                    game.players[serial].alive = False
+            return await real_process(update)
+
+        async def server_ends_the_call():
+            # Teardown starts after the win latch: the server ends the call before the
+            # rainbow, and the client has read up to its status (the call is done).
+            frame_server.fault_trigger.set()
+            with contextlib.suppress(grpc.aio.AioRpcError):
+                async for _ in game.gameplay_stream:
+                    pass
+            assert game.gameplay_stream.done(), "the server did not end the call"
+
+        game._process_gameplay_update = process
+        game._stop_game_music = server_ends_the_call
+        await asyncio.wait_for(game.run(), timeout=10)
+
+        assert frame_server.faulted.is_set()
+        assert game.game_outcome() == "winner"
+        assert GameEvent.GAME_WINNER.value in events
+        assert GameEvent.GAME_ENDED.value in events
+        assert GameEvent.GAME_ERROR.value not in events
+        assert len(frame_server.opened) == 1, "a game past its win opened a second gameplay call"
+
     @pytest.mark.uc("UC-026", flow="main", steps=[3])
     @pytest.mark.uc("UC-030", br=["BR-006"])
     @pytest.mark.asyncio
