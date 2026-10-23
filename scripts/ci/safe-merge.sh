@@ -91,6 +91,7 @@ done
 # All arguments are validated here, before any wait or merge step (#2036).
 [[ -z "$CFILE" || -n "$CLOSE" ]] || { echo "--comment-file needs --close" >&2; exit 2; }
 [[ -n "$NOTE_ISSUE" && -z "$NFILE" ]] && { echo "--note-issue needs --note-file" >&2; exit 2; }
+[[ -n "$NFILE" && -z "$NOTE_ISSUE" ]] && { echo "--note-file needs --note-issue" >&2; exit 2; }
 for f in "$CFILE" "$NFILE"; do [[ -z "$f" || -r "$f" ]] || { echo "cannot read $f" >&2; exit 2; }; done
 
 POLL="${SAFE_MERGE_POLL:-75}"

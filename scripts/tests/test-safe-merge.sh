@@ -33,6 +33,7 @@ echo "gh $*" >>"$STUB_DIR/calls"
 case "$1 $2" in
   "pr view")
     if [[ "$*" == *"statusCheckRollup"* ]]; then cat "$STUB_DIR/view.json"; exit 0; fi
+    if [[ "$*" == *"--json title"* && -f "$STUB_DIR/title-fail" ]]; then exit 1; fi
     jqexpr=""; prev=""
     for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
     jq -r "$jqexpr" "$STUB_DIR/after-merge.json" ;;
@@ -174,6 +175,8 @@ run 42 abcdef1 --comment-file "${WORK}/comment.md"
 # #2036: arguments are validated before any gh call (a wait would come first).
 run 42 abcdef1 --close 7 --note-issue 9
 [[ $RC -eq 2 && -z "$(calls)" ]] || fail "--note-issue without --note-file: rc=$RC calls=$(calls)"
+run 42 abcdef1 --close 7 --note-file "${WORK}/note.md"
+[[ $RC -eq 2 && -z "$(calls)" ]] || fail "--note-file without --note-issue: rc=$RC calls=$(calls)"
 for bad in '7;id' '7,' '*' '7 8' '' ','; do
   run 42 abcdef1 --close "$bad" --comment-file "${WORK}/comment.md"
   [[ $RC -eq 2 ]] || fail "--close '$bad' must be rejected: exit $RC ($OUT)"
@@ -452,6 +455,13 @@ run 42 abcdef1 --close 7,8
 [[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* && "$OUT" == *"closed #7"* ]] || fail "default close comment: rc=$RC $OUT"
 calls | grep -qF 'issue close 7 --comment Done in #42: fix: the title' || fail "default comment text: $(calls)"
 calls | grep -qF 'issue close 8 --comment Done in #42: fix: the title' || fail "default comment text for 8: $(calls)"
+ok
+
+# The title read fails: the default comment is exactly "Done in #<PR>", no ": ".
+reset; view "$GREEN"; touch "${STUB_DIR}/title-fail"
+run 42 abcdef1 --close 7
+[[ $RC -eq 0 && "$OUT" == *"closed #7"* ]] || fail "title read fails: rc=$RC $OUT"
+calls | grep -qxF 'gh issue close 7 --comment Done in #42' || fail "comment without title must be exactly 'Done in #42': $(calls)"
 ok
 
 echo "test-safe-merge: ${pass} groups passed"

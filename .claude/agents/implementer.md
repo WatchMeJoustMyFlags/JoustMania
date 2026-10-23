@@ -150,6 +150,7 @@ Exactly the skill's report (15 lines or fewer, hand back once), with these two l
 Labels: <added per brief | none added; PR needs: <labels>>
 Gates: <gate-runner summary: PASS n / FAIL n / SKIP n; failing gate names>; logs <dir>
 ```
+`logs <dir>` is the directory you gave gate-runner; the logs land in `<dir>/<worktree>-<head8>/`.
 `PR needs:` lists every label the PR must carry. Name `no-spec-change` whenever the diff changes
 `services/**`, `lib/**` or `proto/**` but no spec under `docs/`: without that label the Spec Gate's
 "Spec touched" step fails the PR.
