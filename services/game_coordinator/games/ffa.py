@@ -43,6 +43,9 @@ class FFAGame(BaseGameMode):
     # UC-040 BR-019: the only mode where shield.activation=trigger applies (#1837).
     SHIELD_TRIGGER_ALLOWED = True
 
+    # Set by the win check that publishes the result (UC-020 BR-003, #2020).
+    _win_latched: bool = False
+
     def get_game_name(self) -> str:
         """Return game mode identifier."""
         return "FFA"
@@ -98,27 +101,38 @@ class FFAGame(BaseGameMode):
         """
         Check if game has a winner (last player standing).
 
+        The result is latched once, before ``game_winner`` / ``game_tie`` is
+        published (UC-020 BR-003, #2020): the root-span outcome is latched first,
+        because force_end() runs on the servicer thread and can land after the
+        ``force_ended`` check (also while the last kill awaited its explosion).
+        A force-ended game publishes nothing; a later call does not republish.
+
         Returns:
             True if game should end, False otherwise
         """
-        alive_players = [p for p in self.players.values() if p.alive]
-
-        if len(alive_players) <= 1:
-            # Game over - we have a winner (or tie if 0)
-            if len(alive_players) == 1:
-                winner = alive_players[0]
-                logger.info(f"Winner: {winner.serial}")
-
-                await self.event_publisher(GameEvent.GAME_WINNER, {"serial": winner.serial})
-
-            elif len(alive_players) == 0:  # NOSONAR — intentional: outer if guarantees <=1, this distinguishes 0 from 1
-                logger.info("No winner - all players died simultaneously")
-
-                await self.event_publisher(GameEvent.GAME_TIE, {})
-
+        if self._win_latched:
             return True
+        if self.force_ended:
+            return False
 
-        return False
+        alive_players = [p for p in self.players.values() if p.alive]
+        if len(alive_players) > 1:
+            return False
+
+        self._latch_game_outcome()
+        if self.game_outcome() == "force_ended":
+            return False
+        self._win_latched = True
+
+        if alive_players:
+            winner = alive_players[0]
+            logger.info(f"Winner: {winner.serial}")
+            await self.event_publisher(GameEvent.GAME_WINNER, {"serial": winner.serial})
+        else:
+            logger.info("No winner - all players died simultaneously")
+            await self.event_publisher(GameEvent.GAME_TIE, {})
+
+        return True
 
     async def _kill_player_impl(self, serial: str, accel_mag: float):  # noqa: ARG002
         """

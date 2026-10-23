@@ -3491,9 +3491,13 @@ class BaseGameMode(ABC):
         declined at the first check), and
         ``_kill_player`` returns False. True means
         the kill passed the gate, not that the mode's handler applied it. Default:
-        always (Swapper declines once its win is latched, UC-024 BR-004).
+        until the game's outcome is latched; after that no kill is taken, so a kill
+        during the post-win hold or teardown counts nothing and cannot change a
+        decided result (UC-030 step 9, UC-020 BR-003, UC-026 BR-003; #2019). Modes
+        with their own gate (Swapper, Fight Club, Tournament) decline after their
+        own latch.
         """
-        return True
+        return self._latched_outcome is None
 
     async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion") -> bool:
         """
