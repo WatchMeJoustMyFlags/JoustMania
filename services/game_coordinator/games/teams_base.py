@@ -118,6 +118,12 @@ class TeamsGameBase(BaseGameMode):
         # Team tracking
         self.team_colors = TEAM_COLORS[:num_teams]
 
+        # The result, latched once in the step that decides it (UC-021 BR-003,
+        # UC-022 BR-005, #2003). ``_latched_team`` None with ``_win_latched`` is a tie;
+        # nothing latched (force-end, stream end) means no winner.
+        self._win_latched = False
+        self._latched_team: int | None = None
+
         # Initialize team objects
         for i in range(num_teams):
             self.teams[i] = Team(team_num=i, name=self.team_colors[i]["name"], color=self.team_colors[i]["rgb"])
@@ -335,44 +341,72 @@ class TeamsGameBase(BaseGameMode):
                 alive_teams.add(player.team)
         return alive_teams
 
+    def _latch_team_result(self, winning_team: int | None) -> bool:
+        """Latch the result (a team, or None for a tie) and the root-span outcome.
+
+        Synchronous, no await: called in the step that decides the result and
+        before its event is published, so a force-end that lands afterwards (same
+        tick, the publish, the hold, the rainbow) keeps it (UC-021 BR-003).
+
+        The outcome is latched first: force_end() runs on the servicer thread, so it
+        can land between the caller's ``force_ended`` check and this call. When the
+        latched outcome is ``force_ended`` no result is latched and the caller
+        publishes nothing.
+
+        Returns:
+            True if the result was latched, False if the game was force-ended.
+        """
+        self._latch_game_outcome()
+        if self.game_outcome() == "force_ended":
+            return False
+        self._win_latched = True
+        self._latched_team = winning_team
+        return True
+
     async def _check_win_condition(self) -> bool:
         """
         Check if a team has won.
 
+        The result is latched once (UC-021 BR-003): later calls do not republish
+        it, and a force-ended game latches and publishes none.
+
         Returns:
             True if game should end (<=1 team remaining), False otherwise
         """
-        alive_teams = self._get_alive_teams()
-
-        if len(alive_teams) <= 1:
-            # Game over - we have a winning team (or tie if 0)
-            if len(alive_teams) == 1:
-                winning_team = list(alive_teams)[0]
-                team_name = self.team_colors[winning_team]["name"]
-
-                # Get winning players
-                winners = [p.serial for p in self.players.values() if p.alive and p.team == winning_team]
-
-                logger.info(f"Team {winning_team} ({team_name}) wins with {len(winners)} players!")
-
-                await self.event_publisher(
-                    "team_winner",
-                    {
-                        "team": winning_team,
-                        "team_name": team_name,
-                        "team_color": str(self.team_colors[winning_team]["rgb"]),
-                        "winning_players": winners,
-                        "winner_count": len(winners),
-                    },
-                )
-
-            elif len(alive_teams) == 0:  # NOSONAR — intentional: outer if guarantees <=1, this distinguishes 0 from 1
-                logger.info("No winner - all players died simultaneously")
-                await self.event_publisher(GameEvent.GAME_TIE, {})
-
+        if self._win_latched:
             return True
+        if self.force_ended:
+            return False
 
-        return False
+        alive_teams = self._get_alive_teams()
+        if len(alive_teams) > 1:
+            return False
+
+        winning_team = self._get_winning_team_num(alive_teams)
+        if not self._latch_team_result(winning_team):
+            return False
+
+        if winning_team is not None:
+            team_name = self.team_colors[winning_team]["name"]
+            winners = [p.serial for p in self.players.values() if p.alive and p.team == winning_team]
+
+            logger.info(f"Team {winning_team} ({team_name}) wins with {len(winners)} players!")
+
+            await self.event_publisher(
+                "team_winner",
+                {
+                    "team": winning_team,
+                    "team_name": team_name,
+                    "team_color": str(self.team_colors[winning_team]["rgb"]),
+                    "winning_players": winners,
+                    "winner_count": len(winners),
+                },
+            )
+        else:
+            logger.info("No winner - all players died simultaneously")
+            await self.event_publisher(GameEvent.GAME_TIE, {})
+
+        return True
 
     async def _kill_player_impl(self, serial: str, accel_mag: float):  # noqa: ARG002
         """
@@ -575,26 +609,30 @@ class TeamsGameBase(BaseGameMode):
         logger.info("Ending game...")
         self.state = self.state.__class__.ENDING
 
+        # Only the latched result counts (UC-021 BR-003): a force-end before it, or a
+        # stream end without one, declares no winner and shows no winner effects.
+        force_ended = self.game_outcome() == "force_ended"
+        winning_team_num = None if force_ended else self._latched_team
         alive_teams = self._get_alive_teams()
-        winning_team_num = self._get_winning_team_num(alive_teams)
 
         if winning_team_num is not None:
             await self._send_winner_rainbow_effects(winning_team_num)
             await self._play_team_victory_sound(winning_team_num)
-
-        await self._wait_for_rainbow_effect()
+            await self._wait_for_rainbow_effect()
 
         self._end_surviving_player_spans(winning_team_num)
         await self._publish_player_analytics(winning_team_num)
         self._end_surviving_team_spans(alive_teams, winning_team_num)
 
         self.state = self.state.__class__.ENDED
-        await self.event_publisher(
-            GameEvent.GAME_ENDED,
-            {
-                "game_id": self.game_id,
-                "duration": time.time() - self.start_time if self.start_time else 0,
-            },
-        )
+        ended_payload = {
+            "game_id": self.game_id,
+            "duration": time.time() - self.start_time if self.start_time else 0,
+            "winning_team": winning_team_num if winning_team_num is not None else "none",
+            "outcome": self.game_outcome(),
+        }
+        if force_ended:
+            ended_payload["reason"] = self.force_end_reason
+        await self.event_publisher(GameEvent.GAME_ENDED, ended_payload)
 
         logger.info("Game ended")

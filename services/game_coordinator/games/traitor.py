@@ -343,9 +343,17 @@ class TraitorGame(TeamsGameBase):
         A player's effective team is their secret_team (which equals their
         visible team for non-traitors).
 
+        The result is latched once (UC-022 BR-005): later calls do not republish
+        it, and a force-ended game latches and publishes none.
+
         Returns:
             True if game should end, False otherwise
         """
+        if self._win_latched:
+            return True
+        if self.force_ended:
+            return False
+
         # Count alive players by their secret team (what they actually win with)
         alive_by_secret_team: dict[int, list[str]] = {i: [] for i in range(self.num_teams)}
 
@@ -357,37 +365,39 @@ class TraitorGame(TeamsGameBase):
         # Find teams with alive players
         alive_teams = [team for team, players in alive_by_secret_team.items() if players]
 
-        if len(alive_teams) <= 1:
-            # Game over - we have a winning team
-            if len(alive_teams) == 1:
-                winning_team = alive_teams[0]
-                winners = alive_by_secret_team[winning_team]
-                team_name = self.team_colors[winning_team]["name"]
+        if len(alive_teams) > 1:
+            return False
 
-                logger.info(f"Team {winning_team} ({team_name}) wins with {len(winners)} players!")
+        # Latched before publishing, so a force-end landing afterwards keeps it (UC-022 BR-005)
+        winning_team = alive_teams[0] if alive_teams else None
+        if not self._latch_team_result(winning_team):
+            return False
 
-                # Identify which winners were traitors
-                traitor_winners = [s for s in winners if s in self.traitor_serials]
-                loyal_winners = [s for s in winners if s not in self.traitor_serials]
+        if winning_team is not None:
+            winners = alive_by_secret_team[winning_team]
+            team_name = self.team_colors[winning_team]["name"]
 
-                await self.event_publisher(
-                    "traitor_winner",
-                    {
-                        "team": winning_team,
-                        "team_name": team_name,
-                        "winners": winners,
-                        "traitor_winners": traitor_winners,
-                        "loyal_winners": loyal_winners,
-                    },
-                )
+            logger.info(f"Team {winning_team} ({team_name}) wins with {len(winners)} players!")
 
-            else:
-                logger.info("No winner - all players died")
-                await self.event_publisher("game_tie", {})
+            # Identify which winners were traitors
+            traitor_winners = [s for s in winners if s in self.traitor_serials]
+            loyal_winners = [s for s in winners if s not in self.traitor_serials]
 
-            return True
+            await self.event_publisher(
+                "traitor_winner",
+                {
+                    "team": winning_team,
+                    "team_name": team_name,
+                    "winners": winners,
+                    "traitor_winners": traitor_winners,
+                    "loyal_winners": loyal_winners,
+                },
+            )
+        else:
+            logger.info("No winner - all players died")
+            await self.event_publisher("game_tie", {})
 
-        return False
+        return True
 
     def _player_death_event_attributes(self, serial: str) -> dict:
         """Traitor attributes on the base kill path's player_death event (#1327).
@@ -473,11 +483,12 @@ class TraitorGame(TeamsGameBase):
         logger.info("Ending Traitor game...")
         self.state = self.state.__class__.ENDING
 
-        # Determine winning team (by secret team)
-        alive_teams = self._get_alive_teams()
-        winning_team = list(alive_teams)[0] if len(alive_teams) == 1 else None
+        # Only the latched result counts (UC-022 BR-005): a force-end before it, or a
+        # stream end without one, declares no winner and shows no winner effects.
+        force_ended = self.game_outcome() == "force_ended"
+        winning_team = None if force_ended else self._latched_team
 
-        # Show rainbow effect on winners
+        # Show rainbow effect on winners (by secret team)
         if winning_team is not None and self.gameplay_stream:
             for serial, player in self.players.items():
                 traitor_player = player
@@ -493,11 +504,9 @@ class TraitorGame(TeamsGameBase):
             # Play victory sound (audio service handles voice selection)
             await self._play_sound(Sound.VOX_TRAITOR_WIN, priority=2)
 
-        # Wait for celebration
-        for _ in range(20):  # 2 seconds
-            if not self.running:
-                break
-            await asyncio.sleep(0.1)
+        # Wait for the rainbow (interruptible by a force-end); only a winner is celebrated
+        if winning_team is not None:
+            await self._wait_for_rainbow_effect()
 
         # End all player spans
         for _serial, player in self.players.items():
@@ -523,14 +532,15 @@ class TraitorGame(TeamsGameBase):
                 team.span.end()
 
         self.state = self.state.__class__.ENDED
-        await self.event_publisher(
-            "game_ended",
-            {
-                "game_id": self.game_id,
-                "duration": time.time() - self.start_time if self.start_time else 0,
-                "winning_team": winning_team if winning_team is not None else -1,
-                "traitor_count": len(self.traitor_serials),
-            },
-        )
+        ended_payload = {
+            "game_id": self.game_id,
+            "duration": time.time() - self.start_time if self.start_time else 0,
+            "winning_team": winning_team if winning_team is not None else "none",
+            "traitor_count": len(self.traitor_serials),
+            "outcome": self.game_outcome(),
+        }
+        if force_ended:
+            ended_payload["reason"] = self.force_end_reason
+        await self.event_publisher("game_ended", ended_payload)
 
         logger.info("Traitor game ended")
