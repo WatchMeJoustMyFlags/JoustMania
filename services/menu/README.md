@@ -59,7 +59,7 @@ rpc ProcessInput(ProcessInputRequest) returns (ProcessInputResponse);
 | `button_press` | `{button: "select"}` | Cycle to next game mode |
 | `web_command` | `{command: "start_game"}` | Start game from web UI |
 | `web_command` | `{command: "select_game", game_name: "..."}` | Select specific game mode |
-| `reset_menu` | `{}` | Cancel GAME_STARTING state, return to RUNNING |
+| `reset_menu` | `{}` | Cancel GAME_STARTING state, return to RUNNING; recovers a stale game lifecycle when the coordinator reports no active game (UC-010 BR-008) |
 
 ### StreamMenuEvents
 
@@ -120,7 +120,7 @@ stateDiagram-v2
     RUNNING --> STOPPED: StopMenu RPC
     RUNNING --> GAME_STARTING: All controllers ready\n(≥2 controllers)
     GAME_STARTING --> RUNNING: Game ends\n(game_ended event)
-    GAME_STARTING --> RUNNING: reset_menu input\n(game start cancelled)
+    GAME_STARTING --> RUNNING: reset_menu input, no game\nstarting/running on coordinator\n(lifecycle cancelled, lobby restored)
 
     note right of STOPPED
         No button monitoring

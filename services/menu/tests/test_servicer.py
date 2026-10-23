@@ -968,6 +968,391 @@ class TestModeMinimumPlayers:
         assert second_stream.await_args.args[2].start_config.game_name == Games.Traitor.name
 
 
+class TestStartWhileGameActive:
+    """UC-010 A8 / BR-008 (#2054): a start while a game is starting or running is refused, never cancels it."""
+
+    @staticmethod
+    async def _live_game(servicer, release: asyncio.Event):
+        """Start a game whose coordinator stream stays open until ``release`` is set; return its task."""
+        servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(servicer, "s1", "s2")
+
+        async def _open_stream(*_args, **_kwargs):
+            await release.wait()
+
+        with patch.object(type(servicer), "_run_game_event_stream", autospec=True, side_effect=_open_stream) as stream:
+            await _ready_up(servicer, "s1", "s2")
+            for _ in range(20):
+                if stream.await_count:
+                    break
+                await asyncio.sleep(0.05)
+            assert stream.await_count == 1
+            task = servicer._game_lifecycle_task
+            assert task is not None
+            assert not task.done()
+            return task, stream
+
+    @staticmethod
+    def _rejection(source: str) -> tuple[str, dict]:
+        return (
+            "game_start_rejected",
+            {"game_name": Games.JoustFFA.name, "source": source, "reason": "game_active"},
+        )
+
+    async def _assert_refused(self, servicer, task, stream, source: str, release: asyncio.Event) -> None:
+        assert servicer._game_lifecycle_task is task
+        assert not task.cancelled()
+        assert not task.done()
+        assert stream.await_count == 1
+        assert self._rejection(source) in _published(servicer)
+        # Silent while a game is starting or running (LED is the primary cue; A8).
+        assert not self._beeped(servicer)
+        release.set()
+        await task
+
+    @staticmethod
+    def _beeped(servicer) -> bool:
+        from lib.types import Sound
+
+        # The refusal beep is the only full-volume one (the ready-up beep passes volume=0.5).
+        return any(c.args == (Sound.SFX_BEEP_LOUD,) and not c.kwargs for c in servicer.audio.play_sound.await_args_list)
+
+    @staticmethod
+    def _game_state(servicer, state=None, *, success: bool = True, error: Exception | None = None) -> AsyncMock:
+        """Answer the coordinator's GetGameState through the real stub on the autospec'd channel."""
+        from proto import game_coordinator_pb2
+
+        if error is not None:
+            call = AsyncMock(side_effect=error)
+        else:
+            response = game_coordinator_pb2.GetGameStateResponse(
+                success=success, game_info=game_coordinator_pb2.GameInfo(state=state)
+            )
+            call = AsyncMock(return_value=response)
+        servicer.game_coordinator_channel.unary_unary.return_value = call
+        return call
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_ready_auto_start_mid_game_is_refused(self, real_servicer):
+        """Ready auto start path (latch cleared by a reset): the live lifecycle survives."""
+        release = asyncio.Event()
+        task, stream = await self._live_game(real_servicer, release)
+        real_servicer.ready_handler.reset_game_start_flag()
+        await _connect(real_servicer, "s3")
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as second:
+            await _ready_up(real_servicer, "s3")
+            second.assert_not_awaited()
+        await self._assert_refused(real_servicer, task, stream, "controller", release)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_trigger_button_input_mid_game_is_refused(self, real_servicer):
+        """ProcessInput trigger button mid-game."""
+        release = asyncio.Event()
+        task, stream = await self._live_game(real_servicer, release)
+        request = menu_pb2.ProcessInputRequest(input_type="button_press", data={"button": "trigger"})
+        await real_servicer.ProcessInput(request, MagicMock())
+        await self._assert_refused(real_servicer, task, stream, "button_input", release)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_web_start_game_mid_game_is_refused(self, real_servicer):
+        """ProcessInput web start_game mid-game."""
+        release = asyncio.Event()
+        task, stream = await self._live_game(real_servicer, release)
+        request = menu_pb2.ProcessInputRequest(input_type="web_command", data={"command": "start_game"})
+        await real_servicer.ProcessInput(request, MagicMock())
+        await self._assert_refused(real_servicer, task, stream, "web", release)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_admin_force_start_mid_game_is_refused(self, real_servicer):
+        """Admin force-start callback mid-game."""
+        release = asyncio.Event()
+        task, stream = await self._live_game(real_servicer, release)
+        await real_servicer.start_game("s1", source="admin_force_start", controllers=["s1", "s2"])
+        await self._assert_refused(real_servicer, task, stream, "admin_force_start", release)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_finished_lifecycle_does_not_block_next_start(self, real_servicer):
+        """BR-008: a lifecycle task that already finished is replaced, not refused."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as first:
+            await _ready_up(real_servicer, "s1", "s2")
+            await _await_lifecycle(real_servicer)
+        first.assert_awaited_once()
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as second:
+            await real_servicer.start_game("s1", source="web", controllers=["s1", "s2"])
+            await _await_lifecycle(real_servicer)
+        second.assert_awaited_once()
+        assert not any(e[0] == "game_start_rejected" for e in _published(real_servicer))
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_start_in_pre_game_starting_window_is_refused(self, real_servicer):
+        """A start in the window before GAME_STARTING (lifecycle scheduled, lobby still up) is refused silently."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.start_game("s1", source="web", controllers=["s1", "s2"])
+            task = real_servicer._game_lifecycle_task
+            assert task is not None
+            assert not task.done()
+            assert real_servicer.state == menu_pb2.MenuState.RUNNING
+            await real_servicer.start_game("s2", source="admin_force_start", controllers=["s1", "s2"])
+            assert real_servicer._game_lifecycle_task is task
+            assert self._rejection("admin_force_start") in _published(real_servicer)
+            assert not self._beeped(real_servicer)
+            await task
+        stream.assert_awaited_once()
+        assert not task.cancelled()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    @pytest.mark.uc("UC-010", flow="A4")
+    async def test_refused_ready_start_in_lobby_restart_window_then_trigger_starts(self, real_servicer):
+        """A ready auto start refused in the real _restart_lobby window beeps and clears the latch.
+
+        The lifecycle task is still restoring the lobby (lobby music pending) when every player is
+        ready again: the start is refused with a beep, the latch is cleared, and once the task has
+        finished a trigger press starts the next game.
+        """
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        music_gate = asyncio.Event()
+        in_window = asyncio.Event()
+
+        async def _music_blocks():
+            in_window.set()
+            await music_gate.wait()
+
+        async def _game_then_real_restart(servicer, *_args):
+            await servicer._restart_lobby()
+
+        real_servicer.audio.start_lobby_music.side_effect = _music_blocks
+        with patch.object(
+            type(real_servicer), "_run_game_event_stream", autospec=True, side_effect=_game_then_real_restart
+        ):
+            await _ready_up(real_servicer, "s1", "s2")
+            task = real_servicer._game_lifecycle_task
+            await asyncio.wait_for(in_window.wait(), timeout=2)
+            assert not task.done()
+            # state_manager.reset() ran: everyone is back in CONNECTED; all ready up again.
+            await _ready_up(real_servicer, "s1", "s2")
+            assert self._rejection("controller") in _published(real_servicer)
+            assert self._beeped(real_servicer)
+            assert real_servicer.ready_handler._game_start_in_progress is False
+            real_servicer.audio.start_lobby_music.side_effect = None
+            music_gate.set()
+            await task
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as second:
+            await real_servicer.on_button("s1", "trigger", True)
+            await _await_lifecycle(real_servicer)
+        second.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    @pytest.mark.parametrize("state_name", ["STARTING", "RUNNING"])
+    async def test_reset_menu_keeps_lifecycle_of_active_game(self, real_servicer, state_name):
+        """reset_menu while the coordinator reports a starting or running game keeps the lifecycle, refuses starts."""
+        from proto import game_coordinator_pb2
+
+        release = asyncio.Event()
+        task, stream = await self._live_game(real_servicer, release)
+        lookup = self._game_state(real_servicer, game_coordinator_pb2.GameState.Value(state_name))
+        await real_servicer.ProcessInput(menu_pb2.ProcessInputRequest(input_type="reset_menu"), MagicMock())
+        lookup.assert_awaited_once()
+        await real_servicer.start_game("s1", source="web", controllers=["s1", "s2"])
+        await self._assert_refused(real_servicer, task, stream, "web", release)
+        assert ("game_start_cancelled", {}) not in _published(real_servicer)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_reset_menu_lookup_failure_keeps_lifecycle(self, real_servicer):
+        """BR-008: a failed GetGameState fails closed: the lifecycle is not cancelled."""
+        release = asyncio.Event()
+        task, stream = await self._live_game(real_servicer, release)
+        self._game_state(real_servicer, error=RuntimeError("coordinator unreachable"))
+        await real_servicer.ProcessInput(menu_pb2.ProcessInputRequest(input_type="reset_menu"), MagicMock())
+        assert real_servicer._game_lifecycle_task is task
+        assert not task.done()
+        release.set()
+        await task
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_reset_menu_recovers_a_lifecycle_with_no_active_game(self, real_servicer):
+        """A lifecycle task that never finishes (the game already ended) is cancelled by reset_menu.
+
+        The lobby is restored and the next start runs a new game.
+        """
+        from proto import game_coordinator_pb2
+
+        never = asyncio.Event()
+        task, _stream = await self._live_game(real_servicer, never)
+        real_servicer.controller_events.start.reset_mock()
+        lookup = self._game_state(real_servicer, game_coordinator_pb2.GameState.ENDED)
+        await real_servicer.ProcessInput(menu_pb2.ProcessInputRequest(input_type="reset_menu"), MagicMock())
+        lookup.assert_awaited_once()
+        assert task.cancelled()
+        assert real_servicer._game_lifecycle_task is None
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        real_servicer.controller_events.start.assert_awaited_once()
+        assert ("game_start_cancelled", {}) in _published(real_servicer)
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as second:
+            await real_servicer.start_game("s1", source="web", controllers=["s1", "s2"])
+            await _await_lifecycle(real_servicer)
+        second.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_reset_menu_unsuccessful_lookup_keeps_lifecycle(self, real_servicer):
+        """BR-008: an unsuccessful GetGameState answer fails closed: the lifecycle is not cancelled."""
+        release = asyncio.Event()
+        task, _stream = await self._live_game(real_servicer, release)
+        self._game_state(real_servicer, success=False)
+        await real_servicer.ProcessInput(menu_pb2.ProcessInputRequest(input_type="reset_menu"), MagicMock())
+        assert real_servicer._game_lifecycle_task is task
+        assert not task.done()
+        assert ("game_start_cancelled", {}) not in _published(real_servicer)
+        release.set()
+        await task
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_reset_menu_ignores_a_lifecycle_replaced_during_lookup(self, real_servicer):
+        """The old lifecycle ends and a new start begins while GetGameState is in flight: the new game is kept."""
+        from proto import game_coordinator_pb2
+
+        old_release = asyncio.Event()
+        old_task, _stream = await self._live_game(real_servicer, old_release)
+        new_release = asyncio.Event()
+        new_stream_opened = asyncio.Event()
+
+        async def _new_stream(*_args, **_kwargs):
+            new_stream_opened.set()
+            await new_release.wait()
+
+        async def _lookup_while_a_new_game_starts(*_args, **_kwargs):
+            old_release.set()
+            await old_task
+            await real_servicer.start_game("s1", source="web", controllers=["s1", "s2"])
+            await asyncio.wait_for(new_stream_opened.wait(), timeout=2)
+            return game_coordinator_pb2.GetGameStateResponse(
+                success=True, game_info=game_coordinator_pb2.GameInfo(state=game_coordinator_pb2.GameState.ENDED)
+            )
+
+        real_servicer.game_coordinator_channel.unary_unary.return_value = AsyncMock(
+            side_effect=_lookup_while_a_new_game_starts
+        )
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True, side_effect=_new_stream):
+            await real_servicer.ProcessInput(menu_pb2.ProcessInputRequest(input_type="reset_menu"), MagicMock())
+            new_task = real_servicer._game_lifecycle_task
+            assert new_task is not None
+            assert new_task is not old_task
+            assert not new_task.done()
+            assert ("game_start_cancelled", {}) not in _published(real_servicer)
+            # The new game still blocks a second start.
+            await real_servicer.start_game("s2", source="admin_force_start", controllers=["s1", "s2"])
+            assert self._rejection("admin_force_start") in _published(real_servicer)
+            new_release.set()
+            await new_task
+        assert not new_task.cancelled()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_start_during_reset_menu_lobby_restore_is_refused(self, real_servicer):
+        """A start while reset_menu restores the lobby gets the A8 lobby-restart refusal (beep), then starts later."""
+        from proto import game_coordinator_pb2
+
+        never = asyncio.Event()
+        task, _stream = await self._live_game(real_servicer, never)
+        self._game_state(real_servicer, game_coordinator_pb2.GameState.ENDED)
+        music_gate = asyncio.Event()
+        in_window = asyncio.Event()
+
+        async def _music_blocks():
+            in_window.set()
+            await music_gate.wait()
+
+        real_servicer.audio.start_lobby_music.side_effect = _music_blocks
+        reset = asyncio.create_task(
+            real_servicer.ProcessInput(menu_pb2.ProcessInputRequest(input_type="reset_menu"), MagicMock())
+        )
+        await asyncio.wait_for(in_window.wait(), timeout=2)
+        assert task.cancelled()
+        restore = real_servicer._game_lifecycle_task
+        assert restore is not None
+        assert not restore.done()
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as blocked:
+            await real_servicer.start_game("s1", source="web", controllers=["s1", "s2"])
+            blocked.assert_not_awaited()
+        assert real_servicer._game_lifecycle_task is restore
+        assert self._rejection("web") in _published(real_servicer)
+        assert self._beeped(real_servicer)
+        real_servicer.audio.start_lobby_music.side_effect = None
+        music_gate.set()
+        await reset
+        assert real_servicer._game_lifecycle_task is None
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as second:
+            await real_servicer.start_game("s1", source="web", controllers=["s1", "s2"])
+            await _await_lifecycle(real_servicer)
+        second.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_second_reset_menu_during_lobby_restore_keeps_every_controller(self, real_servicer):
+        """A second reset_menu while state_manager.reset() re-registers is ignored; the first RPC ends normally."""
+        from proto import game_coordinator_pb2
+
+        never = asyncio.Event()
+        await self._live_game(real_servicer, never)
+        self._game_state(real_servicer, game_coordinator_pb2.GameState.ENDED)
+        manager = real_servicer.state_manager
+        original_connect = manager.on_controller_connected
+        in_reset = asyncio.Event()
+        reset_gate = asyncio.Event()
+
+        async def _connect_blocking(serial, *args, **kwargs):
+            if serial == "s2" and not reset_gate.is_set():
+                in_reset.set()
+                await reset_gate.wait()
+            return await original_connect(serial, *args, **kwargs)
+
+        manager.on_controller_connected = _connect_blocking
+        request = menu_pb2.ProcessInputRequest(input_type="reset_menu")
+        first = asyncio.create_task(real_servicer.ProcessInput(request, MagicMock()))
+        await asyncio.wait_for(in_reset.wait(), timeout=2)
+        assert real_servicer._lobby_restarting is True
+
+        await real_servicer.ProcessInput(request, MagicMock())
+
+        reset_gate.set()
+        await first
+        assert not first.cancelled()
+        assert manager.connected_controllers == {"s1", "s2"}
+        assert real_servicer._game_lifecycle_task is None
+        assert real_servicer._lobby_restarting is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_refusal_mid_game_after_a_lobby_restart_stays_silent(self, real_servicer):
+        """The lobby-restart beep window closes when the restore finishes: a later mid-game refusal is silent."""
+        await real_servicer._restart_lobby()
+        assert real_servicer._lobby_restarting is False
+        release = asyncio.Event()
+        task, stream = await self._live_game(real_servicer, release)
+        await real_servicer.start_game("s1", source="web", controllers=["s1", "s2"])
+        await self._assert_refused(real_servicer, task, stream, "web", release)
+
+
 class TestMenuServicerLifecycle:
     """Button monitor, game lifecycle task and shutdown on the real servicer."""
 
@@ -994,17 +1379,18 @@ class TestMenuServicerLifecycle:
         assert real_servicer._game_lifecycle_task is None
 
     @pytest.mark.asyncio
-    async def test_start_game_replaces_running_lifecycle(self, real_servicer):
-        """A new _start_game cancels a lifecycle task that is still running."""
+    async def test_start_game_keeps_running_lifecycle(self, real_servicer):
+        """A _start_game while a lifecycle task is live refuses and leaves it running (#2054)."""
         old = asyncio.create_task(asyncio.sleep(10))
         real_servicer._game_lifecycle_task = old
 
-        with patch.object(type(real_servicer), "_run_game_lifecycle", autospec=True):
+        with patch.object(type(real_servicer), "_run_game_lifecycle", autospec=True) as lifecycle:
             await real_servicer._start_game("web", source="web")
-            await _await_lifecycle(real_servicer)
 
-        assert old.cancelled()
-        assert real_servicer._game_lifecycle_task is not old
+        lifecycle.assert_not_called()
+        assert not old.cancelled()
+        assert real_servicer._game_lifecycle_task is old
+        old.cancel()
 
     @pytest.mark.asyncio
     async def test_shutdown_stops_idle_monitor_and_closes_channels(self, real_servicer):

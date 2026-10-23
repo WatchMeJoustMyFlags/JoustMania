@@ -170,6 +170,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         # Track game lifecycle task for clean shutdown
         self._game_lifecycle_task: asyncio.Task | None = None
+        # True while the lifecycle task restores the lobby after a game (UC-010 A8 lobby-restart window).
+        self._lobby_restarting = False
 
         logger.info("Menu service initialized")
 
@@ -527,7 +529,41 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         return error
 
     async def _handle_reset_menu(self) -> None:
-        """Handle reset_menu input type."""
+        """Handle reset_menu input type.
+
+        UC-010 BR-008 (#2054): reset_menu is the operator's recovery for a lifecycle task that
+        never finishes. A live task whose game is not active on the coordinator is cancelled and
+        the lobby restored; a live task with an active game is kept.
+        """
+        if self._lobby_restarting:
+            # A lobby restore (this handler's or a lifecycle's post-game one) finishes by itself;
+            # cancelling it mid state_manager.reset() would drop controllers not yet re-registered.
+            logger.info("reset_menu ignored: a lobby restore is already running")
+            return
+        task = self._game_lifecycle_task
+        if task is not None and not task.done():
+            if await self._primary_game_active():
+                logger.warning("reset_menu ignored: a game is starting or running on the coordinator")
+                return
+            if self._game_lifecycle_task is not task or task.done():
+                # The lifecycle finished (or a new start replaced it) during the lookup: nothing to recover.
+                logger.info("reset_menu ignored: the lifecycle task changed during the game-state lookup")
+                return
+            logger.warning("reset_menu: cancelling a game lifecycle task with no active game")
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            await self.event_publisher.publish("game_start_cancelled", {})
+            # The restore runs as the lifecycle task, so a start in this window gets the A8
+            # lobby-restart refusal instead of interleaving with the lobby restore.
+            restore = asyncio.create_task(self._restart_lobby())
+            self._game_lifecycle_task = restore
+            try:
+                await restore
+            finally:
+                if self._game_lifecycle_task is restore:
+                    self._game_lifecycle_task = None
+            return
         if self.state == menu_pb2.MenuState.GAME_STARTING:
             self.state = menu_pb2.MenuState.RUNNING
             await self.event_publisher.publish("game_start_cancelled", {})
@@ -587,6 +623,46 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         await self.audio_channel.close()
         logger.info("Menu service gRPC channels closed")
 
+    async def _primary_game_active(self) -> bool:
+        """Whether the coordinator's primary game is starting or running (UC-010 BR-008).
+
+        Fails closed: an error or an unsuccessful answer counts as active, so reset_menu never
+        cancels a live game's stream on a lookup failure.
+        """
+        from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
+
+        stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(self.game_coordinator_channel)
+        try:
+            response = await stub.GetGameState(game_coordinator_pb2.GetGameStateRequest(), timeout=2.0)
+        except Exception as e:
+            logger.warning(f"GetGameState failed, treating the game as active: {e}")
+            return True
+        if not response.success:
+            logger.warning(f"GetGameState unsuccessful, treating the game as active: {response.error}")
+            return True
+        return response.game_info.state in (
+            game_coordinator_pb2.GameState.STARTING,
+            game_coordinator_pb2.GameState.RUNNING,
+        )
+
+    async def _reject_start_while_active(self, serial: str, source: str, game_mode: Games | None) -> None:
+        """Refuse a start request while the game lifecycle task is live (UC-010 A8).
+
+        Publishes ``game_start_rejected`` with reason ``game_active`` and clears the ready
+        latch, so a later trigger can start once the task has finished. Silent while a game
+        is starting or running; a short beep only in the lobby-restart window, where the
+        players are back in the lobby. The live game lifecycle is left untouched.
+        """
+        mode = game_mode if game_mode is not None else self.current_selection
+        logger.warning(f"Start from {serial} ({source}) refused: a game lifecycle is still live")
+        self.ready_handler.reset_game_start_flag()
+        await self.event_publisher.publish(
+            "game_start_rejected",
+            {"game_name": mode.name, "source": source, "reason": "game_active"},
+        )
+        if self._lobby_restarting:
+            await self.audio.play_sound(Sound.SFX_BEEP_LOUD)
+
     async def _start_game(
         self,
         serial: str,
@@ -609,12 +685,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             game_mode: Mode to start, resolved by the caller (web start_game);
                 None reads ``current_selection`` when the lifecycle runs.
         """
-        # Cancel any existing game lifecycle task (defensive)
+        # UC-010 A8 (#2054): a live lifecycle task is a game that is starting or running. Refuse
+        # the start; never cancel the live game's stream. A finished task needs no cancel.
         if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
-            logger.warning("Cancelling existing game lifecycle task before starting new one")
-            self._game_lifecycle_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._game_lifecycle_task
+            await self._reject_start_while_active(serial, source, game_mode)
+            return
 
         # Schedule game lifecycle as background task to avoid blocking button monitor
         self._game_lifecycle_task = asyncio.create_task(
@@ -928,23 +1003,28 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
     async def _restart_lobby(self):
         """Restart lobby state after game ends."""
-        self.state = menu_pb2.MenuState.RUNNING
+        # UC-010 A8: a start refused in this window beeps (the players are back in the lobby).
+        self._lobby_restarting = True
+        try:
+            self.state = menu_pb2.MenuState.RUNNING
 
-        # Start button monitor with fresh trace context (not chained to game trace)
-        with tracer.start_as_current_span("restart_button_monitor", context=otel_context.Context()):
-            await self.start_button_monitor()
-            await self.controller_events.wait_for_connection()
+            # Start button monitor with fresh trace context (not chained to game trace)
+            with tracer.start_as_current_span("restart_button_monitor", context=otel_context.Context()):
+                await self.start_button_monitor()
+                await self.controller_events.wait_for_connection()
 
-        # Reset lobby state
-        with tracer.start_as_current_span("reset_lobby_state"):
-            # Reset state_manager and re-register controllers (sets lobby colors)
-            await self.state_manager.reset()
+            # Reset lobby state
+            with tracer.start_as_current_span("reset_lobby_state"):
+                # Reset state_manager and re-register controllers (sets lobby colors)
+                await self.state_manager.reset()
 
-        with tracer.start_as_current_span("restart_lobby_music"):
-            await self.audio.start_lobby_music()
+            with tracer.start_as_current_span("restart_lobby_music"):
+                await self.audio.start_lobby_music()
 
-        # Restart idle monitor with fresh timer
-        self.idle_monitor.start()
+            # Restart idle monitor with fresh timer
+            self.idle_monitor.start()
+        finally:
+            self._lobby_restarting = False
 
         logger.info("Lobby restarted after game")
 
