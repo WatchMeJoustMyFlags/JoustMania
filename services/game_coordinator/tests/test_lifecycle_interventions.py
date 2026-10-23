@@ -43,6 +43,7 @@ from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 from services.game_coordinator.games.zombie import ZombieGame
 from services.game_coordinator.intervention_errors import InterventionNotApplied
 from services.game_coordinator.interventions import (
+    BLOCK_ELIMINATE_REFUSED,
     BLOCK_MODE_UNSUPPORTED,
     INTERVENTION_SPECS,
     InterventionContext,
@@ -471,21 +472,59 @@ class TestEliminatePlayerHandler:
 
         async def counting_kill(serial, accel_mag, reason="motion"):
             calls.append(serial)
-            await orig(serial, accel_mag, reason)
+            return await orig(serial, accel_mag, reason)
 
         game._kill_player = counting_kill
 
-        # Unknown serial -> no kill.
-        await handle_eliminate_player(make_ctx("eliminate_player", "", game, payload="ghost"))
-        # Empty serial -> no kill.
+        # Empty serial -> no kill, no raise.
         await handle_eliminate_player(make_ctx("eliminate_player", "", game, payload=""))
-        # Already dead -> no kill.
-        game.players["p1"].alive = False
-        await handle_eliminate_player(make_ctx("eliminate_player", "", game, payload="p1"))
         # No game -> no raise.
         await handle_eliminate_player(make_ctx("eliminate_player", "", None, payload="p1"))
 
         assert calls == []
+
+    @pytest.mark.uc("UC-040", flow="A22")
+    @pytest.mark.asyncio
+    async def test_unknown_or_dead_target_is_refused(self):
+        """#1383: an eliminate that kills nobody is not applied (mirrors revive_refused, #1969)."""
+        game = make_ffa_game(num_players=1)
+        with pytest.raises(InterventionNotApplied) as unknown:
+            await handle_eliminate_player(make_ctx("eliminate_player", "", game, payload="ghost"))
+        assert unknown.value.reason == BLOCK_ELIMINATE_REFUSED
+
+        game.players["p1"].alive = False
+        with pytest.raises(InterventionNotApplied) as dead:
+            await handle_eliminate_player(make_ctx("eliminate_player", "", game, payload="p1"))
+        assert dead.value.reason == BLOCK_ELIMINATE_REFUSED
+        assert game.dead_count == 0
+
+    @pytest.mark.uc("UC-040", flow="A22")
+    @pytest.mark.asyncio
+    async def test_kill_declined_by_the_mode_is_refused(self):
+        """#1383: the mode's kill gate declines the kill, so nothing was applied."""
+        game = make_ffa_game(num_players=2)
+        game._accepts_kill = lambda _serial: False
+
+        with pytest.raises(InterventionNotApplied) as exc:
+            await handle_eliminate_player(make_ctx("eliminate_player", "p1", game, payload="p1", target="p1"))
+        assert exc.value.reason == BLOCK_ELIMINATE_REFUSED
+        assert game.players["p1"].alive is True
+        assert game.dead_count == 0
+
+    @pytest.mark.uc("UC-040", flow="A22")
+    @pytest.mark.asyncio
+    async def test_legacy_kill_returning_none_counts_as_applied(self):
+        """Only an explicit False is a refusal: an override returning None still applied."""
+        game = make_ffa_game(num_players=2)
+        killed = []
+
+        async def legacy_kill(serial, accel_mag, reason="motion"):  # noqa: ARG001
+            killed.append(serial)
+
+        game._kill_player = legacy_kill
+
+        await handle_eliminate_player(make_ctx("eliminate_player", "p1", game, payload="p1"))
+        assert killed == ["p1"]
 
 
 # --------------------------------------------------------------------------- #

@@ -3430,7 +3430,19 @@ class BaseGameMode(ABC):
         """
         return True
 
-    async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion"):
+    def _accepts_kill(self, serial: str) -> bool:  # noqa: ARG002
+        """Whether the mode takes this kill at all (UC-030 step 9, #1383).
+
+        Called by ``_kill_player`` synchronously, with its other guards and before
+        any bookkeeping: a declined kill gets no ``dead_count``, ``player_alive``
+        gauge, elimination order, ``player_deaths_total``, explosion, ``player_death``
+        span event or death effect, and ``_kill_player`` returns False. True means
+        the kill passed the gate, not that the mode's handler applied it. Default:
+        always (Swapper declines once its win is latched, UC-024 BR-004).
+        """
+        return True
+
+    async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion") -> bool:
         """
         Kill a player (template method calling subclass implementation).
 
@@ -3443,16 +3455,23 @@ class BaseGameMode(ABC):
                 by an ``eliminate_player`` agent intervention. Recorded on the
                 player_death span event so forced deaths are distinguishable from
                 natural ones while still emitting identical spans/events/metrics.
+
+        Returns:
+            False when the kill was ignored (unknown or dead player, a kill of the
+            same player in flight) or declined by ``_accepts_kill``; True otherwise.
         """
         player = self.players.get(serial)
         if not player or not player.alive or serial in self._kills_in_progress:
-            return
+            return False
+        if not self._accepts_kill(serial):
+            return False
 
         self._kills_in_progress.add(serial)
         try:
             await self._run_kill(serial, player, accel_mag, reason)
         finally:
             self._kills_in_progress.discard(serial)
+        return True
 
     async def _run_kill(self, serial: str, player: Player, accel_mag: float, reason: str) -> None:
         """Body of _kill_player; runs at most once at a time per serial."""

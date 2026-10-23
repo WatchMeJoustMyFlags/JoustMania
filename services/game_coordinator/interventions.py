@@ -595,6 +595,9 @@ BLOCK_NO_GAME = "no_game"
 BLOCK_ALREADY_CHARGED = "already_charged"
 # A revive_player the mode refused (decided game, unknown or already-alive player; #1948).
 BLOCK_REVIVE_REFUSED = "revive_refused"
+# An eliminate_player that killed nobody: unknown or already-dead player, a kill of
+# the same player in flight, or the mode declined the kill (_accepts_kill; #1383).
+BLOCK_ELIMINATE_REFUSED = "eliminate_refused"
 
 # Sentinel game_id for the synthesized primary-only session when the manager is
 # wired with the legacy ``get_game`` callback (no session registry). An empty

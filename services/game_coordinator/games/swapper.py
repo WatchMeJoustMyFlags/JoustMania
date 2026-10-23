@@ -319,11 +319,9 @@ class SwapperGame(TeamsGameBase):
             player.span = None
         logger.info(f"Player {serial} eliminated (controller disconnect)")
 
-    async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion"):
+    def _accepts_kill(self, serial: str) -> bool:  # noqa: ARG002
         """No swap once the win is latched: the winners are already decided (BR-004)."""
-        if self._win_latched:
-            return
-        await super()._kill_player(serial, accel_mag, reason)
+        return not self._win_latched
 
     async def _handle_disconnect(self, serial: str) -> None:
         """Eliminate a disconnected player instead of swapping it (UC-024 A1, #1344).

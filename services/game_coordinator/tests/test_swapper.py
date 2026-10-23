@@ -30,6 +30,9 @@ from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.swapper import SwapperGame
+from services.game_coordinator.intervention_errors import InterventionNotApplied
+from services.game_coordinator.interventions import BLOCK_ELIMINATE_REFUSED, INTERVENTION_SPECS, InterventionContext
+from services.game_coordinator.lifecycle_handlers import handle_eliminate_player
 
 
 class TestSwapperTeamSwapping:
@@ -1121,6 +1124,37 @@ class TestSwapperForceEndWinner:
         await game._end_game_impl()
         assert self._effects(game.gameplay_stream, controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW) == []
         assert events.get_events_of_type("game_ended")[0]["winning_team"] == "none"
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-004"])
+    @pytest.mark.uc("UC-040", flow="A22")
+    @pytest.mark.asyncio
+    async def test_latched_eliminate_is_refused_before_any_bookkeeping(self):
+        """#1383: once latched, the kill gate declines an agent eliminate: no swap, no counters."""
+        game, events = await self._game(4)
+        for player in game.players.values():
+            player.team = 0
+        assert await game._check_win_condition()  # latches the win
+
+        ctx = InterventionContext(
+            spec=next(s for s in INTERVENTION_SPECS if s.flag_key == "eliminate_player"),
+            value="mock_controller_1",
+            payload="mock_controller_1",
+            target_serial="mock_controller_1",
+            game=game,
+            objective="balanced",
+        )
+        with (
+            patch("services.game_coordinator.games.base.metrics") as m,
+            pytest.raises(InterventionNotApplied) as exc,
+        ):
+            await handle_eliminate_player(ctx)
+        assert exc.value.reason == BLOCK_ELIMINATE_REFUSED
+        assert game.players["mock_controller_1"].team == 0
+        assert game.dead_count == 0
+        m.player_deaths_total.labels.assert_not_called()
+        assert game.sounds == []
+        assert events.count_events_of_type("player_swapped") == 0
         await game.cleanup()
 
     @pytest.mark.uc("UC-024", br=["BR-003", "BR-004"])
