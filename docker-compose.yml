@@ -15,7 +15,7 @@
 # For mock mode (testing): make up-mock
 #
 # Environment Variables (can be set in shell or .env file):
-# - IMAGE_TAG: Image tag to use [default: latest]
+# - IMAGE_TAG: Image tag to use [default: latest, only when no .env sets it; the Pi pins a release or commit, C-040]
 # - LOG_LEVEL: Logging level of the agent only (DEBUG, INFO, WARNING, ERROR) [default: INFO];
 #   the Python services take their level from the "log_level" flag (flags.md)
 # - JOUSTMANIA_HOST: Hostname for OTEL resource attributes (host.name) [default: joustmania]
@@ -43,7 +43,7 @@
 # - Local builds tag images with GHCR names for consistency
 #
 # Resource Limits:
-# - Total memory budget ~3.2GB, designed for 4GB Raspberry Pi (leaving ~800MB for OS)
+# - Total memory limits sum to about 4.2-4.3GB (NFR-020 notes the gap to the 4GB Pi); the limits are ceilings, not typical use
 # - CPU limits: 1.0 for real-time app services, 0.5 for standard services, 0.25 for lightweight
 
 x-logging: &default-logging
@@ -218,13 +218,10 @@ services:
       # Loopback only: the agent observes the game through this telemetry, so
       # nobody on the venue network may inject spans or metrics (#1319).
       - "127.0.0.1:4317:4317"
-    depends_on:
-      jaeger:
-        condition: service_healthy
-      loki:
-        condition: service_healthy
-      victoria-metrics:
-        condition: service_healthy
+    # No depends_on on the backends (UC-060 BR-004, FR-181): the collector starts
+    # at once and its exporters queue and retry until Jaeger, Loki and
+    # VictoriaMetrics are up (UC-035 A3, NFR-021).
+    restart: unless-stopped
     networks:
       - joustmania
     healthcheck:
@@ -350,6 +347,7 @@ services:
       rust-hid:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
     # Healthcheck defined in Dockerfile (uses HTTP /healthz)
 
   # Rust HID Service - PS Move HID operations via gRPC. The default Bluetooth
