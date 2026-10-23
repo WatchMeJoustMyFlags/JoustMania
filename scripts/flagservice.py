@@ -63,7 +63,7 @@ class FlagService:
         ]
         if body is not None:
             cmd += ["-H", "Content-Type: application/json", "--data", json.dumps(body)]
-        cmd.append(url)
+        cmd += ["--", url]
         try:
             proc = subprocess.run(cmd, capture_output=True, timeout=self.timeout + 5)
         except (OSError, subprocess.TimeoutExpired) as err:
@@ -77,11 +77,25 @@ class FlagService:
             )
         raw, _, code_text = proc.stdout.rpartition(b"\n")
         status = int(code_text) if code_text.strip().isdigit() else 0
-        if 200 <= status < 300:
-            return json.loads(raw) if raw.strip() else {}
         try:
             parsed = json.loads(raw) if raw.strip() else {}
         except ValueError:
+            parsed = None
+        if 200 <= status < 300:
+            if parsed is None:
+                # 2xx but not JSON: another server answered.
+                raise FlagServiceError(
+                    method,
+                    path,
+                    status,
+                    {
+                        "error": "non_json",
+                        "detail": f"not a flag service answer from {url}: "
+                        + raw.decode(errors="replace")[:200],
+                    },
+                )
+            return parsed
+        if parsed is None:
             parsed = {}
         if not isinstance(parsed, dict) or "error" not in parsed:
             # Not the flag service's {"error","detail"} body: another server answered.
