@@ -1435,10 +1435,15 @@ func (r *Registry) shouldGiveUp(s journal.Summary, targetN int) (string, bool) {
 // promote verdict to the Promoter (PROMOTING → DONE when the promotion acted,
 // PROMOTING → DISCARDED when it did not, #1701), discards otherwise, and tears down
 // the targeting + frees capacity. It is the verdict→terminal path.
+//
+// It concludes an experiment at most once (UC-043 BR-006, #2034): the game-end
+// handler and the allocation pass can both decide to conclude the same
+// experiment, so only a live (proposed / running) experiment is concluded; a
+// later caller gets the current status (concluded, promoting or terminal) back.
 func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verdict) (Status, error) {
 	r.mu.Lock()
 	e := r.entries[id]
-	if e == nil || e.status.IsTerminal() {
+	if e == nil || !e.status.IsLive() {
 		r.mu.Unlock()
 		if e != nil {
 			return e.status, nil
