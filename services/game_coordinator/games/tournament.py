@@ -594,6 +594,21 @@ class TournamentGame(BaseGameMode):
                     self._advance_winner(out[0], match, carried_out=True)
                     changed = True
 
+    def _eliminate_on_timeout(self, match: Match) -> None:
+        """Count the loser of a timed-out match out (UC-025 A1).
+
+        The same elimination gauges and players-alive aggregate as a death
+        (``dead_count``, ``game_player_alive`` 0, the elimination order), but no
+        death: no explosion, no death effect, no ``game_player_deaths_total``
+        and no ``player_death`` span event. ``_finalize_match`` turns its LED off.
+        """
+        loser_serial = match.player2_serial if match.winner_serial == match.player1_serial else match.player1_serial
+        loser = self.players[loser_serial]
+        loser.tournament_state = TournamentState.ELIMINATED
+        loser.alive = False
+        self._count_elimination(loser_serial)
+        self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
+
     async def _bracket_tick(self) -> None:
         """Step the bracket once per gameplay frame (UC-025 steps 2-4, A1, D-G33).
 
@@ -613,6 +628,7 @@ class TournamentGame(BaseGameMode):
                 # Time's up - both survive, random winner (A1)
                 match.winner_serial = self._rng.choice([match.player1_serial, match.player2_serial])
                 logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
+                self._eliminate_on_timeout(match)
                 if self._is_final(match):
                     self._latch_champion(match.winner_serial)
             await self._finalize_match(match)
@@ -663,13 +679,21 @@ class TournamentGame(BaseGameMode):
         with the error kept for run(), which raises it (``game_error``) and latches
         no outcome; it is kept here rather than raised to the base loop so that a
         failure after a force-end is still reported (UC-030 BR-006). After the
-        latch an error is logged and the result stands: the game ends through the
-        teardown with the champion and ``completed`` (UC-025 BR-005, D-G34).
+        latch an error, a gRPC error of the gameplay call included (no reconnect),
+        is logged and the result stands: the game ends through the teardown with
+        the champion and ``completed`` (UC-025 BR-005, D-G34).
         """
         try:
             game_over = await super()._process_gameplay_update(gameplay_update)
         except self._STREAM_CALL_ERRORS:
-            raise
+            if not self._result_latched:
+                raise
+            # The deciding frame's write (the final loser's death effect) failed:
+            # no reconnect, the teardown skips its effects on a failed call.
+            logger.warning(
+                "Gameplay stream failed in the frame that decided the final; the result stands", exc_info=True
+            )
+            return True
         except Exception:
             if not self._result_latched:
                 raise

@@ -8,16 +8,18 @@ with ``eliminate_refused`` and counts nothing.
 """
 
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
+import grpc
 import pytest
 
 test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
 sys.path.insert(0, str(test_dir))
 
-from test_tournament_champion import _ended, _events, _game, _run
+from test_tournament_champion import _ended, _events, _game, _LethalStream, _run
 from test_tournament_run import _bracket_game, _frame
 
 from lib.types import GameEvent, Sound
@@ -307,3 +309,110 @@ async def test_an_error_after_the_champion_latch_keeps_the_completed_result(fail
     if failing_event == "match_end":
         # The champion is still announced after the final's match_end failed.
         assert [e["champion"] for e in _events(log, "tournament_champion")] == [game._champion]
+
+
+class _WriteFailsOnFinalDeathStream(_LethalStream):
+    """The gameplay call fails under the write of the final loser's death effect; every later write fails too."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.failed = False
+
+    async def write(self, message):
+        match = self.game.current_match
+        if (
+            not self.failed
+            and message.HasField("game_effect")
+            and message.game_effect.effect == DEATH
+            and match is not None
+            and match.is_complete
+            and self.game._is_final(match)
+        ):
+            self.failed = True
+        if self.failed:
+            self.rejected.append(message)
+            raise grpc.aio.AioRpcError(grpc.StatusCode.UNAVAILABLE, None, None, "stream broke")
+        await super().write(message)
+
+
+@pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-005"])
+@pytest.mark.uc("UC-030", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_a_stream_error_in_the_frame_that_decided_the_final_keeps_the_result_without_a_reconnect():
+    """D-G34: the final loser's death-effect write fails with a gRPC error: no reconnect, no game_error."""
+    game, log, client, _ = _game(2)
+
+    def open_stream():
+        stream = _WriteFailsOnFinalDeathStream(log, game)
+        client.streams.append(stream)
+        return stream
+
+    client.StreamGameplayData = open_stream
+
+    await _run(game, client)  # a game_error would raise here
+
+    stream = client.streams[0]
+    assert stream.failed, "the final loser's death effect was never written"
+    assert len(client.streams) == 1, "the failed call was reopened after the champion was latched"
+    assert game._champion is not None
+    assert [e["champion"] for e in _events(log, "tournament_champion")] == [game._champion]
+    ended = _ended(log)
+    assert ended["champion"] == game._champion
+    assert ended["outcome"] == "completed"
+    assert GameEvent.GAME_ERROR.value not in [et for et, _ in log.events.events]
+
+
+@pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-005"])
+@pytest.mark.asyncio
+async def test_an_error_in_the_deciding_kill_after_the_latch_keeps_the_completed_result():
+    """D-G34: the kill path fails after the mode's handler latched the champion (the aggregate update)."""
+    game, log, client, _ = _game(2)
+    real_aggregate = game._set_players_alive_aggregate
+    failures = []
+
+    def aggregate(alive_count):
+        if game._result_latched and not failures:
+            failures.append(alive_count)
+            raise RuntimeError("players_alive aggregate failed")
+        real_aggregate(alive_count)
+
+    game._set_players_alive_aggregate = aggregate
+
+    await _run(game, client)  # a game_error would raise here
+
+    assert failures, "the aggregate update after the latch never ran"
+    assert game._champion is not None
+    ended = _ended(log)
+    assert ended["champion"] == game._champion
+    assert ended["outcome"] == "completed"
+    assert GameEvent.GAME_ERROR.value not in [et for et, _ in log.events.events]
+
+
+@pytest.mark.uc("UC-025", flow="A1", steps=[4])
+@pytest.mark.asyncio
+async def test_the_timeout_loser_is_counted_out_without_a_death():
+    """M3: the A1 loser gets the elimination gauges and the aggregate, but no death effect or explosion."""
+    game, events = await _bracket_game()
+    match = game.current_match
+    game._match_deadline = time.monotonic() - 1.0
+
+    with (
+        patch("services.game_coordinator.games.base.metrics") as m,
+        patch.object(game, "_set_players_alive_aggregate") as aggregate,
+    ):
+        await game._process_gameplay_update(_frame())
+
+    winner = match.winner_serial
+    loser = match.player2_serial if winner == match.player1_serial else match.player1_serial
+    assert [(e["winner"], e["loser"]) for e in events.get_events_of_type("match_end")] == [(winner, loser)]
+    assert game.players[loser].alive is False
+    assert game.players[loser].tournament_state == TournamentState.ELIMINATED
+    assert game.dead_count == 1 and game._elimination_count == 1
+    assert _gauge_zero_serials(m) == [loser]
+    m.player_alive.labels.return_value.set.assert_called_once_with(0)
+    m.player_elimination_order.labels.assert_called_once_with(serial=loser, game_id=game.game_id)
+    m.player_elimination_order.labels.return_value.set.assert_called_once_with(1)
+    aggregate.assert_called_with(len(game.players) - 1)
+    m.player_deaths_total.labels.assert_not_called()
+    assert _explosions(game) == 0
+    assert _death_effects(game) == []

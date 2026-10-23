@@ -3525,6 +3525,25 @@ class BaseGameMode(ABC):
         finally:
             self._kills_in_progress.discard(serial)
 
+    def _count_elimination(self, serial: str) -> None:
+        """Count a player out: ``dead_count``, ``game_player_alive`` 0 and the elimination order.
+
+        Called by the kill path for every death, and by a mode that takes a
+        player out without a death (Tournament's match time limit, UC-025 A1).
+        """
+        # Phase 70: Track deaths for music tempo timing
+        self.dead_count += 1
+
+        # Mark player as dead in metrics - dashboard template variables filter
+        # on game_player_alive==1 so dead players naturally disappear from panels.
+        # Metric removal happens at game end via clear_session_player_analytics().
+        metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(0)
+
+        # Record elimination order (1 = first out) for #730 / #722 §7.
+        # Makes session.elimination_sequence queryable per game.
+        self._elimination_count += 1
+        metrics.player_elimination_order.labels(serial=serial, game_id=self.game_id).set(self._elimination_count)
+
     async def _run_kill(self, serial: str, player: Player, accel_mag: float, reason: str) -> bool:
         """Body of _kill_player; runs at most once at a time per serial.
 
@@ -3550,18 +3569,7 @@ class BaseGameMode(ABC):
         alive_count_before = len([p for p in self.players.values() if p.alive])
         logger.info(f"Player died: {serial}, {alive_count_before - 1} players remaining")
 
-        # Phase 70: Track deaths for music tempo timing
-        self.dead_count += 1
-
-        # Mark player as dead in metrics - dashboard template variables filter
-        # on game_player_alive==1 so dead players naturally disappear from panels.
-        # Metric removal happens at game end via clear_session_player_analytics().
-        metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(0)
-
-        # Record elimination order (1 = first out) for #730 / #722 §7.
-        # Makes session.elimination_sequence queryable per game.
-        self._elimination_count += 1
-        metrics.player_elimination_order.labels(serial=serial, game_id=self.game_id).set(self._elimination_count)
+        self._count_elimination(serial)
 
         # UC-030 step 9: one increment per death (respawn modes count each death).
         # Aggregate {mode, game_kind} only; per-player order is the gauge above.
