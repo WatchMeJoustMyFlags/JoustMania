@@ -59,7 +59,7 @@ rpc ProcessInput(ProcessInputRequest) returns (ProcessInputResponse);
 | `button_press` | `{button: "select"}` | Cycle to next game mode |
 | `web_command` | `{command: "start_game"}` | Start game from web UI |
 | `web_command` | `{command: "select_game", game_name: "..."}` | Select specific game mode |
-| `reset_menu` | `{}` | Cancel GAME_STARTING state, return to RUNNING |
+| `reset_menu` | `{}` | Cancel GAME_STARTING state, return to RUNNING; recovers a stale game lifecycle when the coordinator reports no active game (UC-010 BR-008) |
 
 ### StreamMenuEvents
 
