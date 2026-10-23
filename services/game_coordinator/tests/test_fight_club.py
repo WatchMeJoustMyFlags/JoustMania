@@ -1604,6 +1604,61 @@ class TestFightClubForceEndWinner:
         assert ended["reason"] == "operator"
         await game.cleanup()
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"])
+    @pytest.mark.asyncio
+    async def test_force_end_between_the_running_check_and_the_latch_declares_no_winner(self):
+        """A cross-thread force end lands after the running check, before the latch."""
+        game, events = await self._game(3, "test_fc_force_in_latch", min_rounds=1)
+        fighter = game.current_fighter
+        latch = game._latch_game_outcome
+
+        def force_end_then_latch():
+            game.force_end("operator")
+            latch()
+
+        game._latch_game_outcome = force_end_then_latch
+
+        with patch("services.game_coordinator.games.fight_club.metrics"):
+            await game._kill_player(fighter, 5.0)
+
+        assert game.game_over is True
+        await game._end_game_impl()
+
+        ended = self._assert_no_winner(game, events, "force_ended")
+        assert ended["reason"] == "operator"
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-005"])
+    @pytest.mark.asyncio
+    async def test_a_second_decision_does_not_relatch_the_leader(self):
+        """The kill path and the timer path can both decide: the first latch stays."""
+        game, events = await self._game(3, "test_fc_relatch", min_rounds=1)
+        defender = game.current_defender
+        game.players[defender].score = 3
+        assert game._decide_game_end() is True
+        assert game._latched_winner == defender
+        other = next(s for s in game.players if s != defender)
+        game.players[other].score = 9
+
+        assert game._decide_game_end() is True
+
+        assert game._latched_winner == defender
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"])
+    @pytest.mark.asyncio
+    async def test_a_decision_after_a_force_end_latches_nothing(self):
+        """Force end first, then the decision runs: no leader and no outcome are latched."""
+        game, events = await self._game(3, "test_fc_decide_after_force", min_rounds=1)
+        game.players[game.current_defender].score = 3
+        game.force_end("operator")
+
+        assert game._decide_game_end() is True
+
+        assert game._latched_winner is None
+        assert game._latched_outcome is None
+        await game.cleanup()
+
     @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003"])
     @pytest.mark.asyncio
     async def test_stream_end_before_the_decision_declares_no_winner(self):
@@ -1619,11 +1674,11 @@ class TestFightClubForceEndWinner:
 
     @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"])
     @pytest.mark.asyncio
-    async def test_tied_top_declares_no_winner(self):
+    async def test_game_over_without_a_latched_leader_declares_no_winner(self):
         game, events = await self._game(3, "test_fc_tied_top")
         game.players[game.current_defender].score = 3
         game.players[game.current_fighter].score = 3
-        assert game._leader() is None
+        assert game._leader() is None  # defensive: a tie never ends the game (a face-off is seated)
         game.game_over = True
 
         await game._end_game_impl()

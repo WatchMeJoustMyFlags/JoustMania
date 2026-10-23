@@ -450,7 +450,10 @@ class FightClubGame(BaseGameMode):
         return True
 
     def _leader(self) -> str | None:
-        """The one top scorer; None on a tie at the top or without players."""
+        """The one top scorer; None without players.
+
+        The tie branch is defensive: a tie never ends the game (a face-off is seated).
+        """
         scores = sorted((p.score for p in self.players.values()), reverse=True)
         if not scores or (len(scores) >= 2 and scores[0] == scores[1]):
             return None
@@ -461,7 +464,7 @@ class FightClubGame(BaseGameMode):
 
         Synchronous, no await: the winner and the root-span outcome are latched in
         the same step as the decision, so a force end that lands afterwards (same
-        tick, the 1 s hold, the teardown) keeps the winner, and one that landed
+        tick, the rainbow wait, the teardown) keeps the winner, and one that landed
         before it (``running`` already False) latches none (BR-003).
         """
         if not self._should_end_game():
@@ -548,7 +551,7 @@ class FightClubGame(BaseGameMode):
         await self._write_loser_death_effect(loser_serial)
         # The base kill path zeroed the gauge; the re-queued loser is still playing.
         # Skipped after a force end, which cleared the player analytics.
-        if self.running:
+        if self.running and not self._win_latched:
             metrics.player_alive.labels(serial=loser_serial, game_id=self.game_id).set(1)
 
         # Play victory sound for round
@@ -633,7 +636,7 @@ class FightClubGame(BaseGameMode):
             self.round_task.cancel()
 
         # Only the latched winner counts (UC-025 BR-003, BR-005): a force end, a
-        # stream end before the decision and a tie at the top declare none.
+        # stream end before the decision declare none.
         force_ended = self.game_outcome() == "force_ended"
         winner_serial = None if force_ended else self._latched_winner
         winner_score = self.players[winner_serial].score if winner_serial else 0
