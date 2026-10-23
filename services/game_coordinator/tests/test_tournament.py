@@ -592,67 +592,6 @@ class TestAdvanceWinner:
         game._advance_winner(serial, final_match)
 
 
-class TestRunMatchBye:
-    """Tests for _run_match() with bye matches."""
-
-    @pytest.fixture
-    def tournament_game(self):
-        """Create a Tournament game with 3 players (forces a bye)."""
-        mock_controller_manager = MockControllerManagerService(
-            num_controllers=3,
-            death_schedule={},
-            max_duration=10.0,
-        )
-        event_collector = EventCollector()
-
-        game = TournamentGame(
-            controller_manager_client=mock_controller_manager,
-            event_publisher=event_collector.publish,
-            audio_client=None,
-            game_id="test_tournament_bye",
-        )
-
-        return game, mock_controller_manager, event_collector
-
-    @pytest.mark.asyncio
-    async def test_run_match_bye_auto_advances(self, tournament_game):
-        """Bye match should auto-advance the player."""
-        game, mock_controller_manager, _ = tournament_game
-
-        await game._initialize_players_impl(mock_controller_manager.controllers)
-        game.gameplay_stream = RecordingGameplayStream()
-
-        # Find a bye match
-        bye_match = next((m for m in game.bracket if m.is_bye), None)
-        assert bye_match is not None, "Expected at least one bye with 3 players"
-
-        bye_player = bye_match.player1_serial
-
-        await game._run_match(bye_match)
-
-        # Player should be advanced to next round
-        round2_matches = [m for m in game.bracket if m.round_number == 2]
-        found = any(m.player1_serial == bye_player or m.player2_serial == bye_player for m in round2_matches)
-        assert found
-
-    @pytest.mark.asyncio
-    async def test_run_match_bye_does_not_interact_with_stream(self, tournament_game):
-        """Bye match should not write to gameplay stream."""
-        game, mock_controller_manager, _ = tournament_game
-
-        await game._initialize_players_impl(mock_controller_manager.controllers)
-        stream = RecordingGameplayStream()
-        game.gameplay_stream = stream
-
-        bye_match = next((m for m in game.bracket if m.is_bye), None)
-        assert bye_match is not None
-
-        await game._run_match(bye_match)
-
-        # No stream writes for bye
-        assert len(stream.messages) == 0
-
-
 class TestKillPlayerInvincibility:
     """Tests for _kill_player_impl() with invincibility and match context."""
 
@@ -1865,7 +1804,7 @@ class TestByeAdvancement:
         )
         return game, mock_cm
 
-    @pytest.mark.uc("UC-025", flow="A4")
+    @pytest.mark.uc("UC-025", flow="main", steps=[1])
     @pytest.mark.asyncio
     @pytest.mark.parametrize("num_players", [3, 5, 6, 7, 8])
     async def test_bracket_completes_through_real_bracket_functions(self, num_players):
@@ -1889,7 +1828,7 @@ class TestByeAdvancement:
         assert played == num_players - 1
         assert game.players[survivors[0]].round_number == game.total_rounds
 
-    @pytest.mark.uc("UC-025", flow="A4")
+    @pytest.mark.uc("UC-025", flow="main", steps=[1])
     def test_bye_winners_sit_in_round_two_after_build(self):
         game, _ = self._make_game(5)
         game.players = {
@@ -1902,7 +1841,7 @@ class TestByeAdvancement:
         seated = {m.player1_serial for m in round2} | {m.player2_serial for m in round2}
         assert {b.winner_serial for b in byes} <= seated
 
-    @pytest.mark.uc("UC-025", flow="A4")
+    @pytest.mark.uc("UC-025", flow="main", steps=[1])
     @pytest.mark.asyncio
     @pytest.mark.parametrize("num_players", [3, 5, 6])
     async def test_kill_driven_game_loop_completes_with_byes(self, num_players):

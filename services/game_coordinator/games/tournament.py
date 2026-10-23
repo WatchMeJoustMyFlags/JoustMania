@@ -53,7 +53,6 @@ class TournamentState(Enum):
 
     WAITING = "waiting"  # In bracket, waiting for match
     FIGHTING = "fighting"  # Currently in a match
-    BYE = "bye"  # Got a bye this round
     CHAMPION = "champion"  # Won the tournament
     ELIMINATED = "eliminated"  # Lost a match
 
@@ -215,8 +214,6 @@ class TournamentGame(BaseGameMode):
                 match.is_bye = True
                 match.winner_serial = match.player1_serial
                 match.is_complete = True
-                if match.player1_serial:
-                    self.players[match.player1_serial].tournament_state = TournamentState.BYE
             elif player_idx < len(serials):
                 match.player2_serial = serials[player_idx]
                 player_idx += 1
@@ -240,8 +237,7 @@ class TournamentGame(BaseGameMode):
             current_round += 1
 
         # Bye winners enter round 2 now: bye matches are born complete, so
-        # _get_next_match never returns them and _run_match never advances them
-        # (#1990). _advance_winner reads self.bracket, so publish it first.
+        # _get_next_match never returns them (#1990). _advance_winner reads self.bracket, so publish it first.
         self.bracket = matches
         for match in matches:
             if match.is_bye and match.winner_serial:
@@ -254,7 +250,8 @@ class TournamentGame(BaseGameMode):
         """
         Get the next incomplete match that's ready to play.
 
-        A match is ready if both players are assigned (or it's a bye).
+        A match is ready if both players are assigned (bye matches are born
+        complete and their winners are advanced at build time).
 
         Returns:
             Next match to play, or None if tournament is complete
@@ -263,8 +260,6 @@ class TournamentGame(BaseGameMode):
             if match.is_complete:
                 continue
             if match.player1_serial and match.player2_serial:
-                return match
-            if match.is_bye and match.player1_serial:
                 return match
         return None
 
@@ -404,12 +399,6 @@ class TournamentGame(BaseGameMode):
         Args:
             match: The match to run
         """
-        if match.is_bye:
-            # Auto-advance
-            logger.info(f"Match {match.match_id}: {match.player1_serial} gets a bye")
-            self._advance_winner(match.player1_serial, match)
-            return
-
         p1 = self.players[match.player1_serial]
         p2 = self.players[match.player2_serial]
 
