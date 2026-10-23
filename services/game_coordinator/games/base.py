@@ -3937,8 +3937,9 @@ class BaseGameMode(ABC):
     async def _cleanup_after_run(self) -> None:
         """Run-end cleanup shared by every mode's run() finally block.
 
-        Closes open shield charge spans, runs cleanup() and clears this
-        session's analytics, on every exit path (natural end, force-end, error).
+        Closes open shield charge spans, runs cleanup(), ends any player span
+        still open and clears this session's analytics, on every exit path
+        (natural end, force-end, error).
         """
         # An error teardown skips _end_shield_feedback: end open charge spans (#1837).
         # Before cleanup, so a raising cleanup leaves no span open.
@@ -3949,6 +3950,9 @@ class BaseGameMode(ABC):
         finally:
             # A grant arriving while cleanup awaits can open a span after the first close (#1868).
             self._close_shield_charge_spans()
+            # An early return (force-end after the intro, countdown or warm-up) or an
+            # error skips the end step that closes the player spans (#1997).
+            self._end_open_player_spans_on_exit()
         # Ensure this session's analytics are always cleared, even on error
         # (#775) — per-session targeted cleanup, never a global wipe.
         metrics.clear_session_player_analytics(
@@ -4201,6 +4205,47 @@ class BaseGameMode(ABC):
                 player.span.end()
                 player.span = None  # Mark as closed
                 logger.debug(f"Closed lifecycle span for player {serial}")
+
+    def _end_open_player_spans_on_exit(self) -> None:
+        """End every player span the run left open (#1997, telemetry.md §3.2).
+
+        Idempotent: a span the mode already ended (``is_recording()`` false) or
+        cleared (``player.span`` None) is skipped, so a natural end never ends a
+        span twice. A span closed here gets ``game_ended`` with ``winner`` false:
+        ``game.outcome`` ``force_ended`` (+ ``game.end_reason``) after a force-end,
+        ``error`` otherwise. Open countdown spans and the grouping spans close too.
+        """
+        from opentelemetry.trace import Status, StatusCode
+
+        if self.force_ended:
+            outcome = {"game.outcome": "force_ended", "game.end_reason": self.force_end_reason}
+        else:
+            outcome = {"game.outcome": "error"}
+        for serial, player in self.players.items():
+            if player._countdown_span is not None:
+                player._countdown_span.end()
+                player._countdown_span = None
+            span = player.span
+            if span is None:
+                continue
+            if span.is_recording():
+                self._finalize_player_health(player)
+                span.add_event(
+                    "game_ended",
+                    attributes={
+                        "winner": False,
+                        **outcome,
+                        "game_duration": time.time() - self.start_time if self.start_time else 0,
+                    },
+                )
+                if self.force_ended:
+                    span.set_status(Status(StatusCode.OK))
+                else:
+                    span.set_status(Status(StatusCode.ERROR, "game ended before its end step"))
+                span.end()
+                logger.debug(f"Closed lifecycle span for player {serial} on run exit")
+            player.span = None
+        self._close_grouping_spans()
 
     def _close_grouping_spans(self):
         """Close the players and game_cycle grouping spans.
