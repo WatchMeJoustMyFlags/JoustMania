@@ -14,10 +14,11 @@ import asyncio
 import contextlib
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, create_autospec
 
 import grpc
 import pytest
+from opentelemetry.trace import Span
 
 test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
@@ -148,6 +149,37 @@ async def test_fight_club_timeout_on_a_dead_call_still_ends_a_decided_game():
     assert game.round_number == game._min_rounds, "a next round was seated after the decision"
 
 
+@pytest.mark.uc("UC-025", flow="A2", steps=[2])
+@pytest.mark.uc("UC-030", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_fight_club_kill_on_a_dead_call_still_seats_the_next_round():
+    """A round's kill while the call is dead seats the next round with a new timer (#2021)."""
+    game, events = await _running_game(Games.FightClub)
+    game.gameplay_stream = _LiveStream()
+    await game._start_round()
+    await _cancel_round_task(game)
+    first_timer = game.round_task
+    defender, fighter = game.current_defender, game.current_fighter
+    assert None not in (defender, fighter)
+    game.is_in_grace = lambda _player: False
+    game._pause_between_rounds = AsyncMock()
+
+    game.gameplay_stream = _DeadCallStream()
+    try:
+        await game._kill_player_impl(fighter, 10.0)
+
+        assert game.gameplay_stream.attempts >= 1, "the LED writes were not attempted"
+        assert not game.game_over
+        assert game.round_number == 2
+        assert len([e for e in events.events if e[0] == "round_start"]) == 2, "the next round was not started"
+        assert game.current_defender == defender
+        assert game.current_fighter not in (None, fighter)
+        assert game.round_task is not None and game.round_task is not first_timer
+        assert not game.round_task.done(), "the next round has no timer"
+    finally:
+        await _cancel_round_task(game)
+
+
 # --- Werewolf (#2022) ---------------------------------------------------------
 
 
@@ -184,7 +216,7 @@ async def test_werewolf_reveal_on_a_dead_call_reveals_every_werewolf():
     assert stream.attempts == 2 * len(game.werewolf_serials)
 
 
-@pytest.mark.uc("UC-022", flow="A1", steps=[2], br=["BR-004"])
+@pytest.mark.uc("UC-022", flow="A1", steps=[2], br=["BR-006"])
 @pytest.mark.asyncio
 async def test_werewolf_reveal_after_the_win_reveals_nothing():
     """A reveal timer that fires during the win hold reveals nothing (#2022)."""
@@ -202,6 +234,81 @@ async def test_werewolf_reveal_after_the_win_reveals_nothing():
     for serial in game.werewolf_serials:
         assert not game.players[serial].revealed
         assert game.players[serial].color == HUMAN_COLOR
+
+
+class _LatchingStream(_LiveStream):
+    """A live call where a side wins during the first reveal write (a kill in the same tick)."""
+
+    def __init__(self, game):
+        super().__init__()
+        self.game = game
+
+    async def write(self, message):
+        await super().write(message)
+        if len(self.messages) == 1:
+            assert self.game._latch_win("humans")
+
+
+def _written_serials(messages) -> set[str]:
+    serials = set()
+    for message in messages:
+        if message.HasField("game_effect"):
+            serials.add(message.game_effect.serial)
+        if message.HasField("base_color"):
+            serials.add(message.base_color.serial)
+    return serials
+
+
+def _with_spans(game) -> None:
+    for player in game.players.values():
+        player.span = create_autospec(Span, instance=True)
+
+
+def _revealed_span_events(game, serial) -> list:
+    return [c for c in game.players[serial].span.add_event.call_args_list if c.args[0] == "werewolf_revealed"]
+
+
+@pytest.mark.uc("UC-022", flow="A1", steps=[2], br=["BR-006"])
+@pytest.mark.asyncio
+async def test_werewolf_win_during_the_reveal_stops_it_at_the_next_werewolf():
+    """A win latched during the first werewolf's reveal leaves the second unrevealed (#2022)."""
+    game, _events = await _werewolf_game()
+    _with_spans(game)
+    first, second = game.werewolf_serials
+    stream = _LatchingStream(game)
+    game.gameplay_stream = stream
+
+    await game._reveal_werewolves()
+
+    assert game.players[first].revealed
+    assert second not in _written_serials(stream.messages), "the second werewolf was flashed or recoloured"
+    assert not game.players[second].revealed
+    assert game.players[second].color == HUMAN_COLOR
+    assert len(_revealed_span_events(game, first)) == 1
+    assert _revealed_span_events(game, second) == [], "an unrevealed werewolf got the werewolf_revealed span event"
+
+
+@pytest.mark.uc("UC-022", flow="A1", steps=[2], br=["BR-006"])
+@pytest.mark.asyncio
+async def test_werewolf_win_during_the_reveal_voice_reveals_nobody():
+    """A win latched while the reveal voice plays writes no reveal LED and marks no werewolf (#2022)."""
+    game, _events = await _werewolf_game()
+    _with_spans(game)
+    stream = _LiveStream()
+    game.gameplay_stream = stream
+
+    async def _win_during_voice(*_args, **_kwargs):
+        assert game._latch_win("humans")
+
+    game._play_sound = AsyncMock(side_effect=_win_during_voice)
+
+    await game._reveal_werewolves()
+
+    assert stream.messages == []
+    for serial in game.werewolf_serials:
+        assert not game.players[serial].revealed
+        assert game.players[serial].color == HUMAN_COLOR
+        assert _revealed_span_events(game, serial) == []
 
 
 # --- Zombies (respawn timer) --------------------------------------------------
