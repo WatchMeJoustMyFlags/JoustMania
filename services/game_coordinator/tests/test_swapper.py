@@ -711,6 +711,17 @@ def _frame(*serials: str, disconnects: tuple[str, ...] = ()):
     )
 
 
+def _record_sounds(game) -> list:
+    """Replace the game's sound player with a recorder; returns the list of played sounds."""
+    sounds: list = []
+
+    async def record_sound(sound, *_args, **_kwargs):
+        sounds.append(sound)
+
+    game._play_sound = record_sound
+    return sounds
+
+
 class TestSwapperDisconnect:
     """UC-024 A1 (#1344): a disconnected player is eliminated, never swapped, never a winner."""
 
@@ -783,11 +794,19 @@ class TestSwapperDisconnect:
         game, events = await self._game(4)
         gone = "mock_controller_0"
         game._warmup_disconnects = [gone]
+        span = create_autospec(trace.Span, instance=True)
+        span.get_span_context.return_value = trace.INVALID_SPAN_CONTEXT
+        game.players[gone].span = span
 
         assert not await game._handle_warmup_disconnects()
 
         assert game.players[gone].team == 0 and game.players[gone].alive is False
         assert events.count_events_of_type("player_swapped") == 0
+        writes = self._writes_for(game.gameplay_stream, gone)
+        assert writes[-1] == ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        assert ("effect", controller_manager_pb2.GAME_EFFECT_FLASH) not in writes
+        eliminated = [c for c in span.add_event.call_args_list if c.args[0] == "player_eliminated"]
+        assert [c.kwargs["attributes"]["reason"] for c in eliminated] == ["controller_disconnect"]
         assert game._get_alive_teams() == {0, 1}
         assert game._get_team_counts() == {0: 1, 1: 2}
         await game.cleanup()
@@ -838,6 +857,7 @@ class TestSwapperDisconnect:
             await release.wait()
 
         game._swap_pause = gated_pause
+        sounds = _record_sounds(game)
         kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
         await asyncio.wait_for(paused.wait(), 2.0)
         assert game.players[target].team == 1  # mid-swap
@@ -858,6 +878,7 @@ class TestSwapperDisconnect:
         writes = self._writes_for(game.gameplay_stream, target)
         assert not any(kind == "base" for kind, _ in writes)  # no new team colour
         assert writes[-1] == ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        assert Sound.SFX_BEEP not in sounds  # A1 step 3: no swap sound
         await game.cleanup()
 
     @pytest.mark.uc("UC-024", flow="A1", br=["BR-002"])
@@ -867,7 +888,10 @@ class TestSwapperDisconnect:
         target = "mock_controller_0"
         in_sound, release = asyncio.Event(), asyncio.Event()
 
-        async def gated_sound(*_args, **_kwargs):
+        sounds: list = []
+
+        async def gated_sound(sound, *_args, **_kwargs):
+            sounds.append(sound)
             if not in_sound.is_set():
                 in_sound.set()
                 await release.wait()
@@ -888,6 +912,7 @@ class TestSwapperDisconnect:
         writes = self._writes_for(game.gameplay_stream, target)
         assert ("effect", controller_manager_pb2.GAME_EFFECT_FLASH) not in writes
         assert writes[-1] == ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        assert Sound.SFX_BEEP not in sounds  # A1 step 3: no swap sound
         await game.cleanup()
 
     @pytest.mark.uc("UC-024", flow="A1")
@@ -1338,7 +1363,10 @@ class TestSwapperMotionLoop:
                 break
         assert game.players[serial].team == 1
         assert events.count_events_of_type("player_swapped") == 1
-        assert game.players[serial].grace_until > time.time() + 1.5  # death_grace_period_seconds
+        grace = game.death_grace_period  # the configured death_grace_period_seconds (FR-170)
+        assert grace > 0
+        remaining = game.players[serial].grace_until - time.time()
+        assert grace - 1.0 < remaining <= grace
 
         # Keep moving hard inside the grace: no second swap, the player stays alive.
         for _ in range(30):
@@ -1372,6 +1400,8 @@ class TestSwapperMotionLoop:
 
         ended = events.get_events_of_type("game_ended")
         assert len(ended) == 1 and ended[0]["winning_team"] == 1
+        # The unit harness has no servicer session: the game reaching ENDED is the session end
+        # (same as UC-026 Post-S-1); the winners are in the event stream above.
         assert game.state == GameState.ENDED
         assert len(events.get_events_of_type("swapper_winner")) == 1  # still published once
         await game.cleanup()
