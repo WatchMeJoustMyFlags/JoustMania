@@ -217,6 +217,17 @@ func TestAlreadyApplied_FailedWriteDeletesEntry(t *testing.T) {
 		*clock = clock.Add(time.Second)
 		expectOutcome(t, runCycle(l, budgetCtx()), "adjust_player_sensitivity/WEAK:dispatched")
 	})
+	t.Run("UC-040/A35 UC-040/A27 a failed write records nothing, so its value is written again", func(t *testing.T) {
+		l, sink, clock, _ := appliedLoop(t, sens("WEAK", "0.8"))
+		_ = runCycle(l, budgetCtx())
+		l.Actions = errSink{}
+		l.Rules = fakeRules{out: []Decision{sens("WEAK", "1.5")}}
+		*clock = clock.Add(time.Second)
+		_ = runCycle(l, budgetCtx())
+		l.Actions = sink
+		*clock = clock.Add(time.Second)
+		expectOutcome(t, runCycle(l, budgetCtx()), "adjust_player_sensitivity/WEAK:dispatched")
+	})
 	t.Run("UC-040/A35 UC-040/A11 a gated write leaves the entry as it was", func(t *testing.T) {
 		l, sink, clock, _ := appliedLoop(t, sens("WEAK", "0.8"))
 		_ = runCycle(l, budgetCtx())
