@@ -115,4 +115,17 @@ for _ in $(seq 50); do flock -n "$J5/lock" true && break; sleep 0.1; done
 run_d 1 'VERDICT: ERROR: killed' --dir "$J5" --wait 1 -- "$FAKE" 5 abc
 [[ "$(starts)" == 1 ]] || fail "a killed job was restarted"
 
+# --- the job can trap Ctrl-C: SIGINT is not ignored (a `&` start would ignore it)
+INTCMD="${WORK}/int.sh"
+cat >"$INTCMD" <<'EOS'
+#!/usr/bin/env bash
+trap 'echo "got INT"; exit 0' INT
+kill -INT $$
+sleep 1
+echo "INT ignored"
+exit 1
+EOS
+chmod +x "$INTCMD"
+run_d 0 'got INT' --dir "${WORK}/int" --wait 10 -- "$INTCMD"
+
 echo "test-detach: ${pass} checks passed"

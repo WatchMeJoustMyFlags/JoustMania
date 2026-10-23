@@ -18,7 +18,8 @@
 #           DETACH_WAIT or 540: a foreground Bash call is killed at 600 s)
 #
 # Semantics:
-#   - First call: start the command with setsid + nohup, stdin/stdout/stderr
+#   - First call: start the command with setsid -f + nohup (SIGINT/SIGQUIT keep
+#     their default action, unlike a `&` job), stdin/stdout/stderr
 #     redirected, in its own session (a killed caller, or its process group, does
 #     not take the job down). Then wait like any later call.
 #   - Same argv again: attach to the running job, or print the finished result.
@@ -94,8 +95,11 @@ if [[ ! -e "$DIR" ]]; then
   exec 9>"$tmp/lock"
   flock -n 9 || refuse "cannot lock $tmp/lock"
   if mv -T -- "$tmp" "$DIR" 2>/dev/null; then
-    setsid nohup "$SELF" --_job "$DIR" -- "$@" </dev/null >/dev/null 2>&1 &
-    echo "detach: started job $DIR (pid $!)"
+    # setsid -f, not `&`: bash starts a non-interactive `&` job with SIGINT and
+    # SIGQUIT ignored, and the ignore is inherited by the whole job, so a wrapped
+    # test that traps Ctrl-C (test-talk-stage.sh) would never see it.
+    setsid -f nohup "$SELF" --_job "$DIR" -- "$@" </dev/null >/dev/null 2>&1
+    echo "detach: started job $DIR"
   else
     rm -rf -- "$tmp"
   fi
