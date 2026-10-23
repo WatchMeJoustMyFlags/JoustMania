@@ -64,6 +64,19 @@ type ObjectiveRules struct {
 	// builds, noShield the no-shield filter. nil (the golden harness, every older
 	// test) means no player is charged or limited.
 	shieldSource func() (charged, noShield map[string]bool)
+
+	// appliedSource is the loop's applied-value view (UC-040 A35, Loop.AppliedValues):
+	// read once per ranking. nil (the golden harness, every older test) filters
+	// nothing.
+	appliedSource func() map[string]string
+}
+
+// SetAppliedSource installs the applied-value view (Loop.AppliedValues). It is called
+// under the engine lock, so it must not call back into the engine.
+func (r *ObjectiveRules) SetAppliedSource(src func() map[string]string) {
+	r.mu.Lock()
+	r.appliedSource = src
+	r.mu.Unlock()
 }
 
 // SetChargedSource installs a charge-only ledger view: the charged set is also the
@@ -303,6 +316,9 @@ func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, no
 
 	cands = applyBatteryPolicy(cands, c, pol, weights)
 	cands = applyChargePolicy(cands, noShield)
+	if r.appliedSource != nil {
+		cands = applyAppliedPolicy(cands, r.appliedSource(), c)
+	}
 	cands = r.applyVarianceCooldown(cands, now, pol)
 	return scoreAndSort(cands, weights, fitEval), weights, fitEval
 }
@@ -349,6 +365,30 @@ func applyChargePolicy(cands []candidate, noShield map[string]bool) []candidate 
 	kept := cands[:0]
 	for _, cd := range cands {
 		if cd.decision.Intervention == InterventionGrantShield && noShield[cd.decision.TargetSerial] {
+			continue
+		}
+		kept = append(kept, cd)
+	}
+	return kept
+}
+
+// applyAppliedPolicy is the rules' already-applied filter (UC-040 A35 step 4,
+// #2046): it drops a state or level candidate whose value equals the one the loop
+// last wrote for the same intervention and target (applied, from one ledger snapshot
+// per ranking), as the permission chain would block it already_applied. Like the
+// no-shield filter the candidate is not ranked, so a suppressed level does not take
+// an emission slot every second; another candidate may rank instead. A target that
+// left the game keeps its candidate (the chain drops that entry). nil or empty
+// applied keeps every candidate.
+func applyAppliedPolicy(cands []candidate, applied map[string]string, c gamecontext.GameContext) []candidate {
+	if len(applied) == 0 {
+		return cands
+	}
+	kept := cands[:0]
+	for _, cd := range cands {
+		d := cd.decision
+		if v, ok := applied[appliedKey(d)]; ok && idempotentInterventions[d.Intervention] &&
+			present(c, d.TargetSerial) && v == normalisedValue(d.Value) {
 			continue
 		}
 		kept = append(kept, cd)

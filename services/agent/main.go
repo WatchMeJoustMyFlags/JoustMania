@@ -615,6 +615,13 @@ func main() {
 		// Targeted-player display names (#1295): player.name on agent.decision /
 		// agent.action comes from the Multiplexer's controller_info view.
 		loop.SetPlayerNameResolver(mux.PlayerName)
+		// UC-040 A35, BR-023 (#2046): a state or level decision that repeats the value
+		// this loop last wrote is not written again (already_applied); the narrative
+		// records its first suppression as "already in place".
+		loop.SetSuppressReapplied(true)
+		loop.SetAlreadyAppliedRecorder(func(intervention, serial string) {
+			mux.AppendInterventionInPlace(gameID, intervention, serial)
+		})
 		// UC-040 A31 step 1 (#1837): the per-loop shield-charge ledger reads the game's
 		// shield.activation / shield.charge_expiry_seconds from the read-only game domain.
 		loop.SetShieldChargeMode(agentFlags.ShieldCharge)
@@ -636,6 +643,9 @@ func main() {
 		// The rules engine reads the loop's shield ledger once per ranking and skips a
 		// grant_shield to a charged, capped or cooling-down player (UC-040 A31, A33).
 		rules.SetShieldSource(loop.ShieldSerials)
+		// The rules engine skips a state or level candidate whose value the loop
+		// already applied (UC-040 A35 step 4), so it does not take a slot every second.
+		rules.SetAppliedSource(loop.AppliedValues)
 		loop.Rules = rules
 		// Demo/verification probe (decision.probe_decisions): built once per loop so
 		// its rate-limit clock survives flag flips; Loop.rulesFor swaps it in per

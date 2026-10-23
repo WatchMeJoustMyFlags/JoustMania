@@ -29,7 +29,7 @@ import (
 // intervention, the cost of grant_shield and adjust_player_sensitivity.
 var protectiveReserve = interventionCost(InterventionGrantShield)
 
-// admitOrHold is step 3 of the permission chain. It CHARGES the budget when it
+// admitOrHold is step 5 of the permission chain. It CHARGES the budget when it
 // admits d (returning true) and, when it refuses, may SET the cycle's hold on
 // state (BR-014): once a decision that could fit an empty window is refused,
 // every lower-ranked decision of the same cycle is refused without asking the

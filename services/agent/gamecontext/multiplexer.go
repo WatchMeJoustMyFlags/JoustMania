@@ -267,6 +267,12 @@ func (m *Multiplexer) AppendInterventionEvent(gameID, intervention, serial strin
 	m.store(gameID).AppendInterventionEvent(intervention, serial, blocked)
 }
 
+// AppendInterventionInPlace routes an already-applied intervention (UC-040 A35) to
+// the game_id partition's narrative timeline, as AppendInterventionEvent does.
+func (m *Multiplexer) AppendInterventionInPlace(gameID, intervention, serial string) {
+	m.store(gameID).AppendInterventionInPlace(intervention, serial)
+}
+
 // RecordInterventionApply routes a dispatched intervention's write outcome to the
 // game_id partition's tally (#1771), with the same routing as
 // AppendInterventionEvent.
