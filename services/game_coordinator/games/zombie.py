@@ -760,4 +760,4 @@ class ZombieGame(BaseGameMode):
                 await self._stop_game_music()
                 if force_ended:
                     await self.on_force_end()
-                await self.cleanup()
+                await self._cleanup_after_run()
