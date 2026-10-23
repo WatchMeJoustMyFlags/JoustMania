@@ -55,6 +55,9 @@ rectangle "JoustMania" {
         usecase "UC-052\nCanary a Backend by Hand" as UC052
         usecase "UC-053\nChange a Runtime Flag through the Flag Service" as UC053
     }
+    package "Operations" {
+        usecase "UC-060\nOperate the Stage Pi" as UC060
+    }
     package "Talk" {
         usecase "UC-070\nPresent the Talk Demo" as UC070
     }
@@ -91,6 +94,7 @@ operator --> UC046
 operator --> UC050
 operator --> UC052
 operator --> UC053
+operator --> UC060
 
 agent --> UC040
 agent --> UC041

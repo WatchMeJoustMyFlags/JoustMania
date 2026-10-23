@@ -93,13 +93,14 @@ decision backends. Put everything below in the git-ignored `.env.local`
 (later `--env-file` wins). `scripts/setup/joustmania-compose.sh` passes both
 env files (`.env.local` only when it exists) to every compose call, and the
 systemd autostart uses it too, so a reboot comes back with the same tag and
-keys as the manual bring-up (#1488). Use `latest` while rehearsing, then **pin the exact
-tag you rehearsed with** (a release or `sha-...` tag) for the talk, so a new
-push to `main` cannot change the stage images:
+keys as the manual bring-up (#1488). Rehearse by pinning an exact commit sha
+(the bare 40-hex tag, not `sha-...` and not `latest`; UC-060 BR-003) and keep
+that checkout for the talk, so a new push to `main` cannot change the stage
+images. The image tag derives from the checked-out commit; do not set
+`IMAGE_TAG` in `.env.local` on the Pi (it is ignored with a status WARN):
 
 ```bash
 # .env.local  (git-ignored; never commit, never paste on screen)
-IMAGE_TAG=<the tag you rehearsed with>  # latest while rehearsing; must contain #1284 and #1288
 JEV_API_KEY=...                        # Jev, the main in-game backend
 ANTHROPIC_API_KEY=...                  # Claude: in-game backup AND the post-game summary
 # DECISION_OPENAI_API_KEY=...          # only for the optional second-vendor beat (6b)
@@ -450,7 +451,7 @@ The infra loop is not gated by the `enabled` kill switch, only by
       only if beat 6b stays in.
 - [ ] Reboot test (#1488): `sudo systemctl restart joustmania`, wait for it,
       then `docker inspect -f '{{.Config.Image}}' joustmania-agent` ends in the
-      `IMAGE_TAG` from `.env.local` (not `0.7.0`), the journal shows
+      tag derived from the pinned checkout (not `0.7.0`), the journal shows
       `Env files: .env + .env.local`, and the key check above still says `set`.
 - [ ] No dev ports on the venue network (#1319): `sudo ss -tlnp | grep -v 127.0.0.1`
       lists port 80 (envoy) and no 50052-50062, 8013, 8015, 4317 or 50058.
@@ -467,8 +468,8 @@ The infra loop is not gated by the `enabled` kill switch, only by
       script removes it when the `python-hid` profile is off; by hand:
       `docker rm -f joustmania-python-hid`.
 - [ ] `.env.local` holds `JEV_API_KEY`, `ANTHROPIC_API_KEY`,
-      `IMAGE_TAG` (pinned to the rehearsed
-      tag); `DECISION_OPENAI_API_KEY` only if beat 6b stays in. Nothing in
+      no `IMAGE_TAG` (the pin is the checked-out
+      commit); `DECISION_OPENAI_API_KEY` only if beat 6b stays in. Nothing in
       `.env` (`git diff .env` is empty).
 - [ ] Both keys have budget/credit. In `services/agent`:
       Jev: `JEV_API_KEY=... go test -tags live ./decide/backends/jev -run 'TestLiveGate$' -v`
