@@ -133,8 +133,8 @@ _Verified against main f38f076d, 2026-10-23._
   or on rebase). A copied PR body keeps the old `Spec changes:` line: read it against the diff.
 - **Parallel PR id collisions.** Two open PRs can both take the next free `D-*` row or A-/BR- id: grep the open PR
   diffs (`gh pr list --state open --search "UC-0xx"`), not only main, before accepting a new id.
-- **Digest-tag reuse** (`git ls-tree` hash, #1785): the first writer wins and a same-repo PR run can plant a hash,
-  so push the tag only on `merge_group`/`push`.
+- **Collector prebuilt tag** (ci.yml collector-image job, the `git ls-tree` hash tag, #1785): the first writer wins
+  and a same-repo PR run can plant a hash, so only `merge_group` or a push to main pushes it.
 
 ## Spec and tag traps
 
@@ -199,8 +199,9 @@ _Verified against main f38f076d, 2026-10-23._
   resolve. A dedup marker placed in a shared helper (`retrack`) fires for every caller: a failed watch revert used
   up the kill switch's single failure report (#1880). Grep ALL callers of a helper that gains a side effect.
   The gamecontext timeline is a 64-entry ring: use `Session.StartedAt`, not a timeline "start" entry (#1749).
-- **Conclude once** (#2034, #2038): an experiment must conclude at most once; check the concluded outcome, not
-  only the status, and that a second conclude (retry, restart, late span) is a no-op.
+- **Conclude once** (#2034, #2038): the conclude guard must be `IsLive` (proposed or running), because `IsTerminal`
+  ignores concluded and promoting; the second concluder gets the current status back and does nothing (UC-043
+  BR-006, #2038).
 - **Dry-run vs real.** A rehearsed action must not commit reconcile state only an observed effect can clear
   (#1375). A stationary observed stage exposes it; an advancing stage in tests hides it.
 - An OTel cumulative Counter has NO `remove`: a `game_id` (or any per-game id) label is one permanent series per
