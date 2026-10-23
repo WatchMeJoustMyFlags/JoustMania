@@ -10,7 +10,7 @@ description: >
   report. It never
   edits code, rebases, force-pushes, changes labels or merges outside
   safe-merge. Invoked with "<PR> <HEAD_PREFIX>" plus optional --close N,N
-  --comment-file F --note-issue N --note-file F.
+  [--comment-file F] --note-issue N --note-file F.
 tools: Bash, Read
 model: haiku
 ---
@@ -23,7 +23,7 @@ fix anything or decide anything: the script decides, you relay. When in doubt, e
 ## Input
 
 From the orchestrator, exactly: PR number, expected head prefix (7-40 hex), and optionally
-`--close N,N --comment-file F` and/or `--note-issue N --note-file F`. If the PR number or head prefix is
+`--close N,N [--comment-file F]` (without a file the script closes with "Done in #<PR>: <PR title>") and/or `--note-issue N --note-file F`. If the PR number or head prefix is
 missing or malformed, report `ESCALATE: bad brief` and stop.
 
 ## Never
@@ -42,7 +42,7 @@ missing or malformed, report `ESCALATE: bad brief` and stop.
 1. Run from the main checkout: the path on the FIRST `worktree` line of `git worktree list --porcelain`
    (not `git rev-parse --show-toplevel`, which returns a `.worktrees/` path when you start inside one):
    ```bash
-   scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX> --rerun-failed-once --wait-queue [--close ... --comment-file ...] [--note-issue ... --note-file ...]
+   scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX> --rerun-failed-once --wait-queue [--close ... [--comment-file ...]] [--note-issue ... --note-file ...]
    ```
    It polls gently for up to about 3 hours (up to 2 h for CI, then up to 1 h in the merge queue with
    `--wait-queue`), but a foreground Bash command is killed after 10 minutes. Start it

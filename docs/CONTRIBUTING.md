@@ -411,7 +411,7 @@ and exits non-zero on any failure. CI stays the source of truth; the mapping is 
 
 `scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX>` waits for CI (polling every 75 s with backoff, never
 `gh run watch`), ignores SonarCloud and checks of cancelled runs superseded by a newer run on the same head,
-and squash-merges only at the expected head (`--match-head-commit`). `--close N,N --comment-file F` and
+and squash-merges only at the expected head (`--match-head-commit`). `--close N,N [--comment-file F]` (default comment "Done in #<PR>: <PR title>") and
 `--note-issue N --note-file F` act only once the PR reads `MERGED` (`{MERGE}` becomes the short merge SHA).
 `--wait-ci` waits and reports without merging; on red it names known infrastructure failures (stale
 collector image, fast-path stale prebuilt images, `blob not found`) with "add `ci-full`" or "rerun" advice.

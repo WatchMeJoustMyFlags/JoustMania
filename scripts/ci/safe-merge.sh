@@ -7,7 +7,8 @@
 #   --rerun-failed-once       on red, rerun the failed jobs once and wait again
 #                             (a cancelled run: rerun the whole run once)
 #   --close N,N               close these issues after the merge ...
-#   --comment-file F          ... with this comment ({MERGE} -> short merge SHA)
+#   --comment-file F          ... with this comment ({MERGE} -> short merge SHA);
+#                             optional: default "Done in #<PR>: <PR title>"
 #   --note-issue N            comment on one more issue after the merge ...
 #   --note-file F             ... with this body ({MERGE} substituted too)
 #   --wait-queue              merge queue only: after enqueueing, wait until the
@@ -87,8 +88,10 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
-[[ -n "$CLOSE" && -z "$CFILE" ]] && { echo "--close needs --comment-file" >&2; exit 2; }
+# All arguments are validated here, before any wait or merge step (#2036).
+[[ -z "$CFILE" || -n "$CLOSE" ]] || { echo "--comment-file needs --close" >&2; exit 2; }
 [[ -n "$NOTE_ISSUE" && -z "$NFILE" ]] && { echo "--note-issue needs --note-file" >&2; exit 2; }
+[[ -n "$NFILE" && -z "$NOTE_ISSUE" ]] && { echo "--note-file needs --note-issue" >&2; exit 2; }
 for f in "$CFILE" "$NFILE"; do [[ -z "$f" || -r "$f" ]] || { echo "cannot read $f" >&2; exit 2; }; done
 
 POLL="${SAFE_MERGE_POLL:-75}"
@@ -336,7 +339,12 @@ substitute() { local body; body="$(<"$1")"; printf '%s' "${body//\{MERGE\}/"$mer
 
 actions=""
 if [[ -n "$CLOSE" ]]; then
-  body="$(substitute "$CFILE")"
+  if [[ -n "$CFILE" ]]; then
+    body="$(substitute "$CFILE")"
+  else
+    pr_title="$(gh pr view "$PR" --json title --jq .title 2>/dev/null || true)"
+    body="Done in #$PR${pr_title:+: $pr_title}"
+  fi
   IFS=, read -r -a close_list <<<"$CLOSE"
   for n in "${close_list[@]}"; do
     if gh issue close "$n" --comment "$body" >&2; then actions+=" closed #$n;"; else actions+=" close #$n FAILED;"; fi

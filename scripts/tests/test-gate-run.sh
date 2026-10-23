@@ -9,11 +9,17 @@
 #
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-gate-run.sh
 set -euo pipefail
+# Hermetic: a fail-loud fake docker first on PATH, no COMPOSE / DOCKER override.
+unset COMPOSE DOCKER
+FAKE_DOCKER_DIR="$(mktemp -d)"
+printf '#!/bin/sh\necho "test reached docker: $*" >&2\nexit 99\n' >"${FAKE_DOCKER_DIR}/docker"
+chmod +x "${FAKE_DOCKER_DIR}/docker"
+export PATH="${FAKE_DOCKER_DIR}:${PATH}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE_RUN="${SCRIPT_DIR}/../ci/gate-run.sh"
 WORK="$(realpath "$(mktemp -d)")"
-trap 'rm -rf "${WORK}"' EXIT
+trap 'rm -rf "${WORK}" "${FAKE_DOCKER_DIR}"' EXIT
 
 MAIN="${WORK}/main"
 WT="${MAIN}/.worktrees/wt"
@@ -221,7 +227,19 @@ chmod u+w "${WT}/.venv-test"
 
 # --- real runs and verdicts
 run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --repeat 2 --name ok -- scripts/tests/test-pass.sh
-[[ -f "${LOGS}/ok-1.log" && -f "${LOGS}/ok-2.log" ]] || fail "logs ok-1/ok-2 not written"
+NS="${LOGS}/wt-$(git -C "$WT" rev-parse --short=8 HEAD)"
+[[ -f "${NS}/ok-1.log" && -f "${NS}/ok-2.log" ]] || fail "logs ok-1/ok-2 not written under ${NS}"
+# #2036: two worktrees sharing one --logs dir never clobber each other, and the
+# header names the worktree and head.
+git -C "${MAIN}" worktree add -q "${MAIN}/.worktrees/wt3" -b wt3-ns
+mkdir -p "${MAIN}/.worktrees/wt3/scripts/tests"
+echo "echo second worktree" >"${MAIN}/.worktrees/wt3/scripts/tests/test-pass.sh"
+run_gr 0 "gate-run ${MAIN}/.worktrees/wt3 head $(git -C "${MAIN}/.worktrees/wt3" rev-parse --short=8 HEAD) job ok" \
+  --worktree "${MAIN}/.worktrees/wt3" --logs "$LOGS" --name ok -- scripts/tests/test-pass.sh
+NS2="${LOGS}/wt3-$(git -C "${MAIN}/.worktrees/wt3" rev-parse --short=8 HEAD)"
+grep -q "all good" "${NS}/ok-1.log" && grep -q "second worktree" "${NS2}/ok-1.log" \
+  || fail "logs of two worktrees clobbered each other"
+git -C "${MAIN}" worktree remove --force "${MAIN}/.worktrees/wt3"
 run_gr 1 'VERDICT: FAIL' --worktree "$WT" --logs "$LOGS" -- scripts/tests/test-assert.sh
 export FLAKY_COUNTER="${WORK}/flaky-counter"
 run_gr 1 'VERDICT: FLAKY 2/3' --worktree "$WT" --logs "$LOGS" --repeat 3 -- scripts/tests/test-flaky.sh
@@ -231,7 +249,7 @@ run_gr 0 'note: N=1 expect-fail' --worktree "$WT" --logs "$LOGS" --expect-fail -
 run_gr 1 'CAUGHT\? \(non-test error' --worktree "$WT" --logs "$LOGS" --expect-fail -- scripts/tests/test-collect.sh
 run_gr 1 'MUTATION NOT CAUGHT \(1/1 passed\)' --worktree "$WT" --logs "$LOGS" --expect-fail -- scripts/tests/test-pass.sh
 run_gr 1 'MUTATION NOT CAUGHT \(1/2 passed\)' --worktree "$WT" --logs "$LOGS" --repeat 2 --expect-fail -- scripts/tests/test-flaky.sh
-run_gr 1 'test-assert-1.log:.*AssertionError' --worktree "$WT" --logs "$LOGS" --name test-assert -- scripts/tests/test-assert.sh
+run_gr 1 'wt-[0-9a-f]{8}/test-assert-1.log:.*AssertionError' --worktree "$WT" --logs "$LOGS" --name test-assert -- scripts/tests/test-assert.sh
 
 [[ -z "$(git -C "$WT" status --porcelain --untracked-files=no)" ]] || fail "worktree changed"
 echo "test-gate-run: ${pass} checks passed"
