@@ -18,6 +18,10 @@ What this file covers (per mode, headless):
   game_id-aware ``end_*`` helpers from helpers.py).
 - The mode's terminal event (``game_ended``/``game_force_ended``) arrives on the
   collector bound to THAT game_id.
+- A natural end publishes exactly one winner event for the mode and a
+  ``game_ended`` whose winner field matches it (#1361); a force-end (NonStop)
+  publishes ``game_force_ended``, no winner event and ``game_ended`` with no
+  winner.
 
 What this file deliberately does NOT cover:
 - Menu ready-up, mode selection, and lobby-color *restore* — those are menu
@@ -35,6 +39,7 @@ every controller it can see; unreserved parallel games would race the LED
 assertions. Each mode gets its own reserved/tagged controller set.
 """
 
+import ast
 import asyncio
 import os
 import sys
@@ -52,6 +57,7 @@ from tests.integration.helpers import (
     end_fight_club_game,
     end_swapper_game,
     end_tournament_game,
+    end_traitor_game,
     end_werewolf_game,
     end_zombies_game,
     force_end_game_by_id,
@@ -79,6 +85,8 @@ SERVICE_COMPOSITION = GAME
 #   async def(mock_client, serials, game_client, game_id) -> None
 
 EndStrategy = Callable[[Any, list[str], Any, str], Any]
+
+FORCE_END_REASON = "parallel_lifecycle_end"
 
 
 async def end_ffa(mock_client, serials, game_client, game_id) -> None:
@@ -133,10 +141,125 @@ async def end_fight_club(mock_client, serials, game_client, game_id) -> None:
     )
 
 
+async def end_traitor(mock_client, serials, game_client, game_id) -> None:
+    """Traitor: kill all but one (secret teams; the survivor's secret team wins)."""
+    await end_traitor_game(mock_client, serials, delay=0.3, game_client=game_client, game_id=game_id)
+
+
 async def end_force(mock_client, serials, game_client, game_id) -> None:  # noqa: ARG001
-    """Modes with no natural end in tests (NonStop, Traitor): force-end by id."""
+    """Modes with no natural end in tests (NonStop, unlimited time): force-end by id."""
     await asyncio.sleep(2.0)  # let the game run briefly
-    await force_end_game_by_id(game_client, game_id, reason="parallel_lifecycle_end")
+    await force_end_game_by_id(game_client, game_id, reason=FORCE_END_REASON)
+
+
+# =============================================================================
+# Outcome checks (winner event + game_ended winner field, #1361)
+# =============================================================================
+# Each check gets the game's events (collector bound to its game_id), the
+# game's serials and the ``game_ended`` data. Every end strategy leaves the
+# LAST serial alive (it is never killed), so that player is always on the
+# winning side of a kill-decided mode. GameEvent.data is map<string, string>:
+# numbers arrive as their str(), lists and dicts as their Python repr.
+
+# Every event a mode publishes to declare a result; a force-end publishes none.
+WINNER_EVENTS = (
+    "team_winner",
+    "traitor_winner",
+    "werewolf_winner",
+    "zombie_winner",
+    "swapper_winner",
+    "tournament_champion",
+    "tournament_no_winner",
+    "game_winner",
+    "game_tie",
+)
+
+OutcomeCheck = Callable[[list, list[str], dict[str, str]], None]
+
+
+def _winner_events(events: list) -> list:
+    return [e for e in events if e.event_type in WINNER_EVENTS]
+
+
+def _single_winner_event(events: list) -> tuple[str, dict[str, str]]:
+    """The one result event of the game (the result is latched once)."""
+    found = _winner_events(events)
+    assert len(found) == 1, f"expected exactly one winner event, got {[(e.event_type, dict(e.data)) for e in found]}"
+    return found[0].event_type, dict(found[0].data)
+
+
+def _check_team_win(events: list, serials: list[str], ended: dict[str, str]) -> None:
+    """Teams / Random Teams (UC-021 steps 4, 5): team_winner (or game_tie) matches game_ended.winning_team."""
+    kind, data = _single_winner_event(events)
+    if kind == "game_tie":
+        assert ended["winning_team"] == "none", f"game_tie but game_ended {ended}"
+        return
+    assert kind == "team_winner", f"unexpected winner event {kind}: {data}"
+    assert ended["winning_team"] == data["team"], f"team_winner {data} vs game_ended {ended}"
+    assert serials[-1] in ast.literal_eval(data["winning_players"]), f"survivor {serials[-1]} not in {data}"
+
+
+def _check_traitor_win(events: list, serials: list[str], ended: dict[str, str]) -> None:
+    """Traitor (UC-022 step 4): traitor_winner for the survivor's secret team, game_ended.winning_team matches."""
+    kind, data = _single_winner_event(events)
+    assert kind == "traitor_winner", f"expected traitor_winner, got {kind}: {data}"
+    assert ended["winning_team"] == data["team"], f"traitor_winner {data} vs game_ended {ended}"
+    assert serials[-1] in ast.literal_eval(data["winners"]), f"survivor {serials[-1]} not in {data}"
+
+
+def _check_werewolf_win(events: list, serials: list[str], ended: dict[str, str]) -> None:
+    """Werewolf (UC-022 A1 step 4, A2): werewolf_winner (or game_tie) matches game_ended.winner."""
+    kind, data = _single_winner_event(events)
+    if kind == "game_tie":
+        assert ended["winner"] == "none", f"game_tie but game_ended {ended}"
+        return
+    assert kind == "werewolf_winner", f"unexpected winner event {kind}: {data}"
+    assert data["winner"] in ("humans", "werewolves"), data
+    assert ended["winner"] == data["winner"], f"werewolf_winner {data} vs game_ended {ended}"
+    assert serials[-1] in ast.literal_eval(data["winners"]), f"survivor {serials[-1]} not in {data}"
+
+
+def _check_zombie_win(events: list, serials: list[str], ended: dict[str, str]) -> None:  # noqa: ARG001
+    """Zombies (UC-023 A1 step 1): every human converted, zombie_winner(zombies) and game_ended.winner zombies."""
+    kind, data = _single_winner_event(events)
+    assert kind == "zombie_winner", f"expected zombie_winner, got {kind}: {data}"
+    assert data["winner"] == "zombies", data
+    assert ended["winner"] == "zombies", f"game_ended {ended}"
+
+
+def _check_swapper_win(events: list, serials: list[str], ended: dict[str, str]) -> None:
+    """Swapper (UC-024 steps 3, 4): swapper_winner, game_ended.winning_team is its team."""
+    kind, data = _single_winner_event(events)
+    assert kind == "swapper_winner", f"expected swapper_winner, got {kind}: {data}"
+    assert ended["winning_team"] == data["team"], f"swapper_winner {data} vs game_ended {ended}"
+    assert set(ast.literal_eval(data["winners"])) <= set(serials), data
+
+
+def _check_tournament_champion(events: list, serials: list[str], ended: dict[str, str]) -> None:
+    """Tournament (UC-025 step 5): tournament_champion, game_ended.champion is the same player."""
+    kind, data = _single_winner_event(events)
+    assert kind == "tournament_champion", f"expected tournament_champion, got {kind}: {data}"
+    assert data["champion"] in serials, data
+    assert ended["champion"] == data["champion"], f"tournament_champion {data} vs game_ended {ended}"
+
+
+def _check_fight_club_winner(events: list, serials: list[str], ended: dict[str, str]) -> None:
+    """Fight Club (UC-025 A2 step 4): game_ended.winner is the one top scorer; no other result event."""
+    assert not _winner_events(events), [(e.event_type, dict(e.data)) for e in _winner_events(events)]
+    winner = ended["winner"]
+    assert winner in serials, f"game_ended {ended}"
+    scores = ast.literal_eval(ended["final_scores"])
+    top = max(scores.values())
+    assert scores[winner] == top == int(ended["winner_score"]), f"winner {winner} is not the top scorer: {ended}"
+    assert list(scores.values()).count(top) == 1, f"tied top score: {scores}"
+
+
+def _check_force_end_no_winner(events: list, serials: list[str], ended: dict[str, str]) -> None:  # noqa: ARG001
+    """Force-end (UC-026 A1 step 1): no winner event, game_ended winner none with outcome force_ended."""
+    assert not _winner_events(events), [(e.event_type, dict(e.data)) for e in _winner_events(events)]
+    assert ended.get("winner") == "none", f"game_ended {ended}"
+    assert ended["outcome"] == "force_ended", f"game_ended {ended}"
+    assert ended.get("reason") == FORCE_END_REASON, f"game_ended {ended}"
 
 
 # =============================================================================
@@ -152,7 +275,9 @@ class ModeSpec:
     players: int
     end: EndStrategy
     timeout: int  # seconds to await the terminal event after the end strategy
+    check: OutcomeCheck  # winner event + game_ended winner field
     pre_end_delay: float = 0.0  # wait before the end strategy (e.g. formation phase)
+    forced: bool = False  # ended by end_force: expect game_force_ended, no winner
 
 
 # Per-mode specs. JoustFFA runs through the menu in the TC-002 journey
@@ -160,19 +285,23 @@ class ModeSpec:
 _SPECS = {
     # Teams: 4 players on alternating teams (build_start_config); killing the
     # first three wipes team 0. Moved here from the menu-flow lifecycle test.
-    "JoustTeams": ModeSpec("JoustTeams", 4, end_team, 15),
+    "JoustTeams": ModeSpec("JoustTeams", 4, end_team, 15, _check_team_win),
     # RandomTeams runs a 5s team-formation phase (TEAM_FORMATION_DURATION in
     # random_teams.py) before the game proper — kills during it are swallowed,
     # so wait it out before driving the win condition (caught in CI).
-    "JoustRandomTeams": ModeSpec("JoustRandomTeams", 4, end_team, 20, pre_end_delay=6.5),
+    "JoustRandomTeams": ModeSpec("JoustRandomTeams", 4, end_team, 20, _check_team_win, pre_end_delay=6.5),
     # Swapper's death-swap end sequence (delay=0.3/swap) can exceed 15s under
     # 4-way parallel load on a loaded CI runner; 25s also timed out on CI
     # (#897), so give the post-convergence end path generous headroom.
-    "Swapper": ModeSpec("Swapper", 4, end_swapper, 40),
-    "Zombies": ModeSpec("Zombies", 4, end_zombies, 15),
-    "NonStop": ModeSpec("NonStop", 2, end_force, 15),
-    "Traitor": ModeSpec("Traitor", 4, end_force, 15),
-    "Werewolf": ModeSpec("Werewolf", 4, end_werewolf, 20),
+    "Swapper": ModeSpec("Swapper", 4, end_swapper, 40, _check_swapper_win),
+    "Zombies": ModeSpec("Zombies", 4, end_zombies, 15, _check_zombie_win),
+    # NonStop has no time limit in the start config (unlimited, UC-026 A1): it
+    # is the force-end case, asserting the force-end = no winner pattern.
+    "NonStop": ModeSpec("NonStop", 2, end_force, 15, _check_force_end_no_winner, forced=True),
+    # Traitor is driven to a win (#1361): kill all but one, the survivor's
+    # secret team wins.
+    "Traitor": ModeSpec("Traitor", 4, end_traitor, 15, _check_traitor_win),
+    "Werewolf": ModeSpec("Werewolf", 4, end_werewolf, 20, _check_werewolf_win),
     # Tournament: full single-elimination bracket to a champion (#903). Two
     # root causes fixed there: (1) numeric calibration flags were read with the
     # wrong typed getter so the CI match/pause variants silently fell back to
@@ -180,8 +309,8 @@ _SPECS = {
     # the winner never advanced and the bracket stalled (tournament.py). The
     # state-aware end strategy then drives it to completion. Measured ~18-26s of
     # bracket play locally; 45s terminal-event budget covers parallel CI load.
-    "Tournament": ModeSpec("Tournament", 4, end_tournament, 45),
-    "FightClub": ModeSpec("FightClub", 4, end_fight_club, 30),
+    "Tournament": ModeSpec("Tournament", 4, end_tournament, 45, _check_tournament_champion),
+    "FightClub": ModeSpec("FightClub", 4, end_fight_club, 30, _check_fight_club_winner),
 }
 
 # Duration-grouped batches (size <= GAME_MAX_CONCURRENT_GAMES=4). Wall time of a
@@ -303,6 +432,19 @@ async def _run_mode_headless(stack, spec: ModeSpec, tag: str) -> None:
         # is never a success: NonStop's startup crash (GameplayStreamConfig
         # ``serials`` regression) hid behind game_error counting as terminal.
         assert terminal.event_type != "game_error", f"game errored instead of ending: {dict(terminal.data)}"
+
+        # The result (#1361). A natural end: game_ended, never a force-end. A
+        # force-end: game_force_ended, then the mode's own game_ended (it may
+        # arrive before or after the session's game_force_ended).
+        if spec.forced:
+            await collector.wait_for_event("game_force_ended", timeout=spec.timeout)
+            ended = await collector.wait_for_event("game_ended", timeout=spec.timeout)
+        else:
+            assert terminal.event_type == "game_ended", f"expected a natural end, got {terminal.event_type}"
+            ended = terminal
+            assert not collector.get_events("game_force_ended"), "a natural end was force-ended"
+            assert ended.data["outcome"] not in ("force_ended", "error"), dict(ended.data)
+        spec.check(collector.get_events(), serials, dict(ended.data))
     except Exception as exc:  # noqa: BLE001 - re-raise tagged with the mode name
         raise AssertionError(f"[{spec.mode}] headless lifecycle failed: {exc}") from exc
     finally:
@@ -317,15 +459,21 @@ async def _run_mode_headless(stack, spec: ModeSpec, tag: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("modes", _BATCHES)
-# Steps limited to what is asserted: start, RUNNING, game colours, no game_error.
-# Win/end conditions and mode-specific deaths are unit-only (TC-017 step 7); one
-# parametrised run carries all six tags, so a failure in one mode fails every tag.
-@pytest.mark.uc("UC-021", flow="main", steps=[1, 2], tc="TC-017")
-@pytest.mark.uc("UC-022", flow="main", steps=[1], tc="TC-017")
+# Steps limited to what is asserted: start, RUNNING, game colours, no game_error,
+# and the result: each kill-decided mode's winner event and the matching winner
+# field of game_ended; NonStop's force-end declares no winner (#1361).
+# Mode-specific deaths stay unit-only (TC-017 step 7); one parametrised run
+# carries every tag, so a failure in one mode fails every tag.
+@pytest.mark.uc("UC-021", flow="main", steps=[1, 2, 4, 5], tc="TC-017")
+@pytest.mark.uc("UC-022", flow="main", steps=[1, 4], tc="TC-017")
+@pytest.mark.uc("UC-022", flow="A1", steps=[4], tc="TC-017")
 @pytest.mark.uc("UC-023", flow="main", steps=[1], tc="TC-017")
-@pytest.mark.uc("UC-024", flow="main", steps=[1], tc="TC-017")
-@pytest.mark.uc("UC-025", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-023", flow="A1", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-024", flow="main", steps=[1, 3, 4], tc="TC-017")
+@pytest.mark.uc("UC-025", flow="main", steps=[1, 5], tc="TC-017")
+@pytest.mark.uc("UC-025", flow="A2", steps=[4], tc="TC-017")
 @pytest.mark.uc("UC-026", flow="main", steps=[1], tc="TC-017")
+@pytest.mark.uc("UC-026", flow="A1", steps=[1], tc="TC-017")
 async def test_parallel_mode_lifecycle(service_stack, headless_cleanup, modes):
     """Run a duration-grouped batch of game modes concurrently, headless.
 
@@ -334,7 +482,9 @@ async def test_parallel_mode_lifecycle(service_stack, headless_cleanup, modes):
     2. starts a headless game (its own game_id),
     3. verifies controllers got game colors,
     4. runs the mode-specific end strategy (game_id-aware),
-    5. awaits its terminal event on the collector bound to that game_id.
+    5. awaits its terminal event on the collector bound to that game_id,
+    6. checks the result: the mode's winner event and the matching winner field
+       of ``game_ended``, or, for a force-end, ``game_force_ended`` and no winner.
 
     The batch runs all modes via ``asyncio.gather(..., return_exceptions=True)``
     so a single mode's failure doesn't mask the others; failures are re-raised

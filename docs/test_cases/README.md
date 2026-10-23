@@ -36,8 +36,8 @@ has a tagged test. A test case alone never makes a requirement Verified.
 ## Scope
 
 Free-for-All is the current focus: TC-001 to TC-016 are FFA journeys or mode-independent (agent, rollout,
-canary, talk); TC-018 to TC-020 cover the flag service (UC-053, epic #1407). The other game modes (UC-021 to UC-026) are covered by one backlog journey, TC-017, so they
-stay traceable; their detailed journeys are backlog (#1361).
+canary, talk); TC-018 to TC-020 cover the flag service (UC-053, epic #1407). The other game modes (UC-021 to UC-026) are covered by one journey, TC-017, which plays each
+mode to its result (#1361); the per-mode detail is in the unit tests.
 
 ## Index
 
@@ -59,7 +59,7 @@ stay traceable; their detailed journeys are backlog (#1361).
 | [TC-014](TC-014-progressive-rollout-and-rollback.md) | Progressive rollout with automatic rollback | UC-050, UC-051, UC-045, UC-041 | High | Draft | Manual (real controllers); mock support + e2e #1390 |
 | [TC-015](TC-015-canary-by-hand.md) | Canary a backend by hand | UC-052, UC-035 | Medium | Draft | Manual; contract tests for routes; `/canary/*` handler tests (#1388) |
 | [TC-016](TC-016-talk-demo-rehearsal.md) | Talk demo rehearsal | UC-070, UC-044, UC-045, UC-040, UC-042, UC-035 | Medium | Draft | Manual; script tests in CI (#1389) |
-| [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode (backlog) | UC-021 to UC-026 | Low | Draft | Partly (`tests/service/test_tc017_parallel_mode_lifecycle.py`); backlog #1361 |
+| [TC-017](TC-017-non-ffa-modes-round-backlog.md) | One round of every non-FFA mode | UC-021 to UC-026 | Low | Automated | T2: `tests/service/test_tc017_parallel_mode_lifecycle.py` (winner event per mode, #1361); lobby restore not asserted |
 | [TC-018](TC-018-agent-intervention-through-flag-service.md) | Agent intervention through the flag service | UC-053, UC-040 | Critical | Automated | T2: `test_tc018_flag_service_eliminations::test_two_eliminations_through_the_flag_service`; failed read: unit test |
 | [TC-019](TC-019-flag-service-restart.md) | Flag service restart | UC-053 | High | Automated | `test_tc019_flag_service_restart` (T2 service); epoch reset: unit test |
 | [TC-020](TC-020-host-and-stage-change-flags.md) | Host and stage change flags at runtime | UC-012, UC-053, UC-044 | High | Automated | T2: `test_tc020_host_and_stage_flags::test_host_and_stage_change_flags_at_runtime` |

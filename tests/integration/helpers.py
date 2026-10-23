@@ -2124,6 +2124,45 @@ async def end_werewolf_game(
     return killed
 
 
+async def end_traitor_game(
+    mock_client,
+    serials: list[str],
+    delay: float = 0.3,
+    game_client=None,
+    game_id: str = "",
+) -> list[str]:
+    """End a Traitor game with a win (not a force-end) by killing all but one player.
+
+    Traitor roles are secret: GetGameState shows each player's visible team,
+    not the secret team a traitor wins with, so the helper cannot aim at one
+    secret team. Killing all but one player one at a time still decides the
+    game: the survivor's secret team is the only one left (UC-022 main step 4),
+    and sequential kills never wipe every team at once, so it is never a
+    ``game_tie``. The game may end earlier, when a secret team is wiped first;
+    each kill is verified via GetGameState and the loop stops once the game
+    is no longer running.
+
+    Args:
+        mock_client: Mock controller service gRPC client
+        serials: List of all controller serials
+        delay: Delay between kills in seconds
+        game_client: GameCoordinator gRPC client for kill verification
+        game_id: Target a specific session (empty = primary/legacy).
+
+    Returns:
+        List of serials that were killed
+    """
+    killed = []
+    for serial in serials[:-1]:
+        await asyncio.sleep(delay)
+        if not await kill_player_verified(
+            mock_client, game_client, serial, lambda p: not p.alive, game_id=game_id
+        ):
+            break  # Game already ended (one secret team left)
+        killed.append(serial)
+    return killed
+
+
 async def end_zombies_game(
     mock_client,
     serials: list[str],
