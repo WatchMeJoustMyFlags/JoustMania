@@ -44,6 +44,7 @@ unexplained deviation as a finding.
 - Never modify the author's worktree, never `git reset --hard` or `git stash` in any shared worktree, never touch
   the running stack. Throwaway containers on free ports with `--rm` are fine.
 - Known local flakes (a failure that matches is named, not blamed on the PR): [`.claude/known-flakes.md`](../../known-flakes.md).
+- Curated lessons (mutation recipes, gate-run and flag traps, CI and queue behaviour, coordinator and agent patterns, known false positives): read [`.claude/review-lessons.md`](../../review-lessons.md) before a full or adversarial review, and before a short review of a docs PR.
 - Quiet output: `-q --tb=short`, `| tail`. Long notes go to `<scratchpad>/review-<PR>.md`.
 
 ## Steps (full review)
