@@ -15,7 +15,8 @@ argument-hint: "#PR [delta <old>..<new>] [previous findings file]"
 
 # Review PR (JoustMania)
 
-Review, do not fix. Never push to the PR branch.
+Review, do not fix. Never push to the PR branch. Agents run this as the `pr-reviewer` agent
+(`.claude/agents/pr-reviewer.md`), which also carries the standing rules for worktrees, mutation checks and gates.
 
 ## Depth by PR type
 
@@ -42,6 +43,7 @@ unexplained deviation as a finding.
   ```
 - Never modify the author's worktree, never `git reset --hard` or `git stash` in any shared worktree, never touch
   the running stack. Throwaway containers on free ports with `--rm` are fine.
+- Known local flakes (a failure that matches is named, not blamed on the PR): [`.claude/known-flakes.md`](../../known-flakes.md).
 - Quiet output: `-q --tb=short`, `| tail`. Long notes go to `<scratchpad>/review-<PR>.md`.
 
 ## Steps (full review)
@@ -52,11 +54,10 @@ unexplained deviation as a finding.
    must? Async/await propagated? Flags read at use time?
    **C-035:** a new env-only tunable is a finding; runtime flexibility is a flag (requirements.md C-035 lists the exceptions). Proto RPC has its connect-proxy forwarding method?
    Spec IDs collide with open PRs? `Part of #N`, no closing keywords? Labels (`ci-full`, `no-spec-change`) right?
-3. **Mutation check.** In the review worktree, revert or weaken the core fix (`git show <fix> -- <file> | git apply -R`
+3. **Mutation check.** In a SEPARATE detached worktree (`review-<PR>-mut`; the `pr-reviewer` agent rules), revert or weaken the core fix (`git show <fix> -- <file> | git apply -R`
    or a one-line edit), run the new tests: at least one must FAIL (hand the run to the Haiku `gate-runner` agent with
    `run x1 expect fail -- <command>`; it reports `MUTATION CAUGHT (assertion)`, `CAUGHT? (non-test error)` (not
-   proof: read the log) or `MUTATION NOT CAUGHT`). Restore with `git checkout -- .` (detached
-   review worktree only). No failing test = a blocking finding.
+   proof: read the log) or `MUTATION NOT CAUGHT`). Remove that worktree afterwards (never `git checkout <ref> -- <file>` in a worktree that holds work). No failing test = a blocking finding.
 4. **Gates.** `make pr-gates` in the review worktree (`BASE=origin/main`), run through `gate-runner`
    (`<review worktree>` + `gates BASE=origin/main`) so only its summary enters your context.
    A mutation of a service-tier test runs `make test-service SERVICE_TESTS=<file>`.
