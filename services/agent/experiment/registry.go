@@ -1444,11 +1444,14 @@ func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verd
 	r.mu.Lock()
 	e := r.entries[id]
 	if e == nil || !e.status.IsLive() {
-		r.mu.Unlock()
+		// Copy the status under the lock: the winning caller keeps writing it
+		// (promotion, teardown) after we unlock.
+		var current Status
 		if e != nil {
-			return e.status, nil
+			current = e.status
 		}
-		return "", nil
+		r.mu.Unlock()
+		return current, nil
 	}
 	e.status = StatusConcluded
 	// UC-046 BR-013: report pattern timeouts per arm with the conclusion.

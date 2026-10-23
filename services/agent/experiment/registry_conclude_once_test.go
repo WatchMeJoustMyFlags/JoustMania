@@ -223,3 +223,114 @@ func TestRegistryConcludesOnce(t *testing.T) {
 		}
 	})
 }
+
+// armsVerdict returns a promote verdict once armed. Call 1 waits for call 2, so
+// both games are recorded before either concludes; call 2 then waits until the
+// first conclusion is parked in the Promoter, so it finds the experiment no
+// longer live (#2034).
+type armsVerdict struct {
+	armed  atomic.Bool
+	calls  atomic.Int32
+	second chan struct{}
+	parked chan struct{}
+}
+
+func (v *armsVerdict) Evaluate(journal.Summary) (journal.Verdict, bool) {
+	if !v.armed.Load() {
+		return journal.Verdict{Outcome: OutcomeInconclusive}, true
+	}
+	switch v.calls.Add(1) {
+	case 1:
+		select {
+		case <-v.second:
+		case <-time.After(raceWait):
+		}
+	case 2:
+		close(v.second)
+		select {
+		case <-v.parked:
+		case <-time.After(raceWait):
+		}
+	}
+	return journal.Verdict{Outcome: CohortOutcomePromote, Significant: true}, true
+}
+
+// UC: UC-043 BR-006
+func TestRegistryConcludesOnceWhenBothArmsEnd(t *testing.T) {
+	t.Run("UC-043/BR-006 the control and experimental games ending together conclude the experiment once", func(t *testing.T) {
+		verdict := &armsVerdict{second: make(chan struct{}), parked: make(chan struct{})}
+		// The first Promote parks the winner, then holds it on a timer only: no
+		// channel from the losing caller, so under -race an unlocked read of the
+		// status by the loser is unordered with the winner's later write.
+		var promotes atomic.Int32
+		promoter := &fakePromoter{during: func() {
+			if promotes.Add(1) == 1 {
+				close(verdict.parked)
+				time.Sleep(100 * time.Millisecond)
+			}
+		}}
+		target := &fakeTargeting{}
+		logs := &syncBuffer{}
+		spawner := &fakeSpawner{}
+		r := newTestRegistry(t, RegistryConfig{
+			MaxShadowGames: 2,
+			Spawner:        spawner,
+			Verdict:        verdict,
+			Promoter:       promoter,
+			Targeting:      target,
+			Log:            slog.New(slog.NewTextHandler(logs, nil)),
+		})
+		var terminal atomic.Int32
+		r.SetTerminalHook(func(string) { terminal.Add(1) })
+		ctx := context.Background()
+		id := startExperiment(t, r)
+		if n := r.AllocateAndSpawn(ctx); n != 2 {
+			t.Fatalf("spawned %d games, want one per arm", n)
+		}
+
+		verdict.armed.Store(true)
+		statuses := make([]Status, 2)
+		var wg sync.WaitGroup
+		for i := range 2 {
+			spawner.mu.Lock()
+			gameID := spawner.calls[i].gameID
+			spawner.mu.Unlock()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				st, err := r.ConcludeGame(ctx, gameID, 0.5, 30)
+				if err != nil {
+					t.Error(err)
+				}
+				statuses[i] = st
+			}()
+		}
+		wg.Wait()
+
+		if got := promoter.count(); got != 1 {
+			t.Errorf("Promoter called %d times, want 1", got)
+		}
+		if got := logs.count("experiment.concluded"); got != 1 {
+			t.Errorf("experiment.concluded logged %d times, want 1", got)
+		}
+		if got := concludedDecisions(t, r, id); got != 1 {
+			t.Errorf("concluded decisions in the journal = %d, want 1", got)
+		}
+		if got := len(target.strippedIDs()); got != 1 {
+			t.Errorf("Strip called %d times, want 1", got)
+		}
+		if got := terminal.Load(); got != 1 {
+			t.Errorf("terminal hook fired %d times, want 1", got)
+		}
+		if st, _ := r.Status(id); st != StatusDone {
+			t.Errorf("status = %s, want done", st)
+		}
+		// One caller concluded (done); the other got the status current when it
+		// looked (promoting, or done if it was slower than the winner's hold).
+		for _, st := range statuses {
+			if st != StatusDone && st != StatusPromoting {
+				t.Errorf("ConcludeGame returned %s, want done or promoting", st)
+			}
+		}
+	})
+}
