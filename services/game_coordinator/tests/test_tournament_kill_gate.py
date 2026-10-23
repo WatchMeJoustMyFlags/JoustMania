@@ -213,7 +213,7 @@ async def test_the_double_hit_winner_keeps_its_alive_gauge():
     assert _explosions(game) == 1
 
 
-@pytest.mark.uc("UC-025", flow="A4", steps=[3, 4, 5], br=["BR-006"])
+@pytest.mark.uc("UC-025", flow="A4", steps=[1, 2, 3], br=["BR-006"])
 @pytest.mark.parametrize("num_players", [3, 5, 6, 8])
 @pytest.mark.asyncio
 async def test_brackets_with_disconnects_and_interventions_complete(num_players):
@@ -257,7 +257,7 @@ async def test_brackets_with_disconnects_and_interventions_complete(num_players)
     assert [(e["champion"], e["rounds_played"]) for e in announced] == [(left[0], game.total_rounds)]
 
 
-@pytest.mark.uc("UC-025", flow="A4", steps=[5], br=["BR-005"])
+@pytest.mark.uc("UC-025", flow="A4", steps=[2], br=["BR-005"])
 @pytest.mark.asyncio
 async def test_a_walkover_final_reports_the_final_round_as_rounds_played():
     """3 players: the bye player (already in the final) disconnects; the round-1 winner wins the final by walkover."""
@@ -458,7 +458,7 @@ async def test_an_error_in_the_deciding_kill_after_the_latch_keeps_the_completed
     assert GameEvent.GAME_ERROR.value not in [et for et, _ in log.events.events]
 
 
-@pytest.mark.uc("UC-025", flow="A1", steps=[4])
+@pytest.mark.uc("UC-025", flow="A1", steps=[2])
 @pytest.mark.asyncio
 async def test_the_timeout_loser_is_counted_out_without_a_death():
     """M3: the A1 loser gets the elimination gauges and the aggregate, but no death effect or explosion."""

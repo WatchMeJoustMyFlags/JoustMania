@@ -555,7 +555,11 @@ async def test_fight_club_plays_without_a_tempo_loop():
     async def instant_loop():
         await asyncio.sleep(0.05)
 
-    with patch.object(game, "_music_loop") as music_loop, patch.object(game, "_game_loop", side_effect=instant_loop):
+    with (
+        patch.object(game, "_music_loop") as music_loop,
+        patch.object(game, "_start_game_music", wraps=game._start_game_music) as start_music,
+        patch.object(game, "_game_loop", side_effect=instant_loop),
+    ):
         try:
             await asyncio.wait_for(game.run(), timeout=10)
         finally:
@@ -565,3 +569,10 @@ async def test_fight_club_plays_without_a_tempo_loop():
 
     music_loop.assert_not_called()
     assert game.music_loop_task is None
+    # The music starts once at 1.0 and nothing moves the tempo, so the slow table applies to the end.
+    start_music.assert_called_once()
+    assert game.music_speed == 1.0
+    assert game.tempo_intensity == 0.0
+    player = next(iter(game.players.values()))
+    sens = game.sensitivity.value
+    assert game._compute_effective_thresholds(player) == (game.slow_warning[sens], game.slow_max[sens])
