@@ -133,9 +133,9 @@ class WerewolfGame(BaseGameMode):
             WEREWOLF_FRACTION,
         )
 
-        # The result, latched once in _check_win_condition (UC-022 BR-004, #1343):
-        # "humans" / "werewolves" / "tie". None = no result (force-ended before a
-        # win, or the stream ended without one).
+        # The result, latched once in _check_win_condition together with the outcome
+        # (UC-022 BR-004, #1343, #2009): "humans" / "werewolves" / "tie". None = no
+        # result (force-ended before a win, or the stream ended without one).
         self._winner_side: str | None = None
 
         self.werewolf_serials: list[str] = []
@@ -384,6 +384,9 @@ class WerewolfGame(BaseGameMode):
         # The result is latched once: later calls (the loop's hold) do not republish it.
         if self._winner_side is not None:
             return True
+        if self.force_ended:
+            # A force-end declares no winner (BR-004): nothing is latched or published.
+            return False
 
         alive_humans = [s for s in self.human_serials if self.players[s].alive]
         alive_werewolves = [s for s in self.werewolf_serials if self.players[s].alive]
@@ -399,13 +402,15 @@ class WerewolfGame(BaseGameMode):
             else:
                 # Both sides eliminated at once: a tie, not a werewolf_winner (UC-022 A2, #1354)
                 logger.info("Tie: no humans and no werewolves survive")
-                self._winner_side = "tie"
+                if not self._latch_win("tie"):
+                    return False
                 await self.event_publisher(GameEvent.GAME_TIE, {})
                 return True
 
             logger.info(f"{winner.capitalize()} win! {len(winners)} survivors")
 
-            self._winner_side = winner
+            if not self._latch_win(winner):
+                return False
             await self.event_publisher(
                 "werewolf_winner",
                 {
@@ -419,6 +424,18 @@ class WerewolfGame(BaseGameMode):
             return True
 
         return False
+
+    def _latch_win(self, side: str) -> bool:
+        """Latch the outcome, then the result, before the publish awaits (UC-022 BR-004, #2009).
+
+        The outcome latches first: a force-end that won the race declares no winner
+        (False, nothing latched), one landing during the publish keeps this result.
+        """
+        self._latch_game_outcome()
+        if self.game_outcome() == "force_ended":
+            return False
+        self._winner_side = side
+        return True
 
     def _player_death_event_attributes(self, serial: str) -> dict:
         """Werewolf attributes on the base kill path's player_death event (#1327)."""
@@ -460,11 +477,11 @@ class WerewolfGame(BaseGameMode):
         if self.reveal_task and not self.reveal_task.done():
             self.reveal_task.cancel()
 
-        # The result was latched when the win condition fired. A force-end declares
-        # no winner (UC-022 BR-004, #1343) unless one was already latched; a stream end
+        # The result was latched with the outcome when the win condition fired. A
+        # force-end declares no winner (UC-022 BR-004, #1343, #2009); a stream end
         # without a win has none either.
         force_ended = self.game_outcome() == "force_ended"
-        winner_side = self._winner_side  # latched before its event, so a force-end racing the publish keeps it
+        winner_side = None if force_ended else self._winner_side
         winner = winner_side if winner_side in ("humans", "werewolves") else "none"
         if winner == "werewolves":
             winner_serials = [s for s in self.werewolf_serials if self.players[s].alive]
