@@ -103,3 +103,42 @@ class TestFightClubKillAcrossRounds:
         assert game.players[loser].alive is False
         assert game._latched_winner == defender
         _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A4", steps=[5, 6], br=["BR-005", "BR-006"])
+    @pytest.mark.asyncio
+    async def test_both_combatants_disconnect_while_the_forfeit_waits_the_forfeit_comes_first(self):
+        """Two players: the re-seated loser's disconnect waits, then the defender disconnects
+        too; the loser's forfeit applies first (the defender wins 2-0), and the defender's
+        leave, handled after it, finds the game ended with the defender crowned."""
+        game, events = await _round_without_invincibility(2, "test_fc_double_dc")
+        defender, loser = game.current_defender, game.current_fighter
+        round_start_published, round_start_release = asyncio.Event(), asyncio.Event()
+        publish = game.event_publisher
+
+        async def held_round_start(event_type, data):
+            await publish(event_type, data)
+            if event_type == "round_start":
+                round_start_published.set()
+                await round_start_release.wait()
+
+        game.event_publisher = held_round_start
+
+        with patch(FC_METRICS):
+            kill = asyncio.create_task(handle_eliminate_player(_eliminate_ctx(game, loser)))
+            await asyncio.wait_for(round_start_published.wait(), 1.0)
+            assert game.current_fighter == loser
+            await game._handle_disconnect(loser)
+            assert loser in game._deferred_disconnects
+            await game._handle_disconnect(defender)
+            assert game.players[defender].score == 1
+            assert game._accepts_kill(defender) is False
+            round_start_release.set()
+            await kill
+
+        assert game.players[loser].score == 0
+        assert game.players[defender].score == 2
+        assert [e["winner"] for e in events.get_events_of_type("round_end")] == [defender, defender]
+        assert game.players[loser].alive is False
+        assert game._latched_winner == defender
+        assert not game._disconnects_after_forfeit
+        _end_round_timer(game)

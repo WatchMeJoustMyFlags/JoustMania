@@ -138,6 +138,9 @@ class FightClubGame(BaseGameMode):
         # Round losers that disconnected once the next round had seated them again:
         # they forfeit that round when their kill path is done (A4 step 5).
         self._deferred_disconnects: set[str] = set()
+        # The other combatant's disconnect while such a forfeit waits: it is handled
+        # once the forfeit is applied, so the leaver never wins that round (#2015).
+        self._disconnects_after_forfeit: list[str] = []
         # The id of the seated round, and the round each kill in flight entered in:
         # a kill never decides a later round than its own (BR-006, #2015).
         self._round_id: int = 0
@@ -551,17 +554,25 @@ class FightClubGame(BaseGameMode):
         player = self.players.get(serial)
         if player is None:
             return False
+        # A seated combatant's disconnect waits for its round-loss kill: the round
+        # is its forfeit, so the other combatant cannot lose it meanwhile, not even
+        # by its own disconnect (A4 step 5, #2015).
+        if self._other_combatant_forfeit_pending(serial):
+            return False
         if serial in self._disconnected:
             return player.alive
         # A kill that entered during an earlier round (still awaiting its explosion
         # when the next round was seated) never decides this one (#2015).
         if self._kill_round_ids.get(serial, self._round_id) != self._round_id:
             return False
-        # A seated combatant's disconnect waits for its round-loss kill: the round
-        # is its forfeit, so the other combatant cannot lose it meanwhile (A4 step 5).
-        if self._deferred_disconnects.intersection((self.current_defender, self.current_fighter)):
-            return False
         return self._fights_current_round(serial) and not self.is_in_grace(player)
+
+    def _other_combatant_forfeit_pending(self, serial: str) -> bool:
+        """Whether ``serial`` fights the seated round and its opponent's forfeit waits (A4 step 5)."""
+        if not self._fights_current_round(serial):
+            return False
+        other = self.current_fighter if serial == self.current_defender else self.current_defender
+        return other in self._deferred_disconnects
 
     async def _handle_disconnect(self, serial: str) -> None:
         """A disconnect is a forfeit and takes the player out for good (UC-025 A4).
@@ -570,7 +581,9 @@ class FightClubGame(BaseGameMode):
         the base death path, so the kill handler knows: a combatant loses the round
         even during invincibility (the opponent scores), anyone else leaves the
         rotation. The base drops the kill while one of the player is in flight;
-        ``_disconnect_during_kill`` then decides (A4 step 5).
+        ``_disconnect_during_kill`` then decides (A4 step 5). A combatant whose
+        opponent's forfeit still waits (A4 step 5) is handled after that forfeit,
+        so the opponent never wins the round it forfeits (#2015).
         """
         if self._win_latched:
             return
@@ -580,6 +593,12 @@ class FightClubGame(BaseGameMode):
         self._disconnected.add(serial)
         if serial in self._kills_in_progress:
             self._disconnect_during_kill(serial, player)
+            return
+        if self._other_combatant_forfeit_pending(serial):
+            # The opponent's forfeit comes first (it wins this round); this
+            # disconnect is handled right after it (A4 step 5, #2015).
+            logger.info(f"Combatant {serial} disconnected while its opponent's forfeit waits: handled after it")
+            self._disconnects_after_forfeit.append(serial)
             return
         await super()._handle_disconnect(serial)
 
@@ -627,7 +646,17 @@ class FightClubGame(BaseGameMode):
         if serial in self._deferred_disconnects and serial not in self._kills_in_progress:
             self._deferred_disconnects.discard(serial)
             await self._handle_disconnect(serial)
+            await self._replay_disconnects_after_forfeit()
         return taken
+
+    async def _replay_disconnects_after_forfeit(self) -> None:
+        """Handle the disconnects that waited for an opponent's forfeit (A4 step 5, #2015).
+
+        Each goes through ``_handle_disconnect`` as usual: ignored once the winner
+        is latched (BR-005), otherwise the player leaves through the death path.
+        """
+        while self._disconnects_after_forfeit:
+            await self._handle_disconnect(self._disconnects_after_forfeit.pop(0))
 
     def _leave_rotation(self, serial: str) -> None:
         """Take a disconnected player out of the rotation for good; it keeps its score (A4).
