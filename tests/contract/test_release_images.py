@@ -64,3 +64,54 @@ def test_ci_retag_list_equals_release_list():
 
 def test_check_retag_source_knows_every_release_image():
     assert _check_retag_source_images() == _release_images()
+
+
+def _ci_ch_output_keys() -> dict[str, str]:
+    """CH_X env name -> paths-filter output key, from the matrices step's env."""
+    text = (ic.REPO_ROOT / ".github/workflows/ci.yml").read_text()
+    return dict(
+        re.findall(
+            r"^\s+(CH_[A-Z_]+): \$\{\{ steps\.f\.outputs\.(\w+) \}\}\s*$", text, re.M
+        )
+    )
+
+
+def _ci_retag_pairs() -> dict[str, str]:
+    """image -> CH_X variable used in ``maybe_retag``."""
+    text = (ic.REPO_ROOT / ".github/workflows/ci.yml").read_text()
+    return {
+        image: ch
+        for ch, image in re.findall(
+            r'^\s*maybe_retag "\$(CH_[A-Z_]+)"\s+([a-z0-9-]+)\s*$', text, re.M
+        )
+    }
+
+
+def _check_retag_source_filters() -> dict[str, str]:
+    text = (ic.REPO_ROOT / "scripts/ci/check-retag-source.sh").read_text()
+    return dict(re.findall(r"^\s+([a-z0-9-]+)\) filter=(\w+) ;;\s*$", text, re.M))
+
+
+def _ci_filter_keys() -> set[str]:
+    wf = ic.load_yaml(ic.REPO_ROOT / ".github/workflows/ci.yml")
+    for step in wf["jobs"]["changes"]["steps"]:
+        if step.get("id") == "f":
+            return set(ic.yaml.safe_load(step["with"]["filters"]))
+    raise AssertionError("no paths-filter step with id 'f'")
+
+
+def test_retag_ch_variable_matches_check_retag_source_filter():
+    """maybe_retag's CH_X must map to the same filter key check-retag-source.sh
+    uses for that image, and that key must exist in ci.yml's paths-filter."""
+    ch_keys = _ci_ch_output_keys()
+    filters = _check_retag_source_filters()
+    filter_keys = _ci_filter_keys()
+    for image, ch in _ci_retag_pairs().items():
+        assert ch in ch_keys, f"{ch} (for {image}) has no env entry in ci.yml"
+        assert ch_keys[ch] == filters[image], (
+            f"{image}: maybe_retag uses {ch} -> {ch_keys[ch]!r} but "
+            f"check-retag-source.sh uses filter {filters[image]!r}"
+        )
+        assert ch_keys[ch] in filter_keys, (
+            f"{image}: filter {ch_keys[ch]!r} not in ci.yml paths-filter"
+        )

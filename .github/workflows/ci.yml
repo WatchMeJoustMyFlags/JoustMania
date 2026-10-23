@@ -1729,7 +1729,7 @@ jobs:
       - name: Inspect manifest
         run: docker buildx imagetools inspect "${IMAGE_PREFIX}/${IMAGE_NAME}:${GITHUB_SHA}"
 
-  # Release contract: release.yml tag-images expects IMAGE:<sha> for all 10
+  # Release contract: release.yml tag-images expects IMAGE:<sha> for all 12
   # release images. Images skipped by the path filter get a manifest-only retag
   # from :main (seconds each). Explicit if-condition because the build jobs may
   # legitimately be 'skipped' (plain `needs` semantics would skip this job too).
