@@ -17,6 +17,7 @@ Issue #209: Improve test coverage for critical game flow
 """
 
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
@@ -2717,3 +2718,275 @@ class TestIdleWakeThenReadyUp:
 
         assert _started_roster(stream) == ["s1", "s2"]
         assert real_servicer.state == menu_pb2.MenuState.GAME_STARTING
+
+
+class _ReconnectStub:
+    """Fake coordinator stub for UC-010 A9: the start stream breaks after game_start, later
+    streams are primary-bus reconnects, and GetGameState answers with ``state`` / ``game_id``.
+
+    ``failed_reconnects`` reconnect attempts fail like a coordinator that is still down: grpc.aio
+    returns empty headers for an UNAVAILABLE call and the error only surfaces on iteration, and
+    GetGameState fails too. ``lookup_failure`` ("raise" | "unsuccessful") makes the state lookup of
+    a healthy reconnect fail; ``ended_after_check`` makes a reconnect stream deliver ``game_ended``
+    once the state was asked.
+    """
+
+    def __init__(self, state, game_id, *, failed_reconnects=0, ended_after_check=False, lookup_failure=None):
+        self.state = state
+        self.game_id = game_id
+        self.failed_reconnects = failed_reconnects
+        self.ended_after_check = ended_after_check
+        self.lookup_failure = lookup_failure
+        self._down = False
+        self.requests = []
+        self.state_requests = []
+        self.headers_before_check = []
+        self._headers_received = False
+        self._checked = asyncio.Event()
+
+    def __call__(self, _channel):
+        return self
+
+    def StreamGameEvents(self, request, metadata=None):  # noqa: N802 - gRPC stub name
+        from proto import game_coordinator_pb2
+
+        self.requests.append(request)
+        stub = self
+
+        if request.HasField("start_config"):
+
+            class Start:
+                def cancel(self):
+                    pass
+
+                async def _events(self):
+                    yield game_coordinator_pb2.GameEvent(event_type="game_start", game_id="g1")
+                    raise ConnectionError("stream broke")
+
+                def __aiter__(self):
+                    return self._events()
+
+            return Start()
+
+        stub._down = stub.failed_reconnects > 0
+        if stub._down:
+            stub.failed_reconnects -= 1
+        down = stub._down
+
+        class Reconnect:
+            def cancel(self):
+                pass
+
+            async def initial_metadata(self):
+                if not down:
+                    stub._headers_received = True
+                return ()
+
+            async def _events(self):
+                if down:
+                    raise ConnectionError("coordinator unavailable")
+                await stub._checked.wait()
+                if stub.ended_after_check:
+                    yield game_coordinator_pb2.GameEvent(event_type="game_ended", game_id="g1", data={"winner": "s1"})
+                await asyncio.Event().wait()  # an open stream that never delivers
+
+            def __aiter__(self):
+                return self._events()
+
+        return Reconnect()
+
+    async def GetGameState(self, request, **_kwargs):  # noqa: N802 - gRPC stub name
+        from proto import game_coordinator_pb2
+
+        if self._down:
+            raise ConnectionError("coordinator unavailable")
+        self.state_requests.append(request)
+        self.headers_before_check.append(self._headers_received)
+        self._checked.set()
+        if self.lookup_failure == "raise":
+            raise ConnectionError("GetGameState failed")
+        if self.lookup_failure == "unsuccessful":
+            return game_coordinator_pb2.GetGameStateResponse(success=False, error="not ready")
+        return game_coordinator_pb2.GetGameStateResponse(
+            success=True,
+            game_info=game_coordinator_pb2.GameInfo(state=self.state, game_id=self.game_id),
+        )
+
+
+class TestReconnectChecksFollowedGame:
+    """UC-010 A9 / BR-009 (#2063): after a stream reconnect the menu checks that its game still exists."""
+
+    @staticmethod
+    async def _run(real_servicer, stub):
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        real_servicer.audio.start_lobby_music.reset_mock()
+        real_servicer.idle_monitor.start.reset_mock()
+        # UC-010 A8 lobby-restart window: the restore runs with _lobby_restarting set.
+        restarting_seen = []
+        real_servicer.audio.start_lobby_music.side_effect = lambda: restarting_seen.append(
+            real_servicer._lobby_restarting
+        )
+        real_servicer.restarting_seen = restarting_seen
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_delay, *_args, **_kwargs):
+            await real_sleep(0)
+
+        with (
+            patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", stub),
+            patch("services.menu.servicer.asyncio.sleep", fast_sleep),
+        ):
+            await _ready_up(real_servicer, "s1", "s2")
+            await asyncio.wait_for(_await_lifecycle(real_servicer), timeout=5)
+
+    @staticmethod
+    def _assert_lobby_restored(servicer):
+        assert servicer.state == menu_pb2.MenuState.RUNNING
+        assert servicer.state_manager.controller_states == {
+            "s1": ControllerState.CONNECTED,
+            "s2": ControllerState.CONNECTED,
+        }
+        servicer.audio.start_lobby_music.assert_awaited_once()
+        servicer.idle_monitor.start.assert_called_once()
+        assert servicer.restarting_seen == [True]
+        assert servicer._lobby_restarting is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A9", steps=[1, 2, 4], br=["BR-006", "BR-009"])
+    @pytest.mark.parametrize(
+        ("state_name", "active_game_id"),
+        [("ENDED", "g1"), ("IDLE", ""), ("RUNNING", "g2"), ("STARTING", "g2")],
+    )
+    async def test_reconnect_to_ended_game_finishes_lifecycle(self, real_servicer, state_name, active_game_id):
+        """The game ended while the stream was down (or a different game now runs): the lifecycle
+        publishes game_ended for the followed game, restores the lobby and finishes."""
+        from proto import game_coordinator_pb2
+
+        stub = _ReconnectStub(game_coordinator_pb2.GameState.Value(state_name), active_game_id)
+        await self._run(real_servicer, stub)
+
+        assert not stub.requests[1].HasField("start_config")  # BR-006: plain primary-bus subscribe
+        assert not stub.requests[1].game_id
+        assert stub.headers_before_check == [True]  # checked only once the subscription is registered
+        assert not stub.state_requests[0].game_id  # primary game
+        assert ("game_ended", {"game_id": "g1", "reason": "ended_while_disconnected"}) in _published(real_servicer)
+        self._assert_lobby_restored(real_servicer)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A9", steps=[1, 2, 4], br=["BR-009"])
+    async def test_reconnect_after_coordinator_restart_finishes_lifecycle(self, real_servicer):
+        """The coordinator restarted: the first reconnect fails, the next one finds no game (IDLE)."""
+        from proto import game_coordinator_pb2
+
+        stub = _ReconnectStub(game_coordinator_pb2.GameState.IDLE, "", failed_reconnects=1)
+        await self._run(real_servicer, stub)
+
+        assert len(stub.requests) == 3  # start stream, failed reconnect, reconnect
+        assert stub.headers_before_check == [True]
+        assert ("game_ended", {"game_id": "g1", "reason": "ended_while_disconnected"}) in _published(real_servicer)
+        self._assert_lobby_restored(real_servicer)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A9", steps=[1, 3, 4], br=["BR-009"])
+    async def test_reconnect_to_running_game_continues(self, real_servicer):
+        """The followed game still runs: the lifecycle keeps the reconnected stream and ends on the
+        game's own game_ended."""
+        from proto import game_coordinator_pb2
+
+        stub = _ReconnectStub(game_coordinator_pb2.GameState.RUNNING, "g1", ended_after_check=True)
+        await self._run(real_servicer, stub)
+
+        assert stub.headers_before_check == [True]
+        published = _published(real_servicer)
+        assert ("game_ended", {"winner": "s1"}) in published
+        assert not [d for e, d in published if e == "game_ended" and d.get("reason") == "ended_while_disconnected"]
+        self._assert_lobby_restored(real_servicer)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A9", steps=[1, 3], br=["BR-009", "BR-008"])
+    @pytest.mark.parametrize("lookup_failure", ["raise", "unsuccessful"])
+    async def test_failed_state_lookup_keeps_the_stream(self, real_servicer, lookup_failure):
+        """GetGameState fails or answers unsuccessfully: the menu does not guess the game is gone.
+        No game_ended is published, the lobby is not restored and the lifecycle keeps its stream."""
+        from proto import game_coordinator_pb2
+
+        stub = _ReconnectStub(game_coordinator_pb2.GameState.IDLE, "", lookup_failure=lookup_failure)
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        real_servicer.audio.start_lobby_music.reset_mock()
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_delay, *_args, **_kwargs):
+            await real_sleep(0)
+
+        with (
+            patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", stub),
+            patch("services.menu.servicer.asyncio.sleep", fast_sleep),
+        ):
+            await _ready_up(real_servicer, "s1", "s2")
+            task = real_servicer._game_lifecycle_task
+            try:
+                for _ in range(200):
+                    if stub.state_requests:
+                        break
+                    await real_sleep(0.01)
+                assert stub.state_requests, "the reconnect never asked for the game state"
+                for _ in range(20):  # let a wrong "gone" verdict play out
+                    await real_sleep(0)
+                assert not task.done()
+                assert len(stub.requests) == 2  # start stream and one reconnect, no retry
+                assert not [d for e, d in _published(real_servicer) if d.get("reason") == "ended_while_disconnected"]
+                real_servicer.audio.start_lobby_music.assert_not_awaited()
+            finally:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A9", steps=[1, 2, 4], br=["BR-006", "BR-009"])
+    async def test_followed_game_id_is_reset_per_lifecycle(self, real_servicer):
+        """A second lifecycle that breaks before its first event is an A3 restore: it must not
+        reconnect nor publish game_ended for the previous lifecycle's game id."""
+        from proto import game_coordinator_pb2
+
+        stub = _ReconnectStub(game_coordinator_pb2.GameState.IDLE, "")
+        await self._run(real_servicer, stub)
+        assert len(stub.requests) == 2
+        real_servicer.audio.start_lobby_music.reset_mock()
+        real_servicer.event_publisher.publish.reset_mock()
+        stub.requests.clear()
+
+        def breaks_before_first_event(request, metadata=None):  # noqa: ARG001
+            stub.requests.append(request)
+
+            class Broken:
+                def cancel(self):
+                    pass
+
+                async def _events(self):
+                    raise ConnectionError("stream broke before the first event")
+                    yield  # pragma: no cover - makes this an async generator
+
+                def __aiter__(self):
+                    return self._events()
+
+            return Broken()
+
+        stub.StreamGameEvents = breaks_before_first_event
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_delay, *_args, **_kwargs):
+            await real_sleep(0)
+
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        with (
+            patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", stub),
+            patch("services.menu.servicer.asyncio.sleep", fast_sleep),
+        ):
+            await real_servicer._start_game("s1", controllers=["s1", "s2"])
+            await asyncio.wait_for(_await_lifecycle(real_servicer), timeout=5)
+
+        assert len(stub.requests) == 1  # no reconnect
+        assert not [d for e, d in _published(real_servicer) if d.get("reason") == "ended_while_disconnected"]
+        real_servicer.audio.start_lobby_music.assert_awaited_once()

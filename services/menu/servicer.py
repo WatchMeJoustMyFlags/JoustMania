@@ -172,6 +172,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         self._game_lifecycle_task: asyncio.Task | None = None
         # True while the lifecycle task restores the lobby after a game (UC-010 A8 lobby-restart window).
         self._lobby_restarting = False
+        # game_id of the game the lifecycle follows once its start is confirmed; None before (UC-010 BR-009).
+        self._followed_game_id: str | None = None
 
         logger.info("Menu service initialized")
 
@@ -847,11 +849,15 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         stream = None
         game_started = False
         max_reconnect_attempts = 3
+        self._followed_game_id = None
 
         try:
             for attempt in range(max_reconnect_attempts + 1):
                 try:
                     stream = self._open_game_stream(stub, request, metadata, attempt, max_reconnect_attempts)
+                    if attempt > 0 and await self._followed_game_gone(stub, stream):
+                        await self._end_followed_game_while_disconnected()
+                        return
                     result = await self._consume_game_events(stream, game_started, span)
 
                     if result.should_return:
@@ -866,6 +872,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 except Exception as e:
                     self._cancel_stream(stream)
                     stream = None
+                    # A stream that breaks mid-iteration never returns its result: the confirmed
+                    # start (BR-006) is what makes the break eligible for a reconnect.
+                    game_started = game_started or self._followed_game_id is not None
                     game_started = self._check_retry_eligible(e, game_started, attempt, max_reconnect_attempts)
                     backoff = attempt + 1
                     logger.warning(f"Game event stream error: {e}. Reconnecting in {backoff}s...")
@@ -882,6 +891,44 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             await self._restart_lobby()
         finally:
             self._cancel_stream(stream)
+
+    async def _followed_game_gone(self, stub, stream) -> bool:
+        """Whether the followed game ended while the stream was down (UC-010 A9, BR-009).
+
+        Waits for the reconnected stream's headers first: the coordinator sends them once the
+        subscription is registered (#1613), so a game that ends after this check still delivers
+        its terminal event on the new stream. A header wait that times out raises (a normal
+        reconnect failure). grpc.aio returns empty headers for an unavailable coordinator and the
+        error only surfaces when the stream is iterated: the state lookup then fails, the stream is
+        kept, and the iteration error drives the retry. A failed or unsuccessful lookup never
+        counts as "game gone".
+        """
+        from proto import game_coordinator_pb2
+
+        await asyncio.wait_for(stream.initial_metadata(), timeout=5.0)
+        try:
+            response = await stub.GetGameState(game_coordinator_pb2.GetGameStateRequest(), timeout=2.0)
+        except Exception as e:
+            logger.warning(f"GetGameState after reconnect failed, keeping the stream: {e}")
+            return False
+        if not response.success:
+            logger.warning(f"GetGameState after reconnect unsuccessful, keeping the stream: {response.error}")
+            return False
+        info = response.game_info
+        if info.state not in (game_coordinator_pb2.GameState.STARTING, game_coordinator_pb2.GameState.RUNNING):
+            return True
+        return bool(self._followed_game_id) and info.game_id != self._followed_game_id
+
+    async def _end_followed_game_while_disconnected(self) -> None:
+        """Finish the lifecycle of a game that ended while the stream was down (UC-010 A9)."""
+        from lib.types import GameEvent
+
+        logger.warning(f"Game {self._followed_game_id} ended while the game event stream was down")
+        await self.event_publisher.publish(
+            GameEvent.GAME_ENDED,
+            {"game_id": self._followed_game_id or "", "reason": "ended_while_disconnected"},
+        )
+        await self._restart_lobby()
 
     def _open_game_stream(self, stub, request, metadata, attempt: int, max_attempts: int):
         """
@@ -961,6 +1008,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         logger.info(f"Game started successfully: {event.event_type}")
         span.set_attribute("game.started", True)
+        # UC-010 BR-009: the game a reconnect must find again.
+        self._followed_game_id = event.game_id
 
         # Clear ready state now that game has started (Issue #256)
         self._clear_ready_state()
