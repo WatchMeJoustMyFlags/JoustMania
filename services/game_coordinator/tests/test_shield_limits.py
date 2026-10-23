@@ -185,7 +185,9 @@ class TestUC040A34Cap:
         limits["value"] = (1, 0)
         await game.grant_shield("p1", 5.0)
         clock.t += 10.0
-        game.players["p1"] = Player(serial="p1", alive=True, color=(0, 255, 0))  # a fresh Player object
+        game.players["p1"].alive = False  # killed
+        assert await game.revive_player("p1") is True
+        assert game.players["p1"].alive is True
         assert await _refused(game, "p1") == CAP
 
 
