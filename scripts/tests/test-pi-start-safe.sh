@@ -5,7 +5,8 @@
 #  - no `rm -f` except a foreign joustmania-* container (or python-hid when its
 #    profile is inactive), no `prune`, no `down`; the last call is `up -d --remove-orphans`
 #  - "ours" is what `compose ps -a` lists (so a COMPOSE_PROJECT_NAME in .env.local
-#    counts), and when compose cannot list them nothing is removed
+#    counts), and when compose cannot list them nothing is removed; a container from
+#    this checkout under another project name is foreign (it would block `up -d`)
 #  - the effective IMAGE_TAG comes from `compose config --images`, not from a grep
 #    of .env (the release-please inline comment stays out of the log and start.env)
 #  - a long `config --services` list does not make the python-hid check fail
@@ -39,7 +40,7 @@ make_case() {
   printf 'IMAGE_TAG=0.0.0-test\n' >"${CASE}/repo/.env"
   : >"${CASE}/docker.log"
   # docker stub. ps -a --format prints $CASE/containers (name|project|working_dir);
-  # compose ps -a prints $CASE/own (fails when $CASE/ps-fails exists);
+  # compose ps -a prints $CASE/own (name|project; fails when $CASE/ps-fails exists);
   # compose config --services / --images print $CASE/services / $CASE/images (exec:
   # like the real compose, the writer dies of SIGPIPE when the reader exits early);
   # "up" fails when $CASE/up-fails exists.
@@ -74,7 +75,7 @@ run_start() {
 make_case teardown
 printf 'joustmania-menu|repo|/elsewhere\njoustmania-old||\njoustmania-other|someproject|/other\njoustmania-audio|repo|%s\n' \
   "${CASE}/repo" >"${CASE}/containers"
-printf 'joustmania-menu\n' >"${CASE}/own"
+printf 'joustmania-menu|repo\n' >"${CASE}/own"
 run_start || fail "teardown: start exited non-zero"
 log="${CASE}/docker.log"
 if grep -qE '(^| )(prune|down)( |$)' "${log}"; then fail "teardown: prune or down was called"; fi
@@ -94,10 +95,23 @@ grep -q 'unit outdated or not run by the rev-2 unit' "${CASE}/out.log" \
 make_case project-name
 printf 'COMPOSE_PROJECT_NAME=stage\n' >"${CASE}/repo/.env.local"
 printf 'joustmania-menu|stage|/elsewhere\njoustmania-game-coordinator|stage|/elsewhere\n' >"${CASE}/containers"
-printf 'joustmania-menu\njoustmania-game-coordinator\n' >"${CASE}/own"
+printf 'joustmania-menu|stage\njoustmania-game-coordinator|stage\n' >"${CASE}/own"
 run_start || fail "project-name: start exited non-zero"
 if grep -qE '^rm -f joustmania-(menu|game-coordinator)$' "${CASE}/docker.log"; then
   fail "project-name: a container of the .env.local project was removed as foreign"
+fi
+
+# --- 1d. same checkout, another project: foreign (else `up -d` hits a name conflict)
+make_case stale-project
+printf 'COMPOSE_PROJECT_NAME=stage\n' >"${CASE}/repo/.env.local"
+printf 'joustmania-menu|stage|%s\njoustmania-audio|stage|%s\njoustmania-agent|joustmania|%s\n' \
+  "${CASE}/repo" "${CASE}/repo" "${CASE}/repo" >"${CASE}/containers"
+printf 'joustmania-menu|stage\n' >"${CASE}/own"
+run_start || fail "stale-project: start exited non-zero"
+grep -qx 'rm -f joustmania-agent' "${CASE}/docker.log" \
+  || fail "stale-project: a container from this checkout under another project was kept"
+if grep -qE '^rm -f joustmania-(menu|audio)$' "${CASE}/docker.log"; then
+  fail "stale-project: a container of the current project was removed"
 fi
 
 # --- 1c. compose cannot list its containers: nothing is removed ---------------

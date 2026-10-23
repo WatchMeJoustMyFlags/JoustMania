@@ -136,17 +136,25 @@ fi
 # Targeted cleanup only: a joustmania-* container that is not ours blocks the
 # fixed container names, so remove it and say so. Compose itself says which
 # containers are ours (`ps -a` resolves the project name from the shell env,
-# .env and .env.local exactly as `up` does); a container whose compose working
-# dir is this checkout is ours too. If compose cannot list them, remove nothing.
-# Our own containers are never touched here: compose keeps or recreates them
-# (no blanket rm, prune or down; NFR-026).
+# .env and .env.local exactly as `up` does, and lists profile-inactive services
+# too). A container whose compose working dir is this checkout is kept only when
+# its project is one compose listed: one from this checkout under another project
+# name (created before COMPOSE_PROJECT_NAME was set, or by a plain
+# `docker compose up`) would block `up -d` with a name conflict, so it is
+# foreign. If compose cannot list them, remove nothing. Our own containers are
+# never touched here: compose keeps or recreates them (no blanket rm, prune or
+# down; NFR-026).
 echo "Checking for foreign joustmania containers..."
-if OWN_CONTAINERS="$(compose ps -a --format '{{.Name}}' 2>/dev/null)"; then
+if OWN_LIST="$(compose ps -a --format '{{.Name}}|{{.Project}}' 2>/dev/null)"; then
+    OWN_CONTAINERS="$(cut -d'|' -f1 <<<"$OWN_LIST")"
+    OWN_PROJECTS="$(cut -s -d'|' -f2 <<<"$OWN_LIST" | sort -u)"
     CONTAINERS="$(docker ps -a --filter "name=joustmania-" --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)"
     while IFS='|' read -r cname cproject cworkdir; do
         [[ -n "$cname" ]] || continue
         grep -qxF -- "$cname" <<<"$OWN_CONTAINERS" && continue
-        [[ "$cworkdir" == "$JOUSTMANIA_DIR" ]] && continue
+        if [[ "$cworkdir" == "$JOUSTMANIA_DIR" && -n "$cproject" ]] && grep -qxF -- "$cproject" <<<"$OWN_PROJECTS"; then
+            continue
+        fi
         echo "Removing foreign container $cname (project '${cproject:-none}')"
         docker rm -f "$cname" >/dev/null 2>&1 || true
     done <<<"$CONTAINERS"

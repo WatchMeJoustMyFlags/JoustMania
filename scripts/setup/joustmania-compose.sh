@@ -13,7 +13,8 @@
 #   implicit .env, so both are named. A reboot through systemd therefore comes
 #   back exactly like the runbook's manual bring-up (#1488).
 # Never prints the env files or their values. Never run `config` without
-# `--services`/`-q` where output is logged; it prints interpolated secrets.
+# `--services`/`--images`/`-q` where output is logged; it prints interpolated
+# secrets.
 set -euo pipefail
 
 JOUSTMANIA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
