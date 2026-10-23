@@ -145,6 +145,8 @@ class TournamentGame(BaseGameMode):
         self._result_latched: bool = False
         self._champion: str | None = None
         self._champion_announced: bool = False
+        self._no_winner_latched: bool = False
+        self._no_winner_announced: bool = False
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
 
@@ -649,6 +651,9 @@ class TournamentGame(BaseGameMode):
                 if len(left) == 1:
                     self._latch_champion(left[0])
                     await self._announce_champion()
+                elif self._latch_no_winner():
+                    # Nobody is left (A3): no champion, no rainbow, no voice.
+                    await self._announce_no_winner()
             elif not self._stall_logged:
                 # No playable match yet more than one player is left: the bracket is
                 # stuck (a bye that never advanced was #1990; a match with two
@@ -816,41 +821,30 @@ class TournamentGame(BaseGameMode):
                 logger.error(f"Finishing the decided final failed; the champion stands: {e}", exc_info=True)
         await self._announce_champion()
 
-    async def _publish_bracket_result(self) -> bool:
-        """Publish ``tournament_champion`` or ``tournament_no_winner`` once at most one player is left.
+    def _latch_no_winner(self) -> bool:
+        """Latch the outcome of a bracket that finished with nobody left (UC-025 A3, BR-003).
 
-        Not called by the game: the champion is latched and announced by
-        ``_latch_champion`` / ``_announce_champion`` (UC-025 step 5, BR-005); the
-        ``tournament_no_winner`` trigger (A3) waits on a maintainer decision.
-
-        Returns:
-            True if only one player remains (or all eliminated)
+        Synchronous, no await, like ``_latch_champion``: a force-end that landed
+        before it (``running`` already False, or between the check and the latch)
+        keeps its ``force_ended`` outcome and nothing is announced. Returns
+        whether it latched.
         """
-        active_players = [s for s, p in self.players.items() if p.tournament_state != TournamentState.ELIMINATED]
+        if self._result_latched or not self.running:
+            return False
+        self._latch_game_outcome()
+        if self.game_outcome() == "force_ended":
+            return False
+        self._result_latched = True
+        self._no_winner_latched = True
+        logger.info("Tournament ended with no winner")
+        return True
 
-        if len(active_players) <= 1:
-            if len(active_players) == 1:
-                champion_serial = active_players[0]
-                champion = self.players[champion_serial]
-                champion.tournament_state = TournamentState.CHAMPION
-
-                logger.info(f"Tournament champion: {champion_serial} with {champion.wins} wins!")
-
-                await self.event_publisher(
-                    "tournament_champion",
-                    {
-                        "champion": champion_serial,
-                        "wins": champion.wins,
-                        "rounds_played": self.current_round,
-                    },
-                )
-            else:
-                logger.info("Tournament ended with no winner")
-                await self.event_publisher("tournament_no_winner", {})
-
-            return True
-
-        return False
+    async def _announce_no_winner(self) -> None:
+        """Publish ``tournament_no_winner`` once, only for a latched no-winner bracket (UC-025 A3)."""
+        if not self._no_winner_latched or self._no_winner_announced:
+            return
+        self._no_winner_announced = True
+        await self.event_publisher("tournament_no_winner", {})
 
     def _accepts_kill(self, serial: str) -> bool:
         """The Tournament kill gate (UC-025 BR-006, UC-030 step 9; #1383, #1737, D-G8).
