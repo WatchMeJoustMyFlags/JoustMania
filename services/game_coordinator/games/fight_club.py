@@ -687,45 +687,20 @@ class FightClubGame(BaseGameMode):
 
     async def _process_controller_state(self, state):
         """
-        Process controller state during Fight Club.
+        Detect hits for the two fighters only (UC-025 BR-002, #1347).
 
-        Only process states for active fighters (defender/fighter).
+        The defender and the fighter go through the base path (UC-030 steps 4-7
+        and A1): the ``perception.ema_weight`` EMA, the EMA reset during grace and
+        invincibility (``effective_grace_until``), the ``warning_until`` gate,
+        analytics, health, battery and name capture. Waiting players are not
+        checked, but their name, battery and health are still captured.
         """
-        serial = state.serial
-        player = self.players.get(serial)
-
-        if not player:
+        player = self.players.get(state.serial)
+        if player is None or not player.alive:
             return
 
-        fc_player = player
-
-        # Only process if player is in active fight
-        if fc_player.state not in (FightState.DEFENDER, FightState.FIGHTER):
+        if player.state not in (FightState.DEFENDER, FightState.FIGHTER):
+            self._capture_controller_info(player, state.serial, state)
             return
 
-        # Unified effective-grace gate (#817): max(agent shield grace_until, admin
-        # invincible_until). Fight Club overrides _process_controller_state and so
-        # bypasses the base grace_until gate — routing through is_in_grace here is
-        # what makes an agent shield (grant_shield) actually protect a Fight Club
-        # fighter, not just the admin invincibility window.
-        if self.is_in_grace(fc_player):
-            return
-
-        # Calculate acceleration magnitude
-        accel = state.accel
-        accel_mag = (accel.x**2 + accel.y**2 + accel.z**2) ** 0.5
-
-        # Apply EMA filter
-        if fc_player.smoothed_accel < 1e-9:  # Check for uninitialized (avoids float equality)
-            fc_player.smoothed_accel = accel_mag
-        else:
-            fc_player.smoothed_accel = (fc_player.smoothed_accel * 4 + accel_mag) / 5
-
-        # Get thresholds using sensitivity index into base threshold arrays
-        warn_thresh, death_thresh = self._compute_effective_thresholds(fc_player)
-
-        # Check for death
-        if fc_player.smoothed_accel > death_thresh:
-            await self._kill_player(serial, fc_player.smoothed_accel)
-        elif fc_player.smoothed_accel > warn_thresh:
-            await self._warn_player(serial, fc_player.smoothed_accel, warn_thresh)
+        await super()._process_controller_state(state)
