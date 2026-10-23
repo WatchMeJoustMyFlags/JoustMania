@@ -120,7 +120,7 @@ stateDiagram-v2
     RUNNING --> STOPPED: StopMenu RPC
     RUNNING --> GAME_STARTING: All controllers ready\n(≥2 controllers)
     GAME_STARTING --> RUNNING: Game ends\n(game_ended event)
-    GAME_STARTING --> RUNNING: reset_menu input\n(game start cancelled)
+    GAME_STARTING --> RUNNING: reset_menu input, no game\nstarting/running on coordinator\n(lifecycle cancelled, lobby restored)
 
     note right of STOPPED
         No button monitoring

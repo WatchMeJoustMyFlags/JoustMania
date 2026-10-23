@@ -540,13 +540,24 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             if await self._primary_game_active():
                 logger.warning("reset_menu ignored: a game is starting or running on the coordinator")
                 return
+            if self._game_lifecycle_task is not task or task.done():
+                # The lifecycle finished (or a new start replaced it) during the lookup: nothing to recover.
+                logger.info("reset_menu ignored: the lifecycle task changed during the game-state lookup")
+                return
             logger.warning("reset_menu: cancelling a game lifecycle task with no active game")
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-            self._game_lifecycle_task = None
             await self.event_publisher.publish("game_start_cancelled", {})
-            await self._restart_lobby()
+            # The restore runs as the lifecycle task, so a start in this window gets the A8
+            # lobby-restart refusal instead of interleaving with the lobby restore.
+            restore = asyncio.create_task(self._restart_lobby())
+            self._game_lifecycle_task = restore
+            try:
+                await restore
+            finally:
+                if self._game_lifecycle_task is restore:
+                    self._game_lifecycle_task = None
             return
         if self.state == menu_pb2.MenuState.GAME_STARTING:
             self.state = menu_pb2.MenuState.RUNNING
