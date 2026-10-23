@@ -7,6 +7,8 @@
 set -euo pipefail
 # Hermetic: a fail-loud fake docker first on PATH, no COMPOSE / DOCKER override.
 unset COMPOSE DOCKER
+# Hermetic: no detach state from a caller (e.g. this test run inside a gate-run job).
+unset GATE_RUN_WORKER GATE_RUN_WAIT GATE_RUN_DRY_RUN DETACH_WAIT
 FAKE_DOCKER_DIR="$(mktemp -d)"
 printf '#!/bin/sh\necho "test reached docker: $*" >&2\nexit 99\n' >"${FAKE_DOCKER_DIR}/docker"
 chmod +x "${FAKE_DOCKER_DIR}/docker"
@@ -39,7 +41,8 @@ run_d() {
   local want_rc="$1" want_re="$2" out rc
   shift 2
   set +e
-  out="$("${DETACH}" "$@" 2>&1)"
+  # timeout: a detach regression that loops must fail the test, not hang `make lint`.
+  out="$(timeout 60 "${DETACH}" "$@" 2>&1)"
   rc=$?
   set -e
   [[ "$rc" == "$want_rc" ]] || fail "exit $rc (want $want_rc) for: $*"$'\n'"$out"
@@ -84,7 +87,7 @@ pass=$((pass + 1))
 # --- concurrent identical first calls: one job
 rm -f "$FAKE_COUNTER"
 J3="${WORK}/merge-3"
-for _ in 1 2 3; do "$DETACH" --dir "$J3" --wait 0 -- "$FAKE" 3 abc >/dev/null 2>&1 & done
+for _ in 1 2 3; do timeout 60 "$DETACH" --dir "$J3" --wait 0 -- "$FAKE" 3 abc >/dev/null 2>&1 & done
 wait || true
 run_d 0 'MERGED #3 at abc$' --dir "$J3" --wait 10 -- "$FAKE" 3 abc
 [[ "$(starts)" == 1 ]] || fail "concurrent first calls started $(starts) jobs"
@@ -92,7 +95,7 @@ run_d 0 'MERGED #3 at abc$' --dir "$J3" --wait 10 -- "$FAKE" 3 abc
 # --- a killed waiter (its whole process group) leaves the job alive
 rm -f "$FAKE_COUNTER"
 J4="${WORK}/merge-4"
-setsid "$DETACH" --dir "$J4" --wait 30 -- "$FAKE" 4 abc >/dev/null 2>&1 &
+setsid timeout 60 "$DETACH" --dir "$J4" --wait 30 -- "$FAKE" 4 abc >/dev/null 2>&1 &
 waiter=$!
 for _ in $(seq 50); do [[ -f "$J4/pid" ]] && break; sleep 0.1; done
 [[ -f "$J4/pid" ]] || fail "job did not start"

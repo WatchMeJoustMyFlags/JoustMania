@@ -86,7 +86,8 @@ those targets in that case (`REFUSED: .venv-test is not writable`), so sudo is n
    line per repeat, the pr-gates table, `VERDICT: ...`, at most 20 failing lines and `Logs: ...`. Use Read
    on a log only if the caller's brief asks for a specific slice.
 3. `VERDICT: ERROR: killed` (the job ended without a result), or a call that ended without a `VERDICT:`
-   line: report `ERROR: killed`; do not start it again.
+   line: report `ERROR: killed`; do not start it again yourself. A later brief with the same job replaces the
+   killed job with a fresh run (the script does that; the caller decides whether to re-brief).
 4. `REFUSED: ... holds a different command`: another job with this `--name` is still running at this head;
    report it as REFUSED.
 

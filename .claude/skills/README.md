@@ -42,7 +42,7 @@ Agents in `.claude/agents/` that run these workflows:
 | Agent | Model | Role |
 |---|---|---|
 | `implementer` | sonnet (opus for hot path, concurrency, safety) | runs `implement-issue` (and its fixer mode); delegates gates and test runs to `gate-runner`, broad searches to `Explore` |
-| `gate-runner` | haiku | runs only `scripts/ci/gate-run.sh` (allow-list enforced in code) for `make pr-gates` or test commands (repeat counts, mutation checks) in one worktree, in the foreground under ~8 min total, in the background for integration/e2e/full `pr-gates`; logs to files, relays the script's verdict and at most 20 failing lines; never edits |
+| `gate-runner` | haiku | runs only `scripts/ci/gate-run.sh` (allow-list enforced in code) for `make pr-gates` or test commands (repeat counts, mutation checks) in one worktree; every call is a foreground call (the script runs the job detached and the agent reruns it while it reports `PENDING`, #2036), never `run_in_background`; logs to files, relays the script's verdict and at most 20 failing lines; never edits |
 | `pr-reviewer` | sonnet (opus for features, hot path, concurrency, safety, CI) | runs `review-pr` (full, adversarial, delta); mutation checks in a separate worktree, gates via `gate-runner`, never edits the PR; known flakes in `.claude/known-flakes.md` |
 | `pr-merger` | haiku | merge mechanics after a clean review (below) |
 | `uc-coverage` | inherit | read-only coverage audit behind `coverage-check` |

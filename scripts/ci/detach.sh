@@ -28,7 +28,8 @@
 #   - Wait: when rc appears, print out and exit with the command's exit code.
 #     Otherwise print `VERDICT: PENDING (<elapsed>s); rerun the same command`
 #     and exit 3. A job that ended without rc (killed): `VERDICT: ERROR: killed
-#     ...`, exit 1; it is never restarted.
+#     ...`, exit 1; detach.sh never restarts it (gate-run.sh replaces it on
+#     its next call; other callers use a new --dir).
 #   Exit 3 is also a real exit code of some wrapped commands (safe-merge.sh: head
 #   mismatch): a caller loops only while the exit is 3 AND the last line starts
 #   with `VERDICT: PENDING`.
@@ -117,7 +118,7 @@ while :; do
   if ! job_alive; then
     [[ -f "$DIR/rc" ]] && finish
     tail -n 5 -- "$DIR/out" 2>/dev/null
-    echo "VERDICT: ERROR: killed (the job in $DIR ended without an exit code); it is not restarted"
+    echo "VERDICT: ERROR: killed (the job in $DIR ended without an exit code); detach.sh never restarts it"
     exit 1
   fi
   ((SECONDS < deadline)) || break

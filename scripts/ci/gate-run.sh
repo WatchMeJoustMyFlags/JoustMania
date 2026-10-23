@@ -46,8 +46,10 @@
 # <logs>/<worktree-basename>-<head8>/<name>.job/. One call waits at most GATE_RUN_WAIT
 # seconds (default 540, 0-580); when the run is not done yet it prints
 # `VERDICT: PENDING (<n>s); rerun the same command` and exits 3. Rerunning the same
-# command attaches to the job (never a second one). Never run this script with the
-# Bash tool's run_in_background: loop on exit 3 in the foreground instead.
+# command attaches to the job (never a second one). A finished job whose command or
+# worktree state differs, and a killed job, are replaced by a fresh one. Never run
+# this script with the Bash tool's run_in_background: loop on exit 3 in the
+# foreground instead.
 #
 # Exit: 0 verdict as expected (PASS, or MUTATION CAUGHT (assertion) with --expect-fail),
 #       1 any other verdict (also ERROR: killed), 2 REFUSED, 3 PENDING.
@@ -61,7 +63,13 @@ refuse() {
 }
 
 # ---------------------------------------------------------------- arguments
-WT="" LOGS="" REPEAT=1 EXPECT_FAIL=0 NAME="run" RUN_DIR_REL=""
+WT="" LOGS="" REPEAT=1 EXPECT_FAIL=0 NAME="run" RUN_DIR_REL="" WORKER=0
+# Internal first argument: the detached job re-runs this script as the worker. An
+# argv flag, not an env var, so nothing leaks into the run's environment (#2036).
+if [[ "${1:-}" == --_worker ]]; then
+  WORKER=1
+  shift
+fi
 while (($#)); do
   case "$1" in
     --worktree) (($# >= 2)) || refuse "--worktree needs a value"; WT="$2"; shift 2 ;;
@@ -276,24 +284,45 @@ tree_fingerprint() {
 # - Running job with a different command under the same name: REFUSED.
 # - Finished job, but a different command or a changed worktree (a mutation check
 #   with the same command after another edit): a fresh job replaces it.
-if [[ "${GATE_RUN_WORKER:-}" != 1 ]]; then
+# - A killed job (no rc, its lock free) is replaced the same way.
+# The check, the removal and the start run under a flock on $JOB.lock, so two
+# concurrent callers never remove each other's fresh job.
+if ((!WORKER)); then
   SELF="$(realpath -e -- "${BASH_SOURCE[0]}")"
-  worker=("$SELF" --worktree "$WT_REAL" --logs "$LOGS_BASE" --name "$NAME" --repeat "$REPEAT")
+  DETACH="$(dirname -- "$SELF")/detach.sh"
+  worker=("$SELF" --_worker --worktree "$WT_REAL" --logs "$LOGS_BASE" --name "$NAME" --repeat "$REPEAT")
   ((EXPECT_FAIL)) && worker+=(--expect-fail)
   [[ -n "$RUN_DIR_REL" ]] && worker+=(--dir "$RUN_DIR_REL")
   worker+=(-- "${CMD[@]}")
+  WAIT="${GATE_RUN_WAIT:-540}"
+  [[ "$WAIT" =~ ^[0-9]{1,3}$ ]] && ((WAIT <= 580)) || refuse "wait must be 0-580 seconds: $WAIT"
+  echo "gate-run $WT_REAL head ${HEAD_SHA:0:8} job $NAME"
+  echo "cmd: ${RUN_DIR_REL:+(in $RUN_DIR_REL) }${CMD[*]}"
+  exec 8>"$JOB.lock"
+  flock 8 || refuse "cannot lock $JOB.lock"
   if [[ -f "$JOB/rc" ]]; then
     if [[ "$(cat -- "$JOB/cmd" 2>/dev/null)" != "$(printf '%q\n' "${worker[@]}")" ||
       "$(cat -- "$JOB/tree" 2>/dev/null)" != "$(tree_fingerprint)" ]]; then
       rm -rf -- "$JOB"
     fi
+  elif [[ -f "$JOB/lock" ]] && flock -n "$JOB/lock" true 2>/dev/null; then
+    rm -rf -- "$JOB"  # killed: ended without rc and nobody holds its lock
   fi
-  echo "gate-run $WT_REAL head ${HEAD_SHA:0:8} job $NAME"
-  echo "cmd: ${RUN_DIR_REL:+(in $RUN_DIR_REL) }${CMD[*]}"
-  export GATE_RUN_WORKER=1
-  exec "$(dirname -- "$SELF")/detach.sh" --dir "$JOB" --wait "${GATE_RUN_WAIT:-540}" -- "${worker[@]}"
+  # Start (or attach) without waiting, still under the lock; then wait without it.
+  start_out="$("$DETACH" --dir "$JOB" --wait 0 -- "${worker[@]}" 2>&1 8>&-)"
+  start_rc=$?
+  exec 8>&-
+  if ((start_rc == 2)); then
+    echo "$start_out"
+    exit 2
+  fi
+  grep -m1 '^detach: started' <<<"$start_out"
+  exec "$DETACH" --dir "$JOB" --wait "$WAIT" -- "${worker[@]}"
 fi
-# Worker (inside the detached job): record the state this run sees, then run.
+# Worker (inside the detached job): nothing of the caller's detach state reaches the
+# run (a nested gate-run, e.g. test-gate-run.sh under `make lint`, detaches itself).
+unset GATE_RUN_WORKER GATE_RUN_WAIT GATE_RUN_DRY_RUN DETACH_WAIT
+# Record the state this run sees, then run.
 { tree_fingerprint >"$JOB/tree"; } 2>/dev/null
 
 TEST_FAIL_RE='FAILED|AssertionError|\bassert\b|--- FAIL|panicked'

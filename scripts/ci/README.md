@@ -25,6 +25,12 @@ directory and the command against an allow-list in code, runs it N times without
 a shell, writes logs outside the worktree and prints a compact verdict
 (PASS / FAIL / FLAKY k/N, mutation-check verdicts with `--expect-fail`). Usage
 and the allow-list in the script header. Test: `scripts/tests/test-gate-run.sh`.
+Detach / await (#2036): the run is a detached job (`detach.sh`) under
+`<logs>/<worktree>-<head8>/<name>.job/`; one call waits at most `GATE_RUN_WAIT` s
+(default 540). Exit 0 expected verdict, 1 other verdict (also `ERROR: killed`),
+2 REFUSED, 3 `VERDICT: PENDING (<n>s); rerun the same command`: the same command
+again attaches to the job. A finished job with another command or worktree state,
+and a killed job, are replaced by a fresh one.
 
 Threat model: guards against agent and prompt mistakes (what the caller adds to a
 command), not a sandbox for untrusted PR code. Every allowed form runs the
@@ -33,6 +39,18 @@ cargo build.rs, scripts/tests). Run it only on PRs you would run locally.
 Accepted risk: pytest `-p`/`-o`/`--rootdir`/`--import-mode` and go
 `-ldflags`/`-gcflags` pass validation but can only reach worktree or venv code,
 because absolute paths and `..` are refused; no per-option allow-list.
+
+### `detach.sh`
+
+Detach-and-await for long commands (#2036): `detach.sh --dir <abs job dir> [--wait <s>] -- <argv>`
+starts the command once as a detached job (setsid, own session) and waits at most
+`--wait` s (0-580, default 540) per call, so an agent stays in foreground Bash calls.
+The same argv again attaches to the job or prints its result (never a second job);
+a different argv for the dir is REFUSED (exit 2). Exit: the command's own code, or
+3 with a last line `VERDICT: PENDING (<n>s); rerun the same command`, or 1 with
+`VERDICT: ERROR: killed` (never restarted; use a new `--dir`). A wrapped command
+may exit 3 itself, so loop only on exit 3 AND a `VERDICT: PENDING` last line. Used
+by `gate-run.sh` and the pr-merger agent. Test: `scripts/tests/test-detach.sh`.
 
 ### `safe-merge.sh`
 

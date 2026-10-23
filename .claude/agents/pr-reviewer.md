@@ -60,7 +60,8 @@ If the PR number is missing (or the delta range or findings file is), report `BL
    `CAUGHT? (non-test error)` are not proof: read the log and fix the mutation, or report no failing test.
 4. **gate-runner for every gate, repeat and mutation run** (`.claude/agents/gate-runner.md`; brief format in
    `.claude/agents/implementer.md` "Delegation"). Foreground Agent calls, and wait for EVERY verdict: never hand
-   back while a run is in flight. Report PASS only for a VERDICT line exactly `VERDICT: PASS`; FLAKY, FAIL,
+   back while a run is in flight. Never start gates or gate-runner with `run_in_background` (#2036: you go idle
+   and hand back early). Report PASS only for a VERDICT line exactly `VERDICT: PASS`; FLAKY, FAIL,
    REFUSED and a reply without a VERDICT are reported as that. A failure matching `.claude/known-flakes.md` is
    named as a known flake; rerun it once under no load before you call it one.
 5. **`scripts/**` only.** When the diff changes only `scripts/**`, never run `make pr-gates` (it selects the

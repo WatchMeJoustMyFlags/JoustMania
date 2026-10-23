@@ -48,8 +48,12 @@ missing or malformed, report `ESCALATE: bad brief` and stop.
    `--wait-queue`), but a foreground Bash command is killed after 10 minutes. So run it through the
    detach helper, which starts it once as a detached job and waits at most 540 s per call:
    ```bash
-   scripts/ci/detach.sh --dir <your scratchpad>/merge-<PR>-<HEAD_PREFIX> --wait 540 -- scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX> --rerun-failed-once --wait-queue [--close ...]
+   scripts/ci/detach.sh --dir <your scratchpad>/merge-<PR>-<HEAD_PREFIX>-<STAMP> --wait 540 -- scripts/ci/safe-merge.sh <PR> <HEAD_PREFIX> --rerun-failed-once --wait-queue [--close ...]
    ```
+   `<STAMP>` is `date +%Y%m%d%H%M%S`, taken ONCE at the start of this brief and reused for every call of
+   this brief. Every brief gets a fresh dir: the scratchpad is shared by every pr-merger of the session,
+   and an old dir would reprint an old result (for example a `QUEUED` from an earlier brief) instead of
+   running safe-merge again.
    Every call is a FOREGROUND Bash call with `timeout: 600000`; never `run_in_background` (you would go
    idle and hand back before the merge ends, #2036).
    - Exit 3 AND the last line starts with `VERDICT: PENDING`: run the SAME command again, unchanged. It
@@ -57,8 +61,11 @@ missing or malformed, report `ESCALATE: bad brief` and stop.
      still PENDING after that: escalate (`safe-merge: still running in <dir>`), Next step `re-check later`.
    - Any other result: the safe-merge run has ended; the LAST stdout line is its result and the exit code
      is its exit code (exit 3 with another last line is safe-merge's own head mismatch).
-   - `VERDICT: ERROR: killed`, `REFUSED: ...`, or no result line: escalate (`safe-merge: killed`) and NEVER
-     start it again (not even with a new `--dir`).
+   - `VERDICT: ERROR: killed`, or no result line: escalate (`safe-merge: killed`) and NEVER start it again
+     (not even with a new `--dir`).
+   - `REFUSED: ...` from detach.sh (a bad argument, or the dir holds a different command): nothing ran in
+     this call. Escalate (`safe-merge: detach refused: <the REFUSED line>`) with Next step `re-brief`; do not
+     retry with another dir yourself.
 2. Exit `0` and the line says `MERGED` (including `already MERGED`): clean up (step 3), report `MERGED`.
    Exit `6` `QUEUED` (merge queue, #1555: the PR is still queued when the script's queue wait ran out):
    no cleanup, no issue changes, report `QUEUED` with Next step `re-check later`; do not run the script again.
@@ -95,5 +102,5 @@ safe-merge: exit <code>: <result line>
 Failing checks: <names | none>
 Log (<=10 lines): <lines | none>
 Cleanup: <worktree removed <path> | none found | kept: <reason>>; main <fast-forwarded to <sha8> | skipped: reason>
-Next step: <none | re-check later | rebase on main | fix the failing test | add ci-full | check review comments | re-brief with the current head>
+Next step: <none | re-check later | rebase on main | fix the failing test | add ci-full | check review comments | re-brief | re-brief with the current head>
 ```
