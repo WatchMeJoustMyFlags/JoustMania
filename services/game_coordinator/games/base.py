@@ -3452,10 +3452,12 @@ class BaseGameMode(ABC):
     def _accepts_kill(self, serial: str) -> bool:  # noqa: ARG002
         """Whether the mode takes this kill at all (UC-030 step 9, #1383).
 
-        Called by ``_kill_player`` synchronously, with its other guards and before
-        any bookkeeping: a declined kill gets no ``dead_count``, ``player_alive``
-        gauge, elimination order, ``player_deaths_total``, explosion, ``player_death``
-        span event or death effect, and ``_kill_player`` returns False. True means
+        Called by ``_kill_player`` synchronously, with its other guards, and again
+        by ``_run_kill`` after its awaits (shield charge end, explosion), right
+        before the bookkeeping: a declined kill gets no ``dead_count``, ``player_alive``
+        gauge, elimination order, ``player_deaths_total``, ``player_death`` span event
+        or death effect (nor an explosion when declined at the first check), and
+        ``_kill_player`` returns False. True means
         the kill passed the gate, not that the mode's handler applied it. Default:
         always (Swapper declines once its win is latched, UC-024 BR-004).
         """
@@ -3487,17 +3489,32 @@ class BaseGameMode(ABC):
 
         self._kills_in_progress.add(serial)
         try:
-            await self._run_kill(serial, player, accel_mag, reason)
+            return await self._run_kill(serial, player, accel_mag, reason)
         finally:
             self._kills_in_progress.discard(serial)
-        return True
 
-    async def _run_kill(self, serial: str, player: Player, accel_mag: float, reason: str) -> None:
-        """Body of _kill_player; runs at most once at a time per serial."""
+    async def _run_kill(self, serial: str, player: Player, accel_mag: float, reason: str) -> bool:
+        """Body of _kill_player; runs at most once at a time per serial.
+
+        Returns False when the kill gate closed while the kill path awaited (the
+        shield charge end, the explosion): the kill is then declined before any
+        bookkeeping (UC-030 step 9, #1988).
+        """
         # A held shield charge ends with the death, before the player span closes
         # (UC-040 A32; a disconnect and eliminate_player come through here too).
         if player.shield_charge_seconds > 0:
             await self._discard_shield_charge(player, CHARGE_OUTCOME_DEATH)
+
+        # Play death explosion sound under the player's span
+        player_ctx = trace.set_span_in_context(player.span) if player.span else None
+        await self._play_sound(Sound.SFX_EXPLOSION, priority=2, parent_context=player_ctx)
+
+        # The gate again, synchronous with the bookkeeping and the mode's handler: a
+        # mode's state may have changed during the awaits above (Swapper latched its
+        # win, the game was force-ended), and a declined kill counts no death (#1988).
+        if not self._accepts_kill(serial):
+            return False
+
         alive_count_before = len([p for p in self.players.values() if p.alive])
         logger.info(f"Player died: {serial}, {alive_count_before - 1} players remaining")
 
@@ -3522,10 +3539,6 @@ class BaseGameMode(ABC):
         # This ensures the death effect and sound are parented to the player_lifecycle
         # span even after the subclass impl ends it. (#456)
         trace_parent, trace_state = inject_trace_context(player.span)
-
-        # Play death explosion sound under the player's span
-        player_ctx = trace.set_span_in_context(player.span) if player.span else None
-        await self._play_sound(Sound.SFX_EXPLOSION, priority=2, parent_context=player_ctx)
 
         # The ONE player_death span event per death, for every mode (#1327): modes
         # add their own attributes through _player_death_event_attributes() and
@@ -3573,6 +3586,7 @@ class BaseGameMode(ABC):
                 )
             )
             await self.gameplay_stream.write(effect_cmd)
+        return True
 
     async def _wait_for_rainbow_effect(self) -> bool:
         """

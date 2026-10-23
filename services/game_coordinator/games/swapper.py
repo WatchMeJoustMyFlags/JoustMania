@@ -288,6 +288,10 @@ class SwapperGame(TeamsGameBase):
         if self.running:
             metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
         logger.debug(f"Player {serial} respawned on team {new_team}")
+        if self._swap_cut_short():
+            # The win latched, or the game ended, while the colour was written (BR-003,
+            # BR-004, #1988): the player is on its new team, but no event or beep.
+            return
 
         # Publish swap event
         await self.event_publisher(
@@ -300,8 +304,13 @@ class SwapperGame(TeamsGameBase):
             },
         )
 
-        # Play swap sound
-        await self._play_sound(Sound.SFX_BEEP, priority=1)
+        # Play swap sound, unless the win latched or the game ended during the publish
+        if not self._swap_cut_short():
+            await self._play_sound(Sound.SFX_BEEP, priority=1)
+
+    def _swap_cut_short(self) -> bool:
+        """True once the win is latched or the game stopped: a swap in flight ends quietly."""
+        return self._win_latched or not self.running
 
     def _eliminate(self, serial: str) -> None:
         """Take a disconnected player out of the game (UC-024 A1).
@@ -319,9 +328,15 @@ class SwapperGame(TeamsGameBase):
             player.span = None
         logger.info(f"Player {serial} eliminated (controller disconnect)")
 
-    def _accepts_kill(self, serial: str) -> bool:  # noqa: ARG002
-        """No swap once the win is latched: the winners are already decided (BR-004)."""
-        return not self._win_latched
+    def _accepts_kill(self, serial: str) -> bool:
+        """No swap once the win is latched or the game stopped (BR-003, BR-004).
+
+        The base checks this at the kill's start and again right before the death
+        bookkeeping, so a kill whose gate closed while the kill path awaited counts
+        no death (#1988). A player marked eliminated before the latch (A1) is still
+        taken out: its disconnect is real.
+        """
+        return serial in self._eliminated or (self.running and not self._win_latched)
 
     async def _handle_disconnect(self, serial: str) -> None:
         """Eliminate a disconnected player instead of swapping it (UC-024 A1, #1344).
@@ -426,6 +441,7 @@ class SwapperGame(TeamsGameBase):
             # Every player was eliminated (UC-024 A1 step 4): nobody wins, never team 0.
             logger.info("Swapper ended with no player left: no winner")
             self._win_latched = True
+            self._latch_game_outcome()
             return True
 
         if len(teams) == 1:
@@ -437,6 +453,9 @@ class SwapperGame(TeamsGameBase):
             self._latched_team = winning_team
             self._latched_winners = winners
             self._latched_excluded = excluded
+            # The outcome latches in the same step, before the publish awaits: a
+            # force-end landing during the publish keeps this winner (BR-004, #1988).
+            self._latch_game_outcome()
 
             team_name = self.team_colors[winning_team]["name"]
             logger.info(f"Team {winning_team} ({team_name}) wins! Winners: {len(winners)}, Excluded: {excluded}")

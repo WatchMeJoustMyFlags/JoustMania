@@ -1020,6 +1020,59 @@ class TestZombieForceEndWinner:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-023", br=["BR-003"])
+    @pytest.mark.parametrize("side", ["zombies", "humans"])
+    async def test_force_end_during_the_winner_publish_keeps_the_winner(self, setup, side):
+        """#1988: a force-end landing while zombie_winner is published keeps that winner."""
+        game, events = setup
+        game.running = True
+        if side == "zombies":
+            self._convert_all_humans(game)
+        else:
+            game.time_remaining = 0
+
+        async def publish(kind, data):
+            if kind == "zombie_winner":
+                game.force_end("operator")  # the servicer thread, mid-publish
+            await events.publish(kind, data)
+
+        game.event_publisher = publish
+        assert await game._check_win_condition()
+        game._latch_game_outcome()  # the run() latches when the loop exits
+
+        await game._end_game_impl()
+
+        (winner_event,) = events.get_events_of_type("zombie_winner")
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == winner_event["winner"] == side
+        assert ended["outcome"] == "completed" and "reason" not in ended
+        assert self._rainbow_writes(game)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-023", br=["BR-003"])
+    @pytest.mark.parametrize("side", ["zombies", "humans"])
+    async def test_force_end_before_the_win_check_publishes_no_winner(self, setup, side):
+        """#1988: a force-end that lands first declares no winner, even with the win condition met."""
+        game, events = setup
+        game.running = True
+        if side == "zombies":
+            self._convert_all_humans(game)
+        else:
+            game.time_remaining = 0
+        game.force_end("operator")
+
+        assert await game._check_win_condition() is False
+        game._latch_game_outcome()
+        await game._end_game_impl()
+
+        assert events.get_events_of_type("zombie_winner") == []
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "none" and ended["outcome"] == "force_ended"
+        assert self._rainbow_writes(game) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
     @pytest.mark.uc("UC-023", br=["BR-003", "BR-005"])
     async def test_win_is_latched_and_published_once(self, setup):
         game, events = setup

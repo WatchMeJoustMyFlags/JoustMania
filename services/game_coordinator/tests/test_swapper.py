@@ -1462,3 +1462,141 @@ class TestSwapperEliminationSpan:
         denied = MODE_CAPABILITY_DENY[game.get_game_name()]
         assert "revive_player" in denied
         assert "eliminate_player" not in denied
+
+
+class TestSwapperWinOutcomeLatch:
+    """UC-024 BR-003 / BR-004 (#1988): the winner event and game_ended always agree on a force-end."""
+
+    @staticmethod
+    def _force_end_on(game, events, event_type):
+        """Force-end the game while ``event_type`` is being published (the servicer thread)."""
+
+        async def publish(kind, data):
+            if kind == event_type:
+                game.force_end("operator")
+            await events.publish(kind, data)
+
+        game.event_publisher = publish
+
+    @pytest.mark.uc("UC-024", br=["BR-003", "BR-004"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_during_the_winner_publish_keeps_the_winner(self):
+        game, events = await TestSwapperForceEndWinner._game(4)
+        for player in game.players.values():
+            player.team = 0
+        game.last_death_serial = "mock_controller_3"
+        self._force_end_on(game, events, "swapper_winner")
+
+        assert await game._check_win_condition()
+        game._latch_game_outcome()  # what run() does when the loop returns
+        await game._end_game_impl()
+
+        (winner,) = events.get_events_of_type("swapper_winner")
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winning_team"] == winner["team"] == 0
+        assert ended["outcome"] == "completed" and "reason" not in ended
+        rainbow = TestSwapperForceEndWinner._effects(
+            game.gameplay_stream, controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        )
+        assert sorted(rainbow) == sorted(winner["winners"])
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-003"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_before_the_win_check_publishes_no_winner(self):
+        game, events = await TestSwapperForceEndWinner._game(4)
+        for player in game.players.values():
+            player.team = 0
+        game.force_end("operator")
+
+        assert await game._check_win_condition() is False
+        game._latch_game_outcome()
+        await game._end_game_impl()
+
+        assert events.get_events_of_type("swapper_winner") == []
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winning_team"] == "none" and ended["outcome"] == "force_ended"
+        await game.cleanup()
+
+    @staticmethod
+    def _player_death_events(span):
+        return [c for c in span.add_event.call_args_list if c.args[0] == "player_death"]
+
+    @pytest.mark.uc("UC-024", br=["BR-004"])
+    @pytest.mark.uc("UC-030", flow="main", steps=[9])
+    @pytest.mark.asyncio
+    async def test_kill_held_while_the_win_latches_counts_no_death(self):
+        game, events = await TestSwapperForceEndWinner._game(3)
+        spans = TestSwapperForceEndWinner._spans(game)
+        for player in game.players.values():
+            player.team = 0
+        target = "mock_controller_1"
+        held, release = TestSwapperForceEndWinner._hold_explosion(game)
+
+        with patch("services.game_coordinator.games.base.metrics") as m:
+            kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
+            await asyncio.wait_for(held.wait(), 2.0)
+            assert await game._check_win_condition()  # the loop latches the win meanwhile
+            release.set()
+            assert await asyncio.wait_for(kill, 2.0) is False
+
+        assert game.dead_count == 0
+        m.player_deaths_total.labels.assert_not_called()
+        m.player_alive.labels.assert_not_called()
+        m.player_elimination_order.labels.assert_not_called()
+        assert self._player_death_events(spans[target]) == []
+        assert game.players[target].alive is True
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-003"])
+    @pytest.mark.uc("UC-030", flow="main", steps=[9])
+    @pytest.mark.asyncio
+    async def test_kill_held_while_force_ended_counts_no_death(self):
+        game, events = await TestSwapperForceEndWinner._game(4)
+        spans = TestSwapperForceEndWinner._spans(game)
+        target = "mock_controller_0"
+        held, release = TestSwapperForceEndWinner._hold_explosion(game)
+
+        with patch("services.game_coordinator.games.base.metrics") as m:
+            kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
+            await asyncio.wait_for(held.wait(), 2.0)
+            game.force_end("operator")
+            release.set()
+            assert await asyncio.wait_for(kill, 2.0) is False
+
+        assert game.dead_count == 0
+        m.player_deaths_total.labels.assert_not_called()
+        assert self._player_death_events(spans[target]) == []
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", br=["BR-003", "BR-004"])
+    @pytest.mark.parametrize("ending", ["win_latched", "force_ended"])
+    @pytest.mark.asyncio
+    async def test_end_during_the_colour_write_publishes_no_swap(self, ending):
+        # Teams: c0, c2 on team 0; c1 on team 1. The agent swaps c1 to team 0.
+        game, events = await TestSwapperForceEndWinner._game(3)
+        target = "mock_controller_1"
+        writing, release = asyncio.Event(), asyncio.Event()
+        real_set_colour = game._set_player_color
+
+        async def gated_set_colour(serial, color):
+            await real_set_colour(serial, color)
+            writing.set()
+            await release.wait()
+
+        game._set_player_color = gated_set_colour
+        kill = asyncio.create_task(game._kill_player(target, 0.0, reason="agent_intervention"))
+        await asyncio.wait_for(writing.wait(), 2.0)
+        if ending == "win_latched":
+            assert await game._check_win_condition()
+        else:
+            game.force_end("operator")
+        release.set()
+        await asyncio.wait_for(kill, 2.0)
+
+        assert game.players[target].team == 0 and game.players[target].alive is True
+        assert events.count_events_of_type("player_swapped") == 0
+        assert Sound.SFX_BEEP not in game.sounds
+        await game.cleanup()

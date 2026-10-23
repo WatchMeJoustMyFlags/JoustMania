@@ -365,6 +365,9 @@ class ZombieGame(BaseGameMode):
         # The win is latched once: later calls (the 1 s hold) do not republish it.
         if self._winner_side is not None:
             return True
+        if self.force_ended:
+            # A force-end declares no winner (BR-003): nothing is latched or published.
+            return False
 
         # Count alive humans (not counting converting players)
         alive_humans = [s for s in self.human_serials if self.players[s].alive and not self.players[s].is_zombie]
@@ -373,6 +376,9 @@ class ZombieGame(BaseGameMode):
         if len(alive_humans) == 0:
             logger.info("All humans converted! Zombies win!")
             self._winner_side = "zombies"
+            # The outcome latches in the same step, before the publish awaits: a
+            # force-end landing during the publish keeps this winner (BR-003, #1988).
+            self._latch_game_outcome()
             await self.event_publisher(
                 "zombie_winner",
                 {
@@ -386,6 +392,9 @@ class ZombieGame(BaseGameMode):
         if self.time_remaining <= 0:
             logger.info(f"Time's up! Humans win with {len(alive_humans)} survivors!")
             self._winner_side = "humans"
+            # The outcome latches in the same step, before the publish awaits: a
+            # force-end landing during the publish keeps this winner (BR-003, #1988).
+            self._latch_game_outcome()
             await self.event_publisher(
                 "zombie_winner",
                 {
