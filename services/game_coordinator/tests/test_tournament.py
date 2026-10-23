@@ -1788,77 +1788,6 @@ class TestTournamentDoubleHit:
     def _one_frame_stream():
         stream = AsyncGameplayStreamMock(timeout_forever=True)
 
-
-class TestByeAdvancement:
-    """Bye winners enter round 2 when the bracket is built (#1990, D-G31)."""
-
-    @staticmethod
-    def _make_game(num_players: int):
-        mock_cm = MockControllerManagerService(num_controllers=num_players, death_schedule={}, max_duration=10.0)
-        game = TournamentGame(
-            controller_manager_client=mock_cm,
-            event_publisher=EventCollector().publish,
-            audio_client=None,
-            game_id=f"test_bye_{num_players}",
-            invincibility_seconds=0.0,
-        )
-        return game, mock_cm
-
-    @pytest.mark.uc("UC-025", flow="main", steps=[1])
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("num_players", [3, 5, 6, 7, 8])
-    async def test_bracket_completes_through_real_bracket_functions(self, num_players):
-        """Playing every match _get_next_match offers leaves exactly one player."""
-        game, mock_cm = self._make_game(num_players)
-        await game._initialize_players_impl(mock_cm.controllers)
-
-        played = 0
-        while (match := game._get_next_match()) is not None:
-            assert match.player1_serial and match.player2_serial, "only real matches are offered"
-            loser = match.player2_serial
-            match.winner_serial = match.player1_serial
-            match.is_complete = True
-            game.players[loser].tournament_state = TournamentState.ELIMINATED
-            game._advance_winner(match.winner_serial, match)
-            played += 1
-            assert played <= num_players, "bracket must not loop"
-
-        survivors = [s for s, p in game.players.items() if p.tournament_state != TournamentState.ELIMINATED]
-        assert len(survivors) == 1
-        assert played == num_players - 1
-        assert game.players[survivors[0]].round_number == game.total_rounds
-
-    @pytest.mark.uc("UC-025", flow="main", steps=[1])
-    def test_bye_winners_sit_in_round_two_after_build(self):
-        game, _ = self._make_game(5)
-        game.players = {
-            f"s{i}": TournamentPlayer(serial=f"s{i}", team=-1, alive=True, color=(0, 0, 0)) for i in range(5)
-        }
-        bracket = game._generate_bracket(5)
-        byes = [m for m in bracket if m.is_bye]
-        assert len(byes) == 3
-        round2 = [m for m in bracket if m.round_number == 2]
-        seated = {m.player1_serial for m in round2} | {m.player2_serial for m in round2}
-        assert {b.winner_serial for b in byes} <= seated
-
-    @pytest.mark.uc("UC-025", flow="main", steps=[1])
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("num_players", [3, 5, 6])
-    async def test_kill_driven_game_loop_completes_with_byes(self, num_players):
-        """The gameplay loop, driven by real kills, ends with one survivor."""
-        from unittest.mock import AsyncMock, patch
-
-        game, mock_cm = self._make_game(num_players)
-        await game._initialize_players_impl(mock_cm.controllers)
-        game._play_sound = AsyncMock()
-        game.running = True
-        game.gameplay_stream = AsyncGameplayStreamMock(timeout_forever=True)
-
-        async def kill_p1_of_current(_gameplay_data):
-            match = game.current_match
-            if match and not match.is_complete:
-                await game._kill_player_impl(match.player1_serial, accel_mag=5.0)
-
         async def read_with_data():
             from proto import controller_manager_pb2 as cm
 
@@ -1979,6 +1908,83 @@ class TestByeAdvancement:
         assert game.players[waiting_serial].alive is True
         assert _death_effect_serials(stream) == []
 
+
+class TestByeAdvancement:
+    """Bye winners enter round 2 when the bracket is built (#1990, D-G31)."""
+
+    @staticmethod
+    def _make_game(num_players: int):
+        mock_cm = MockControllerManagerService(num_controllers=num_players, death_schedule={}, max_duration=10.0)
+        game = TournamentGame(
+            controller_manager_client=mock_cm,
+            event_publisher=EventCollector().publish,
+            audio_client=None,
+            game_id=f"test_bye_{num_players}",
+            invincibility_seconds=0.0,
+        )
+        return game, mock_cm
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[1])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("num_players", [3, 5, 6, 7, 8])
+    async def test_bracket_completes_through_real_bracket_functions(self, num_players):
+        """Playing every match _get_next_match offers leaves exactly one player."""
+        game, mock_cm = self._make_game(num_players)
+        await game._initialize_players_impl(mock_cm.controllers)
+
+        played = 0
+        while (match := game._get_next_match()) is not None:
+            assert match.player1_serial and match.player2_serial, "only real matches are offered"
+            loser = match.player2_serial
+            match.winner_serial = match.player1_serial
+            match.is_complete = True
+            game.players[loser].tournament_state = TournamentState.ELIMINATED
+            game._advance_winner(match.winner_serial, match)
+            played += 1
+            assert played <= num_players, "bracket must not loop"
+
+        survivors = [s for s, p in game.players.items() if p.tournament_state != TournamentState.ELIMINATED]
+        assert len(survivors) == 1
+        assert played == num_players - 1
+        assert game.players[survivors[0]].round_number == game.total_rounds
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[1])
+    def test_bye_winners_sit_in_round_two_after_build(self):
+        game, _ = self._make_game(5)
+        game.players = {
+            f"s{i}": TournamentPlayer(serial=f"s{i}", team=-1, alive=True, color=(0, 0, 0)) for i in range(5)
+        }
+        bracket = game._generate_bracket(5)
+        byes = [m for m in bracket if m.is_bye]
+        assert len(byes) == 3
+        round2 = [m for m in bracket if m.round_number == 2]
+        seated = {m.player1_serial for m in round2} | {m.player2_serial for m in round2}
+        assert {b.winner_serial for b in byes} <= seated
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[1])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("num_players", [3, 5, 6])
+    async def test_kill_driven_game_loop_completes_with_byes(self, num_players):
+        """The gameplay loop, driven by real kills, ends with one survivor."""
+        from unittest.mock import AsyncMock, patch
+
+        game, mock_cm = self._make_game(num_players)
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+        game.gameplay_stream = AsyncGameplayStreamMock(timeout_forever=True)
+
+        async def kill_p1_of_current(_gameplay_data):
+            match = game.current_match
+            if match and not match.is_complete:
+                await game._kill_player_impl(match.player1_serial, accel_mag=5.0)
+
+        async def read_with_data():
+            from proto import controller_manager_pb2 as cm
+
+            update = cm.GameplayDataUpdate()
+            update.controllers.add(serial="tick")
+            return update
 
         game._process_controller_state = kill_p1_of_current
         game.gameplay_stream.read = read_with_data
