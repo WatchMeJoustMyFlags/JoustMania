@@ -1308,6 +1308,41 @@ class TestStartWhileGameActive:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    async def test_second_reset_menu_during_lobby_restore_keeps_every_controller(self, real_servicer):
+        """A second reset_menu while state_manager.reset() re-registers is ignored; the first RPC ends normally."""
+        from proto import game_coordinator_pb2
+
+        never = asyncio.Event()
+        await self._live_game(real_servicer, never)
+        self._game_state(real_servicer, game_coordinator_pb2.GameState.ENDED)
+        manager = real_servicer.state_manager
+        original_connect = manager.on_controller_connected
+        in_reset = asyncio.Event()
+        reset_gate = asyncio.Event()
+
+        async def _connect_blocking(serial, *args, **kwargs):
+            if serial == "s2" and not reset_gate.is_set():
+                in_reset.set()
+                await reset_gate.wait()
+            return await original_connect(serial, *args, **kwargs)
+
+        manager.on_controller_connected = _connect_blocking
+        request = menu_pb2.ProcessInputRequest(input_type="reset_menu")
+        first = asyncio.create_task(real_servicer.ProcessInput(request, MagicMock()))
+        await asyncio.wait_for(in_reset.wait(), timeout=2)
+        assert real_servicer._lobby_restarting is True
+
+        await real_servicer.ProcessInput(request, MagicMock())
+
+        reset_gate.set()
+        await first
+        assert not first.cancelled()
+        assert manager.connected_controllers == {"s1", "s2"}
+        assert real_servicer._game_lifecycle_task is None
+        assert real_servicer._lobby_restarting is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
     async def test_refusal_mid_game_after_a_lobby_restart_stays_silent(self, real_servicer):
         """The lobby-restart beep window closes when the restore finishes: a later mid-game refusal is silent."""
         await real_servicer._restart_lobby()

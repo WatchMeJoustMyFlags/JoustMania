@@ -535,6 +535,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         never finishes. A live task whose game is not active on the coordinator is cancelled and
         the lobby restored; a live task with an active game is kept.
         """
+        if self._lobby_restarting:
+            # A lobby restore (this handler's or a lifecycle's post-game one) finishes by itself;
+            # cancelling it mid state_manager.reset() would drop controllers not yet re-registered.
+            logger.info("reset_menu ignored: a lobby restore is already running")
+            return
         task = self._game_lifecycle_task
         if task is not None and not task.done():
             if await self._primary_game_active():
