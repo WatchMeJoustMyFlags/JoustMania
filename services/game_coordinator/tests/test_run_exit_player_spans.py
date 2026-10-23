@@ -296,3 +296,37 @@ async def test_a_natural_end_ends_each_player_span_once_with_the_mode_attributes
         for event in _game_ended(span):
             assert "game.outcome" not in event.attributes, "the mode's own end step closed it"
     assert DOUBLE_END not in caplog.text
+
+
+@pytest.mark.uc("UC-030", br=["BR-007"])
+@pytest.mark.uc("UC-025", steps=[5], br=["BR-005"])
+@pytest.mark.asyncio
+async def test_tournament_natural_end_closes_the_champion_span_with_tournament_ended(exporter, caplog):
+    """The end step, not the run-end cleanup, closes the spans: the champion keeps ``tournament_ended``."""
+    caplog.set_level(logging.WARNING)
+    game = _game(Games.Tournament)
+    champion = SERIALS[0]
+
+    async def final_decided_loop():
+        await asyncio.sleep(0.05)
+        game.players[champion].wins = 2
+        game.players[champion].round_number = 2
+        assert game._latch_champion(champion)
+
+    game._game_loop = final_decided_loop
+    await asyncio.wait_for(game.run(), timeout=20)
+
+    spans = _player_spans(exporter)
+    assert sorted(s.attributes["player.serial"] for s in spans) == SERIALS, "one ended span per player"
+    for span in spans:
+        assert _game_ended(span) == [], "the run-end cleanup must not close a span on a natural end"
+        ended = [e for e in span.events if e.name == "tournament_ended"]
+        assert len(ended) == 1, span.events
+        attrs = dict(ended[0].attributes)
+        is_champion = span.attributes["player.serial"] == champion
+        assert attrs["is_champion"] is is_champion
+        if is_champion:
+            assert attrs["wins"] == 2
+            assert attrs["final_round"] == 2
+    assert DOUBLE_END not in caplog.text
+    _assert_no_span_left_open(exporter)

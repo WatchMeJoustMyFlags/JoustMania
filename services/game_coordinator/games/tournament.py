@@ -1055,9 +1055,8 @@ class TournamentGame(BaseGameMode):
                 if self._bracket_error is not None:
                     raise self._bracket_error
                 self._latch_game_outcome()
-                # The natural end closes the player spans with the bracket, as the
-                # base gameplay phase does; an early exit leaves them to the run-end cleanup (#1997).
-                self._close_all_player_spans()
+                # The end step closes the player spans with tournament_ended; an early
+                # exit or an error leaves them to the run-end cleanup (#1997).
 
                 # End game
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
