@@ -897,8 +897,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
         Waits for the reconnected stream's headers first: the coordinator sends them once the
         subscription is registered (#1613), so a game that ends after this check still delivers
-        its terminal event on the new stream. A failed header wait raises (a normal reconnect
-        failure); a failed or unsuccessful state lookup keeps the stream.
+        its terminal event on the new stream. A header wait that times out raises (a normal
+        reconnect failure). grpc.aio returns empty headers for an unavailable coordinator and the
+        error only surfaces when the stream is iterated: the state lookup then fails, the stream is
+        kept, and the iteration error drives the retry. A failed or unsuccessful lookup never
+        counts as "game gone".
         """
         from proto import game_coordinator_pb2
 
