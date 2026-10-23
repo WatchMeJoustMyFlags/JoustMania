@@ -84,11 +84,14 @@ async def test_declined_kill_does_no_bookkeeping():
         impl_calls.append(serial)
 
     game._kill_player_impl = impl
+    game.players["p1"].shield_charge_seconds = 5.0
 
     with patch("services.game_coordinator.games.base.metrics") as m:
         result = await game._kill_player("p1", 3.0)
 
     assert result is False
+    # the gate sits ahead of the shield-charge discard: a declined kill keeps the charge
+    assert game.players["p1"].shield_charge_seconds == 5.0
     assert impl_calls == []
     assert game.players["p1"].alive is True
     assert game.dead_count == 0
