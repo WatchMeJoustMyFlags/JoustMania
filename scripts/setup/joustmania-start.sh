@@ -2,14 +2,39 @@
 # JoustMania startup script with optional auto-update
 # Gracefully handles missing internet connection
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOUSTMANIA_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
-STATUS_DIR="${JOUSTMANIA_STATUS_DIR:-/tmp/joustmania}"
-STATUS_FILE="$STATUS_DIR/update-status.json"
+# Start state lives in the unit's RuntimeDirectory (RUNTIME_DIRECTORY); an old
+# unit has none, so fall back to /tmp. JOUSTMANIA_STATUS_DIR is the test override.
+# Writing state is never fatal.
+STATE_DIR="${JOUSTMANIA_STATUS_DIR:-${RUNTIME_DIRECTORY:-/tmp/joustmania}}"
+STATE_FILE="$STATE_DIR/start.env"
+START_RESULT="failed"
 
 cd "$JOUSTMANIA_DIR"
+
+# JOUSTMANIA_UNIT_REV comes from the installed unit (rev 2+). Without it the
+# unit is outdated (it still has the teardown ExecStartPre): never fail, so the
+# old unit's Restart=on-failure cannot loop.
+write_state() { # $1 = phase, $2 = result
+    {
+        mkdir -p "$STATE_DIR" &&
+            printf 'phase=%s\nresult=%s\nhead=%s\nimage_tag=%s\nts=%s\n' \
+                "$1" "$2" "${HEAD_SHORT:-unknown}" "${EFFECTIVE_IMAGE_TAG:-unknown}" "$(date -Iseconds)" \
+                >"$STATE_FILE"
+    } 2>/dev/null || true
+}
+on_exit() {
+    local rc=$?
+    write_state start "$([[ $rc -eq 0 ]] && echo "$START_RESULT" || echo failed)"
+    if [[ $rc -ne 0 && -z "${JOUSTMANIA_UNIT_REV:-}" ]]; then
+        echo "unit outdated: sudo $JOUSTMANIA_DIR/scripts/setup/install_autostart.sh (start failed, exit $rc; exiting 0 so the old unit does not loop)"
+        exit 0
+    fi
+}
+trap on_exit EXIT
 
 # Every compose call goes through joustmania-compose.sh: docker-compose.yml
 # only, never the dev override that publishes the mock control and gRPC ports
@@ -24,8 +49,13 @@ compose() {
 echo "=== JoustMania Startup ==="
 echo "Working directory: $JOUSTMANIA_DIR"
 
-# Create status directory
-mkdir -p "$STATUS_DIR"
+mkdir -p "$STATE_DIR" 2>/dev/null || echo "state dir $STATE_DIR not writable; continuing"
+
+# Docker may still be coming up: wait for it (the unit has Requires=docker.service)
+for _ in $(seq 1 "${JOUSTMANIA_DOCKER_WAIT_S:-60}"); do
+    docker info >/dev/null 2>&1 && break
+    sleep 1
+done
 
 # Files to track for updates
 TRACKED_FILES=(
@@ -39,7 +69,7 @@ TRACKED_FILES=(
 declare -A CHECKSUMS_BEFORE
 for file in "${TRACKED_FILES[@]}"; do
     if [[ -f "$file" ]]; then
-        CHECKSUMS_BEFORE["$file"]=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1)
+        CHECKSUMS_BEFORE["$file"]=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1 || true)
     fi
 done
 
@@ -57,24 +87,22 @@ fi
 CHANGED_FILES=()
 for file in "${TRACKED_FILES[@]}"; do
     if [[ -f "$file" ]]; then
-        CHECKSUM_AFTER=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1)
-        if [[ "${CHECKSUMS_BEFORE[$file]}" != "$CHECKSUM_AFTER" ]]; then
+        CHECKSUM_AFTER=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1 || true)
+        if [[ "${CHECKSUMS_BEFORE[$file]:-}" != "$CHECKSUM_AFTER" ]]; then
             CHANGED_FILES+=("$file")
             echo "Service file changed: $file"
         fi
     fi
 done
 
-# Write status file for observability
-CHANGED_FILES_JSON=$(printf '%s\n' "${CHANGED_FILES[@]}" | jq -R . | jq -s .)
-cat > "$STATUS_FILE" << EOF
-{
-    "timestamp": "$(date -Iseconds)",
-    "git_pull_status": "$GIT_PULL_STATUS",
-    "service_files_changed": ${CHANGED_FILES_JSON:-[]},
-    "update_pending": $([[ ${#CHANGED_FILES[@]} -gt 0 ]] && echo "true" || echo "false")
-}
-EOF
+HEAD_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+HEAD_TAG="$(git describe --tags --exact-match 2>/dev/null || echo none)"
+# Effective IMAGE_TAG: .env.local wins over .env. Read by grep, never by
+# `compose config` (that prints interpolated secrets).
+EFFECTIVE_IMAGE_TAG="$(grep -hs '^IMAGE_TAG=' .env .env.local | tail -n 1 | cut -d= -f2- || true)"
+EFFECTIVE_IMAGE_TAG="${EFFECTIVE_IMAGE_TAG:-unset}"
+echo "Version: commit $HEAD_SHORT, tag $HEAD_TAG, IMAGE_TAG $EFFECTIVE_IMAGE_TAG (git pull: $GIT_PULL_STATUS)"
+write_state start starting
 
 if [[ ${#CHANGED_FILES[@]} -gt 0 ]]; then
     echo "WARNING: Service files have changed. Run 'sudo ./scripts/setup/install_autostart.sh' to apply updates."
@@ -95,22 +123,28 @@ else
     echo "Could not pull images (offline) - continuing with cached images"
 fi
 
-# Force-remove any stale joustmania containers from previous unclean shutdown
-echo "Cleaning up stale containers..."
-docker ps -aq --filter "name=joustmania-" | xargs -r docker rm -f 2>/dev/null || true
-docker container prune -f 2>/dev/null || true
-
-# Normal compose cleanup
-echo "Cleaning up..."
-compose down --remove-orphans || true
+# Targeted cleanup only: a joustmania-* container that does not belong to this
+# compose project (no label, or another project) blocks the fixed container
+# names, so remove it and say so. Our own containers are never touched here:
+# compose keeps or recreates them (no blanket rm, prune or down; NFR-026).
+PROJECT="${COMPOSE_PROJECT_NAME:-$(basename "$JOUSTMANIA_DIR" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-')}"
+echo "Checking for foreign joustmania containers (project $PROJECT)..."
+CONTAINERS="$(docker ps -a --filter "name=joustmania-" --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' 2>/dev/null || true)"
+while IFS='|' read -r cname cproject; do
+    [[ -n "$cname" && "$cproject" != "$PROJECT" ]] || continue
+    echo "Removing foreign container $cname (project '${cproject:-none}')"
+    docker rm -f "$cname" >/dev/null 2>&1 || true
+done <<<"$CONTAINERS"
 
 # Set all audio devices to max volume
 echo "Setting audio volume..."
-for card in /proc/asound/card[0-9]*; do
+for card in "${JOUSTMANIA_ASOUND_DIR:-/proc/asound}"/card[0-9]*; do
+  [[ -e "$card" ]] || continue
   card_num=$(basename "$card" | sed 's/card//')
-  amixer -c "$card_num" scontrols 2>/dev/null | sed -e "s/^Simple mixer control //" | while read ctrl; do
-    amixer -c "$card_num" set "$ctrl" 100% unmute 2>/dev/null
-  done
+  # pipefail + errexit: a card without controls or a failing amixer is fine
+  { amixer -c "$card_num" scontrols 2>/dev/null || true; } | sed -e "s/^Simple mixer control //" | while read -r ctrl; do
+    amixer -c "$card_num" set "$ctrl" 100% unmute 2>/dev/null || true
+  done || true
 done
 echo "Audio volume configured"
 
@@ -130,13 +164,15 @@ echo "Audio volume configured"
 # Upgrade step (#1402 I1): Pis that ran python-hid before #1371 keep a
 # joustmania-python-hid container (restart: unless-stopped), and `up -d` never
 # removes a container whose profile is inactive. Remove it explicitly whenever
-# the python-hid profile is not active. Idempotent: no-op if it is absent. The
-# blanket joustmania-* cleanup above covers it today; this keeps the upgrade
-# step explicit should that cleanup ever be narrowed.
-if ! compose config --services 2>/dev/null | grep -qx python-hid; then
+# the python-hid profile is not active. Idempotent: no-op if it is absent.
+# The services go through a variable: `config | grep -q` under pipefail dies of
+# SIGPIPE when the list is long and grep exits early (audit F4).
+COMPOSE_SERVICES="$(compose config --services 2>/dev/null || true)"
+if ! grep -qx python-hid <<<"$COMPOSE_SERVICES"; then
     docker rm -f joustmania-python-hid >/dev/null 2>&1 || true
 fi
 
-# Start services (this must succeed)
+# Start services (this must succeed). Not exec: the EXIT trap records the result.
 echo "Starting JoustMania (Bluetooth backend: rust-hid${COMPOSE_PROFILES:+, profiles: ${COMPOSE_PROFILES}})..."
-exec "$COMPOSE_WRAPPER" up -d
+compose up -d --remove-orphans
+START_RESULT="ok"

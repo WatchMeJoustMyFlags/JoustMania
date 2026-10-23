@@ -12,7 +12,7 @@
 # 2. Behaviour: joustmania-start.sh is run against a stub docker; every compose
 #    call it makes starts with `-f docker-compose.yml --env-file .env`, plus
 #    `--env-file .env.local` (last, so it wins) exactly when .env.local exists
-#    (#1488); it ends in `up -d`, never prints the env values, and removes a
+#    (#1488); it ends in `up -d --remove-orphans`, never prints the env values, and removes a
 #    stale joustmania-python-hid container only while the python-hid profile
 #    is inactive (#1402 I1). The env files are dummies created by the test.
 # Runs as part of `make lint`, or directly:
@@ -148,8 +148,8 @@ check_compose_calls() { # $1 = docker.log, $2 = case name, $3 = expected compose
     [[ "${call}" == "$3 "* ]] || fail "$2: compose call does not start with '$3': docker ${call}"
     if [[ "${call}" == *override* ]]; then fail "$2: compose call loads the override: docker ${call}"; fi
   done <<<"${calls}"
-  [[ "$(tail -1 "$1")" == "$3 up -d" ]] \
-    || fail "$2: last docker call is not '$3 up -d': $(tail -1 "$1")"
+  [[ "$(tail -1 "$1")" == "$3 up -d --remove-orphans" ]] \
+    || fail "$2: last docker call is not '$3 up -d --remove-orphans': $(tail -1 "$1")"
 }
 
 BASE_PREFIX="compose -f docker-compose.yml --env-file .env"
