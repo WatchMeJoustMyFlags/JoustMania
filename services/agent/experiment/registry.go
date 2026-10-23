@@ -1466,7 +1466,16 @@ func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verd
 		}
 		verdict.Reason += summary
 	}
-	r.recordDecision(e.journal, StatusConcluded, "target N reached / verdict "+verdict.Outcome)
+	// The final verdict rides on the concluded decision (#2042): the journal
+	// summary, the promoter and a restart (UC-043 A15) read the verdict the
+	// experiment concluded on, also after a give-up or pattern-exhausted conclusion.
+	finalVerdict := verdict
+	r.appendEvent(e.journal, journal.Event{
+		Kind:    journal.KindDecision,
+		Status:  string(StatusConcluded),
+		Note:    "target N reached / verdict " + verdict.Outcome,
+		Verdict: &finalVerdict,
+	})
 	jrnl := e.journal
 	flagKey := e.flagKey
 	r.mu.Unlock()

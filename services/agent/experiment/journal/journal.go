@@ -197,6 +197,12 @@ func (j *Journal) apply(e Event) {
 			j.summary.Status = e.Status
 		}
 	case KindDecision:
+		// The concluded decision carries the final verdict (#2042); an older journal
+		// has none and keeps the last interim verdict.
+		if e.Verdict != nil {
+			v := *e.Verdict
+			j.summary.Verdict = &v
+		}
 		if e.Status != "" {
 			j.summary.Status = e.Status
 		}
