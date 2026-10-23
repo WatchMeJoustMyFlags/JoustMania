@@ -5,7 +5,7 @@
 # stubbed on PATH, so no stack is needed. Runs as part of `make lint`, or directly:
 #   ./scripts/tests/test-pattern-replay-check.sh
 #
-# UC: UC-046 main A11
+# UC: UC-046 main step 9 step 10 A11
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,6 +65,24 @@ expect "params digest differs" 2 "params_digest differs" -- "${CHECK}" --compare
 expect "usage" 3 "usage" -- "${CHECK}"
 
 # Two-run flow with docker stubbed: `run` succeeds, `logs` prints the record.
+# Hermetic: nothing here may reach a real docker, compose or flag service. Any exported
+# COMPOSE/DOCKER would bypass the stub, and the flag helper is stubbed (no live GET).
+unset COMPOSE DOCKER
+cat >"${WORK}/flags.sh" <<'SH'
+#!/usr/bin/env bash
+echo '{"effective_default":"default","variant_values":{"default":300}}'
+SH
+chmod +x "${WORK}/flags.sh"
+export FLAGS_SH="${WORK}/flags.sh"
+# Fail-loud docker first on PATH for every case; the two-run cases below replace it with the stub.
+cat >"${WORK}/bin/docker" <<'SH'
+#!/usr/bin/env bash
+echo "FAKE DOCKER CALLED UNEXPECTEDLY: docker $*" >&2
+exit 99
+SH
+chmod +x "${WORK}/bin/docker"
+export PATH="${WORK}/bin:${PATH}"
+
 cat >"${WORK}/bin/docker" <<SH
 #!/usr/bin/env bash
 case "\$1" in
