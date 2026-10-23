@@ -854,14 +854,18 @@ class TestFightClubProcessControllerState:
 
 
 class RecordingGameplayStream:
-    """Gameplay stream mock that records every effect it is asked to write."""
+    """Gameplay stream mock that records every write in order."""
 
     def __init__(self):
-        self.effects = []
+        self.messages = []
+
+    @property
+    def effects(self):
+        """The (serial, effect) pairs of the game_effect writes, in order."""
+        return [(m.game_effect.serial, m.game_effect.effect) for m in self.messages if m.HasField("game_effect")]
 
     async def write(self, message):
-        if message.HasField("game_effect"):
-            self.effects.append((message.game_effect.serial, message.game_effect.effect))
+        self.messages.append(message)
 
 
 class TestFightClubDetectionOnBasePath:
@@ -1102,16 +1106,6 @@ class TestFightClubIntroPhase:
         phases = game._get_additional_phases()
         assert len(phases) == 1
         assert phases[0].name == "fight_club_intro"
-
-
-class RecordingGameplayStream:
-    """Gameplay stream mock that records every write in order."""
-
-    def __init__(self):
-        self.messages = []
-
-    async def write(self, message):
-        self.messages.append(message)
 
 
 def _writes_for(stream, serial):
