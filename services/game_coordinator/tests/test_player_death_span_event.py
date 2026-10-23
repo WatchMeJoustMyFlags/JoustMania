@@ -47,6 +47,7 @@ async def _game_with_spans(mode: Games, num_players: int = 4):
     game.random_teams = False
     await game._initialize_players_impl(mock_cm.controllers)
     game.gameplay_stream = _RecordingStream()
+    game.running = True  # kills happen in a running game (Swapper declines them otherwise, #1988)
     spans = {}
     for i, (serial, player) in enumerate(game.players.items()):
         player.name = f"Player {i}"
