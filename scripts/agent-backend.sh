@@ -68,7 +68,7 @@ from flagservice import FlagService, FlagServiceError, FlagServiceUnreachable
 
 writer, args = sys.argv[1], sys.argv[2:]
 action = args[0] if args else "status"
-fs = FlagService.from_env()
+fs = FlagService.from_env(use_curl=True)
 SET = "agent"
 
 
@@ -80,8 +80,10 @@ def flag_view(key):
     try:
         return fs.flag(SET, key)
     except FlagServiceError as err:
-        if err.status == 404:
+        if err.status == 404 and err.reason == "unknown_flag":
             sys.exit(f"flag {key!r} not defined in the {SET} flag set")
+        if err.reason == "non_json":
+            sys.exit(f"HTTP {err.status} from {fs.base_url}: {err.detail} (is FLAG_SERVICE_URL the flag service?)")
         raise
 
 
