@@ -2350,6 +2350,27 @@ class BaseGameMode(ABC):
                 player._led_degraded_span.end()
                 player._led_degraded_span = None
 
+    def _capture_controller_info(self, player: Player, serial: str, controller_state) -> None:
+        """
+        Capture the per-frame controller info that is not death detection: the
+        name, the health counters and the battery. A mode that skips detection
+        for some players (Fight Club waiting players, #1347) still calls this.
+        """
+        # Capture controller name on first frame and update span title
+        if not player.name and controller_state.name:
+            player.name = controller_state.name
+            if player.span:
+                player.span.update_name(f"player: {player.name}")
+                player.span.set_attribute("player.name", player.name)
+
+        # Process controller health counters (#571)
+        self._process_health(player, serial, controller_state)
+
+        # Capture the latest battery reading (#798) so the intervention battery
+        # guard has a live in-process source. GameplayData.battery is the same
+        # signal that feeds controller_battery_pct; normalize identically.
+        player.battery_pct = battery_to_pct(controller_state.battery)
+
     async def _process_controller_state(self, controller_state):
         """
         Process a single controller's state and check for death.
@@ -2367,20 +2388,7 @@ class BaseGameMode(ABC):
         if not player.alive:
             return  # Dead player, ignore
 
-        # Capture controller name on first frame and update span title
-        if not player.name and controller_state.name:
-            player.name = controller_state.name
-            if player.span:
-                player.span.update_name(f"player: {player.name}")
-                player.span.set_attribute("player.name", player.name)
-
-        # Process controller health counters (#571)
-        self._process_health(player, serial, controller_state)
-
-        # Capture the latest battery reading (#798) so the intervention battery
-        # guard has a live in-process source. GameplayData.battery is the same
-        # signal that feeds controller_battery_pct; normalize identically.
-        player.battery_pct = battery_to_pct(controller_state.battery)
+        self._capture_controller_info(player, serial, controller_state)
 
         accel = controller_state.accel
         accel_mag = self._compute_accel_magnitude(accel)

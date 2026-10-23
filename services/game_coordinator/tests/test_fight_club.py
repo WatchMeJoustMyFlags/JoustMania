@@ -12,8 +12,10 @@ Tests the core Fight Club mechanics:
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+import pytest_asyncio
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -301,8 +303,8 @@ class TestFightClubGameMode:
         # Clear invincibility so processing actually happens
         game.players[defender_serial].invincible_until = 0
 
-        # Build a ControllerState proto with nested accel (not flat accel_x)
-        state = controller_manager_pb2.ControllerState(
+        # Build a GameplayData proto (what the game loop passes) with nested accel (not flat accel_x)
+        state = controller_manager_pb2.GameplayData(
             serial=defender_serial,
             accel=controller_manager_pb2.Vector3(x=0.5, y=0.0, z=0.0),
         )
@@ -373,7 +375,7 @@ class TestFightClubGameMode:
 
         # Feed 10 lethal motion frames during invincibility
         for _ in range(10):
-            state = controller_manager_pb2.ControllerState(
+            state = controller_manager_pb2.GameplayData(
                 serial=defender_serial,
                 accel=controller_manager_pb2.Vector3(x=10.0, y=10.0, z=10.0),
             )
@@ -822,7 +824,7 @@ class TestFightClubProcessControllerState:
 
         assert in_line_serial is not None
 
-        state = controller_manager_pb2.ControllerState(
+        state = controller_manager_pb2.GameplayData(
             serial=in_line_serial,
             accel=controller_manager_pb2.Vector3(x=10.0, y=10.0, z=10.0),
         )
@@ -839,13 +841,136 @@ class TestFightClubProcessControllerState:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        state = controller_manager_pb2.ControllerState(
+        state = controller_manager_pb2.GameplayData(
             serial="UNKNOWN_SERIAL",
             accel=controller_manager_pb2.Vector3(x=5.0, y=5.0, z=5.0),
         )
 
         # Should not raise
         await game._process_controller_state(state)
+
+
+class RecordingGameplayStream:
+    """Gameplay stream mock that records every effect it is asked to write."""
+
+    def __init__(self):
+        self.effects = []
+
+    async def write(self, message):
+        if message.HasField("game_effect"):
+            self.effects.append((message.game_effect.serial, message.game_effect.effect))
+
+
+class TestFightClubDetectionOnBasePath:
+    """#1347: Fight Club detects hits with the base path (UC-030 steps 4-7, A1) for its two fighters only."""
+
+    @pytest_asyncio.fixture
+    async def started_game(self):
+        mock_controller_manager = MockControllerManagerService(
+            num_controllers=3,
+            death_schedule={},
+            max_duration=10.0,
+        )
+        game = FightClubGame(
+            controller_manager_client=mock_controller_manager,
+            event_publisher=EventCollector().publish,
+            audio_client=None,
+            game_id="test_fight_club_detection",
+        )
+        game.gameplay_stream = RecordingGameplayStream()
+        await game._initialize_players_impl(mock_controller_manager.controllers)
+        await game._start_round()
+        return game
+
+    @staticmethod
+    def _frame(serial, magnitude, **fields):
+        return controller_manager_pb2.GameplayData(
+            serial=serial,
+            accel=controller_manager_pb2.Vector3(x=magnitude, y=0.0, z=0.0),
+            **fields,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[4])
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-002"])
+    async def test_fighter_ema_uses_perception_ema_weight(self, started_game):
+        game = started_game
+        defender = game.players[game.current_defender]
+        defender.invincible_until = 0
+        game._ema_weight = 1.0
+
+        with patch.object(game, "_kill_player", autospec=True), patch.object(game, "_warn_player", autospec=True):
+            await game._process_controller_state(self._frame(defender.serial, 1.0))
+            await game._process_controller_state(self._frame(defender.serial, 2.0))
+
+        # weight 1: (1.0 * 1 + 2.0) / 2 = 1.5 (a hard-coded weight 4 gives 1.2)
+        assert defender.smoothed_accel == pytest.approx(1.5)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A1")
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-001", "BR-002"])
+    async def test_spike_before_invincibility_ends_does_not_kill_after_it(self, started_game):
+        game = started_game
+        fighter = game.players[game.current_fighter]
+        _, death_threshold = game._compute_effective_thresholds(fighter)
+        # A lethal value still in the filter when the invincibility window opens.
+        fighter.smoothed_accel = death_threshold * 3
+        assert game.is_in_grace(fighter)
+
+        with (
+            patch.object(game, "_kill_player", autospec=True) as kill,
+            patch.object(game, "_warn_player", autospec=True),
+        ):
+            await game._process_controller_state(self._frame(fighter.serial, death_threshold * 3))
+            assert fighter.smoothed_accel == 0.0  # A1 step 1: the EMA is reset in grace
+            fighter.invincible_until = 0  # invincibility ends
+            await game._process_controller_state(self._frame(fighter.serial, 1.0))
+
+        kill.assert_not_called()
+        assert fighter.smoothed_accel == pytest.approx(1.0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[6, 7])
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-002"])
+    async def test_at_most_one_warning_per_warning_window(self, started_game):
+        game = started_game
+        defender = game.players[game.current_defender]
+        defender.invincible_until = 0
+        warn_threshold, death_threshold = game._compute_effective_thresholds(defender)
+        between = (warn_threshold + death_threshold) / 2
+
+        with patch.object(game, "_kill_player", autospec=True) as kill:
+            for _ in range(10):
+                await game._process_controller_state(self._frame(defender.serial, between))
+
+        kill.assert_not_called()
+        warnings = [
+            effect
+            for serial, effect in game.gameplay_stream.effects
+            if serial == defender.serial and effect == controller_manager_pb2.GAME_EFFECT_PLAYER_WARNING
+        ]
+        assert len(warnings) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-025", flow="A2", steps=[1, 2], br=["BR-002"])
+    async def test_waiting_player_is_not_checked_but_name_and_battery_are_captured(self, started_game):
+        game = started_game
+        waiting = next(p for p in game.players.values() if p.state == FightState.IN_LINE)
+        waiting.name = ""
+        waiting.battery_pct = None
+        waiting.invincible_until = 0
+
+        with (
+            patch.object(game, "_kill_player", autospec=True) as kill,
+            patch.object(game, "_warn_player", autospec=True) as warn,
+        ):
+            await game._process_controller_state(self._frame(waiting.serial, 50.0, name="Alice", battery=4))
+
+        kill.assert_not_called()
+        warn.assert_not_called()
+        assert waiting.smoothed_accel == 0.0
+        assert waiting.name == "Alice"
+        assert waiting.battery_pct == pytest.approx(80.0)
 
 
 class TestFightClubCleanupAndForceEnd:
