@@ -632,6 +632,8 @@ class TestTraitorEndGameImpl:
         game.gameplay_stream = stream
         game.start_time = time.time()
         game.state = GameState.RUNNING
+        game.running = True
+        assert await game._check_win_condition()  # latches the result (UC-022 BR-005)
         game.running = False
 
         await game._end_game_impl()
@@ -670,6 +672,8 @@ class TestTraitorEndGameImpl:
         game.gameplay_stream = RecordingGameplayStream()
         game.start_time = time.time() - 45
         game.state = GameState.RUNNING
+        game.running = True
+        assert await game._check_win_condition()  # latches the result (UC-022 BR-005)
         game.running = False
 
         await game._end_game_impl()
@@ -705,13 +709,15 @@ class TestTraitorEndGameImpl:
         game.gameplay_stream = RecordingGameplayStream()
         game.start_time = time.time()
         game.state = GameState.RUNNING
+        game.running = True
+        assert await game._check_win_condition()  # latches the result (UC-022 BR-005)
         game.running = False
 
         await game._end_game_impl()
 
         ended_events = event_collector.get_events_of_type("game_ended")
         assert len(ended_events) == 1
-        assert ended_events[0]["winning_team"] == -1  # No winner
+        assert ended_events[0]["winning_team"] == "none"  # No winner (was -1 before #2003)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-022", cond=["Post-S-1"])
@@ -955,3 +961,161 @@ class TestUC022PostF1:
         types = [t for t, _ in events.events]
         assert GameEvent.GAME_STARTED not in types
         assert game.state == GameState.ENDED
+
+
+class TestTraitorBR005ForceEndNoWinner:
+    """UC-022 BR-005 (#2003): only a latched result is announced; a force-end before it declares none."""
+
+    @pytest.fixture
+    def fast_rainbow(self):
+        config = GamePerformanceConfig(winner_rainbow_duration_ms=200)
+        with patch.object(get_config_manager(), "get_config", return_value=config):
+            yield config
+
+    @staticmethod
+    async def _running_game(events_hook=None):
+        cm = MockControllerManagerService(num_controllers=4)
+        events = EventCollector()
+
+        async def publish(event_type, data):
+            await events.publish(event_type, data)
+            if events_hook:
+                events_hook(event_type)
+
+        game = TraitorGame(
+            controller_manager_client=cm,
+            event_publisher=publish,
+            audio_client=None,
+            game_id="uc022_br5",
+        )
+        game.random_teams = False
+        await game._initialize_players_impl(cm.controllers)
+        game.gameplay_stream = RecordingGameplayStream()
+        game.start_time = time.time()
+        game.state = GameState.RUNNING
+        game.running = True
+        game.sounds = []
+
+        async def record_sound(sound, *_args, **_kwargs):
+            game.sounds.append(sound)
+
+        game._play_sound = record_sound
+        return game, events
+
+    @staticmethod
+    def _eliminate_secret_team(game, team: int) -> list[str]:
+        """Mark secret team ``team`` dead (no win check); returns the surviving serials."""
+        for player in game.players.values():
+            if player.secret_team == team:
+                player.alive = False
+        return sorted(s for s, p in game.players.items() if p.alive)
+
+    @staticmethod
+    def _rainbows(game) -> list[str]:
+        return sorted(
+            m.game_effect.serial
+            for m in game.gameplay_stream.messages
+            if m.HasField("game_effect") and m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        )
+
+    def _assert_no_winner(self, game, events, outcome: str, reason: str | None):
+        assert self._rainbows(game) == []
+        assert game.sounds == []
+        assert events.get_events_of_type("traitor_winner") == []
+        ended = events.get_events_of_type("game_ended")
+        assert len(ended) == 1
+        assert ended[0]["winning_team"] == "none"
+        assert ended[0]["outcome"] == outcome
+        if reason is None:
+            assert "reason" not in ended[0]
+        else:
+            assert ended[0]["reason"] == reason
+
+    def _assert_winner(self, game, events, team: int, winners: list[str]):
+        assert self._rainbows(game) == winners
+        assert len(game.sounds) == 1
+        assert events.count_events_of_type("traitor_winner") == 1
+        ended = events.get_events_of_type("game_ended")
+        assert len(ended) == 1
+        assert ended[0]["winning_team"] == team
+        assert ended[0]["outcome"] == "completed"
+        assert "reason" not in ended[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", br=["BR-005"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    async def test_force_end_while_running_declares_no_winner(self, fast_rainbow):
+        """A force-end before any result: no traitor_winner, rainbow, voice or wait; game_ended none + reason."""
+        game, events = await self._running_game()
+        self._eliminate_secret_team(game, 1)  # one secret team left, but no win check ran yet
+        game.force_end("operator")
+
+        assert not await game._check_win_condition()  # a force-ended game latches nothing
+        await game._end_game_impl()
+
+        self._assert_no_winner(game, events, "force_ended", "operator")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", br=["BR-005"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    async def test_force_end_after_the_decision_keeps_the_winner(self, fast_rainbow):
+        """A force-end during the hold after a win keeps the winner, its effects and outcome completed."""
+        game, events = await self._running_game()
+        winners = self._eliminate_secret_team(game, 1)
+
+        assert await game._check_win_condition()
+        game.force_end("operator")
+        assert await game._check_win_condition()  # latched: not published again
+        await game._end_game_impl()
+
+        self._assert_winner(game, events, 0, winners)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", br=["BR-005"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    async def test_same_tick_force_end_during_the_win_publish_keeps_the_winner(self, fast_rainbow):
+        """Same tick, decision first: a force-end landing while traitor_winner is published keeps the winner."""
+        holder: dict = {}
+
+        def force_end_on_win(event_type):
+            if event_type == "traitor_winner":
+                holder["game"].force_end("operator")
+
+        game, events = await self._running_game(force_end_on_win)
+        holder["game"] = game
+        winners = self._eliminate_secret_team(game, 1)
+
+        assert await game._check_win_condition()
+        assert game.game_outcome() == "completed"
+        await game._end_game_impl()
+
+        self._assert_winner(game, events, 0, winners)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", br=["BR-005"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    async def test_same_tick_force_end_before_the_win_check_declares_no_winner(self, fast_rainbow):
+        """Same tick, force-end first: the lethal kill's win check then latches and publishes nothing."""
+        game, events = await self._running_game()
+        losers = [s for s, p in game.players.items() if p.secret_team == 1]
+        for serial in losers[:-1]:
+            game.players[serial].alive = False
+        game.force_end("operator")
+        game.players[losers[-1]].alive = False  # the same tick's last lethal sample
+
+        assert not await game._check_win_condition()
+        await game._end_game_impl()
+
+        self._assert_no_winner(game, events, "force_ended", "operator")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-022", br=["BR-005"])
+    async def test_stream_end_before_a_decision_declares_no_winner(self, fast_rainbow):
+        """A gameplay stream that ends before any result: winning_team none, outcome completed, no effects."""
+        game, events = await self._running_game()
+        self._eliminate_secret_team(game, 1)  # one secret team left, but the stream ended before the win check
+        game.running = False
+
+        await game._end_game_impl()
+
+        self._assert_no_winner(game, events, "completed", None)

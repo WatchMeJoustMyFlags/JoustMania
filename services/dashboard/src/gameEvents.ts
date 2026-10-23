@@ -37,8 +37,8 @@ function noWinnerDetail(data: Record<string, string>): string {
 
 /**
  * `game_ended` winner: a serial is a controller, `none` is no winner, anything else a team name (#1935).
- * Modes without a `winner` field publish `winning_team` (Swapper, Traitor: a numeric team index, `-1` or
- * `none` = no winner) or `champion` (Tournament: a serial) (#1977). Teams base publishes neither.
+ * Modes without a `winner` field publish `winning_team` (Swapper, Traitor, Teams: a numeric team index,
+ * `none` = no winner; `-1` from Traitor before #2003) or `champion` (Tournament: a serial) (#1977).
  */
 function endedLine(data: Record<string, string>, fallbackSerial: string | null): string {
   const raw = present(data["winner"]) || present(data["champion"]) || teamWinner(data["winning_team"]);

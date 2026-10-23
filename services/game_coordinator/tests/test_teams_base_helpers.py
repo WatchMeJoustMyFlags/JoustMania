@@ -672,6 +672,8 @@ class TestEndGameImpl:
                 ("p2", 1, False),
             ],
         )
+        game_with_mocks.running = True
+        assert await game_with_mocks._check_win_condition()  # latches team 0 (UC-021 BR-003)
 
         await game_with_mocks._end_game_impl()
 
@@ -684,7 +686,7 @@ class TestEndGameImpl:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-021", flow="A2")
     async def test_end_game_tie(self, game_with_mocks, mock_event_publisher):
-        """Should skip rainbow and victory sound when there is no winner (tie)."""
+        """Should skip rainbow, victory sound and the rainbow wait when there is no winner (tie)."""
         _add_players(
             game_with_mocks,
             [
@@ -692,12 +694,14 @@ class TestEndGameImpl:
                 ("p2", 1, False),
             ],
         )
+        game_with_mocks.running = True
+        assert await game_with_mocks._check_win_condition()  # latches the tie (UC-021 BR-003)
 
         await game_with_mocks._end_game_impl()
 
         game_with_mocks._send_winner_rainbow_effects.assert_not_awaited()
         game_with_mocks._play_team_victory_sound.assert_not_awaited()
-        game_with_mocks._wait_for_rainbow_effect.assert_awaited_once()
+        game_with_mocks._wait_for_rainbow_effect.assert_not_awaited()
         game_with_mocks._end_surviving_player_spans.assert_called_once_with(None)
         game_with_mocks._publish_player_analytics.assert_awaited_once_with(None)
 
@@ -729,6 +733,8 @@ class TestEndGameImpl:
                 ("p3", 1, False),
             ],
         )
+        game_with_mocks.running = True
+        assert await game_with_mocks._check_win_condition()  # latches team 0 (UC-021 BR-003)
 
         await game_with_mocks._end_game_impl()
 
