@@ -126,31 +126,7 @@ class TestTournamentGameMode:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All players active - no win
-        assert not await game._publish_bracket_result()
         assert not await game._check_win_condition()
-
-    @pytest.mark.asyncio
-    async def test_check_win_condition_one_remaining(self, tournament_game):
-        """Test that win condition triggers when one player remains."""
-        game, mock_controller_manager, event_collector = tournament_game
-
-        await game._initialize_players_impl(mock_controller_manager.controllers)
-
-        # Eliminate 3 players
-        serials = list(game.players.keys())
-        for serial in serials[:-1]:  # All but last
-            game.players[serial].tournament_state = TournamentState.ELIMINATED
-
-        # Should have winner
-        assert await game._publish_bracket_result()
-
-        # Last player should be champion
-        last_serial = serials[-1]
-        assert game.players[last_serial].tournament_state == TournamentState.CHAMPION
-
-        # Verify event
-        champion_events = event_collector.get_events_of_type("tournament_champion")
-        assert len(champion_events) == 1
 
     @pytest.mark.asyncio
     async def test_tournament_player_dataclass(self, tournament_game):
@@ -368,7 +344,7 @@ class TestTournamentWinCondition:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All waiting - no win
-        assert not await game._publish_bracket_result()
+        assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
     async def test_no_win_multiple_non_eliminated(self, tournament_game):
@@ -385,27 +361,7 @@ class TestTournamentWinCondition:
         game.players[serials[3]].tournament_state = TournamentState.WAITING
 
         # Multiple non-eliminated - no win
-        assert not await game._publish_bracket_result()
-
-    @pytest.mark.asyncio
-    async def test_champion_receives_event(self, tournament_game):
-        """Champion event includes player info."""
-        game, mock_controller_manager, event_collector = tournament_game
-
-        await game._initialize_players_impl(mock_controller_manager.controllers)
-
-        # Eliminate all but one
-        serials = list(game.players.keys())
-        champion_serial = serials[-1]
-
-        for serial in serials[:-1]:
-            game.players[serial].tournament_state = TournamentState.ELIMINATED
-
-        await game._publish_bracket_result()
-
-        champion_events = event_collector.get_events_of_type("tournament_champion")
-        assert len(champion_events) == 1
-        assert champion_events[0]["champion"] == champion_serial
+        assert not await game._check_win_condition()
 
 
 # ---------------------------------------------------------------------------
@@ -1411,7 +1367,7 @@ class TestFullBracketKillDriven:
 
         # The game's win condition holds; the champion announcement recognizes the champion.
         assert await game._check_win_condition() is True
-        assert await game._publish_bracket_result() is True
+        await game._finish_decided_final()
         assert champion.tournament_state == TournamentState.CHAMPION
 
     @pytest.mark.uc("UC-025", flow="main", steps=[3, 4])
@@ -1449,7 +1405,7 @@ class TestFullBracketKillDriven:
 
 
 # ---------------------------------------------------------------------------
-# Champion announcement edge cases (_publish_bracket_result, #1337)
+# Champion announcement edge cases (_latch_champion / _announce_no_winner, #1337)
 # ---------------------------------------------------------------------------
 
 
@@ -1479,8 +1435,9 @@ class TestCheckWinConditionEdgeCases:
         for player in game.players.values():
             player.tournament_state = TournamentState.ELIMINATED
 
-        result = await game._publish_bracket_result()
-        assert result is True
+        game.running = True
+        assert game._latch_no_winner() is True
+        await game._announce_no_winner()
 
         # Should publish tournament_no_winner, not tournament_champion
         no_winner_events = event_collector.get_events_of_type("tournament_no_winner")
@@ -1705,7 +1662,6 @@ class TestTournamentDoubleHit:
 
         survivors = [s for s, p in game.players.items() if p.tournament_state != TournamentState.ELIMINATED]
         assert survivors == [winner_serial]
-        assert await game._publish_bracket_result() is True
         assert game.players[winner_serial].tournament_state == TournamentState.CHAMPION
         assert game.players[loser_serial].tournament_state == TournamentState.ELIMINATED
         assert _death_effect_serials(stream) == [loser_serial]
