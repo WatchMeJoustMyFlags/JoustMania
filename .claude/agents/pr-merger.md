@@ -58,7 +58,10 @@ missing or malformed, report `ESCALATE: bad brief` and stop.
    idle and hand back before the merge ends, #2036).
    - Exit 3 AND the last line starts with `VERDICT: PENDING`: run the SAME command again, unchanged. It
      attaches to the running safe-merge and never starts a second one. At most 22 calls (about 3 h 20 min);
-     still PENDING after that: escalate (`safe-merge: still running in <dir>`), Next step `re-check later`.
+     still PENDING after that: escalate (`safe-merge: still running in <dir>`, with the full `<dir>` path), Next
+     step `re-check later`. A re-brief for the same PR and head MUST reuse that `<dir>` (the orchestrator puts it in
+     the brief) and runs the same command; without a dir in the brief, check `<old dir>/rc` and its lock for any
+     earlier dir of this PR first, and never start a second safe-merge while the first still polls.
    - Any other result: the safe-merge run has ended; the LAST stdout line is its result and the exit code
      is its exit code (exit 3 with another last line is safe-merge's own head mismatch).
    - `VERDICT: ERROR: killed`, or no result line: escalate (`safe-merge: killed`) and NEVER start it again

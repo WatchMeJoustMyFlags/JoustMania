@@ -32,8 +32,9 @@ _Verified against main f38f076d, 2026-10-23._
 - **Several mutations at once.** One detached worktree per mutation (for example `review-<N>-m1`, `-m2`) and one gate-runner
   each, with its own `logs <dir>`; two runs sharing a log dir clobber `run1-1.log`.
 - **Shell tests** (`scripts/tests/test-*.sh`): a suite that stops at the first failure can hide which test killed
-  a mutation. Build a temp script from the harness plus the one test block. gate-runner labels the shell `FAIL:`
-  exit `CAUGHT? (non-test error)`: read the FAIL line, it can be a real assertion. To test workflow `run:` loops,
+  a mutation. Build a temp script from the harness plus the one test block. For a `bash scripts/tests/...`
+  command gate-run.sh counts a shell `FAIL` / `FAILED` line as `MUTATION CAUGHT (assertion)` (not for `make lint`).
+  Still read the line: a harness setup FAIL looks the same. To test workflow `run:` loops,
   extract the block with PyYAML and stub `gh`, `sleep` and `date` on `PATH` (sub-second, covers `set -e` paths).
 - **Cross-PR semantic merge.** `T=$(git merge-tree --write-tree origin/main A); C=$(git commit-tree $T -p origin/main -m sim);
   git merge-tree --write-tree $C B`, then `git archive` the tree and run the suites. `--merge-base=origin/main`
