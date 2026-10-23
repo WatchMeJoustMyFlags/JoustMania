@@ -219,8 +219,9 @@ services:
       # nobody on the venue network may inject spans or metrics (#1319).
       - "127.0.0.1:4317:4317"
     # No depends_on on the backends (UC-060 BR-004, FR-181): the collector starts
-    # at once and its exporters queue and retry until Jaeger, Loki and
-    # VictoriaMetrics are up (UC-035 A3, NFR-021).
+    # at once and its exporters use the collector's default bounded retry (about
+    # 5 min, in-memory queue) until Jaeger, Loki and VictoriaMetrics are up; a
+    # backend that comes up later than that loses the early data (UC-035 A3, NFR-021).
     restart: unless-stopped
     networks:
       - joustmania
