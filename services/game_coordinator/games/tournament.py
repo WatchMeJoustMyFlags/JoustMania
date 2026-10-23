@@ -594,6 +594,21 @@ class TournamentGame(BaseGameMode):
                     self._advance_winner(out[0], match, carried_out=True)
                     changed = True
 
+    def _eliminate_on_timeout(self, match: Match) -> None:
+        """Count the loser of a timed-out match out (UC-025 A1).
+
+        The same elimination gauges and players-alive aggregate as a death
+        (``dead_count``, ``game_player_alive`` 0, the elimination order), but no
+        death: no explosion, no death effect, no ``game_player_deaths_total``
+        and no ``player_death`` span event. ``_finalize_match`` turns its LED off.
+        """
+        loser_serial = match.player2_serial if match.winner_serial == match.player1_serial else match.player1_serial
+        loser = self.players[loser_serial]
+        loser.tournament_state = TournamentState.ELIMINATED
+        loser.alive = False
+        self._count_elimination(loser_serial)
+        self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
+
     async def _bracket_tick(self) -> None:
         """Step the bracket once per gameplay frame (UC-025 steps 2-4, A1, D-G33).
 
@@ -613,6 +628,7 @@ class TournamentGame(BaseGameMode):
                 # Time's up - both survive, random winner (A1)
                 match.winner_serial = self._rng.choice([match.player1_serial, match.player2_serial])
                 logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
+                self._eliminate_on_timeout(match)
                 if self._is_final(match):
                     self._latch_champion(match.winner_serial)
             await self._finalize_match(match)
@@ -659,12 +675,30 @@ class TournamentGame(BaseGameMode):
     async def _process_gameplay_update(self, gameplay_update) -> bool:
         """Base frame processing (disconnects, then detection), then one bracket step.
 
-        A failing bracket step ends the game loop with the error kept for run(),
-        which raises it (``game_error``). The base loop also ends the game on a
-        frame-processing error without a reconnect (#2001), so this is kept for
-        the explicit, logged bracket-failure path (UC-030 BR-006).
+        A failing bracket step before the champion is latched ends the game loop
+        with the error kept for run(), which raises it (``game_error``) and latches
+        no outcome; it is kept here rather than raised to the base loop so that a
+        failure after a force-end is still reported (UC-030 BR-006). After the
+        latch an error, a gRPC error of the gameplay call included (no reconnect),
+        is logged and the result stands: the game ends through the teardown with
+        the champion and ``completed`` (UC-025 BR-005, D-G34).
         """
-        game_over = await super()._process_gameplay_update(gameplay_update)
+        try:
+            game_over = await super()._process_gameplay_update(gameplay_update)
+        except self._STREAM_CALL_ERRORS:
+            if not self._result_latched:
+                raise
+            # The deciding frame's write (the final loser's death effect) failed:
+            # no reconnect, the teardown skips its effects on a failed call.
+            logger.warning(
+                "Gameplay stream failed in the frame that decided the final; the result stands", exc_info=True
+            )
+            return True
+        except Exception:
+            if not self._result_latched:
+                raise
+            logger.error("Tournament frame failed after the champion was latched; the result stands", exc_info=True)
+            return True
         try:
             if game_over:
                 # The final was decided in this frame: finish it now (UC-025 step 5).
@@ -672,6 +706,12 @@ class TournamentGame(BaseGameMode):
                 return True
             await self._bracket_tick()
         except Exception as e:
+            if self._result_latched:
+                logger.error(
+                    f"Tournament bracket step failed after the champion was latched; the result stands: {e}",
+                    exc_info=True,
+                )
+                return True
             logger.error(f"Tournament bracket step failed: {e}", exc_info=True)
             self._bracket_error = e
             return True
@@ -755,7 +795,7 @@ class TournamentGame(BaseGameMode):
             {
                 "champion": self._champion,
                 "wins": champion.wins,
-                "rounds_played": self.current_round,
+                "rounds_played": max(self.current_round, champion.round_number),
             },
         )
 
@@ -769,7 +809,11 @@ class TournamentGame(BaseGameMode):
             return
         match = self.current_match
         if match is not None and match.is_complete:
-            await self._finalize_match(match)
+            try:
+                await self._finalize_match(match)
+            except Exception as e:
+                # The champion is latched: the result stands (UC-025 BR-005, D-G34).
+                logger.error(f"Finishing the decided final failed; the champion stands: {e}", exc_info=True)
         await self._announce_champion()
 
     async def _publish_bracket_result(self) -> bool:
@@ -808,54 +852,49 @@ class TournamentGame(BaseGameMode):
 
         return False
 
+    def _accepts_kill(self, serial: str) -> bool:
+        """The Tournament kill gate (UC-025 BR-006, UC-030 step 9; #1383, #1737, D-G8).
+
+        No kill once the champion is latched (BR-005). A disconnected player is
+        always taken (A4: a fighter forfeits even in grace, a waiting player is
+        out). Otherwise only a fighter of the undecided current match out of its
+        grace can lose: a waiting or bye player, a fighter in grace, the winner of
+        a decided match (a double hit, BR-004) and anyone between matches are
+        declined before the base death accounting, so an ``eliminate_player`` on
+        them is refused (``eliminate_refused``). Grace is the unified effective
+        grace (#817): max(agent shield, match invincibility).
+        """
+        if self._result_latched:
+            return False
+        if serial in self._disconnected:
+            return True
+        player = self.players.get(serial)
+        return player is not None and self._fights_undecided_match(serial) and not self.is_in_grace(player)
+
     async def _kill_player_impl(self, serial: str, accel_mag: float):
         """
         Handle player death during a match.
+
+        The base kill path calls this only for a kill ``_accepts_kill`` took,
+        synchronously after its second check; the check here keeps a direct call
+        to the same rule.
 
         Args:
             serial: Controller serial number
             accel_mag: Acceleration magnitude that caused death
         """
-        player = self.players[serial]
-        disconnected = serial in self._disconnected
-
-        # The final is decided: nothing changes the result any more (UC-025 BR-005).
-        if self._result_latched:
+        if not self._accepts_kill(serial):
             return
+        player = self.players[serial]
 
         # A disconnected player that is not fighting an undecided match (a waiting
         # player, or the winner of a match decided in this frame) leaves the
         # bracket; its next opponent gets a walkover (UC-025 A4).
-        if disconnected and not self._fights_undecided_match(serial):
+        if not self._fights_undecided_match(serial):
             player.tournament_state = TournamentState.ELIMINATED
             player.alive = False
             player.color = ELIMINATED_COLOR
             logger.info(f"Player {serial} disconnected while waiting: out of the bracket")
-            return
-
-        # Check if in active match
-        if player.tournament_state != TournamentState.FIGHTING:
-            return
-
-        # Check immunity via the unified effective-grace rule (#817):
-        # max(agent shield grace_until, admin invincible_until). Honors both an
-        # admin invincibility baseline and an agent shield landing mid-match.
-        # A disconnected fighter forfeits even in grace (UC-025 A4).
-        if not disconnected and self.is_in_grace(player):
-            logger.debug(f"Player {serial} is invincible")
-            return
-
-        # Only process if this player is in current match
-        if not self.current_match:
-            return
-
-        if serial not in (self.current_match.player1_serial, self.current_match.player2_serial):
-            return
-
-        # One loser per match (UC-025 BR-004, #1991): a double hit in one frame
-        # reaches here for the winner too, who is still FIGHTING because the
-        # match is finalised only after the frame. The first kill decided it.
-        if self.current_match.is_complete:
             return
 
         # Determine winner
@@ -925,7 +964,11 @@ class TournamentGame(BaseGameMode):
 
         # Celebrate champion
         if champion_serial:
-            await self._finish_decided_final()
+            try:
+                await self._finish_decided_final()
+            except Exception as e:
+                # The champion is latched: the result stands (UC-025 BR-005, D-G34).
+                logger.error(f"Announcing the champion failed; the result stands: {e}", exc_info=True)
             if self.gameplay_stream:
                 effect_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(

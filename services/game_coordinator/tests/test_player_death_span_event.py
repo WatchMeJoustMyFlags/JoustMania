@@ -53,7 +53,20 @@ async def _game_with_spans(mode: Games, num_players: int = 4):
         player.name = f"Player {i}"
         player.span = _autospec_span()
         spans[serial] = player.span
+    if mode == Games.Tournament:
+        _seat_first_player_in_a_match(game)
     return game, spans
+
+
+def _seat_first_player_in_a_match(game) -> None:
+    """Tournament takes a kill only from a fighter of the undecided current match (UC-025 BR-006)."""
+    from services.game_coordinator.games.tournament import TournamentState
+
+    serial = next(iter(game.players))
+    match = next(m for m in game.bracket if serial in (m.player1_serial, m.player2_serial) and not m.is_complete)
+    game.current_match = match
+    for fighter in (match.player1_serial, match.player2_serial):
+        game.players[fighter].tournament_state = TournamentState.FIGHTING
 
 
 def _death_events(span):
