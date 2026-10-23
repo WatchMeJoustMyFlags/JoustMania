@@ -37,6 +37,7 @@ from services.game_coordinator.interventions import (  # noqa: E402
 from services.game_coordinator.lifecycle_handlers import handle_eliminate_player  # noqa: E402
 
 FC_METRICS = "services.game_coordinator.games.fight_club.metrics"
+BASE_METRICS = "services.game_coordinator.games.base.metrics"
 
 
 async def _round_on(num_players: int, game_id: str, *, invincible: bool = False, min_rounds: int = 10):
@@ -100,7 +101,7 @@ class _GatedEffectStream(RecordingGameplayStream):
 class TestFightClubDisconnectForfeit:
     """UC-025 A4 (Fight Club part): a disconnect is a forfeit, the player is out for good."""
 
-    @pytest.mark.uc("UC-025", flow="A4", steps=[1], br=["BR-006"])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[4], br=["BR-006"])
     @pytest.mark.asyncio
     async def test_defender_disconnect_during_invincibility_the_fighter_wins(self):
         game, events = await _round_on(3, "test_fc_dc_defender_invincible", invincible=True)
@@ -119,7 +120,7 @@ class TestFightClubDisconnectForfeit:
         assert round_end and round_end[0]["winner"] == fighter and round_end[0]["loser"] == defender
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="A4", steps=[2])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[5])
     @pytest.mark.asyncio
     async def test_waiting_player_disconnect_never_fights_again(self):
         game, events = await _round_on(4, "test_fc_dc_waiting", min_rounds=100)
@@ -141,7 +142,7 @@ class TestFightClubDisconnectForfeit:
         assert game.running and not game.game_over
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="A4", steps=[2])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[5])
     @pytest.mark.asyncio
     async def test_loser_disconnect_during_the_pause_leaves_no_ghost(self):
         """An eliminate_player round loss pauses 1 s; the loser disconnects meanwhile (the base drops that kill)."""
@@ -170,7 +171,7 @@ class TestFightClubDisconnectForfeit:
         assert loser not in game.queue
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="A4", steps=[1])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[6])
     @pytest.mark.asyncio
     async def test_two_players_one_disconnects_the_game_ends(self):
         game, events = await _round_on(2, "test_fc_dc_two_players")
@@ -186,7 +187,7 @@ class TestFightClubDisconnectForfeit:
         assert not events.get_events_of_type("round_start")[1:]
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="A4", steps=[1])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[6])
     @pytest.mark.asyncio
     async def test_a_disconnected_leader_can_still_be_crowned(self):
         game, _ = await _round_on(3, "test_fc_dc_leader_crowned", min_rounds=100)
@@ -202,7 +203,7 @@ class TestFightClubDisconnectForfeit:
         assert game._latched_winner == leader
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="A4", steps=[1])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[6])
     @pytest.mark.asyncio
     async def test_tied_top_with_no_face_off_possible_has_no_winner(self):
         game, _ = await _round_on(2, "test_fc_dc_tied_no_winner")
@@ -219,7 +220,7 @@ class TestFightClubDisconnectForfeit:
         assert game._latched_winner is None
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="A4", steps=[1], br=["BR-005"])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[6], br=["BR-005"])
     @pytest.mark.asyncio
     async def test_a_disconnect_after_the_latch_is_ignored(self):
         game, _ = await _round_on(2, "test_fc_dc_after_latch", min_rounds=1)
@@ -370,33 +371,76 @@ class TestFightClubKillGate:
         assert not events.get_events_of_type("round_end")
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="A4", steps=[2], br=["BR-006"])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[5], br=["BR-006"])
     @pytest.mark.asyncio
-    async def test_a_disconnect_kill_in_flight_is_not_counted_twice(self):
+    async def test_a_disconnect_while_its_kill_is_in_flight_counts_one_death(self):
         """A fighter's kill awaits its explosion; the round times out and the fighter, now waiting, disconnects.
 
-        The disconnect takes it out at once (the base drops the kill: one is in flight); the kill in
-        flight is then declined, so the player is not counted out a second time.
+        The base drops the disconnect kill (one is in flight); the kill in flight then takes the
+        player out of the rotation through the death path: exactly one death is counted.
         """
-        game, _ = await _round_on(3, "test_fc_gate_double_count", min_rounds=100)
+        game, _ = await _round_on(3, "test_fc_gate_one_death", min_rounds=100)
         explosion = _GatedExplosion()
         game._play_sound = explosion
         fighter = game.current_fighter
-        counted = _counted(game)
+        dead_count, order = _counted(game)
 
-        with patch(FC_METRICS):
+        with patch(FC_METRICS) as fc_metrics, patch(BASE_METRICS) as base_metrics:
             kill = asyncio.create_task(game._kill_player(fighter, 5.0))
             await asyncio.wait_for(explosion.started.wait(), 1.0)
             await game._handle_timeout()
             assert fighter in game.queue
             await game._handle_disconnect(fighter)
-            assert game.players[fighter].alive is False
-            assert fighter not in game.queue
             explosion.release.set()
-            assert await kill is False
+            assert await kill is True
 
-        assert _counted(game) == counted
+            assert base_metrics.player_deaths_total.labels.return_value.inc.call_count == 1
+            assert call(1) not in fc_metrics.player_alive.labels.return_value.set.call_args_list
+
+        assert _counted(game) == (dead_count + 1, order + 1)
+        assert game.players[fighter].alive is False
         assert fighter not in game.queue
+        assert fighter not in (game.current_defender, game.current_fighter)
+        assert all(p.score == 0 for p in game.players.values())
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A4", steps=[4, 5, 6], br=["BR-006"])
+    @pytest.mark.asyncio
+    async def test_a_round_loser_seated_again_that_disconnects_forfeits_the_seated_round(self):
+        """Two players: eliminate_player on the fighter; it disconnects while the next ``round_start`` is published.
+
+        The next round has seated the loser again (nobody else is left to fight); its round-loss kill
+        is still in flight, so the disconnect waits for it and then forfeits the seated round.
+        """
+        game, events = await _round_on(2, "test_fc_dc_seated_loser")
+        defender, loser = game.current_defender, game.current_fighter
+        round_start_published, round_start_release = asyncio.Event(), asyncio.Event()
+        publish = game.event_publisher
+
+        async def held_round_start(event_type, data):
+            await publish(event_type, data)
+            if event_type == "round_start":
+                round_start_published.set()
+                await round_start_release.wait()
+
+        game.event_publisher = held_round_start
+        dead_count, order = _counted(game)
+
+        with patch(FC_METRICS):
+            kill = asyncio.create_task(handle_eliminate_player(_eliminate_ctx(game, loser)))
+            await asyncio.wait_for(round_start_published.wait(), 1.0)
+            assert game.current_fighter == loser
+            await game._handle_disconnect(loser)
+            round_start_release.set()
+            await kill
+
+        assert game.players[loser].alive is False
+        assert loser not in (game.current_defender, game.current_fighter)
+        assert game.players[defender].score == 2
+        assert [e["loser"] for e in events.get_events_of_type("round_end")] == [loser, loser]
+        assert _counted(game) == (dead_count + 2, order + 2)
+        assert game.game_over is True
+        assert game._latched_winner == defender
         _end_round_timer(game)
 
     @pytest.mark.uc("UC-025", flow="A2", steps=[2])
@@ -421,7 +465,7 @@ class TestFightClubKillGate:
             assert call(1) not in fc_metrics.player_alive.labels.return_value.set.call_args_list
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="A4", steps=[1])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[4, 5])
     @pytest.mark.asyncio
     async def test_start_round_skips_a_disconnected_serial(self):
         game, _ = await _round_on(4, "test_fc_start_round_skips", min_rounds=100)

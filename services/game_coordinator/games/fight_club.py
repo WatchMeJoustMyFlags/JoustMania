@@ -130,11 +130,14 @@ class FightClubGame(BaseGameMode):
         # The winner, latched when the game decides to end (UC-025 BR-005, #1343).
         self._win_latched: bool = False
         self._latched_winner: str | None = None
-        # True from a round's decision (kill or timeout) until the next round seats
-        # its pair: no round is fought, so no kill is taken (UC-025 BR-006).
-        self._round_ending: bool = False
         # Serials whose controller disconnected: out of the rotation for good (A4).
         self._disconnected: set[str] = set()
+        # Round losers whose loss the kill handler applied and is still finishing
+        # (the pause, the next round's seating; A4 step 5).
+        self._finishing_round_loss: set[str] = set()
+        # Round losers that disconnected once the next round had seated them again:
+        # they forfeit that round when their kill path is done (A4 step 5).
+        self._deferred_disconnects: set[str] = set()
         self.game_span: trace.Span | None = None
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
@@ -287,8 +290,6 @@ class FightClubGame(BaseGameMode):
 
         defender = self.players[self.current_defender]
         fighter = self.players[self.current_fighter]
-        # The pair is seated: from here a kill can decide this round (BR-006).
-        self._round_ending = False
 
         # Set states
         defender.state = FightState.DEFENDER
@@ -383,10 +384,10 @@ class FightClubGame(BaseGameMode):
         """
         Handle round timeout - both players go to back of queue.
 
-        The round is over before the first await: a kill in flight (awaiting its
-        explosion) is then declined by the kill gate (UC-025 BR-006).
+        The round is over before the first await (both combatant slots are
+        cleared): a kill in flight (awaiting its explosion) is then declined by the
+        kill gate (UC-025 BR-006).
         """
-        self._round_ending = True
         if self.current_defender:
             defender = self.players[self.current_defender]
             defender.state = FightState.IN_LINE
@@ -512,10 +513,14 @@ class FightClubGame(BaseGameMode):
             self._latch_game_outcome()
 
     def _fights_current_round(self, serial: str) -> bool:
-        """Whether the player is the defender or the fighter of a round being fought."""
+        """Whether the player is the defender or the fighter of a round being fought.
+
+        A round's decision (the kill or the timeout) clears a combatant slot before
+        its first await, and the next round fills both slots before its first, so
+        no round is fought in between (BR-006).
+        """
         return (
             not self.game_over
-            and not self._round_ending
             and self.current_defender is not None
             and self.current_fighter is not None
             and serial in (self.current_defender, self.current_fighter)
@@ -550,9 +555,8 @@ class FightClubGame(BaseGameMode):
         Ignored once the winner is latched (BR-005). The serial is marked before
         the base death path, so the kill handler knows: a combatant loses the round
         even during invincibility (the opponent scores), anyone else leaves the
-        rotation. The base drops the kill while the player's own round-loss kill
-        is still in flight (the loser during the pause between rounds); the player
-        then leaves the rotation here, without a second death.
+        rotation. The base drops the kill while one of the player is in flight;
+        ``_disconnect_during_kill`` then decides (A4 step 5).
         """
         if self._win_latched:
             return
@@ -560,15 +564,44 @@ class FightClubGame(BaseGameMode):
         if player is None or not player.alive:
             return
         self._disconnected.add(serial)
-        if serial in self._kills_in_progress and not self._fights_current_round(serial):
-            logger.info(f"Round loser {serial} disconnected during the round change: out of the rotation")
-            if player.span:
-                player.span.add_event("player_disconnected", attributes={"reason": "controller_disconnect"})
-            self._leave_rotation(serial)
-            if self.running:
-                self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
+        if serial in self._kills_in_progress:
+            self._disconnect_during_kill(serial, player)
             return
         await super()._handle_disconnect(serial)
+
+    def _disconnect_during_kill(self, serial: str, player: FightClubPlayer) -> None:
+        """A disconnect while a kill of the same player is in flight (UC-025 A4 step 5).
+
+        - The kill has not reached the round yet (it awaits its explosion): it
+          counts the one death and, seeing the mark, forfeits the round or takes
+          the player out of the rotation.
+        - The kill was the player's round loss, still being finished, and the next
+          round has seated the player again (two players, or a face-off): it
+          forfeits that round once the kill path is done (``_kill_player``).
+        - The kill was the player's round loss and the player waits: it leaves the
+          rotation at once, without a second death.
+        """
+        if serial in self._finishing_round_loss and self._fights_current_round(serial):
+            logger.info(f"Round loser {serial} disconnected after being seated again: it forfeits that round")
+            self._deferred_disconnects.add(serial)
+            return
+        if player.span:
+            player.span.add_event("player_disconnected", attributes={"reason": "controller_disconnect"})
+        if serial not in self._finishing_round_loss:
+            logger.info(f"Player {serial} disconnected while its kill is in flight: that kill takes it out")
+            return
+        logger.info(f"Round loser {serial} disconnected during the round change: out of the rotation")
+        self._leave_rotation(serial)
+        if self.running:
+            self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
+
+    async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion") -> bool:
+        """The base kill path, then a disconnect deferred while the kill ran (A4 step 5)."""
+        taken = await super()._kill_player(serial, accel_mag, reason)
+        if serial in self._deferred_disconnects and serial not in self._kills_in_progress:
+            self._deferred_disconnects.discard(serial)
+            await self._handle_disconnect(serial)
+        return taken
 
     def _leave_rotation(self, serial: str) -> None:
         """Take a disconnected player out of the rotation for good; it keeps its score (A4).
@@ -618,8 +651,8 @@ class FightClubGame(BaseGameMode):
             self._leave_rotation(serial)
             return
 
-        # The round is decided: no further kill is taken until the next round.
-        self._round_ending = True
+        # The round is decided: no further kill is taken until the next round
+        # (the combatant slot is cleared below, before the first await).
         fc_player.alive = False
 
         # Cancel round timer
@@ -659,6 +692,18 @@ class FightClubGame(BaseGameMode):
         else:
             loser.alive = True
             self.queue.append(loser_serial)
+            # Until the next round is seated, a disconnect of the loser cannot go
+            # through the kill path (this kill is in flight; A4 step 5).
+            self._finishing_round_loss.add(loser_serial)
+        try:
+            await self._finish_round(loser_serial, winner_serial, accel_mag)
+        finally:
+            self._finishing_round_loss.discard(loser_serial)
+
+    async def _finish_round(self, loser_serial: str, winner_serial: str, accel_mag: float) -> None:
+        """Announce a decided round, then end the game or start the next round after the pause."""
+        winner = self.players[winner_serial]
+        loser = self.players[loser_serial]
 
         # The face-off round (if this was one) is over (#1345).
         self.face_off_mode = False
@@ -678,8 +723,8 @@ class FightClubGame(BaseGameMode):
         # Play victory sound for round
         await self._play_sound(Sound.SFX_BEEP, priority=1)
 
-        if player.span:
-            player.span.add_event(
+        if loser.span:
+            loser.span.add_event(
                 "round_lost",
                 attributes={
                     "accel_magnitude": accel_mag,
@@ -901,12 +946,23 @@ class FightClubGame(BaseGameMode):
                 if not self.running:
                     return
 
+                # Disconnects buffered during the intro, the countdown and the warm-up
+                # leave the rotation before round 1 is seated: no forfeit point, no
+                # round pause; fewer than two connected players end the game (A4).
+                ended_before_round_one = await self._handle_warmup_disconnects()
+                if not self.running:
+                    return
+
                 # The first round (and its timer) starts after the warm-up
-                await self._start_round()
+                if not ended_before_round_one:
+                    await self._start_round()
 
                 # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
-                    await self._game_loop()
+                    if ended_before_round_one:
+                        await self._hold_win_display()
+                    else:
+                        await self._game_loop()
                 self._latch_game_outcome()
 
                 # End game
