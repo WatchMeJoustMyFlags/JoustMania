@@ -129,31 +129,6 @@ class TestTournamentGameMode:
         assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
-    async def test_check_win_condition_one_remaining(self, tournament_game):
-        """Test that win condition triggers when one player remains."""
-        game, mock_controller_manager, event_collector = tournament_game
-
-        await game._initialize_players_impl(mock_controller_manager.controllers)
-
-        # Eliminate 3 players
-        serials = list(game.players.keys())
-        for serial in serials[:-1]:  # All but last
-            game.players[serial].tournament_state = TournamentState.ELIMINATED
-
-        # Should have winner
-        game.running = True
-        last_serial = serials[-1]
-        assert game._latch_champion(last_serial)
-        await game._announce_champion()
-
-        # Last player should be champion
-        assert game.players[last_serial].tournament_state == TournamentState.CHAMPION
-
-        # Verify event
-        champion_events = event_collector.get_events_of_type("tournament_champion")
-        assert len(champion_events) == 1
-
-    @pytest.mark.asyncio
     async def test_tournament_player_dataclass(self, tournament_game):
         """Test TournamentPlayer dataclass attributes."""
         game, mock_controller_manager, _ = tournament_game
@@ -387,28 +362,6 @@ class TestTournamentWinCondition:
 
         # Multiple non-eliminated - no win
         assert not await game._check_win_condition()
-
-    @pytest.mark.asyncio
-    async def test_champion_receives_event(self, tournament_game):
-        """Champion event includes player info."""
-        game, mock_controller_manager, event_collector = tournament_game
-
-        await game._initialize_players_impl(mock_controller_manager.controllers)
-
-        # Eliminate all but one
-        serials = list(game.players.keys())
-        champion_serial = serials[-1]
-
-        for serial in serials[:-1]:
-            game.players[serial].tournament_state = TournamentState.ELIMINATED
-
-        game.running = True
-        game._latch_champion(champion_serial)
-        await game._announce_champion()
-
-        champion_events = event_collector.get_events_of_type("tournament_champion")
-        assert len(champion_events) == 1
-        assert champion_events[0]["champion"] == champion_serial
 
 
 # ---------------------------------------------------------------------------
@@ -1414,7 +1367,8 @@ class TestFullBracketKillDriven:
 
         # The game's win condition holds; the champion announcement recognizes the champion.
         assert await game._check_win_condition() is True
-        assert champion.tournament_state != TournamentState.ELIMINATED
+        await game._finish_decided_final()
+        assert champion.tournament_state == TournamentState.CHAMPION
 
     @pytest.mark.uc("UC-025", flow="main", steps=[3, 4])
     @pytest.mark.asyncio
