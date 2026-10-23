@@ -310,7 +310,8 @@ class WerewolfGame(BaseGameMode):
         # Wait for reveal time (configurable via werewolf_reveal_time setting)
         await asyncio.sleep(self._reveal_time)
 
-        if not self.running:
+        # Nothing is revealed once a side has won (the win hold, UC-022 BR-006, #2022).
+        if not self._reveal_allowed():
             return
 
         logger.info("Revealing werewolves!")
@@ -321,13 +322,21 @@ class WerewolfGame(BaseGameMode):
         # Play reveal sound (Joust/vox/)
         await self._play_sound(Sound.VOX_WEREWOLF_REVEAL, priority=2)
 
-        # Change werewolf colors to blue
+        # Change werewolf colors to blue. Guarded writes: a write on a dead call is
+        # skipped and the other werewolves are still revealed; the reopened stream
+        # restores the colour (UC-030 BR-006, #2022). The check runs again before each
+        # werewolf: a win latched during the publish, the voice or an earlier
+        # werewolf's flash stops the reveal there (UC-022 BR-006).
+        revealed_serials = []
         for serial in self.werewolf_serials:
+            if not self._reveal_allowed():
+                break
             player = self.players.get(serial)
             if player and player.alive:
                 wolf_player = player
                 wolf_player.revealed = True
                 wolf_player.color = WEREWOLF_COLOR
+                revealed_serials.append(serial)
 
                 # Flash effect then set color
                 flash_cmd = controller_manager_pb2.GameplayStreamControl(
@@ -336,7 +345,7 @@ class WerewolfGame(BaseGameMode):
                         effect=controller_manager_pb2.GAME_EFFECT_FLASH,
                     )
                 )
-                await self.gameplay_stream.write(flash_cmd)
+                await self._write_effect_guarded(flash_cmd, "Werewolf reveal flash")
 
                 await asyncio.sleep(0.3)
 
@@ -346,15 +355,19 @@ class WerewolfGame(BaseGameMode):
                         color=controller_manager_pb2.RGB(r=WEREWOLF_COLOR[0], g=WEREWOLF_COLOR[1], b=WEREWOLF_COLOR[2]),
                     )
                 )
-                await self.gameplay_stream.write(base_color_cmd)
+                await self._write_effect_guarded(base_color_cmd, "Werewolf reveal colour")
 
-        # Mark all werewolves as revealed
-        for serial in self.werewolf_serials:
+        # Span events only for the werewolves actually revealed
+        for serial in revealed_serials:
             player = self.players.get(serial)
             if player and player.span:
                 player.span.add_event("werewolf_revealed", {"time_since_start": self._reveal_time})
 
-        logger.info(f"Revealed {len(self.werewolf_serials)} werewolves")
+        logger.info(f"Revealed {len(revealed_serials)} werewolves")
+
+    def _reveal_allowed(self) -> bool:
+        """Whether the reveal may go on: the game runs and no side has won (UC-022 BR-006)."""
+        return self.running and self._winner_side is None
 
     def _compute_effective_thresholds(self, player: Player) -> tuple[float, float]:
         """

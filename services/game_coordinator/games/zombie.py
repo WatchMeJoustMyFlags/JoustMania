@@ -582,23 +582,27 @@ class ZombieGame(BaseGameMode):
             player.span.add_event("zombie_respawned", {"respawn.cause": cause})
 
         # Zombie colour FIRST, then the flash: the flash restores to the current
-        # base colour, which the death effect left black (#1342).
+        # base colour, which the death effect left black (#1342). Guarded writes: the
+        # respawn timer is a background task, and a write on a dead call is skipped
+        # (the reopened stream restores the zombie colour, UC-030 BR-006).
         if self.gameplay_stream:
-            await self.gameplay_stream.write(
+            await self._write_effect_guarded(
                 controller_manager_pb2.GameplayStreamControl(
                     base_color=controller_manager_pb2.ControllerColorConfig(
                         serial=serial,
                         color=controller_manager_pb2.RGB(r=ZOMBIE_COLOR[0], g=ZOMBIE_COLOR[1], b=ZOMBIE_COLOR[2]),
                     )
-                )
+                ),
+                "Zombie respawn colour",
             )
-            await self.gameplay_stream.write(
+            await self._write_effect_guarded(
                 controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=serial,
                         effect=controller_manager_pb2.GAME_EFFECT_FLASH,
                     )
-                )
+                ),
+                "Zombie respawn flash",
             )
         return True
 

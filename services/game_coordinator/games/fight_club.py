@@ -428,7 +428,13 @@ class FightClubGame(BaseGameMode):
         await self._start_round()
 
     async def _update_player_colors(self):
-        """Update all player colors based on their state."""
+        """Update all player colors based on their state.
+
+        Guarded writes: on a dead gameplay call (the round timer can run during the
+        game loop's reconnect wait) the colours are skipped and the caller still
+        seats the next round or ends the game; the reopened stream restores each
+        player's colour (UC-025 A2 step 2, UC-030 BR-006, #2021).
+        """
         for serial, player in self.players.items():
             fc_player = player
             color = WAITING_COLOR
@@ -445,7 +451,7 @@ class FightClubGame(BaseGameMode):
                         color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
                     )
                 )
-                await self.gameplay_stream.write(color_cmd)
+                await self._write_effect_guarded(color_cmd, "Fight Club colours")
 
     async def _check_win_condition(self) -> bool:
         """Check if game should end."""
