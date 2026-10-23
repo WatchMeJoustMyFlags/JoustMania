@@ -54,10 +54,11 @@ if (( n % 2 )); then echo "--- FAIL: TestX"; exit 1; fi
 echo ok
 EOF
 ln -s test-pass.sh "${WT}/scripts/tests/test-link.sh"
-# Counts its starts (counter outside the worktree), then runs for 3 s.
+# Counts its starts (counter outside the worktree), then blocks on the fifo $SLOW_GATE
+# when set (the test releases it, #2073), else runs for 3 s.
 cat >"${WT}/scripts/tests/test-slow.sh" <<'EOF'
 n=$(( $(cat "$SLOW_COUNTER" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$SLOW_COUNTER"
-sleep 3
+if [[ -n "${SLOW_GATE:-}" ]]; then read -r _ <"$SLOW_GATE"; else sleep 3; fi
 echo "slow done"
 EOF
 # Fails when the caller's detach state reached the run (#2036 review: a nested
@@ -293,23 +294,34 @@ run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name slow -- scripts/
 [[ "$(starts)" == 2 ]] || fail "changed worktree reused the old verdict (starts: $(starts))"
 rm -f "${WT}/mutant.txt" "$SLOW_COUNTER"
 # A killed waiter (its whole process group, as the Bash tool does) leaves the job alive.
+# The job blocks on a fifo (fd 7 read-write, so opening never blocks) until released.
+mkfifo "${WORK}/slow-gate"
+exec 7<>"${WORK}/slow-gate"
+export SLOW_GATE="${WORK}/slow-gate"
 setsid timeout 60 env GATE_RUN_WAIT=30 "${GATE_RUN}" --worktree "$WT" --logs "$LOGS" --name killed \
   -- scripts/tests/test-slow.sh >/dev/null 2>&1 &
 waiter=$!
-for _ in $(seq 50); do [[ -f "${NS}/killed.job/pid" ]] && break; sleep 0.1; done
+for _ in $(seq 300); do [[ -f "${NS}/killed.job/pid" ]] && break; sleep 0.1; done
 [[ -f "${NS}/killed.job/pid" ]] || fail "killed-waiter job did not start"
 kill -KILL -- "-${waiter}" 2>/dev/null || kill -KILL "$waiter"
 wait "$waiter" 2>/dev/null || true
 kill -0 "$(cat "${NS}/killed.job/pid")" 2>/dev/null || fail "job died with its waiter"
+echo go >&7
 run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name killed -- scripts/tests/test-slow.sh
 [[ "$(starts)" == 1 ]] || fail "killed waiter: job restarted (starts: $(starts))"
+exec 7>&-
+unset SLOW_GATE
 # A job killed before it wrote rc is replaced by a fresh one on the next call.
 rm -f "$SLOW_COUNTER"
-GATE_RUN_WAIT=0 run_gr 3 'VERDICT: PENDING' --worktree "$WT" --logs "$LOGS" --name dead -- scripts/tests/test-slow.sh
-for _ in $(seq 50); do [[ -f "${NS}/dead.job/pid" && "$(starts)" == 1 ]] && break; sleep 0.1; done
+# Blocked on a fifo nobody writes to, so the job is still running when it is killed.
+mkfifo "${WORK}/dead-gate"
+exec 7<>"${WORK}/dead-gate"
+SLOW_GATE="${WORK}/dead-gate" GATE_RUN_WAIT=0 run_gr 3 'VERDICT: PENDING' --worktree "$WT" --logs "$LOGS" --name dead -- scripts/tests/test-slow.sh
+for _ in $(seq 300); do [[ -f "${NS}/dead.job/pid" && "$(starts)" == 1 ]] && break; sleep 0.1; done
 [[ "$(starts)" == 1 ]] || fail "dead job did not start"
 pkill -KILL -s "$(cat "${NS}/dead.job/pid")" || true
-for _ in $(seq 50); do flock -n "${NS}/dead.job/lock" true && break; sleep 0.1; done
+for _ in $(seq 300); do flock -n "${NS}/dead.job/lock" true && break; sleep 0.1; done
+exec 7>&-
 run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name dead -- scripts/tests/test-slow.sh
 [[ "$(starts)" == 2 ]] || fail "killed job was not replaced (starts: $(starts))"
 # Concurrent identical calls after the worktree changed: one fresh job, not one each.
