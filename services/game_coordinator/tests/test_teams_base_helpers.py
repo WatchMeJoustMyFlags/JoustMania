@@ -122,6 +122,7 @@ class TestSendWinnerRainbowEffects:
     async def test_sends_effects_to_alive_winning_players(self, game):
         """Should send rainbow effect to alive players on the winning team."""
         mock_stream = AsyncMock()
+        mock_stream.done = MagicMock(return_value=False)  # sync, like grpc.aio's call.done()
         game.gameplay_stream = mock_stream
 
         _add_players(
@@ -141,6 +142,7 @@ class TestSendWinnerRainbowEffects:
     async def test_skips_dead_players_on_winning_team(self, game):
         """Should not send effects to dead players even if on winning team."""
         mock_stream = AsyncMock()
+        mock_stream.done = MagicMock(return_value=False)  # sync, like grpc.aio's call.done()
         game.gameplay_stream = mock_stream
 
         _add_players(
@@ -159,6 +161,7 @@ class TestSendWinnerRainbowEffects:
     async def test_skips_players_on_other_teams(self, game):
         """Should not send effects to players on non-winning teams."""
         mock_stream = AsyncMock()
+        mock_stream.done = MagicMock(return_value=False)  # sync, like grpc.aio's call.done()
         game.gameplay_stream = mock_stream
 
         _add_players(
