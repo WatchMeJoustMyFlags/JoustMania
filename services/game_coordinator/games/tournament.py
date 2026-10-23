@@ -15,15 +15,16 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
-import grpc
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from lib.feature_flags import read_float_flag
-from lib.types import Sound
+from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
+    GAME_MODE_ATTR,
     BaseGameMode,
+    GameState,
     Phase,
     Player,
     resolve_non_negative_duration,
@@ -46,6 +47,8 @@ ELIMINATED_COLOR = (0, 0, 0)  # Off when eliminated
 MATCH_DURATION = 22.0  # Seconds per match
 DEFAULT_INVINCIBILITY_DURATION = 4.0  # Seconds at start of match
 TIME_BETWEEN_MATCHES = 5.0  # Pause between matches
+ROUND_PAUSE_S = 2.0  # Pause after round_start, before the round's first match
+TOURNAMENT_INTRO_DURATION_S = 3.0  # Intro length; the stream is drained meanwhile (UC-025 step 1)
 
 
 class TournamentState(Enum):
@@ -129,8 +132,15 @@ class TournamentGame(BaseGameMode):
         self.current_match: Match | None = None
         self.current_round = 1
         self.total_rounds = 0
-        self.match_task: asyncio.Task | None = None
         self.match_span: trace.Span | None = None
+        # The bracket is a state machine stepped on every gameplay frame of the base
+        # game loop (UC-025 steps 2-4, D-G33): deadlines are time.monotonic().
+        self._match_deadline: float = 0.0  # the match time limit (A1)
+        self._next_action_at: float = 0.0  # the end of the round pause or the pause between matches
+        self._bracket_finished: bool = False  # no match left to play: the win condition
+        self._bracket_error: Exception | None = None  # a bracket step failed: run() raises it
+        self._stall_logged: bool = False
+        self._disconnected: set[str] = set()  # serials whose controller disconnected (A4)
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
 
@@ -295,10 +305,12 @@ class TournamentGame(BaseGameMode):
 
             logger.info(f"Advanced {winner_serial} to round {next_round}, match {next_match.match_id}")
 
-            # Update player state
+            # Update player state; a winner that disconnected stays out (A4), and
+            # its next opponent gets a walkover (_resolve_walkovers).
             player = self.players[winner_serial]
             player.round_number = next_round
-            player.tournament_state = TournamentState.WAITING
+            if player.tournament_state != TournamentState.ELIMINATED:
+                player.tournament_state = TournamentState.WAITING
 
     async def _initialize_players_impl(self, controllers: list):
         """
@@ -370,35 +382,43 @@ class TournamentGame(BaseGameMode):
             },
         )
 
-        # Set all to waiting color
+        # Set all to waiting color. A write on a broken early stream is skipped:
+        # the drain stop at the end of the intro reopens the stream (UC-025 step 1).
         for serial in self.players:
-            if self.gameplay_stream:
-                color_cmd = controller_manager_pb2.GameplayStreamControl(
-                    base_color=controller_manager_pb2.ControllerColorConfig(
-                        serial=serial,
-                        color=controller_manager_pb2.RGB(r=WAITING_COLOR[0], g=WAITING_COLOR[1], b=WAITING_COLOR[2]),
-                    )
-                )
-                await self.gameplay_stream.write(color_cmd)
+            await self._set_base_color(serial, WAITING_COLOR)
 
         # Play intro sound (use start sound - no dedicated tournament intro exists)
         await self._play_sound(Sound.SFX_START3, priority=2)
 
-        # Wait for intro
-        for _ in range(30):  # 3 seconds
+        # Wait for intro (interruptible, checked every 0.1 s)
+        for _ in range(round(TOURNAMENT_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
             await asyncio.sleep(0.1)
 
         logger.info("Tournament intro phase complete")
 
-    async def _run_match(self, match: Match):
-        """
-        Run a single tournament match.
+    async def _set_base_color(self, serial: str, color: tuple[int, int, int]) -> None:
+        """Set a player's LED colour and keep ``player.color`` in sync.
 
-        Args:
-            match: The match to run
+        A reopened stream sends ``player.color`` for every player in its config, so
+        a mid-game reopen restores the current colours (UC-025 step 2, UC-030 BR-006).
         """
+        self.players[serial].color = color
+        # Guarded: a write during the reconnect backoff (the old call is finished but
+        # still ``self.gameplay_stream``) must not end the bracket (UC-030 BR-006).
+        await self._write_effect_guarded(
+            controller_manager_pb2.GameplayStreamControl(
+                base_color=controller_manager_pb2.ControllerColorConfig(
+                    serial=serial,
+                    color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
+                )
+            ),
+            "Tournament colour",
+        )
+
+    async def _start_match(self, match: Match) -> None:
+        """Start a match: both fighters FIGHTING, red and blue, invincible (UC-025 step 2)."""
         p1 = self.players[match.player1_serial]
         p2 = self.players[match.player2_serial]
 
@@ -407,8 +427,9 @@ class TournamentGame(BaseGameMode):
         p2.tournament_state = TournamentState.FIGHTING
         p1.alive = True
         p2.alive = True
+        self.current_match = match
 
-        # Create match span (inherits current active context)
+        # Create match span (inherits current active context: gameplay_phase)
         self.match_span = tracer.start_span(
             "tournament_match",
             attributes={
@@ -432,15 +453,8 @@ class TournamentGame(BaseGameMode):
         )
 
         # Set colors
-        if self.gameplay_stream:
-            for serial, color in [(match.player1_serial, MATCH_COLORS[0]), (match.player2_serial, MATCH_COLORS[1])]:
-                color_cmd = controller_manager_pb2.GameplayStreamControl(
-                    base_color=controller_manager_pb2.ControllerColorConfig(
-                        serial=serial,
-                        color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
-                    )
-                )
-                await self.gameplay_stream.write(color_cmd)
+        await self._set_base_color(match.player1_serial, MATCH_COLORS[0])
+        await self._set_base_color(match.player2_serial, MATCH_COLORS[1])
 
         # Set invincibility (duration configurable via tournament_invincibility setting)
         invincible_until = time.time() + self._invincibility_duration
@@ -450,108 +464,67 @@ class TournamentGame(BaseGameMode):
         # Play match start sound (use beep - no dedicated fight sound exists)
         await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)
 
-        # Run match: process controller states from gameplay stream
-        match_start = time.time()
+        # The match time limit (A1) runs from here
+        self._match_deadline = time.monotonic() + self._match_duration
 
-        # Process gameplay stream updates during match
-        # Use anext with timeout to check for match completion and time limit
-        while self.running and not match.is_complete:
-            elapsed = time.time() - match_start
+    async def _finalize_match(self, match: Match) -> None:
+        """End a decided match: winner effect, loser off, ``match_end``, advance (UC-025 steps 3-4).
 
-            if elapsed >= self._match_duration:
-                # Time's up - both survive, random winner
-                match.winner_serial = self._rng.choice([match.player1_serial, match.player2_serial])
-                logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
-                break
+        Runs once per match, for a kill (or a fighter's disconnect, A4), where
+        ``_kill_player_impl`` decided the match, and for the timeout (A1), where
+        the bracket step picked the winner.
+        """
+        match.is_complete = True
+        self.current_match = None
+        self._next_action_at = time.monotonic() + self._time_between_matches
 
-            # Process controller states from gameplay stream (with timeout).
-            # Uses the StreamStreamCall.read() API, NOT __anext__() on the call
-            # object: with tracing interceptors active the channel returns an
-            # InterceptedStreamStreamCall, which exposes read()/__aiter__ but
-            # no direct __anext__ — every Tournament match crashed with
-            # "'InterceptedStreamStreamCall' object has no attribute
-            # '__anext__'" (surfaced by the grpcio 1.76->1.81 bump in #846;
-            # previously masked by game_error counting as a valid terminal).
-            try:
-                gameplay_update = await asyncio.wait_for(
-                    self.gameplay_stream.read(),
-                    timeout=0.1,  # Check for match completion every 100ms
-                )
-                if gameplay_update is grpc.aio.EOF:
-                    # Stream ended
-                    logger.warning("Gameplay stream ended during match")
-                    break
-                # Process each controller's state
-                for gameplay_data in gameplay_update.controllers:
-                    await self._process_controller_state(gameplay_data)
-            except TimeoutError:
-                # No data received, continue loop (check time/completion)
-                pass
+        # Determine loser
+        loser_serial = match.player2_serial if match.winner_serial == match.player1_serial else match.player1_serial
 
-        # Finalize match. Runs for BOTH ways a match can end:
-        #  - timeout: the loop set winner_serial and broke (is_complete False);
-        #  - kill: _kill_player_impl set winner_serial AND is_complete True.
-        # The previous `not match.is_complete` guard skipped finalization for
-        # kill-decided matches, so their winner was never advanced and the
-        # bracket stalled (no champion, game never ended) — the core #903 bug.
-        # Idempotency: the winner is still FIGHTING until finalize moves it to
-        # WAITING, so this block runs exactly once even if re-entered.
-        winner_still_fighting = (
-            match.winner_serial is not None
-            and self.players[match.winner_serial].tournament_state == TournamentState.FIGHTING
-        )
-        if match.winner_serial and winner_still_fighting:
-            match.is_complete = True
+        winner = self.players[match.winner_serial]
+        loser = self.players[loser_serial]
 
-            # Determine loser
-            loser_serial = match.player2_serial if match.winner_serial == match.player1_serial else match.player1_serial
-
-            winner = self.players[match.winner_serial]
-            loser = self.players[loser_serial]
-
-            winner.wins += 1
+        winner.wins += 1
+        if winner.tournament_state == TournamentState.FIGHTING:
             winner.tournament_state = TournamentState.WAITING
-            loser.tournament_state = TournamentState.ELIMINATED
-            loser.alive = False
+        loser.tournament_state = TournamentState.ELIMINATED
+        loser.alive = False
 
-            # Show winner effect. GAME_EFFECT_WIN_FLASH never existed in the
-            # current GameEffect enum (third proto-drift crash in this mode's
-            # match path, after the serials field and the __anext__ call) —
-            # use WINNER_RAINBOW, the celebration effect the champion path
-            # (#699) already uses; the runtime AttributeError killed the game
-            # at first match completion.
-            if self.gameplay_stream:
-                effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                    game_effect=controller_manager_pb2.GameEffectCommand(
-                        serial=match.winner_serial,
-                        effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
-                    )
+        # Show winner effect. GAME_EFFECT_WIN_FLASH never existed in the
+        # current GameEffect enum (third proto-drift crash in this mode's
+        # match path, after the serials field and the __anext__ call) —
+        # use WINNER_RAINBOW, the celebration effect the champion path
+        # (#699) already uses; the runtime AttributeError killed the game
+        # at first match completion.
+        await self._write_effect_guarded(
+            controller_manager_pb2.GameplayStreamControl(
+                game_effect=controller_manager_pb2.GameEffectCommand(
+                    serial=match.winner_serial,
+                    effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
                 )
-                await self.gameplay_stream.write(effect_cmd)
+            ),
+            "Tournament match winner effect",
+        )
 
-                # Turn off loser
-                off_cmd = controller_manager_pb2.GameplayStreamControl(
-                    base_color=controller_manager_pb2.ControllerColorConfig(
-                        serial=loser_serial,
-                        color=controller_manager_pb2.RGB(r=0, g=0, b=0),
-                    )
-                )
-                await self.gameplay_stream.write(off_cmd)
+        # Turn off loser
+        await self._set_base_color(loser_serial, ELIMINATED_COLOR)
 
-            # End loser's span
-            if loser.span:
-                loser.span.add_event(
-                    "eliminated",
-                    attributes={
-                        "match_id": match.match_id,
-                        "round": match.round_number,
-                        "eliminated_by": match.winner_serial,
-                    },
-                )
-                loser.span.set_status(Status(StatusCode.OK))
-                loser.span.end()
-                loser.span = None  # Mark as closed to prevent double-ending
+        # End loser's span
+        if loser.span:
+            loser.span.add_event(
+                "eliminated",
+                attributes={
+                    "match_id": match.match_id,
+                    "round": match.round_number,
+                    "eliminated_by": match.winner_serial,
+                },
+            )
+            loser.span.set_status(Status(StatusCode.OK))
+            loser.span.end()
+            loser.span = None  # Mark as closed to prevent double-ending
 
+        # A force-end during the writes above publishes no match_end (UC-025 BR-003)
+        if self.running:
             await self.event_publisher(
                 "match_end",
                 {
@@ -562,72 +535,170 @@ class TournamentGame(BaseGameMode):
                 },
             )
 
-            # End match span
-            if self.match_span:
-                self.match_span.add_event(
-                    "match_complete",
-                    attributes={
-                        "winner": match.winner_serial,
-                        "loser": loser_serial,
-                    },
-                )
-                self.match_span.set_status(Status(StatusCode.OK))
-                self.match_span.end()
-                self.match_span = None
+        # End match span
+        if self.match_span:
+            self.match_span.add_event(
+                "match_complete",
+                attributes={
+                    "winner": match.winner_serial,
+                    "loser": loser_serial,
+                },
+            )
+            self.match_span.set_status(Status(StatusCode.OK))
+            self.match_span.end()
+            self.match_span = None
 
-            # Advance winner
-            self._advance_winner(match.winner_serial, match)
+        # Advance winner
+        self._advance_winner(match.winner_serial, match)
 
-    async def _gameplay_loop(self):
-        """Run the tournament by processing matches."""
-        logger.info("Tournament gameplay starting...")
-        stall_logged = False
+    def _resolve_walkovers(self) -> None:
+        """Advance the opponent of a player who left the bracket by a disconnect (UC-025 A4).
 
-        while self.running:
-            # Get next match
-            next_match = self._get_next_match()
+        A match not yet played whose slot holds an eliminated player goes to the
+        other player without a match. A slot still waiting for its feeder waits:
+        the walkover happens once the feeder's winner is advanced. A match left
+        with two eliminated players ends with no winner.
+        """
+        changed = True
+        while changed:
+            changed = False
+            for match in self.bracket:
+                if match.is_complete or match is self.current_match:
+                    continue
+                slots = [s for s in (match.player1_serial, match.player2_serial) if s is not None]
+                out = [s for s in slots if self.players[s].tournament_state == TournamentState.ELIMINATED]
+                if not out:
+                    continue
+                remaining = [s for s in slots if s not in out]
+                if remaining:
+                    match.winner_serial = remaining[0]
+                    match.is_complete = True
+                    logger.info(f"Match {match.match_id}: walkover for {remaining[0]} ({out[0]} is out)")
+                    self._advance_winner(remaining[0], match)
+                    changed = True
+                elif len(out) == 2:
+                    match.is_complete = True
+                    logger.warning(f"Match {match.match_id}: both players are out, no winner")
+                    changed = True
 
-            if next_match is None:
-                # Check if we have a champion
-                alive_players = [s for s, p in self.players.items() if p.tournament_state != TournamentState.ELIMINATED]
-                if len(alive_players) <= 1:
-                    logger.info("Tournament complete!")
-                    break
-                # No playable match yet more than one player is left: the
-                # bracket is stuck (a bye that never advanced was #1990).
-                if not stall_logged:
-                    stall_logged = True
-                    logger.error(
-                        f"Tournament bracket stalled with {len(alive_players)} players left and no playable match"
-                    )
-                await asyncio.sleep(0.1)
-                continue
+    async def _bracket_tick(self) -> None:
+        """Step the bracket once per gameplay frame (UC-025 steps 2-4, A1, D-G33).
 
-            # Check if round changed
-            if next_match.round_number > self.current_round:
-                self.current_round = next_match.round_number
-                logger.info(f"Starting round {self.current_round}")
-                await self.event_publisher(
-                    "round_start",
-                    {"round": self.current_round, "total_rounds": self.total_rounds},
-                )
-                # Play round start sound (use start - no dedicated round sound exists)
-                await self._play_sound(Sound.SFX_START, priority=2)
-                await asyncio.sleep(2)
+        The base game loop reads the stream for the whole game; this runs after
+        each frame's detection. A decided match is finalised, a match past its
+        time limit gets a random winner, and after the round or between-match
+        pause the next match starts. ``_bracket_finished`` is set once no match is
+        left and at most one player remains.
+        """
+        if self._bracket_finished or not self.running:
+            return
+        match = self.current_match
+        if match is not None:
+            if not match.is_complete:
+                if time.monotonic() < self._match_deadline:
+                    return
+                # Time's up - both survive, random winner (A1)
+                match.winner_serial = self._rng.choice([match.player1_serial, match.player2_serial])
+                logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
+            await self._finalize_match(match)
+            return
 
-            self.current_match = next_match
-            await self._run_match(next_match)
-            self.current_match = None
+        if time.monotonic() < self._next_action_at:
+            return
 
-            # Pause between matches
-            for _ in range(int(self._time_between_matches * 10)):
-                if not self.running:
-                    break
-                await asyncio.sleep(0.1)
+        self._resolve_walkovers()
+        next_match = self._get_next_match()
+        if next_match is None:
+            left = [s for s, p in self.players.items() if p.tournament_state != TournamentState.ELIMINATED]
+            if len(left) <= 1:
+                logger.info("Tournament complete!")
+                self._bracket_finished = True
+            elif not self._stall_logged:
+                # No playable match yet more than one player is left: the bracket is
+                # stuck (a bye that never advanced was #1990; a match with two
+                # disconnected players feeds an empty slot, UC-025 track T3).
+                self._stall_logged = True
+                logger.error(f"Tournament bracket stalled with {len(left)} players left and no playable match")
+            return
+
+        # Check if round changed
+        if next_match.round_number > self.current_round:
+            self.current_round = next_match.round_number
+            logger.info(f"Starting round {self.current_round}")
+            await self.event_publisher(
+                "round_start",
+                {"round": self.current_round, "total_rounds": self.total_rounds},
+            )
+            # Play round start sound (use start - no dedicated round sound exists)
+            await self._play_sound(Sound.SFX_START, priority=2)
+            self._next_action_at = time.monotonic() + ROUND_PAUSE_S
+            return
+
+        await self._start_match(next_match)
+
+    async def _process_gameplay_update(self, gameplay_update) -> bool:
+        """Base frame processing (disconnects, then detection), then one bracket step.
+
+        A failing bracket step ends the game loop with the error kept for run(),
+        which raises it (``game_error``): raised here it would read as a stream
+        error and reconnect a healthy stream (UC-030 BR-006).
+        """
+        if await super()._process_gameplay_update(gameplay_update):
+            return True
+        try:
+            await self._bracket_tick()
+        except Exception as e:
+            logger.error(f"Tournament bracket step failed: {e}", exc_info=True)
+            self._bracket_error = e
+            return True
+        return await self._check_win_condition()
+
+    def _latch_game_outcome(self) -> None:
+        """A bracket failure ends the game loop but is no natural end: nothing is latched."""
+        if self._bracket_error is not None:
+            return
+        super()._latch_game_outcome()
+
+    async def _process_controller_state(self, controller_state):
+        """Hit detection only for the two fighters of the match (UC-025 step 3).
+
+        A waiting player is not checked (#1737), but its controller name, health
+        and battery are still read, so the battery guard and the span name stay
+        current (UC-030 step 3).
+        """
+        serial = controller_state.serial
+        player = self.players.get(serial)
+        if player is not None and player.alive and player.tournament_state != TournamentState.FIGHTING:
+            self._capture_controller_info(player, serial, controller_state)
+            return
+        await super()._process_controller_state(controller_state)
+
+    async def _handle_disconnect(self, serial: str) -> None:
+        """A disconnect takes the player out of the bracket (UC-025 A4).
+
+        Marked before the base death path, so the kill handler knows: a fighter
+        forfeits its match even during invincibility, and a waiting player is out
+        (its next opponent gets a walkover in the next bracket step).
+        """
+        player = self.players.get(serial)
+        if player is None or not player.alive:
+            return
+        self._disconnected.add(serial)
+        await super()._handle_disconnect(serial)
 
     async def _check_win_condition(self) -> bool:
+        """The game ends once the bracket has no match left to play, or a bracket step failed.
+
+        Called by the base game loop after every disconnect and controller sample;
+        it publishes nothing (the champion announcement is UC-025 step 5, #1337).
         """
-        Check if tournament is complete.
+        return self._bracket_finished or self._bracket_error is not None
+
+    async def _publish_bracket_result(self) -> bool:
+        """Publish ``tournament_champion`` or ``tournament_no_winner`` once at most one player is left.
+
+        Not called by the game yet: the step 5 Known gap (#1337, UC-025 track T2)
+        wires it into the end of the game with the win latch.
 
         Returns:
             True if only one player remains (or all eliminated)
@@ -667,6 +738,17 @@ class TournamentGame(BaseGameMode):
             accel_mag: Acceleration magnitude that caused death
         """
         player = self.players[serial]
+        disconnected = serial in self._disconnected
+
+        # A disconnected player that is not fighting an undecided match (a waiting
+        # player, or the winner of a match decided in this frame) leaves the
+        # bracket; its next opponent gets a walkover (UC-025 A4).
+        if disconnected and not self._fights_undecided_match(serial):
+            player.tournament_state = TournamentState.ELIMINATED
+            player.alive = False
+            player.color = ELIMINATED_COLOR
+            logger.info(f"Player {serial} disconnected while waiting: out of the bracket")
+            return
 
         # Check if in active match
         if player.tournament_state != TournamentState.FIGHTING:
@@ -675,7 +757,8 @@ class TournamentGame(BaseGameMode):
         # Check immunity via the unified effective-grace rule (#817):
         # max(agent shield grace_until, admin invincible_until). Honors both an
         # admin invincibility baseline and an agent shield landing mid-match.
-        if self.is_in_grace(player):
+        # A disconnected fighter forfeits even in grace (UC-025 A4).
+        if not disconnected and self.is_in_grace(player):
             logger.debug(f"Player {serial} is invincible")
             return
 
@@ -706,10 +789,8 @@ class TournamentGame(BaseGameMode):
         player.tournament_state = TournamentState.ELIMINATED
         player.alive = False
 
-        # Signal the match loop to stop; finalization (advance winner, emit
-        # match_end, eliminate loser) happens in _run_match, which now runs its
-        # finalize block for kill-decided matches too (it previously only ran on
-        # the timeout path, so kill wins never advanced and the bracket stalled).
+        # Signal the bracket step to finalise the match (advance the winner, emit
+        # match_end) after this frame (_bracket_tick -> _finalize_match).
         self.current_match.is_complete = True
 
         winner = self.current_match.winner_serial
@@ -725,6 +806,16 @@ class TournamentGame(BaseGameMode):
                     "sensitivity": self.sensitivity.name,
                 },
             )
+
+    def _fights_undecided_match(self, serial: str) -> bool:
+        """Whether the player is a fighter of the current match and that match is not decided yet."""
+        match = self.current_match
+        return (
+            match is not None
+            and not match.is_complete
+            and serial in (match.player1_serial, match.player2_serial)
+            and self.players[serial].tournament_state == TournamentState.FIGHTING
+        )
 
     def _sends_death_effect(self, serial: str) -> bool:
         """PLAYER_DEATH only for a player that is not alive after the kill (UC-025 BR-004, #1991).
@@ -781,6 +872,7 @@ class TournamentGame(BaseGameMode):
                 )
                 player.span.set_status(Status(StatusCode.OK))
                 player.span.end()
+                player.span = None
 
         self.state = self.state.__class__.ENDED
         await self.event_publisher(
@@ -796,44 +888,54 @@ class TournamentGame(BaseGameMode):
         logger.info("Tournament game ended")
 
     async def cleanup(self) -> None:
-        """Cancel match timer and any tracked tasks."""
+        """End the match span and any player span still open (a force-end or an error skips the end step)."""
         if self.match_span:
             self.match_span.end()
             self.match_span = None
+        self._close_all_player_spans()
         await super().cleanup()
 
     async def run(self):
         """
         Run the Tournament game.
 
-        Override to use bracket-based _gameplay_loop instead of standard _game_loop.
+        Same start and teardown as Fight Club and Werewolf (UC-025 step 1, Pre-1,
+        BR-002): the bracket runs on the base game loop (D-G33, #1882).
         """
-        from services.game_coordinator.games.base import GameState
-
         # The session game root span carries the outcome (#1328).
         self._capture_game_root_span()
         with tracer.start_as_current_span("tournament_game") as game_span:
             self.game_span = game_span
             game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute("game.mode", self.get_game_name())
+            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
             try:
                 self.running = True
+                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
                     await self._initialize_players()
+                    if len(self.players) < 2:
+                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
+                    # Before any task is created: tasks copy the context (#1273).
+                    self._set_flag_eval_context()
                     self._create_player_spans(None)  # Uses current context
 
-                # Start gameplay stream before intro (needed for LED effects)
+                # The intro colours go over the stream, so it opens first; a drain
+                # discards the intro's frames and keeps disconnects (UC-025 step 1).
                 await self._start_gameplay_stream()
-
-                # Additional phases (tournament intro)
-                for phase in self._get_additional_phases():
-                    if not self.running:
-                        break
-                    with tracer.start_as_current_span(phase.name):
-                        await phase.execute()
+                self._start_early_stream_drain()
+                phases_completed = False
+                try:
+                    for phase in self._get_additional_phases():
+                        if not self.running:
+                            break
+                        with tracer.start_as_current_span(phase.name):
+                            await phase.execute()
+                    phases_completed = True
+                finally:
+                    await self._stop_early_stream_drain(reopen=phases_completed)
 
                 if not self.running:
                     return
@@ -850,24 +952,36 @@ class TournamentGame(BaseGameMode):
                 self.start_time = time.time()
 
                 # Emit game_started event (required for integration tests)
-                from lib.types import GameEvent
-
                 await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 
-                # Start music
+                # Start music (no tempo loop by design, UC-025 BR-002)
                 await self._start_game_music()
 
-                # Tournament gameplay (bracket matches instead of standard game loop)
+                # Prime the EMA filters before death detection (UC-030 BR-003)
+                await self._warmup_ema()
+
+                if not self.running:
+                    return
+
+                # The bracket runs on the base game loop: one stream read for the whole
+                # game, a bracket step per frame (D-G33, #1882). Match spans start
+                # inside gameplay_phase.
                 with tracer.start_as_current_span("gameplay_phase"):
-                    await self._gameplay_loop()
+                    await self._game_loop()
+                if self._bracket_error is not None:
+                    raise self._bracket_error
                 self._latch_game_outcome()
 
                 # End game
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
+                    # Shield LEDs end with the game, before the winner effects (#1301).
+                    await self._end_shield_feedback()
                     await self._end_game_impl()
                     self._record_game_outcome(teardown_span)
+                    # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
+                    self._release_gameplay_stream()
 
                 game_span.set_status(Status(StatusCode.OK))
 
@@ -883,4 +997,4 @@ class TournamentGame(BaseGameMode):
                 await self._stop_game_music()
                 if force_ended:
                     await self.on_force_end()
-                await self.cleanup()
+                await self._cleanup_after_run()

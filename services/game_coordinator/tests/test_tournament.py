@@ -11,7 +11,6 @@ Tests the core Tournament mechanics:
 import sys
 from pathlib import Path
 
-import grpc
 import pytest
 
 # Setup paths for imports
@@ -121,12 +120,13 @@ class TestTournamentGameMode:
 
     @pytest.mark.asyncio
     async def test_check_win_condition_all_active(self, tournament_game):
-        """Test that win condition is false when multiple players active."""
+        """Test that no result is announced when multiple players are active."""
         game, mock_controller_manager, _ = tournament_game
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All players active - no win
+        assert not await game._publish_bracket_result()
         assert not await game._check_win_condition()
 
     @pytest.mark.asyncio
@@ -142,7 +142,7 @@ class TestTournamentGameMode:
             game.players[serial].tournament_state = TournamentState.ELIMINATED
 
         # Should have winner
-        assert await game._check_win_condition()
+        assert await game._publish_bracket_result()
 
         # Last player should be champion
         last_serial = serials[-1]
@@ -368,7 +368,7 @@ class TestTournamentWinCondition:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         # All waiting - no win
-        assert not await game._check_win_condition()
+        assert not await game._publish_bracket_result()
 
     @pytest.mark.asyncio
     async def test_no_win_multiple_non_eliminated(self, tournament_game):
@@ -385,7 +385,7 @@ class TestTournamentWinCondition:
         game.players[serials[3]].tournament_state = TournamentState.WAITING
 
         # Multiple non-eliminated - no win
-        assert not await game._check_win_condition()
+        assert not await game._publish_bracket_result()
 
     @pytest.mark.asyncio
     async def test_champion_receives_event(self, tournament_game):
@@ -401,7 +401,7 @@ class TestTournamentWinCondition:
         for serial in serials[:-1]:
             game.players[serial].tournament_state = TournamentState.ELIMINATED
 
-        await game._check_win_condition()
+        await game._publish_bracket_result()
 
         champion_events = event_collector.get_events_of_type("tournament_champion")
         assert len(champion_events) == 1
@@ -968,7 +968,7 @@ class TestTournamentAdditionalPhases:
 
 
 # ---------------------------------------------------------------------------
-# Async gameplay stream mock for _run_match tests
+# Recording gameplay stream and frame driver for the bracket step tests
 # ---------------------------------------------------------------------------
 
 
@@ -989,62 +989,51 @@ _patch_win_flash()
 
 
 class AsyncGameplayStreamMock:
-    """Mock gameplay stream that yields controller data and records writes.
+    """Mock gameplay stream that records writes.
 
-    Mirrors the StreamStreamCall ``read()`` API the match loop uses (the
-    production call object is an InterceptedStreamStreamCall, which exposes
-    ``read()`` but no direct ``__anext__`` — the bug this models): yields a
-    configurable sequence of updates, then ``grpc.aio.EOF`` when exhausted.
-    ``__aiter__``/``__anext__`` are kept for iterator-based consumers.
+    The bracket runs on the base game loop (D-G33): these tests feed frames to
+    ``_process_gameplay_update`` directly, so the stream is only written to.
     """
 
-    def __init__(self, updates=None, *, timeout_forever=False):
-        """
-        Args:
-            updates: List of GameplayDataUpdate protos to yield. When
-                exhausted, ``read()`` returns ``grpc.aio.EOF`` (and
-                ``__anext__`` raises ``StopAsyncIteration``).
-            timeout_forever: If True, every read raises ``TimeoutError`` so
-                the match loop only checks elapsed time.
-        """
-        self._updates = list(updates or [])
-        self._idx = 0
-        self._timeout_forever = timeout_forever
+    def __init__(self):
         self.messages: list = []
 
     async def write(self, message):
         self.messages.append(message)
 
-    def _next_update(self):
-        if self._timeout_forever:
-            raise TimeoutError
-        if self._idx < len(self._updates):
-            update = self._updates[self._idx]
-            self._idx += 1
-            return update
-        return None
 
-    async def read(self):
-        update = self._next_update()
-        return grpc.aio.EOF if update is None else update
+def _tick_update():
+    """A gameplay frame with one (unknown) controller entry, so detection runs once per frame."""
+    from proto import controller_manager_pb2 as cm
 
-    def __aiter__(self):
-        return self
+    update = cm.GameplayDataUpdate()
+    update.controllers.add(serial="tick")
+    return update
 
-    async def __anext__(self):
-        update = self._next_update()
-        if update is None:
-            raise StopAsyncIteration
-        return update
+
+async def _drive_bracket(game, max_frames: int = 2000) -> int:
+    """Feed frames as the base game loop does until the win condition holds; return the frame count."""
+    for frame in range(1, max_frames + 1):
+        if await game._process_gameplay_update(_tick_update()):
+            return frame
+    raise AssertionError(f"the bracket did not finish within {max_frames} frames (stalled)")
+
+
+def _no_pauses(game):
+    """No pause between matches or after a round_start (the deadlines are monotonic time)."""
+    from unittest.mock import patch
+
+    game._time_between_matches = 0.0
+    return patch("services.game_coordinator.games.tournament.ROUND_PAUSE_S", 0.0)
 
 
 # ---------------------------------------------------------------------------
-# _run_match orchestration tests
+# Match start, timeout and finalisation (bracket step)
 # ---------------------------------------------------------------------------
 
 
 class TestRunMatchActive:
-    """Tests for _run_match() with two active players (non-bye)."""
+    """A match through the bracket step: start, time limit (A1) and finalisation."""
 
     @pytest.fixture
     def tournament_game(self):
@@ -1066,10 +1055,13 @@ class TestRunMatchActive:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-025", flow="main", steps=[2])
     @pytest.mark.asyncio
     async def test_run_match_sets_fighting_state_and_colors(self, tournament_game):
-        """_run_match sets both players to FIGHTING and sends red/blue colors."""
+        """_start_match sets both players to FIGHTING, sends red/blue and keeps player.color in sync."""
         from unittest.mock import AsyncMock
+
+        from services.game_coordinator.games.tournament import MATCH_COLORS
 
         game, mock_cm, event_collector = tournament_game
         await game._initialize_players_impl(mock_cm.controllers)
@@ -1080,27 +1072,22 @@ class TestRunMatchActive:
         p1, p2 = serials[0], serials[1]
 
         match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
-
-        # Stream that always times out so we can control match completion
-        # externally by marking the match complete after checking state.
-        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        stream = AsyncGameplayStreamMock()
         game.gameplay_stream = stream
 
-        # Kill p1 after first iteration so match finishes quickly
-        async def kill_after_check(_gd):
-            if game.players[p1].tournament_state == TournamentState.FIGHTING:
-                match.winner_serial = p2
-                match.is_complete = True
+        await game._start_match(match)
 
-        game._process_controller_state = kill_after_check
-
-        await game._run_match(match)
+        assert game.current_match is match
+        assert game.players[p1].tournament_state == TournamentState.FIGHTING
+        assert game.players[p2].tournament_state == TournamentState.FIGHTING
 
         # Colors should have been sent: red for p1, blue for p2
-        color_msgs = [m for m in stream.messages if m.HasField("base_color")]
-        color_serials = {m.base_color.serial for m in color_msgs}
-        assert p1 in color_serials
-        assert p2 in color_serials
+        color_msgs = {m.base_color.serial: m.base_color.color for m in stream.messages if m.HasField("base_color")}
+        assert (color_msgs[p1].r, color_msgs[p1].g, color_msgs[p1].b) == MATCH_COLORS[0]
+        assert (color_msgs[p2].r, color_msgs[p2].g, color_msgs[p2].b) == MATCH_COLORS[1]
+        # A reopened stream sends player.color: it must hold the match colours (O3).
+        assert game.players[p1].color == MATCH_COLORS[0]
+        assert game.players[p2].color == MATCH_COLORS[1]
 
         # match_start event should have been published
         match_starts = event_collector.get_events_of_type("match_start")
@@ -1108,9 +1095,10 @@ class TestRunMatchActive:
         assert match_starts[0]["player1"] == p1
         assert match_starts[0]["player2"] == p2
 
+    @pytest.mark.uc("UC-025", flow="A1")
     @pytest.mark.asyncio
     async def test_run_match_timeout_picks_random_winner(self, tournament_game):
-        """When match timer expires, a random winner is chosen and finalized."""
+        """When the match time limit has passed, a random winner is chosen and finalized."""
         from unittest.mock import AsyncMock, patch
 
         game, mock_cm, event_collector = tournament_game
@@ -1122,31 +1110,17 @@ class TestRunMatchActive:
         p1, p2 = serials[0], serials[1]
 
         match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+        game.gameplay_stream = AsyncGameplayStreamMock()
+        await game._start_match(match)
+        game._match_deadline = 0.0  # the time limit has passed
 
-        stream = AsyncGameplayStreamMock(timeout_forever=True)
-        game.gameplay_stream = stream
-
-        # Make time.time() jump past MATCH_DURATION on the second call
-        original_time = time.time
-        call_count = 0
-
-        def fast_time():
-            nonlocal call_count
-            call_count += 1
-            # First calls are for invincibility setup; after ~5 calls jump ahead
-            if call_count > 4:
-                return original_time() + 100
-            return original_time()
-
-        with (
-            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch.object(game._rng, "choice", return_value=p1),
-        ):
-            await game._run_match(match)
+        with patch.object(game._rng, "choice", return_value=p1):
+            await game._bracket_tick()
 
         # Match should be finalized with p1 as winner
         assert match.is_complete is True
         assert match.winner_serial == p1
+        assert game.current_match is None
 
         # Loser should be ELIMINATED
         assert game.players[p2].tournament_state == TournamentState.ELIMINATED
@@ -1161,64 +1135,53 @@ class TestRunMatchActive:
         assert match_ends[0]["winner"] == p1
         assert match_ends[0]["loser"] == p2
 
+    @pytest.mark.uc("UC-025", flow="A1")
     @pytest.mark.asyncio
-    async def test_run_match_stream_ended_during_match(self, tournament_game):
-        """StopAsyncIteration during match exits cleanly without crash."""
+    async def test_undecided_match_within_its_time_limit_keeps_running(self, tournament_game):
+        """A frame before the time limit with nobody hit leaves the match running."""
         from unittest.mock import AsyncMock
 
-        game, mock_cm, _ = tournament_game
+        game, mock_cm, event_collector = tournament_game
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
 
         serials = list(game.players.keys())
-        p1, p2 = serials[0], serials[1]
+        match = Match(match_id=0, round_number=1, player1_serial=serials[0], player2_serial=serials[1])
+        game.gameplay_stream = AsyncGameplayStreamMock()
+        await game._start_match(match)
 
-        match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+        for _ in range(5):
+            assert await game._process_gameplay_update(_tick_update()) is False
 
-        # Empty stream -- read() returns grpc.aio.EOF immediately
-        stream = AsyncGameplayStreamMock(updates=[])
-        game.gameplay_stream = stream
-
-        # Should not raise
-        await game._run_match(match)
-
-        # Match should NOT be finalized since nobody won
         assert match.is_complete is False
+        assert game.current_match is match
+        assert event_collector.get_events_of_type("match_end") == []
 
+    @pytest.mark.uc("UC-025", flow="main", br=["BR-003"])
     @pytest.mark.asyncio
     async def test_run_match_game_stopped_mid_match(self, tournament_game):
-        """Setting running=False during match causes clean exit."""
+        """A force-ended game steps the bracket no more: no finalisation, no match_end."""
         from unittest.mock import AsyncMock
 
-        game, mock_cm, _ = tournament_game
+        game, mock_cm, event_collector = tournament_game
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
 
         serials = list(game.players.keys())
-        p1, p2 = serials[0], serials[1]
+        match = Match(match_id=0, round_number=1, player1_serial=serials[0], player2_serial=serials[1])
+        game.gameplay_stream = AsyncGameplayStreamMock()
+        await game._start_match(match)
+        game._match_deadline = 0.0
+        game.running = False
 
-        match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
+        await game._bracket_tick()
 
-        call_count = 0
-
-        async def stop_on_second_read():
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 2:
-                game.running = False
-            raise TimeoutError
-
-        stream = AsyncGameplayStreamMock(timeout_forever=True)
-        stream.read = stop_on_second_read
-        game.gameplay_stream = stream
-
-        await game._run_match(match)
-
-        # Match should not be complete since we stopped
         assert match.is_complete is False
+        assert event_collector.get_events_of_type("match_end") == []
 
+    @pytest.mark.uc("UC-025", flow="A1")
     @pytest.mark.asyncio
     async def test_run_match_winner_effect_and_loser_off(self, tournament_game):
         """After match finalization, winner gets WINNER_RAINBOW and loser LED turns off."""
@@ -1235,25 +1198,13 @@ class TestRunMatchActive:
         p1, p2 = serials[0], serials[1]
 
         match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
-
-        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        stream = AsyncGameplayStreamMock()
         game.gameplay_stream = stream
+        await game._start_match(match)
+        game._match_deadline = 0.0
 
-        original_time = time.time
-        call_count = 0
-
-        def fast_time():
-            nonlocal call_count
-            call_count += 1
-            if call_count > 4:
-                return original_time() + 100
-            return original_time()
-
-        with (
-            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch.object(game._rng, "choice", return_value=p2),
-        ):
-            await game._run_match(match)
+        with patch.object(game._rng, "choice", return_value=p2):
+            await game._bracket_tick()
 
         # Winner effect
         effect_msgs = [m for m in stream.messages if m.HasField("game_effect")]
@@ -1262,21 +1213,22 @@ class TestRunMatchActive:
             for m in effect_msgs
         )
 
-        # Loser LED off (0,0,0)
+        # Loser LED off (0,0,0), and player.color follows for a reopen (O3)
         color_msgs = [m for m in stream.messages if m.HasField("base_color")]
         loser_off = [m for m in color_msgs if m.base_color.serial == p1]
         assert any(
             m.base_color.color.r == 0 and m.base_color.color.g == 0 and m.base_color.color.b == 0 for m in loser_off
         )
+        assert game.players[p1].color == (0, 0, 0)
 
 
 # ---------------------------------------------------------------------------
-# _gameplay_loop tests
+# The bracket on the frame loop
 # ---------------------------------------------------------------------------
 
 
 class TestGameplayLoop:
-    """Tests for _gameplay_loop() orchestration."""
+    """The bracket advances on gameplay frames until no match is left (UC-025 steps 2-4)."""
 
     @pytest.fixture
     def tournament_game(self):
@@ -1298,43 +1250,31 @@ class TestGameplayLoop:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-025", flow="A1")
     @pytest.mark.asyncio
     async def test_gameplay_loop_completes_tournament(self, tournament_game):
-        """_gameplay_loop should run matches until a champion is determined."""
+        """Timed-out matches run until one player is left; then the win condition holds."""
         from unittest.mock import AsyncMock, patch
 
         game, mock_cm, event_collector = tournament_game
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
+        game.gameplay_stream = AsyncGameplayStreamMock()
+        game._match_duration = 0.0  # every match times out on its next frame
 
         serials = list(game.players.keys())
         p1, p2 = serials[0], serials[1]
 
-        stream = AsyncGameplayStreamMock(timeout_forever=True)
-        game.gameplay_stream = stream
-
-        original_time = time.time
-        call_count = 0
-
-        def fast_time():
-            nonlocal call_count
-            call_count += 1
-            if call_count > 4:
-                return original_time() + 100
-            return original_time()
-
-        with (
-            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch.object(game._rng, "choice", return_value=p1),
-            patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await game._gameplay_loop()
+        with _no_pauses(game), patch.object(game._rng, "choice", return_value=p1):
+            await _drive_bracket(game)
 
         # One player should be eliminated, one waiting/champion
         assert game.players[p2].tournament_state == TournamentState.ELIMINATED
         assert game.players[p1].tournament_state == TournamentState.WAITING
+        assert await game._check_win_condition() is True
 
+    @pytest.mark.uc("UC-025", flow="main", steps=[2, 4])
     @pytest.mark.asyncio
     async def test_gameplay_loop_round_change_publishes_event(self, tournament_game):
         """When advancing to a new round, round_start event should be published."""
@@ -1355,31 +1295,45 @@ class TestGameplayLoop:
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
+        game.gameplay_stream = AsyncGameplayStreamMock()
+        game._match_duration = 0.0
 
-        stream = AsyncGameplayStreamMock(timeout_forever=True)
-        game.gameplay_stream = stream
-
-        original_time = time.time
-        call_count = 0
-
-        def fast_time():
-            nonlocal call_count
-            call_count += 1
-            if call_count > 4:
-                return original_time() + 100
-            return original_time()
-
-        with (
-            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch.object(game._rng, "choice", side_effect=lambda x: x[0]),
-            patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await game._gameplay_loop()
+        with _no_pauses(game), patch.object(game._rng, "choice", side_effect=lambda x: x[0]):
+            await _drive_bracket(game)
 
         # Should have round_start events for round 2
         round_starts = event_collector.get_events_of_type("round_start")
         assert len(round_starts) >= 1
         assert round_starts[0]["round"] == 2
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[4])
+    @pytest.mark.asyncio
+    async def test_frames_during_the_pause_between_matches_start_no_match(self, tournament_game):
+        """The pause is a deadline: frames read during it are processed, the next match waits for it."""
+        from unittest.mock import AsyncMock
+
+        mock_cm = MockControllerManagerService(num_controllers=4, death_schedule={}, max_duration=10.0)
+        event_collector = EventCollector()
+        game = TournamentGame(
+            controller_manager_client=mock_cm,
+            event_publisher=event_collector.publish,
+            audio_client=None,
+            game_id="test_pause",
+            invincibility_seconds=0.0,
+        )
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+        game.gameplay_stream = AsyncGameplayStreamMock()
+        game._match_duration = 0.0
+        game._time_between_matches = 60.0
+
+        for _ in range(20):
+            assert await game._process_gameplay_update(_tick_update()) is False
+
+        assert len(event_collector.get_events_of_type("match_start")) == 1
+        assert len(event_collector.get_events_of_type("match_end")) == 1
+        assert game.current_match is None, "the next match waits for the pause"
 
 
 # ---------------------------------------------------------------------------
@@ -1390,14 +1344,11 @@ class TestGameplayLoop:
 class TestFullBracketKillDriven:
     """End-to-end bracket completion driven by real kills (not timeouts).
 
-    The pre-existing _gameplay_loop tests resolve every match by TIMEOUT
-    (timeout_forever streams + jumped clock), which exercised a different code
-    path than a real match: a kill sets ``match.is_complete`` inside
-    ``_kill_player_impl``, and the old finalize guard ``if not match.is_complete``
-    then SKIPPED winner-advancement, stalling the bracket so no champion ever
-    emerged (the #903 production bug). These tests kill the current match's
-    player every match, so the whole bracket runs through the kill path and must
-    still crown a champion.
+    A kill sets ``match.is_complete`` inside ``_kill_player_impl``; the old
+    finalize guard ``if not match.is_complete`` then SKIPPED winner-advancement,
+    stalling the bracket so no champion ever emerged (the #903 production bug).
+    These tests kill the current match's player every match, so the whole
+    bracket runs through the kill path and must still leave one player.
     """
 
     def _make_game(self, num_controllers: int, game_id: str):
@@ -1412,20 +1363,20 @@ class TestFullBracketKillDriven:
         )
         return game, mock_cm, event_collector
 
+    @pytest.mark.uc("UC-025", flow="main", steps=[3, 4])
     @pytest.mark.asyncio
     async def test_kill_driven_bracket_crowns_champion(self):
-        """A 4-player bracket resolved entirely by kills produces one champion."""
-        from unittest.mock import AsyncMock, patch
+        """A 4-player bracket resolved entirely by kills leaves one player."""
+        from unittest.mock import AsyncMock
 
         game, mock_cm, event_collector = self._make_game(4, "test_kill_bracket")
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
-        game.gameplay_stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game.gameplay_stream = AsyncGameplayStreamMock()
 
-        # Every match: "kill" player1 of the current match the first time the
-        # stream is read, exactly as a real death would (sets winner + complete
-        # via _kill_player_impl). This drives the kill-decided finalize path.
+        # Every match: "kill" player1 of the current match on its first frame,
+        # exactly as a real death would (sets winner + complete via _kill_player_impl).
         async def kill_p1_of_current(_gameplay_data):
             match = game.current_match
             if match and not match.is_complete:
@@ -1433,24 +1384,8 @@ class TestFullBracketKillDriven:
 
         game._process_controller_state = kill_p1_of_current
 
-        # read() must return an update carrying at least one controller entry so
-        # the match loop's ``for gameplay_data in update.controllers`` actually
-        # invokes _process_controller_state (an empty update would never kill,
-        # and the match would run to its full timeout).
-        async def read_with_data():
-            from proto import controller_manager_pb2 as cm
-
-            update = cm.GameplayDataUpdate()
-            update.controllers.add(serial="tick")
-            return update
-
-        game.gameplay_stream.read = read_with_data
-
-        with patch(
-            "services.game_coordinator.games.tournament.asyncio.sleep",
-            new_callable=AsyncMock,
-        ):
-            await game._gameplay_loop()
+        with _no_pauses(game):
+            await _drive_bracket(game)
 
         # Exactly one non-eliminated player remains: the champion-to-be.
         survivors = [s for s, p in game.players.items() if p.tournament_state != TournamentState.ELIMINATED]
@@ -1466,10 +1401,12 @@ class TestFullBracketKillDriven:
         match_ends = event_collector.get_events_of_type("match_end")
         assert len(match_ends) == 3  # 2 first-round + 1 final
 
-        # The final win condition recognizes the champion.
+        # The game's win condition holds; the champion announcement recognizes the champion.
         assert await game._check_win_condition() is True
+        assert await game._publish_bracket_result() is True
         assert champion.tournament_state == TournamentState.CHAMPION
 
+    @pytest.mark.uc("UC-025", flow="main", steps=[3, 4])
     @pytest.mark.asyncio
     async def test_kill_driven_match_advances_winner(self):
         """A single kill-decided match advances its winner to round 2.
@@ -1484,27 +1421,14 @@ class TestFullBracketKillDriven:
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
-        game.gameplay_stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game.gameplay_stream = AsyncGameplayStreamMock()
 
         first_match = [m for m in game.bracket if m.round_number == 1 and not m.is_bye][0]
-        game.current_match = first_match
         winner_serial = first_match.player2_serial
+        await game._start_match(first_match)
 
-        async def kill_p1(_gameplay_data):
-            await game._kill_player_impl(first_match.player1_serial, accel_mag=5.0)
-
-        game._process_controller_state = kill_p1
-
-        async def read_once():
-            from proto import controller_manager_pb2 as cm
-
-            update = cm.GameplayDataUpdate()
-            update.controllers.add(serial="tick")
-            return update
-
-        game.gameplay_stream.read = read_once
-
-        await game._run_match(first_match)
+        await game._kill_player_impl(first_match.player1_serial, accel_mag=5.0)
+        await game._bracket_tick()
 
         # Winner advanced to a round-2 match (the finalize ran).
         round2 = [m for m in game.bracket if m.round_number == 2]
@@ -1517,12 +1441,12 @@ class TestFullBracketKillDriven:
 
 
 # ---------------------------------------------------------------------------
-# _check_win_condition edge cases
+# Champion announcement edge cases (_publish_bracket_result, #1337)
 # ---------------------------------------------------------------------------
 
 
 class TestCheckWinConditionEdgeCases:
-    """Additional edge case tests for _check_win_condition()."""
+    """Edge cases of the champion announcement and the bracket win condition."""
 
     @pytest.fixture
     def tournament_game(self):
@@ -1540,14 +1464,14 @@ class TestCheckWinConditionEdgeCases:
 
     @pytest.mark.asyncio
     async def test_all_eliminated_no_winner(self, tournament_game):
-        """When all players are eliminated, win condition is True with no champion."""
+        """When all players are eliminated, the announcement is tournament_no_winner."""
         game, mock_cm, event_collector = tournament_game
         await game._initialize_players_impl(mock_cm.controllers)
 
         for player in game.players.values():
             player.tournament_state = TournamentState.ELIMINATED
 
-        result = await game._check_win_condition()
+        result = await game._publish_bracket_result()
         assert result is True
 
         # Should publish tournament_no_winner, not tournament_champion
@@ -1555,6 +1479,21 @@ class TestCheckWinConditionEdgeCases:
         assert len(no_winner_events) == 1
         champion_events = event_collector.get_events_of_type("tournament_champion")
         assert len(champion_events) == 0
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[4])
+    @pytest.mark.asyncio
+    async def test_win_condition_is_the_finished_bracket_and_publishes_nothing(self, tournament_game):
+        """The base loop calls it after every sample: no event, True only once the bracket is done."""
+        game, mock_cm, event_collector = tournament_game
+        await game._initialize_players_impl(mock_cm.controllers)
+        for serial in list(game.players)[:-1]:
+            game.players[serial].tournament_state = TournamentState.ELIMINATED
+        published_before = len(event_collector.events)
+
+        assert await game._check_win_condition() is False, "only the bracket step ends the bracket"
+        game._bracket_finished = True
+        assert await game._check_win_condition() is True
+        assert len(event_collector.events) == published_before
 
 
 # ---------------------------------------------------------------------------
@@ -1628,114 +1567,6 @@ class TestKillPlayerSpan:
 
 
 # ---------------------------------------------------------------------------
-# run() lifecycle test
-# ---------------------------------------------------------------------------
-
-
-class TestRunLifecycle:
-    """Tests for the full run() orchestration."""
-
-    @pytest.mark.asyncio
-    async def test_run_full_lifecycle(self):
-        """run() should execute init, intro, countdown, gameplay, and end."""
-        from unittest.mock import AsyncMock, patch
-
-        mock_cm = MockControllerManagerService(num_controllers=2, death_schedule={}, max_duration=10.0)
-        event_collector = EventCollector()
-
-        game = TournamentGame(
-            controller_manager_client=mock_cm,
-            event_publisher=event_collector.publish,
-            audio_client=None,
-            game_id="test_run_lifecycle",
-            invincibility_seconds=0.0,
-        )
-
-        stream = AsyncGameplayStreamMock(timeout_forever=True)
-
-        # Mock _initialize_players to call _initialize_players_impl directly
-        async def fake_init_players():
-            await game._initialize_players_impl(mock_cm.controllers)
-
-        game._initialize_players = fake_init_players
-        game._play_sound = AsyncMock()
-        game._start_gameplay_stream = AsyncMock()
-        game.gameplay_stream = stream
-        game._countdown = AsyncMock()
-        game._start_game_music = AsyncMock()
-        game._stop_game_music = AsyncMock()
-
-        original_time = time.time
-        call_count = 0
-
-        def fast_time():
-            nonlocal call_count
-            call_count += 1
-            if call_count > 4:
-                return original_time() + 100
-            return original_time()
-
-        serials = [f"mock_controller_{i}" for i in range(2)]
-
-        with (
-            patch("services.game_coordinator.games.tournament.time.time", side_effect=fast_time),
-            patch.object(game._rng, "choice", return_value=serials[0]),
-            patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await game.run()
-
-        # Verify lifecycle phases were called
-        game._start_gameplay_stream.assert_called_once()
-        game._countdown.assert_called_once()
-        game._start_game_music.assert_called_once()
-        game._stop_game_music.assert_called_once()
-
-        # game_started and game_ended events should exist
-        started_events = event_collector.get_events_of_type("game_started")
-        assert len(started_events) == 1
-        ended_events = event_collector.get_events_of_type("game_ended")
-        assert len(ended_events) == 1
-
-    @pytest.mark.asyncio
-    async def test_run_stops_early_if_not_running_after_intro(self):
-        """If running becomes False during intro, run() returns without gameplay."""
-        from unittest.mock import AsyncMock, patch
-
-        mock_cm = MockControllerManagerService(num_controllers=2, death_schedule={}, max_duration=10.0)
-        event_collector = EventCollector()
-
-        game = TournamentGame(
-            controller_manager_client=mock_cm,
-            event_publisher=event_collector.publish,
-            audio_client=None,
-            game_id="test_run_early_stop",
-            invincibility_seconds=0.0,
-        )
-
-        async def fake_init_players():
-            await game._initialize_players_impl(mock_cm.controllers)
-
-        game._initialize_players = fake_init_players
-        game._play_sound = AsyncMock()
-        game._start_gameplay_stream = AsyncMock()
-        game.gameplay_stream = AsyncGameplayStreamMock(timeout_forever=True)
-        game._start_game_music = AsyncMock()
-        game._stop_game_music = AsyncMock()
-
-        async def stop_during_countdown():
-            game.running = False
-
-        game._countdown = AsyncMock(side_effect=stop_during_countdown)
-
-        with patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock):
-            await game.run()
-
-        # game_started should NOT have been published since we stopped before gameplay
-        started_events = event_collector.get_events_of_type("game_started")
-        assert len(started_events) == 0
-
-
-# ---------------------------------------------------------------------------
 # Double hit in one frame (UC-025 BR-004, D-G30, #1991)
 # ---------------------------------------------------------------------------
 
@@ -1784,20 +1615,6 @@ class TestTournamentDoubleHit:
 
         return double_hit
 
-    @staticmethod
-    def _one_frame_stream():
-        stream = AsyncGameplayStreamMock(timeout_forever=True)
-
-        async def read_with_data():
-            from proto import controller_manager_pb2 as cm
-
-            update = cm.GameplayDataUpdate()
-            update.controllers.add(serial="tick")
-            return update
-
-        stream.read = read_with_data
-        return stream
-
     @pytest.mark.uc("UC-025", flow="main", steps=[3], br=["BR-004"])
     @pytest.mark.asyncio
     async def test_double_hit_eliminates_only_the_first_fighter(self):
@@ -1808,15 +1625,15 @@ class TestTournamentDoubleHit:
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
-        stream = self._one_frame_stream()
+        stream = AsyncGameplayStreamMock()
         game.gameplay_stream = stream
         game._process_controller_state = self._double_hit_on_first_frame(game)
 
         first_match = [m for m in game.bracket if m.round_number == 1 and not m.is_bye][0]
         loser_serial, winner_serial = first_match.player1_serial, first_match.player2_serial
-        game.current_match = first_match
+        await game._start_match(first_match)
 
-        await game._run_match(first_match)
+        await game._process_gameplay_update(_tick_update())
 
         assert first_match.winner_serial == winner_serial
         assert game.players[loser_serial].tournament_state == TournamentState.ELIMINATED
@@ -1840,15 +1657,15 @@ class TestTournamentDoubleHit:
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
-        stream = self._one_frame_stream()
+        stream = AsyncGameplayStreamMock()
         game.gameplay_stream = stream
         game._process_controller_state = self._double_hit_on_first_frame(game, player2_first=True)
 
         first_match = [m for m in game.bracket if m.round_number == 1 and not m.is_bye][0]
         winner_serial, loser_serial = first_match.player1_serial, first_match.player2_serial
-        game.current_match = first_match
+        await game._start_match(first_match)
 
-        await game._run_match(first_match)
+        await game._process_gameplay_update(_tick_update())
 
         assert first_match.winner_serial == winner_serial
         assert game.players[loser_serial].tournament_state == TournamentState.ELIMINATED
@@ -1862,28 +1679,25 @@ class TestTournamentDoubleHit:
     @pytest.mark.asyncio
     async def test_two_player_double_hit_leaves_the_right_champion(self):
         """2 players: the final's double hit leaves the second fighter as champion."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock
 
         game, mock_cm, _ = self._make_game(2, "test_double_hit_final")
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
-        stream = self._one_frame_stream()
+        stream = AsyncGameplayStreamMock()
         game.gameplay_stream = stream
         game._process_controller_state = self._double_hit_on_first_frame(game)
 
         final = [m for m in game.bracket if not m.is_bye][0]
         loser_serial, winner_serial = final.player1_serial, final.player2_serial
 
-        with patch(
-            "services.game_coordinator.games.tournament.asyncio.sleep",
-            new_callable=AsyncMock,
-        ):
-            await game._gameplay_loop()
+        with _no_pauses(game):
+            await _drive_bracket(game)
 
         survivors = [s for s, p in game.players.items() if p.tournament_state != TournamentState.ELIMINATED]
         assert survivors == [winner_serial]
-        assert await game._check_win_condition() is True
+        assert await game._publish_bracket_result() is True
         assert game.players[winner_serial].tournament_state == TournamentState.CHAMPION
         assert game.players[loser_serial].tournament_state == TournamentState.ELIMINATED
         assert _death_effect_serials(stream) == [loser_serial]
@@ -1898,7 +1712,7 @@ class TestTournamentDoubleHit:
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
-        stream = AsyncGameplayStreamMock(timeout_forever=True)
+        stream = AsyncGameplayStreamMock()
         game.gameplay_stream = stream
         waiting_serial = next(iter(game.players))
 
@@ -1965,39 +1779,24 @@ class TestByeAdvancement:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("num_players", [3, 5, 6])
     async def test_kill_driven_game_loop_completes_with_byes(self, num_players):
-        """The gameplay loop, driven by real kills, ends with one survivor."""
-        from unittest.mock import AsyncMock, patch
+        """The bracket, driven by real kills on the frame loop, ends with one survivor."""
+        from unittest.mock import AsyncMock
 
         game, mock_cm = self._make_game(num_players)
         await game._initialize_players_impl(mock_cm.controllers)
         game._play_sound = AsyncMock()
         game.running = True
-        game.gameplay_stream = AsyncGameplayStreamMock(timeout_forever=True)
+        game.gameplay_stream = AsyncGameplayStreamMock()
 
         async def kill_p1_of_current(_gameplay_data):
             match = game.current_match
             if match and not match.is_complete:
                 await game._kill_player_impl(match.player1_serial, accel_mag=5.0)
 
-        async def read_with_data():
-            from proto import controller_manager_pb2 as cm
-
-            update = cm.GameplayDataUpdate()
-            update.controllers.add(serial="tick")
-            return update
-
         game._process_controller_state = kill_p1_of_current
-        game.gameplay_stream.read = read_with_data
 
-        sleeps = 0
-
-        async def counted_sleep(_delay):
-            nonlocal sleeps
-            sleeps += 1
-            assert sleeps < 1000, "gameplay loop is spinning: the bracket is stalled"
-
-        with patch("services.game_coordinator.games.tournament.asyncio.sleep", counted_sleep):
-            await game._gameplay_loop()
+        with _no_pauses(game):
+            await _drive_bracket(game, max_frames=200)
 
         survivors = [s for s, p in game.players.items() if p.tournament_state != TournamentState.ELIMINATED]
         assert len(survivors) == 1
