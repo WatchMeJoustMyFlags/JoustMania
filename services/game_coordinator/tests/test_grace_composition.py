@@ -25,6 +25,7 @@ conftest.
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -42,6 +43,13 @@ from services.game_coordinator.games.base import BaseGameMode, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.fight_club import FightClubGame, FightState
 from services.game_coordinator.games.tournament import TournamentPlayer, TournamentState
+
+
+@pytest.fixture(autouse=True)
+def _no_shield_limits():
+    """Shield limits off (#2044, UC-040 BR-022): these tests are not about the cap or the cooldown."""
+    with patch.object(BaseGameMode, "_shield_limits", return_value=(0, 0)):
+        yield
 
 
 class MockGameplayStream:
@@ -190,8 +198,9 @@ class TestGrantShieldComposition:
         assert game.effective_grace_until(p) >= now + 30.0
 
     @pytest.mark.asyncio
-    async def test_repeated_shields_only_extend(self):
-        """Repeated shields never shorten; a shorter follow-up is a no-op."""
+    @pytest.mark.uc("UC-040", flow="A34", br=["BR-022"])
+    async def test_cooldown_off_restores_extend_not_shorten(self):
+        """Cooldown 0 (BR-022): repeated shields never shorten; a shorter follow-up is a no-op."""
         game = _make_ffa_game()
         p = Player(serial="A", alive=True)
         game.players["A"] = p

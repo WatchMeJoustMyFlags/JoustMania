@@ -72,6 +72,8 @@ flags:
   - {set: agent, key: experiment.max_game_seconds, kind: overlay, scope: [stack], bounds: {range: [10, 1800], integer: true}}
   - {set: agent, key: policy.max_interventions_per_minute, kind: overlay, scope: [stack], bounds: {range: [1, 100], integer: true}}
   - {set: agent, key: policy.coordinator_backstop_per_minute, kind: overlay, scope: [stack], bounds: {range: [1, 100], integer: true}}
+  - {set: agent, key: policy.max_shields_per_player_per_game, kind: overlay, scope: [stack], bounds: {range: [0, 20], integer: true}}
+  - {set: agent, key: policy.shield_cooldown_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 120], integer: true}}
   - {set: agent, key: fitness.accelerate.target_session_seconds, kind: overlay, scope: [stack]}
   - {set: agent, key: verdict_min_n, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
   - {set: agent, key: verdict_min_pairs, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}

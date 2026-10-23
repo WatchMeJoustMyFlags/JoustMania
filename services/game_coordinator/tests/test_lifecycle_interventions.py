@@ -37,7 +37,7 @@ from conftest import MockControllerManagerService, async_noop
 
 from lib.types import GameEvent
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import GameState, Player
+from services.game_coordinator.games.base import BaseGameMode, GameState, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 from services.game_coordinator.games.zombie import ZombieGame
@@ -63,6 +63,13 @@ from services.game_coordinator.lifecycle_handlers import (
     parse_toughness_boost_value,
     register_lifecycle_handlers,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_shield_limits():
+    """Shield limits off (#2044, UC-040 BR-022): these tests are not about the cap or the cooldown."""
+    with patch.object(BaseGameMode, "_shield_limits", return_value=(0, 0)):
+        yield
 
 
 # --------------------------------------------------------------------------- #

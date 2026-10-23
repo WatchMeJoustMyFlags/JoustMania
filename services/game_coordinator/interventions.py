@@ -593,6 +593,10 @@ BLOCK_NO_GAME = "no_game"
 # The handler applied nothing on purpose (InterventionNotApplied): a grant_shield to
 # a player who already holds a shield charge (#1837, UC-040 A31, BR-020).
 BLOCK_ALREADY_CHARGED = "already_charged"
+# A grant_shield refused by the shield limits per player per game (#2044, UC-040 A34,
+# BR-022): raised by games/base.py grant_shield as InterventionNotApplied.
+BLOCK_SHIELD_CAP_REACHED = "shield_cap_reached"
+BLOCK_SHIELD_COOLDOWN = "shield_cooldown"
 # A revive_player the mode refused (decided game, unknown or already-alive player; #1948).
 BLOCK_REVIVE_REFUSED = "revive_refused"
 # An eliminate_player that killed nobody: unknown or already-dead player, a kill of

@@ -28,6 +28,7 @@ from proto import controller_manager_pb2
 from services.game_coordinator.game_factory import _GAME_CLASSES
 from services.game_coordinator.games import base as base_module
 from services.game_coordinator.games.base import (
+    BaseGameMode,
     Player,
     resolve_charge_expiry,
     resolve_shield_activation,
@@ -41,6 +42,13 @@ CHARGE = controller_manager_pb2.GAME_EFFECT_SHIELD_CHARGE
 SWELL = controller_manager_pb2.GAME_EFFECT_SHIELD_SWELL
 DEATH = controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH
 T0 = 1000.0
+
+
+@pytest.fixture(autouse=True)
+def _no_shield_limits():
+    """Shield limits off (#2044, UC-040 BR-022): these tests are not about the cap or the cooldown."""
+    with patch.object(BaseGameMode, "_shield_limits", return_value=(0, 0)):
+        yield
 
 
 class RecordingStream:

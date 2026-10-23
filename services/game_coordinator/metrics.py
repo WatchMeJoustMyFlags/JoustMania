@@ -504,7 +504,8 @@ def clear_session_player_analytics(
 #   blocked:      'true' if rejected by policy/permission enforcement, else 'false'
 #   block_reason: why a blocked attempt was rejected ('not_allowed', 'rate_limited',
 #                 'low_battery', 'mode_unsupported', 'no_game', 'handler_error',
-#                 'already_charged' (#1837, UC-040 A31), 'revive_refused', 'experiment_override',
+#                 'already_charged' (#1837, UC-040 A31), 'shield_cap_reached', 'shield_cooldown'
+#                 (#2044, UC-040 A34), 'revive_refused', 'experiment_override',
 #                 'eliminate_refused' (UC-040 A22)); empty
 #                 string for applied (blocked='false') attempts. Cardinality is bounded
 #                 to this fixed reason set, so it is safe as a label.
