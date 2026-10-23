@@ -272,9 +272,9 @@ class TestFightClubGameMode:
         game.players["mock_controller_0"].score = 5
         game.players["mock_controller_1"].score = 5
 
-        # Should enable face-off mode but not end
+        # Should schedule a face-off but not end
         assert game._should_end_game() is False
-        assert game.face_off_mode is True
+        assert game._face_off_pair == ("mock_controller_0", "mock_controller_1")
 
     @pytest.mark.asyncio
     async def test_check_win_condition(self, fight_club_game):
@@ -430,7 +430,7 @@ class TestFightClubStartRoundEdgeCases:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        game.face_off_mode = True
+        game._face_off_pair = ("mock_controller_0", "mock_controller_1")
         await game._start_round()
 
         assert game.round_end_time == float("inf")
@@ -447,7 +447,7 @@ class TestFightClubStartRoundEdgeCases:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
         game.running = True
-        game.face_off_mode = True
+        game._face_off_pair = ("mock_controller_0", "mock_controller_1")
 
         await game._start_round()
 
@@ -665,7 +665,7 @@ class TestFightClubFaceOff:
 
     @pytest.mark.asyncio
     async def test_should_end_game_face_off_sets_combatants(self, fight_club_game):
-        """Face-off mode sets current_defender and current_fighter to tied players."""
+        """A tie stores the tied pair for the next round."""
         game, mock_controller_manager, _ = fight_club_game
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
@@ -679,10 +679,11 @@ class TestFightClubFaceOff:
 
         result = game._should_end_game()
 
+        # Only the pair is stored; the current combatants are not overwritten (#1345).
         assert result is False
-        assert game.face_off_mode is True
-        assert game.current_defender == "mock_controller_0"
-        assert game.current_fighter == "mock_controller_1"
+        assert game._face_off_pair == ("mock_controller_0", "mock_controller_1")
+        assert game.current_defender is None
+        assert game.current_fighter is None
 
     @pytest.mark.asyncio
     async def test_should_end_game_already_in_face_off_continues(self, fight_club_game):
@@ -726,6 +727,7 @@ class TestFightClubFaceOff:
         # Defender now has 8, fighter has 7 - clear leader, should end
         assert game.players["mock_controller_0"].score == 8
         assert game.game_over is True
+        assert game.face_off_mode is False
 
 
 class TestFightClubUpdatePlayerColors:
@@ -1099,3 +1101,246 @@ class TestFightClubIntroPhase:
         phases = game._get_additional_phases()
         assert len(phases) == 1
         assert phases[0].name == "fight_club_intro"
+
+
+class RecordingGameplayStream:
+    """Gameplay stream mock that records every write in order."""
+
+    def __init__(self):
+        self.messages = []
+
+    async def write(self, message):
+        self.messages.append(message)
+
+
+def _writes_for(stream, serial):
+    """The (kind, value) writes one controller received, in order."""
+    out = []
+    for m in stream.messages:
+        if m.HasField("game_effect") and m.game_effect.serial == serial:
+            out.append(("effect", m.game_effect.effect))
+        elif m.HasField("base_color") and m.base_color.serial == serial:
+            c = m.base_color.color
+            out.append(("base", (c.r, c.g, c.b)))
+    return out
+
+
+def _make_game(num_players: int, game_id: str) -> tuple[FightClubGame, MockControllerManagerService, EventCollector]:
+    mock_controller_manager = MockControllerManagerService(
+        num_controllers=num_players,
+        death_schedule={},
+        max_duration=10.0,
+    )
+    event_collector = EventCollector()
+    game = FightClubGame(
+        controller_manager_client=mock_controller_manager,
+        event_publisher=event_collector.publish,
+        audio_client=None,
+        game_id=game_id,
+    )
+    game.gameplay_stream = None
+    return game, mock_controller_manager, event_collector
+
+
+async def _no_pause():
+    return None
+
+
+def _end_round_timer(game: FightClubGame) -> None:
+    game.running = False
+    if game.round_task and not game.round_task.done():
+        game.round_task.cancel()
+
+
+def _clear_invincibility(game: FightClubGame) -> None:
+    for player in game.players.values():
+        player.invincible_until = 0
+
+
+class TestFightClubFaceOffPairing:
+    """UC-025 A2 step 3 (#1345): the face-off fights exactly the tied leaders."""
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
+    @pytest.mark.asyncio
+    async def test_tie_between_waiting_players_fights_exactly_that_pair(self):
+        game, mock_cm, event_collector = _make_game(4, "test_fc_face_off_waiting_pair")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._pause_between_rounds = _no_pause
+        a, b, c, d = (f"mock_controller_{i}" for i in range(4))
+        game.round_number = DEFAULT_MIN_ROUNDS - 1
+        await game._start_round()  # round MIN: a (defender) vs b; queue [c, d]
+        assert (game.current_defender, game.current_fighter) == (a, b)
+        game.players[a].score = 1
+        game.players[c].score = 3
+        game.players[d].score = 3
+        _clear_invincibility(game)
+        event_collector.clear()
+
+        # a beats b (a=2), c and d stay tied at the top: the next round is their face-off.
+        await game._kill_player_impl(b, accel_mag=5.0)
+
+        assert game.game_over is False
+        assert {game.current_defender, game.current_fighter} == {c, d}
+        assert game.current_defender != game.current_fighter
+        assert game.face_off_mode is True
+        assert game.round_end_time == float("inf")
+        # The displaced round winner stays in the rotation, at the front; the pair left the queue.
+        assert game.queue == [a, b]
+        assert game.players[a].state == FightState.IN_LINE
+        round_starts = event_collector.get_events_of_type("round_start")
+        assert len(round_starts) == 1
+        assert round_starts[0]["face_off"] is True
+        assert {round_starts[0]["defender"], round_starts[0]["fighter"]} == {c, d}
+
+        # The face-off is one round: its winner leads by one and the game ends; the flag resets.
+        _clear_invincibility(game)
+        await game._kill_player_impl(game.current_fighter, accel_mag=5.0)
+        assert game.game_over is True
+        assert game.face_off_mode is False
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
+    @pytest.mark.asyncio
+    async def test_round_winner_tied_with_a_waiting_player_keeps_the_defender_role(self):
+        game, mock_cm, _ = _make_game(4, "test_fc_face_off_winner_in_pair")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._pause_between_rounds = _no_pause
+        a, b, c, d = (f"mock_controller_{i}" for i in range(4))
+        game.round_number = DEFAULT_MIN_ROUNDS - 1
+        await game._start_round()  # a vs b; queue [c, d]
+        game.players[a].score = 2
+        game.players[c].score = 3
+        _clear_invincibility(game)
+
+        await game._kill_player_impl(b, accel_mag=5.0)  # a = 3, tied with c
+
+        assert (game.current_defender, game.current_fighter) == (a, c)
+        assert game.queue == [d, b]
+        assert game.face_off_mode is True
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
+    @pytest.mark.asyncio
+    async def test_timeout_into_tie_seats_the_pair_and_keeps_everyone_in_rotation(self):
+        game, mock_cm, _ = _make_game(3, "test_fc_face_off_timeout")
+        await game._initialize_players_impl(mock_cm.controllers)
+        a, b, c = (f"mock_controller_{i}" for i in range(3))
+        game.round_number = DEFAULT_MIN_ROUNDS - 1
+        await game._start_round()  # a vs b; queue [c]
+        game.players[a].score = 4
+        game.players[c].score = 4
+
+        await game._handle_timeout()
+
+        assert (game.current_defender, game.current_fighter) == (a, c)
+        assert game.queue == [b]
+        assert game.face_off_mode is True
+        assert sorted([game.current_defender, game.current_fighter, *game.queue]) == [a, b, c]
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[1])
+    @pytest.mark.asyncio
+    async def test_start_round_never_pairs_the_defender_with_itself(self):
+        game, mock_cm, _ = _make_game(3, "test_fc_no_self_pair")
+        await game._initialize_players_impl(mock_cm.controllers)
+        a, b, c = (f"mock_controller_{i}" for i in range(3))
+        game.current_defender = a  # a also still queued (stale entry)
+
+        await game._start_round()
+
+        assert game.current_defender == a
+        assert game.current_fighter == b
+        assert game.queue == [c]
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
+    @pytest.mark.asyncio
+    async def test_round_after_face_off_is_timed_again(self):
+        game, mock_cm, _ = _make_game(4, "test_fc_face_off_reset")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._face_off_pair = ("mock_controller_0", "mock_controller_1")
+        await game._start_round()
+        assert game.face_off_mode is True
+
+        await game._start_round()
+
+        assert game.face_off_mode is False
+        assert game.round_end_time != float("inf")
+        _end_round_timer(game)
+
+
+class TestFightClubLoserLed:
+    """UC-025 A2 step 2 (D-G32): the round loser stays in the game and ends on its next colour."""
+
+    async def _play_round(self, num_players: int, game_id: str):
+        game, mock_cm, _ = _make_game(num_players, game_id)
+        await game._initialize_players_impl(mock_cm.controllers)
+        game.gameplay_stream = RecordingGameplayStream()
+        game._pause_between_rounds = _no_pause
+        await game._start_round()
+        game.running = True
+        _clear_invincibility(game)
+        return game
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
+    @pytest.mark.asyncio
+    async def test_two_players_loser_fights_next_round_on_fighter_colour(self):
+        game = await self._play_round(2, "test_fc_loser_led_two")
+        loser = game.current_defender
+        game.gameplay_stream.messages.clear()
+
+        with patch("services.game_coordinator.games.fight_club.metrics"):
+            await game._kill_player(loser, 5.0)
+
+        writes = _writes_for(game.gameplay_stream, loser)
+        assert writes.count(("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)) == 1
+        assert writes.index(("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)) < len(writes) - 1
+        assert writes[-1] == ("base", FIGHTER_COLOR)
+        assert game.current_fighter == loser
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
+    @pytest.mark.asyncio
+    async def test_queued_loser_ends_on_waiting_colour_with_gauge_back_to_one(self):
+        game = await self._play_round(4, "test_fc_loser_led_four")
+        loser = game.current_fighter
+
+        with patch("services.game_coordinator.games.fight_club.metrics") as fc_metrics:
+            game.gameplay_stream.messages.clear()
+            await game._kill_player(loser, 5.0)
+
+        writes = _writes_for(game.gameplay_stream, loser)
+        assert writes.count(("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)) == 1
+        assert writes[-1] == ("base", WAITING_COLOR)
+        assert game.players[loser].alive is True
+        fc_metrics.player_alive.labels.assert_called_with(serial=loser, game_id=game.game_id)
+        fc_metrics.player_alive.labels.return_value.set.assert_called_with(1)
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
+    @pytest.mark.asyncio
+    async def test_kill_after_force_end_does_not_recreate_the_gauge(self):
+        game = await self._play_round(3, "test_fc_loser_gauge_ended")
+        loser = game.current_fighter
+        game.running = False
+
+        with patch("services.game_coordinator.games.fight_club.metrics") as fc_metrics:
+            await game._kill_player(loser, 5.0)
+
+        fc_metrics.player_alive.labels.return_value.set.assert_not_called()
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
+    @pytest.mark.asyncio
+    async def test_declined_kill_of_a_waiting_player_writes_no_death_effect(self):
+        game = await self._play_round(3, "test_fc_waiting_no_death")
+        waiting = game.queue[0]
+        game.gameplay_stream.messages.clear()
+
+        with patch("services.game_coordinator.games.fight_club.metrics"):
+            await game._kill_player(waiting, 5.0)
+
+        assert ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH) not in _writes_for(
+            game.gameplay_stream, waiting
+        )
+        _end_round_timer(game)

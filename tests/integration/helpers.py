@@ -864,7 +864,9 @@ async def select_admin_option(
         await press_move()
         if await async_poll_until(shown, timeout=settle_seconds, interval=0.1):
             return presses
-    raise AssertionError(f"admin option colour {target_color} never showed in {max_presses} Move presses (last={last})")
+    raise AssertionError(
+        f"admin option colour {target_color} never showed in {max_presses} Move presses (last={last})"
+    )
 
 
 async def exit_admin_mode(mock_client, serial: str):
@@ -2185,35 +2187,48 @@ async def end_fight_club_game(
     game_client,
     delay: float = 0.2,
     round_wait: float = 3.5,
-    rounds: int = 6,
+    game_id: str = "",
+    timeout: float = 60.0,
 ) -> list[str]:
-    """End a Fight Club game by running through rounds until a winner emerges.
+    """End a Fight Club game by running rounds until the game is no longer RUNNING.
 
     Fight Club is queue-based 1v1 matches. CI default: min_rounds=5,
     invincibility=2.0s. After a kill there's a 1.0s inter-round pause,
     then a new round starts with fresh invincibility.
 
-    Strategy: Each round, wait for invincibility to expire, then kill all
+    Strategy: each pass waits for invincibility to expire, then kills all
     serials. FightClub's _kill_player_impl only processes players in
     DEFENDER or FIGHTER state, so queued players are harmlessly ignored.
+    The loop follows the game state rather than a fixed round count: a tie
+    after min_rounds adds an untimed face-off round (UC-025 A2 step 3), so
+    the number of rounds is not known up front.
 
     Args:
         mock_client: Mock controller service gRPC client
         serials: List of all controller serials
         game_client: GameCoordinator client (for game state queries)
-        delay: Delay between individual kill attempts in seconds
-        round_wait: Time to wait before each kill attempt. Must exceed
+        delay: Delay after each kill pass in seconds
+        round_wait: Time to wait before each kill pass. Must exceed
             inter-round pause (1.0s) + invincibility duration (2.0s CI).
             Default 3.5s = 1.0 + 2.0 + 0.5 buffer.
-        rounds: Number of rounds to run (default 6: 5 CI min_rounds + 1)
+        game_id: Target session (empty = primary/legacy).
+        timeout: Max total time to keep running rounds.
 
     Returns:
         List of serials that were killed
     """
-    killed = []
+    killed: list[str] = []
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    round_num = 0
 
-    for round_num in range(rounds):
-        print(f"Fight Club round {round_num + 1}/{rounds}")
+    while await get_player_states(game_client, game_id=game_id) is not None:
+        if loop.time() >= deadline:
+            raise TimeoutError(
+                f"Fight Club still RUNNING after {round_num} kill passes ({timeout}s)"
+            )
+        round_num += 1
+        print(f"Fight Club kill pass {round_num}")
 
         # Wait for inter-round pause (1s) + invincibility (2s) + buffer
         await asyncio.sleep(round_wait)
