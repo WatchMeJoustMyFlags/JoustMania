@@ -126,8 +126,9 @@ service-tier file), `uv run --package <member> [--extra <x>] pytest ...`, `go te
 for product paths the full-tier evidence is PR CI "Service Tests" = pass, so never report a local PASS as tier
 coverage and name that in the report.
 Call it as a foreground Agent call (not `run_in_background`): that call is the wait; never run the same
-command yourself in parallel. gate-runner chooses foreground or background itself and hands back only
-when the run has finished. For a normal run, report PASS only when the VERDICT line is exactly
+command yourself in parallel. gate-runner stays in the foreground (never `run_in_background` for gates:
+the script detaches the run and gate-runner loops on `PENDING`) and hands back only when the run has
+finished; `GATES PENDING: <logs dir> ...` means it ran out of calls: re-brief it with the same job. For a normal run, report PASS only when the VERDICT line is exactly
 `VERDICT: PASS`. For an `expect fail` run, the good result is a VERDICT line ending in `MUTATION CAUGHT
 (assertion)` (the script prints `VERDICT: FAIL  MUTATION CAUGHT (assertion)`); `MUTATION NOT CAUGHT` and
 `CAUGHT?` are failed mutation checks even when the line starts with `VERDICT: PASS`. Report FLAKY, FAIL,

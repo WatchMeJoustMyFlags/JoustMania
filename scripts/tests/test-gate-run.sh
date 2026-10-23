@@ -11,6 +11,8 @@
 set -euo pipefail
 # Hermetic: a fail-loud fake docker first on PATH, no COMPOSE / DOCKER override.
 unset COMPOSE DOCKER
+# Hermetic: no detach state from a caller (e.g. this test run inside a gate-run job).
+unset GATE_RUN_WORKER GATE_RUN_WAIT GATE_RUN_DRY_RUN DETACH_WAIT
 FAKE_DOCKER_DIR="$(mktemp -d)"
 printf '#!/bin/sh\necho "test reached docker: $*" >&2\nexit 99\n' >"${FAKE_DOCKER_DIR}/docker"
 chmod +x "${FAKE_DOCKER_DIR}/docker"
@@ -52,6 +54,23 @@ if (( n % 2 )); then echo "--- FAIL: TestX"; exit 1; fi
 echo ok
 EOF
 ln -s test-pass.sh "${WT}/scripts/tests/test-link.sh"
+# Counts its starts (counter outside the worktree), then runs for 3 s.
+cat >"${WT}/scripts/tests/test-slow.sh" <<'EOF'
+n=$(( $(cat "$SLOW_COUNTER" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$SLOW_COUNTER"
+sleep 3
+echo "slow done"
+EOF
+# Fails when the caller's detach state reached the run (#2036 review: a nested
+# gate-run, as in test-gate-run.sh under `make lint`, must detach itself).
+cat >"${WT}/scripts/tests/test-env.sh" <<'EOF'
+if [[ -n "${GATE_RUN_WORKER:-}${GATE_RUN_WAIT:-}${DETACH_WAIT:-}" ]]; then echo "FAIL: detach env leaked"; exit 1; fi
+echo "env clean"
+EOF
+# A shell test's own assertion line (scripts/tests style), #2036.
+cat >"${WT}/scripts/tests/test-shfail.sh" <<'EOF'
+echo "FAIL: expected exit 3, got 0" >&2
+exit 1
+EOF
 
 pass=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -61,7 +80,8 @@ run_gr() {
   local want_rc="$1" want_re="$2" out rc
   shift 2
   set +e
-  out="$("${GATE_RUN}" "$@" 2>&1)"
+  # timeout: a detach regression that loops must fail the test, not hang `make lint`.
+  out="$(timeout 60 "${GATE_RUN}" "$@" 2>&1)"
   rc=$?
   set -e
   [[ "$rc" == "$want_rc" ]] || fail "exit $rc (want $want_rc) for: $*"$'\n'"$out"
@@ -250,6 +270,64 @@ run_gr 1 'CAUGHT\? \(non-test error' --worktree "$WT" --logs "$LOGS" --expect-fa
 run_gr 1 'MUTATION NOT CAUGHT \(1/1 passed\)' --worktree "$WT" --logs "$LOGS" --expect-fail -- scripts/tests/test-pass.sh
 run_gr 1 'MUTATION NOT CAUGHT \(1/2 passed\)' --worktree "$WT" --logs "$LOGS" --repeat 2 --expect-fail -- scripts/tests/test-flaky.sh
 run_gr 1 'wt-[0-9a-f]{8}/test-assert-1.log:.*AssertionError' --worktree "$WT" --logs "$LOGS" --name test-assert -- scripts/tests/test-assert.sh
+# #2036: a shell test's FAIL line is an assertion, not a non-test error.
+run_gr 0 'MUTATION CAUGHT \(assertion\)' --worktree "$WT" --logs "$LOGS" --name shfail --expect-fail -- scripts/tests/test-shfail.sh
+
+# --- detach / await (#2036)
+export SLOW_COUNTER="${WORK}/slow-counter"
+starts() { cat "$SLOW_COUNTER" 2>/dev/null || echo 0; }
+# A call that cannot wait long enough: PENDING, exit 3; the same call later: the verdict.
+GATE_RUN_WAIT=1 run_gr 3 'VERDICT: PENDING \([0-9]+s\); rerun the same command' \
+  --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-slow.sh
+[[ -f "${NS}/slow.job/pid" && -f "${NS}/slow.job/cmd" && -f "${NS}/slow.job/lock" ]] || fail "job dir lacks pid/cmd/lock"
+# A different command under the same name while the job runs: REFUSED.
+run_gr 2 'REFUSED: .*different command' --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-pass.sh
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-slow.sh
+[[ "$(cat "${NS}/slow.job/rc")" == 0 ]] || fail "job rc not written"
+# The identical call again: the finished verdict, no second job.
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-slow.sh
+[[ "$(starts)" == 1 ]] || fail "identical call started a second job (starts: $(starts))"
+# A changed worktree (e.g. the next mutation) with the same command: a fresh run.
+echo mutated >"${WT}/mutant.txt"
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-slow.sh
+[[ "$(starts)" == 2 ]] || fail "changed worktree reused the old verdict (starts: $(starts))"
+rm -f "${WT}/mutant.txt" "$SLOW_COUNTER"
+# A killed waiter (its whole process group, as the Bash tool does) leaves the job alive.
+setsid timeout 60 env GATE_RUN_WAIT=30 "${GATE_RUN}" --worktree "$WT" --logs "$LOGS" --name killed \
+  -- scripts/tests/test-slow.sh >/dev/null 2>&1 &
+waiter=$!
+for _ in $(seq 50); do [[ -f "${NS}/killed.job/pid" ]] && break; sleep 0.1; done
+[[ -f "${NS}/killed.job/pid" ]] || fail "killed-waiter job did not start"
+kill -KILL -- "-${waiter}" 2>/dev/null || kill -KILL "$waiter"
+wait "$waiter" 2>/dev/null || true
+kill -0 "$(cat "${NS}/killed.job/pid")" 2>/dev/null || fail "job died with its waiter"
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name killed -- scripts/tests/test-slow.sh
+[[ "$(starts)" == 1 ]] || fail "killed waiter: job restarted (starts: $(starts))"
+# A job killed before it wrote rc is replaced by a fresh one on the next call.
+rm -f "$SLOW_COUNTER"
+GATE_RUN_WAIT=0 run_gr 3 'VERDICT: PENDING' --worktree "$WT" --logs "$LOGS" --name dead -- scripts/tests/test-slow.sh
+for _ in $(seq 50); do [[ -f "${NS}/dead.job/pid" && "$(starts)" == 1 ]] && break; sleep 0.1; done
+[[ "$(starts)" == 1 ]] || fail "dead job did not start"
+pkill -KILL -s "$(cat "${NS}/dead.job/pid")" || true
+for _ in $(seq 50); do flock -n "${NS}/dead.job/lock" true && break; sleep 0.1; done
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name dead -- scripts/tests/test-slow.sh
+[[ "$(starts)" == 2 ]] || fail "killed job was not replaced (starts: $(starts))"
+# Concurrent identical calls after the worktree changed: one fresh job, not one each.
+rm -f "$SLOW_COUNTER"
+echo mutated >"${WT}/mutant.txt"
+for _ in 1 2 3; do
+  timeout 60 "${GATE_RUN}" --worktree "$WT" --logs "$LOGS" --name dead -- scripts/tests/test-slow.sh >/dev/null 2>&1 &
+done
+wait || true
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name dead -- scripts/tests/test-slow.sh
+[[ "$(starts)" == 1 ]] || fail "concurrent calls replaced each other's job (starts: $(starts))"
+rm -f "${WT}/mutant.txt" "$SLOW_COUNTER"
+# The caller's detach env (preset, or inherited from an outer gate-run job) never
+# reaches the run, and the call still detaches.
+GATE_RUN_WORKER=1 GATE_RUN_WAIT=30 DETACH_WAIT=30 run_gr 0 'job envleak.*VERDICT: PASS' \
+  --worktree "$WT" --logs "$LOGS" --name envleak -- scripts/tests/test-env.sh
+[[ -f "${NS}/envleak.job/rc" ]] || fail "preset GATE_RUN_WORKER skipped the detach"
+GATE_RUN_WAIT=600 run_gr 2 'REFUSED: wait must be 0-580' --worktree "$WT" --logs "$LOGS" --name w -- scripts/tests/test-pass.sh
 
 [[ -z "$(git -C "$WT" status --porcelain --untracked-files=no)" ]] || fail "worktree changed"
 echo "test-gate-run: ${pass} checks passed"
