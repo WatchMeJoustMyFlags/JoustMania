@@ -9,6 +9,7 @@ Tests the core Fight Club mechanics:
 - Win condition (highest score after minimum rounds)
 """
 
+import asyncio
 import sys
 import time
 from pathlib import Path
@@ -1221,6 +1222,29 @@ class TestFightClubFaceOffPairing:
 
     @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
+    async def test_round_winner_second_in_join_order_keeps_the_defender_role(self):
+        game, mock_cm, _ = _make_game(4, "test_fc_face_off_winner_second")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._pause_between_rounds = _no_pause
+        a, b, c, d = (f"mock_controller_{i}" for i in range(4))
+        game.round_number = DEFAULT_MIN_ROUNDS - 1
+        await game._start_round()  # a vs b; queue [c, d]
+        game.players[a].score = 3
+        game.players[b].score = 2
+        _clear_invincibility(game)
+
+        # b beats a: b = 3, tied with a, and the stored pair is (a, b) by join order.
+        await game._kill_player_impl(a, accel_mag=5.0)
+
+        assert (game.current_defender, game.current_fighter) == (b, a)
+        assert game.players[b].state == FightState.DEFENDER
+        assert game.players[a].state == FightState.FIGHTER
+        assert game.queue == [c, d]
+        assert game.face_off_mode is True
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
+    @pytest.mark.asyncio
     async def test_timeout_into_tie_seats_the_pair_and_keeps_everyone_in_rotation(self):
         game, mock_cm, _ = _make_game(3, "test_fc_face_off_timeout")
         await game._initialize_players_impl(mock_cm.controllers)
@@ -1343,4 +1367,30 @@ class TestFightClubLoserLed:
         assert ("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH) not in _writes_for(
             game.gameplay_stream, waiting
         )
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
+    @pytest.mark.asyncio
+    async def test_loser_effect_on_an_ended_call_still_starts_the_next_round(self):
+        """The loser's death effect on a call that ended under it (UC-030 BR-006) is skipped, not fatal (#1345)."""
+
+        class FailingEffectStream(RecordingGameplayStream):
+            async def write(self, message):
+                if message.HasField("game_effect"):
+                    raise asyncio.InvalidStateError("call finished")
+                await super().write(message)
+
+        game = await self._play_round(3, "test_fc_loser_effect_call_ended")
+        game.gameplay_stream = FailingEffectStream()
+        loser = game.current_fighter
+        round_before = game.round_number
+
+        with patch("services.game_coordinator.games.fight_club.metrics"):
+            await game._kill_player(loser, 5.0)
+
+        assert game.round_number == round_before + 1
+        assert game.current_fighter is not None
+        assert game.current_fighter != game.current_defender
+        assert game.round_task is not None
+        assert loser in game.queue
         _end_round_timer(game)

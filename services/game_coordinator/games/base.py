@@ -1657,16 +1657,27 @@ class BaseGameMode(ABC):
         ``AioRpcError`` when the call fails under the write. A cancel of this
         task still propagates. Returns whether the effect was written.
         """
+        return await self._write_effect_guarded(message, "End-of-game effect")
+
+    async def _write_effect_guarded(self, message, what: str) -> bool:
+        """Write a gameplay effect, skipping it with a warning when the call has ended.
+
+        Shared by ``_write_end_effect`` and in-game effects that must not abort a
+        state transition (Fight Club round loser, #1345). ``what`` names the
+        effect in the warning. Skips on a finished call; catches
+        ``InvalidStateError`` / ``AioRpcError`` from the write; a cancel still
+        propagates. Returns whether the effect was written.
+        """
         stream = self.gameplay_stream
         if stream is None:
             return False
         if self._gameplay_call_done():
-            logger.warning("End-of-game effect skipped: the gameplay stream has already ended")
+            logger.warning(f"{what} skipped: the gameplay stream has already ended")
             return False
         try:
             await stream.write(message)
         except (asyncio.InvalidStateError, grpc.aio.AioRpcError) as e:
-            logger.warning(f"End-of-game effect skipped: the gameplay stream ended during the write ({e!r})")
+            logger.warning(f"{what} skipped: the gameplay stream ended during the write ({e!r})")
             return False
         return True
 

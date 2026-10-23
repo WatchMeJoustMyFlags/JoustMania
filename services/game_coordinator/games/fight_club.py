@@ -565,12 +565,17 @@ class FightClubGame(BaseGameMode):
         return False
 
     async def _write_loser_death_effect(self, serial: str) -> None:
-        """Send ``GAME_EFFECT_PLAYER_DEATH`` to the round loser, under its player span."""
+        """Send ``GAME_EFFECT_PLAYER_DEATH`` to the round loser, under its player span.
+
+        Runs before the next round starts, so a call that ended under it (UC-030
+        BR-006) skips the effect with a warning instead of aborting the round
+        transition (#1345, the #1985 guard).
+        """
         if not self.gameplay_stream:
             return
         player = self.players[serial]
         trace_parent, trace_state = inject_trace_context(player.span)
-        await self.gameplay_stream.write(
+        await self._write_effect_guarded(
             controller_manager_pb2.GameplayStreamControl(
                 game_effect=controller_manager_pb2.GameEffectCommand(
                     serial=serial,
@@ -578,7 +583,8 @@ class FightClubGame(BaseGameMode):
                     trace_parent=trace_parent,
                     trace_state=trace_state,
                 )
-            )
+            ),
+            "Round loser death effect",
         )
 
     async def _end_game_impl(self):
