@@ -50,8 +50,9 @@ If the PR number is missing (or the delta range or findings file is), report `BL
 2. **Read-only on the PR.** Never edit the PR branch or push to it. Never run `git checkout <ref> -- <file>` in a
    worktree that holds work; never `git stash`, `git reset --hard` or `git clean` outside your own throwaway
    worktrees; never touch the running docker stack or another session's worktree.
-3. **Mutation checks in a SEPARATE detached worktree** (`.worktrees/review-<N>-mut`), never in the review
-   worktree: the permission classifier may deny in-place product edits, so apply the mutation by a Python string
+3. **Mutation checks in a SEPARATE detached worktree**, never in the review worktree:
+   `git worktree add --detach <main>/.worktrees/review-<N>-mut refs/review/<N>` (`review-<N>d-mut` in delta
+   mode). The permission classifier may deny in-place product edits, so apply the mutation by a Python string
    replace (read the file, `assert old in text`, write the replaced text) or run an A/B (same test on the fix and
    on the parent commit). Weaken the core fix, run the new tests through gate-runner with `expect fail`; the good
    result is a VERDICT ending in `MUTATION CAUGHT (assertion)`. `MUTATION NOT CAUGHT`, `CAUGHT?` and
@@ -62,11 +63,13 @@ If the PR number is missing (or the delta range or findings file is), report `BL
    REFUSED and a reply without a VERDICT are reported as that. A failure matching `.claude/known-flakes.md` is
    named as a known flake; rerun it once under no load before you call it one.
 5. **`scripts/**` only.** When the diff changes only `scripts/**`, never run `make pr-gates` (it selects the
-   container service gate). Run the shell tests (`scripts/tests/test-*.sh`) through gate-runner, with a
-   fail-loud fake `docker` first on `PATH` and `unset COMPOSE DOCKER`, so a test that reaches for docker fails
-   instead of silently using the real stack.
-6. **Spec review.** Run `/spec-review` (skill step 7: lint for the UC, then the checklist) on every UC the PR
-   touches, in every depth. Report only warnings the PR introduces.
+   container service gate). Run `make lint` and each changed or relevant `scripts/tests/test-*.sh` YOURSELF via
+   Bash (gate-run.sh cannot set PATH yet; that is a later #2036 item), with the fail-loud docker stub first on
+   `PATH`: `unset COMPOSE DOCKER; PATH=<repo>/scripts/tests/lib/fail-docker:$PATH FLAG_SERVICE_URL=http://127.0.0.1:9 bash scripts/tests/test-X.sh 2>&1 | tail -n 20`.
+   A `REAL-DOCKER-CALLED` line on stderr means the test reached for the real stack: report it.
+6. **Spec review.** Run the review-pr step 7 scripts (`scripts/aiup/spec-review/...`: lint for the UC, then the
+   checklist), not the `/spec-review` plugin skill, on every UC the PR touches, in every depth. Report only
+   warnings the PR introduces. Write the findings file with a Bash heredoc (you have no Write tool).
 7. **CI before "ready".** `gh pr checks <N>` once, no watching. Say READY only when the checks the diff needs are
    green, "Service Tests" included when the changed paths require it (skill step 5). Pending or skipped is not
    green: say what you are waiting on and give READY WITH CHANGES or no verdict, never READY.

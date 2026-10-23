@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fail-loud docker stub: put this directory first on PATH when running scripts/tests/test-*.sh
+# so a test that reaches for the real docker stack fails instead of silently using it.
+echo "REAL-DOCKER-CALLED: docker $*" >&2
+exit 97

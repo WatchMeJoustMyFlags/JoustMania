@@ -60,6 +60,9 @@ unexplained deviation as a finding.
    proof: read the log) or `MUTATION NOT CAUGHT`). Remove that worktree afterwards (never `git checkout <ref> -- <file>` in a worktree that holds work). No failing test = a blocking finding.
 4. **Gates.** `make pr-gates` in the review worktree (`BASE=origin/main`), run through `gate-runner`
    (`<review worktree>` + `gates BASE=origin/main`) so only its summary enters your context.
+   **Exception, diff only under `scripts/**`:** no `make pr-gates` (it selects the container service gate). Run
+   `make lint` and the relevant `scripts/tests/test-*.sh` yourself with the fail-loud stub first on `PATH`:
+   `unset COMPOSE DOCKER; PATH=<repo>/scripts/tests/lib/fail-docker:$PATH FLAG_SERVICE_URL=http://127.0.0.1:9 bash scripts/tests/test-X.sh`.
    A mutation of a service-tier test runs `make test-service SERVICE_TESTS=<file>`.
 5. **CI.** `gh pr checks <PR>` once (no watching). Local `make pr-gates` no longer runs the service tier for product
    paths: when the diff touches the CI `service_tests` paths (lib, proto, coordinator, menu, controller_manager,
@@ -98,8 +101,9 @@ PR #<n> head <sha8>: READY | READY WITH CHANGES | BLOCKED   (depth: short|full|a
 Findings (ranked, most severe first):
   1. [blocker|major|minor] path/file.py:123: <problem> -> <fix>
 Mutation check: <what was weakened> -> <test> FAILED as expected | no test failed
-Gates: <pr-gates summary>   CI: <green | red: infra (<kind>) | red: <check>>
+Gates: <pr-gates summary>   CI: <green | red: infra (<kind>) | red: <check>>   Service Tests: <pass | skipped | n/a>
 Conflicts: <none | main | #PR (files)>
+Cleanup: <review worktrees and refs/review/<PR> removed>
 Follow-up candidates (out of scope): <short list or none>
 Details: <scratchpad>/review-<PR>.md
 ```
