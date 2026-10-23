@@ -87,6 +87,7 @@ operator --> UC003
 operator --> UC004
 operator --> UC005
 operator --> UC027
+agent --> UC027
 operator --> UC035
 operator --> UC044
 operator --> UC045
@@ -117,6 +118,12 @@ UC042 --> modelapi
 UC043 --> github
 
 UC020 ..> UC030 : <<include>>
+UC021 ..> UC030 : <<include>>
+UC022 ..> UC030 : <<include>>
+UC023 ..> UC030 : <<include>>
+UC024 ..> UC030 : <<include>>
+UC025 ..> UC030 : <<include>>
+UC026 ..> UC030 : <<include>>
 UC040 ..> UC041 : <<include>>
 UC043 ..> UC041 : <<include>>
 UC043 ..> UC046 : <<include>>
