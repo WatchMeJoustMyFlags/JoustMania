@@ -34,7 +34,12 @@ not conflict structurally.
 import logging
 
 from .intervention_errors import InterventionNotApplied
-from .interventions import InterventionContext, InterventionManager
+from .interventions import (
+    BLOCK_ELIMINATE_REFUSED,
+    BLOCK_REVIVE_REFUSED,
+    InterventionContext,
+    InterventionManager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -343,8 +348,11 @@ async def handle_eliminate_player(ctx: InterventionContext) -> None:
     The payload is the target serial. Routes through ``game._kill_player`` with
     reason ``agent_intervention`` and accel 0.0 so the same spans, EventBus
     events, and metrics fire as for a natural death. Defensive: no live game /
-    unknown serial / already-dead → log + no-op (``_kill_player`` itself ignores
-    unknown/dead serials, but we check first to log a clear reason).
+    empty serial → log + no-op. When nobody is killed (unknown serial, already-dead
+    player, or ``_kill_player`` returns False: a kill of the same player in flight
+    or the mode declined it) nothing was applied, so it raises
+    ``InterventionNotApplied`` and the intervention is recorded as
+    ``blocked=true`` / ``eliminate_refused`` (UC-040 A22, #1383).
     """
     game = ctx.game
     if game is None:
@@ -359,14 +367,16 @@ async def handle_eliminate_player(ctx: InterventionContext) -> None:
     players = getattr(game, "players", {})
     player = players.get(serial)
     if player is None:
-        logger.warning(f"eliminate_player: unknown serial {serial}, ignoring")
-        return
+        logger.warning(f"eliminate_player: unknown serial {serial}, refused")
+        raise InterventionNotApplied(BLOCK_ELIMINATE_REFUSED, f"eliminate_player: unknown serial {serial}")
     if not getattr(player, "alive", False):
-        logger.info(f"eliminate_player: {serial} already dead, no-op")
-        return
+        logger.info(f"eliminate_player: {serial} already dead, refused")
+        raise InterventionNotApplied(BLOCK_ELIMINATE_REFUSED, f"eliminate_player: {serial} already dead")
 
     logger.info(f"eliminate_player: forcing elimination of {serial} ({ELIMINATE_REASON})")
-    await game._kill_player(serial, ELIMINATE_ACCEL, reason=ELIMINATE_REASON)
+    # ``is False``: a legacy override returning None still counts as applied.
+    if await game._kill_player(serial, ELIMINATE_ACCEL, reason=ELIMINATE_REASON) is False:
+        raise InterventionNotApplied(BLOCK_ELIMINATE_REFUSED, f"eliminate_player: mode declined the kill of {serial}")
 
 
 async def handle_revive_player(ctx: InterventionContext) -> None:
@@ -397,7 +407,7 @@ async def handle_revive_player(ctx: InterventionContext) -> None:
 
     logger.info(f"revive_player: reviving {serial}")
     if not await revive(serial):
-        raise InterventionNotApplied("revive_refused", f"revive_player: mode refused revive of {serial}")
+        raise InterventionNotApplied(BLOCK_REVIVE_REFUSED, f"revive_player: mode refused revive of {serial}")
 
 
 def register_lifecycle_handlers(manager: InterventionManager) -> None:
