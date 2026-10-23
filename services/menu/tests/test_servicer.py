@@ -2805,6 +2805,12 @@ class TestReconnectChecksFollowedGame:
         await _connect(real_servicer, "s1", "s2")
         real_servicer.audio.start_lobby_music.reset_mock()
         real_servicer.idle_monitor.start.reset_mock()
+        # UC-010 A8 lobby-restart window: the restore runs with _lobby_restarting set.
+        restarting_seen = []
+        real_servicer.audio.start_lobby_music.side_effect = lambda: restarting_seen.append(
+            real_servicer._lobby_restarting
+        )
+        real_servicer.restarting_seen = restarting_seen
         real_sleep = asyncio.sleep
 
         async def fast_sleep(_delay, *_args, **_kwargs):
@@ -2826,6 +2832,8 @@ class TestReconnectChecksFollowedGame:
         }
         servicer.audio.start_lobby_music.assert_awaited_once()
         servicer.idle_monitor.start.assert_called_once()
+        assert servicer.restarting_seen == [True]
+        assert servicer._lobby_restarting is False
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A9", steps=[1, 2, 4], br=["BR-006", "BR-009"])
