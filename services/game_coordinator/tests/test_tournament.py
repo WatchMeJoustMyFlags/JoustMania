@@ -837,9 +837,11 @@ class TestTournamentEndGame:
 
         serials = list(game.players.keys())
         champion = serials[0]
-        game.players[champion].tournament_state = TournamentState.CHAMPION
         for s in serials[1:]:
             game.players[s].tournament_state = TournamentState.ELIMINATED
+        game.running = True
+        assert game._latch_champion(champion)
+        game.running = False  # the loop has ended
 
         await game._end_game_impl()
         self._teardown()
@@ -860,9 +862,11 @@ class TestTournamentEndGame:
         await self._setup_game(game, mock_controller_manager)
 
         serials = list(game.players.keys())
-        game.players[serials[0]].tournament_state = TournamentState.CHAMPION
         for s in serials[1:]:
             game.players[s].tournament_state = TournamentState.ELIMINATED
+        game.running = True
+        assert game._latch_champion(serials[0])
+        game.running = False  # the loop has ended
 
         await game._end_game_impl()
         self._teardown()
@@ -873,7 +877,7 @@ class TestTournamentEndGame:
 
     @pytest.mark.asyncio
     async def test_end_game_no_champion(self, tournament_game):
-        """No champion → game_ended event has champion=None."""
+        """No champion → game_ended event has champion "none" (UC-025 BR-003)."""
         game, mock_controller_manager, event_collector = tournament_game
         await self._setup_game(game, mock_controller_manager)
 
@@ -886,7 +890,7 @@ class TestTournamentEndGame:
 
         ended_events = event_collector.get_events_of_type("game_ended")
         assert len(ended_events) == 1
-        assert ended_events[0]["champion"] is None
+        assert ended_events[0]["champion"] == "none"
 
     @pytest.mark.asyncio
     async def test_end_game_publishes_game_ended_event(self, tournament_game):
@@ -895,7 +899,9 @@ class TestTournamentEndGame:
         await self._setup_game(game, mock_controller_manager)
 
         serials = list(game.players.keys())
-        game.players[serials[0]].tournament_state = TournamentState.CHAMPION
+        game.running = True
+        game._latch_champion(serials[0])
+        game.running = False  # the loop has ended
 
         # Mark some bracket matches as completed
         for match in game.bracket[:2]:
@@ -1269,9 +1275,11 @@ class TestGameplayLoop:
         with _no_pauses(game), patch.object(game._rng, "choice", return_value=p1):
             await _drive_bracket(game)
 
-        # One player should be eliminated, one waiting/champion
+        # One player is eliminated; the time limit of the final crowned the other (BR-005)
         assert game.players[p2].tournament_state == TournamentState.ELIMINATED
-        assert game.players[p1].tournament_state == TournamentState.WAITING
+        assert game.players[p1].tournament_state == TournamentState.CHAMPION
+        assert game._champion == p1
+        assert [e["champion"] for e in event_collector.get_events_of_type("tournament_champion")] == [p1]
         assert await game._check_win_condition() is True
 
     @pytest.mark.uc("UC-025", flow="main", steps=[2, 4])

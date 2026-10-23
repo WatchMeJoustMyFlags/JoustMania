@@ -78,9 +78,10 @@ def _make_winner(game, mode: Games) -> None:
     elif mode == Games.Zombies:
         game.time_remaining = 0
     elif mode == Games.Tournament:
-        game.players[serials[0]].tournament_state = TournamentState.CHAMPION
+        # The champion is latched when the final is decided (UC-025 BR-005).
         for serial in serials[1:]:
             game.players[serial].tournament_state = TournamentState.ELIMINATED
+        assert game._latch_champion(serials[0])
     elif mode == Games.NonStop:
         game._time_limit_reached = True
         game.players[serials[0]].score = 5

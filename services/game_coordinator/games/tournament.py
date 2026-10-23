@@ -141,6 +141,10 @@ class TournamentGame(BaseGameMode):
         self._bracket_error: Exception | None = None  # a bracket step failed: run() raises it
         self._stall_logged: bool = False
         self._disconnected: set[str] = set()  # serials whose controller disconnected (A4)
+        # The result, latched in the step that decides the final (UC-025 step 5, BR-005).
+        self._result_latched: bool = False
+        self._champion: str | None = None
+        self._champion_announced: bool = False
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
 
@@ -273,13 +277,15 @@ class TournamentGame(BaseGameMode):
                 return match
         return None
 
-    def _advance_winner(self, winner_serial: str, completed_match: Match):
+    def _advance_winner(self, winner_serial: str, completed_match: Match, carried_out: bool = False):
         """
         Advance winner to next round's match.
 
         Args:
             winner_serial: Serial of winning player
             completed_match: The match that was just completed
+            carried_out: The serial is an out player carried into the next slot by a
+                match with no winner (both players out): its round is not bumped.
         """
         if completed_match.round_number >= self.total_rounds:
             # Tournament winner!
@@ -305,6 +311,8 @@ class TournamentGame(BaseGameMode):
 
             logger.info(f"Advanced {winner_serial} to round {next_round}, match {next_match.match_id}")
 
+            if carried_out:
+                return
             # Update player state; a winner that disconnected stays out (A4), and
             # its next opponent gets a walkover (_resolve_walkovers).
             player = self.players[winner_serial]
@@ -495,16 +503,18 @@ class TournamentGame(BaseGameMode):
         # match path, after the serials field and the __anext__ call) —
         # use WINNER_RAINBOW, the celebration effect the champion path
         # (#699) already uses; the runtime AttributeError killed the game
-        # at first match completion.
-        await self._write_effect_guarded(
-            controller_manager_pb2.GameplayStreamControl(
-                game_effect=controller_manager_pb2.GameEffectCommand(
-                    serial=match.winner_serial,
-                    effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
-                )
-            ),
-            "Tournament match winner effect",
-        )
+        # at first match completion. The final gets none: the champion's
+        # rainbow comes with the end of the game (UC-025 step 5, #1986).
+        if not self._is_final(match):
+            await self._write_effect_guarded(
+                controller_manager_pb2.GameplayStreamControl(
+                    game_effect=controller_manager_pb2.GameEffectCommand(
+                        serial=match.winner_serial,
+                        effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
+                    )
+                ),
+                "Tournament match winner effect",
+            )
 
         # Turn off loser
         await self._set_base_color(loser_serial, ELIMINATED_COLOR)
@@ -581,7 +591,7 @@ class TournamentGame(BaseGameMode):
                 elif len(out) == 2:
                     match.is_complete = True
                     logger.warning(f"Match {match.match_id}: both players are out, no winner")
-                    self._advance_winner(out[0], match)
+                    self._advance_winner(out[0], match, carried_out=True)
                     changed = True
 
     async def _bracket_tick(self) -> None:
@@ -603,7 +613,10 @@ class TournamentGame(BaseGameMode):
                 # Time's up - both survive, random winner (A1)
                 match.winner_serial = self._rng.choice([match.player1_serial, match.player2_serial])
                 logger.info(f"Match {match.match_id} timeout - random winner: {match.winner_serial}")
+                if self._is_final(match):
+                    self._latch_champion(match.winner_serial)
             await self._finalize_match(match)
+            await self._announce_champion()
             return
 
         if time.monotonic() < self._next_action_at:
@@ -616,6 +629,10 @@ class TournamentGame(BaseGameMode):
             if len(left) <= 1:
                 logger.info("Tournament complete!")
                 self._bracket_finished = True
+                # A final won by a walkover (A4) crowns the player left.
+                if len(left) == 1:
+                    self._latch_champion(left[0])
+                    await self._announce_champion()
             elif not self._stall_logged:
                 # No playable match yet more than one player is left: the bracket is
                 # stuck (a bye that never advanced was #1990; a match with two
@@ -643,12 +660,16 @@ class TournamentGame(BaseGameMode):
         """Base frame processing (disconnects, then detection), then one bracket step.
 
         A failing bracket step ends the game loop with the error kept for run(),
-        which raises it (``game_error``): raised here it would read as a stream
-        error and reconnect a healthy stream (UC-030 BR-006).
+        which raises it (``game_error``). The base loop also ends the game on a
+        frame-processing error without a reconnect (#2001), so this is kept for
+        the explicit, logged bracket-failure path (UC-030 BR-006).
         """
-        if await super()._process_gameplay_update(gameplay_update):
-            return True
+        game_over = await super()._process_gameplay_update(gameplay_update)
         try:
+            if game_over:
+                # The final was decided in this frame: finish it now (UC-025 step 5).
+                await self._finish_decided_final()
+                return True
             await self._bracket_tick()
         except Exception as e:
             logger.error(f"Tournament bracket step failed: {e}", exc_info=True)
@@ -690,18 +711,73 @@ class TournamentGame(BaseGameMode):
         await super()._handle_disconnect(serial)
 
     async def _check_win_condition(self) -> bool:
-        """The game ends once the bracket has no match left to play, or a bracket step failed.
+        """The game ends once the final is decided, the bracket has no match left, or a bracket step failed.
 
         Called by the base game loop after every disconnect and controller sample;
-        it publishes nothing (the champion announcement is UC-025 step 5, #1337).
+        it publishes nothing (the champion is announced by ``_announce_champion``).
         """
-        return self._bracket_finished or self._bracket_error is not None
+        return self._result_latched or self._bracket_finished or self._bracket_error is not None
+
+    def _is_final(self, match: Match) -> bool:
+        """Whether the match is the final (the last round has one match)."""
+        return match.round_number >= self.total_rounds
+
+    def _latch_champion(self, serial: str) -> bool:
+        """Latch the champion and the root-span outcome when the final is decided (UC-025 BR-005).
+
+        Synchronous, no await: called in the step that decides the final (the
+        kill, the time limit, a walkover), so a force-end that lands afterwards
+        keeps the champion, and one that landed before it (``running`` already
+        False) latches none (BR-003). The outcome is latched first and checked
+        again: a force-end from the servicer thread can land between the running
+        check and the latch, and then no champion may be set or announced.
+        Returns whether it latched.
+        """
+        if self._result_latched or not self.running:
+            return False
+        self._latch_game_outcome()
+        if self.game_outcome() == "force_ended":
+            return False
+        self._result_latched = True
+        self._champion = serial
+        self.players[serial].tournament_state = TournamentState.CHAMPION
+        logger.info(f"Tournament champion: {serial} with {self.players[serial].wins} wins!")
+        return True
+
+    async def _announce_champion(self) -> None:
+        """Publish ``tournament_champion`` once, only for a latched champion (UC-025 step 5)."""
+        if self._champion is None or self._champion_announced:
+            return
+        self._champion_announced = True
+        champion = self.players[self._champion]
+        await self.event_publisher(
+            "tournament_champion",
+            {
+                "champion": self._champion,
+                "wins": champion.wins,
+                "rounds_played": self.current_round,
+            },
+        )
+
+    async def _finish_decided_final(self) -> None:
+        """Finalise the decided final (loser off, ``match_end``; no match rainbow) and announce the champion.
+
+        Idempotent: the frame that decided the final runs it, and the end of the
+        game runs it again for a final decided outside a frame (an intervention).
+        """
+        if self._champion is None:
+            return
+        match = self.current_match
+        if match is not None and match.is_complete:
+            await self._finalize_match(match)
+        await self._announce_champion()
 
     async def _publish_bracket_result(self) -> bool:
         """Publish ``tournament_champion`` or ``tournament_no_winner`` once at most one player is left.
 
-        Not called by the game yet: the step 5 Known gap (#1337, UC-025 track T2)
-        wires it into the end of the game with the win latch.
+        Not called by the game: the champion is latched and announced by
+        ``_latch_champion`` / ``_announce_champion`` (UC-025 step 5, BR-005); the
+        ``tournament_no_winner`` trigger (A3) waits on a maintainer decision.
 
         Returns:
             True if only one player remains (or all eliminated)
@@ -742,6 +818,10 @@ class TournamentGame(BaseGameMode):
         """
         player = self.players[serial]
         disconnected = serial in self._disconnected
+
+        # The final is decided: nothing changes the result any more (UC-025 BR-005).
+        if self._result_latched:
+            return
 
         # A disconnected player that is not fighting an undecided match (a waiting
         # player, or the winner of a match decided in this frame) leaves the
@@ -797,6 +877,9 @@ class TournamentGame(BaseGameMode):
         self.current_match.is_complete = True
 
         winner = self.current_match.winner_serial
+        # The final's decision latches the champion in this same step (UC-025 BR-005).
+        if self._is_final(self.current_match):
+            self._latch_champion(winner)
         logger.info(f"Match {self.current_match.match_id}: {serial} eliminated, winner: {winner}")
 
         # Add death event to player span
@@ -835,15 +918,14 @@ class TournamentGame(BaseGameMode):
         logger.info("Ending Tournament game...")
         self.state = self.state.__class__.ENDING
 
-        # Find champion
-        champion_serial = None
-        for serial, player in self.players.items():
-            if player.tournament_state == TournamentState.CHAMPION:
-                champion_serial = serial
-                break
+        # Only the latched champion counts (UC-025 BR-003, BR-005): a force-end, a
+        # stream end or a bracket that ends before the final is decided crown none.
+        force_ended = self.game_outcome() == "force_ended"
+        champion_serial = None if force_ended else self._champion
 
         # Celebrate champion
         if champion_serial:
+            await self._finish_decided_final()
             if self.gameplay_stream:
                 effect_cmd = controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
@@ -855,16 +937,13 @@ class TournamentGame(BaseGameMode):
 
             await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)
 
-        # Wait for celebration
-        for _ in range(30):  # 3 seconds
-            if not self.running:
-                break
-            await asyncio.sleep(0.1)
+            # Wait for the rainbow (interruptible by a force-end)
+            await self._wait_for_rainbow_effect()
 
         # End remaining spans
-        for _serial, player in self.players.items():
+        for serial, player in self.players.items():
             if player.span:
-                is_champion = player.tournament_state == TournamentState.CHAMPION
+                is_champion = serial == champion_serial
                 player.span.add_event(
                     "tournament_ended",
                     attributes={
@@ -878,15 +957,16 @@ class TournamentGame(BaseGameMode):
                 player.span = None
 
         self.state = self.state.__class__.ENDED
-        await self.event_publisher(
-            "game_ended",
-            {
-                "game_id": self.game_id,
-                "duration": time.time() - self.start_time if self.start_time else 0,
-                "champion": champion_serial,
-                "total_matches": len([m for m in self.bracket if m.is_complete and not m.is_bye]),
-            },
-        )
+        ended_payload = {
+            "game_id": self.game_id,
+            "duration": time.time() - self.start_time if self.start_time else 0,
+            "champion": champion_serial or "none",
+            "total_matches": len([m for m in self.bracket if m.is_complete and not m.is_bye]),
+            "outcome": self.game_outcome(),
+        }
+        if force_ended:
+            ended_payload["reason"] = self.force_end_reason
+        await self.event_publisher("game_ended", ended_payload)
 
         logger.info("Tournament game ended")
 
