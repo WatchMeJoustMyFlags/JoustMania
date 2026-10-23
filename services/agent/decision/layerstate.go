@@ -21,6 +21,14 @@ const (
 	// ReasonAlreadyCharged: in trigger mode the agent's charge ledger holds a
 	// grant_shield to this player within its window (UC-040 A31 step 1, BR-020).
 	ReasonAlreadyCharged BlockReason = "already_charged"
+	// ReasonShieldCapReached: the agent already wrote
+	// policy.max_shields_per_player_per_game shields to this player in this game
+	// (written plus in flight; UC-040 A33, BR-022).
+	ReasonShieldCapReached BlockReason = "shield_cap_reached"
+	// ReasonShieldCooldown: the player's last agent shield ended less than
+	// policy.shield_cooldown_seconds ago, or another grant to them is in flight
+	// (UC-040 A33, BR-022).
+	ReasonShieldCooldown BlockReason = "shield_cooldown"
 )
 
 // DecisionOutcome records what happened to one candidate decision this cycle:

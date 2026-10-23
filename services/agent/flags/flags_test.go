@@ -84,6 +84,8 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 		ints: map[string]int64{
 			keyBatteryThreshold:            30,
 			keyMaxInterventionsPerMinute:   4,
+			keyMaxShieldsPerPlayerPerGame:  1,
+			keyShieldCooldownSeconds:       30,
 			keyEnduranceMinSessionSeconds:  300,
 			keyAccelerateTargetSessionSecs: 30,
 		},
@@ -113,7 +115,7 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 	if !reflect.DeepEqual(got.InterventionsAllowed, wantAllowed) {
 		t.Errorf("InterventionsAllowed = %v, want %v", got.InterventionsAllowed, wantAllowed)
 	}
-	wantPolicy := Policy{BatteryThreshold: 30, MaxInterventionsPerMinute: 4}
+	wantPolicy := Policy{BatteryThreshold: 30, MaxInterventionsPerMinute: 4, MaxShieldsPerPlayerPerGame: 1, ShieldCooldownSeconds: 30}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want %+v", got.Policy, wantPolicy)
 	}
@@ -148,8 +150,10 @@ func TestEvaluate_DefaultsWhenMissing(t *testing.T) {
 		t.Errorf("InterventionsAllowed = %v, want empty", got.InterventionsAllowed)
 	}
 	wantPolicy := Policy{
-		BatteryThreshold:          DefaultBatteryThreshold,
-		MaxInterventionsPerMinute: DefaultMaxInterventionsPerMinute,
+		BatteryThreshold:           DefaultBatteryThreshold,
+		MaxInterventionsPerMinute:  DefaultMaxInterventionsPerMinute,
+		MaxShieldsPerPlayerPerGame: DefaultMaxShieldsPerPlayerPerGame,
+		ShieldCooldownSeconds:      DefaultShieldCooldownSeconds,
 	}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want defaults %+v", got.Policy, wantPolicy)
@@ -224,6 +228,8 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 		keyInterventionsAllowed:         boom,
 		keyBatteryThreshold:             boom,
 		keyMaxInterventionsPerMinute:    boom,
+		keyMaxShieldsPerPlayerPerGame:   boom,
+		keyShieldCooldownSeconds:        boom,
 		keyEnduranceMinSessionSeconds:   boom,
 		keyBalancedMaxSkillGap:          boom,
 		keyBalancedSpikeSurvival:        boom,
@@ -245,8 +251,10 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 		t.Errorf("InterventionsAllowed = %v, want empty", got.InterventionsAllowed)
 	}
 	wantPolicy := Policy{
-		BatteryThreshold:          DefaultBatteryThreshold,
-		MaxInterventionsPerMinute: DefaultMaxInterventionsPerMinute,
+		BatteryThreshold:           DefaultBatteryThreshold,
+		MaxInterventionsPerMinute:  DefaultMaxInterventionsPerMinute,
+		MaxShieldsPerPlayerPerGame: DefaultMaxShieldsPerPlayerPerGame,
+		ShieldCooldownSeconds:      DefaultShieldCooldownSeconds,
 	}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v on error, want defaults %+v", got.Policy, wantPolicy)
@@ -256,6 +264,32 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 	}
 	if got.BluetoothFitness != defaultBluetoothFitness() {
 		t.Errorf("BluetoothFitness = %+v on error, want defaults %+v", got.BluetoothFitness, defaultBluetoothFitness())
+	}
+}
+
+// UC: UC-040 A33 BR-022
+func TestEvaluate_ShieldLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		ints               map[string]int64
+		errs               map[string]error
+		wantCap, wantPause int
+	}{
+		{"UC-040/A33 BR-022 the flag values", map[string]int64{keyMaxShieldsPerPlayerPerGame: 6, keyShieldCooldownSeconds: 8}, nil, 6, 8},
+		{"UC-040/A33 BR-022 0 means unlimited / off", map[string]int64{keyMaxShieldsPerPlayerPerGame: 0, keyShieldCooldownSeconds: 0}, nil, 0, 0},
+		{"UC-040/A33 BR-022 missing flags give 3 / 15", nil, nil, 3, 15},
+		{"UC-040/A33 BR-022 a read error gives 3 / 15", nil, map[string]error{
+			keyMaxShieldsPerPlayerPerGame: errors.New("boom"), keyShieldCooldownSeconds: errors.New("boom"),
+		}, 3, 15},
+		{"UC-040/A33 BR-022 a negative value gives 3 / 15", map[string]int64{keyMaxShieldsPerPlayerPerGame: -1, keyShieldCooldownSeconds: -5}, nil, 3, 15},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := New(stubEvaluator{ints: tc.ints, errs: tc.errs}, nil).Evaluate(context.Background()).Policy
+			if got.MaxShieldsPerPlayerPerGame != tc.wantCap || got.ShieldCooldownSeconds != tc.wantPause {
+				t.Fatalf("shield limits = %d / %d, want %d / %d",
+					got.MaxShieldsPerPlayerPerGame, got.ShieldCooldownSeconds, tc.wantCap, tc.wantPause)
+			}
+		})
 	}
 }
 

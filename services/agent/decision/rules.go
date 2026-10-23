@@ -59,26 +59,41 @@ type ObjectiveRules struct {
 	// rolls from the time-seeded RNG (the game is then non-exact, BR-007).
 	lateSeed func()
 
-	// chargedSource is the loop's shield-charge ledger view (UC-040 A31, #1870):
-	// read once per ranking, after the throttle. nil (the golden harness, every
-	// older test) means no player is charged.
-	chargedSource func() map[string]bool
+	// shieldSource is the loop's shield-ledger view (UC-040 A31, A33, #1870): read
+	// once per ranking, after the throttle. charged feeds the state the ranking
+	// builds, noShield the no-shield filter. nil (the golden harness, every older
+	// test) means no player is charged or limited.
+	shieldSource func() (charged, noShield map[string]bool)
 }
 
-// SetChargedSource installs the shield-charge ledger view (Loop.ChargedSerials).
-// It is called under the engine lock, so it must not call back into the engine.
+// SetChargedSource installs a charge-only ledger view: the charged set is also the
+// no-shield set. It is called under the engine lock, so it must not call back into
+// the engine.
 func (r *ObjectiveRules) SetChargedSource(src func() map[string]bool) {
+	if src == nil {
+		r.SetShieldSource(nil)
+		return
+	}
+	r.SetShieldSource(func() (map[string]bool, map[string]bool) {
+		charged := src()
+		return charged, charged
+	})
+}
+
+// SetShieldSource installs the shield-ledger view (Loop.ShieldSerials). It is called
+// under the engine lock, so it must not call back into the engine.
+func (r *ObjectiveRules) SetShieldSource(src func() (charged, noShield map[string]bool)) {
 	r.mu.Lock()
-	r.chargedSource = src
+	r.shieldSource = src
 	r.mu.Unlock()
 }
 
-// chargedLocked takes the one ledger snapshot of a ranking. Caller holds r.mu.
-func (r *ObjectiveRules) chargedLocked() map[string]bool {
-	if r.chargedSource == nil {
-		return nil
+// shieldLocked takes the one ledger snapshot of a ranking. Caller holds r.mu.
+func (r *ObjectiveRules) shieldLocked() (charged, noShield map[string]bool) {
+	if r.shieldSource == nil {
+		return nil, nil
 	}
-	return r.chargedSource()
+	return r.shieldSource()
 }
 
 // SetLateSeedHook installs the callback for a seed that arrived after chaos draws.
@@ -192,10 +207,10 @@ func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func(charged 
 	}
 	r.lastEval = now
 
-	// One ledger snapshot per ranking: the charge policy and the state built
-	// below read the same map (#1870).
-	charged := r.chargedLocked()
-	ranked, weights, fitEval := r.rankLocked(c, now, charged)
+	// One ledger snapshot per ranking: the no-shield filter and the state built
+	// below read the same snapshot (#1870, UC-040 A33).
+	charged, noShield := r.shieldLocked()
+	ranked, weights, fitEval := r.rankLocked(c, now, noShield)
 	r.lastFitness = fitEval
 
 	// Emission is bounded to maxDecisionsPerEval per evaluation. The weighted
@@ -264,10 +279,10 @@ var difficultyInterventions = map[string]bool{
 // the weights and fitness evaluation used. It is the side-effect-light core
 // shared by Evaluate and the decide rules backend (decide_rules.go): it draws
 // R9's chaos roll from r.rng but does NOT touch lastEval, lastFitness or
-// lastDifficultyAt — those belong to the caller that actually emits. charged is
-// the ranking's shield-charge snapshot (nil: nobody is charged). Caller holds
-// r.mu.
-func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, charged map[string]bool) ([]scoredCandidate, map[string]float64, FitnessEvaluation) {
+// lastDifficultyAt — those belong to the caller that actually emits. noShield is
+// the ranking's shield-ledger snapshot: the players a grant_shield would be refused
+// for (nil: nobody). Caller holds r.mu.
+func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, noShield map[string]bool) ([]scoredCandidate, map[string]float64, FitnessEvaluation) {
 	weights := normalizedWeights(r.objectives.Objectives())
 	pol := r.policy.Policy()
 	fit := r.fitness.Fitness()
@@ -287,7 +302,7 @@ func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, ch
 	cands = append(cands, chaosCandidates(c, pol, roll, rollTarget)...)
 
 	cands = applyBatteryPolicy(cands, c, pol, weights)
-	cands = applyChargePolicy(cands, charged)
+	cands = applyChargePolicy(cands, noShield)
 	cands = r.applyVarianceCooldown(cands, now, pol)
 	return scoreAndSort(cands, weights, fitEval), weights, fitEval
 }
@@ -321,18 +336,19 @@ func normalizedWeights(w map[string]float64) map[string]float64 {
 	return cp
 }
 
-// applyChargePolicy drops every grant_shield candidate whose target is charged
-// (UC-040 A31, #1870): the ledger would refuse it already_charged, so like the
-// battery policy the candidate is not ranked. It does not move the shield to
-// another player: R4 means "the weakest", and pacing stays one charge per window
-// for that player. A nil or empty charged keeps every candidate.
-func applyChargePolicy(cands []candidate, charged map[string]bool) []candidate {
-	if len(charged) == 0 {
+// applyChargePolicy is the shared no-shield filter (UC-040 A31, A33; #1870, #2044):
+// it drops every grant_shield candidate whose target is in noShield (charged, at the
+// shield cap or in the cooldown), because the ledger would refuse it. Like the
+// battery policy the candidate is not ranked, so R4 does not take an emission slot
+// every second for a refused shield. It does not move the shield to another player:
+// R4 means "the weakest". A nil or empty noShield keeps every candidate.
+func applyChargePolicy(cands []candidate, noShield map[string]bool) []candidate {
+	if len(noShield) == 0 {
 		return cands
 	}
 	kept := cands[:0]
 	for _, cd := range cands {
-		if cd.decision.Intervention == InterventionGrantShield && charged[cd.decision.TargetSerial] {
+		if cd.decision.Intervention == InterventionGrantShield && noShield[cd.decision.TargetSerial] {
 			continue
 		}
 		kept = append(kept, cd)

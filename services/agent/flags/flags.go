@@ -32,6 +32,11 @@ const (
 	keyInterventionsAllowed      = "interventions_allowed"
 	keyBatteryThreshold          = "policy.battery_threshold"
 	keyMaxInterventionsPerMinute = "policy.max_interventions_per_minute"
+	// Shield limits per player per game (UC-040 A33, BR-022; #2044): operator flags
+	// the agent reads and never writes (C-034). No targeting (flags.md §3), so the
+	// agent's empty context resolves the coordinator's value.
+	keyMaxShieldsPerPlayerPerGame = "policy.max_shields_per_player_per_game"
+	keyShieldCooldownSeconds      = "policy.shield_cooldown_seconds"
 
 	// LLM call gate (#847): the flag-controlled gate in FRONT of every remote
 	// decide call (#1226) and post-game retro. Both are read EVERY cycle (never
@@ -164,6 +169,12 @@ const (
 	DefaultBatteryThreshold = 20
 	// DefaultMaxInterventionsPerMinute is the weighted per-minute budget.
 	DefaultMaxInterventionsPerMinute = 2
+	// DefaultMaxShieldsPerPlayerPerGame and DefaultShieldCooldownSeconds are the
+	// shield limits (UC-040 BR-022) when the flag cannot be read or is negative:
+	// the limits stay on. They match services/flagd/agent.json and the coordinator's
+	// games/base.py defaults.
+	DefaultMaxShieldsPerPlayerPerGame = 3
+	DefaultShieldCooldownSeconds      = 15
 
 	// LLM call-gate default (#847), mirroring the services/flagd/agent.json
 	// defaultVariant: the fail-closed safe value when flagd is unreachable.
@@ -310,6 +321,13 @@ type Policy struct {
 	BatteryThreshold int
 	// MaxInterventionsPerMinute is the weighted per-minute dispatch budget.
 	MaxInterventionsPerMinute int
+	// MaxShieldsPerPlayerPerGame caps the agent's grant_shield writes per player per
+	// game (UC-040 A33, BR-022). 0 = unlimited (also the zero value, so a hand-built
+	// Snapshot, the rules golden among them, stays inert).
+	MaxShieldsPerPlayerPerGame int
+	// ShieldCooldownSeconds is the pause after the end of a player's last agent
+	// shield before the next grant (UC-040 A33, BR-022). 0 = off.
+	ShieldCooldownSeconds int
 }
 
 // LLMGate is the call gate in FRONT of every remote decide call and retro (#847,
@@ -747,6 +765,9 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 		Policy: Policy{
 			BatteryThreshold:          f.intFlag(ctx, keyBatteryThreshold, DefaultBatteryThreshold),
 			MaxInterventionsPerMinute: f.intFlag(ctx, keyMaxInterventionsPerMinute, DefaultMaxInterventionsPerMinute),
+			MaxShieldsPerPlayerPerGame: f.nonNegativeIntFlag(ctx, keyMaxShieldsPerPlayerPerGame,
+				DefaultMaxShieldsPerPlayerPerGame),
+			ShieldCooldownSeconds: f.nonNegativeIntFlag(ctx, keyShieldCooldownSeconds, DefaultShieldCooldownSeconds),
 		},
 		LLMGate: f.llmGate(ctx),
 		Fitness: Fitness{
@@ -855,6 +876,17 @@ func (f *Flags) intFlag(ctx context.Context, key string, def int) int {
 		return def
 	}
 	return int(v)
+}
+
+// nonNegativeIntFlag is intFlag for a limit where a negative value is a mistake: it
+// gives def, like a read error, so the limit stays on (UC-040 BR-022).
+func (f *Flags) nonNegativeIntFlag(ctx context.Context, key string, def int) int {
+	v := f.intFlag(ctx, key, def)
+	if v < 0 {
+		f.log.Debug("flags negative limit fell back to default", "key", key, "value", v, "default", def)
+		return def
+	}
+	return v
 }
 
 // floatFlag resolves a float fitness flag, falling back to def on any error.
