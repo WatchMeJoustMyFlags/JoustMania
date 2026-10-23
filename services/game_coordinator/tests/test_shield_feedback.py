@@ -23,11 +23,18 @@ from conftest import MockControllerManagerService
 
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import Player
+from services.game_coordinator.games.base import BaseGameMode, Player
 from services.game_coordinator.games.ffa import FFAGame
 
 SHIELD = controller_manager_pb2.GAME_EFFECT_SHIELD
 TOUGHNESS_BOOST = controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST
+
+
+@pytest.fixture(autouse=True)
+def _no_shield_limits():
+    """Shield limits off (#2044, UC-040 BR-022): these tests are not about the cap or the cooldown."""
+    with patch.object(BaseGameMode, "_shield_limits", return_value=(0, 0)):
+        yield
 
 
 class RecordingStream:

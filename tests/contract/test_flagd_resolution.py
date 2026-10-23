@@ -879,6 +879,30 @@ def test_shield_flag_targeting_uses_only_the_agents_context(flag_dir):
     assert not failures, "\n".join(failures)
 
 
+# The shield limits (#2044, UC-040 BR-022, flags.md §3): the coordinator reads them in
+# the game's context, the agent with an empty one, so any targeting (even on the API-level
+# game_kind the handler registry allows) could give the two sides different limits.
+SHIELD_LIMIT_FLAGS = (
+    "policy.max_shields_per_player_per_game",
+    "policy.shield_cooldown_seconds",
+)
+
+
+@pytest.mark.uc("UC-040", flow="A34", br=["BR-022"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_shield_limit_flags_carry_no_targeting(flag_dir):
+    """Static: the two shield-limit flags exist in agent.json with no targeting at all."""
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    flags = json.loads((root / "agent.json").read_text())["flags"]
+    failures = []
+    for key in SHIELD_LIMIT_FLAGS:
+        if key not in flags:
+            failures.append(f"{flag_dir}/agent.json has no {key}")
+        elif flags[key].get("targeting"):
+            failures.append(f"{flag_dir}/agent.json {key} has targeting")
+    assert not failures, "\n".join(failures)
+
+
 # Every flag an intervention handler reads (#1872, flags.md section 1.2). Since #1970 the
 # handler runs in the game's flag transaction context (targetingKey = game_mode, game_mode,
 # controller_count, sensitivity, game_kind, experiment_id, arm), with the read's own keys

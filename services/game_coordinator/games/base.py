@@ -36,6 +36,7 @@ from lib.feature_flags import (
     GAME_KIND_SHADOW,
     build_session_kind_context,
     read_float_flag,
+    read_int_flag,
     read_object_flag,
     read_string_flag,
     set_game_transaction_context,
@@ -218,6 +219,21 @@ def resolve_charge_expiry(value: object) -> float:
     if math.isnan(seconds) or seconds < 0.0:
         return DEFAULT_CHARGE_EXPIRY_SECONDS
     return min(CHARGE_EXPIRY_MAX_SECONDS, seconds)
+
+
+# Agent shield limits per player per game (#2044, UC-040 A34, BR-022): the
+# coordinator's backstop. Operator flags in the `agent` set, read per grant.
+DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME = 3
+DEFAULT_SHIELD_COOLDOWN_SECONDS = 15
+SHIELD_REFUSED_CAP = "shield_cap_reached"
+SHIELD_REFUSED_COOLDOWN = "shield_cooldown"
+
+
+def resolve_shield_limit(value: object, default: int) -> int:
+    """Validate a shield-limit flag value (flags.md §3): a negative or non-int value gives the default."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return default
+    return value
 
 
 @dataclass(frozen=True)
@@ -923,6 +939,12 @@ class BaseGameMode(ABC):
         # Shield feedback still running per serial: wall-clock end time (#1301,
         # UC-040 A16/A17). Only a record for the game-end clear; no task.
         self._shield_feedback_until: dict[str, float] = {}
+        # Agent shields per serial in this game (#2044, UC-040 BR-022): grants
+        # counted and the end of the last agent shield (grant time + seconds; in
+        # trigger mode from the charge grant). Per game-mode instance, so a new
+        # game starts fresh; keyed by serial, so a revive does not reset them.
+        self._agent_shield_grants: dict[str, int] = {}
+        self._agent_shield_last_end: dict[str, float] = {}
 
         # Settings - sensitivity is now passed via StartGameConfig.
         #
@@ -2618,6 +2640,15 @@ class BaseGameMode(ABC):
         one. If the player is already shielded past ``now + seconds`` the existing
         (longer) grace is kept; a shorter request never shortens it.
 
+        Shield limits (#2044, UC-040 A34, BR-022): after the alive check (and in
+        trigger mode after ``already_charged``) a grant is refused with
+        ``InterventionNotApplied`` once the player has had
+        ``policy.max_shields_per_player_per_game`` agent shields in this game
+        (``shield_cap_reached``), or while ``now`` is before the end of the last
+        agent shield plus ``policy.shield_cooldown_seconds`` (``shield_cooldown``).
+        So with a cooldown set, a running agent shield is never extended; cooldown
+        0 restores extend-not-shorten. A kept (no-op) grant does not count.
+
         Shield feedback (#1301, UC-040 A16): the ``shield_up`` sound, a
         ``GAME_EFFECT_SHIELD`` for the remaining protection (rendered by the
         controller manager: fade, last-second blink, restore) and a
@@ -2641,10 +2672,25 @@ class BaseGameMode(ABC):
 
         # UC-040 BR-019: in trigger mode the grant is a charge the player activates
         # (A30). Read per grant, so a flip applies to the next grant only.
-        if self._shield_activation_mode() == SHIELD_ACTIVATION_TRIGGER:
-            return await self._grant_shield_charge(player, seconds)
+        trigger = self._shield_activation_mode() == SHIELD_ACTIVATION_TRIGGER
+        if trigger and player.shield_charge_seconds > 0:
+            # UC-040 A31: a held charge is refused before the shield limits.
+            from services.game_coordinator.intervention_errors import InterventionNotApplied
 
-        new_grace = time.time() + seconds
+            logger.info(f"Shield charge for {serial} refused: a charge is already held")
+            raise InterventionNotApplied("already_charged")
+
+        now = time.time()
+        self._check_shield_limits(player, now)
+
+        if trigger:
+            granted = await self._grant_shield_charge(player, seconds)
+            # BR-022: in trigger mode the cooldown runs from the grant (the charge
+            # stored), not from the activation.
+            self._record_agent_shield(serial, now, seconds)
+            return granted
+
+        new_grace = now + seconds
         # Extend-not-shorten (#817): the agent only ever writes its own
         # grace_until field — never invincible_until (the admin baseline). If the
         # player's effective grace (max of agent shield + admin invincibility) is
@@ -2662,6 +2708,7 @@ class BaseGameMode(ABC):
         # BR-010); an extension restarts the LED fade silently.
         was_protected = self._shield_protected(player, time.time())
         player.grace_until = new_grace
+        self._record_agent_shield(serial, now, seconds)
         logger.info(f"Shield granted to {serial} for {seconds:.1f}s (grace_until={new_grace:.2f})")
 
         if player.span:
@@ -2674,6 +2721,64 @@ class BaseGameMode(ABC):
         await self._send_shield_feedback(player, new_grace - time.time(), kind="full", sound=not was_protected)
 
         return True
+
+    def _shield_limits(self) -> tuple[int, int]:
+        """``(max shields per player per game, cooldown seconds)`` for the next grant (UC-040 BR-022).
+
+        Operator flags in the ``agent`` set, read per grant with the game's context
+        (flags.md §3). 0 means unlimited / off. A read error or a negative value
+        gives the default (3 / 15 s), so the limits stay on.
+        """
+        # Literal flag keys, so the contract scan resolves the reads.
+        max_shields = read_int_flag(
+            "agent",
+            "policy.max_shields_per_player_per_game",
+            DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME,
+            game_id=self.game_id,
+        )
+        cooldown = read_int_flag(
+            "agent", "policy.shield_cooldown_seconds", DEFAULT_SHIELD_COOLDOWN_SECONDS, game_id=self.game_id
+        )
+        return (
+            resolve_shield_limit(max_shields, DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME),
+            resolve_shield_limit(cooldown, DEFAULT_SHIELD_COOLDOWN_SECONDS),
+        )
+
+    def _check_shield_limits(self, player: "Player", now: float) -> None:
+        """Raise ``InterventionNotApplied`` when the cap or the cooldown refuses a grant (UC-040 A34)."""
+        max_shields, cooldown = self._shield_limits()
+        used = self._agent_shield_grants.get(player.serial, 0)
+        if max_shields > 0 and used >= max_shields:
+            self._refuse_shield(player, SHIELD_REFUSED_CAP, used, 0.0)
+        last_end = self._agent_shield_last_end.get(player.serial)
+        if cooldown > 0 and last_end is not None and now < last_end + cooldown:
+            self._refuse_shield(player, SHIELD_REFUSED_COOLDOWN, used, last_end + cooldown - now)
+
+    def _refuse_shield(self, player: "Player", reason: str, used: int, cooldown_remaining: float) -> None:
+        """Log, record ``shield_refused`` on the player's span and raise (UC-040 A34)."""
+        from services.game_coordinator.intervention_errors import InterventionNotApplied
+
+        logger.info(
+            f"Shield for {player.serial} refused: {reason} "
+            f"(grants used {used}, cooldown remaining {cooldown_remaining:.1f}s)"
+        )
+        if player.span:
+            with contextlib.suppress(Exception):
+                player.span.add_event(
+                    "shield_refused",
+                    attributes={
+                        "shield.refusal_reason": reason,
+                        "shield.grants_used": used,
+                        "shield.cooldown_remaining_s": round(cooldown_remaining, 3),
+                        **player_identity_attributes(player.serial, player.name),
+                    },
+                )
+        raise InterventionNotApplied(reason)
+
+    def _record_agent_shield(self, serial: str, now: float, seconds: float) -> None:
+        """Count an applied agent shield and remember its own end (UC-040 BR-022; never ``grace_until``)."""
+        self._agent_shield_grants[serial] = self._agent_shield_grants.get(serial, 0) + 1
+        self._agent_shield_last_end[serial] = now + seconds
 
     # Toughness boost defaults (#1129, #1103 Phase 2). Boost is clamped to the same
     # upper bound as handicap_factor so a toughness boost is "much harder to die"
@@ -2940,16 +3045,10 @@ class BaseGameMode(ABC):
 
         ``grace_until`` is left alone: the player is not protected until they
         activate the charge with the trigger (UC-030 A6). A grant while a charge
-        is held applies nothing and raises ``InterventionNotApplied`` with
-        ``already_charged`` (A31); the intervention manager records it as blocked
-        and refunds the backstop reservation.
+        is held is refused by ``grant_shield`` before this runs (``already_charged``,
+        A31); the intervention manager records it as blocked and refunds the
+        backstop reservation.
         """
-        from services.game_coordinator.intervention_errors import InterventionNotApplied
-
-        if player.shield_charge_seconds > 0:
-            logger.info(f"Shield charge for {player.serial} refused: a charge is already held")
-            raise InterventionNotApplied("already_charged")
-
         now = time.time()
         expiry = self._read_charge_expiry()
         player.shield_charge_seconds = seconds

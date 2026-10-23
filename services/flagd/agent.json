@@ -106,6 +106,26 @@
       },
       "defaultVariant": "default"
     },
+    "policy.max_shields_per_player_per_game": {
+      "state": "ENABLED",
+      "variants": {
+        "unlimited": 0,
+        "one": 1,
+        "default": 3,
+        "generous": 6
+      },
+      "defaultVariant": "default"
+    },
+    "policy.shield_cooldown_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "short": 8,
+        "default": 15,
+        "long": 30
+      },
+      "defaultVariant": "default"
+    },
     "fitness.endurance.min_session_seconds": {
       "state": "ENABLED",
       "variants": {

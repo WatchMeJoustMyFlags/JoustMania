@@ -36,6 +36,16 @@ HANDLER_FLAG_READS = {
         "targeting": ["gameId"],
         "readers": "games/base.py _read_charge_expiry <- grant_shield <- handle_shield_seconds",
     },
+    # Shield limits (#2044, UC-040 BR-022): operator flags the agent is to read with an empty
+    # context too (#2044 agent half), so no targeting at all, or the two sides could differ.
+    ("agent", "policy.max_shields_per_player_per_game"): {
+        "targeting": [],
+        "readers": "games/base.py _shield_limits <- grant_shield <- handle_shield_seconds (no targeting)",
+    },
+    ("agent", "policy.shield_cooldown_seconds"): {
+        "targeting": [],
+        "readers": "games/base.py _shield_limits <- grant_shield <- handle_shield_seconds (no targeting)",
+    },
     ("game", "windows"): {
         "targeting": ["targetingKey", "experiment_id", "arm"],
         "experiment_rung": "applies",
