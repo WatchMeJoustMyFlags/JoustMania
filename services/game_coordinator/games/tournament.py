@@ -239,6 +239,14 @@ class TournamentGame(BaseGameMode):
             matches_in_round //= 2
             current_round += 1
 
+        # Bye winners enter round 2 now: bye matches are born complete, so
+        # _get_next_match never returns them and _run_match never advances them
+        # (#1990). _advance_winner reads self.bracket, so publish it first.
+        self.bracket = matches
+        for match in matches:
+            if match.is_bye and match.winner_serial:
+                self._advance_winner(match.winner_serial, match)
+
         logger.info(f"Generated bracket: {len(matches)} matches, {self.total_rounds} rounds, {num_byes} byes")
         return matches
 
@@ -584,6 +592,7 @@ class TournamentGame(BaseGameMode):
     async def _gameplay_loop(self):
         """Run the tournament by processing matches."""
         logger.info("Tournament gameplay starting...")
+        stall_logged = False
 
         while self.running:
             # Get next match
@@ -595,6 +604,13 @@ class TournamentGame(BaseGameMode):
                 if len(alive_players) <= 1:
                     logger.info("Tournament complete!")
                     break
+                # No playable match yet more than one player is left: the
+                # bracket is stuck (a bye that never advanced was #1990).
+                if not stall_logged:
+                    stall_logged = True
+                    logger.error(
+                        f"Tournament bracket stalled with {len(alive_players)} players left and no playable match"
+                    )
                 await asyncio.sleep(0.1)
                 continue
 
