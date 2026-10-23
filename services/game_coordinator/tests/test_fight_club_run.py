@@ -462,3 +462,67 @@ async def test_natural_end_ends_shield_feedback_closes_the_stream_and_runs_the_s
     assert game.gameplay_stream is None, "the stream is released after the winner effects"
     assert game._game_outcome_attributes()["game.outcome"] == "completed"
     assert game.round_task is None or game.round_task.done()
+
+
+def _disconnect_after_warmup(game, serials):
+    """A disconnect seen during the intro, the countdown or the warm-up: buffered for the game start."""
+    real_warmup = game._warmup_ema
+
+    async def warmup():
+        await real_warmup()
+        game._warmup_disconnects.extend(serials)
+
+    game._warmup_ema = warmup
+
+
+@pytest.mark.uc("UC-025", flow="A4", steps=[5])
+@pytest.mark.asyncio
+async def test_a_disconnect_buffered_before_round_one_leaves_without_a_forfeit():
+    """The leaver would be round 1's defender: it leaves before round 1 is seated, nobody scores."""
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _fight_club(log, client)
+    leaver = SERIALS[0]
+    _disconnect_after_warmup(game, [leaver])
+
+    task = asyncio.create_task(game.run())
+    await _wait_for(lambda: log.events.count_events_of_type("round_start") == 1 or task.done())
+    await _stop(game, task, client)
+
+    round_start = log.events.get_events_of_type("round_start")[0]
+    assert leaver not in (round_start["defender"], round_start["fighter"])
+    assert log.events.count_events_of_type("round_end") == 0
+    assert all(p.score == 0 for p in game.players.values())
+    assert game.players[leaver].alive is False
+    assert leaver not in game.queue
+    death_effects = [
+        effect
+        for _, effect in log.writes("game_effect")
+        if effect.serial == leaver and effect.effect == controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH
+    ]
+    assert death_effects == [], "no death effect to a controller that is gone"
+
+
+@pytest.mark.uc("UC-025", flow="A4", steps=[5, 6])
+@pytest.mark.asyncio
+async def test_buffered_disconnects_leaving_one_player_end_the_game_before_round_one():
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _fight_club(log, client, players=_players()[:2])
+    _disconnect_after_warmup(game, [SERIALS[0]])
+
+    try:
+        await asyncio.wait_for(game.run(), timeout=10)
+    finally:
+        for stream in client.streams:
+            if stream.producer:
+                stream.producer.cancel()
+
+    assert log.events.count_events_of_type("round_start") == 0
+    assert log.events.count_events_of_type("round_end") == 0
+    ended = log.events.get_events_of_type("game_ended")
+    assert len(ended) == 1
+    assert ended[0]["winner"] == "none"
+    assert ended[0]["total_rounds"] == 0
+    assert ended[0]["outcome"] == "completed"
+    assert game.gameplay_stream is None, "the stream is released"
