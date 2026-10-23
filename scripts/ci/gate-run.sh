@@ -42,8 +42,15 @@
 # validation, but can only reach worktree or venv code because absolute paths and
 # '..' are refused; the threat model covers that, so there is no per-option allow-list.
 #
+# Detach / await (#2036): the run is a detached job (scripts/ci/detach.sh) in
+# <logs>/<worktree-basename>-<head8>/<name>.job/. One call waits at most GATE_RUN_WAIT
+# seconds (default 540, 0-580); when the run is not done yet it prints
+# `VERDICT: PENDING (<n>s); rerun the same command` and exits 3. Rerunning the same
+# command attaches to the job (never a second one). Never run this script with the
+# Bash tool's run_in_background: loop on exit 3 in the foreground instead.
+#
 # Exit: 0 verdict as expected (PASS, or MUTATION CAUGHT (assertion) with --expect-fail),
-#       1 any other verdict, 2 REFUSED.
+#       1 any other verdict (also ERROR: killed), 2 REFUSED, 3 PENDING.
 #
 # Test: scripts/tests/test-gate-run.sh (runs in `make lint`).
 set -uo pipefail
@@ -242,13 +249,57 @@ fi
 unset MAKEFLAGS MAKEFILES GNUMAKEFLAGS GOFLAGS PYTEST_ADDOPTS BASH_ENV ENV RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER
 
 HEAD_SHA="$(git -C "$WT_REAL" rev-parse HEAD)"
+LOGS_BASE="$LOGS"
 # Namespace the logs per worktree and head: a shared --logs dir stays safe.
 LOGS="$LOGS/$(basename -- "$WT_REAL")-${HEAD_SHA:0:8}"
 mkdir -p -- "$LOGS" || refuse "cannot create logs dir: $LOGS"
-echo "gate-run $WT_REAL head ${HEAD_SHA:0:8} job $NAME"
-echo "cmd: ${RUN_DIR_REL:+(in $RUN_DIR_REL) }${CMD[*]}"
+JOB="$LOGS/$NAME.job"
+
+# Worktree state the job ran on: HEAD, uncommitted changes, untracked files.
+tree_fingerprint() {
+  {
+    git -C "$WT_REAL" rev-parse HEAD
+    git --no-optional-locks -C "$WT_REAL" diff HEAD --binary
+    git -C "$WT_REAL" ls-files -o --exclude-standard
+    git -C "$WT_REAL" ls-files -o --exclude-standard -z | (cd "$WT_REAL" && xargs -0r git hash-object --)
+  } 2>/dev/null | sha256sum | cut -c1-16
+}
+
+# ---------------------------------------------------------------- detach / await (#2036)
+# The caller's call only waits; the run itself is a detached job (scripts/ci/detach.sh)
+# in $JOB, started by re-running this script as the worker with the same validated
+# arguments. Each call waits up to GATE_RUN_WAIT s (default 540, max 580) and prints
+# the verdict, or `VERDICT: PENDING (<n>s); rerun the same command` with exit 3.
+# - Identical call (same worktree, head, name, repeat, expect-fail, dir, command):
+#   attaches to the running job, or prints its verdict when it has finished and the
+#   worktree state is still the one it ran on. Never a second job.
+# - Running job with a different command under the same name: REFUSED.
+# - Finished job, but a different command or a changed worktree (a mutation check
+#   with the same command after another edit): a fresh job replaces it.
+if [[ "${GATE_RUN_WORKER:-}" != 1 ]]; then
+  SELF="$(realpath -e -- "${BASH_SOURCE[0]}")"
+  worker=("$SELF" --worktree "$WT_REAL" --logs "$LOGS_BASE" --name "$NAME" --repeat "$REPEAT")
+  ((EXPECT_FAIL)) && worker+=(--expect-fail)
+  [[ -n "$RUN_DIR_REL" ]] && worker+=(--dir "$RUN_DIR_REL")
+  worker+=(-- "${CMD[@]}")
+  if [[ -f "$JOB/rc" ]]; then
+    if [[ "$(cat -- "$JOB/cmd" 2>/dev/null)" != "$(printf '%q\n' "${worker[@]}")" ||
+      "$(cat -- "$JOB/tree" 2>/dev/null)" != "$(tree_fingerprint)" ]]; then
+      rm -rf -- "$JOB"
+    fi
+  fi
+  echo "gate-run $WT_REAL head ${HEAD_SHA:0:8} job $NAME"
+  echo "cmd: ${RUN_DIR_REL:+(in $RUN_DIR_REL) }${CMD[*]}"
+  export GATE_RUN_WORKER=1
+  exec "$(dirname -- "$SELF")/detach.sh" --dir "$JOB" --wait "${GATE_RUN_WAIT:-540}" -- "${worker[@]}"
+fi
+# Worker (inside the detached job): record the state this run sees, then run.
+{ tree_fingerprint >"$JOB/tree"; } 2>/dev/null
 
 TEST_FAIL_RE='FAILED|AssertionError|\bassert\b|--- FAIL|panicked'
+# scripts/tests/*.sh assert by printing their own `FAIL...` line and exiting non-zero
+# (`FAIL: x`, `FAIL - x`, `FAIL name: x`, `FAILED: x`).
+[[ "${CMD[0]}" == bash ]] && TEST_FAIL_RE+='|^[[:space:]]*FAIL(ED)?([: ]|$)'
 NON_TEST_RE='ERROR collecting|errors? during collection|SyntaxError|IndentationError|ModuleNotFoundError|ImportError while|command not found|No such file or directory|Cannot connect to the Docker daemon|could not compile|build failed|no Go files|cannot find package|setup failed|No rule to make target'
 
 failed=0 non_test=0

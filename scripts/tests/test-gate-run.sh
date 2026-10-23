@@ -52,6 +52,17 @@ if (( n % 2 )); then echo "--- FAIL: TestX"; exit 1; fi
 echo ok
 EOF
 ln -s test-pass.sh "${WT}/scripts/tests/test-link.sh"
+# Counts its starts (counter outside the worktree), then runs for 3 s.
+cat >"${WT}/scripts/tests/test-slow.sh" <<'EOF'
+n=$(( $(cat "$SLOW_COUNTER" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$SLOW_COUNTER"
+sleep 3
+echo "slow done"
+EOF
+# A shell test's own assertion line (scripts/tests style), #2036.
+cat >"${WT}/scripts/tests/test-shfail.sh" <<'EOF'
+echo "FAIL: expected exit 3, got 0" >&2
+exit 1
+EOF
 
 pass=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -250,6 +261,40 @@ run_gr 1 'CAUGHT\? \(non-test error' --worktree "$WT" --logs "$LOGS" --expect-fa
 run_gr 1 'MUTATION NOT CAUGHT \(1/1 passed\)' --worktree "$WT" --logs "$LOGS" --expect-fail -- scripts/tests/test-pass.sh
 run_gr 1 'MUTATION NOT CAUGHT \(1/2 passed\)' --worktree "$WT" --logs "$LOGS" --repeat 2 --expect-fail -- scripts/tests/test-flaky.sh
 run_gr 1 'wt-[0-9a-f]{8}/test-assert-1.log:.*AssertionError' --worktree "$WT" --logs "$LOGS" --name test-assert -- scripts/tests/test-assert.sh
+# #2036: a shell test's FAIL line is an assertion, not a non-test error.
+run_gr 0 'MUTATION CAUGHT \(assertion\)' --worktree "$WT" --logs "$LOGS" --name shfail --expect-fail -- scripts/tests/test-shfail.sh
+
+# --- detach / await (#2036)
+export SLOW_COUNTER="${WORK}/slow-counter"
+starts() { cat "$SLOW_COUNTER" 2>/dev/null || echo 0; }
+# A call that cannot wait long enough: PENDING, exit 3; the same call later: the verdict.
+GATE_RUN_WAIT=1 run_gr 3 'VERDICT: PENDING \([0-9]+s\); rerun the same command' \
+  --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-slow.sh
+[[ -f "${NS}/slow.job/pid" && -f "${NS}/slow.job/cmd" && -f "${NS}/slow.job/lock" ]] || fail "job dir lacks pid/cmd/lock"
+# A different command under the same name while the job runs: REFUSED.
+run_gr 2 'REFUSED: .*different command' --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-pass.sh
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-slow.sh
+[[ "$(cat "${NS}/slow.job/rc")" == 0 ]] || fail "job rc not written"
+# The identical call again: the finished verdict, no second job.
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-slow.sh
+[[ "$(starts)" == 1 ]] || fail "identical call started a second job (starts: $(starts))"
+# A changed worktree (e.g. the next mutation) with the same command: a fresh run.
+echo mutated >"${WT}/mutant.txt"
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name slow -- scripts/tests/test-slow.sh
+[[ "$(starts)" == 2 ]] || fail "changed worktree reused the old verdict (starts: $(starts))"
+rm -f "${WT}/mutant.txt" "$SLOW_COUNTER"
+# A killed waiter (its whole process group, as the Bash tool does) leaves the job alive.
+setsid env GATE_RUN_WAIT=30 "${GATE_RUN}" --worktree "$WT" --logs "$LOGS" --name killed \
+  -- scripts/tests/test-slow.sh >/dev/null 2>&1 &
+waiter=$!
+for _ in $(seq 50); do [[ -f "${NS}/killed.job/pid" ]] && break; sleep 0.1; done
+[[ -f "${NS}/killed.job/pid" ]] || fail "killed-waiter job did not start"
+kill -KILL -- "-${waiter}" 2>/dev/null || kill -KILL "$waiter"
+wait "$waiter" 2>/dev/null || true
+kill -0 "$(cat "${NS}/killed.job/pid")" 2>/dev/null || fail "job died with its waiter"
+run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name killed -- scripts/tests/test-slow.sh
+[[ "$(starts)" == 1 ]] || fail "killed waiter: job restarted (starts: $(starts))"
+GATE_RUN_WAIT=600 run_gr 2 'REFUSED: wait must be 0-580' --worktree "$WT" --logs "$LOGS" --name w -- scripts/tests/test-pass.sh
 
 [[ -z "$(git -C "$WT" status --porcelain --untracked-files=no)" ]] || fail "worktree changed"
 echo "test-gate-run: ${pass} checks passed"

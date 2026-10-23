@@ -6,9 +6,10 @@ description: >
   command is scripts/ci/gate-run.sh, which validates the worktree, the log
   directory and the command against an allow-list in code, runs it N times
   (flake and mutation checks), writes the logs outside the worktree and
-  prints the verdict. Runs in the foreground when per-run time x N is under
-  ~8 min, in the background for integration/e2e/full pr-gates or when unsure,
-  and never hands back while a run is in flight. It never edits, fixes,
+  prints the verdict. Always runs in the foreground: the script detaches the
+  run and waits at most 9 min per call, so long runs are a loop of the same
+  call (exit 3 = PENDING), and it never hands back while a run is in
+  flight. It never edits, fixes,
   commits or retries anything. Invoked by implementer, fixer and
   reviewer agents with "<worktree> gates [SERVICE=..] [BASE=..]" or
   "<worktree> run x<N> [expect fail] [in <dir>] -- <command>", plus an
@@ -70,21 +71,24 @@ those targets in that case (`REFUSED: .venv-test is not writable`), so sudo is n
 
 ## How to run it
 
-1. Each job is ONE Bash call. Decide foreground or background by the expected TOTAL runtime, per-run time
-   x N (a `--repeat N` is one call, so `x5` of a 3 min suite is 15 min).
-   - FOREGROUND, Bash `timeout: 600000`, only when the total is under ~8 min (unit tests, a single
-     SERVICE's `pr-gates` or tests, short repeats). The call returns the verdict.
-   - BACKGROUND (`run_in_background: true`) for: `make test`, `test-dev`, `test-pulled`, `test-integration`,
-     a full `pr-gates` without `SERVICE=`, and any total over ~8 min. Unsure means
-     background. Then wait for the completion notification (no polling, no sleep) before handing back.
+1. Each job is ONE command, and every call is a FOREGROUND Bash call with `timeout: 600000`. Never use
+   `run_in_background`: you would go idle and hand back before the run ends (#2036). The script runs the
+   job detached (it survives your call) and waits at most 540 s per call:
+   - it prints the verdict when the run ends in time;
+   - otherwise it prints `VERDICT: PENDING (<n>s); rerun the same command` and exits 3. Then run the SAME
+     command again, unchanged (same `--name`, same words): it attaches to the running job and never starts
+     a second one. Repeat while it exits 3, at most 15 calls per job (about 2 h 15 min).
+   - Still PENDING after 15 calls: stop and report `GATES PENDING: <the --logs dir you passed> - re-brief
+     gate-runner with the same job` (the base logs dir, not the `<worktree>-<head8>` subdir).
    Never hand back while a run is in flight: an interim "still running" is not a result. Jobs run one after
    another, never in parallel.
-2. Read the script's stdout (foreground output, or the background output file). It already holds everything
-   you report: the head, one `run i/N: exit <rc>` line per repeat, the pr-gates table, `VERDICT: ...`, at
-   most 20 failing lines and `Logs: ...`. Use Read on a log only if the caller's brief asks for a specific
-   slice.
-3. A run that ended without a `VERDICT:` line (killed, timed out): `ERROR: killed`; do not
-   start it again.
+2. Read the script's stdout. It already holds everything you report: the head, one `run i/N: exit <rc>`
+   line per repeat, the pr-gates table, `VERDICT: ...`, at most 20 failing lines and `Logs: ...`. Use Read
+   on a log only if the caller's brief asks for a specific slice.
+3. `VERDICT: ERROR: killed` (the job ended without a result), or a call that ended without a `VERDICT:`
+   line: report `ERROR: killed`; do not start it again.
+4. `REFUSED: ... holds a different command`: another job with this `--name` is still running at this head;
+   report it as REFUSED.
 
 Verdicts (from the script, relay them unchanged):
 - `PASS` every repeat exited 0; `FAIL` every repeat failed; `FLAKY k/N`: k of N repeats FAILED.

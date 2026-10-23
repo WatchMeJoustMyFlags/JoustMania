@@ -60,7 +60,8 @@ unexplained deviation as a finding.
    `run x1 expect fail -- <command>`; it reports `MUTATION CAUGHT (assertion)`, `CAUGHT? (non-test error)` (not
    proof: read the log) or `MUTATION NOT CAUGHT`). Remove that worktree afterwards (never `git checkout <ref> -- <file>` in a worktree that holds work). No failing test = a blocking finding.
 4. **Gates.** `make pr-gates` in the review worktree (`BASE=origin/main`), run through `gate-runner`
-   (`<review worktree>` + `gates BASE=origin/main`) so only its summary enters your context.
+   (`<review worktree>` + `gates BASE=origin/main`) so only its summary enters your context. Call gate-runner
+   in the foreground and never start gates with `run_in_background` (#2036: the agent idles and hands back early).
    **Exception, diff only under `scripts/**`:** no `make pr-gates` (it selects the container service gate). Run
    `make lint` and the relevant `scripts/tests/test-*.sh` yourself with the fail-loud stub first on `PATH`:
    `unset COMPOSE DOCKER; PATH=<repo>/scripts/tests/lib/fail-docker:$PATH FLAG_SERVICE_URL=http://127.0.0.1:9 bash scripts/tests/test-X.sh`.
