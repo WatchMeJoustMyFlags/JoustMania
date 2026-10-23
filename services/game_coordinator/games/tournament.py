@@ -727,14 +727,19 @@ class TournamentGame(BaseGameMode):
         Synchronous, no await: called in the step that decides the final (the
         kill, the time limit, a walkover), so a force-end that lands afterwards
         keeps the champion, and one that landed before it (``running`` already
-        False) latches none (BR-003). Returns whether it latched.
+        False) latches none (BR-003). The outcome is latched first and checked
+        again: a force-end from the servicer thread can land between the running
+        check and the latch, and then no champion may be set or announced.
+        Returns whether it latched.
         """
         if self._result_latched or not self.running:
+            return False
+        self._latch_game_outcome()
+        if self.game_outcome() == "force_ended":
             return False
         self._result_latched = True
         self._champion = serial
         self.players[serial].tournament_state = TournamentState.CHAMPION
-        self._latch_game_outcome()
         logger.info(f"Tournament champion: {serial} with {self.players[serial].wins} wins!")
         return True
 

@@ -374,3 +374,114 @@ async def test_an_out_player_carried_by_a_both_out_walkover_keeps_its_round():
     final = next(m for m in game.bracket if m.round_number == 2)
     assert {final.player1_serial, final.player2_serial} & {pending.player1_serial, pending.player2_serial}
     assert [game.players[s].round_number for s in (pending.player1_serial, pending.player2_serial)] == [1, 1]
+
+
+# ---------------------------------------------------------------------------
+# BR-003 / BR-005: a force-end inside the latch window; the champion after the latch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-003", "BR-005"])
+@pytest.mark.asyncio
+async def test_a_force_end_inside_the_latch_window_crowns_nobody():
+    """A force-end from the servicer thread lands between the running check and the outcome latch.
+
+    The champion is then neither announced nor named in ``game_ended``: a champion
+    appears in both or in neither.
+    """
+    game, log, client, sounds = _game(2)
+    real_latch = type(game)._latch_game_outcome
+    fired: list = []
+
+    def latch():
+        # The first latch while the final is being decided: the force-end lands just before it.
+        match = game.current_match
+        if not fired and match is not None and match.is_complete and game._is_final(match):
+            fired.append(True)
+            game.force_end("latch_window")
+        real_latch(game)
+
+    game._latch_game_outcome = latch
+    await _run(game, client)
+
+    assert fired, "the latch window was never hit"
+    assert game._champion is None
+    assert _events(log, "tournament_champion") == []
+    ended = _ended(log)
+    assert ended["champion"] == "none"
+    assert ended["outcome"] == "force_ended"
+    assert ended["reason"] == "latch_window"
+    assert _rainbows(log) == []
+    assert Sound.VOX_CONGRATULATIONS not in sounds
+
+
+@pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-005"])
+@pytest.mark.asyncio
+async def test_the_latched_champion_ignores_a_later_disconnect_and_eliminate():
+    """After the final is decided, a disconnect or an eliminate of the champion changes nothing."""
+    game, _ = await _bracket_game(num_players=2)
+    final = game.current_match
+    loser, champion = final.player1_serial, final.player2_serial
+
+    assert await game._process_gameplay_update(_frame([loser], spike=[loser])) is True
+    assert game._champion == champion
+
+    await game._handle_disconnect(champion)
+    await game._kill_player(champion, 0.0, reason="agent_intervention")
+
+    player = game.players[champion]
+    assert player.alive
+    assert player.tournament_state == TournamentState.CHAMPION
+    deaths = [
+        m.game_effect.serial
+        for m in game.gameplay_stream.messages
+        if m.HasField("game_effect") and m.game_effect.effect == DEATH
+    ]
+    assert champion not in deaths, deaths
+
+
+@pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-005"])
+@pytest.mark.asyncio
+async def test_a_final_decided_outside_a_frame_is_finished_at_the_end():
+    """An intervention decides the final outside a frame: the end of the game finishes it once."""
+    game, events = await _bracket_game(num_players=2)
+    final = game.current_match
+    loser, champion = final.player1_serial, final.player2_serial
+
+    assert await game._kill_player(loser, 0.0, reason="agent_intervention") is True
+    assert game._champion == champion
+    assert events.get_events_of_type("tournament_champion") == []
+
+    await game._end_game_impl()
+
+    order = [et for et, _ in events.events]
+    assert order.count("match_end") == 1, order
+    assert order.count("tournament_champion") == 1, order
+    assert order.index("match_end") < order.index("tournament_champion") < order.index(GameEvent.GAME_ENDED.value)
+    assert [e["champion"] for e in events.get_events_of_type("tournament_champion")] == [champion]
+    assert events.get_events_of_type(GameEvent.GAME_ENDED)[0]["champion"] == champion
+
+
+@pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-003"])
+@pytest.mark.asyncio
+async def test_a_force_ended_outcome_names_no_champion_in_game_ended():
+    """The end of the game names no champion once the outcome reads ``force_ended``.
+
+    A bracket error keeps the outcome unlatched, so a champion decided afterwards and
+    a later force-end leave ``_champion`` set with a ``force_ended`` outcome.
+    """
+    game, events = await _bracket_game(num_players=2)
+    game._bracket_error = RuntimeError("bracket step failed")
+    final = game.current_match
+    loser, champion = final.player1_serial, final.player2_serial
+    assert await game._kill_player(loser, 0.0, reason="agent_intervention") is True
+    assert game._champion == champion
+    game.force_end("after_error")
+
+    await game._end_game_impl()
+
+    ended = events.get_events_of_type(GameEvent.GAME_ENDED)
+    assert len(ended) == 1, ended
+    assert ended[0]["champion"] == "none"
+    assert ended[0]["outcome"] == "force_ended"
+    assert events.get_events_of_type("tournament_champion") == []
