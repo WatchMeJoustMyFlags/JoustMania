@@ -1289,9 +1289,20 @@ class TestGameplayStreamReopen:
         assert reconnects.labels.return_value.inc.call_count == 1, "a reconnect was not counted exactly once"
 
     @pytest.mark.uc("UC-030", br=["BR-006"])
+    @pytest.mark.parametrize(
+        "write_error",
+        [
+            lambda: grpc.aio.AioRpcError(
+                grpc.StatusCode.UNAVAILABLE, grpc.aio.Metadata(), grpc.aio.Metadata(), details="write failed"
+            ),
+            # Through the production interceptor channel a write on a dead call raises this one.
+            lambda: asyncio.InvalidStateError("RPC is already finished"),
+        ],
+        ids=["aio_rpc_error", "invalid_state_error"],
+    )
     @pytest.mark.asyncio
-    async def test_game_loop_reconnect_closes_the_old_call(self, serve):
-        """A processing error leaves the old call live: the reconnect opens a new one and cancels the old."""
+    async def test_game_loop_reconnect_closes_the_old_call(self, serve, write_error):
+        """A gRPC write error (#2001) leaves the old call live: the reconnect opens a new one, then cancels the old."""
         frame_server, stub = await serve(None)
         game = self._ffa(stub)
         await game._initialize_players()
@@ -1312,7 +1323,7 @@ class TestGameplayStreamReopen:
         async def process(update):
             processed.append(update.timestamp)
             if len(processed) == 1:
-                raise RuntimeError("processing failed")
+                raise write_error()
             if len(processed) >= 4:
                 game.running = False
             return False
