@@ -648,6 +648,7 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 	// spans re-parent under it; teardown ends it.
 	r.startSpanLocked(e, intent)
 	r.recordDecision(e.journal, StatusRunning, "experiment started")
+	r.emitProgressLocked(e, ProgressTriggerStarted, "", e.spanCtx) // #2059
 	r.log.Info("experiment.started", "experiment_id", id)
 	return nil
 }
@@ -1138,6 +1139,7 @@ func (r *Registry) bindGame(id, gameID, arm string, pairIndex int, pattern *Patt
 		PairIndex: &pi,
 		Pattern:   e.patternFactsLocked(pairIndex, pattern),
 	})
+	r.emitProgressLocked(e, ProgressTriggerGameAssigned, "", e.spanCtx) // #2059
 	r.log.Info("experiment.game_assigned",
 		"experiment_id", id, "game_id", gameID, "arm", arm, "pair_index", pairIndex)
 	return true
@@ -1253,6 +1255,14 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 			})
 		}
 	}
+	// #2059: after the fold AND the interim verdict, so the snapshot counts exactly
+	// the folded games and its verdict.* is this game's. An experiment torn down in
+	// between (AbortAll) already emitted its terminal snapshot.
+	r.mu.Lock()
+	if e := r.entries[id]; e != nil && !e.status.IsTerminal() {
+		r.emitProgressLocked(e, ProgressTriggerGameConcluded, "", e.spanCtx)
+	}
+	r.mu.Unlock()
 
 	r.log.Info("experiment.game_concluded",
 		"experiment_id", id, "game_id", gameID, "arm", arm, "fitness", fitness)
@@ -1355,6 +1365,7 @@ func (r *Registry) ReleaseGame(gameID, reason string) bool {
 	if pairIdx != nil {
 		r.rerunPairLocked(e, *pairIdx, reason)
 	}
+	r.emitProgressLocked(e, ProgressTriggerGameReleased, "", e.spanCtx) // #2059
 	r.mu.Unlock()
 
 	r.log.Info("experiment.game_released",
@@ -1476,6 +1487,7 @@ func (r *Registry) conclude(ctx context.Context, id string, verdict journal.Verd
 		Note:    "target N reached / verdict " + verdict.Outcome,
 		Verdict: &finalVerdict,
 	})
+	r.emitProgressLocked(e, ProgressTriggerConcluded, "", e.spanCtx) // #2059
 	jrnl := e.journal
 	flagKey := e.flagKey
 	r.mu.Unlock()
@@ -1558,6 +1570,7 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 	if errors.Is(journalErr, journal.ErrSummaryWrite) {
 		journalErr = nil
 	}
+	r.emitProgressLocked(e, ProgressTriggerPromoting, "", e.spanCtx) // #2059
 	// #1188: re-parent the code_improvement.promote span as the experiment's TERMINAL
 	// child. The promote span is started from the ctx passed to Promoter.Promote, so
 	// installing the still-live experiment ROOT span on the ctx (an in-process
@@ -1703,6 +1716,7 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	// discarded/done, abort), so ending it here guarantees no leak on ANY terminal path.
 	// It is placed BEFORE the idempotency guard (and is itself idempotent) so a path
 	// that finds the status already terminal still ends the span exactly once.
+	progressLink := e.spanCtx // #2059: the Link target, read before the span ends
 	r.endSpanLocked(e)
 	// A terminal status is never overwritten: an AbortAll that raced a conclusion
 	// keeps the experiment aborted (#1701).
@@ -1720,6 +1734,7 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 		Status: string(terminal),
 		Note:   reason,
 	})
+	r.emitProgressLocked(e, ProgressTriggerTerminal, reason, progressLink) // #2059
 	r.log.Info("experiment.torn_down", "experiment_id", id, "status", string(terminal), "reason", reason)
 }
 
@@ -1820,7 +1835,11 @@ func (r *Registry) Rehydrate(ids []string) error {
 		}
 		if r.patterns != nil && !r.restorePatternLocked(e) {
 			lost = append(lost, id)
+			continue
 		}
+		// #2059: once per restored experiment that stays live (the torn-down ones
+		// above emit their terminal snapshot instead).
+		r.emitProgressLocked(e, ProgressTriggerRehydrate, "", e.spanCtx)
 	}
 	return errors.Join(errs...)
 }

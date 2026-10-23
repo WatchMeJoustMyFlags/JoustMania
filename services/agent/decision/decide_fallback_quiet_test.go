@@ -136,7 +136,7 @@ func TestRules_QuietCycleStaysSpanFree(t *testing.T) {
 	h, reader, logs := quietFallbackHarness(t, nil)
 	h.flags.mutate(func(s *flags.Snapshot) { s.Decision.Backend = flags.DecisionBackendRules })
 	h.loop.OnEvaluate(context.Background(), quietContext(), testTrigger())
-	if n := len(h.sr.Ended()); n != 0 {
+	if n := len(decisionTraceSpans(h.sr.Ended())); n != 0 {
 		t.Fatalf("spans = %d, want 0 on a quiet rules cycle", n)
 	}
 	if g := gatedByReason(t, reader); len(g) != 0 {

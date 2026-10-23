@@ -94,9 +94,22 @@ func attrValue(span sdktrace.ReadOnlySpan, key string) (attribute.Value, bool) {
 func TestOnEvaluate_NoDecisionsNoSpans(t *testing.T) {
 	l, sr, _ := newTestLoop(t)
 	l.OnEvaluate(context.Background(), gamecontext.GameContext{}, testTrigger())
-	if n := len(sr.Ended()); n != 0 {
+	// The partition's one agent.flag_state (#2059) is not part of the decision trace.
+	if n := len(decisionTraceSpans(sr.Ended())); n != 0 {
 		t.Fatalf("spans = %d, want 0 (no decision, no trace)", n)
 	}
+}
+
+// decisionTraceSpans drops the agent.flag_state span (#2059), which the first cycle
+// of every partition emits next to the lazy decision trace.
+func decisionTraceSpans(spans []sdktrace.ReadOnlySpan) []sdktrace.ReadOnlySpan {
+	var out []sdktrace.ReadOnlySpan
+	for _, s := range spans {
+		if s.Name() != SpanFlagState {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
@@ -109,7 +122,7 @@ func TestOnEvaluate_EmitsFullHierarchy(t *testing.T) {
 
 	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "session-1"}, trig)
 
-	ended := sr.Ended()
+	ended := decisionTraceSpans(sr.Ended())
 	if len(ended) != 3 {
 		t.Fatalf("spans = %d, want 3", len(ended))
 	}
@@ -241,7 +254,7 @@ func TestOnEvaluate_BlockedDecisionRecordedNotApplied(t *testing.T) {
 	if got := sink.calls.Load(); got != 0 {
 		t.Fatalf("sink calls = %d, want 0 (blocked action must not apply)", got)
 	}
-	ended := sr.Ended()
+	ended := decisionTraceSpans(sr.Ended())
 	if len(ended) != 3 {
 		t.Fatalf("spans = %d, want 3 (blocked actions are recorded, not dropped)", len(ended))
 	}
