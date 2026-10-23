@@ -300,6 +300,32 @@ func TestShieldLimits_PendingBlocksCooldown(t *testing.T) {
 }
 
 // UC: UC-040 A33 BR-022
+func TestShieldLimits_LastEndKeepsLater(t *testing.T) {
+	t.Run("UC-040/A33 a shorter grant committed later does not move the cooldown start back", func(t *testing.T) {
+		var cl chargeLedger
+		t0 := time.Unix(1_000, 0)
+		off := shieldLimits{}
+		long := shieldRequest{limits: off, seconds: 30 * time.Second}
+		short := shieldRequest{limits: off, seconds: 2 * time.Second}
+		resLong, _, _ := cl.reserve("WEAK", t0, long)
+		resShort, _, _ := cl.reserve("WEAK", t0, short)
+		if resLong == nil || resShort == nil {
+			t.Fatal("precondition: with the cooldown off both grants must be in flight")
+		}
+		cl.commit("WEAK", resLong.gen, t0, long)
+		cl.commit("WEAK", resShort.gen, t0.Add(time.Second), short)
+		// long ends at t0+32 s; short would end at t0+5 s.
+		on := shieldRequest{limits: shieldLimits{cooldown: 10 * time.Second}, seconds: 2 * time.Second}
+		if res, reason, _ := cl.reserve("WEAK", t0.Add(40*time.Second), on); res != nil || reason != ReasonShieldCooldown {
+			t.Fatalf("reserve at t0+40s = %v / %q, want shield_cooldown (runs to t0+42s)", res, reason)
+		}
+		if res, _, _ := cl.reserve("WEAK", t0.Add(42*time.Second), on); res == nil {
+			t.Fatal("reserve at t0+42s refused, want the cooldown over")
+		}
+	})
+}
+
+// UC: UC-040 A33 BR-022
 func TestShieldLimits_Concurrent(t *testing.T) {
 	t.Run("UC-040/A33 concurrent grants to one player never exceed the cap", func(t *testing.T) {
 		l, sink, clock, _ := limitLoop(t, 1000, 3, 0)

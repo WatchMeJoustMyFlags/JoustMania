@@ -100,7 +100,7 @@ type chargeEntry struct {
 	// slot.
 	committed int
 	pending   map[uint64]struct{}
-	// lastEnd is the end of the last written shield: write + granted seconds +
+	// lastEnd is the latest end of the written shields: write + granted seconds +
 	// chargeLedgerMargin (in trigger mode too: the cooldown runs from the grant).
 	lastEnd time.Time
 	// reported is the reason of the last refusal against this entry since the last
@@ -196,7 +196,11 @@ func (cl *chargeLedger) commit(serial string, gen uint64, now time.Time, req shi
 		e.chargeUntil = now.Add(req.chargeWindow)
 	}
 	e.committed++
-	e.lastEnd = now.Add(req.seconds + chargeLedgerMargin)
+	// Keep the later end: with the cooldown off two grants can be in flight and commit
+	// out of order, and a shorter shield must not move the end back.
+	if end := now.Add(req.seconds + chargeLedgerMargin); end.After(e.lastEnd) {
+		e.lastEnd = end
+	}
 	e.reported = ""
 	cl.entries[serial] = e
 }
