@@ -494,3 +494,38 @@ func TestProgress_AssignedExcludesSpawnReservations(t *testing.T) {
 		}
 	}
 }
+
+// The concluded snapshot carries the FINAL verdict (#2042), not the last interim
+// one: a give-up conclusion with no interim verdict still reports verdict.outcome.
+// UC: UC-035 4
+func TestProgress_ConcludedSnapshotCarriesFinalVerdict(t *testing.T) {
+	spawner := &fakeSpawner{}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{concludeAtN: 1000},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2, MaxGamesPerExperiment: 1,
+	})
+	startedExperiment(t, r)
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.4, 60); err != nil {
+		t.Fatal(err)
+	}
+	var gameConcluded, concluded int = -1, -1
+	spans := progressSpans(sr)
+	for i, s := range spans {
+		switch progressTriggersOf(s) {
+		case ProgressTriggerGameConcluded:
+			gameConcluded = i
+		case ProgressTriggerConcluded:
+			concluded = i
+		}
+	}
+	if gameConcluded < 0 || concluded < 0 {
+		t.Fatalf("triggers = %v, want game_concluded and concluded", progressTriggers(sr))
+	}
+	if _, ok := rootSpanAttr(spans[gameConcluded], decision.AttrVerdictOutcome); ok {
+		t.Fatalf("game_concluded carries a verdict, want none (no interim verdict)")
+	}
+	if v, ok := rootSpanAttr(spans[concluded], decision.AttrVerdictOutcome); !ok || v != OutcomeInconclusive {
+		t.Fatalf("concluded verdict.outcome = %q (set %v), want final %q", v, ok, OutcomeInconclusive)
+	}
+}
