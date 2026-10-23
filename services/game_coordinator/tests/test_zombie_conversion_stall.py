@@ -125,11 +125,72 @@ async def test_zombie_killed_during_the_delay_stays_dark(game, held_delay):
 
     await game._kill_player(human, 5.0)
     held_delay.set()
-    await task
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
+    assert task.cancelled(), "the zombie kill must drop the pending conversion colour"
+    assert human not in game._conversion_colour_tasks
     writes = _writes_for(game.gameplay_stream, human)
     assert GREY not in writes
     assert writes[-1] == DEATH
+
+
+@pytest.mark.uc("UC-023", flow="main", steps=[3, 4])
+@pytest.mark.asyncio
+async def test_zombie_respawned_during_the_delay_gets_no_second_colour(game, held_delay):
+    human = game.human_serials[0]
+    game.death_grace_period = 0.0
+    await game._kill_player(human, 3.0)
+    game.players[human].grace_until = 0.0
+    task = game._conversion_colour_tasks[human]
+    await game._kill_player(human, 5.0)
+
+    before_respawn = len(_writes_for(game.gameplay_stream, human))
+    assert await game._respawn_player(human) is True
+    respawn_writes = _writes_for(game.gameplay_stream, human)[before_respawn:]
+    held_delay.set()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    # Only the respawn's own grey and flash: the conversion's write never follows.
+    assert _writes_for(game.gameplay_stream, human)[before_respawn:] == respawn_writes
+    assert respawn_writes.count(GREY) == 1
+
+
+@pytest.mark.uc("UC-023", flow="main", steps=[3])
+@pytest.mark.asyncio
+async def test_cleanup_cancels_the_pending_zombie_colour(game, held_delay):
+    stream = game.gameplay_stream
+    human = game.human_serials[0]
+    await game._kill_player(human, 3.0)
+    task = game._conversion_colour_tasks[human]
+
+    await game.cleanup()
+    held_delay.set()
+    await asyncio.sleep(0)
+
+    assert task.cancelled(), "cleanup() left the conversion colour task running"
+    assert game._conversion_colour_tasks == {}
+    assert _writes_for(stream, human) == [DEATH]
+
+
+@pytest.mark.uc("UC-023", flow="main", steps=[3, 5])
+@pytest.mark.asyncio
+async def test_winning_conversion_turns_grey_before_the_winner_rainbow(game):
+    # Real clock: the conversion delay (0.5 s) ends inside the 1 s post-win hold
+    # (UC-020 BR-003), so the last convert shows grey, then the rainbow.
+    game._wait_for_rainbow_effect = async_noop
+    humans = list(game.human_serials)
+    for human in humans:
+        await game._kill_player(human, 3.0)
+    assert await game._check_win_condition() is True
+
+    await game._hold_win_display()
+    await game._end_game_impl()
+
+    rainbow = ("effect", controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW)
+    for human in humans:
+        assert _writes_for(game.gameplay_stream, human) == [DEATH, GREY, rainbow]
 
 
 @pytest.mark.uc("UC-023", flow="main", steps=[3])

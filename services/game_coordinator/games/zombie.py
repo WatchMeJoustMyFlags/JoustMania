@@ -442,6 +442,13 @@ class ZombieGame(BaseGameMode):
 
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")
 
+            # A zombie-colour write still pending from its conversion is dropped: the
+            # death effect keeps the LED off, and the respawn sets the colour itself
+            # (UC-023 steps 3 and 4, #2023).
+            pending_colour = self._conversion_colour_tasks.pop(serial, None)
+            if pending_colour is not None:
+                pending_colour.cancel()
+
             # Start respawn task (tracked for automatic cleanup)
             self._respawn_tasks[serial] = self._track_task(
                 asyncio.create_task(self._respawn_zombie(serial, respawn_delay))
@@ -522,8 +529,11 @@ class ZombieGame(BaseGameMode):
         """Set a converted human's zombie colour once the death flash has played (#2023).
 
         Skipped when the game stopped or the zombie died meanwhile (its death effect
-        keeps the LED off). A guarded write: on a dead gameplay call it is skipped,
-        and the reopened stream restores the zombie colour (UC-030 BR-006).
+        keeps the LED off; the zombie kill also cancels this task, so a respawn within
+        the delay gets no second colour write). A guarded write: on a dead gameplay
+        call it is skipped, and the reopened stream restores the zombie colour
+        (UC-030 BR-006). CONVERSION_COLOUR_DELAY stays below the 1 s post-win hold
+        (UC-020 BR-003), so a winning conversion's grey lands before the rainbow.
         """
         try:
             await asyncio.sleep(CONVERSION_COLOUR_DELAY)
@@ -547,8 +557,8 @@ class ZombieGame(BaseGameMode):
         """No base death effect for a converted human, which stays in the game (#1342).
 
         A converted human is still alive after ``_kill_player_impl`` and already got
-        its own death flash (the zombie colour follows from a task, #2023); a killed zombie is dead and gets
-        the base death effect (LED off until it respawns).
+        its own death flash (the zombie colour follows from a task, #2023); a killed
+        zombie is dead and gets the base death effect (LED off until it respawns).
         """
         return not self.players[serial].alive
 
@@ -712,6 +722,8 @@ class ZombieGame(BaseGameMode):
         if self.timer_task and not self.timer_task.done():
             self.timer_task.cancel()
         await super().cleanup()
+        # A task cancelled before its first step never runs its own removal.
+        self._conversion_colour_tasks.clear()
 
     async def run(self):
         """
