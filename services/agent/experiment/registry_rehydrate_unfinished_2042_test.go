@@ -346,6 +346,65 @@ func TestPromotionWriteAhead_2042(t *testing.T) {
 		}
 	})
 
+	t.Run("UC-043/BR-007 a one-shot journal failure journals the refusal once and a restart ends discarded", func(t *testing.T) {
+		promoter := &fakePromoter{}
+		root := t.TempDir()
+		path := ""
+		var original []byte
+		// The journal accepts writes again once the refusal is logged: the log line is
+		// the only call between the failed promoting append and the refusal append.
+		restore := &restoreOnLog{fire: func() {
+			if err := os.Remove(path); err != nil {
+				t.Error(err)
+				return
+			}
+			if err := os.WriteFile(path, original, 0o644); err != nil {
+				t.Error(err)
+			}
+		}, msg: "experiment.promote_failed"}
+		r := newTestRegistry(t, RegistryConfig{
+			Root: root, MaxShadowGames: 4, Promoter: promoter, Targeting: &fakeTargeting{},
+			Log: slog.New(restore),
+		})
+		id := startExperiment(t, r)
+		r.mu.Lock()
+		e := r.entries[id]
+		e.status = StatusConcluded
+		jrnl := e.journal
+		r.mu.Unlock()
+		if err := jrnl.AppendEvent(journal.Event{Kind: journal.KindDecision, Status: string(StatusConcluded), Note: "target N reached"}); err != nil {
+			t.Fatal(err)
+		}
+		path = filepath.Join(root, id, "events.jsonl")
+		var err error
+		if original, err = os.ReadFile(path); err != nil {
+			t.Fatal(err)
+		}
+		replaceWithDir(t, path)
+
+		res := r.promote(context.Background(), id, jrnl)
+		if n := promoter.count(); n != 0 {
+			t.Fatalf("promoter called %d times, want 0", n)
+		}
+		if !strings.HasPrefix(res.Reason, "promotion not journaled: ") {
+			t.Fatalf("result = %+v, want promotion not journaled", res)
+		}
+		promotions := eventsOfKind(journalEvents(t, r, id), journal.KindPromotion)
+		if len(promotions) != 1 || promotions[0].Status != PromotionDiscarded {
+			t.Fatalf("promotion events = %+v, want exactly one discarded", promotions)
+		}
+
+		h := &restartHarness{root: root, id: id, promoter: &fakePromoter{}, targeting: &fakeTargeting{}, logs: &syncBuffer{}}
+		h.r = newRestartRegistry(root, h)
+		h.rehydrate(t)
+		if st, _ := h.r.Status(id); st != StatusDiscarded {
+			t.Errorf("status after restart = %q, want discarded", st)
+		}
+		if note := h.outcomeNote(t); note == AbortReasonPromotionInterrupted {
+			t.Errorf("outcome note = %q, want a discarded promotion, not an interrupted one", note)
+		}
+	})
+
 	t.Run("UC-043/BR-007 a conclusion whose promoting decision fails ends discarded unpromoted", func(t *testing.T) {
 		promoter := &fakePromoter{}
 		root := t.TempDir()
@@ -414,3 +473,20 @@ func TestPromotionWriteAhead_2042(t *testing.T) {
 		}
 	})
 }
+
+// restoreOnLog is a slog handler that runs fire once, on the first record with msg.
+type restoreOnLog struct {
+	msg  string
+	fire func()
+	once sync.Once
+}
+
+func (h *restoreOnLog) Enabled(context.Context, slog.Level) bool { return true }
+func (h *restoreOnLog) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Message == h.msg {
+		h.once.Do(h.fire)
+	}
+	return nil
+}
+func (h *restoreOnLog) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *restoreOnLog) WithGroup(string) slog.Handler      { return h }
