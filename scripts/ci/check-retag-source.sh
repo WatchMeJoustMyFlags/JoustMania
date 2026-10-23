@@ -69,6 +69,7 @@ case "$image" in
   python-hid) filter=python_hid ;;
   otel-collector) filter=otel_collector ;;
   flag-service) filter=flag_service ;;
+  agent) filter=agent ;;
   *)
     echo "::error::check-retag-source: unknown image '${image}'" >&2
     exit 1

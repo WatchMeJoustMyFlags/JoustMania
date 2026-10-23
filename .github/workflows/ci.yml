@@ -48,7 +48,7 @@ name: CI
 # A skipped e2e job is fine for CI Complete unless e2e_required was true.
 #
 # Release contract: release.yml tag-images retags IMAGE:<sha> -> IMAGE:<version>
-# for all 10 release images, so every main push must produce a :<sha> tag for
+# for all 12 release images, so every main push must produce a :<sha> tag for
 # every image. Images skipped by the path filter get a seconds-long manifest
 # retag from :main instead (retag-skipped job).
 
@@ -475,7 +475,7 @@ jobs:
             echo "docker_extra=$(printf '%s\n' "${extra[@]}" | jq -sc .)" >> "$GITHUB_OUTPUT"
           fi
 
-          # retag matrix: the 11 release.yml images NOT built this run — on main
+          # retag matrix: the 12 release.yml images NOT built this run — on main
           # pushes they still need a :<sha> tag for release tagging
           retag=()
           maybe_retag() {
@@ -492,6 +492,7 @@ jobs:
           maybe_retag "$CH_PYTHON_HID"         python-hid
           maybe_retag "$CH_OTEL_COLLECTOR"     otel-collector
           maybe_retag "$CH_FLAG_SERVICE"       flag-service
+          maybe_retag "$CH_AGENT"              agent
           echo "retag=$(json_array "${retag[@]}")" >> "$GITHUB_OUTPUT"
 
   # Build and test shared packages (proto, lib)
