@@ -65,7 +65,7 @@ Ripgrep skips git-ignored paths (`.venv`, `node_modules`); still restrict paths 
 | Go comment tag | pattern `^// UC: UC-040\b`, glob `*_test.go`, path `services` (agent and connect-proxy) |
 | Go subtests | pattern `"UC-040/`, glob `*_test.go`, path `services` (agent and connect-proxy) |
 | Rust comment tag | pattern `^\s*// UC: UC-040\b`, glob `*.rs`, path `services/rust-hid` (tests sit in an indented `#[cfg(test)] mod tests`) |
-| Shell test tag (header line) | pattern `^# UC: .*\bUC-040\b`, path `scripts/tests` ; the units follow the id on the same line (`# UC: UC-070 A8 BR-003`); in Go, shell and vitest a condition is just another unit token (`Pre-1`, `Post-F-1`) |
+| Shell test tag (header line) | pattern `^# UC: .*\bUC-040\b`, path `scripts/tests` ; the units follow the id on the same line (`# UC: UC-070 A8 BR-003`; a main step is `main step 9 step 10`, like Rust); in Go, shell and vitest a condition is just another unit token (`Pre-1`, `Post-F-1`) |
 | Dashboard (vitest) | pattern `describe\(\s*['"\x60]UC-040`, path `services/dashboard/src/__tests__` |
 | Business-rule markers in code | pattern `UC-040 BR-\d{3}`, paths `services`, `lib` (glob `!**/*_test.go`, `type` per language as needed) |
 | NFR tag (pytest), for `NFR-XXX` units | pattern `mark\.nfr\([^)]*["']NFR-014["']`, `multiline: true`, `type: py`, paths `services`, `lib`, `tests` (also on classes) |

@@ -5,7 +5,7 @@
 # stubbed on PATH, so no stack is needed. Runs as part of `make lint`, or directly:
 #   ./scripts/tests/test-pattern-replay-check.sh
 #
-# UC: UC-046 main A11
+# UC: UC-046 main step 9 step 10 A11
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

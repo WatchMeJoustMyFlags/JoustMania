@@ -13,6 +13,7 @@
 #   scripts/pattern-replay-check.sh <archetype> [seed]
 #   scripts/pattern-replay-check.sh --against <record.json>
 #   scripts/pattern-replay-check.sh --compare <record-a.json> <record-b.json>
+#   scripts/pattern-replay-check.sh --show-timeout
 #
 # --against replays one recorded game (UC-046 step 9): the record is a saved
 # PATTERN_REPLAY_RECORD JSON or one `pattern_game_ended` line of an experiment's
@@ -28,12 +29,47 @@
 # stop the stack's own agent first so only the throwaway agent observes the game.
 #
 # Environment: COMPOSE (default "docker compose"), PATTERN_REPLAY_TIMEOUT seconds
-# per run (default 420: the 300 s safety cap plus start-up), PATTERN_REPLAY_SERVICE
-# (default "agent").
+# per run (default: the effective safety cap `experiment.max_game_seconds` read from
+# the flag service plus 120 s start-up margin, so 420 s for the default 300 s cap and
+# 720 s / 1920 s for the long / soak caps; UC-046 A16), PATTERN_REPLAY_SERVICE
+# (default "agent"), FLAGS_SH (flag helper, default scripts/flags.sh; FLAG_SERVICE_URL
+# as there).
 #
 # Exit codes: 0 identical, 1 the replay differs, 2 not comparable (non-exact or a
 # digest differs), 3 usage or run error.
 set -euo pipefail
+
+# UC-046 A16, BR-013: the wait follows the pinned safety cap, never a fixed 420 s.
+# cap_seconds: the effective experiment.max_game_seconds; the agent falls back to 300
+# for a value outside 30..3600, and so do we when the flag service cannot be read.
+cap_seconds() {
+  local flags_sh="${FLAGS_SH:-$(dirname "${BASH_SOURCE[0]}")/flags.sh}" view
+  view="$("${flags_sh}" get agent experiment.max_game_seconds 2>/dev/null)" || view=""
+  python3 -c '
+import json, sys
+cap = 300
+try:
+    view = json.loads(sys.argv[1])
+    overlay = view.get("stack_overlay") or {}
+    value = overlay.get("value")
+    if not isinstance(value, (int, float)):
+        value = json.loads(str(view["variant_values"][view["effective_default"]]))
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and 30 <= value <= 3600:
+        cap = int(value)
+except Exception:
+    pass
+print(cap)
+' "${view}"
+}
+
+# replay_timeout: seconds to wait per run; the env override wins, else cap + 120 s start-up.
+replay_timeout() {
+  if [[ -n "${PATTERN_REPLAY_TIMEOUT:-}" ]]; then
+    echo "${PATTERN_REPLAY_TIMEOUT}"
+  else
+    echo $(($(cap_seconds) + 120))
+  fi
+}
 
 # normalize <file>: print a replay record from a record or a journal event.
 normalize() {
@@ -116,7 +152,8 @@ run_once() {
   local archetype="$1" seed="$2" out="$3" tag="$4"
   local compose="${COMPOSE:-docker compose}"
   local service="${PATTERN_REPLAY_SERVICE:-agent}"
-  local timeout="${PATTERN_REPLAY_TIMEOUT:-420}"
+  local timeout
+  timeout="$(replay_timeout)"
   local name="pattern-replay-$$-${tag}"
   local args=(-e AGENT_SHADOW_GAME=true -e SHADOW_GAME_MODE=JoustFFA -e "SHADOW_GAME_ARCHETYPE=${archetype}")
   [[ -n "${seed}" ]] && args+=(-e "SHADOW_GAME_SEED=${seed}")
@@ -137,6 +174,10 @@ run_once() {
 }
 
 main() {
+  if [[ "${1:-}" == "--show-timeout" ]]; then
+    replay_timeout
+    return
+  fi
   if [[ "${1:-}" == "--compare" ]]; then
     [[ $# -eq 3 ]] || { echo "usage: $0 --compare <record-a.json> <record-b.json>" >&2; exit 3; }
     WORK_DIR="$(mktemp -d)"

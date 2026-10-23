@@ -65,7 +65,7 @@ in-memory services).
 | Test tier (pytest) | `pytestmark = pytest.mark.tier("service")` in every `tests/service` module (T2 service tier: services from source on a fresh flag plane, #1422); collection fails without it. The TC's Automation section names the tier in a `**Tier:**` line |
 | Go | `// UC: UC-040 A2 BR-003` directly above `func Test...` and subtests `t.Run("UC-040/A2 ...")`; a condition is another unit token: `// UC: UC-040 Pre-1`, `t.Run("UC-040/Post-F-1 ...")` |
 | Dashboard (vitest) | `describe('UC-040: ...')` / `it('A2: ...')` (AIUP JS convention); a condition test: `it('Pre-1: ...')` |
-| Shell test (`scripts/tests/*.sh`) | a `# UC: UC-070 A8 BR-003` line in the header comment (one line per use case; conditions are unit tokens too: `# UC: UC-070 Pre-1`) |
+| Shell test (`scripts/tests/*.sh`) | a `# UC: UC-070 A8 BR-003` line in the header comment (one line per use case; conditions are unit tokens too: `# UC: UC-070 Pre-1`; a main-scenario step is `main step 9`, several `main step 9 step 10`, the analogue of pytest `steps=`: `# UC: UC-046 main step 9 step 10 A11`) |
 | Code enforcing a rule | `# UC-040 BR-004: <one line>` / `// UC-040 BR-004: ...` above the enforcing code |
 | NFR measurement / check (pytest) | `@pytest.mark.nfr("NFR-014")` (several ids allowed), on the test or class that measures or verifies the NFR; print the measured numbers. Registered next to `uc` |
 | NFR measurement / check (Go) | `// NFR: NFR-012 NFR-013` directly above `func Test...` (next to a `// UC:` line if both apply) |

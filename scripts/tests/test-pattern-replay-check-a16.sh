@@ -2,7 +2,7 @@
 # Tests for the "replay gives no record" exits of scripts/pattern-replay-check.sh (#1703, #1725).
 # `docker` is stubbed on PATH; no stack needed.
 #
-# UC: UC-046 A16
+# UC: UC-046 A16 step 9
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +46,24 @@ expect "replay prints no record" 3 "no PATTERN_REPLAY_RECORD" -- env PATH="${WOR
 expect "two-run flow prints no record" 3 "no PATTERN_REPLAY_RECORD" -- env PATH="${WORK}/bin:${PATH}" PATTERN_REPLAY_TIMEOUT=1 "${CHECK}" slow_cascade 7
 expect "compare usage" 3 "usage" -- "${CHECK}" --compare "${WORK}/ok.json"
 expect "against usage" 3 "usage" -- "${CHECK}" --against
+
+# The wait follows the pinned safety cap (default 300, long 600, soak 1800) plus 120 s.
+cat >"${WORK}/flags.sh" <<'SH'
+#!/usr/bin/env bash
+v="${STUB_VARIANT:-default}"
+overlay="${STUB_OVERLAY:+,\"stack_overlay\":${STUB_OVERLAY}}"
+[[ "${STUB_FAIL:-}" == 1 ]] && exit 1
+echo "{\"effective_default\":\"${v}\",\"variant_values\":{\"default\":300,\"long\":600,\"soak\":1800}${overlay}}"
+SH
+chmod +x "${WORK}/flags.sh"
+export FLAGS_SH="${WORK}/flags.sh"
+expect "wait: default cap" 0 "420" -- "${CHECK}" --show-timeout
+expect "wait: long cap" 0 "720" -- env STUB_VARIANT=long "${CHECK}" --show-timeout
+expect "wait: soak cap" 0 "1920" -- env STUB_VARIANT=soak "${CHECK}" --show-timeout
+expect "wait: overlay value" 0 "1020" -- env STUB_OVERLAY='{"value":900}' "${CHECK}" --show-timeout
+expect "wait: out-of-range cap falls back to 300" 0 "420" -- env STUB_OVERLAY='{"value":5000}' "${CHECK}" --show-timeout
+expect "wait: flag service unreachable" 0 "420" -- env STUB_FAIL=1 "${CHECK}" --show-timeout
+expect "wait: env override wins" 0 "55" -- env STUB_VARIANT=soak PATTERN_REPLAY_TIMEOUT=55 "${CHECK}" --show-timeout
 
 if ((fails > 0)); then
   echo "${fails} test(s) failed"
