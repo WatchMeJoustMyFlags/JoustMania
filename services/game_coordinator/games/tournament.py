@@ -722,11 +722,12 @@ class TournamentGame(BaseGameMode):
             )
 
     def _sends_death_effect(self, serial: str) -> bool:
-        """PLAYER_DEATH only when this kill eliminated the player (UC-025 BR-004, #1991).
+        """PLAYER_DEATH only for a player that is not alive after the kill (UC-025 BR-004, #1991).
 
         ``_kill_player_impl`` sets ``alive`` False only for the match loser; a kill it
         ignores (waiting player, grace, decided match) leaves the player alive, and
-        the base kill path must not paint that player dead.
+        the base kill path must not paint that player dead. A player already eliminated
+        by another path (e.g. an intervention) may still get the effect; harmless.
         """
         return not self.players[serial].alive
 

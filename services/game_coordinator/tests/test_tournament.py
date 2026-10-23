@@ -1828,8 +1828,8 @@ class TestTournamentDoubleHit:
         return game, mock_cm, event_collector
 
     @staticmethod
-    def _double_hit_on_first_frame(game):
-        """Each match's first frame kills player1, then player2, through the base kill path."""
+    def _double_hit_on_first_frame(game, player2_first: bool = False):
+        """Each match's first frame kills player1, then player2 (or reversed), through the base kill path."""
         hit_matches: set[int] = set()
 
         async def double_hit(_gameplay_data):
@@ -1837,8 +1837,11 @@ class TestTournamentDoubleHit:
             if match is None or match.match_id in hit_matches:
                 return
             hit_matches.add(match.match_id)
-            await game._kill_player(match.player1_serial, accel_mag=5.0)
-            await game._kill_player(match.player2_serial, accel_mag=5.0)
+            order = [match.player1_serial, match.player2_serial]
+            if player2_first:
+                order.reverse()
+            for serial in order:
+                await game._kill_player(serial, accel_mag=5.0)
 
         return double_hit
 
@@ -1886,6 +1889,34 @@ class TestTournamentDoubleHit:
         match_ends = event_collector.get_events_of_type("match_end")
         assert [e["winner"] for e in match_ends] == [winner_serial]
         # PLAYER_DEATH only for the kill that eliminated the player.
+        assert _death_effect_serials(stream) == [loser_serial]
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[3], br=["BR-004"])
+    @pytest.mark.asyncio
+    async def test_double_hit_player2_first_makes_player1_the_winner(self):
+        """Mirrored order: the first fighter to die is player2, so player1 advances."""
+        from unittest.mock import AsyncMock
+
+        game, mock_cm, event_collector = self._make_game(4, "test_double_hit_mirrored")
+        await game._initialize_players_impl(mock_cm.controllers)
+        game._play_sound = AsyncMock()
+        game.running = True
+        stream = self._one_frame_stream()
+        game.gameplay_stream = stream
+        game._process_controller_state = self._double_hit_on_first_frame(game, player2_first=True)
+
+        first_match = [m for m in game.bracket if m.round_number == 1 and not m.is_bye][0]
+        winner_serial, loser_serial = first_match.player1_serial, first_match.player2_serial
+        game.current_match = first_match
+
+        await game._run_match(first_match)
+
+        assert first_match.winner_serial == winner_serial
+        assert game.players[loser_serial].tournament_state == TournamentState.ELIMINATED
+        assert game.players[winner_serial].tournament_state == TournamentState.WAITING
+        assert game.players[winner_serial].alive is True
+        match_ends = event_collector.get_events_of_type("match_end")
+        assert [e["winner"] for e in match_ends] == [winner_serial]
         assert _death_effect_serials(stream) == [loser_serial]
 
     @pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-004"])
