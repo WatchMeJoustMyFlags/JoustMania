@@ -323,6 +323,9 @@ type Loop struct {
 	// the ledger inert.
 	charges          chargeLedger
 	shieldChargeMode ShieldChargeMode
+
+	// flagState is this partition's agent.flag_state digest (#2059, flag_state.go).
+	flagState flagStateTracker
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -547,7 +550,11 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		now = time.Now
 	}
 
-	snapshot := l.Flags.Evaluate(ctx)
+	// #2059: the snapshot is resolved with the flag-evaluation events buffered, and
+	// agent.flag_state is emitted on the partition's first cycle or a changed snapshot,
+	// BEFORE the kill-switch short-circuit so enabled=false is visible too.
+	snapshot, flagEvents := l.evaluateFlags(ctx)
+	l.emitFlagState(ctx, snapshot, c, flagEvents)
 	state := newLayerState(snapshot)
 	// Existence layer: enabled=false short-circuits before any rules evaluation.
 	// This is the safe default when flagd is unreachable. The disabled state is

@@ -648,6 +648,7 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 	// spans re-parent under it; teardown ends it.
 	r.startSpanLocked(e, intent)
 	r.recordDecision(e.journal, StatusRunning, "experiment started")
+	r.emitProgressLocked(e, ProgressTriggerStarted, "", e.spanCtx) // #2059
 	r.log.Info("experiment.started", "experiment_id", id)
 	return nil
 }
@@ -1138,6 +1139,7 @@ func (r *Registry) bindGame(id, gameID, arm string, pairIndex int, pattern *Patt
 		PairIndex: &pi,
 		Pattern:   e.patternFactsLocked(pairIndex, pattern),
 	})
+	r.emitProgressLocked(e, ProgressTriggerGameAssigned, "", e.spanCtx) // #2059
 	r.log.Info("experiment.game_assigned",
 		"experiment_id", id, "game_id", gameID, "arm", arm, "pair_index", pairIndex)
 	return true
@@ -1234,6 +1236,8 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 		Fitness:   &f,
 		DurationS: durationS,
 	})
+	// #2059: after the fold, so the snapshot counts exactly the folded games.
+	r.emitProgressLocked(e, ProgressTriggerGameConcluded, "", e.spanCtx)
 	jrnl := e.journal
 	r.mu.Unlock()
 
@@ -1355,6 +1359,7 @@ func (r *Registry) ReleaseGame(gameID, reason string) bool {
 	if pairIdx != nil {
 		r.rerunPairLocked(e, *pairIdx, reason)
 	}
+	r.emitProgressLocked(e, ProgressTriggerGameReleased, "", e.spanCtx) // #2059
 	r.mu.Unlock()
 
 	r.log.Info("experiment.game_released",
@@ -1703,6 +1708,7 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	// discarded/done, abort), so ending it here guarantees no leak on ANY terminal path.
 	// It is placed BEFORE the idempotency guard (and is itself idempotent) so a path
 	// that finds the status already terminal still ends the span exactly once.
+	progressLink := e.spanCtx // #2059: the Link target, read before the span ends
 	r.endSpanLocked(e)
 	// A terminal status is never overwritten: an AbortAll that raced a conclusion
 	// keeps the experiment aborted (#1701).
@@ -1720,6 +1726,7 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 		Status: string(terminal),
 		Note:   reason,
 	})
+	r.emitProgressLocked(e, ProgressTriggerTerminal, reason, progressLink) // #2059
 	r.log.Info("experiment.torn_down", "experiment_id", id, "status", string(terminal), "reason", reason)
 }
 
@@ -1820,7 +1827,11 @@ func (r *Registry) Rehydrate(ids []string) error {
 		}
 		if r.patterns != nil && !r.restorePatternLocked(e) {
 			lost = append(lost, id)
+			continue
 		}
+		// #2059: once per restored experiment that stays live (the torn-down ones
+		// above emit their terminal snapshot instead).
+		r.emitProgressLocked(e, ProgressTriggerRehydrate, "", e.spanCtx)
 	}
 	return errors.Join(errs...)
 }
