@@ -179,19 +179,29 @@ describe("UC-035: A3 a telemetry backend is down (dashboard side)", () => {
   const emptyView = {
     feed: [],
     flags: null,
-    overlay: { blockedByAction: [], blockedByReason: [], totalBlocked: 0, appliedOk: null, appliedError: null },
+    overlay: { blockedByAction: [], blockedByReason: [], totalBlocked: null, appliedOk: null, appliedError: null },
   };
 
-  it("UC-035/A3 an agent panel that never rendered says Loki is unreachable", () => {
+  it("UC-035/A3 an agent panel that never rendered says Jaeger is unreachable", () => {
     const el = stubDom();
     onAgentPollFailed(agentView());
-    expect(el("feed").innerHTML).toContain("Could not reach Loki for agent telemetry.");
+    expect(el("feed").innerHTML).toContain("Could not reach Jaeger for agent telemetry.");
+    expect(el("flags").innerHTML).toContain("Could not reach Jaeger for agent telemetry.");
   });
 
-  it("UC-035/A3 an experiments panel that never rendered says Loki is unreachable", () => {
+  it("UC-035/A3 an experiments panel that never rendered says Jaeger is unreachable", () => {
     const el = stubDom();
     onExperimentsPollFailed(new ExperimentsView("grid", "fresh"));
-    expect(el("grid").innerHTML).toContain("Could not reach Loki for experiment telemetry.");
+    expect(el("grid").innerHTML).toContain("Could not reach Jaeger for experiment telemetry.");
+  });
+
+  it("UC-035/A3 Jaeger up without spans shows the no-data hints, not an error", () => {
+    const el = stubDom();
+    agentView().render(emptyView as never);
+    new ExperimentsView("grid", "fresh").render([]);
+    expect(el("flags").innerHTML).toContain("No agent.flag_state spans in Jaeger yet");
+    expect(el("grid").innerHTML).toContain("No experiment.progress spans in Jaeger yet");
+    expect(el("flags").innerHTML + el("grid").innerHTML).not.toContain("Could not reach");
   });
 
   it("UC-035/A3 a decide strip that never rendered says Jaeger is unreachable", () => {
@@ -211,10 +221,11 @@ describe("UC-035: A3 a telemetry backend is down (dashboard side)", () => {
     expect(el("dfeed").innerHTML).toBe(painted);
   });
 
-  it("UC-035/A3 VictoriaMetrics down shows the Applied count as n/a", () => {
+  it("UC-035/A3 VictoriaMetrics down shows the Applied and Blocked counts as n/a", () => {
     const el = stubDom();
     agentView().render(emptyView as never);
-    expect(el("overlay").innerHTML).toContain('title="VictoriaMetrics unreachable">n/a</span>');
+    const html = el("overlay").innerHTML;
+    expect(html.match(/title="VictoriaMetrics unreachable">n\/a<\/span>/g)?.length).toBe(2);
   });
 
   it("UC-035/A3 a rendered agent panel keeps its data and is marked stale", () => {

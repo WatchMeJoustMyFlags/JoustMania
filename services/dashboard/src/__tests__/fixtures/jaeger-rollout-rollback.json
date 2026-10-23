@@ -1,0 +1,55 @@
+{
+  "data": [
+    {
+      "traceID": "1f00000000000002",
+      "spans": [
+        {
+          "traceID": "1f00000000000002",
+          "spanID": "in0002",
+          "operationName": "agent.infrastructure.decision",
+          "references": [],
+          "startTime": 1760000080000000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "rollout.target",
+              "type": "string",
+              "value": "bluez"
+            },
+            {
+              "key": "fitness.passing",
+              "type": "bool",
+              "value": false
+            },
+            {
+              "key": "fitness.violations",
+              "type": "string",
+              "value": "event_gap_ms>40"
+            },
+            {
+              "key": "remediation.action",
+              "type": "string",
+              "value": "rollback"
+            },
+            {
+              "key": "rollout.dry_run",
+              "type": "bool",
+              "value": true
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        }
+      ],
+      "processes": {
+        "p1": {
+          "serviceName": "agent",
+          "tags": []
+        }
+      },
+      "warnings": null
+    }
+  ]
+}

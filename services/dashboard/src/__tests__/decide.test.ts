@@ -153,8 +153,8 @@ describe("parseDecideTraces — ordering, dedupe, current strip", () => {
   });
 
   it("empty / null data", () => {
-    expect(parseDecideTraces({ data: null })).toEqual({ rows: [], current: null });
-    expect(parseDecideTraces({})).toEqual({ rows: [], current: null });
+    expect(parseDecideTraces({ data: null })).toEqual({ rows: [], current: null, flagStates: [] });
+    expect(parseDecideTraces({})).toEqual({ rows: [], current: null, flagStates: [] });
   });
 });
 
@@ -219,7 +219,7 @@ describe("rendering + escaping", () => {
       target: evil,
       outcomeReason: evil,
       decisions: [
-        { spanId: "z", action: evil, blocked: true, reason: evil, targetSerial: evil, targetName: evil + "n" },
+        { spanId: "z", tsMs: 0, action: evil, blocked: true, reason: evil, blockReason: evil, targetSerial: evil, targetName: evil + "n" },
       ],
     };
     const html = renderDecideRow(row);

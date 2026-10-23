@@ -196,9 +196,11 @@ def test_step7_grafana_provisions_a_loki_datasource_for_explore():
     assert len(loki) == 1, sources
     assert loki[0]["url"] == "http://loki:3100"
     assert loki[0]["access"] == "proxy"
-    # The dashboard's "Open logs in Grafana" link opens Explore on this uid.
+    # The dashboard no longer links to Loki (#2059): its Experiments link opens the
+    # experiment.progress spans in Jaeger; step 7 starts in Grafana Explore itself.
     spa = (ic.REPO_ROOT / "services" / "dashboard" / "src" / "index.html").read_text()
-    assert f"%22datasource%22:%22{loki[0]['uid']}%22" in spa
+    assert f"%22datasource%22:%22{loki[0]['uid']}%22" not in spa
+    assert "/jaeger/search?service=agent&operation=experiment.progress" in spa
 
 
 @pytest.mark.uc("UC-035", flow="main", steps=[6], br=["BR-004"])
