@@ -2,7 +2,7 @@
 # Tests for the "replay gives no record" exits of scripts/pattern-replay-check.sh (#1703, #1725).
 # `docker` is faked on PATH and the flag helper stubbed (FLAGS_SH); no stack needed, runs in seconds.
 #
-# UC: UC-046 A16 step 9
+# UC: UC-046 A16
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,6 +43,8 @@ chmod +x "${WORK}/bin/docker"
 export FAKE_DOCKER_LOG="${WORK}/docker.log"
 : >"${FAKE_DOCKER_LOG}"
 export PATH="${WORK}/bin:${PATH}"
+# An exported COMPOSE/DOCKER would bypass the fake docker (run_once uses ${COMPOSE:-docker compose}).
+unset COMPOSE DOCKER
 cat >"${WORK}/flags.sh" <<'SH'
 #!/usr/bin/env bash
 v="${STUB_VARIANT:-default}"
@@ -76,6 +78,10 @@ expect "wait: overlay value" 0 "1020" -- env STUB_OVERLAY='{"value":900}' "${CHE
 expect "wait: out-of-range cap falls back to 300" 0 "420" -- env STUB_OVERLAY='{"value":5000}' "${CHECK}" --show-timeout
 expect "wait: flag service unreachable" 0 "420" -- env STUB_FAIL=1 "${CHECK}" --show-timeout
 expect "wait: env override wins" 0 "55" -- env STUB_VARIANT=soak PATTERN_REPLAY_TIMEOUT=55 "${CHECK}" --show-timeout
+expect "wait: env override not a number" 3 "positive integer" -- env PATTERN_REPLAY_TIMEOUT=abc "${CHECK}" --show-timeout
+expect "wait: env override zero" 3 "positive integer" -- env PATTERN_REPLAY_TIMEOUT=0 "${CHECK}" --show-timeout
+expect "wait: env override negative" 3 "positive integer" -- env PATTERN_REPLAY_TIMEOUT=-5 "${CHECK}" --show-timeout
+expect "wait: env override invalid on a run" 3 "positive integer" -- env FAKE_DOCKER_OK=1 PATTERN_REPLAY_TIMEOUT=1x "${CHECK}" slow_cascade 7
 
 # --show-timeout and every error exit above must never reach docker.
 if [[ -e "${FAKE_DOCKER_LOG}.unexpected" ]]; then

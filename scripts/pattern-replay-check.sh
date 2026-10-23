@@ -69,6 +69,10 @@ print(cap)
 # replay_timeout: seconds to wait per run; the env override wins, else cap + 120 s start-up.
 replay_timeout() {
   if [[ -n "${PATTERN_REPLAY_TIMEOUT:-}" ]]; then
+    if [[ ! "${PATTERN_REPLAY_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]; then
+      echo "PATTERN_REPLAY_TIMEOUT must be a positive integer (seconds), got: ${PATTERN_REPLAY_TIMEOUT}" >&2
+      exit 3
+    fi
     echo "${PATTERN_REPLAY_TIMEOUT}"
   else
     echo $(($(cap_seconds) + 120))
