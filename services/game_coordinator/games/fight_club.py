@@ -19,7 +19,7 @@ from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
 from lib.feature_flags import read_float_flag
-from lib.types import Sound
+from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
@@ -37,6 +37,7 @@ ROUND_DURATION = 22.0  # Seconds per round
 DEFAULT_INVINCIBILITY_DURATION = 4.0  # Seconds of invincibility at round start
 DEFAULT_MIN_ROUNDS = 10  # Minimum rounds before game can end
 COUNTDOWN_BEEPS = 3  # Beeps in last 3 seconds of round
+FC_INTRO_DURATION_S = 2.0  # Intro length; the stream is drained meanwhile (UC-025 A2 step 1)
 
 # Colors
 DEFENDER_COLOR = Colors.Red.value  # Red for defender
@@ -207,22 +208,29 @@ class FightClubGame(BaseGameMode):
         """
         logger.info("Starting Fight Club intro phase...")
 
-        # Set all controllers to waiting color
-        for serial in self.players:
-            if self.gameplay_stream:
-                color_cmd = controller_manager_pb2.GameplayStreamControl(
-                    base_color=controller_manager_pb2.ControllerColorConfig(
-                        serial=serial,
-                        color=controller_manager_pb2.RGB(r=WAITING_COLOR[0], g=WAITING_COLOR[1], b=WAITING_COLOR[2]),
+        # A write error (the early stream already broke) is logged, not raised:
+        # the drain stop at the end of the intro reopens the stream (UC-025 A2 step 1).
+        try:
+            # Set all controllers to waiting color
+            for serial in self.players:
+                if self.gameplay_stream:
+                    color_cmd = controller_manager_pb2.GameplayStreamControl(
+                        base_color=controller_manager_pb2.ControllerColorConfig(
+                            serial=serial,
+                            color=controller_manager_pb2.RGB(
+                                r=WAITING_COLOR[0], g=WAITING_COLOR[1], b=WAITING_COLOR[2]
+                            ),
+                        )
                     )
-                )
-                await self.gameplay_stream.write(color_cmd)
+                    await self.gameplay_stream.write(color_cmd)
+        except Exception as e:
+            logger.error(f"Failed to set the Fight Club intro colours: {e}", exc_info=True)
 
         # Play intro sound (use start sound - no dedicated fight club intro exists)
         await self._play_sound(Sound.SFX_START3, priority=2)
 
-        # Wait for intro
-        for _ in range(20):  # 2 seconds
+        # Wait for intro (interruptible, checked every 0.1 s)
+        for _ in range(round(FC_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
             await asyncio.sleep(0.1)
@@ -585,6 +593,7 @@ class FightClubGame(BaseGameMode):
 
             try:
                 self.running = True
+                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
                 # Initialization phase
                 with tracer.start_as_current_span("initialization_phase"):
@@ -594,17 +603,26 @@ class FightClubGame(BaseGameMode):
                         f"min_rounds={self._min_rounds}"
                     )
                     await self._initialize_players()
+                    if len(self.players) < 2:
+                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
+                    # Before any task is created: tasks copy the context (#1273).
+                    self._set_flag_eval_context()
                     self._create_player_spans(None)
 
-                # Start gameplay stream before intro (needed for LED effects)
+                # The intro colours go over the stream, so it opens first; a drain
+                # discards the intro's frames and keeps disconnects (UC-025 A2 step 1).
                 await self._start_gameplay_stream()
-
-                # Additional phases (intro)
-                for phase in self._get_additional_phases():
-                    if not self.running:
-                        break
-                    with tracer.start_as_current_span(phase.name):
-                        await phase.execute()
+                self._start_early_stream_drain()
+                phases_completed = False
+                try:
+                    for phase in self._get_additional_phases():
+                        if not self.running:
+                            break
+                        with tracer.start_as_current_span(phase.name):
+                            await phase.execute()
+                    phases_completed = True
+                finally:
+                    await self._stop_early_stream_drain(reopen=phases_completed)
 
                 if not self.running:
                     return
@@ -620,28 +638,36 @@ class FightClubGame(BaseGameMode):
                 self.state = GameState.RUNNING
                 self.start_time = time.time()
 
-                # Emit game_started event (required for integration tests)
-                from lib.types import GameEvent
-
+                # Fight Club publishes game_started after the countdown (UC-025 A2 step 1).
                 await self.event_publisher(
                     GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
                 )
 
-                # Start music
+                # Start music (no tempo loop by design, UC-025 BR-002)
                 await self._start_game_music()
 
-                # Start first round (gameplay stream already started before intro)
+                # Prime the EMA filters before death detection (UC-030 BR-003)
+                await self._warmup_ema()
+
+                if not self.running:
+                    return
+
+                # The first round (and its timer) starts after the warm-up
                 await self._start_round()
 
-                # Game loop - process controller states
+                # Game loop (gameplay stream already started before intro)
                 with tracer.start_as_current_span("gameplay_phase"):
                     await self._game_loop()
                 self._latch_game_outcome()
 
                 # End game
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
+                    # Shield LEDs end with the game, before the winner effects (#1301).
+                    await self._end_shield_feedback()
                     await self._end_game_impl()
                     self._record_game_outcome(teardown_span)
+                    # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
+                    self._release_gameplay_stream()
 
                 game_span.set_status(Status(StatusCode.OK))
 
@@ -657,7 +683,7 @@ class FightClubGame(BaseGameMode):
                 await self._stop_game_music()
                 if force_ended:
                     await self.on_force_end()
-                await self.cleanup()
+                await self._cleanup_after_run()
 
     async def _process_controller_state(self, state):
         """
