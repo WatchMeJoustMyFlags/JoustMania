@@ -213,6 +213,62 @@ class TestGameSessionLoop:
         assert session.game_state == game_coordinator_pb2.GameState.ENDED
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-025", cond=["Post-F-1"])
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_tournament_init_failure_publishes_exactly_one_game_error(self, mock_tracer_mod, mock_factory):
+        """UC-025 Post-F-1: a Tournament run() that refuses to start ends the session with one game_error."""
+        from services.game_coordinator.games.tournament import TournamentGame
+
+        session = _make_session()
+        session.game_running = True
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        game = TournamentGame(
+            controller_manager_client=MagicMock(),
+            event_publisher=AsyncMock(),
+            audio_client=None,
+            game_id="game_abc123",
+            initial_players=[game_coordinator_pb2.Player(serial="p1")],
+        )
+        mock_factory.create_game.return_value = game
+
+        await session._run_game_loop_async()
+
+        error_calls = [c for c in session.event_bus.publish.call_args_list if c[0][0] == "game_error"]
+        assert len(error_calls) == 1
+        assert "at least 2 players" in error_calls[0][0][1]["error"]
+        assert session.game_running is False
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-025", cond=["Post-F-1"])
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_fight_club_init_failure_publishes_exactly_one_game_error(self, mock_tracer_mod, mock_factory):
+        """UC-025 Post-F-1: a Fight Club run() that refuses to start ends the session with one game_error."""
+        from services.game_coordinator.games.fight_club import FightClubGame
+
+        session = _make_session()
+        session.game_running = True
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        game = FightClubGame(
+            controller_manager_client=MagicMock(),
+            event_publisher=AsyncMock(),
+            audio_client=None,
+            game_id="game_abc123",
+            initial_players=[game_coordinator_pb2.Player(serial="p1")],
+        )
+        mock_factory.create_game.return_value = game
+
+        await session._run_game_loop_async()
+
+        error_calls = [c for c in session.event_bus.publish.call_args_list if c[0][0] == "game_error"]
+        assert len(error_calls) == 1
+        assert "at least 2 players" in error_calls[0][0][1]["error"]
+        assert session.game_running is False
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-026", cond=["Post-F-1"])
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")

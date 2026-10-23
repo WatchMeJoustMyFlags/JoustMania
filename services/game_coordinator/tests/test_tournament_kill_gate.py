@@ -10,7 +10,7 @@ with ``eliminate_refused`` and counts nothing.
 import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import grpc
 import pytest
@@ -281,6 +281,76 @@ async def test_a_walkover_final_reports_the_final_round_as_rounds_played():
 @pytest.mark.uc("UC-025", br=["BR-006"])
 def test_revive_is_denied_by_the_capability_matrix():
     assert "revive_player" in MODE_CAPABILITY_DENY["Tournament"]
+    assert "eliminate_player" not in MODE_CAPABILITY_DENY["Tournament"]
+
+
+@pytest.mark.uc("UC-025", flow="main", steps=[3], br=["BR-001"])
+@pytest.mark.uc("UC-030", flow="A1")
+@pytest.mark.asyncio
+async def test_an_agent_shield_protects_a_fighter_after_the_match_invincibility_ends():
+    """BR-001: grace is max(agent shield, match invincibility): a shielded fighter cannot lose, then can."""
+    game, _ = await _bracket_game()  # invincibility 0: only the shield protects
+    match = game.current_match
+    shielded = match.player1_serial
+    game.players[shielded].grace_until = time.time() + 60.0
+
+    with patch("services.game_coordinator.games.base.metrics"):
+        await game._process_gameplay_update(_frame([shielded], spike=[shielded]))
+    assert game.current_match is match and not match.is_complete, "a shielded fighter lost the match"
+    assert game.players[shielded].alive and game.dead_count == 0
+
+    game.players[shielded].grace_until = time.time() - 1.0  # the shield ends
+    with patch("services.game_coordinator.games.base.metrics"):
+        await game._process_gameplay_update(_frame([shielded], spike=[shielded]))
+    assert match.is_complete and match.winner_serial == match.player2_serial
+
+
+def _gameplay_data(serial, magnitude):
+    return controller_manager_pb2.GameplayData(
+        serial=serial, accel=controller_manager_pb2.Vector3(x=magnitude, y=0, z=0)
+    )
+
+
+@pytest.mark.uc("UC-030", flow="main", steps=[4])
+@pytest.mark.uc("UC-025", flow="main", steps=[3], br=["BR-002"])
+@pytest.mark.asyncio
+async def test_a_fighter_ema_uses_perception_ema_weight():
+    """BR-002: Tournament's two fighters are smoothed with the configured EMA weight, like every mode."""
+    game, _ = await _bracket_game()
+    fighter = game.players[game.current_match.player1_serial]
+    game._ema_weight = 1.0
+
+    with patch.object(game, "_kill_player", autospec=True), patch.object(game, "_warn_player", autospec=True):
+        await game._process_controller_state(_gameplay_data(fighter.serial, 1.0))
+        await game._process_controller_state(_gameplay_data(fighter.serial, 2.0))
+
+    # weight 1: (1.0 * 1 + 2.0) / 2 = 1.5 (a hard-coded weight 4 gives 1.2)
+    assert fighter.smoothed_accel == pytest.approx(1.5)
+
+
+@pytest.mark.uc("UC-030", flow="main", steps=[6, 7])
+@pytest.mark.uc("UC-025", flow="main", steps=[3], br=["BR-002"])
+@pytest.mark.asyncio
+async def test_a_fighter_gets_at_most_one_warning_per_warning_window():
+    """BR-002: between the warning and the death threshold a fighter is warned once, not killed."""
+    game, _ = await _bracket_game()
+    fighter = game.players[game.current_match.player1_serial]
+    warn_threshold, death_threshold = game._compute_effective_thresholds(fighter)
+    between = (warn_threshold + death_threshold) / 2
+
+    with patch.object(game, "_kill_player", autospec=True) as kill:
+        for _ in range(10):
+            await game._process_controller_state(_gameplay_data(fighter.serial, between))
+
+    kill.assert_not_called()
+    warnings = [
+        m
+        for m in game.gameplay_stream.messages
+        if m.HasField("game_effect")
+        and m.game_effect.serial == fighter.serial
+        and m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_PLAYER_WARNING
+    ]
+    assert len(warnings) == 1
 
 
 @pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-005"])
@@ -394,6 +464,9 @@ async def test_the_timeout_loser_is_counted_out_without_a_death():
     """M3: the A1 loser gets the elimination gauges and the aggregate, but no death effect or explosion."""
     game, events = await _bracket_game()
     match = game.current_match
+    spans = {serial: MagicMock() for serial in game.players}
+    for serial, span in spans.items():
+        game.players[serial].span = span
     game._match_deadline = time.monotonic() - 1.0
 
     with (
@@ -416,3 +489,4 @@ async def test_the_timeout_loser_is_counted_out_without_a_death():
     m.player_deaths_total.labels.assert_not_called()
     assert _explosions(game) == 0
     assert _death_effects(game) == []
+    assert "player_death" not in [c.args[0] for c in spans[loser].add_event.call_args_list]

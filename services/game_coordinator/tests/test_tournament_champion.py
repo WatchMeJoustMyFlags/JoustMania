@@ -30,6 +30,7 @@ from test_tournament_run import _bracket_game, _frame
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games import tournament as tournament_mod
+from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.tournament import TournamentGame, TournamentState
 from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
 
@@ -196,7 +197,7 @@ def _ended(log) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.uc("UC-025", flow="main", steps=[3, 4, 5], br=["BR-005"])
+@pytest.mark.uc("UC-025", flow="main", steps=[3, 4, 5], br=["BR-005"], cond=["Post-S-1"])
 @pytest.mark.parametrize("num_players", [2, 3], ids=["two-players", "three-players-bye"])
 @pytest.mark.asyncio
 async def test_run_crowns_the_champion_once_with_rainbow_and_voice(num_players):
@@ -214,6 +215,7 @@ async def test_run_crowns_the_champion_once_with_rainbow_and_voice(num_players):
     assert ended["outcome"] == "completed"
     assert "reason" not in ended
     assert game.game_outcome() == "completed"
+    assert game.state == GameState.ENDED, "Post-S-1: the session ends"
 
     # One match rainbow per non-final match, then the champion's rainbow only.
     match_ends = _events(log, "match_end")
@@ -225,6 +227,20 @@ async def test_run_crowns_the_champion_once_with_rainbow_and_voice(num_players):
     assert order.index("tournament_champion") < order.index(GameEvent.GAME_ENDED.value)
     assert GameEvent.GAME_ERROR.value not in order
     assert len(client.streams) == 1
+
+
+@pytest.mark.uc("UC-025", br=["BR-002"])
+@pytest.mark.asyncio
+async def test_tournament_plays_without_a_tempo_loop():
+    """BR-002: no tempo loop by design: the music plays at 1.0 and the slow threshold table applies all game."""
+    game, log, client, _sounds = _game(2)
+
+    with patch.object(game, "_music_loop") as music_loop:
+        await _run(game, client)
+
+    music_loop.assert_not_called()
+    assert game.music_loop_task is None
+    assert _events(log, "tournament_champion"), "the game did not play to its end"
 
 
 @pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-005"])
@@ -358,7 +374,7 @@ async def test_a_final_won_by_a_walkover_crowns_the_player_left():
     assert game.game_outcome() == "completed"
 
 
-@pytest.mark.uc("UC-025", flow="A4")
+@pytest.mark.uc("UC-025", flow="A4", steps=[2])
 @pytest.mark.asyncio
 async def test_an_out_player_carried_by_a_both_out_walkover_keeps_its_round():
     """The both-out walkover carries an out player forward; its round (span final_round) stays."""

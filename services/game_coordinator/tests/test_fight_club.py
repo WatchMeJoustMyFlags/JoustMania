@@ -30,6 +30,7 @@ from conftest import EventCollector, MockControllerManagerService
 
 from lib.types import Sound
 from proto import controller_manager_pb2
+from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.fight_club import (
     DEFAULT_INVINCIBILITY_DURATION,
     DEFAULT_MIN_ROUNDS,
@@ -179,6 +180,7 @@ class TestFightClubGameMode:
         assert defender.state == FightState.DEFENDER
         assert defender.score == initial_score
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
     @pytest.mark.asyncio
     async def test_kill_player_after_invincibility(self, fight_club_game):
         """Test that kills after invincibility are processed."""
@@ -208,6 +210,7 @@ class TestFightClubGameMode:
         assert defender_serial in game.queue
         assert game.players[defender_serial].state == FightState.IN_LINE
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
     @pytest.mark.asyncio
     async def test_defender_wins_stays_defender(self, fight_club_game):
         """Test that when defender wins, they stay as defender."""
@@ -249,6 +252,7 @@ class TestFightClubGameMode:
 
         assert game._should_end_game() is False
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_should_end_game_after_min_rounds_with_leader(self, fight_club_game):
         """Test that game ends after minimum rounds with clear leader."""
@@ -263,6 +267,7 @@ class TestFightClubGameMode:
 
         assert game._should_end_game() is True
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_should_not_end_game_when_tied(self, fight_club_game):
         """Test that game continues with tied scores (enables face-off)."""
@@ -338,6 +343,7 @@ class TestFightClubGameMode:
         assert defender.state == FightState.DEFENDER
         assert fighter.state == FightState.FIGHTER
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
     @pytest.mark.asyncio
     async def test_handle_timeout_both_to_queue(self, fight_club_game):
         """Test that when round times out, both players go to back of queue."""
@@ -426,6 +432,7 @@ class TestFightClubStartRoundEdgeCases:
 
         assert game.game_over is True
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_start_round_face_off_mode_no_time_limit(self, fight_club_game):
         """In face-off mode, round_end_time is set to infinity."""
@@ -443,6 +450,7 @@ class TestFightClubStartRoundEdgeCases:
         assert len(round_events) == 1
         assert round_events[0]["face_off"] is True
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_start_round_face_off_no_timer_task(self, fight_club_game):
         """In face-off mode, no round_task is created."""
@@ -498,6 +506,7 @@ class TestFightClubHandleTimeout:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
     @pytest.mark.asyncio
     async def test_handle_timeout_publishes_event(self, fight_club_game):
         """Timeout publishes a round_timeout event with the round number."""
@@ -571,6 +580,7 @@ class TestFightClubEndGameImpl:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-005"], cond=["Post-S-1"])
     @pytest.mark.asyncio
     async def test_end_game_publishes_winner_and_scores(self, fight_club_game):
         """_end_game_impl publishes game_ended event with winner and scores."""
@@ -603,7 +613,9 @@ class TestFightClubEndGameImpl:
         assert data["outcome"] == "completed"
         assert "reason" not in data
         game._wait_for_rainbow_effect.assert_awaited_once()
+        assert game.state == GameState.ENDED, "Post-S-1: the session ends"
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4])
     @pytest.mark.asyncio
     async def test_end_game_sends_rainbow_effect(self, fight_club_game):
         """_end_game_impl sends winner rainbow effect via gameplay stream."""
@@ -1071,6 +1083,7 @@ class TestFightClubIntroPhase:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[1])
     @pytest.mark.asyncio
     async def test_intro_phase_sends_waiting_colors(self, fight_club_game):
         """Intro phase sets all players to waiting color via gameplay stream."""

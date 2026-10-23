@@ -689,6 +689,7 @@ class TestTournamentIntroPhase:
         assert intro_events[0]["total_players"] == 4
         assert intro_events[0]["total_rounds"] == game.total_rounds
 
+    @pytest.mark.uc("UC-025", flow="main", steps=[1])
     @pytest.mark.asyncio
     async def test_intro_sets_waiting_colors(self, tournament_game):
         """Intro should set all controllers to WAITING_COLOR (gray)."""
