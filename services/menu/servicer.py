@@ -587,6 +587,20 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         await self.audio_channel.close()
         logger.info("Menu service gRPC channels closed")
 
+    async def _reject_start_while_active(self, serial: str, source: str, game_mode: Games | None) -> None:
+        """Refuse a start request while a game is starting or running (UC-010 A8).
+
+        Publishes ``game_start_rejected`` with reason ``game_active`` and plays a short beep.
+        The live game lifecycle is left untouched.
+        """
+        mode = game_mode if game_mode is not None else self.current_selection
+        logger.warning(f"Start from {serial} ({source}) refused: a game is already starting or running")
+        await self.event_publisher.publish(
+            "game_start_rejected",
+            {"game_name": mode.name, "source": source, "reason": "game_active"},
+        )
+        await self.audio.play_sound(Sound.SFX_BEEP_LOUD)
+
     async def _start_game(
         self,
         serial: str,
@@ -609,12 +623,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             game_mode: Mode to start, resolved by the caller (web start_game);
                 None reads ``current_selection`` when the lifecycle runs.
         """
-        # Cancel any existing game lifecycle task (defensive)
+        # UC-010 A8 (#2054): a live lifecycle task is a game that is starting or running. Refuse
+        # the start; never cancel the live game's stream. A finished task needs no cancel.
         if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
-            logger.warning("Cancelling existing game lifecycle task before starting new one")
-            self._game_lifecycle_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._game_lifecycle_task
+            await self._reject_start_while_active(serial, source, game_mode)
+            return
 
         # Schedule game lifecycle as background task to avoid blocking button monitor
         self._game_lifecycle_task = asyncio.create_task(
