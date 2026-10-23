@@ -1291,7 +1291,7 @@ class TestGameplayStreamReopen:
     @pytest.mark.uc("UC-030", br=["BR-006"])
     @pytest.mark.asyncio
     async def test_game_loop_reconnect_closes_the_old_call(self, serve):
-        """A processing error leaves the old call live: the reconnect opens a new one and cancels the old."""
+        """A gRPC write error (#2001) leaves the old call live: the reconnect opens a new one, then cancels the old."""
         frame_server, stub = await serve(None)
         game = self._ffa(stub)
         await game._initialize_players()
@@ -1312,7 +1312,9 @@ class TestGameplayStreamReopen:
         async def process(update):
             processed.append(update.timestamp)
             if len(processed) == 1:
-                raise RuntimeError("processing failed")
+                raise grpc.aio.AioRpcError(
+                    grpc.StatusCode.UNAVAILABLE, grpc.aio.Metadata(), grpc.aio.Metadata(), details="write failed"
+                )
             if len(processed) >= 4:
                 game.running = False
             return False

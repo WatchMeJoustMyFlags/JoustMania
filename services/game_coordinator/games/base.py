@@ -1970,9 +1970,25 @@ class BaseGameMode(ABC):
         return attempt
 
     _RECONNECT_BACKOFF_S = 1.0
+    # Errors of the gameplay call itself, raised by a read or by a write on it
+    # (UC-030 BR-006): the game loop reconnects on these. Any other error while a
+    # frame is processed ends the game with game_error (UC-020 BR-003, #2001).
+    _STREAM_CALL_ERRORS = (grpc.aio.AioRpcError, asyncio.InvalidStateError)
     # A reopened stream counts as healthy, and the reconnect count starts again, after
     # this many frames (about 1 s at the default 60 Hz; UC-030 BR-006, #1931).
     _RECONNECT_HEALTHY_FRAMES = 60
+
+    async def _hold_win_display(self) -> None:
+        """Latch the outcome and keep the game active 1 s to show the winner (UC-020 BR-003).
+
+        A mode that ends the loop on an error it raises from ``run()`` latches no
+        outcome (Tournament bracket step, #2001): the loop ends at once, no hold.
+        """
+        self._latch_game_outcome()
+        if self._latched_outcome is None:
+            return
+        logger.info("Win condition met, keeping game active for 1 second to show winner")
+        await asyncio.sleep(1.0)
 
     async def _game_loop(self):
         """Main game loop - processes controller states and checks for deaths."""
@@ -2003,9 +2019,7 @@ class BaseGameMode(ABC):
             # UC-020 A2: disconnects seen during EMA warmup go through the death path now.
             # A game force-ended during the countdown or warmup stays force_ended (BR-003).
             if self.running and await self._handle_warmup_disconnects():
-                self._latch_game_outcome()
-                logger.info("Win condition met, keeping game active for 1 second to show winner")
-                await asyncio.sleep(1.0)
+                await self._hold_win_display()
                 return
             last_alive_serials = await self._send_alive_filter_update(last_alive_serials)
 
@@ -2023,6 +2037,7 @@ class BaseGameMode(ABC):
             max_reconnect_attempts = 3
             reconnect_attempt = 0
             frames_since_reconnect = 0
+            frame_failed = False
 
             logger.info("Starting gameplay data stream loop, waiting for first update...")
             while self.running:
@@ -2044,15 +2059,23 @@ class BaseGameMode(ABC):
                             logger.info("Game running=False, breaking loop")
                             break
 
-                        # Process controllers and check for game over
-                        if await self._process_gameplay_update(gameplay_update):
-                            self._latch_game_outcome()
-                            logger.info("Win condition met, keeping game active for 1 second to show winner")
-                            await asyncio.sleep(1.0)
-                            return
+                        # Process controllers and check for game over, then update the
+                        # alive filter if players changed. An error here that is not a
+                        # gRPC error of the call (a mode's kill handler, its win check)
+                        # ends the game, no reconnect (UC-030 BR-006, #2001).
+                        try:
+                            game_over = await self._process_gameplay_update(gameplay_update)
+                            if not game_over:
+                                last_alive_serials = await self._send_alive_filter_update(last_alive_serials)
+                        except self._STREAM_CALL_ERRORS:
+                            raise
+                        except Exception:
+                            frame_failed = True
+                            raise
 
-                        # Update alive filter if players changed
-                        last_alive_serials = await self._send_alive_filter_update(last_alive_serials)
+                        if game_over:
+                            await self._hold_win_display()
+                            return
 
                         # Track loop timing for metrics
                         loop_iterations += 1
@@ -2083,7 +2106,12 @@ class BaseGameMode(ABC):
 
                 except Exception as e:
                     if not self.running:
+                        if frame_failed:
+                            logger.warning(f"Frame processing failed after the game stopped: {e!r}")
                         break
+                    if frame_failed:
+                        logger.error("Frame processing failed, ending the game without a reconnect")
+                        raise
 
                     reconnect_attempt += 1
                     frames_since_reconnect = 0
