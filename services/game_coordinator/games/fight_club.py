@@ -138,6 +138,10 @@ class FightClubGame(BaseGameMode):
         # Round losers that disconnected once the next round had seated them again:
         # they forfeit that round when their kill path is done (A4 step 5).
         self._deferred_disconnects: set[str] = set()
+        # The id of the seated round, and the round each kill in flight entered in:
+        # a kill never decides a later round than its own (BR-006, #2015).
+        self._round_id: int = 0
+        self._kill_round_ids: dict[str, int] = {}
         self.game_span: trace.Span | None = None
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
@@ -288,6 +292,8 @@ class FightClubGame(BaseGameMode):
                 self.game_over = True
                 return
 
+        # A new round is seated: kills that entered an earlier one are stale (BR-006).
+        self._round_id += 1
         defender = self.players[self.current_defender]
         fighter = self.players[self.current_fighter]
 
@@ -547,6 +553,14 @@ class FightClubGame(BaseGameMode):
             return False
         if serial in self._disconnected:
             return player.alive
+        # A kill that entered during an earlier round (still awaiting its explosion
+        # when the next round was seated) never decides this one (#2015).
+        if self._kill_round_ids.get(serial, self._round_id) != self._round_id:
+            return False
+        # A seated combatant's disconnect waits for its round-loss kill: the round
+        # is its forfeit, so the other combatant cannot lose it meanwhile (A4 step 5).
+        if self._deferred_disconnects.intersection((self.current_defender, self.current_fighter)):
+            return False
         return self._fights_current_round(serial) and not self.is_in_grace(player)
 
     async def _handle_disconnect(self, serial: str) -> None:
@@ -596,8 +610,20 @@ class FightClubGame(BaseGameMode):
             self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
 
     async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion") -> bool:
-        """The base kill path, then a disconnect deferred while the kill ran (A4 step 5)."""
-        taken = await super()._kill_player(serial, accel_mag, reason)
+        """The base kill path, then a disconnect deferred while the kill ran (A4 step 5).
+
+        A kill entering the path records the round it entered in, for the gate's
+        second check after the awaits (BR-006, #2015); a kill dropped because one of
+        the same player is in flight leaves that record alone.
+        """
+        entering = serial not in self._kills_in_progress
+        if entering:
+            self._kill_round_ids[serial] = self._round_id
+        try:
+            taken = await super()._kill_player(serial, accel_mag, reason)
+        finally:
+            if entering:
+                self._kill_round_ids.pop(serial, None)
         if serial in self._deferred_disconnects and serial not in self._kills_in_progress:
             self._deferred_disconnects.discard(serial)
             await self._handle_disconnect(serial)
