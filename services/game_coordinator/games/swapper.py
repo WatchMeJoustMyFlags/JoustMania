@@ -82,6 +82,13 @@ class SwapperGame(TeamsGameBase):
         # that ever changes, a revive must refuse these serials.
         self._eliminated: set[str] = set()
 
+        # The win, latched once when ``swapper_winner`` is published (UC-024 BR-004,
+        # #1343): the end-of-game step uses only this snapshot, never the live teams.
+        self._win_latched = False
+        self._latched_team: int | None = None
+        self._latched_winners: list[str] = []
+        self._latched_excluded: str | None = None
+
     def get_game_name(self) -> str:
         """Return game mode identifier."""
         return "Swapper"
@@ -162,6 +169,11 @@ class SwapperGame(TeamsGameBase):
         if serial in self._eliminated:
             # UC-024 A1: a disconnected player is eliminated, not swapped.
             self._eliminate(serial)
+            return
+        if self._win_latched or not self.running:
+            # The win was latched, or the game ended, while the base kill path awaited
+            # (shield discard, explosion sound): no swap, no write (BR-003, BR-004).
+            # ``alive`` stays True, so no death effect follows either.
             return
 
         old_team = player.team
@@ -257,6 +269,12 @@ class SwapperGame(TeamsGameBase):
             # does not finish (no colour, no gauge reset, no player_swapped, no beep).
             self._eliminate(serial)
             return
+        if not self.running or self._win_latched:
+            # The game ended, or the win was latched, during the pause (BR-003, BR-004):
+            # the end effects own the LED. No colour, gauge, event or sound. The player
+            # is back in the game on its new team, so no death effect follows either.
+            player.alive = True
+            return
         await self._set_player_color(serial, player.color)
 
         # Respawn the player on their new team
@@ -301,6 +319,12 @@ class SwapperGame(TeamsGameBase):
             player.span = None
         logger.info(f"Player {serial} eliminated (controller disconnect)")
 
+    async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion"):
+        """No swap once the win is latched: the winners are already decided (BR-004)."""
+        if self._win_latched:
+            return
+        await super()._kill_player(serial, accel_mag, reason)
+
     async def _handle_disconnect(self, serial: str) -> None:
         """Eliminate a disconnected player instead of swapping it (UC-024 A1, #1344).
 
@@ -309,15 +333,18 @@ class SwapperGame(TeamsGameBase):
         kill while another kill of the same player is in flight. The mark makes that
         swap, or that kill, eliminate the player.
 
-        The last swap is cleared only when this elimination removes the last swapped
-        player or completes the convergence itself (BR-001, D2). When the teams had
-        already converged by the last swap (an agent swap whose win check has not run
-        yet), that swap completed the convergence and its player stays excluded.
+        The last swap is cleared only when this elimination completes the convergence
+        itself (BR-001, D2). An eliminated player is never the excluded one
+        (``_excluded_serial``), and when the teams had already converged by the last
+        swap (an agent swap whose win check has not run yet), that swap completed the
+        convergence and its player stays excluded. Ignored once the win is latched.
         """
+        if self._win_latched:
+            return
         if serial in self.players and serial not in self._eliminated:
             converged_before = len(self._get_alive_teams()) <= 1
             self._eliminated.add(serial)
-            if serial == self.last_death_serial or not converged_before:
+            if not converged_before and len(self._get_alive_teams()) <= 1:
                 self.last_death_serial = None
         await super()._handle_disconnect(serial)
 
@@ -389,18 +416,29 @@ class SwapperGame(TeamsGameBase):
         Returns:
             True if all players are on one team, False otherwise
         """
+        if self._win_latched:
+            return True
+        if not self.running:
+            # A force-end declares no winner (BR-003): nothing is latched or published.
+            return False
+
         teams = self._get_alive_teams()
 
         if not teams:
             # Every player was eliminated (UC-024 A1 step 4): nobody wins, never team 0.
             logger.info("Swapper ended with no player left: no winner")
+            self._win_latched = True
             return True
 
         if len(teams) == 1:
-            # All remaining players on one team
+            # All remaining players on one team: latch before publishing (BR-004)
             winning_team = next(iter(teams))
             winners = self._team_winners(winning_team)
             excluded = self._excluded_serial()
+            self._win_latched = True
+            self._latched_team = winning_team
+            self._latched_winners = winners
+            self._latched_excluded = excluded
 
             team_name = self.team_colors[winning_team]["name"]
             logger.info(f"Team {winning_team} ({team_name}) wins! Winners: {len(winners)}, Excluded: {excluded}")
@@ -437,13 +475,12 @@ class SwapperGame(TeamsGameBase):
         logger.info("Ending Swapper game...")
         self.state = self.state.__class__.ENDING
 
-        # Determine winning team
-        # Eliminated players are never winners (UC-024 A1); no team left = no winner.
-        # Two teams left (a force end) still picks one: the force-end rule is #1343.
-        teams = self._get_alive_teams()
-        winning_team = next(iter(teams)) if teams else None
-        winners = set(self._team_winners(winning_team)) if winning_team is not None else set()
-        excluded = self._excluded_serial()
+        # Only the latched win counts (BR-003, BR-004): a force-end declares no winner,
+        # and a stream end without a win has none either.
+        force_ended = self.game_outcome() == "force_ended"
+        winning_team = None if force_ended else self._latched_team
+        winners = set(self._latched_winners) if winning_team is not None else set()
+        excluded = self._latched_excluded if winning_team is not None else None
 
         # Show rainbow effect on winners (excluding last swapper)
         if self.gameplay_stream:
@@ -473,8 +510,8 @@ class SwapperGame(TeamsGameBase):
             sound = TEAM_WIN_SOUNDS.get(winning_team_obj.name, Sound.VOX_CONGRATULATIONS)
             await self._play_sound(sound, priority=2)
 
-        # Wait for celebration (interruptible)
-        for _ in range(20):  # 2 seconds
+        # Wait for celebration (interruptible); only a declared winner is celebrated
+        for _ in range(20 if winning_team is not None else 0):  # 2 seconds
             if not self.running:
                 break
             await asyncio.sleep(0.1)
@@ -505,13 +542,14 @@ class SwapperGame(TeamsGameBase):
                 team.span.end()
 
         self.state = self.state.__class__.ENDED
-        await self.event_publisher(
-            "game_ended",
-            {
-                "game_id": self.game_id,
-                "duration": time.time() - self.start_time if self.start_time else 0,
-                "winning_team": winning_team if winning_team is not None else "none",
-            },
-        )
+        ended_payload = {
+            "game_id": self.game_id,
+            "duration": time.time() - self.start_time if self.start_time else 0,
+            "winning_team": winning_team if winning_team is not None else "none",
+            "outcome": self.game_outcome(),
+        }
+        if force_ended:
+            ended_payload["reason"] = self.force_end_reason
+        await self.event_publisher("game_ended", ended_payload)
 
         logger.info("Swapper game ended")
