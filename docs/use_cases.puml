@@ -50,9 +50,9 @@ rectangle "JoustMania" {
         usecase "UC-046\nRun Repeatable Pattern-Driven Shadow Games" as UC046
     }
     package "Infrastructure" {
-        usecase "UC-050\nRoll Out a Controller Backend Progressively" as UC050
-        usecase "UC-051\nRoll Back Automatically on Degradation" as UC051
-        usecase "UC-052\nCanary a Backend by Hand" as UC052
+        usecase "UC-050\nRoll Out a Controller Backend Progressively\n(parked)" as UC050
+        usecase "UC-051\nRoll Back Automatically on Degradation\n(parked)" as UC051
+        usecase "UC-052\nCanary a Backend by Hand\n(parked)" as UC052
         usecase "UC-053\nChange a Runtime Flag through the Flag Service" as UC053
     }
     package "Operations" {
@@ -65,8 +65,11 @@ rectangle "JoustMania" {
 
 player --> UC001
 player --> UC002
+operator --> UC002
 player --> UC010
+operator --> UC010
 player --> UC011
+operator --> UC011
 player --> UC020
 player --> UC021
 player --> UC022
@@ -139,6 +142,12 @@ UC013 ..> UC053 : <<include>>
 note right of maintainer
   Reviews tier-3 proposals
   (issue / PR) from UC-043
+end note
+
+note bottom of UC050
+  UC-050, UC-051 and UC-052 are parked
+  (maintainer decision 2026-10-19, #1617):
+  code kept, not audited
 end note
 
 @enduml
