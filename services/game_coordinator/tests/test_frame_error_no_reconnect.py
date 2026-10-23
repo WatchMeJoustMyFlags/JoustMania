@@ -172,3 +172,38 @@ async def test_a_tournament_bracket_error_ends_without_the_win_hold(caplog):
     assert len(client.streams) == 1
     assert reconnects == 0
     assert not log.events.get_events_of_type(GameEvent.GAME_ENDED), "a bracket error ended the game as a natural end"
+
+
+@pytest.mark.uc("UC-030", br=["BR-006"])
+@pytest.mark.uc("UC-020", br=["BR-003"])
+@pytest.mark.asyncio
+async def test_a_frame_error_after_a_force_end_ends_the_game_as_force_ended(caplog):
+    """A kill handler that force-ends the game and then raises: the loop ends quietly, outcome force_ended."""
+    log = RecordingLog()
+    client = QueueControllerManager(log)
+    game = _ffa(log, client)
+    game._RECONNECT_BACKOFF_S = 0.01
+
+    async def force_end_then_fail(_serial, _accel_mag):
+        game.force_end("admin stop")
+        raise RuntimeError("kill handler bug after the stop")
+
+    game._kill_player_impl = force_end_then_fail
+    frames = _count_frames(game)
+
+    async def disconnect_in_the_loop():
+        await _wait_for(lambda: len(frames) >= 1)
+        stream = client.streams[-1]
+        stream.disconnect_at[stream.seq + 1] = SERIALS[-1]
+
+    trigger = asyncio.create_task(disconnect_in_the_loop())
+    with caplog.at_level(logging.WARNING, logger="services.game_coordinator.games.base"):
+        error, reconnects = await _run_until_error(game, client)
+    trigger.cancel()
+
+    assert error is None, f"a frame error after a force-end failed the run: {error!r}"
+    assert "Frame processing failed after the game stopped" in caplog.text
+    assert game._game_outcome_attributes().get("game.outcome") == "force_ended"
+    assert not log.events.get_events_of_type(GameEvent.GAME_ERROR), "a stopped game published game_error"
+    assert len(client.streams) == 1
+    assert reconnects == 0

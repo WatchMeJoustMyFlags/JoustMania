@@ -2107,7 +2107,7 @@ class BaseGameMode(ABC):
                 except Exception as e:
                     if not self.running:
                         if frame_failed:
-                            logger.warning(f"Frame processing failed after the game stopped: {e!r}")
+                            logger.warning(f"Frame processing failed after the game stopped: {e!r}", exc_info=True)
                         break
                     if frame_failed:
                         logger.error("Frame processing failed, ending the game without a reconnect")
