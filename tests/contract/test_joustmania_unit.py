@@ -2,8 +2,10 @@
 
 Static checks over ``scripts/setup/joustmania.service``: nothing in it removes or tears
 down containers (a reboot with unchanged images recreates 0, NFR-026), a stop is a plain
-compose ``stop``, retries are bounded (3 in 15 minutes, A5), the unit waits for Bluetooth
-but not for the network (BR-001), and it declares the revision the start script checks.
+compose ``stop``, retries are bounded (3 in 15 minutes, A5), the unit requires Docker and
+orders after Docker and Bluetooth (Pre-1), and it declares the revision the start script
+checks. ``Wants=network-online.target`` stays until the maintainer decides #2027 Decision 10;
+it is not asserted either way (docker.service wants network-online.target anyway).
 """
 
 from __future__ import annotations
@@ -44,20 +46,17 @@ def test_start_attempts_are_bounded_to_3_in_15_minutes():
     assert _lines("Unit", "StartLimitBurst") == ["3"]
 
 
-@pytest.mark.uc("UC-060", br=["BR-001"])
-def test_unit_orders_after_bluetooth_and_does_not_want_the_network():
+@pytest.mark.uc("UC-060", cond=["Pre-1"])
+def test_unit_requires_docker_and_orders_after_docker_and_bluetooth():
     after = " ".join(_lines("Unit", "After")).split()
     wants = " ".join(_lines("Unit", "Wants")).split()
     assert "bluetooth.service" in after
     assert "bluetooth.service" in wants
     assert "docker.service" in after
-    assert "network-online.target" not in wants, (
-        "booting without a network must not wait on it"
-    )
     assert "docker.service" in " ".join(_lines("Unit", "Requires")).split()
 
 
-@pytest.mark.uc("UC-060", br=["BR-001"])
+@pytest.mark.uc("UC-060", cond=["Post-F-1"])
 def test_unit_removes_nothing_before_start():
     exec_start_pre = _lines("Service", "ExecStartPre")
     text = "\n".join(exec_start_pre)
@@ -73,7 +72,7 @@ def test_unit_removes_nothing_before_start():
     assert not re.search(r"docker (container )?prune|\brm -f\b", body)
 
 
-@pytest.mark.uc("UC-060", br=["BR-001"])
+@pytest.mark.uc("UC-060", cond=["Post-F-1"])
 def test_stop_is_a_plain_compose_stop_not_down():
     (stop,) = _lines("Service", "ExecStop")
     assert stop.endswith("joustmania-compose.sh stop --timeout 20")

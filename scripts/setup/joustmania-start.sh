@@ -16,7 +16,8 @@ START_RESULT="failed"
 cd "$JOUSTMANIA_DIR"
 
 # JOUSTMANIA_UNIT_REV comes from the installed unit (rev 2+). Without it the
-# unit is outdated (it still has the teardown ExecStartPre): never fail, so the
+# unit is outdated (it still has the teardown ExecStartPre and `down` at stop)
+# or the script runs by hand: say so on every start, and never fail, so the
 # old unit's Restart=on-failure cannot loop.
 write_state() { # $1 = phase, $2 = result
     {
@@ -48,6 +49,9 @@ compose() {
 
 echo "=== JoustMania Startup ==="
 echo "Working directory: $JOUSTMANIA_DIR"
+if [[ -z "${JOUSTMANIA_UNIT_REV:-}" ]]; then
+    echo "unit outdated or not run by the rev-2 unit (no JOUSTMANIA_UNIT_REV): sudo $JOUSTMANIA_DIR/scripts/setup/install_autostart.sh"
+fi
 
 mkdir -p "$STATE_DIR" 2>/dev/null || echo "state dir $STATE_DIR not writable; continuing"
 
@@ -97,10 +101,16 @@ done
 
 HEAD_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 HEAD_TAG="$(git describe --tags --exact-match 2>/dev/null || echo none)"
-# Effective IMAGE_TAG: .env.local wins over .env. Read by grep, never by
-# `compose config` (that prints interpolated secrets).
-EFFECTIVE_IMAGE_TAG="$(grep -hs '^IMAGE_TAG=' .env .env.local | tail -n 1 | cut -d= -f2- || true)"
-EFFECTIVE_IMAGE_TAG="${EFFECTIVE_IMAGE_TAG:-unset}"
+# Effective IMAGE_TAG as compose resolves it (shell env, then .env.local, then
+# .env; quotes, `export` and inline comments handled by compose): the tag of the
+# game-coordinator image from `config --images`, which prints only image refs.
+EFFECTIVE_IMAGE_TAG="unknown"
+COMPOSE_IMAGES="$(compose config --images 2>/dev/null || true)"
+GC_IMAGE="$(grep -m 1 '/game-coordinator-service[:@]' <<<"$COMPOSE_IMAGES" || true)"
+GC_IMAGE="${GC_IMAGE%%@*}"
+if [[ "${GC_IMAGE##*/}" == *:* ]]; then
+    EFFECTIVE_IMAGE_TAG="${GC_IMAGE##*:}"
+fi
 echo "Version: commit $HEAD_SHORT, tag $HEAD_TAG, IMAGE_TAG $EFFECTIVE_IMAGE_TAG (git pull: $GIT_PULL_STATUS)"
 write_state start starting
 
@@ -123,18 +133,26 @@ else
     echo "Could not pull images (offline) - continuing with cached images"
 fi
 
-# Targeted cleanup only: a joustmania-* container that does not belong to this
-# compose project (no label, or another project) blocks the fixed container
-# names, so remove it and say so. Our own containers are never touched here:
-# compose keeps or recreates them (no blanket rm, prune or down; NFR-026).
-PROJECT="${COMPOSE_PROJECT_NAME:-$(basename "$JOUSTMANIA_DIR" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-')}"
-echo "Checking for foreign joustmania containers (project $PROJECT)..."
-CONTAINERS="$(docker ps -a --filter "name=joustmania-" --format '{{.Names}}|{{.Label "com.docker.compose.project"}}' 2>/dev/null || true)"
-while IFS='|' read -r cname cproject; do
-    [[ -n "$cname" && "$cproject" != "$PROJECT" ]] || continue
-    echo "Removing foreign container $cname (project '${cproject:-none}')"
-    docker rm -f "$cname" >/dev/null 2>&1 || true
-done <<<"$CONTAINERS"
+# Targeted cleanup only: a joustmania-* container that is not ours blocks the
+# fixed container names, so remove it and say so. Compose itself says which
+# containers are ours (`ps -a` resolves the project name from the shell env,
+# .env and .env.local exactly as `up` does); a container whose compose working
+# dir is this checkout is ours too. If compose cannot list them, remove nothing.
+# Our own containers are never touched here: compose keeps or recreates them
+# (no blanket rm, prune or down; NFR-026).
+echo "Checking for foreign joustmania containers..."
+if OWN_CONTAINERS="$(compose ps -a --format '{{.Name}}' 2>/dev/null)"; then
+    CONTAINERS="$(docker ps -a --filter "name=joustmania-" --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)"
+    while IFS='|' read -r cname cproject cworkdir; do
+        [[ -n "$cname" ]] || continue
+        grep -qxF -- "$cname" <<<"$OWN_CONTAINERS" && continue
+        [[ "$cworkdir" == "$JOUSTMANIA_DIR" ]] && continue
+        echo "Removing foreign container $cname (project '${cproject:-none}')"
+        docker rm -f "$cname" >/dev/null 2>&1 || true
+    done <<<"$CONTAINERS"
+else
+    echo "Could not list this project's containers; removing none"
+fi
 
 # Set all audio devices to max volume
 echo "Setting audio volume..."
