@@ -766,6 +766,7 @@ class ZombieGame(BaseGameMode):
                 game_span.set_status(Status(StatusCode.OK))
 
             except Exception as e:
+                self._run_failed = True
                 logger.error(f"Game error: {e}", exc_info=True)
                 game_span.record_exception(e)
                 game_span.set_status(Status(StatusCode.ERROR, str(e)))

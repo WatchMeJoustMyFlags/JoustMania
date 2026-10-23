@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
@@ -45,7 +45,7 @@ from services.game_coordinator.games.base import Phase
 from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
 
 TRACED_MODULES = [base, fight_club, nonstop_joust, swapper, teams_base, tournament, traitor, werewolf, zombie]
-RUN_OVERRIDE_MODES = [Games.FightClub, Games.Werewolf, Games.Zombies]
+RUN_OVERRIDE_MODES = [Games.FightClub, Games.Werewolf, Games.Zombies, Games.Tournament]
 BASE_RUN_MODES = [Games.JoustFFA, Games.NonStop]
 EARLY_RETURN_PHASES = ["intro", "countdown", "warmup"]
 # Werewolf and Zombies return early after the intro and the countdown only: a force-end
@@ -55,13 +55,25 @@ SERIALS = [f"mock_controller_{i}" for i in range(4)]
 DOUBLE_END = "Calling end() on an ended span"
 
 
+class _StartedSpans(SpanProcessor):
+    """Records every started span, so a test can find the spans that never ended."""
+
+    def __init__(self):
+        self.spans = []
+
+    def on_start(self, span, parent_context=None):
+        self.spans.append(span)
+
+
 @pytest.fixture
 def exporter(monkeypatch):
     """An SDK tracer behind every game module, and no countdown or long rainbow."""
     # conftest disables the SDK via OTEL_SDK_DISABLED, which a TracerProvider reads at construction.
     monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
     exp = InMemorySpanExporter()
+    exp.started = _StartedSpans()
     provider = TracerProvider()
+    provider.add_span_processor(exp.started)
     provider.add_span_processor(SimpleSpanProcessor(exp))
     tracer = provider.get_tracer("test_run_exit_player_spans")
     config = GamePerformanceConfig(countdown_phase_duration_ms=0, winner_rainbow_duration_ms=50)
@@ -105,6 +117,12 @@ def _player_spans(exp) -> list:
     return [s for s in exp.get_finished_spans() if s.name == "player_lifecycle" or s.name.startswith("player: ")]
 
 
+def _assert_no_span_left_open(exp) -> None:
+    """Every span the run started ended: player, countdown_phase and the grouping spans."""
+    open_spans = sorted(s.name for s in exp.started.spans if s.end_time is None)
+    assert open_spans == [], f"spans left open: {open_spans}"
+
+
 def _game_ended(span) -> list:
     return [e for e in span.events if e.name == "game_ended"]
 
@@ -121,6 +139,7 @@ def _assert_every_player_span_ended_once(exp, caplog, outcome: str | None, reaso
         assert attrs.get("game.outcome") == outcome
         assert attrs.get("game.end_reason") == reason
     assert DOUBLE_END not in caplog.text
+    _assert_no_span_left_open(exp)
 
 
 @pytest.mark.uc("UC-030", br=["BR-007"])
@@ -145,6 +164,13 @@ async def test_werewolf_force_end_before_the_game_loop_ends_every_player_span(ex
 @pytest.mark.asyncio
 async def test_zombies_force_end_before_the_game_loop_ends_every_player_span(exporter, caplog, phase):
     await _run_force_ended(Games.Zombies, phase, exporter, caplog)
+
+
+@pytest.mark.uc("UC-030", br=["BR-007"])
+@pytest.mark.parametrize("phase", EARLY_RETURN_PHASES)
+@pytest.mark.asyncio
+async def test_tournament_force_end_before_the_bracket_ends_every_player_span(exporter, caplog, phase):
+    await _run_force_ended(Games.Tournament, phase, exporter, caplog)
 
 
 async def _run_force_ended(mode: Games, phase: str, exp, caplog) -> None:
@@ -182,6 +208,73 @@ async def test_an_error_in_the_warmup_ends_every_player_span(exporter, caplog, m
     names = {s.name for s in exporter.get_finished_spans()}
     if mode in BASE_RUN_MODES:
         assert {"players", "game_cycle"} <= names, "the grouping spans end with the player spans"
+
+
+@pytest.mark.uc("UC-030", br=["BR-007"])
+@pytest.mark.parametrize("mode", BASE_RUN_MODES, ids=lambda m: m.name)
+@pytest.mark.asyncio
+async def test_an_error_in_the_countdown_ends_the_countdown_and_grouping_spans(exporter, caplog, mode):
+    caplog.set_level(logging.WARNING)
+    game = _game(mode)
+
+    async def broken_countdown():
+        raise RuntimeError("countdown failed")
+
+    game._countdown = broken_countdown
+    with pytest.raises(RuntimeError, match="countdown failed"):
+        await asyncio.wait_for(game.run(), timeout=20)
+
+    _assert_every_player_span_ended_once(exporter, caplog, "error", None)
+    finished = [s.name for s in exporter.get_finished_spans()]
+    assert finished.count("countdown_phase") == len(SERIALS)
+    assert {"players", "game_cycle"} <= set(finished)
+
+
+@pytest.mark.uc("UC-030", br=["BR-007"])
+@pytest.mark.asyncio
+async def test_an_error_after_the_loop_latched_labels_the_spans_with_the_latched_outcome(exporter, caplog):
+    caplog.set_level(logging.WARNING)
+    game = _game(Games.FightClub)
+
+    async def instant_loop():
+        await asyncio.sleep(0.05)
+
+    async def broken_teardown():
+        raise RuntimeError("teardown failed")
+
+    game._game_loop = instant_loop
+    game._end_shield_feedback = broken_teardown
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        await asyncio.wait_for(game.run(), timeout=20)
+
+    latched = game._latched_outcome["game.outcome"]
+    assert latched != "error"
+    _assert_every_player_span_ended_once(exporter, caplog, latched, None)
+    assert all(s.status.status_code == StatusCode.ERROR for s in _player_spans(exporter))
+
+
+@pytest.mark.uc("UC-030", br=["BR-007"])
+@pytest.mark.asyncio
+async def test_a_failing_span_end_keeps_the_run_error_and_clears_the_analytics(exporter, caplog):
+    game = _game(Games.JoustFFA)
+
+    async def broken_warmup():
+        raise RuntimeError("warm-up failed")
+
+    def broken_finalize(_player):
+        raise ValueError("finalize failed")
+
+    game._warmup_ema = broken_warmup
+    game._finalize_player_health = broken_finalize
+    with (
+        patch.object(base.metrics, "clear_session_player_analytics") as clear_analytics,
+        pytest.raises(RuntimeError, match="warm-up failed"),
+    ):
+        await asyncio.wait_for(game.run(), timeout=20)
+
+    clear_analytics.assert_called_once()
+    assert "Ending the open player spans failed" in caplog.text
+    assert {"players", "game_cycle"} <= {s.name for s in exporter.get_finished_spans()}
 
 
 @pytest.mark.uc("UC-030", br=["BR-007"])

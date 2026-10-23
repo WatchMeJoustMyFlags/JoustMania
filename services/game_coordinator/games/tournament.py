@@ -971,11 +971,10 @@ class TournamentGame(BaseGameMode):
         logger.info("Tournament game ended")
 
     async def cleanup(self) -> None:
-        """End the match span and any player span still open (a force-end or an error skips the end step)."""
+        """End the match span; the shared run-end cleanup ends any player span still open (#1997)."""
         if self.match_span:
             self.match_span.end()
             self.match_span = None
-        self._close_all_player_spans()
         await super().cleanup()
 
     async def run(self):
@@ -1056,6 +1055,9 @@ class TournamentGame(BaseGameMode):
                 if self._bracket_error is not None:
                     raise self._bracket_error
                 self._latch_game_outcome()
+                # The natural end closes the player spans with the bracket, as the
+                # base gameplay phase does; an early exit leaves them to the run-end cleanup (#1997).
+                self._close_all_player_spans()
 
                 # End game
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
@@ -1069,6 +1071,7 @@ class TournamentGame(BaseGameMode):
                 game_span.set_status(Status(StatusCode.OK))
 
             except Exception as e:
+                self._run_failed = True
                 logger.error(f"Game error: {e}", exc_info=True)
                 game_span.record_exception(e)
                 game_span.set_status(Status(StatusCode.ERROR, str(e)))

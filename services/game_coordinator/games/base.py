@@ -914,6 +914,9 @@ class BaseGameMode(ABC):
         # rainbow) must not turn a real win into force_ended (#1328).
         self._latched_outcome: dict | None = None
         self._outcome_recorded = False
+        # Set when run() exits by an exception: the run-end cleanup labels the
+        # player spans it ends ``error`` (UC-030 BR-007, #1997).
+        self._run_failed = False
         # The game root span (current when run() starts); the outcome lands on it.
         self._game_root_span: trace.Span | None = None
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
@@ -3951,8 +3954,17 @@ class BaseGameMode(ABC):
             # A grant arriving while cleanup awaits can open a span after the first close (#1868).
             self._close_shield_charge_spans()
             # An early return (force-end after the intro, countdown or warm-up) or an
-            # error skips the end step that closes the player spans (#1997).
-            self._end_open_player_spans_on_exit()
+            # error skips the end step that closes the player spans (#1997). Guarded
+            # so a failure here neither masks the run's own error nor skips the
+            # analytics clear below.
+            try:
+                self._end_open_player_spans_on_exit()
+            except Exception:
+                logger.exception(f"Ending the open player spans failed: {self.game_id}")
+            try:
+                self._close_grouping_spans()
+            except Exception:
+                logger.exception(f"Closing the grouping spans failed: {self.game_id}")
         # Ensure this session's analytics are always cleared, even on error
         # (#775) — per-session targeted cleanup, never a global wipe.
         metrics.clear_session_player_analytics(
@@ -4079,6 +4091,7 @@ class BaseGameMode(ABC):
                 )
 
         except Exception as e:
+            self._run_failed = True
             logger.error(f"{self.get_game_name()} game error: {e}", exc_info=True)
             self.state = GameState.ENDED
             current_span = trace.get_current_span()
@@ -4211,16 +4224,20 @@ class BaseGameMode(ABC):
 
         Idempotent: a span the mode already ended (``is_recording()`` false) or
         cleared (``player.span`` None) is skipped, so a natural end never ends a
-        span twice. A span closed here gets ``game_ended`` with ``winner`` false:
-        ``game.outcome`` ``force_ended`` (+ ``game.end_reason``) after a force-end,
-        ``error`` otherwise. Open countdown spans and the grouping spans close too.
+        span twice. A span closed here gets ``game_ended`` with ``winner`` false
+        and ``game.outcome``: the latched outcome, else ``force_ended`` (+
+        ``game.end_reason``), else ``error`` after run() raised, else
+        ``completed``. Status ERROR only after run() raised. Open countdown
+        spans close too; the caller closes the grouping spans.
         """
         from opentelemetry.trace import Status, StatusCode
 
-        if self.force_ended:
-            outcome = {"game.outcome": "force_ended", "game.end_reason": self.force_end_reason}
-        else:
+        if self._latched_outcome is not None or self.force_ended:
+            outcome = self._game_outcome_attributes()
+        elif self._run_failed:
             outcome = {"game.outcome": "error"}
+        else:
+            outcome = {"game.outcome": "completed"}
         for serial, player in self.players.items():
             if player._countdown_span is not None:
                 player._countdown_span.end()
@@ -4238,14 +4255,13 @@ class BaseGameMode(ABC):
                         "game_duration": time.time() - self.start_time if self.start_time else 0,
                     },
                 )
-                if self.force_ended:
-                    span.set_status(Status(StatusCode.OK))
-                else:
+                if self._run_failed:
                     span.set_status(Status(StatusCode.ERROR, "game ended before its end step"))
+                else:
+                    span.set_status(Status(StatusCode.OK))
                 span.end()
                 logger.debug(f"Closed lifecycle span for player {serial} on run exit")
             player.span = None
-        self._close_grouping_spans()
 
     def _close_grouping_spans(self):
         """Close the players and game_cycle grouping spans.
