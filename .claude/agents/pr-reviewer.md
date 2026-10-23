@@ -1,5 +1,6 @@
 ---
 name: pr-reviewer
+memory: user
 description: >
   Independent reviewer for ONE JoustMania pull request: follows the review-pr
   skill (detached review worktree, correctness and safety first, mutation check
