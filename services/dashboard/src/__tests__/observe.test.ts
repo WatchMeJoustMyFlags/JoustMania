@@ -115,6 +115,13 @@ describe("UC-035: step 2 game event feed", () => {
     expect(fold([["game_ended", { champion: "00:06:f7:aa:bb:cc", total_matches: "3" }]]).feed).toEqual(["Game ended! Winner: b:cc"]);
   });
 
+  it("UC-035/main step 2 game_ended with a stringified None champion or winner is a plain Game ended (#1977)", () => {
+    expect(fold([["game_ended", { champion: "None", total_matches: "0" }]]).feed).toEqual(["Game ended!"]);
+    expect(fold([["game_ended", { winner: "None", outcome: "winner" }]]).feed).toEqual(["Game ended!"]);
+    expect(fold([["game_ended", { winner: "", champion: "" }]]).feed).toEqual(["Game ended!"]);
+    expect(fold([["game_ended", { winner: "None", champion: "00:06:f7:aa:bb:cc" }]]).feed).toEqual(["Game ended! Winner: b:cc"]);
+  });
+
   it("UC-035/main step 2 game_ended with a winner field ignores winning_team (#1977)", () => {
     expect(fold([["game_ended", { winner: "werewolves", winning_team: "werewolves" }]]).feed).toEqual(["Game ended! Winner: team werewolves"]);
   });

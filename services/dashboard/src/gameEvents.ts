@@ -41,11 +41,16 @@ function noWinnerDetail(data: Record<string, string>): string {
  * `none` = no winner) or `champion` (Tournament: a serial) (#1977). Teams base publishes neither.
  */
 function endedLine(data: Record<string, string>, fallbackSerial: string | null): string {
-  const raw = data["winner"] || data["champion"] || teamWinner(data["winning_team"]);
+  const raw = present(data["winner"]) || present(data["champion"]) || teamWinner(data["winning_team"]);
   if (raw === "none") return `Game ended! No winner${noWinnerDetail(data)}`;
   if (raw && !SERIAL_RE.test(raw)) return `Game ended! Winner: ${/^Team \d+$/.test(raw) ? raw : `team ${raw}`}`;
   const winner = raw ? shortSerial(raw) : fallbackSerial;
   return winner ? `Game ended! Winner: ${winner}` : "Game ended!";
+}
+
+/** The event bus stringifies payload values, so an unset serial arrives as "None": treat it as absent (#1977). */
+function present(value: string | undefined): string | undefined {
+  return value === undefined || value === "" || value === "None" ? undefined : value;
 }
 
 /** `winning_team` as an `endedLine` winner: "Team N" for an index, `none` for -1/none, a name as is. */
