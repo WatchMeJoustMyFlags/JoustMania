@@ -593,6 +593,43 @@ class TestBR003ForceEndNoWinner:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-021", br=["BR-003"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @TEAM_MODES
+    async def test_force_end_between_the_force_end_check_and_the_latch_declares_no_winner(self, fast_config, game_cls):
+        """A cross-thread force-end lands after the win check's force_ended check, before the latch."""
+        game, events = await self._running_game(game_cls)
+        self._eliminate_team(game, 1)
+        latch = game._latch_game_outcome
+
+        def force_end_then_latch():
+            game.force_end("operator")
+            latch()
+
+        game._latch_game_outcome = force_end_then_latch
+
+        assert not await game._check_win_condition()  # outcome force_ended: no result latched
+        assert game._latched_team is None
+        await game._end_game_impl()
+
+        self._assert_no_winner(game, events, "force_ended", "operator")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", br=["BR-003"])
+    @TEAM_MODES
+    async def test_force_ended_outcome_overrides_a_latched_team(self, fast_config, game_cls):
+        """Defence in depth: a force_ended outcome declares no winner even when a team is latched."""
+        game, events = await self._running_game(game_cls)
+        game._win_latched = True
+        game._latched_team = next(p.team for p in game.players.values())
+        game.force_end("operator")
+        game._latch_game_outcome()
+
+        await game._end_game_impl()
+
+        self._assert_no_winner(game, events, "force_ended", "operator")
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-021", br=["BR-003"])
     @TEAM_MODES
     async def test_stream_end_before_a_decision_declares_no_winner(self, fast_config, game_cls):
         """A gameplay stream that ends before any result: winning_team none, outcome completed, no effects."""

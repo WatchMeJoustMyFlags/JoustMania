@@ -341,16 +341,27 @@ class TeamsGameBase(BaseGameMode):
                 alive_teams.add(player.team)
         return alive_teams
 
-    def _latch_team_result(self, winning_team: int | None) -> None:
+    def _latch_team_result(self, winning_team: int | None) -> bool:
         """Latch the result (a team, or None for a tie) and the root-span outcome.
 
         Synchronous, no await: called in the step that decides the result and
         before its event is published, so a force-end that lands afterwards (same
         tick, the publish, the hold, the rainbow) keeps it (UC-021 BR-003).
+
+        The outcome is latched first: force_end() runs on the servicer thread, so it
+        can land between the caller's ``force_ended`` check and this call. When the
+        latched outcome is ``force_ended`` no result is latched and the caller
+        publishes nothing.
+
+        Returns:
+            True if the result was latched, False if the game was force-ended.
         """
+        self._latch_game_outcome()
+        if self.game_outcome() == "force_ended":
+            return False
         self._win_latched = True
         self._latched_team = winning_team
-        self._latch_game_outcome()
+        return True
 
     async def _check_win_condition(self) -> bool:
         """
@@ -372,7 +383,8 @@ class TeamsGameBase(BaseGameMode):
             return False
 
         winning_team = self._get_winning_team_num(alive_teams)
-        self._latch_team_result(winning_team)
+        if not self._latch_team_result(winning_team):
+            return False
 
         if winning_team is not None:
             team_name = self.team_colors[winning_team]["name"]

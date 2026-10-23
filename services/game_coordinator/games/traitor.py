@@ -370,7 +370,8 @@ class TraitorGame(TeamsGameBase):
 
         # Latched before publishing, so a force-end landing afterwards keeps it (UC-022 BR-005)
         winning_team = alive_teams[0] if alive_teams else None
-        self._latch_team_result(winning_team)
+        if not self._latch_team_result(winning_team):
+            return False
 
         if winning_team is not None:
             winners = alive_by_secret_team[winning_team]
