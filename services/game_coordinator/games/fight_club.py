@@ -127,6 +127,9 @@ class FightClubGame(BaseGameMode):
         self.face_off_mode: bool = False
         # The tied leaders the next round pairs (set by _should_end_game, #1345).
         self._face_off_pair: tuple[str, str] | None = None
+        # The winner, latched when the game decides to end (UC-025 BR-005, #1343).
+        self._win_latched: bool = False
+        self._latched_winner: str | None = None
         self.game_span: trace.Span | None = None
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
@@ -391,10 +394,12 @@ class FightClubGame(BaseGameMode):
         # Update colors and start next round
         await self._update_player_colors()
 
-        if self._should_end_game():
-            self.game_over = True
-        else:
-            await self._start_round()
+        if self._decide_game_end():
+            return
+        # A force end during the awaits above starts no next round (UC-025 BR-005).
+        if not self.running or self.game_over:
+            return
+        await self._start_round()
 
     async def _update_player_colors(self):
         """Update all player colors based on their state."""
@@ -444,6 +449,30 @@ class FightClubGame(BaseGameMode):
 
         return True
 
+    def _leader(self) -> str | None:
+        """The one top scorer; None on a tie at the top or without players."""
+        scores = sorted((p.score for p in self.players.values()), reverse=True)
+        if not scores or (len(scores) >= 2 and scores[0] == scores[1]):
+            return None
+        return max(self.players, key=lambda serial: self.players[serial].score)
+
+    def _decide_game_end(self) -> bool:
+        """End the game after this round when ``_should_end_game`` says so (UC-025 BR-005).
+
+        Synchronous, no await: the winner and the root-span outcome are latched in
+        the same step as the decision, so a force end that lands afterwards (same
+        tick, the 1 s hold, the teardown) keeps the winner, and one that landed
+        before it (``running`` already False) latches none (BR-003).
+        """
+        if not self._should_end_game():
+            return False
+        self.game_over = True
+        if self.running and not self._win_latched:
+            self._win_latched = True
+            self._latched_winner = self._leader()
+            self._latch_game_outcome()
+        return True
+
     async def _kill_player_impl(self, serial: str, accel_mag: float):
         """
         Handle player death in a fight.
@@ -463,6 +492,12 @@ class FightClubGame(BaseGameMode):
 
         # Only process if player is in active fight
         if fc_player.state not in (FightState.DEFENDER, FightState.FIGHTER):
+            return
+
+        # Between rounds (the 1 s pause, or after the game decided) no round is
+        # fought: a kill of the round winner has no opponent to score (#1343).
+        if self.current_defender is None or self.current_fighter is None:
+            logger.debug(f"Player {serial} killed between rounds, ignoring")
             return
 
         fc_player.alive = False
@@ -541,12 +576,13 @@ class FightClubGame(BaseGameMode):
         )
 
         # Check if game should end
-        if self._should_end_game():
-            self.game_over = True
-        else:
-            # Start next round
-            await self._pause_between_rounds()
-            await self._start_round()
+        if self._decide_game_end():
+            return
+        await self._pause_between_rounds()
+        # A force end during the pause starts no next round (UC-025 BR-005).
+        if not self.running or self.game_over:
+            return
+        await self._start_round()
 
     async def _pause_between_rounds(self) -> None:
         """Brief pause between a round's kill and the next round.
@@ -596,33 +632,31 @@ class FightClubGame(BaseGameMode):
         if self.round_task and not self.round_task.done():
             self.round_task.cancel()
 
-        # Find winner (highest score)
+        # Only the latched winner counts (UC-025 BR-003, BR-005): a force end, a
+        # stream end before the decision and a tie at the top declare none.
+        force_ended = self.game_outcome() == "force_ended"
+        winner_serial = None if force_ended else self._latched_winner
+        winner_score = self.players[winner_serial].score if winner_serial else 0
         scores = [(s, p.score) for s, p in self.players.items()]
         scores.sort(key=lambda x: x[1], reverse=True)
 
-        winner_serial = scores[0][0] if scores else None
-        winner_score = scores[0][1] if scores else 0
+        logger.info(f"Winner: {winner_serial or 'none'} with score {winner_score}")
 
-        logger.info(f"Winner: {winner_serial} with score {winner_score}")
-
-        # Show rainbow effect on winner
-        if winner_serial and self.gameplay_stream:
-            effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                game_effect=controller_manager_pb2.GameEffectCommand(
-                    serial=winner_serial,
-                    effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
+        if winner_serial:
+            if self.gameplay_stream:
+                effect_cmd = controller_manager_pb2.GameplayStreamControl(
+                    game_effect=controller_manager_pb2.GameEffectCommand(
+                        serial=winner_serial,
+                        effect=controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW,
+                    )
                 )
-            )
-            await self._write_end_effect(effect_cmd)
+                await self._write_end_effect(effect_cmd)
 
-        # Play victory sound (audio service handles voice selection)
-        await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)
+            # Play victory sound (audio service handles voice selection)
+            await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)
 
-        # Wait for celebration
-        for _ in range(20):  # 2 seconds
-            if not self.running:
-                break
-            await asyncio.sleep(0.1)
+            # Wait for the rainbow (interruptible by a force end)
+            await self._wait_for_rainbow_effect()
 
         # End all player spans
         for serial, player in self.players.items():
@@ -641,17 +675,18 @@ class FightClubGame(BaseGameMode):
                 player.span.end()
 
         self.state = self.state.__class__.ENDED
-        await self.event_publisher(
-            "game_ended",
-            {
-                "game_id": self.game_id,
-                "duration": time.time() - self.start_time if self.start_time else 0,
-                "winner": winner_serial,
-                "winner_score": winner_score,
-                "total_rounds": self.round_number,
-                "final_scores": {s: p.score for s, p in self.players.items()},
-            },
-        )
+        ended_payload = {
+            "game_id": self.game_id,
+            "duration": time.time() - self.start_time if self.start_time else 0,
+            "winner": winner_serial or "none",
+            "winner_score": winner_score,
+            "total_rounds": self.round_number,
+            "final_scores": {s: p.score for s, p in self.players.items()},
+            "outcome": self.game_outcome(),
+        }
+        if force_ended:
+            ended_payload["reason"] = self.force_end_reason
+        await self.event_publisher("game_ended", ended_payload)
 
         logger.info("Fight Club game ended")
 

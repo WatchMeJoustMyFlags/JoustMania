@@ -13,10 +13,11 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
 import pytest_asyncio
+from opentelemetry import trace
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -27,6 +28,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService
 
+from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.fight_club import (
     DEFAULT_INVINCIBILITY_DURATION,
@@ -534,6 +536,7 @@ class TestFightClubHandleTimeout:
         game, mock_controller_manager, _ = fight_club_game
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
+        game.running = True  # rounds only follow each other in a running game (UC-025 BR-005)
         await game._start_round()
 
         await game._handle_timeout()
@@ -544,6 +547,7 @@ class TestFightClubHandleTimeout:
         # Initial: 4 players. Start round: 2 in queue, 2 fighting.
         # After timeout + new round: old 2 go back, new 2 pulled = 2 in queue
         assert len(game.queue) == 2
+        _end_round_timer(game)
 
 
 class TestFightClubEndGameImpl:
@@ -582,6 +586,8 @@ class TestFightClubEndGameImpl:
         game.players["mock_controller_1"].score = 5
         game.players["mock_controller_2"].score = 1
         game.round_number = 12
+        assert game._decide_game_end() is True  # latches the leader (UC-025 BR-005)
+        game._wait_for_rainbow_effect = AsyncMock(return_value=True)
 
         await game._end_game_impl()
 
@@ -594,6 +600,9 @@ class TestFightClubEndGameImpl:
         assert data["final_scores"]["mock_controller_0"] == 2
         assert data["final_scores"]["mock_controller_1"] == 5
         assert data["final_scores"]["mock_controller_2"] == 1
+        assert data["outcome"] == "completed"
+        assert "reason" not in data
+        game._wait_for_rainbow_effect.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_end_game_sends_rainbow_effect(self, fight_club_game):
@@ -614,6 +623,9 @@ class TestFightClubEndGameImpl:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
         game.players["mock_controller_0"].score = 3
+        game.round_number = DEFAULT_MIN_ROUNDS
+        assert game._decide_game_end() is True
+        game._wait_for_rainbow_effect = AsyncMock(return_value=True)
 
         await game._end_game_impl()
 
@@ -1160,6 +1172,7 @@ class TestFightClubFaceOffPairing:
     async def test_tie_between_waiting_players_fights_exactly_that_pair(self):
         game, mock_cm, event_collector = _make_game(4, "test_fc_face_off_waiting_pair")
         await game._initialize_players_impl(mock_cm.controllers)
+        game.running = True  # rounds only follow each other in a running game (UC-025 BR-005)
         game._pause_between_rounds = _no_pause
         a, b, c, d = (f"mock_controller_{i}" for i in range(4))
         game.round_number = DEFAULT_MIN_ROUNDS - 1
@@ -1199,6 +1212,7 @@ class TestFightClubFaceOffPairing:
     async def test_round_winner_tied_with_a_waiting_player_keeps_the_defender_role(self):
         game, mock_cm, _ = _make_game(4, "test_fc_face_off_winner_in_pair")
         await game._initialize_players_impl(mock_cm.controllers)
+        game.running = True  # rounds only follow each other in a running game (UC-025 BR-005)
         game._pause_between_rounds = _no_pause
         a, b, c, d = (f"mock_controller_{i}" for i in range(4))
         game.round_number = DEFAULT_MIN_ROUNDS - 1
@@ -1219,6 +1233,7 @@ class TestFightClubFaceOffPairing:
     async def test_round_winner_second_in_join_order_keeps_the_defender_role(self):
         game, mock_cm, _ = _make_game(4, "test_fc_face_off_winner_second")
         await game._initialize_players_impl(mock_cm.controllers)
+        game.running = True  # rounds only follow each other in a running game (UC-025 BR-005)
         game._pause_between_rounds = _no_pause
         a, b, c, d = (f"mock_controller_{i}" for i in range(4))
         game.round_number = DEFAULT_MIN_ROUNDS - 1
@@ -1242,6 +1257,7 @@ class TestFightClubFaceOffPairing:
     async def test_timeout_into_tie_seats_the_pair_and_keeps_everyone_in_rotation(self):
         game, mock_cm, _ = _make_game(3, "test_fc_face_off_timeout")
         await game._initialize_players_impl(mock_cm.controllers)
+        game.running = True  # rounds only follow each other in a running game (UC-025 BR-005)
         a, b, c = (f"mock_controller_{i}" for i in range(3))
         game.round_number = DEFAULT_MIN_ROUNDS - 1
         await game._start_round()  # a vs b; queue [c]
@@ -1388,3 +1404,254 @@ class TestFightClubLoserLed:
         assert game.round_task is not None
         assert loser in game.queue
         _end_round_timer(game)
+
+
+class TestFightClubForceEndWinner:
+    """UC-025 BR-003 / BR-005 (#1343): a force end declares no winner; the decided winner is latched."""
+
+    @staticmethod
+    async def _game(num_players: int, game_id: str, min_rounds: int = DEFAULT_MIN_ROUNDS):
+        game, mock_cm, events = _make_game(num_players, game_id)
+        game._min_rounds = min_rounds
+        await game._initialize_players_impl(mock_cm.controllers)
+        game.gameplay_stream = RecordingGameplayStream()
+        game._pause_between_rounds = _no_pause
+        game.sounds = []
+
+        async def record_sound(sound, *_args, **_kwargs):
+            game.sounds.append(sound)
+
+        game._play_sound = record_sound
+        game._wait_for_rainbow_effect = AsyncMock(return_value=True)
+        for player in game.players.values():
+            span = create_autospec(trace.Span, instance=True)
+            span.get_span_context.return_value = trace.INVALID_SPAN_CONTEXT
+            player.span = span
+        game.running = True
+        game.start_time = time.time()
+        await game._start_round()
+        _clear_invincibility(game)
+        return game, events
+
+    @staticmethod
+    def _rainbows(game):
+        return [
+            m.game_effect.serial
+            for m in game.gameplay_stream.messages
+            if m.HasField("game_effect") and m.game_effect.effect == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        ]
+
+    @staticmethod
+    def _span_winner_flags(game):
+        return {
+            serial: [
+                c.kwargs["attributes"]["winner"]
+                for c in player.span.add_event.call_args_list
+                if c.args[0] == "game_ended"
+            ]
+            for serial, player in game.players.items()
+        }
+
+    @staticmethod
+    def _publish_hook(game, events, on_event: str, action):
+        async def publish(event_type, data):
+            await events.publish(event_type, data)
+            if event_type == on_event:
+                await action()
+
+        game.event_publisher = publish
+
+    def _assert_no_winner(self, game, events, outcome: str):
+        assert self._rainbows(game) == []
+        assert Sound.VOX_CONGRATULATIONS not in game.sounds
+        game._wait_for_rainbow_effect.assert_not_awaited()
+        assert all(flags == [False] for flags in self._span_winner_flags(game).values())
+        ended = events.get_events_of_type("game_ended")
+        assert len(ended) == 1
+        assert ended[0]["winner"] == "none"
+        assert ended[0]["winner_score"] == 0
+        assert ended[0]["outcome"] == outcome
+        return ended[0]
+
+    def _assert_winner(self, game, events, winner: str):
+        assert self._rainbows(game) == [winner]
+        assert Sound.VOX_CONGRATULATIONS in game.sounds
+        game._wait_for_rainbow_effect.assert_awaited_once()
+        flags = self._span_winner_flags(game)
+        assert flags.pop(winner) == [True]
+        assert all(f == [False] for f in flags.values())
+        ended = events.get_events_of_type("game_ended")
+        assert len(ended) == 1
+        assert ended[0]["winner"] == winner
+        assert ended[0]["winner_score"] == game.players[winner].score
+        assert ended[0]["outcome"] == "completed"
+        assert "reason" not in ended[0]
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_while_running_declares_no_winner(self):
+        game, events = await self._game(3, "test_fc_force_end_running")
+        leader = game.current_defender
+        game.players[leader].score = 3
+        game.force_end("operator")
+
+        await game._end_game_impl()
+
+        ended = self._assert_no_winner(game, events, "force_ended")
+        assert ended["reason"] == "operator"
+        assert ended["final_scores"][leader] == 3
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-005"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_during_the_round_pause_starts_no_next_round(self):
+        game, events = await self._game(3, "test_fc_force_end_pause")
+        fighter = game.current_fighter
+        round_before = game.round_number
+        timer_before = game.round_task
+
+        async def force_end_in_pause():
+            game.force_end("operator")
+
+        game._pause_between_rounds = force_end_in_pause
+
+        with patch("services.game_coordinator.games.fight_club.metrics"):
+            await game._kill_player(fighter, 5.0)
+
+        assert events.count_events_of_type("round_start") == 1
+        assert game.round_number == round_before
+        assert game.current_fighter is None
+        assert game.round_task is timer_before  # no new round timer
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-005"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_during_a_round_timeout_starts_no_next_round(self):
+        game, events = await self._game(3, "test_fc_force_end_timeout")
+        round_before = game.round_number
+
+        async def force_end():
+            game.force_end("operator")
+
+        self._publish_hook(game, events, "round_timeout", force_end)
+
+        await game._handle_timeout()
+
+        assert events.count_events_of_type("round_start") == 1
+        assert game.round_number == round_before
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_after_the_kill_decision_keeps_the_winner(self):
+        """Decision first, force end in the same tick (no await between): the winner stays."""
+        game, events = await self._game(3, "test_fc_latch_kill", min_rounds=1)
+        defender, fighter = game.current_defender, game.current_fighter
+
+        with patch("services.game_coordinator.games.fight_club.metrics"):
+            await game._kill_player(fighter, 5.0)
+        game.force_end("operator")
+
+        assert game.game_over is True
+        await game._end_game_impl()
+
+        self._assert_winner(game, events, defender)
+        assert events.count_events_of_type("round_start") == 1
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_after_the_timeout_decision_keeps_the_winner(self):
+        game, events = await self._game(3, "test_fc_latch_timeout", min_rounds=1)
+        leader = game.queue[0]
+        game.players[leader].score = 2
+
+        await game._handle_timeout()
+        game.force_end("operator")
+
+        assert game.game_over is True
+        await game._end_game_impl()
+
+        self._assert_winner(game, events, leader)
+        assert events.count_events_of_type("round_start") == 1
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"])
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.asyncio
+    async def test_force_end_just_before_the_kill_decision_declares_no_winner(self):
+        """Force end first, at the last await before the decision: nothing is latched."""
+        game, events = await self._game(3, "test_fc_force_first", min_rounds=1)
+        fighter = game.current_fighter
+
+        async def force_end():
+            game.force_end("operator")
+
+        self._publish_hook(game, events, "round_end", force_end)
+
+        with patch("services.game_coordinator.games.fight_club.metrics"):
+            await game._kill_player(fighter, 5.0)
+
+        assert game.game_over is True
+        await game._end_game_impl()
+
+        ended = self._assert_no_winner(game, events, "force_ended")
+        assert ended["reason"] == "operator"
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_stream_end_before_the_decision_declares_no_winner(self):
+        game, events = await self._game(3, "test_fc_stream_end")
+        game.players[game.current_defender].score = 3
+        game.running = False  # the stream ended; not force-ended, nothing decided
+
+        await game._end_game_impl()
+
+        ended = self._assert_no_winner(game, events, "completed")
+        assert "reason" not in ended
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"])
+    @pytest.mark.asyncio
+    async def test_tied_top_declares_no_winner(self):
+        game, events = await self._game(3, "test_fc_tied_top")
+        game.players[game.current_defender].score = 3
+        game.players[game.current_fighter].score = 3
+        assert game._leader() is None
+        game.game_over = True
+
+        await game._end_game_impl()
+
+        self._assert_no_winner(game, events, "completed")
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-003"])
+    @pytest.mark.asyncio
+    async def test_eliminate_of_the_round_winner_during_the_pause_is_ignored(self):
+        game, events = await self._game(3, "test_fc_eliminate_in_pause")
+        defender, fighter = game.current_defender, game.current_fighter
+        results = []
+
+        async def eliminate_winner_in_pause():
+            results.append(await game._kill_player(defender, 0.0, reason="agent_intervention"))
+
+        game._pause_between_rounds = eliminate_winner_in_pause
+
+        with patch("services.game_coordinator.games.fight_club.metrics"):
+            await game._kill_player(fighter, 5.0)
+
+        assert len(results) == 1
+        winner = game.players[defender]
+        assert winner.alive is True
+        assert winner.score == 1
+        assert game.current_defender == defender
+        assert game.round_number == 2
+        assert events.count_events_of_type("round_start") == 2
+        _end_round_timer(game)
+        await game.cleanup()
