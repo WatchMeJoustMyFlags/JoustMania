@@ -2748,6 +2748,21 @@ class TestModeMinimumPlayers:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A3", br=["BR-001"])
+    async def test_minimum_error_takes_precedence_over_game_in_progress(self, servicer):
+        """Error order: a sub-minimum start while a game runs answers the minimum error, not 'already in progress'."""
+        with _NO_THREAD:
+            ok, _ = await servicer._start_game_from_config(_config(), _MockSpan())
+            assert ok is True
+
+            success, message = await servicer._start_game_from_config(
+                _config(game_name="Traitor", serials=self._serials(3)), _MockSpan()
+            )
+
+        assert success is False
+        assert message == "Traitor needs at least 4 players"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", br=["BR-001"])
     @pytest.mark.uc("UC-022", cond=["Pre-1"])
     async def test_stream_start_below_minimum_answers_game_start_error(self, servicer):
         """A direct StreamGameEvents(start_config) start cannot bypass the menu's check."""

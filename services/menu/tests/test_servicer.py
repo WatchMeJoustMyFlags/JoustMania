@@ -432,6 +432,48 @@ class TestMenuServicerProcessInput:
         assert request.start_config.game_name == Games.JoustTeams.name
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2], br=["BR-001"])
+    @pytest.mark.uc("UC-010", flow="A6")
+    async def test_web_start_game_below_mode_minimum_is_cancelled(self, real_servicer):
+        """web_command start_game for Teams with two READY players never reaches the coordinator."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        real_servicer.current_selection = Games.JoustTeams
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1", "s2")
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.ProcessInput(self._request("web_command", command="start_game"), MagicMock())
+            await _await_lifecycle(real_servicer)
+
+        stream.assert_not_awaited()
+        assert _published(real_servicer)[-1] == (
+            "game_start_cancelled",
+            {"game_name": "JoustTeams", "player_count": 2, "minimum_players": 3},
+        )
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        assert set(real_servicer.state_manager.controller_states.values()) == {ControllerState.CONNECTED}
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2], br=["BR-001"])
+    async def test_button_trigger_below_mode_minimum_is_cancelled(self, real_servicer):
+        """A ProcessInput trigger for Teams with two READY players is cancelled the same way."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        _select(real_servicer, Games.JoustTeams)
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1", "s2")
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.ProcessInput(self._request("button_press", button="trigger"), MagicMock())
+            await _await_lifecycle(real_servicer)
+
+        stream.assert_not_awaited()
+        assert _published(real_servicer)[-1] == (
+            "game_start_cancelled",
+            {"game_name": "JoustTeams", "player_count": 2, "minimum_players": 3},
+        )
+        assert set(real_servicer.state_manager.controller_states.values()) == {ControllerState.CONNECTED}
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A6")
     async def test_web_start_game_honours_requested_mode(self, real_servicer):
         """UC-010 A6 (#1278): start_game with a mode selects that mode, then starts it."""
