@@ -660,8 +660,9 @@ class TournamentGame(BaseGameMode):
         """Base frame processing (disconnects, then detection), then one bracket step.
 
         A failing bracket step ends the game loop with the error kept for run(),
-        which raises it (``game_error``): raised here it would read as a stream
-        error and reconnect a healthy stream (UC-030 BR-006).
+        which raises it (``game_error``). The base loop also ends the game on a
+        frame-processing error without a reconnect (#2001), so this is kept for
+        the explicit, logged bracket-failure path (UC-030 BR-006).
         """
         game_over = await super()._process_gameplay_update(gameplay_update)
         try:
