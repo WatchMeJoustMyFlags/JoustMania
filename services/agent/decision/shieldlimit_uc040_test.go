@@ -241,7 +241,9 @@ func TestShieldLimits_RefusalLeaksNoCharge(t *testing.T) {
 	})
 }
 
-// blockingSink holds every Apply until release is closed, so a write stays in flight.
+// blockingSink holds the FIRST Apply until release is closed, so that write stays in
+// flight; later Applies go through at once, so a grant the ledger wrongly admits
+// fails the assertion instead of hanging the test.
 type blockingSink struct {
 	capturingSink
 	entered chan struct{}
@@ -250,8 +252,11 @@ type blockingSink struct {
 }
 
 func (s *blockingSink) Apply(ctx context.Context, d Decision) error {
-	s.once.Do(func() { close(s.entered) })
-	<-s.release
+	first := false
+	s.once.Do(func() { first = true; close(s.entered) })
+	if first {
+		<-s.release
+	}
 	return s.capturingSink.Apply(ctx, d)
 }
 
