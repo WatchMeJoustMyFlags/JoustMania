@@ -269,6 +269,62 @@ class TestGameSessionLoop:
         assert session.game_state == game_coordinator_pb2.GameState.ENDED
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-025", cond=["Post-S-1"])
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_tournament_run_that_completes_ends_the_session(self, mock_tracer_mod, mock_factory):
+        """UC-025 Post-S-1: a Tournament run() that completes leaves the session ENDED with no game_error."""
+        from services.game_coordinator.games.tournament import TournamentGame
+
+        session = _make_session()
+        session.game_running = True
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        game = TournamentGame(
+            controller_manager_client=MagicMock(),
+            event_publisher=AsyncMock(),
+            audio_client=None,
+            game_id="game_abc123",
+            initial_players=[game_coordinator_pb2.Player(serial="p1"), game_coordinator_pb2.Player(serial="p2")],
+        )
+        game.run = AsyncMock()
+        mock_factory.create_game.return_value = game
+
+        await session._run_game_loop_async()
+
+        game.run.assert_awaited_once()
+        assert not [c for c in session.event_bus.publish.call_args_list if c[0][0] == "game_error"]
+        assert session.game_running is False
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-025", cond=["Post-S-1"])
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_fight_club_run_that_completes_ends_the_session(self, mock_tracer_mod, mock_factory):
+        """UC-025 Post-S-1: a Fight Club run() that completes leaves the session ENDED with no game_error."""
+        from services.game_coordinator.games.fight_club import FightClubGame
+
+        session = _make_session()
+        session.game_running = True
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        game = FightClubGame(
+            controller_manager_client=MagicMock(),
+            event_publisher=AsyncMock(),
+            audio_client=None,
+            game_id="game_abc123",
+            initial_players=[game_coordinator_pb2.Player(serial="p1"), game_coordinator_pb2.Player(serial="p2")],
+        )
+        game.run = AsyncMock()
+        mock_factory.create_game.return_value = game
+
+        await session._run_game_loop_async()
+
+        game.run.assert_awaited_once()
+        assert not [c for c in session.event_bus.publish.call_args_list if c[0][0] == "game_error"]
+        assert session.game_running is False
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-026", cond=["Post-F-1"])
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")

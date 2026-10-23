@@ -85,6 +85,7 @@ class TestFightClubGameMode:
         # All players should be in queue
         assert len(game.queue) == 4
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[1])
     @pytest.mark.asyncio
     async def test_players_start_in_line(self, fight_club_game):
         """Test that all players start in IN_LINE state."""
@@ -97,6 +98,7 @@ class TestFightClubGameMode:
             assert player.color == WAITING_COLOR
             assert player.score == 0
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[1])
     @pytest.mark.asyncio
     async def test_start_round_sets_defender_and_fighter(self, fight_club_game):
         """Test that _start_round sets defender and fighter from queue."""
@@ -123,6 +125,7 @@ class TestFightClubGameMode:
         assert fighter.state == FightState.FIGHTER
         assert fighter.color == FIGHTER_COLOR
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[1])
     @pytest.mark.asyncio
     async def test_queue_decreases_after_round_start(self, fight_club_game):
         """Test that queue shrinks as players enter fights."""
@@ -140,6 +143,7 @@ class TestFightClubGameMode:
 
         assert len(game.queue) == 2
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
     @pytest.mark.asyncio
     async def test_invincibility_set_on_round_start(self, fight_club_game):
         """Test that players get invincibility when round starts."""
@@ -159,6 +163,7 @@ class TestFightClubGameMode:
         assert defender.invincible_until > time_before + DEFAULT_INVINCIBILITY_DURATION - 0.5
         assert fighter.invincible_until > time_before + DEFAULT_INVINCIBILITY_DURATION - 0.5
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-001"])
     @pytest.mark.asyncio
     async def test_kill_player_during_invincibility_ignored(self, fight_club_game):
         """Test that kills during invincibility are ignored."""
@@ -238,6 +243,7 @@ class TestFightClubGameMode:
         # Fighter goes to back of queue
         assert fighter_serial in game.queue
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_should_end_game_before_min_rounds(self, fight_club_game):
         """Test that game doesn't end before minimum rounds."""
@@ -298,6 +304,7 @@ class TestFightClubGameMode:
         game.game_over = True
         assert await game._check_win_condition() is True
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-002"])
     @pytest.mark.asyncio
     async def test_process_controller_state_reads_proto_accel(self, fight_club_game):
         """Test that _process_controller_state correctly reads nested accel from proto."""
@@ -323,6 +330,7 @@ class TestFightClubGameMode:
         # Verify the player's smoothed_accel was updated
         assert game.players[defender_serial].smoothed_accel > 0
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[1])
     @pytest.mark.asyncio
     async def test_start_round_assigns_roles(self, fight_club_game):
         """Test that after _start_round, defender and fighter have correct state."""
@@ -368,6 +376,7 @@ class TestFightClubGameMode:
         assert game.players[defender_serial].state == FightState.IN_LINE
         assert game.players[fighter_serial].state == FightState.IN_LINE
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-001"])
     @pytest.mark.asyncio
     async def test_invincibility_blocks_death(self, fight_club_game):
         """Test that a player with invincibility survives lethal motion."""
@@ -465,6 +474,7 @@ class TestFightClubStartRoundEdgeCases:
         # round_task should not be created in face-off mode
         assert game.round_task is None
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
     @pytest.mark.asyncio
     async def test_start_round_existing_defender_uses_queue_for_fighter(self, fight_club_game):
         """When defender already exists, only challenger is pulled from queue."""
@@ -522,6 +532,7 @@ class TestFightClubHandleTimeout:
         assert len(timeout_events) == 1
         assert timeout_events[0]["round"] == round_num
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_handle_timeout_triggers_game_over_when_should_end(self, fight_club_game):
         """After timeout, if _should_end_game returns True, game_over is set."""
@@ -539,6 +550,7 @@ class TestFightClubHandleTimeout:
 
         assert game.game_over is True
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
     @pytest.mark.asyncio
     async def test_handle_timeout_clears_current_combatants(self, fight_club_game):
         """After timeout, current_defender and current_fighter are cleared."""
@@ -580,7 +592,7 @@ class TestFightClubEndGameImpl:
 
         return game, mock_controller_manager, event_collector
 
-    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-005"], cond=["Post-S-1"])
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-005"])
     @pytest.mark.asyncio
     async def test_end_game_publishes_winner_and_scores(self, fight_club_game):
         """_end_game_impl publishes game_ended event with winner and scores."""
@@ -613,7 +625,7 @@ class TestFightClubEndGameImpl:
         assert data["outcome"] == "completed"
         assert "reason" not in data
         game._wait_for_rainbow_effect.assert_awaited_once()
-        assert game.state == GameState.ENDED, "Post-S-1: the session ends"
+        assert game.state == GameState.ENDED, "the game reaches ENDED"
 
     @pytest.mark.uc("UC-025", flow="A2", steps=[4])
     @pytest.mark.asyncio
@@ -648,6 +660,7 @@ class TestFightClubEndGameImpl:
         )
         assert rainbow_sent is True
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4])
     @pytest.mark.asyncio
     async def test_end_game_no_stream_no_crash(self, fight_club_game):
         """_end_game_impl works without gameplay_stream (no crash)."""
@@ -688,6 +701,7 @@ class TestFightClubFaceOff:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_should_end_game_face_off_sets_combatants(self, fight_club_game):
         """A tie stores the tied pair for the next round."""
@@ -710,6 +724,7 @@ class TestFightClubFaceOff:
         assert game.current_defender is None
         assert game.current_fighter is None
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_should_end_game_already_in_face_off_continues(self, fight_club_game):
         """If already in face-off mode and still tied, continue (return False)."""
@@ -725,6 +740,7 @@ class TestFightClubFaceOff:
         result = game._should_end_game()
         assert result is False
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[3])
     @pytest.mark.asyncio
     async def test_kill_during_face_off_ends_game(self, fight_club_game):
         """A kill during face-off resolves the tie and ends the game."""
@@ -776,6 +792,7 @@ class TestFightClubUpdatePlayerColors:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[1])
     @pytest.mark.asyncio
     async def test_update_player_colors_sends_correct_colors(self, fight_club_game):
         """_update_player_colors sends defender=red, fighter=green, others=white."""
@@ -834,6 +851,7 @@ class TestFightClubProcessControllerState:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-002"])
     @pytest.mark.asyncio
     async def test_process_state_ignores_in_line_player(self, fight_club_game):
         """Controller state for IN_LINE player is ignored (no EMA update)."""
@@ -1026,6 +1044,7 @@ class TestFightClubCleanupAndForceEnd:
 
         return game, mock_controller_manager, event_collector
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003"])
     @pytest.mark.asyncio
     async def test_on_force_end_sets_game_over(self, fight_club_game):
         """on_force_end sets game_over flag so game loop exits."""
@@ -1123,6 +1142,7 @@ class TestFightClubIntroPhase:
         # Should return quickly without error
         await game._intro_phase()
 
+    @pytest.mark.uc("UC-025", flow="A2", steps=[1])
     @pytest.mark.asyncio
     async def test_get_additional_phases_returns_intro(self, fight_club_game):
         """_get_additional_phases returns the fight_club_intro phase."""
@@ -1557,7 +1577,7 @@ class TestFightClubForceEndWinner:
         assert game.round_number == round_before
         await game.cleanup()
 
-    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"])
+    @pytest.mark.uc("UC-025", flow="A2", steps=[4], br=["BR-003", "BR-005"], cond=["Post-S-1"])
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
     @pytest.mark.asyncio
     async def test_force_end_after_the_kill_decision_keeps_the_winner(self):

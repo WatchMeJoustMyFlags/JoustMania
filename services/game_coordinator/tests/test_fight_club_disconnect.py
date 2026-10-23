@@ -278,7 +278,7 @@ class TestFightClubKillGate:
         assert game.current_defender != round_winner
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="main", steps=[3], br=["BR-006"])
+    @pytest.mark.uc("UC-025", flow="A2", steps=[2], br=["BR-006"])
     @pytest.mark.uc("UC-040", flow="A22")
     @pytest.mark.asyncio
     async def test_eliminate_of_a_waiting_player_is_refused_and_counts_nothing(self):
@@ -470,7 +470,7 @@ class TestFightClubKillGate:
         assert game._latched_winner == defender
         _end_round_timer(game)
 
-    @pytest.mark.uc("UC-025", flow="A2", steps=[2])
+    @pytest.mark.uc("UC-025", br=["BR-005"])
     @pytest.mark.asyncio
     async def test_loser_gauge_is_not_reset_once_the_game_is_decided(self):
         """#2002 guard: the latch lands while the loser's death effect is written (the winner leaves)."""

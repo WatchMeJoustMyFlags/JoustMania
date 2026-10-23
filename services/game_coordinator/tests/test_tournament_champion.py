@@ -215,7 +215,7 @@ async def test_run_crowns_the_champion_once_with_rainbow_and_voice(num_players):
     assert ended["outcome"] == "completed"
     assert "reason" not in ended
     assert game.game_outcome() == "completed"
-    assert game.state == GameState.ENDED, "Post-S-1: the session ends"
+    assert game.state == GameState.ENDED, "the game reaches ENDED"
 
     # One match rainbow per non-final match, then the champion's rainbow only.
     match_ends = _events(log, "match_end")
@@ -235,12 +235,22 @@ async def test_tournament_plays_without_a_tempo_loop():
     """BR-002: no tempo loop by design: the music plays at 1.0 and the slow threshold table applies all game."""
     game, log, client, _sounds = _game(2)
 
-    with patch.object(game, "_music_loop") as music_loop:
+    with (
+        patch.object(game, "_music_loop") as music_loop,
+        patch.object(game, "_start_game_music", wraps=game._start_game_music) as start_music,
+    ):
         await _run(game, client)
 
     music_loop.assert_not_called()
     assert game.music_loop_task is None
     assert _events(log, "tournament_champion"), "the game did not play to its end"
+    # The music starts once at 1.0 and nothing moves the tempo, so the slow table applies to the end.
+    start_music.assert_called_once()
+    assert game.music_speed == 1.0
+    assert game.tempo_intensity == 0.0
+    player = next(iter(game.players.values()))
+    sens = game.sensitivity.value
+    assert game._compute_effective_thresholds(player) == (game.slow_warning[sens], game.slow_max[sens])
 
 
 @pytest.mark.uc("UC-025", flow="main", steps=[5], br=["BR-005"])
@@ -352,7 +362,7 @@ async def test_a_force_end_after_the_final_is_decided_keeps_the_champion():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.uc("UC-025", flow="A4", steps=[5], br=["BR-005"])
+@pytest.mark.uc("UC-025", flow="A4", steps=[2], br=["BR-005"])
 @pytest.mark.asyncio
 async def test_a_final_won_by_a_walkover_crowns_the_player_left():
     """3 players: the bye player disconnects while waiting; the round-1 winner is champion."""
