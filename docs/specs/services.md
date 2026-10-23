@@ -40,7 +40,7 @@ Dependencies (start-up, from `depends_on` and code): audio, python-hid, rust-hid
 dependencies; the controller manager waits for flagd and rust-hid to be healthy and for python-hid only when the `python-hid` profile is active (compose
 `depends_on`, `required: false`, #1371) and talks to both HID adapters over gRPC; the game coordinator calls the controller manager and
 audio, and the menu calls the controller manager, the game coordinator and audio (code only: in compose the
-coordinator and the menu wait only for flagd); flagd waits for the flag service to be healthy and restarts with it; the agent depends only on flagd, and it and rust-hid wait in the background for flagd's first sync rather than at start ([flags.md §1.1](flags.md#11-clients), #1713)
+coordinator and the menu wait only for flagd); flagd waits for the flag service to be healthy and restarts with it; no game service depends on an observability service (Jaeger, Loki, VictoriaMetrics, Grafana, the collector), and the collector itself has no `depends_on` on its backends: it starts at once and its exporters queue and retry (UC-060 BR-004, FR-181); every service in `docker-compose.yml` and `docker-compose.lite.yml` has a restart policy and a json-file log limit (10 MB x 3); the agent depends only on flagd, and it and rust-hid wait in the background for flagd's first sync rather than at start ([flags.md §1.1](flags.md#11-clients), #1713)
 (and calls the game coordinator and the mock control API to run shadow games, the named exception in C-005).
 
 ## 2. Service catalog

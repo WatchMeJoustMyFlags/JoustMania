@@ -19,6 +19,13 @@
 # All images use canonical GHCR names for consistency.
 # Use IMAGE_TAG environment variable to specify version (default: latest)
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+    labels: "com.docker.compose.service,com.docker.compose.image"
+
 services:
   # Flag service (epic #1407): runtime flags in memory, served to flagd as ONE
   # gRPC sync source for every flag set (flagd reads no flag file). Same
@@ -55,6 +62,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
     deploy:
       resources:
         limits:
@@ -85,6 +93,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
   # Controller Manager Service
   controller-manager:
     image: ghcr.io/watchmejoustmyflags/joustmania/controller-manager-service:${IMAGE_TAG:-latest}
@@ -117,6 +126,7 @@ services:
       rust-hid:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
     # Healthcheck defined in Dockerfile
 
   # Pairing Daemon - USB controller pairing and Bluetooth monitoring
@@ -161,6 +171,7 @@ services:
       rust-hid:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
     # Healthcheck defined in Dockerfile
 
   # Rust HID Service - PS Move HID access (ControllerIOService + PairingService)
@@ -195,6 +206,7 @@ services:
       flagd:
         condition: service_started
     restart: unless-stopped
+    logging: *default-logging
     # Healthcheck defined in Dockerfile (uses grpc_health_probe)
     deploy:
       resources:
@@ -221,6 +233,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
     # Healthcheck defined in Dockerfile
 
   # Menu Service
@@ -246,6 +259,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
     # Healthcheck defined in Dockerfile
 
   # Audio Service
@@ -275,6 +289,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
     group_add:
       - audio
     # Healthcheck defined in Dockerfile
@@ -309,6 +324,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
       interval: 2s
@@ -328,6 +344,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
     # Healthcheck defined in Dockerfile
 
   # Envoy (Gateway)
@@ -341,6 +358,7 @@ services:
     networks:
       - joustmania
     restart: unless-stopped
+    logging: *default-logging
 
 networks:
   joustmania:
