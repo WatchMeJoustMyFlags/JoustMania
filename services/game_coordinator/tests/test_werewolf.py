@@ -1102,13 +1102,53 @@ class TestWerewolfForceEndWinner:
         assert ended["outcome"] == "completed"
         assert "reason" not in ended
 
+    @staticmethod
+    def _decide(game, side):
+        """Kill the losing side ("tie": everybody) so the win check decides `side`."""
+        if side == "werewolves":
+            losers = game.human_serials
+        elif side == "humans":
+            losers = game.werewolf_serials
+        else:
+            losers = list(game.players)
+        for serial in losers:
+            game.players[serial].alive = False
+
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
     @pytest.mark.uc("UC-022", br=["BR-004"])
-    async def test_force_end_between_latch_and_end_keeps_the_winner(self, setup):
+    @pytest.mark.parametrize("side", ["humans", "werewolves"])
+    async def test_force_end_during_the_winner_publish_keeps_the_winner_completed(self, setup, side):
+        """#2009: a force-end landing while werewolf_winner is published keeps it, outcome completed."""
         game, events = setup
-        for serial in game.human_serials:
-            game.players[serial].alive = False
+        game.running = True
+        self._decide(game, side)
+
+        async def publish(kind, data):
+            if kind == "werewolf_winner":
+                game.force_end("race")  # the servicer thread, mid-publish
+            await events.publish(kind, data)
+
+        game.event_publisher = publish
+        assert await game._check_win_condition()
+        game._latch_game_outcome()  # the run() latches when the loop exits
+
+        await game._end_game_impl()
+
+        (winner_event,) = events.get_events_of_type("werewolf_winner")
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == winner_event["winner"] == side
+        assert ended["outcome"] == "completed" and "reason" not in ended
+        assert self._rainbow_writes(game)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-022", br=["BR-004"])
+    async def test_force_end_after_the_decision_in_the_same_tick_keeps_the_winner(self, setup):
+        """#2009: the win check decides first, the force-end follows in the same tick."""
+        game, events = setup
+        game.running = True
+        self._decide(game, "werewolves")
         assert await game._check_win_condition()
         game.force_end("race")  # lands before the loop latched its outcome
         for serial in game.werewolf_serials:  # a recompute would now see a tie
@@ -1121,8 +1161,59 @@ class TestWerewolfForceEndWinner:
         assert Sound.VOX_WEREWOLF_WIN in self._sounds(game)
         (ended,) = events.get_events_of_type("game_ended")
         assert ended["winner"] == "werewolves"
-        assert ended["outcome"] == "force_ended"
-        assert ended["reason"] == "race"
+        assert ended["outcome"] == "completed" and "reason" not in ended
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-022", br=["BR-004"])
+    @pytest.mark.parametrize("side", ["humans", "werewolves", "tie"])
+    async def test_force_end_racing_the_outcome_latch_publishes_nothing(self, setup, side):
+        """#2009 (#2002 recipe): a force-end right before the outcome latch wins the race: no result anywhere."""
+        game, events = setup
+        game.running = True
+        self._decide(game, side)
+        latch = game._latch_game_outcome
+
+        def force_end_then_latch():
+            game.force_end("operator")
+            latch()
+
+        game._latch_game_outcome = force_end_then_latch
+
+        assert await game._check_win_condition() is False
+        assert game._winner_side is None
+        await game._end_game_impl()
+
+        assert events.get_events_of_type("werewolf_winner") == []
+        assert events.get_events_of_type("game_tie") == []
+        assert self._rainbow_writes(game) == []
+        assert self._sounds(game) == []
+        game._wait_for_rainbow_effect.assert_not_called()
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "none" and ended["outcome"] == "force_ended"
+        assert ended["reason"] == "operator"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-027", flow="main", steps=[3])
+    @pytest.mark.uc("UC-022", br=["BR-004"])
+    @pytest.mark.parametrize("side", ["humans", "werewolves", "tie"])
+    async def test_force_end_before_the_win_check_in_the_same_tick_publishes_nothing(self, setup, side):
+        """#2009: a force-end that lands first declares no result, even with the win condition met."""
+        game, events = setup
+        game.running = True
+        self._decide(game, side)
+        game.force_end("operator")
+
+        assert await game._check_win_condition() is False
+        game._latch_game_outcome()
+        await game._end_game_impl()
+
+        assert events.get_events_of_type("werewolf_winner") == []
+        assert events.get_events_of_type("game_tie") == []
+        assert self._rainbow_writes(game) == []
+        assert self._sounds(game) == []
+        (ended,) = events.get_events_of_type("game_ended")
+        assert ended["winner"] == "none" and ended["outcome"] == "force_ended"
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-027", flow="main", steps=[3])
