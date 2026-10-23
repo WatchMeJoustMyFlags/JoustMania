@@ -65,7 +65,9 @@ func TestEvaluate_WithInMemoryProvider(t *testing.T) {
 	if !reflect.DeepEqual(got.InterventionsAllowed, []string{"play_audio_cue", "adjust_volume"}) {
 		t.Errorf("InterventionsAllowed = %v", got.InterventionsAllowed)
 	}
-	wantPolicy := Policy{BatteryThreshold: 30, MaxInterventionsPerMinute: 4}
+	// The shield limits are not in this provider: they resolve to their defaults.
+	wantPolicy := Policy{BatteryThreshold: 30, MaxInterventionsPerMinute: 4,
+		MaxShieldsPerPlayerPerGame: DefaultMaxShieldsPerPlayerPerGame, ShieldCooldownSeconds: DefaultShieldCooldownSeconds}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want %+v", got.Policy, wantPolicy)
 	}

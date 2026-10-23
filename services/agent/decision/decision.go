@@ -561,6 +561,10 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		return state
 	}
 
+	// The shield ledger's views (the rules' no-shield filter) use this cycle's
+	// live shield limits (UC-040 A33).
+	l.charges.setLimits(limitsOf(snapshot.Policy))
+
 	// Objective layer: publish the per-cycle objectives flag into the rules
 	// engine. The engine reads them inside Evaluate; engines that ignore
 	// objectives (Noop/Probe) skip this.
@@ -765,20 +769,22 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	cost := interventionCost(d.Intervention)
 	perm := l.evaluatePermission(ctx, snapshot, c, d, now, cost, state)
 	reason, blocked := perm.reason, perm.blocked
-	// UC-040 A31 step 1: a charge reserved by the permission chain is kept only when
-	// the write is applied; every other way out of this function releases it.
+	// UC-040 A31 step 1, A33: a shield reserved by the permission chain is kept only
+	// when the write is applied; every other way out of this function, a later
+	// refusal in the chain included, releases it.
 	applied := false
-	defer perm.charge.finish(&applied)
+	defer perm.shield.finish(&applied)
 	if blocked && reason == ReasonRateLimit && l.repeatRefusal(d, now) {
 		// UC-040 A21: the budget already refused this decision and has not
 		// changed since; count it, but emit no span, warning or timeline entry.
 		l.recordRepeatRefusal(ctx, d, cost, state, ReasonRateLimit)
 		return
 	}
-	if blocked && reason == ReasonAlreadyCharged && perm.repeatCharge {
-		// UC-040 A31 step 1 (as A21): the ledger already refused a grant against
-		// this entry; count it, but emit no span, warning or timeline entry.
-		l.recordRepeatRefusal(ctx, d, cost, state, ReasonAlreadyCharged)
+	if blocked && perm.repeatShield {
+		// UC-040 A31 step 1, A33 (as A21): the shield ledger already refused a
+		// grant with this reason against this entry; count it, but emit no span,
+		// warning or timeline entry.
+		l.recordRepeatRefusal(ctx, d, cost, state, reason)
 		return
 	}
 
@@ -955,17 +961,19 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 type permission struct {
 	reason  BlockReason
 	blocked bool
-	// charge is the shield-charge reservation this decision holds (UC-040 A31), nil
-	// when the ledger does not apply or refused. The caller must finish it.
-	charge *chargeReservation
-	// repeatCharge marks an already_charged refusal that repeats an earlier one
-	// against the same ledger entry (quiet, as A21).
-	repeatCharge bool
+	// shield is the shield-ledger reservation this decision holds (UC-040 A31, A33),
+	// nil when the ledger does not apply or refused. It is returned on a later
+	// refusal too: the caller's deferred finish releases it.
+	shield *chargeReservation
+	// repeatShield marks a shield-ledger refusal (already_charged,
+	// shield_cap_reached, shield_cooldown) that repeats an earlier one with the same
+	// reason against the same entry (quiet, as A21).
+	repeatShield bool
 }
 
 // evaluatePermission runs the permission chain over one decision in order:
-// allow-list gate (#727), battery threshold, the shield-charge ledger (UC-040
-// A31), then the weighted rate limit (#728). It returns the verdict. The
+// allow-list gate (#727), battery threshold, the shield ledger (UC-040 A31, A33),
+// then the weighted rate limit (#728). It returns the verdict. The
 // rate limit is charged ONLY when the decision passes the allow-list and
 // battery gates AND fits the budget — so the budget is spent on decisions the
 // agent actually dispatches, the unification chosen over #726's
@@ -985,23 +993,27 @@ func (l *Loop) evaluatePermission(ctx context.Context, snapshot flags.Snapshot, 
 	if l.batteryBlocks(snapshot, c, d) {
 		return permission{reason: ReasonBatteryThreshold, blocked: true}
 	}
-	// 3. Shield-charge ledger (UC-040 A31 step 1, BR-020): in trigger mode at most
-	// one agent charge per player per window. Before the rate limit, so a refusal
-	// charges no budget; the reservation is released below if the limit blocks.
-	charge, refused, firstRefusal := l.reserveCharge(ctx, c, d, now)
-	if refused {
-		return permission{reason: ReasonAlreadyCharged, blocked: true, repeatCharge: !firstRefusal}
+	// Check-only steps that reserve nothing go here, ahead of every step that
+	// reserves, so their refusal can leak nothing (#2046 already_applied).
+	//
+	// 3. Shield ledger (UC-040 A31 step 1, BR-020; A33, BR-022): a targeted
+	// grant_shield is refused already_charged (trigger mode), shield_cap_reached or
+	// shield_cooldown, else reserved. Before the rate limit, so a refusal charges no
+	// budget and does not end rank-order admission.
+	shield, refused, firstRefusal := l.reserveShield(ctx, snapshot, c, d, now)
+	if refused != "" {
+		return permission{reason: refused, blocked: true, repeatShield: !firstRefusal}
 	}
 	// 4. Weighted rate limit: block when the per-minute budget is exhausted. The
 	// limiter charges the cost only when it admits, so blocked decisions above do
 	// not draw down the budget. Budget-aware (UC-040 BR-014/BR-015, budget.go):
 	// rank order is kept within a cycle and nudges leave a protective reserve.
-	// admitOrHold charges the budget on admit and may set the cycle's hold.
+	// admitOrHold charges the budget on admit and may set the cycle's hold. A
+	// block returns the shield reservation, and the caller's finish releases it.
 	if !l.admitOrHold(snapshot, d, now, cost, state) {
-		charge.finish(nil)
-		return permission{reason: ReasonRateLimit, blocked: true}
+		return permission{reason: ReasonRateLimit, blocked: true, shield: shield}
 	}
-	return permission{charge: charge}
+	return permission{shield: shield}
 }
 
 // batteryBlocks reports whether a player-targeted decision must be blocked
