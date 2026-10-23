@@ -325,7 +325,7 @@ class TestSingleGameCharacterization:
             assert ok1 is True
 
             ok2, error = await servicer._start_game_from_config(
-                _config(game_name="Teams", serials=("p3", "p4")), _MockSpan()
+                _config(game_name="Teams", serials=("p3", "p4", "p5")), _MockSpan()
             )
         assert ok2 is False
         assert "already in progress" in error.lower()
@@ -830,7 +830,7 @@ class TestGameIdRouting:
         """GetGameState(game_id=...) returns that specific session's state."""
         gid1, _ = await _start_running(servicer, _config(game_name="FFA", serials=("a1", "a2")))
         # gid2 is a shadow (#1018: a second MENU start is rejected).
-        gid2, _ = await _start_running(servicer, _shadow_config(game_name="Teams", serials=("b1", "b2")))
+        gid2, _ = await _start_running(servicer, _shadow_config(game_name="Teams", serials=("b1", "b2", "b3")))
 
         resp1 = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(game_id=gid1), MockGrpcContext())
         resp2 = await servicer.GetGameState(game_coordinator_pb2.GetGameStateRequest(game_id=gid2), MockGrpcContext())
@@ -852,7 +852,7 @@ class TestGameIdRouting:
     async def test_list_games_shows_running_then_empties(self, servicer, cap_two):
         """ListGames enumerates all live sessions, then empties as they end."""
         gid1, _ = await _start_running(servicer, _config(game_name="FFA", serials=("a1", "a2")))
-        gid2, _ = await _start_running(servicer, _shadow_config(game_name="Teams", serials=("b1", "b2")))
+        gid2, _ = await _start_running(servicer, _shadow_config(game_name="Teams", serials=("b1", "b2", "b3")))
 
         resp = await servicer.ListGames(game_coordinator_pb2.ListGamesRequest(), MockGrpcContext())
         assert resp.success is True
@@ -2676,3 +2676,103 @@ class TestForceEndOnce:
         assert [c for c in clear_state.call_args_list if c.args == ("shadow", gid_s)] == [call("shadow", gid_s)]
         assert [e.data["reason"] for e in self._drain(q)] == ["operator"]
         assert gid in servicer.sessions
+
+
+# Per-mode minimum players (UC-010 BR-001, #1862). The values are pinned here, not
+# read from lib/types.py, so a changed minimum shows up as a test failure.
+_MODE_MINIMUMS = [
+    ("JoustFFA", 2),
+    ("JoustTeams", 3),
+    ("JoustRandomTeams", 3),
+    ("Traitor", 4),
+    ("Werewolf", 3),
+    ("Zombies", 4),
+    ("Swapper", 3),
+    ("FightClub", 2),
+    ("Tournament", 3),
+    ("NonStop", 2),
+]
+
+
+class TestModeMinimumPlayers:
+    """UC-010 BR-001: the coordinator refuses a start below the mode's minimum, for every origin."""
+
+    @pytest.fixture
+    def servicer(self):
+        return GameCoordinatorServicer()
+
+    @staticmethod
+    def _serials(count):
+        return tuple(f"p{i}" for i in range(1, count + 1))
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", br=["BR-001"])
+    @pytest.mark.uc("UC-021", cond=["Pre-1"])
+    @pytest.mark.uc("UC-022", cond=["Pre-1"])
+    @pytest.mark.uc("UC-023", cond=["Pre-1"])
+    @pytest.mark.uc("UC-024", cond=["Pre-1"])
+    @pytest.mark.uc("UC-025", cond=["Pre-1"])
+    @pytest.mark.parametrize("make_config", [_config, _shadow_config], ids=["real", "shadow"])
+    @pytest.mark.parametrize(("game_name", "minimum"), _MODE_MINIMUMS)
+    async def test_below_minimum_is_refused_and_registers_nothing(self, servicer, make_config, game_name, minimum):
+        config = make_config(game_name=game_name, serials=self._serials(minimum - 1))
+
+        with _NO_THREAD:
+            success, message = await servicer._start_game_from_config(config, _MockSpan())
+
+        assert success is False
+        if minimum == 2:
+            assert message == "Need at least 2 players"
+        else:
+            assert message == f"{game_name} needs at least {minimum} players"
+        assert servicer.sessions == {}
+        assert servicer.game_id is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[5], br=["BR-001"])
+    @pytest.mark.uc("UC-021", cond=["Pre-1"])
+    @pytest.mark.uc("UC-022", cond=["Pre-1"])
+    @pytest.mark.uc("UC-023", cond=["Pre-1"])
+    @pytest.mark.uc("UC-024", cond=["Pre-1"])
+    @pytest.mark.uc("UC-025", cond=["Pre-1"])
+    @pytest.mark.parametrize("make_config", [_config, _shadow_config], ids=["real", "shadow"])
+    @pytest.mark.parametrize(("game_name", "minimum"), _MODE_MINIMUMS)
+    async def test_at_minimum_starts(self, servicer, make_config, game_name, minimum):
+        config = make_config(game_name=game_name, serials=self._serials(minimum))
+
+        with _NO_THREAD:
+            success, game_id = await servicer._start_game_from_config(config, _MockSpan())
+
+        assert success is True, game_id
+        assert game_id in servicer.sessions
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", br=["BR-001"])
+    async def test_minimum_error_takes_precedence_over_game_in_progress(self, servicer):
+        """Error order: a sub-minimum start while a game runs answers the minimum error, not 'already in progress'."""
+        with _NO_THREAD:
+            ok, _ = await servicer._start_game_from_config(_config(), _MockSpan())
+            assert ok is True
+
+            success, message = await servicer._start_game_from_config(
+                _config(game_name="Traitor", serials=self._serials(3)), _MockSpan()
+            )
+
+        assert success is False
+        assert message == "Traitor needs at least 4 players"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", br=["BR-001"])
+    @pytest.mark.uc("UC-022", cond=["Pre-1"])
+    async def test_stream_start_below_minimum_answers_game_start_error(self, servicer):
+        """A direct StreamGameEvents(start_config) start cannot bypass the menu's check."""
+        request = game_coordinator_pb2.StreamEventsRequest(
+            start_config=_config(game_name="Traitor", serials=self._serials(3))
+        )
+
+        with _NO_THREAD:
+            collected = await _collect_stream_events(servicer, request, MockGrpcContext(), until="game_start_error")
+
+        assert [e.event_type for e in collected] == ["game_start_error"]
+        assert collected[0].data["error"] == "Traitor needs at least 4 players"
+        assert servicer.sessions == {}

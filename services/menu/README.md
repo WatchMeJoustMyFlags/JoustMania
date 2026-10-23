@@ -77,7 +77,7 @@ rpc StreamMenuEvents(StreamMenuEventsRequest) returns (stream MenuEvent);
 | `menu_stopped` | `{}` | Menu has stopped |
 | `selection_changed` | `{game_name, source?, serial?}` | Game mode changed |
 | `game_requested` | `{game_name, source?, serial?}` | Game start requested |
-| `game_start_cancelled` | `{}` | Game start was cancelled |
+| `game_start_cancelled` | `{game_name, player_count, minimum_players}` (roster below the mode's minimum) or `{}` (`reset_menu`) | Game start was cancelled |
 | `game_start_rejected` | `{game_name, source, error}` | Web `start_game` named an unknown or unimplemented mode; no game starts |
 
 ## Lobby Feedback

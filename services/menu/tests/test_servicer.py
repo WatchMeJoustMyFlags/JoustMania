@@ -420,16 +420,58 @@ class TestMenuServicerProcessInput:
         """UC-010 A6: web_command start_game starts the selected mode with the READY controllers."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
         real_servicer.current_selection = Games.JoustTeams
-        await _connect(real_servicer, "s1", "s2", "s3")
-        await _ready_up(real_servicer, "s2", "s3")
+        await _connect(real_servicer, "s1", "s2", "s3", "s4")
+        await _ready_up(real_servicer, "s2", "s3", "s4")
 
         with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
             await real_servicer.ProcessInput(self._request("web_command", command="start_game"), MagicMock())
             await _await_lifecycle(real_servicer)
 
-        assert _started_roster(stream) == ["s2", "s3"]
+        assert _started_roster(stream) == ["s2", "s3", "s4"]
         request = stream.await_args.args[2]
         assert request.start_config.game_name == Games.JoustTeams.name
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2], br=["BR-001"])
+    @pytest.mark.uc("UC-010", flow="A6")
+    async def test_web_start_game_below_mode_minimum_is_cancelled(self, real_servicer):
+        """web_command start_game for Teams with two READY players never reaches the coordinator."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        real_servicer.current_selection = Games.JoustTeams
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1", "s2")
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.ProcessInput(self._request("web_command", command="start_game"), MagicMock())
+            await _await_lifecycle(real_servicer)
+
+        stream.assert_not_awaited()
+        assert _published(real_servicer)[-1] == (
+            "game_start_cancelled",
+            {"game_name": "JoustTeams", "player_count": 2, "minimum_players": 3},
+        )
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        assert set(real_servicer.state_manager.controller_states.values()) == {ControllerState.CONNECTED}
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2], br=["BR-001"])
+    async def test_button_trigger_below_mode_minimum_is_cancelled(self, real_servicer):
+        """A ProcessInput trigger for Teams with two READY players is cancelled the same way."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        _select(real_servicer, Games.JoustTeams)
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await _ready_up(real_servicer, "s1", "s2")
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.ProcessInput(self._request("button_press", button="trigger"), MagicMock())
+            await _await_lifecycle(real_servicer)
+
+        stream.assert_not_awaited()
+        assert _published(real_servicer)[-1] == (
+            "game_start_cancelled",
+            {"game_name": "JoustTeams", "player_count": 2, "minimum_players": 3},
+        )
+        assert set(real_servicer.state_manager.controller_states.values()) == {ControllerState.CONNECTED}
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A6")
@@ -659,7 +701,7 @@ class TestMenuServicerReadyUpStart:
         real_servicer.state = menu_pb2.MenuState.RUNNING
         real_servicer.current_selection = Games.JoustTeams
         real_servicer.state_manager.set_game_mode(Games.JoustTeams)
-        await _connect(real_servicer, "s1", "s2")
+        await _connect(real_servicer, "s1", "s2", "s3")
         await _ready_up(real_servicer, "s1")
         led = real_servicer.state_manager.led
         led.reset_mock()
@@ -672,11 +714,14 @@ class TestMenuServicerReadyUpStart:
             await _await_lifecycle(real_servicer)
 
         stream.assert_not_awaited()
-        assert _published(real_servicer) == [("game_start_cancelled", {})]
+        assert _published(real_servicer) == [
+            ("game_start_cancelled", {"game_name": "JoustTeams", "player_count": 1, "minimum_players": 3})
+        ]
         assert real_servicer.state == menu_pb2.MenuState.RUNNING
         assert real_servicer.state_manager.controller_states == {
             "s1": ControllerState.CONNECTED,
             "s2": ControllerState.CONNECTED,
+            "s3": ControllerState.CONNECTED,
         }
         led.set_connected_color.assert_any_await("s1", Games.JoustTeams.name)
         real_servicer.audio.stop_lobby_music.assert_not_awaited()
@@ -685,10 +730,10 @@ class TestMenuServicerReadyUpStart:
 
         # The un-ready cleared the start latch: the players can ready up and the next start goes through.
         with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as second_stream:
-            await _ready_up(real_servicer, "s1", "s2")
+            await _ready_up(real_servicer, "s1", "s2", "s3")
             await _await_lifecycle(real_servicer)
 
-        assert _started_roster(second_stream) == ["s1", "s2"]
+        assert _started_roster(second_stream) == ["s1", "s2", "s3"]
         assert second_stream.await_args.args[2].start_config.game_name == Games.JoustTeams.name
         assert real_servicer.state == menu_pb2.MenuState.GAME_STARTING
 
@@ -702,7 +747,7 @@ class TestMenuServicerReadyUpStart:
         real_servicer.state = menu_pb2.MenuState.RUNNING
         real_servicer.current_selection = Games.JoustTeams
         real_servicer.state_manager.set_game_mode(Games.JoustTeams)
-        await _connect(real_servicer, "s1", "s2")
+        await _connect(real_servicer, "s1", "s2", "s3")
         led = real_servicer.state_manager.led
         real_servicer.audio.start_lobby_music.reset_mock()
         real_servicer.idle_monitor.start.reset_mock()
@@ -720,7 +765,7 @@ class TestMenuServicerReadyUpStart:
                 return stream
 
         with patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", RejectingStub):
-            await _ready_up(real_servicer, "s1", "s2")
+            await _ready_up(real_servicer, "s1", "s2", "s3")
             led.reset_mock()
             await _await_lifecycle(real_servicer)
 
@@ -728,11 +773,13 @@ class TestMenuServicerReadyUpStart:
         assert real_servicer.state_manager.controller_states == {
             "s1": ControllerState.CONNECTED,
             "s2": ControllerState.CONNECTED,
+            "s3": ControllerState.CONNECTED,
         }
         assert real_servicer.state_manager.ready_controllers == set()
         assert sorted(c.args for c in led.set_connected_color.await_args_list) == [
             ("s1", Games.JoustTeams.name),
             ("s2", Games.JoustTeams.name),
+            ("s3", Games.JoustTeams.name),
         ]
         real_servicer.audio.start_lobby_music.assert_awaited_once()
         real_servicer.idle_monitor.start.assert_called_once()
@@ -775,6 +822,150 @@ class TestMenuServicerForceStartShortRoster:
         # Back in the lobby: the host is CONNECTED again with the lobby colour.
         assert real_servicer.state_manager.controller_states["host"] == ControllerState.CONNECTED
         real_servicer.led.set_connected_color.assert_any_await("host", Games.JoustFFA.name)
+
+
+# Per-mode minimum players (UC-010 BR-001, #1862), pinned so a changed minimum fails a test.
+_MODE_MINIMUMS = [
+    (Games.JoustFFA, 2),
+    (Games.JoustTeams, 3),
+    (Games.JoustRandomTeams, 3),
+    (Games.Traitor, 4),
+    (Games.Werewolf, 3),
+    (Games.Zombies, 4),
+    (Games.Swapper, 3),
+    (Games.FightClub, 2),
+    (Games.Tournament, 3),
+    (Games.NonStop, 2),
+]
+
+
+async def _enter_admin(servicer, serial: str) -> None:
+    """Hold Cross, Circle, Square and Triangle (UC-012), then release them."""
+    for button in ("cross", "circle", "square", "triangle"):
+        await servicer.on_button(serial, button, True)
+    for button in ("cross", "circle", "square", "triangle"):
+        await servicer.on_button(serial, button, False)
+    assert servicer.admin_handler.is_admin_controller(serial)
+
+
+def _select(servicer, mode: Games) -> None:
+    servicer.current_selection = mode
+    servicer.state_manager.set_game_mode(mode)
+
+
+def _not_enough(mode: Games, count: int, minimum: int) -> tuple[str, dict]:
+    return ("game_start_cancelled", {"game_name": mode.name, "player_count": count, "minimum_players": minimum})
+
+
+class TestModeMinimumPlayers:
+    """UC-010 BR-001 / UC-014 BR-002: no start below the selected mode's minimum, on every start path."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2], br=["BR-001"])
+    @pytest.mark.uc("UC-021", cond=["Pre-1"])
+    @pytest.mark.uc("UC-022", cond=["Pre-1"])
+    @pytest.mark.uc("UC-023", cond=["Pre-1"])
+    @pytest.mark.uc("UC-024", cond=["Pre-1"])
+    @pytest.mark.uc("UC-025", cond=["Pre-1"])
+    @pytest.mark.parametrize(("mode", "minimum"), [m for m in _MODE_MINIMUMS if m[1] > 2], ids=lambda v: str(v))
+    async def test_everyone_ready_below_minimum_is_cancelled_then_starts_at_minimum(self, real_servicer, mode, minimum):
+        """Everyone ready but one short of the mode's minimum: no coordinator start, game_start_cancelled
+        names the shortfall, "not enough players" is announced, everyone is un-readied (dim lobby LED).
+        With one more player the same lobby starts the mode."""
+        from lib.types import Sound
+
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        _select(real_servicer, mode)
+        short = [f"s{i}" for i in range(1, minimum)]
+        await _connect(real_servicer, *short)
+        led = real_servicer.state_manager.led
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await _ready_up(real_servicer, *short)
+            await _await_lifecycle(real_servicer)
+
+        stream.assert_not_awaited()
+        assert _published(real_servicer)[-1] == _not_enough(mode, minimum - 1, minimum)
+        real_servicer.audio.play_voice.assert_awaited_with(Sound.MENU_VOX_NOT_ENOUGH_PLAYERS)
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        assert set(real_servicer.state_manager.controller_states.values()) == {ControllerState.CONNECTED}
+        led.set_connected_color.assert_any_await("s1", mode.name)
+        assert real_servicer.current_selection == mode
+
+        full = [*short, f"s{minimum}"]
+        await _connect(real_servicer, full[-1])
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as second_stream:
+            await _ready_up(real_servicer, *full)
+            await _await_lifecycle(real_servicer)
+
+        assert _started_roster(second_stream) == sorted(full)
+        assert second_stream.await_args.args[2].start_config.game_name == mode.name
+        assert real_servicer.state == menu_pb2.MenuState.GAME_STARTING
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2], br=["BR-001"])
+    @pytest.mark.parametrize(("mode", "minimum"), _MODE_MINIMUMS, ids=lambda v: str(v))
+    async def test_short_roster_is_cancelled_for_every_mode(self, real_servicer, mode, minimum):
+        """Every implemented mode: a roster one below its minimum never reaches the coordinator."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        _select(real_servicer, mode)
+        roster = [f"s{i}" for i in range(1, minimum)]
+
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.start_game("s1", source="controller", controllers=roster)
+            await _await_lifecycle(real_servicer)
+
+        stream.assert_not_awaited()
+        assert _published(real_servicer) == [_not_enough(mode, minimum - 1, minimum)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A3", steps=[1, 2], br=["BR-002"])
+    @pytest.mark.uc("UC-022", cond=["Pre-1"])
+    async def test_force_start_skips_ready_check_but_not_minimum(self, real_servicer):
+        """UC-014 BR-002: a forced Traitor roster of three is cancelled; with four it starts though
+        the host is not READY."""
+        from lib.types import Sound
+        from proto import controller_manager_pb2_grpc
+
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        _select(real_servicer, Games.Traitor)
+        await _connect(real_servicer, "host", "s2", "s3", "s4")
+        await _enter_admin(real_servicer, "host")
+        await _ready_up(real_servicer, "s2", "s3")
+
+        live_stub = create_autospec(controller_manager_pb2_grpc.ControllerManagerServiceStub, instance=True)
+        live_stub.GetConnectedControllers = AsyncMock(
+            return_value=controller_manager_pb2.GetConnectedControllersResponse(
+                connected_serials=["host", "s2", "s3", "s4"]
+            )
+        )
+        with (
+            patch("lib.feature_flags.get_flag_client", side_effect=default_returning_flag_client),
+            patch.object(controller_manager_pb2_grpc, "ControllerManagerServiceStub", return_value=live_stub),
+            patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream,
+        ):
+            await real_servicer.admin_handler.handle_force_start("host")
+            await _await_lifecycle(real_servicer)
+
+        stream.assert_not_awaited()
+        assert _published(real_servicer)[-1] == _not_enough(Games.Traitor, 3, 4)
+        real_servicer.audio.play_voice.assert_awaited_with(Sound.MENU_VOX_NOT_ENOUGH_PLAYERS)
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+
+        # Four in the roster: the host (admin) is not READY, the force-start still starts the game.
+        await _enter_admin(real_servicer, "host")
+        await _ready_up(real_servicer, "s2", "s3", "s4")
+        assert real_servicer._game_lifecycle_task.done()
+        with (
+            patch("lib.feature_flags.get_flag_client", side_effect=default_returning_flag_client),
+            patch.object(controller_manager_pb2_grpc, "ControllerManagerServiceStub", return_value=live_stub),
+            patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as second_stream,
+        ):
+            await real_servicer.admin_handler.handle_force_start("host")
+            await _await_lifecycle(real_servicer)
+
+        assert _started_roster(second_stream) == ["host", "s2", "s3", "s4"]
+        assert second_stream.await_args.args[2].start_config.game_name == Games.Traitor.name
 
 
 class TestMenuServicerLifecycle:
@@ -1870,7 +2061,9 @@ class TestRunGameLifecycleRosterAbort:
 
         await self._run(servicer)
 
-        servicer.event_publisher.publish.assert_awaited_once_with("game_start_cancelled", {})
+        servicer.event_publisher.publish.assert_awaited_once_with(
+            "game_start_cancelled", {"game_name": "JoustFFA", "player_count": 1, "minimum_players": 2}
+        )
         assert servicer.state == menu_pb2.MenuState.RUNNING
         servicer._prepare_game_start.assert_not_awaited()
         servicer.state_manager.reset.assert_awaited_once()
@@ -1883,7 +2076,9 @@ class TestRunGameLifecycleRosterAbort:
 
         await self._run(servicer, controllers=["s1"])
 
-        servicer.event_publisher.publish.assert_awaited_once_with("game_start_cancelled", {})
+        servicer.event_publisher.publish.assert_awaited_once_with(
+            "game_start_cancelled", {"game_name": "JoustFFA", "player_count": 1, "minimum_players": 2}
+        )
         assert servicer.state == menu_pb2.MenuState.RUNNING
 
 

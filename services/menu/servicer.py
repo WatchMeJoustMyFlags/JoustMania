@@ -19,7 +19,7 @@ from lib.feature_flags import (
 )
 from lib.flag_service_writer import FlagServiceWriter
 from lib.telemetry import get_tracer
-from lib.types import Games
+from lib.types import Games, Sound
 from proto import menu_pb2, menu_pb2_grpc
 from services.menu import metrics
 from services.menu.controller_events import ControllerEventLoop
@@ -677,14 +677,21 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             roster = list(controllers) if controllers is not None else list(self.state_manager.ready_controllers)
             span.set_attribute("controller.count", len(roster))
 
-            if len(roster) < 2:
-                logger.warning(f"Not enough players to start game: {len(roster)}")
+            # UC-010 BR-001 (#1862): every start path (ready auto start, trigger,
+            # admin force-start, web / ProcessInput) needs the mode's minimum.
+            minimum_players = mode.minimum_players
+            if len(roster) < minimum_players:
+                logger.warning(f"Not enough players to start {mode.name}: {len(roster)} (minimum {minimum_players})")
                 # Don't leave the menu stuck in GAME_STARTING if a start aborts.
                 if self.state == menu_pb2.MenuState.GAME_STARTING:
                     self.state = menu_pb2.MenuState.RUNNING
                 # Publish on every roster abort (UC-010 A3) — the ready/auto-start
                 # path is still RUNNING here, only admin force-start is GAME_STARTING.
-                await self.event_publisher.publish("game_start_cancelled", {})
+                await self.event_publisher.publish(
+                    "game_start_cancelled",
+                    {"game_name": mode.name, "player_count": len(roster), "minimum_players": minimum_players},
+                )
+                await self.audio.play_voice(Sound.MENU_VOX_NOT_ENOUGH_PLAYERS)
                 # Restore lobby LEDs. The button monitor and lobby music are still
                 # running (we abort before _prepare_game_start), so a full
                 # _restart_lobby would be wrong here — but admin force-start sends a
