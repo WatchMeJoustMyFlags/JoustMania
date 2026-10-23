@@ -21,7 +21,7 @@ Specs are the source of truth; code and tests follow from them. Start at [docs/R
 ## Agent workflows
 
 - Implementing an issue (agent or human): [.claude/skills/implement-issue](.claude/skills/implement-issue/SKILL.md): worktree, spec first, failing test, `make pr-gates`, push, stop, 15-line report. Agents run it as the [implementer](.claude/agents/implementer.md) agent (sonnet; opus for hot path, concurrency, safety), which hands gate and test runs to the Haiku [gate-runner](.claude/agents/gate-runner.md) and broad searches to `Explore`.
-- Reviewing a PR: [.claude/skills/review-pr](.claude/skills/review-pr/SKILL.md): depth by PR type, mutation check, delta mode; merge with `scripts/ci/safe-merge.sh`, delegated to the Haiku [pr-merger](.claude/agents/pr-merger.md) agent. Reviewers send `make pr-gates` and mutation-check runs to gate-runner too.
+- Reviewing a PR: the [pr-reviewer](.claude/agents/pr-reviewer.md) agent runs [.claude/skills/review-pr](.claude/skills/review-pr/SKILL.md): depth by PR type, mutation check, delta mode; merge with `scripts/ci/safe-merge.sh`, delegated to the Haiku [pr-merger](.claude/agents/pr-merger.md) agent. Reviewers send `make pr-gates` and mutation-check runs to gate-runner too.
 
 ## Session Management
 
