@@ -293,6 +293,7 @@ class TestSwapperMotionProcessing:
             audio_client=None,
             game_id="test_swapper_motion",
         )
+        game.running = True
         return game, mock_cm
 
     @pytest.mark.asyncio

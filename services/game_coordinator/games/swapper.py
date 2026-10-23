@@ -166,14 +166,14 @@ class SwapperGame(TeamsGameBase):
             accel_mag: Acceleration magnitude that caused death
         """
         player = self.players[serial]
+        if serial in self._eliminated:
+            # UC-024 A1: a disconnected player is eliminated, not swapped.
+            self._eliminate(serial)
+            return
         if self._win_latched or not self.running:
             # The win was latched, or the game ended, while the base kill path awaited
             # (shield discard, explosion sound): no swap, no write (BR-003, BR-004).
             # ``alive`` stays True, so no death effect follows either.
-            return
-        if serial in self._eliminated:
-            # UC-024 A1: a disconnected player is eliminated, not swapped.
-            self._eliminate(serial)
             return
 
         old_team = player.team

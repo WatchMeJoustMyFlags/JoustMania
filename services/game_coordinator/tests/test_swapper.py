@@ -393,6 +393,7 @@ class TestSwapperGracePeriod:
             audio_client=None,
             game_id="test_swapper_grace",
         )
+        game.running = True
 
         return game, mock_controller_manager, event_collector
 
