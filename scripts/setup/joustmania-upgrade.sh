@@ -21,8 +21,11 @@
 #      previous (ref, branch, image tag, images) in .joustmania-release. The
 #      checkout is the single switch: the image tag derives from HEAD
 #      (lib-joustmania.sh), no env file is written.
-#   5. Apply: `sudo systemctl restart joustmania`, then wait until every game
-#      service is running (and healthy where it has a healthcheck).
+#   5. Apply: `sudo systemctl reset-failed joustmania` (operator restarts do not
+#      spend the unit's start limit, BR-006), `sudo systemctl restart
+#      joustmania`, then wait until every game service is running (and healthy
+#      where it has a healthcheck). A start systemd refuses (start-limit-hit)
+#      is reset and retried once, then reported as refused: never rolled back.
 #   6. Not healthy within the timeout: roll back to the previous version
 #      (A3) unless --no-rollback. Healthy: remove superseded images of the
 #      joustmania repositories the two recorded versions use (nothing else).
@@ -231,14 +234,47 @@ wait_healthy() {
     done
 }
 
-# apply: restart the unit and judge the game services
+RECOVER_CMD="sudo systemctl reset-failed $UNIT && sudo systemctl start $UNIT"
+
+# start_refused: systemd refused the last start of the unit (start limit)
+start_refused() {
+    [[ "$(systemctl show -p Result --value "$UNIT" 2>/dev/null || true)" == start-limit-hit ]]
+}
+
+# restart_unit: an operator restart (UC-060 BR-006). The unit's start limit
+# (3 in 900 s) is for crash loops of automatic retries, not for deliberate
+# restarts, so reset it first; it is never weakened in the unit itself. A start
+# systemd still refuses is reset and retried once.
+# Returns 0 started, 1 failed to start, 3 refused by systemd (start-limit-hit).
+restart_unit() {
+    sudo systemctl reset-failed "$UNIT" || say "WARN: systemctl reset-failed $UNIT failed"
+    sudo systemctl restart "$UNIT" && return 0
+    start_refused || return 1
+    say "systemd refused the start (start-limit-hit); resetting the start limit and retrying once"
+    sudo systemctl reset-failed "$UNIT" || say "WARN: systemctl reset-failed $UNIT failed"
+    sudo systemctl restart "$UNIT" && return 0
+    start_refused && return 3
+    return 1
+}
+
+# apply: restart the unit and judge the game services. Returns 0 healthy,
+# 1 failed to start or not healthy, 3 the start was refused by systemd: the
+# version was never judged, so callers must not roll back because of it.
 apply() {
     say "restarting the $UNIT unit"
-    if ! sudo systemctl restart "$UNIT"; then
-        say "the $UNIT unit failed to start"
-        return 1
-    fi
-    wait_healthy
+    local rc=0
+    restart_unit || rc=$?
+    case "$rc" in
+        0) wait_healthy ;;
+        3)
+            say "the $UNIT unit start was refused by systemd (start-limit-hit), not judged; recover with: $RECOVER_CMD"
+            return 3
+            ;;
+        *)
+            say "the $UNIT unit failed to start"
+            return 1
+            ;;
+    esac
 }
 
 # switch_to <commit>: the single switch (UC-060 A2 step 2)
@@ -334,6 +370,9 @@ do_status() {
         say "WARN: checkout not pinned (HEAD on a branch, UC-060 A4)"
     fi
     warn_overrides
+    if start_refused; then
+        say "WARN: the $UNIT unit is start-limit-hit (systemd refuses to start it); recover with: $RECOVER_CMD"
+    fi
 }
 
 # repair_stale_record <commit>: an upgrade cut off between its checkout and its
@@ -407,10 +446,16 @@ do_upgrade() {
     if ! git diff --quiet "$prev_ref" "$commit" -- scripts/setup/joustmania.service; then
         say "unit file changed: run sudo $JOUSTMANIA_DIR/scripts/setup/install_autostart.sh"
     fi
-    if apply; then
+    local apply_rc=0
+    apply || apply_rc=$?
+    if ((apply_rc == 0)); then
         say "now at $TARGET_REF (image tag $tag); previous $prev_ref kept for --rollback"
         prune_images
         return 0
+    fi
+    if ((apply_rc == 3)); then
+        # Never roll back because of a refused start (UC-060 BR-006)
+        die "the start of $TARGET_REF was refused by systemd (start-limit-hit); not rolling back. $TARGET_REF is checked out (previous $prev_ref kept for --rollback); recover with: $RECOVER_CMD"
     fi
     if [[ "$no_rollback" == 1 ]]; then
         die "$TARGET_REF is not healthy; left in place for inspection (--no-rollback). Roll back with --rollback."
@@ -421,6 +466,7 @@ do_upgrade() {
     case "$rc" in
         0) die "upgrade to $TARGET_REF failed; rolled back to $prev_ref" ;;
         2) die "upgrade to $TARGET_REF failed and the rollback to $prev_ref was not applied (nothing switched back); the unhealthy $TARGET_REF stays checked out (state failed)" ;;
+        3) die "upgrade to $TARGET_REF failed; $prev_ref is checked out but its start was refused by systemd (start-limit-hit); recover with: $RECOVER_CMD" ;;
         *) die "rollback to $prev_ref did not come up healthy either (state failed)" ;;
     esac
 }
@@ -469,7 +515,8 @@ rollback_plan() {
 # restart has been judged, so a run cut off anywhere in between is finished by
 # the next --rollback instead of toggling back (rollback_plan).
 # Returns 0 healthy, 1 restarted but not healthy (or stuck between versions),
-# 2 not applied: nothing switched or restarted, the record as it was.
+# 2 not applied: nothing switched or restarted, the record as it was,
+# 3 switched and recorded, but systemd refused the start (BR-006).
 roll_back_to_previous() {
     local imgs missing saved
     rollback_plan || {
@@ -504,8 +551,9 @@ roll_back_to_previous() {
         return 1
     }
     local rc=0
-    apply || rc=1
-    # The restart was judged: the rollback is over, healthy or not
+    apply || rc=$?
+    # The restart was judged (or refused, with HEAD and the record on the
+    # target): the rollback is over, healthy or not
     write_release_raw "$(grep -v '^rollback_to=' "$JOUSTMANIA_DIR/$RELEASE_FILE")" ||
         say "could not clear rollback_to in $RELEASE_FILE"
     return "$rc"
@@ -538,6 +586,7 @@ do_rollback() {
     case "$rc" in
         0) say "rolled back to $T_REF" ;;
         2) die "rollback to $T_REF not applied; nothing changed: $running still runs" ;;
+        3) die "rollback to $T_REF is checked out, but its start was refused by systemd (start-limit-hit); recover with: $RECOVER_CMD" ;;
         *) die "rollback to $T_REF failed or did not come up healthy (state failed)" ;;
     esac
 }
