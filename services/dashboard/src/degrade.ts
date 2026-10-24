@@ -95,17 +95,25 @@ export type AgentPollResults = [
  * Fold one settled Agent poll (VictoriaMetrics counts, flag-state search,
  * rollout searches) into the state. Returns the overlay to keep, whether the
  * Jaeger legs succeeded and the first failure (the poller backs off on it).
+ * `ran` names the Jaeger legs this tick actually searched; a skipped leg is a
+ * resolved placeholder, not evidence. `jaegerOk` is null when no leg ran, so the
+ * caller keeps its previous verdict (a Jaeger outage must not clear on a tick
+ * that never asked Jaeger).
  */
 export function settleAgentPoll(
   [counts, flags, rollouts]: AgentPollResults,
   overlay: InterventionOverlay | null,
   mergeFlags: (states: FlagPanel[]) => void,
-): { overlay: InterventionOverlay | null; jaegerOk: boolean; failed: PromiseRejectedResult | undefined } {
+  ran: { flags: boolean; rollouts: boolean },
+): { overlay: InterventionOverlay | null; jaegerOk: boolean | null; failed: PromiseRejectedResult | undefined } {
   if (flags.status === "fulfilled") mergeFlags(flags.value);
   const failed = [counts, flags, rollouts].find((r): r is PromiseRejectedResult => r.status === "rejected");
   return {
     overlay: counts.status === "fulfilled" ? counts.value : overlay,
-    jaegerOk: flags.status === "fulfilled" && rollouts.status === "fulfilled",
+    jaegerOk:
+      !ran.flags && !ran.rollouts
+        ? null
+        : (!ran.flags || flags.status === "fulfilled") && (!ran.rollouts || rollouts.status === "fulfilled"),
     failed,
   };
 }

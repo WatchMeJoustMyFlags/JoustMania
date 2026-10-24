@@ -251,10 +251,15 @@ describe("UC-035: A3 a telemetry backend is down (dashboard side)", () => {
       Promise.reject(new Error("Jaeger unreachable")),
       Promise.resolve(),
     ])) as AgentPollResults;
-    const result = settleAgentPoll(settled, overlay, () => {
-      throw new Error("a failed search merges nothing");
-    });
-    paintAgentPanels(view, result.overlay, result.jaegerOk, () => ({ feed: [], flags: null }));
+    const result = settleAgentPoll(
+      settled,
+      overlay,
+      () => {
+        throw new Error("a failed search merges nothing");
+      },
+      { flags: true, rollouts: true },
+    );
+    paintAgentPanels(view, result.overlay, result.jaegerOk ?? false, () => ({ feed: [], flags: null }));
     return result;
   }
 
@@ -286,6 +291,29 @@ describe("UC-035: A3 a telemetry backend is down (dashboard side)", () => {
 
     expect(el("feed").innerHTML).toBe(feed);
     expect(el("overlay").innerHTML).toContain("agent-stat-applied");
+    expect(el("fresh").textContent).toBe("stale — last updated 20s ago");
+  });
+
+  it("UC-035/A3 a tick that ran no Jaeger leg keeps the previous verdict, so the panels still go stale", async () => {
+    vi.useFakeTimers();
+    const el = stubDom();
+    const view = agentView();
+    paintAgentPanels(view, emptyView.overlay, true, () => ({ feed: [], flags: null }));
+    vi.advanceTimersByTime(20_000);
+    await pollWithFlagsDown(view, emptyView.overlay);
+
+    // Next tick: flag store is filled and no rollout is due, both legs skipped
+    // (resolved placeholders) while Jaeger is still down.
+    const skipped = (await Promise.allSettled([
+      Promise.resolve(counts),
+      Promise.resolve([]),
+      Promise.resolve(),
+    ])) as AgentPollResults;
+    const result = settleAgentPoll(skipped, counts, () => {}, { flags: false, rollouts: false });
+    expect(result.jaegerOk).toBeNull();
+    const jaegerOk = result.jaegerOk ?? false; // main.ts: ?? previous agentJaegerOk (false)
+    paintAgentPanels(view, result.overlay, jaegerOk, () => ({ feed: [], flags: null }));
+
     expect(el("fresh").textContent).toBe("stale — last updated 20s ago");
   });
 

@@ -319,9 +319,10 @@ function startAgentPolling() {
       tick += 1;
       const result = settleAgentPoll(settled, interventionCounts, (states) =>
         flagStore.merge(states, decideStore.followState),
+        { flags: flagsNeeded, rollouts: rolloutDue },
       );
       interventionCounts = result.overlay;
-      agentJaegerOk = result.jaegerOk;
+      agentJaegerOk = result.jaegerOk ?? agentJaegerOk;
       renderAgentPanels();
       if (result.failed) throw result.failed.reason;
     },
