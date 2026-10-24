@@ -246,7 +246,10 @@ async def test_any_read_error_counts_as_the_device_gone(tmp_path):
     dev = FakeDevice("/dev/input/event3", read_error=ValueError("binding bug"))
     manager, _, _ = _manager(tmp_path, FakeBackend({dev.path: dev}))
     assert await manager.attach()
-    await asyncio.wait_for(manager.read_until_gone(), timeout=2)  # returns instead of waiting forever
+    reader = asyncio.create_task(manager.read_until_gone())
+    done, _ = await asyncio.wait({reader}, timeout=1)
+    reader.cancel()
+    assert reader in done  # returns (device gone) instead of waiting forever
 
 
 @pytest.mark.uc("UC-015", flow="A4", br=["BR-014"], cond=["Pre-1"])
