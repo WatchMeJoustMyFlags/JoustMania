@@ -149,6 +149,18 @@ export class AgentView {
     this.hasRendered = true;
   }
 
+  /**
+   * Jaeger failed while VictoriaMetrics answered (UC-035 A3 step 2): the
+   * Jaeger-fed panels (activity feed, flag panel) name Jaeger, the overlay is
+   * left to renderOverlay.
+   */
+  setJaegerError(message: string) {
+    const html = `<div class="loading">${escapeHtml(message)}</div>`;
+    this.feedEl.innerHTML = html;
+    this.flagsEl.innerHTML = html;
+    this.hasRendered = true;
+  }
+
   /** A poll just failed; keep the last good render and let the hint go stale. */
   markStale() {
     this.updateFreshness();
@@ -226,7 +238,8 @@ export class AgentView {
     this.flagsEl.innerHTML = renderFlagPanel(flags);
   }
 
-  private renderOverlay(overlay: InterventionOverlay) {
+  /** The VictoriaMetrics overlay alone; leaves the Jaeger panels and their freshness. */
+  renderOverlay(overlay: InterventionOverlay) {
     const applied =
       overlay.appliedOk === null
         ? '<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>'

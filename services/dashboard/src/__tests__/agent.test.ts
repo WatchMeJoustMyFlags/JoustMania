@@ -190,6 +190,38 @@ describe("UC-070: BR-005 the flag panel follows the stage game", () => {
   });
 });
 
+describe("UC-070: BR-005 the flag-state search and store keep the live real game", () => {
+  const live = { realGameLive: true, followGameId: "", primaryGameId: "game_real000002" };
+
+  it("UC-035/main step 3 while a real game is live the fallback search filters by its game.id", async () => {
+    const urls = stubFetch(() => json(games));
+    await fetchFlagStates(undefined, live);
+    await fetchFlagStates(undefined, { realGameLive: false, followGameId: "game_shadow00001", primaryGameId: "game_real000002" });
+    const [withGame, without] = urls.map((u) => new URL(u, "http://x").searchParams);
+    expect(JSON.parse(withGame.get("tags") ?? "null")).toEqual({ "game.id": "game_real000002" });
+    expect(withGame.get("operation")).toBe("agent.flag_state");
+    expect(without.has("tags")).toBe(false);
+  });
+
+  it("UC-070/BR-005 newer shadow games never evict the live primary game's flag state", () => {
+    const store = new FlagStateStore(2);
+    const [real] = parseFlagStates(games).filter((s) => s.gameId === "game_real000001");
+    store.merge([{ ...real, gameId: "game_real000002", spanId: "primary" }], live);
+    const shadows = [1, 2, 3].map((i) => ({
+      ...real,
+      gameId: `game_shadow0000${i}`,
+      gameKind: "shadow",
+      spanId: `s${i}`,
+      startUs: real.startUs + i * 1_000_000,
+      tsMs: real.tsMs + i * 1000,
+    }));
+    store.merge(shadows, live);
+    expect(store.size).toBe(2);
+    expect(store.current(live)?.spanId).toBe("primary");
+    expect(store.has("game_shadow00003")).toBe(true);
+  });
+});
+
 describe("UC-035: main step 3, activity feed (blocked decisions + rollout)", () => {
   it("UC-035/main step 3 blocked rows come from the decide poll's agent.decision spans", () => {
     const store = new DecideStore();

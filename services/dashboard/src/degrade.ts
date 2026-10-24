@@ -15,7 +15,10 @@
  *                   rows"); with nothing ever received it is the no-data state.
  *
  * VictoriaMetrics down never fails a poll: Applied and Blocked show `n/a`.
+ * Jaeger down with VictoriaMetrics up: the overlay renders, the Jaeger-fed
+ * panels keep their data (stale) or name Jaeger, never the no-data hints.
  */
+import type { AgentView as AgentViewData, FlagPanel, InterventionOverlay } from "./agent.js";
 
 export const AGENT_JAEGER_DOWN = "Could not reach Jaeger for agent telemetry.";
 export const EXPERIMENTS_JAEGER_DOWN = "Could not reach Jaeger for experiment telemetry.";
@@ -52,4 +55,57 @@ export function onExperimentsPollFailed(view: StaleCapable): void {
 
 export function onDecidePollFailed(view: DecideCapable): void {
   if (!view.decideHasRendered) view.setDecideError(DECIDE_JAEGER_DOWN);
+}
+
+interface AgentPanelsCapable extends StaleCapable {
+  render(view: AgentViewData): void;
+  renderOverlay(overlay: InterventionOverlay): void;
+  setJaegerError(message: string): void;
+}
+
+/**
+ * Paint the Agent tab's feed, flag panel and overlay. `jaegerOk` is false while
+ * the last Agent poll's Jaeger leg (flag-state or rollout search) failed: the
+ * overlay still renders, the Jaeger-fed panels keep their last data and go
+ * stale, or name Jaeger when they never rendered (UC-035 A3 step 2).
+ */
+export function paintAgentPanels(
+  view: AgentPanelsCapable,
+  overlay: InterventionOverlay | null,
+  jaegerOk: boolean,
+  jaegerPanels: () => Pick<AgentViewData, "feed" | "flags">,
+): void {
+  if (jaegerOk) {
+    if (overlay !== null) view.render({ ...jaegerPanels(), overlay });
+    return;
+  }
+  if (overlay !== null) view.renderOverlay(overlay);
+  if (view.rendered) view.markStale();
+  else if (overlay !== null) view.setJaegerError(AGENT_JAEGER_DOWN);
+  else view.setError(AGENT_JAEGER_DOWN);
+}
+
+export type AgentPollResults = [
+  PromiseSettledResult<InterventionOverlay>,
+  PromiseSettledResult<FlagPanel[]>,
+  PromiseSettledResult<unknown>,
+];
+
+/**
+ * Fold one settled Agent poll (VictoriaMetrics counts, flag-state search,
+ * rollout searches) into the state. Returns the overlay to keep, whether the
+ * Jaeger legs succeeded and the first failure (the poller backs off on it).
+ */
+export function settleAgentPoll(
+  [counts, flags, rollouts]: AgentPollResults,
+  overlay: InterventionOverlay | null,
+  mergeFlags: (states: FlagPanel[]) => void,
+): { overlay: InterventionOverlay | null; jaegerOk: boolean; failed: PromiseRejectedResult | undefined } {
+  if (flags.status === "fulfilled") mergeFlags(flags.value);
+  const failed = [counts, flags, rollouts].find((r): r is PromiseRejectedResult => r.status === "rejected");
+  return {
+    overlay: counts.status === "fulfilled" ? counts.value : overlay,
+    jaegerOk: flags.status === "fulfilled" && rollouts.status === "fulfilled",
+    failed,
+  };
 }

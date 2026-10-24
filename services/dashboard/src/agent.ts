@@ -314,13 +314,21 @@ export class FlagStateStore {
 
   constructor(private readonly maxGames = 20) {}
 
-  merge(states: FlagPanel[]): void {
+  /**
+   * Fold new flag states in. Over `maxGames` the oldest go, but never the live
+   * primary game's (`follow`): a burst of newer shadow games must not evict the
+   * flag state the panel shows (UC-070 BR-005).
+   */
+  merge(states: FlagPanel[], follow?: DecideFollow): void {
     for (const s of states) {
       const held = this.byGame.get(s.gameId);
       if (!held || flagNewestFirst(s, held) < 0) this.byGame.set(s.gameId, s);
     }
     if (this.byGame.size > this.maxGames) {
-      const keep = this.sorted().slice(0, this.maxGames);
+      const pinned =
+        follow?.realGameLive === true && follow.primaryGameId ? this.byGame.get(follow.primaryGameId) : undefined;
+      const rest = this.sorted().filter((s) => s !== pinned);
+      const keep = pinned ? [pinned, ...rest.slice(0, this.maxGames - 1)] : rest.slice(0, this.maxGames);
       this.byGame.clear();
       for (const s of keep) this.byGame.set(s.gameId, s);
     }
@@ -376,11 +384,19 @@ export function needsFlagStateFallback(
 /**
  * The flag-state fallback search: the newest FLAG_STATE_FALLBACK_LIMIT traces,
  * with no `start` (Jaeger's own window; a flag state is emitted once per game and
- * on change, so an incremental window would miss a long quiet game's).
+ * on change, so an incremental window would miss a long quiet game's). While a
+ * real game is live the search asks for that game's `game.id`: shadow games
+ * started after it would otherwise fill the limit.
  */
-export async function fetchFlagStates(signal?: AbortSignal): Promise<FlagPanel[]> {
+export async function fetchFlagStates(signal?: AbortSignal, follow?: DecideFollow): Promise<FlagPanel[]> {
+  const primary = follow?.realGameLive === true ? follow.primaryGameId : "";
   const body = await searchTraces(
-    { operation: FLAG_STATE_OPERATION, limit: FLAG_STATE_FALLBACK_LIMIT, startMs: null },
+    {
+      operation: FLAG_STATE_OPERATION,
+      limit: FLAG_STATE_FALLBACK_LIMIT,
+      startMs: null,
+      ...(primary ? { tags: { "game.id": primary } } : {}),
+    },
     signal,
   );
   return parseFlagStates(body);
