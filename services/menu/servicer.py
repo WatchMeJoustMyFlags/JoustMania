@@ -509,6 +509,19 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         Never the HTTP flag writer (0.5 s per flag). A flag the client cannot resolve reads as its
         default: empty variant names, and the kill switch as off.
         """
+        start_time = time.time()
+        try:
+            response = self._menu_status()
+        except Exception:
+            metrics.grpc_requests_total.labels(method="GetMenuStatus", status="error").inc()
+            raise
+        finally:
+            metrics.grpc_request_duration_seconds.labels(method="GetMenuStatus").observe(time.time() - start_time)
+        metrics.grpc_requests_total.labels(method="GetMenuStatus", status="ok").inc()
+        return response
+
+    def _menu_status(self) -> menu_pb2.GetMenuStatusResponse:
+        """Build the GetMenuStatus snapshot (synchronous: in-process reads only)."""
         game = self.game_settings_client
         user = self.user_prefs_client
         agent = self.agent_settings_client

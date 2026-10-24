@@ -6,7 +6,7 @@ dict; the flag-service writers are autospecs, so a test can prove the snapshot n
 
 import asyncio
 import contextlib
-from unittest.mock import AsyncMock, create_autospec, patch
+from unittest.mock import AsyncMock, call, create_autospec, patch
 
 import pytest
 import pytest_asyncio
@@ -155,6 +155,32 @@ async def test_status_empty_values_when_nothing_is_set_or_resolvable(menu):
     assert (reply.agent_level, reply.agent_backend, reply.audio_volume_master) == ("", "", "")
     # The kill switch fails closed: unreadable reads as off.
     assert reply.agent_enabled is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A5")
+@patch("services.menu.metrics.grpc_request_duration_seconds")
+@patch("services.menu.metrics.grpc_requests_total")
+async def test_status_records_the_grpc_request_metrics(requests_total, duration, menu):
+    await status(menu)
+
+    requests_total.labels.assert_called_once_with(method="GetMenuStatus", status="ok")
+    requests_total.labels.return_value.inc.assert_called_once_with()
+    assert duration.labels.call_args_list == [call(method="GetMenuStatus")]
+    duration.labels.return_value.observe.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A5")
+@patch("services.menu.metrics.grpc_requests_total")
+async def test_status_counts_a_failed_read_as_an_error(requests_total, menu):
+    menu.agent_settings_client.get_boolean_value.side_effect = RuntimeError("provider gone")
+
+    with pytest.raises(RuntimeError):
+        await status(menu)
+
+    requests_total.labels.assert_called_once_with(method="GetMenuStatus", status="error")
+    requests_total.labels.return_value.inc.assert_called_once_with()
 
 
 # --- lifecycle_generation ----------------------------------------------------------------------
