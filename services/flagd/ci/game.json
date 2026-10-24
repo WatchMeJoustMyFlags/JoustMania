@@ -114,6 +114,15 @@
       },
       "defaultVariant": "default"
     },
+    "shield.ending_rumble_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "default": 1,
+        "early": 2
+      },
+      "defaultVariant": "default"
+    },
     "sensitivity": {
       "state": "ENABLED",
       "variants": {

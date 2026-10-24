@@ -63,6 +63,11 @@ CHARGE_REMINDER_S_RANGE = (1.0, 30.0)  # 0 stays 0 (off)
 # Below the coordinator's 10 s re-send margin (SHIELD_CHARGE_RESEND_MARGIN_SECONDS), so a
 # layer that is re-sent (expiry never, or more than 120 s ahead) never gets an early pulse.
 CHARGE_PRE_EXPIRY_MAX_S = 8.0
+# Shield ending soon (#2094, UC-040 BR-021): a double pulse this long before an active
+# (full) shield layer ends; ``shield.ending_rumble_seconds``, read per layer start.
+DEFAULT_SHIELD_ENDING_LEAD_S = 1.0
+SHIELD_ENDING_LEAD_MAX_S = 3.0
+SHIELD_ENDING_PULSES = 2
 CHARGE_SLOT_WAIT_S = 1.0  # a cue waits this long for a busy rumble slot, then is skipped
 CHARGE_SLOT_POLL_S = 0.05
 
@@ -343,3 +348,11 @@ class ControllerEffectsBase(ABC):
             self.active_effects[serial].task.cancel()
             del self.active_effects[serial]
             logger.debug(f"Cancelled effect for {serial}")
+
+
+def resolve_shield_ending_lead(value: object) -> float:
+    """Validate ``shield.ending_rumble_seconds`` (flags.md §4): bad -> 1 s, clamped to 0..3, 0 = off."""
+    lead = _finite_number(value)
+    if lead is None or lead < 0:
+        return DEFAULT_SHIELD_ENDING_LEAD_S
+    return min(SHIELD_ENDING_LEAD_MAX_S, lead)

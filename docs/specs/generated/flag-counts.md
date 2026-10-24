@@ -7,7 +7,7 @@ Part of [flags.md](../flags.md). **175 flags in 8 flag sets**; the `ci/` copies 
 | Flag set | File | Flags |
 |---|---|---|
 | `agent` | [`services/flagd/agent.json`](../../../services/flagd/agent.json) | 81 |
-| `game` | [`services/flagd/game.json`](../../../services/flagd/game.json) | 39 |
+| `game` | [`services/flagd/game.json`](../../../services/flagd/game.json) | 40 |
 | `interventions` | [`services/flagd/interventions.json`](../../../services/flagd/interventions.json) | 17 |
 | `controller` | [`services/flagd/controller.json`](../../../services/flagd/controller.json) | 3 |
 | `rollout` | [`services/flagd/rollout.json`](../../../services/flagd/rollout.json) | 4 |

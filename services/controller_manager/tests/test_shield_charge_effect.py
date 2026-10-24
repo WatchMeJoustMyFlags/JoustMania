@@ -731,3 +731,152 @@ class TestUC040ChargeRumbleFlags:
         )
         assert resolve_charge_cues(0, 150, 0, 0) == ChargeCues(intensity=0, reminder_s=0.0, pre_expiry_s=0.0)
         assert resolve_charge_cues(True, 150, 0.2, 3) == ChargeCues(reminder_s=1.0)
+
+
+# ---------------------------------------------------------------------------
+# Shield ending soon (#2094, UC-040 A16 / A17, BR-021)
+# ---------------------------------------------------------------------------
+
+_REAL_READ_SHIELD_ENDING_LEAD = fm_module.read_shield_ending_lead
+
+
+@pytest.fixture
+def ending_manager(cue_manager, monkeypatch):
+    monkeypatch.setattr(fm_module, "read_shield_ending_lead", lambda: 1.0)  # the flag default
+    monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
+    return cue_manager
+
+
+async def _run_ending_to_end(manager):
+    task = manager._shield_ending_tasks.get(SERIAL)
+    if task is not None:
+        await asyncio.wait_for(task, timeout=5)
+
+
+class TestUC040ShieldEndingPulse:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-021"])
+    async def test_instant_shield_double_pulses_1_second_before_it_ends(self, ending_manager, backend):
+        """UC-040 A16 / BR-021: a 5 s shield pulses 150 ms at 4.00 and 4.25 s, nothing else."""
+        await _effect(ending_manager, SHIELD, 5000)
+        await _run_ending_to_end(ending_manager)
+
+        offsets = [(round(t - 1000.0, 3), i) for t, i in backend.rumble]
+        assert offsets == [(4.0, 255), (4.15, 0), (4.25, 255), (4.4, 0)]
+        assert SERIAL not in ending_manager._shield_ending_tasks
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-021"])
+    async def test_activated_charge_shield_gets_the_ending_pulse(self, ending_manager, backend):
+        """UC-030 A6 / UC-040 BR-021: SHIELD_CHARGE 0 then SHIELD 5 s: the pulse comes 1 s before its end."""
+        await _effect(ending_manager, CHARGE, 20_000)
+        await _effect(ending_manager, CHARGE, 0)
+        await _effect(ending_manager, SHIELD, 5000)
+        await _run_ending_to_end(ending_manager)
+
+        assert _on_times(backend) == [4.0, 4.25]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-021"])
+    async def test_a_restart_moves_the_pulse_to_the_new_end(self, ending_manager, backend, clock):
+        """UC-040 BR-021: a re-grant at 4 s of a new 5 s shield pulses at 8 s, not at 4 s."""
+        clock.enable_blocking()
+        await _effect(ending_manager, SHIELD, 5000)
+        await _spin()
+        assert clock.time() == pytest.approx(1004.0)  # asleep until the old pulse time
+        await _effect(ending_manager, SHIELD, 5000)  # restarts at 1004, ends at 1009
+        clock.disable_blocking()
+        await _run_ending_to_end(ending_manager)
+
+        assert _on_times(backend) == [8.0, 8.25]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-021"])
+    async def test_short_shield_and_toughness_boost_get_no_pulse(self, ending_manager, backend):
+        """UC-040 BR-021: a shield no longer than the lead, and a toughness boost, give no pulse."""
+        await _effect(ending_manager, SHIELD, 1000)
+        await _run_ending_to_end(ending_manager)
+        await ending_manager.end_shield_effect(SERIAL, restore=False)
+        await _effect(ending_manager, BOOST, 5000)
+        await _spin(40)
+
+        assert backend.rumble == []
+        assert SERIAL not in ending_manager._shield_ending_tasks
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A17", br=["BR-021"])
+    async def test_no_pulse_after_death(self, ending_manager, backend, clock, monkeypatch):
+        """UC-040 A17: a death during the shield ends it and its pending pulse; only the death rumble follows."""
+        monkeypatch.setattr(fm_module, "DEATH_RUMBLE_MS", 50)
+        monkeypatch.setattr(fm_module, "DEATH_RED_HOLD_MS", 1)
+        monkeypatch.setattr(fm_module, "DEATH_FADE_MS", 1)
+        clock.enable_blocking()
+        await _effect(ending_manager, SHIELD, 5000)
+        await _spin()
+
+        await _effect(ending_manager, controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        assert SERIAL not in ending_manager._shield_ending_tasks
+        clock.disable_blocking()
+        await asyncio.sleep(0.15)
+
+        assert [i for _, i in backend.rumble] == [255, 0]  # the death rumble and its stop
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A17", br=["BR-021"])
+    async def test_game_end_mid_pulse_switches_the_motor_off(self, ending_manager, backend, clock):
+        """UC-040 A17: SHIELD 0 at game end cuts the ending pulse in progress at once."""
+        clock.enable_blocking()
+        await _effect(ending_manager, SHIELD, 5000)
+        await _step_until(clock, 1004.0)
+        await _spin()
+        clock.release_all()  # wake at the pulse time: the first pulse switches on
+        await _spin()
+        assert backend.rumble[-1][1] == 255
+
+        await _effect(ending_manager, SHIELD, 0)
+
+        assert backend.rumble[-1][1] == 0
+        assert SERIAL not in ending_manager._shield_ending_tasks
+        assert SERIAL not in ending_manager.vibration_tasks
+        clock.disable_blocking()
+        await _spin(40)
+        assert _on_times(backend) == [4.0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-021"])
+    async def test_a_running_warning_keeps_the_slot(self, ending_manager, backend, clock):
+        """UC-040 BR-021: a rumble that outlasts the 1 s wait suppresses the ending pulse."""
+        clock.enable_blocking()
+        await _effect(ending_manager, SHIELD, 5000)
+        await _spin()
+        await ending_manager.set_vibration(SERIAL, 100, 5000)
+        warning = ending_manager.vibration_tasks[SERIAL]
+        await _step_until(clock, 1004.95)  # the 1 s wait for the slot runs out
+
+        assert _on_times(backend) == []
+        assert ending_manager.vibration_tasks[SERIAL] is warning and not warning.done()
+        warning.cancel()
+        await _finish(ending_manager, clock)
+
+
+class TestUC040ShieldEndingFlag:
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-021"])
+    def test_reads_the_game_flag_and_clamps(self, monkeypatch):
+        """flags.md §4: shield.ending_rumble_seconds, bad -> 1 s, clamped to 0..3."""
+        from lib import feature_flags
+        from services.controller_manager.effects_base import resolve_shield_ending_lead
+
+        reads = []
+        monkeypatch.setattr(
+            feature_flags,
+            "read_float_flag",
+            lambda domain, key, _default, _game_id=None: reads.append((domain, key)) or 2.0,
+        )
+
+        assert _REAL_READ_SHIELD_ENDING_LEAD() == 2.0
+        assert reads == [("game", "shield.ending_rumble_seconds")]
+        assert resolve_shield_ending_lead(None) == 1.0
+        assert resolve_shield_ending_lead(float("nan")) == 1.0
+        assert resolve_shield_ending_lead(-1) == 1.0
+        assert resolve_shield_ending_lead(9) == 3.0
+        assert resolve_shield_ending_lead(0) == 0.0
