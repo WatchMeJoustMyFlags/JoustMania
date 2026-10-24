@@ -535,6 +535,7 @@ class TestUC040ChargeRumblePattern:
         await _effect(cue_manager, CHARGE, 20_000)
         await _step_until(clock, 1006.0)  # the 5 s reminder has played
         await _effect(cue_manager, CHARGE, 0)  # the activation
+        assert SERIAL not in cue_manager._charge_cue_tasks  # stopped at once, not at its next wake
         clock.disable_blocking()
         await _spin(40)
 
@@ -561,6 +562,43 @@ class TestUC040ChargeRumblePattern:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    async def test_charge_zero_under_a_toughness_boost_stops_the_pattern_mid_pulse(self, cue_manager, backend, clock):
+        """UC-040 A32: the charge ends while another shield layer keeps painting: the pulse is cut too."""
+        clock.enable_blocking()
+        await _effect(cue_manager, BOOST, 60_000)
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _spin()
+        assert backend.rumble[-1][1] == 255  # inside the first grant pulse
+
+        await _effect(cue_manager, CHARGE, 0)
+
+        assert backend.rumble[-1][1] == 0
+        assert SERIAL not in cue_manager._charge_cue_tasks
+        assert "toughness_boost" in cue_manager._shield_layers[SERIAL]
+        clock.disable_blocking()
+        await _spin(40)
+        assert _on_times(backend) == [0.0]
+        await _finish(cue_manager, clock)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    async def test_game_end_mid_pulse_switches_the_motor_off(self, cue_manager, backend, clock):
+        """UC-040 A32: SHIELD 0 at game end cuts a charge pulse in progress at once."""
+        clock.enable_blocking()
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _spin()
+        assert backend.rumble[-1][1] == 255
+
+        await _effect(cue_manager, SHIELD, 0)
+
+        assert backend.rumble[-1][1] == 0
+        assert SERIAL not in cue_manager._charge_cue_tasks
+        clock.disable_blocking()
+        await _spin(40)
+        assert _on_times(backend) == [0.0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
     async def test_no_reminder_after_expiry(self, cue_manager, backend, monkeypatch):
         """UC-040 A32: reminders at 5 and 10 s of a 12 s charge, none after its end."""
         monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(pre_expiry_s=0))
@@ -582,6 +620,7 @@ class TestUC040ChargeRumblePattern:
         mark = len(backend.rumble)
 
         await _effect(cue_manager, controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        assert SERIAL not in cue_manager._charge_cue_tasks  # stopped at once, not at its next wake
         clock.disable_blocking()
         await asyncio.sleep(0.15)
 
@@ -626,6 +665,22 @@ class TestUC040ChargeRumblePattern:
         assert [t for t in _on_times(backend) if t >= 1.0] == []
         assert cue_manager.vibration_tasks[SERIAL] is warning and not warning.done()
         warning.cancel()
+        await _finish(cue_manager, clock)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    async def test_a_rumble_stop_cancels_a_pulse_in_progress(self, cue_manager, backend, clock):
+        """UC-040 BR-021: a vibration stop (intensity 0) ends the running pulse; its burst writes nothing more."""
+        clock.enable_blocking()
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _spin()
+        pulse = cue_manager.vibration_tasks[SERIAL]
+
+        await cue_manager.set_vibration(SERIAL, 0, 0)
+        await _spin()
+
+        assert pulse.done()
+        assert backend.rumble[-1][1] == 0
         await _finish(cue_manager, clock)
 
     @pytest.mark.asyncio

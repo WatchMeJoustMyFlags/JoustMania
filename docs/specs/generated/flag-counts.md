@@ -2,12 +2,12 @@
 
 # Flag counts (generated)
 
-Part of [flags.md](../flags.md). **171 flags in 8 flag sets**; the `ci/` copies (flags.md §12) are not counted.
+Part of [flags.md](../flags.md). **175 flags in 8 flag sets**; the `ci/` copies (flags.md §12) are not counted.
 
 | Flag set | File | Flags |
 |---|---|---|
 | `agent` | [`services/flagd/agent.json`](../../../services/flagd/agent.json) | 81 |
-| `game` | [`services/flagd/game.json`](../../../services/flagd/game.json) | 35 |
+| `game` | [`services/flagd/game.json`](../../../services/flagd/game.json) | 39 |
 | `interventions` | [`services/flagd/interventions.json`](../../../services/flagd/interventions.json) | 17 |
 | `controller` | [`services/flagd/controller.json`](../../../services/flagd/controller.json) | 3 |
 | `rollout` | [`services/flagd/rollout.json`](../../../services/flagd/rollout.json) | 4 |
