@@ -191,8 +191,10 @@ echo "Audio volume configured"
 # Real controllers are read through rust-hid, the default Bluetooth backend
 # (#1371); it is part of the default compose services. python-hid is opt-in and
 # needs all three of:
-#   1. COMPOSE_PROFILES=python-hid, set in a systemd drop-in (not in .env: .env
-#      is tracked, and editing it breaks the `git pull --ff-only` above):
+#   1. COMPOSE_PROFILES=python-hid, in .env.local or a systemd drop-in (never in
+#      .env: it is tracked). Set the whole comma-separated list in one place
+#      (e.g. python-hid,operator-pad): a unit drop-in Environment= wins over
+#      .env.local, so a drop-in with python-hid alone switches the pad off.
 #        sudo systemctl edit joustmania
 #          [Service]
 #          Environment=COMPOSE_PROFILES=python-hid
@@ -213,7 +215,8 @@ if ! grep -qx python-hid <<<"$COMPOSE_SERVICES"; then
 fi
 
 # The operator pad (UC-015, #2050) is opt-in the same way: COMPOSE_PROFILES=
-# operator-pad in .env.local (comma-separated with python-hid when both run).
+# operator-pad. Set the whole comma-separated list in one place (e.g.
+# python-hid,operator-pad); a unit drop-in Environment= wins over .env.local.
 # A pad container left over from a run with the profile on would keep its
 # exclusive grab of the pad and keep sending commands (restart:
 # unless-stopped, and `up -d --remove-orphans` keeps a profile-inactive

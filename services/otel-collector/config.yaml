@@ -306,7 +306,7 @@ processors:
         match_type: regexp
         resource_attributes:
           - key: service.name
-            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid|python-hid)$"
+            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid|python-hid|operator-pad)$"
 
   # Keep only the agent's agent.decide spans for the span_metrics connector
   # (#1427). The traces/span_metrics pipeline runs beside the main traces

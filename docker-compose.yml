@@ -32,8 +32,9 @@
 #      its default "rust" keeps every controller on rust-hid otherwise.
 #
 # Operator pad (UC-015, #2050): opt-in with the "operator-pad" profile
-# (COMPOSE_PROFILES=operator-pad in .env.local on the Pi; comma-separate it
-# from python-hid). INPUT_GID sets the host's input group GID [default: 996,
+# (COMPOSE_PROFILES=operator-pad in .env.local on the Pi; set the whole
+# comma-separated list in one place, e.g. python-hid,operator-pad: a unit
+# drop-in Environment= wins over .env.local). INPUT_GID sets the host's input group GID [default: 996,
 # the stage Pi]; a stack without the profile behaves exactly as before.
 #
 # Host ports: only envoy's 80 is reachable from the network. flagd sync (8015),
@@ -543,9 +544,10 @@ services:
   # Operator pad (UC-015, #2050): a USB macro pad as a lobby and agent remote.
   # OPT-IN ONLY: starts with the `operator-pad` profile (COMPOSE_PROFILES in
   # .env.local on the Pi, UC-060). Not privileged: it reads only /dev/input
-  # (read-only bind mount; EVIOCGRAB and the keyboard LEDs work on it), the
-  # cgroup rule allows the evdev char devices (major 13) including ones
-  # plugged in later, and group_add gives the nonroot user the host's input
+  # (read-only bind mount: it guards the directory only, the nodes stay
+  # writable, which EVIOCGRAB and the keyboard LEDs need), the cgroup rule
+  # allows read/write (no mknod) on the evdev char devices (major 13),
+  # including ones plugged in later, and group_add gives the nonroot user the host's input
   # group. INPUT_GID is host identity (C-035): the input group's GID differs
   # per host (996 on the stage Pi; `getent group input` shows it). No
   # /run/udev: evdev does not need it. Serves no port, so no healthcheck.
@@ -560,7 +562,7 @@ services:
     volumes:
       - /dev/input:/dev/input:ro
     device_cgroup_rules:
-      - "c 13:* rmw"
+      - "c 13:* rw"
     group_add:
       - "${INPUT_GID:-996}"
     environment:

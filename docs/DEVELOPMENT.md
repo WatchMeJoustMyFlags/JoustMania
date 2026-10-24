@@ -100,8 +100,9 @@ the current version runs, switches the checkout, restarts the unit and rolls bac
 services do not come up healthy (`--no-rollback` keeps the failed version for inspection;
 `--rollback` returns to the other recorded version offline, back on its branch when it ran from one, and
 only when every image compose resolves there is on the Pi; `--status` shows both). Put opt-in profiles
-(`COMPOSE_PROFILES=python-hid`, `COMPOSE_PROFILES=operator-pad`, or both comma-separated) in `.env.local`; a `systemctl edit`
-drop-in is honoured too. The start script removes the container of a profile that is off (python-hid, operator-pad), so
+(`COMPOSE_PROFILES=python-hid`, `COMPOSE_PROFILES=operator-pad`, or `python-hid,operator-pad`) in `.env.local`; a `systemctl edit`
+drop-in is honoured too. Set the whole comma-separated list in one place: a unit drop-in `Environment=` wins over
+`.env.local`, and a profile missing from the winning list is off. The start script removes the container of a profile that is off (python-hid, operator-pad), so
 switching a profile off takes effect at the next start. The operator pad ([UC-015](use_cases/UC-015.md)) reads `/dev/input`
 as the host's `input` group: set `INPUT_GID` in `.env.local` when `getent group input` is not 996.
 
@@ -340,7 +341,7 @@ checklists below are the code side.
 `controller-manager`, `python-hid`, `rust-hid` and `pairing-daemon` run `privileged` for USB/HID and
 Bluetooth access; `pairing-daemon` also uses the host network (raw HCI). `audio` is unprivileged and gets the
 sound devices. `operator-pad` (opt-in profile) is unprivileged: a read-only `/dev/input` mount, the cgroup
-rule `c 13:* rmw` and the host's `input` group (`INPUT_GID`). Details and the reasons: [services.md](specs/services.md#mode-to-config-message-privileges-libraries-and-proto-files).
+rule `c 13:* rw` and the host's `input` group (`INPUT_GID`). Details and the reasons: [services.md](specs/services.md#mode-to-config-message-privileges-libraries-and-proto-files).
 Without hardware, `docker-compose.ci.yml` removes the audio devices and moves the hardware services behind
 the `hardware` profile.
 

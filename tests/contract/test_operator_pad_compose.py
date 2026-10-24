@@ -1,4 +1,4 @@
-"""The operator pad deploys as an opt-in, unprivileged compose service (UC-015 Pre-1, BR-014, FR-195, #2050 PR7).
+"""The operator pad deploys as an opt-in, unprivileged compose service (UC-015 Pre-1, FR-195, #2050 PR7).
 
 Static checks over the compose files: ``docker-compose.yml`` starts ``operator-pad`` only
 under its ``operator-pad`` profile, never privileged, with exactly one host mount
@@ -45,28 +45,36 @@ def test_pad_starts_only_with_its_profile():
             )
 
 
-@pytest.mark.uc("UC-015", cond=["Pre-1"], br=["BR-014"])
+@pytest.mark.uc("UC-015", cond=["Pre-1"])
 def test_pad_is_not_privileged():
     pad = _pad()
     assert pad.get("privileged", False) is False
-    for key in ("pid", "network_mode", "cap_add", "devices", "ipc", "security_opt"):
+    for key in (
+        "user",
+        "pid",
+        "network_mode",
+        "cap_add",
+        "devices",
+        "ipc",
+        "security_opt",
+    ):
         assert key not in pad, f"{PAD} must not set {key}"
     assert pad.get("restart") == "unless-stopped"
 
 
-@pytest.mark.uc("UC-015", cond=["Pre-1"], br=["BR-014"])
+@pytest.mark.uc("UC-015", cond=["Pre-1"])
 def test_pad_mounts_only_dev_input_read_only():
     volumes = _pad().get("volumes")
     assert volumes == ["/dev/input:/dev/input:ro"], volumes
     assert not any("udev" in str(v) for v in volumes), "evdev needs no /run/udev"
 
 
-@pytest.mark.uc("UC-015", cond=["Pre-1"], br=["BR-014"])
+@pytest.mark.uc("UC-015", cond=["Pre-1"])
 def test_pad_cgroup_rule_allows_evdev_nodes_only():
-    assert _pad().get("device_cgroup_rules") == ["c 13:* rmw"]
+    assert _pad().get("device_cgroup_rules") == ["c 13:* rw"]
 
 
-@pytest.mark.uc("UC-015", cond=["Pre-1"], br=["BR-014"])
+@pytest.mark.uc("UC-015", cond=["Pre-1"])
 def test_pad_joins_the_host_input_group():
     group_add = _pad().get("group_add")
     assert isinstance(group_add, list) and len(group_add) == 1, group_add
