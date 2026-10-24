@@ -254,7 +254,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         ``ProcessInput`` select and the web ``select_game`` / ``start_game``
         commands all land in the SAME state the coordinator start path reads
         (#1030): the servicer's ``current_selection``, the state_manager's game
-        mode (the value the admin handler displays), a ``selection_changed``
+        mode (the value the admin handler displays), the lobby colour of every
+        CONNECTED / READY controller (UC-011 BR-005), a ``selection_changed``
         event and the ``current_game`` default persisted to flagd.
 
         Returns False (and changes nothing) for an unknown or unplayable mode.
@@ -265,6 +266,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             return False
         self.current_selection = game_mode
         self.state_manager.set_game_mode(game_mode)
+        # UC-011 step 6, BR-005 (#2105): every lobby controller takes the new mode's colour.
+        await self.state_manager.show_lobby_colors()
         payload = {"game_name": game_mode.name, "source": source}
         if serial is not None:
             payload["serial"] = serial

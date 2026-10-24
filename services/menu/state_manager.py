@@ -332,11 +332,25 @@ class StateManager:
             return
 
         self.set_game_mode(game_mode)
+        await self.show_lobby_colors()
         await asyncio.to_thread(self.user_prefs_writer.update_default_variant, "current_game", game_mode.name)
         payload = {"game_name": game_mode.name, "source": source}
         if serial is not None:
             payload["serial"] = serial
         await self.publish_event("selection_changed", payload)
+
+    async def show_lobby_colors(self) -> None:
+        """UC-011 step 6, BR-005: the current mode's lobby colour on every CONNECTED (dim) and READY
+        (bright) controller; ADMIN and IDLE controllers keep theirs. Best effort per controller."""
+        mode = self.current_game_mode.name
+        for serial, state in list(self.controller_states.items()):
+            try:
+                if state == ControllerState.CONNECTED:
+                    await self.led.set_connected_color(serial, mode)
+                elif state == ControllerState.READY:
+                    await self.led.set_ready_color(serial, mode)
+            except Exception as e:
+                logger.warning(f"Lobby colour for {serial} failed: {e}")
 
     async def reset(self) -> list[str]:
         """

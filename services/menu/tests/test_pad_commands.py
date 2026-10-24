@@ -699,9 +699,9 @@ async def test_pad_mode_change_voices_the_final_mode_and_pulses_every_lobby_cont
     servicer.state_manager.audio.play_game_mode_voice.assert_awaited_once_with(final)
     pulse = (controller_manager_pb2.GAME_EFFECT_PULSE, GAME_MODE_COLORS[final], settings_ops.MODE_PULSE_MS)
     assert sorted(_pulses(servicer)) == [("dim", *pulse), ("ready", *pulse)]
-    # The pulse is an effect: the base (lobby) colours are not repainted, so each controller
-    # returns to its own dim / bright colour when the pulse ends.
-    servicer.state_manager.led.send_base_color.assert_not_awaited()
+    # After the pulse each controller shows the new mode's lobby colour (UC-011 step 6, BR-005).
+    servicer.state_manager.led.set_connected_color.assert_awaited_once_with("dim", final)
+    servicer.state_manager.led.set_ready_color.assert_awaited_once_with("ready", final)
 
 
 @pytest.mark.asyncio
