@@ -207,13 +207,29 @@ def test_auto_repeat_is_ignored():
 
 
 @pytest.mark.uc("UC-015", flow="main", br=["BR-007"])
-def test_release_without_press_and_a_second_press_are_ignored():
+def test_release_without_press_is_ignored():
     pad = Pad()
     assert pad.release("K1") == []
     assert pad.release("KNOB_PRESS") == []
-    pad.at(0).press("K3")
-    pad.at(900).press("K3")  # duplicate press keeps the first press time
-    assert pad.at(1000).release("K3") == [Gesture(HOLD, "K3", held_ms=1000)]
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-007"])
+def test_a_second_press_after_a_lost_release_restarts_the_timing():
+    pad = Pad()
+    pad.at(0).press("K4")
+    # The K4 release was lost (SYN_DROPPED, firmware hiccup); much later the operator taps K4 once.
+    pad.at(60_000).press("K4")
+    out = pad.at(60_100).release("K4")
+    assert all(g.kind != HOLD for g in out), out
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-005", "BR-007"])
+def test_a_second_press_drops_the_layer_turns_of_the_lost_press():
+    pad = Pad()
+    pad.at(0).press("K2")
+    pad.turn("B")
+    pad.at(5_000).press("K2")  # re-armed: the turn of the first press is gone
+    assert pad.at(5_100).release("K2") == [Gesture(TAP, "K2", held_ms=100)]
 
 
 @pytest.mark.uc("UC-015", flow="A4", br=["BR-010"])

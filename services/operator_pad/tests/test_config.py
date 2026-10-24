@@ -1,11 +1,12 @@
 """The `operator` flag set readers (flags.md §10a, UC-015 Pre-2, BR-007)."""
 
-from unittest.mock import create_autospec
+from unittest.mock import create_autospec, patch
 
 import pytest
 from openfeature.client import OpenFeatureClient
 
-from services.operator_pad.config import DEFAULT_KEYMAP, PadConfig, parse_device, parse_keymap
+from services.operator_pad import config as config_module
+from services.operator_pad.config import DEFAULT_KEYMAP, PadConfig, Timings, parse_device, parse_keymap
 
 
 @pytest.mark.uc("UC-015", cond=["Pre-2"])
@@ -74,3 +75,20 @@ def test_unreadable_flags_keep_the_defaults():
     assert config.timings().tap_ms == 400
     assert config.device() == ("cb00", "1337")
     assert config.enabled() is True
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-007"])
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"operator_pad.hold_agent_ms": 300},
+        {"operator_pad.hold_end_ms": 400},
+        {"operator_pad.tap_ms": 2000},
+    ],
+    ids=["agent-hold-below-tap", "end-hold-equal-tap", "tap-above-holds"],
+)
+def test_a_hold_not_above_the_tap_limit_keeps_the_default_timings(values):
+    with patch.object(config_module, "logger") as log:
+        timings = PadConfig(_client(values)).timings()
+    assert timings == Timings()
+    log.warning.assert_called_once()

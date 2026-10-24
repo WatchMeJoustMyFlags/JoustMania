@@ -28,7 +28,7 @@ from services.operator_pad.gestures import (
     TAP,
     Gesture,
 )
-from services.operator_pad.state import is_stopped
+from services.operator_pad.state import is_known, is_stopped
 
 logger = logging.getLogger(__name__)
 tracer = get_tracer(__name__)
@@ -145,7 +145,7 @@ class Actions:
             return await self._tap(key, status)
         if kind == HOLD:
             if key == K3:
-                return await self._agent_switch(status, gesture.locked)
+                return await self._agent_switch(status, press_status, gesture.locked)
             if key == K4:
                 return await self._end_or_start(status, press_status)
             return "none", NOOP
@@ -191,12 +191,19 @@ class Actions:
             return
         await self._cues.voice(voice)
 
-    async def _agent_switch(self, status, locked: bool) -> tuple[str, str]:
-        """K3 hold (step 6, BR-002, BR-003); while locked only the stop direction (A6)."""
-        if status is None:
-            await self._cues.failure()
-            return "agent_switch", MENU_UNAVAILABLE
-        direction = "resume" if is_stopped(status) else "stop"
+    async def _agent_switch(self, status, press_status, locked: bool) -> tuple[str, str]:
+        """K3 hold (step 6, BR-002, BR-003, BR-013, A10); while locked only the stop direction (A6).
+
+        The direction is the intent at the press; the release read only confirms it. Any unknown
+        read allows only the stop (fail closed): it is idempotent and attempts both writes.
+        """
+        if is_known(press_status) and is_known(status):
+            if is_stopped(press_status) != is_stopped(status):
+                await self._cues.cancel()  # A10: changed during the hold, by someone else
+                return "agent_switch", CANCELLED
+            direction = "resume" if is_stopped(press_status) else "stop"
+        else:
+            direction = "stop"
         if locked and direction != "stop":
             return "agent_switch", REFUSED  # A6: a locked pad sends nothing but the stop
         return "agent_switch", await self._send({"command": "agent_switch", "direction": direction})

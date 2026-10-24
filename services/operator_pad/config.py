@@ -133,7 +133,8 @@ class PadConfig:
         return parsed
 
     def timings(self) -> Timings:
-        return Timings(
+        """The timings in force; the defaults when a hold time is not above the tap limit (BR-007)."""
+        timings = Timings(
             tap_ms=self._int("operator_pad.tap_ms", DEFAULT_TAP_MS),
             hold_ms={
                 K3: self._int("operator_pad.hold_agent_ms", DEFAULT_HOLD_AGENT_MS),
@@ -141,3 +142,10 @@ class PadConfig:
                 K8: self._int("operator_pad.hold_lock_ms", DEFAULT_HOLD_LOCK_MS),
             },
         )
+        if any(hold <= timings.tap_ms for hold in timings.hold_ms.values()):
+            logger.warning(
+                f"operator_pad timings invalid (tap_ms={timings.tap_ms}, hold={timings.hold_ms}): "
+                "every hold must be longer than the tap limit; using the default timings"
+            )
+            return Timings()
+        return timings

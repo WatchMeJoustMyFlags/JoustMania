@@ -52,6 +52,12 @@ class PadController:
         self._press_status.clear()
         self._actions.cancel_pending()
 
+    def events_dropped(self) -> None:
+        """The kernel dropped input events (SYN_DROPPED, A4 step 2): a release may be lost, reset the gestures."""
+        logger.warning("Pad input events dropped (SYN_DROPPED): gestures in progress reset")
+        self.machine.reset()
+        self._press_status.clear()
+
     async def on_code(self, code: int, value: int, t_ms: int) -> None:
         name = self._keymap.get(code)
         if name is None:

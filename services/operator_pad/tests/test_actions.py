@@ -117,7 +117,6 @@ async def test_menu_stale_refusal_plays_the_cancel_cue(actions, menu, cues):
     [
         Gesture(TAP, "K1"),
         Gesture(TAP, "K6"),
-        Gesture(HOLD, "K3"),
         Gesture(HOLD, "K4"),
         Gesture(LAYER, "K2", steps=1),
         Gesture(LAYER, "K7", steps=1),
@@ -308,15 +307,53 @@ async def test_backend_already_at_the_end_is_at_limit_and_sends_nothing(actions,
     ],
 )
 async def test_k3_hold_stops_a_running_agent_and_resumes_a_stopped_one(actions, menu, agent, direction):
-    await actions.dispatch(Gesture(HOLD, "K3"), status(**agent))
+    await actions.dispatch(Gesture(HOLD, "K3"), status(**agent), status(**agent))
     assert sent(menu) == [{"command": "agent_switch", "direction": direction}]
 
 
 @pytest.mark.uc("UC-015", flow="A6", br=["BR-002"])
 async def test_locked_pad_still_stops_the_agent_but_never_resumes_it(actions, menu):
-    await actions.dispatch(Gesture(HOLD, "K3", locked=True), status(agent_enabled=False))
+    stopped = status(agent_enabled=False)
+    await actions.dispatch(Gesture(HOLD, "K3", locked=True), stopped, stopped)
     menu.ProcessInput.assert_not_awaited()
-    await actions.dispatch(Gesture(HOLD, "K3", locked=True), status())
+    await actions.dispatch(Gesture(HOLD, "K3", locked=True), status(), status())
+    assert sent(menu) == [{"command": "agent_switch", "direction": "stop"}]
+
+
+@pytest.mark.uc("UC-015", flow="A10", br=["BR-009", "BR-013"])
+@pytest.mark.parametrize(
+    ("at_press", "at_release"),
+    [
+        (status(), status(agent_enabled=False)),  # stopped from the dashboard during a kill hold
+        (status(agent_level="none"), status()),  # resumed by someone else during a resume hold
+    ],
+    ids=["stopped-during-the-hold", "resumed-during-the-hold"],
+)
+async def test_k3_status_changed_during_the_hold_cancels_and_sends_nothing(actions, menu, cues, at_press, at_release):
+    result = await actions.dispatch(Gesture(HOLD, "K3", held_ms=1200), at_release, at_press)
+    assert result == ("agent_switch", "cancelled")
+    menu.ProcessInput.assert_not_awaited()
+    cues.cancel.assert_awaited_once()
+
+
+@pytest.mark.uc("UC-015", flow="A10", br=["BR-002", "BR-013"])
+@pytest.mark.parametrize("locked", [False, True], ids=["unlocked", "locked"])
+@pytest.mark.parametrize(
+    ("at_press", "at_release"),
+    [
+        (None, None),  # GetMenuStatus failed or timed out
+        (None, status(agent_enabled=False)),
+        (status(agent_enabled=False), None),  # a resume hold whose release read failed
+        (status(agent_enabled=False, agent_level=""), status(agent_enabled=False, agent_level="")),  # unresolvable
+        (status(agent_level="bogus"), status(agent_level="bogus")),
+    ],
+    ids=["both-unread", "press-unread", "release-unread", "flags-unresolvable", "level-off-the-ladder"],
+)
+async def test_k3_hold_with_an_unknown_status_sends_the_stop_never_the_resume(
+    actions, menu, at_press, at_release, locked
+):
+    result = await actions.dispatch(Gesture(HOLD, "K3", held_ms=1200, locked=locked), at_release, at_press)
+    assert result == ("agent_switch", "ok")
     assert sent(menu) == [{"command": "agent_switch", "direction": "stop"}]
 
 

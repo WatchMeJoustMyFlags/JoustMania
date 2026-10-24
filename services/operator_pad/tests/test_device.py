@@ -29,11 +29,23 @@ class FakeEvent:
         return self._ts
 
 
+PAD_KEYS = list(range(183, 195))  # F13 .. F24
+
+
 class FakeDevice:
-    def __init__(self, path: str, grab_errors: list[int] | None = None, events: list[FakeEvent] | None = None):
+    def __init__(
+        self,
+        path: str,
+        grab_errors: list[int] | None = None,
+        events: list[FakeEvent] | None = None,
+        keys: list[int] | None = None,
+        read_error: BaseException | None = None,
+    ):
         self.path = path
         self.grab_errors = list(grab_errors or [])
         self.events = list(events or [])
+        self.keys = PAD_KEYS if keys is None else keys
+        self.read_error = read_error or OSError(errno.ENODEV, "No such device")  # unplugged
         self.grabbed = self.closed = False
         self.grab_calls = 0
         self.leds: list[tuple[int, int]] = []
@@ -53,10 +65,13 @@ class FakeDevice:
     def set_led(self, led: int, value: int) -> None:
         self.leds.append((led, value))
 
+    def capabilities(self, verbose: bool = False, absinfo: bool = True) -> dict[int, list]:
+        return {0: [0, 1, 4], 1: list(self.keys)}
+
     async def async_read_loop(self):
         for event in self.events:
             yield event
-        raise OSError(errno.ENODEV, "No such device")  # unplugged
+        raise self.read_error
 
 
 class FakeBackend:
@@ -103,12 +118,25 @@ async def test_ebusy_after_the_retries_gives_up_and_counts():
     counter.labels.assert_called_once_with(reason="ebusy")
 
 
-def _manager(tmp_path, backend):
+class FakeClock:
+    """The injected monotonic clock (ms): each read returns the next value."""
+
+    def __init__(self, values: list[int]) -> None:
+        self.values = list(values)
+
+    def __call__(self) -> int:
+        return self.values.pop(0)
+
+
+def _manager(tmp_path, backend, clock=None):
     config = create_autospec(PadConfig, instance=True)
     config.device.return_value = PAD
     config.keymap.return_value = parse_keymap(DEFAULT_KEYMAP)
     controller = create_autospec(PadController, instance=True)
-    manager = DeviceManager(config, controller, backend_factory=lambda: backend, sysfs_root=tmp_path, sleep=no_sleep)
+    extra = {"clock_ms": clock} if clock is not None else {}
+    manager = DeviceManager(
+        config, controller, backend_factory=lambda: backend, sysfs_root=tmp_path, sleep=no_sleep, **extra
+    )
     return manager, config, controller
 
 
@@ -142,10 +170,10 @@ async def test_events_are_fed_in_order_and_unplug_detaches(tmp_path):
     make_sysfs(tmp_path, {"event3": PAD})
     events = [FakeEvent(183, 1, 10.0), FakeEvent(0, 0, 10.0, type_=0), FakeEvent(183, 0, 10.2)]
     dev = FakeDevice("/dev/input/event3", events=events)
-    manager, _, controller = _manager(tmp_path, FakeBackend({dev.path: dev}))
+    manager, _, controller = _manager(tmp_path, FakeBackend({dev.path: dev}), clock=FakeClock([5000, 5200]))
     assert await manager.attach()
     await asyncio.wait_for(manager.read_until_gone(), timeout=2)
-    assert [c.args for c in controller.on_code.await_args_list] == [(183, 1, 10000), (183, 0, 10200)]
+    assert [c.args for c in controller.on_code.await_args_list] == [(183, 1, 5000), (183, 0, 5200)]
     manager.detach()
     controller.detached.assert_called_once()
     assert dev.closed and not dev.grabbed
@@ -180,3 +208,98 @@ async def test_missing_evdev_binding_never_crashes(tmp_path):
         config, create_autospec(PadController, instance=True), backend_factory=missing, sysfs_root=tmp_path
     )
     assert not await manager.attach()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-007"], steps=[7])
+@pytest.mark.parametrize("step_s", [3600.0, -3600.0], ids=["clock-forward", "clock-backward"])
+async def test_events_are_timed_by_the_monotonic_clock_not_the_realtime_evdev_time(tmp_path, step_s):
+    # NTP steps the wall clock between the press and the release of a K4 tap: the evdev time jumps.
+    make_sysfs(tmp_path, {"event3": PAD})
+    events = [FakeEvent(189, 1, 100.0), FakeEvent(189, 0, 100.1 + step_s)]
+    dev = FakeDevice("/dev/input/event3", events=events)
+    manager, _, controller = _manager(tmp_path, FakeBackend({dev.path: dev}), clock=FakeClock([7000, 7100]))
+    assert await manager.attach()
+    await asyncio.wait_for(manager.read_until_gone(), timeout=2)
+    assert [c.args for c in controller.on_code.await_args_list] == [(189, 1, 7000), (189, 0, 7100)]
+
+
+def test_default_clock_is_monotonic():
+    with patch.object(device_module.time, "monotonic_ns", return_value=12_345_678_901):
+        assert device_module.monotonic_ms() == 12_345
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-007"])
+async def test_syn_dropped_resets_the_gestures_in_order(tmp_path):
+    make_sysfs(tmp_path, {"event3": PAD})
+    events = [FakeEvent(189, 1, 1.0), FakeEvent(device_module.SYN_DROPPED, 0, 1.1, type_=0), FakeEvent(183, 1, 1.2)]
+    dev = FakeDevice("/dev/input/event3", events=events)
+    manager, _, controller = _manager(tmp_path, FakeBackend({dev.path: dev}), clock=FakeClock([1, 2]))
+    assert await manager.attach()
+    await asyncio.wait_for(manager.read_until_gone(), timeout=2)
+    names = [c[0] for c in controller.mock_calls if c[0] in ("on_code", "events_dropped")]
+    assert names == ["on_code", "events_dropped", "on_code"]
+
+
+@pytest.mark.uc("UC-015", flow="A4")
+async def test_any_read_error_counts_as_the_device_gone(tmp_path):
+    make_sysfs(tmp_path, {"event3": PAD})
+    dev = FakeDevice("/dev/input/event3", read_error=ValueError("binding bug"))
+    manager, _, _ = _manager(tmp_path, FakeBackend({dev.path: dev}))
+    assert await manager.attach()
+    await asyncio.wait_for(manager.read_until_gone(), timeout=2)  # returns instead of waiting forever
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-014"], cond=["Pre-1"])
+async def test_a_partial_grab_fails_the_attach_and_releases_the_grabbed_nodes(tmp_path):
+    make_sysfs(tmp_path, {"event3": PAD, "event4": PAD})
+    ok = FakeDevice("/dev/input/event3")
+    busy = FakeDevice("/dev/input/event4", grab_errors=[errno.EBUSY] * 10)
+    manager, _, controller = _manager(tmp_path, FakeBackend({ok.path: ok, busy.path: busy}))
+    assert not await manager.attach()
+    assert not ok.grabbed and ok.closed
+    controller.attached.assert_not_called()
+    busy.grab_errors.clear()  # the other process let go: the next rescan attaches both
+    ok.closed = False
+    assert await manager.attach()
+    assert ok.grabbed and busy.grabbed
+
+
+@pytest.mark.uc("UC-015", br=["BR-014"], cond=["Pre-1"])
+@pytest.mark.parametrize("ids", [("054c", "03d5"), ("054C", "0C5E")], ids=["zcm1", "zcm2"])
+async def test_ps_move_ids_are_never_opened_whatever_the_flag_says(tmp_path, ids):
+    make_sysfs(tmp_path, {"event5": ids})
+    backend = FakeBackend({"/dev/input/event5": FakeDevice("/dev/input/event5")})
+    manager, config, controller = _manager(tmp_path, backend)
+    config.device.return_value = (ids[0].lower(), ids[1].lower())
+    assert not await manager.attach()
+    assert backend.opened == []
+    assert find_pad_nodes(ids[0], ids[1], backend.list_devices, tmp_path) == []
+    controller.attached.assert_not_called()
+
+
+@pytest.mark.uc("UC-015", br=["BR-014"], cond=["Pre-1"])
+async def test_a_matching_node_without_a_keymap_key_is_not_grabbed(tmp_path):
+    make_sysfs(tmp_path, {"event3": PAD, "event4": PAD})
+    keys = FakeDevice("/dev/input/event3")
+    mouse = FakeDevice("/dev/input/event4", keys=[272, 273])  # BTN_LEFT, BTN_RIGHT only
+    manager, _, _ = _manager(tmp_path, FakeBackend({keys.path: keys, mouse.path: mouse}))
+    assert await manager.attach()
+    assert keys.grabbed and not mouse.grabbed and mouse.closed
+    lone = FakeDevice("/dev/input/event4", keys=[272])
+    manager2, _, controller2 = _manager(tmp_path, FakeBackend({lone.path: lone}))
+    assert not await manager2.attach()
+    controller2.attached.assert_not_called()
+
+
+@pytest.mark.uc("UC-015", flow="A4")
+async def test_a_node_that_fails_right_after_the_attach_waits_the_rescan_interval(tmp_path):
+    make_sysfs(tmp_path, {"event3": PAD})
+    backend = FakeBackend({"/dev/input/event3": FakeDevice("/dev/input/event3")})  # read fails at once
+    manager, _, _ = _manager(tmp_path, backend)
+    manager._rescan_seconds = 0.1
+    stop = asyncio.Event()
+    task = asyncio.create_task(manager.run(stop))
+    await asyncio.sleep(0.25)
+    stop.set()
+    await asyncio.wait_for(task, timeout=2)
+    assert 1 <= len(backend.opened) <= 4  # without the wait: hundreds of attach / detach cycles

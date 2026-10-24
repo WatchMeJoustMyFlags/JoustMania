@@ -2,9 +2,14 @@
 
 Nodes are matched by the USB vendor:product of `operator_pad.device` through sysfs
 (``/sys/class/input/eventN/device/id/{vendor,product}``), so no other input device is opened (the
-PS Move controllers have nodes there too). Every matching node is grabbed (EVIOCGRAB); an
-``EBUSY`` grab is retried, because an old container may still hold it. A pad that is missing or
-unplugged is rescanned for and never fails the service.
+PS Move controllers have nodes there too, and their ids are denied whatever the flag says). A
+matching node is the pad only when it reports a key code of the keymap (UC-015 BR-014). Every pad
+node is grabbed (EVIOCGRAB); an ``EBUSY`` grab is retried, because an old container may still hold
+it, and a node that still cannot be grabbed fails the whole attach (the next rescan tries again).
+A pad that is missing or unplugged is rescanned for and never fails the service.
+
+Each event is stamped with the monotonic clock when it is read (BR-007): the kernel's evdev time
+is CLOCK_REALTIME, which jumps when a Pi without an RTC syncs its clock.
 
 python-evdev is imported lazily in `evdev_backend()` only, so the tests (and a host without the
 binding) run against a fake backend.
@@ -16,6 +21,7 @@ import asyncio
 import contextlib
 import errno
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -30,12 +36,19 @@ from services.operator_pad.controller import PadController
 logger = logging.getLogger(__name__)
 tracer = get_tracer(__name__)
 
-EV_KEY = 1  # linux/input-event-codes.h
+EV_SYN, EV_KEY = 0, 1  # linux/input-event-codes.h
+SYN_DROPPED = 3
 LED_SCROLLL = 2
 SYSFS_INPUT = Path("/sys/class/input")
 RESCAN_SECONDS = 2.0
 GRAB_RETRIES = 5
 GRAB_RETRY_SECONDS = 0.5
+# PS Move (ZCM1, ZCM2): never opened or grabbed, whatever operator_pad.device says (UC-015 BR-014).
+DENIED_USB_IDS = frozenset({("054c", "03d5"), ("054c", "0c5e")})
+
+
+def monotonic_ms() -> int:
+    return time.monotonic_ns() // 1_000_000
 
 
 class InputDevice(Protocol):
@@ -45,6 +58,7 @@ class InputDevice(Protocol):
     def ungrab(self) -> None: ...
     def close(self) -> None: ...
     def set_led(self, led: int, value: int) -> None: ...
+    def capabilities(self, verbose: bool = False, absinfo: bool = True) -> dict[int, list]: ...
     def async_read_loop(self) -> Any: ...
 
 
@@ -79,13 +93,37 @@ def _read_id(sysfs_root: Path, node: str, field: str) -> str | None:
 
 
 def find_pad_nodes(vendor: str, product: str, list_devices: Callable[[], list[str]], sysfs_root: Path) -> list[str]:
-    """The /dev/input/eventN paths whose sysfs USB ids are vendor:product, in a stable order."""
+    """The /dev/input/eventN paths whose sysfs USB ids are vendor:product, in a stable order.
+
+    Denied ids (the PS Move) match nothing (BR-014).
+    """
+    if (vendor.lower(), product.lower()) in DENIED_USB_IDS:
+        return []
     matches = []
     for path in list_devices():
         node = Path(path).name
         if _read_id(sysfs_root, node, "vendor") == vendor and _read_id(sysfs_root, node, "product") == product:
             matches.append(path)
     return sorted(matches)
+
+
+def open_node(backend: Backend, path: str) -> InputDevice | None:
+    try:
+        return backend.open(path)
+    except OSError as e:
+        logger.warning(f"Opening pad node {path} failed: {e}")
+        metrics.grab_failures_total.labels(reason="error").inc()
+        return None
+
+
+def reports_keys(device: InputDevice, key_codes: frozenset[int]) -> bool:
+    """BR-014: the node reports at least one key code of the keymap (not a mouse or consumer node)."""
+    try:
+        keys = device.capabilities(absinfo=False).get(EV_KEY, [])
+    except Exception as e:
+        logger.warning(f"Reading the capabilities of {device.path} failed: {e}")
+        return False
+    return any(code in key_codes for code in keys)
 
 
 async def grab_node(
@@ -96,12 +134,20 @@ async def grab_node(
     delay: float = GRAB_RETRY_SECONDS,
 ) -> InputDevice | None:
     """Open and grab one node; retry EBUSY up to ``retries`` times. None when it cannot be grabbed."""
-    try:
-        device = backend.open(path)
-    except OSError as e:
-        logger.warning(f"Opening pad node {path} failed: {e}")
-        metrics.grab_failures_total.labels(reason="error").inc()
+    device = open_node(backend, path)
+    if device is None:
         return None
+    return await grab_device(device, path, sleep, retries, delay)
+
+
+async def grab_device(
+    device: InputDevice,
+    path: str,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    retries: int = GRAB_RETRIES,
+    delay: float = GRAB_RETRY_SECONDS,
+) -> InputDevice | None:
+    """Grab an open node; retry EBUSY up to ``retries`` times. None (node closed) when it cannot be grabbed."""
     for attempt in range(retries + 1):
         try:
             device.grab()
@@ -131,6 +177,7 @@ class DeviceManager:
         sysfs_root: Path = SYSFS_INPUT,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rescan_seconds: float = RESCAN_SECONDS,
+        clock_ms: Callable[[], int] = monotonic_ms,
     ) -> None:
         self._config = config
         self._controller = controller
@@ -139,6 +186,8 @@ class DeviceManager:
         self._sysfs_root = sysfs_root
         self._sleep = sleep
         self._rescan_seconds = rescan_seconds
+        self._clock_ms = clock_ms
+        self._denied_warned = False
         self._devices: list[InputDevice] = []
 
     def set_lock_led(self, on: bool) -> None:
@@ -164,6 +213,11 @@ class DeviceManager:
         ids = self._config.device()
         if backend is None or ids is None:
             return False
+        if ids in DENIED_USB_IDS:
+            if not self._denied_warned:
+                self._denied_warned = True
+                logger.warning(f"operator_pad.device={ids[0]}:{ids[1]} is a PS Move controller: never grabbed")
+            return False
         try:
             paths = find_pad_nodes(ids[0], ids[1], backend.list_devices, self._sysfs_root)
         except OSError as e:
@@ -171,29 +225,50 @@ class DeviceManager:
             return False
         if not paths:
             return False
+        keymap = self._config.keymap()
+        key_codes = frozenset(keymap)
         with tracer.start_as_current_span("operator_pad.device_attach") as span:
             span.set_attribute("pad.device", f"{ids[0]}:{ids[1]}")
-            devices = []
+            devices: list[InputDevice] = []
+            failed: list[str] = []
             for path in paths:
-                device = await grab_node(backend, path, self._sleep)
-                if device is not None:
+                device = open_node(backend, path)
+                if device is None:
+                    failed.append(path)
+                    continue
+                if not reports_keys(device, key_codes):
+                    logger.debug(f"{path} reports no key of the keymap: not a pad node, left alone")
+                    with contextlib.suppress(Exception):
+                        device.close()
+                    continue
+                if await grab_device(device, path, self._sleep) is None:
+                    failed.append(path)
+                else:
                     devices.append(device)
             span.set_attribute("pad.node_count", len(devices))
-            if not devices:
-                span.set_status(trace.Status(trace.StatusCode.ERROR, "no pad node could be grabbed"))
+            if failed or not devices:
+                # BR-014: a pad node left ungrabbed would type into the console; release all, retry at the rescan.
+                self._release(devices)
+                reason = f"pad nodes not grabbed: {failed}" if failed else "no pad node reports a keymap key"
+                logger.warning(f"Pad attach failed ({reason}); retrying at the next rescan")
+                span.set_status(trace.Status(trace.StatusCode.ERROR, reason))
                 return False
         self._devices = devices
-        self._controller.attached(self._config.keymap())
+        self._controller.attached(keymap)
         metrics.device_attached.set(1)
         logger.info(f"Pad attached: {[d.path for d in devices]}")
         return True
 
-    def detach(self) -> None:
-        for device in self._devices:
+    @staticmethod
+    def _release(devices: list[InputDevice]) -> None:
+        for device in devices:
             with contextlib.suppress(Exception):
                 device.ungrab()
             with contextlib.suppress(Exception):
                 device.close()
+
+    def detach(self) -> None:
+        self._release(self._devices)
         if self._devices:
             logger.warning("Pad detached; rescanning")
         self._devices = []
@@ -204,23 +279,34 @@ class DeviceManager:
         """Feed key events of every grabbed node to the controller in arrival order until a node fails."""
         queue: asyncio.Queue = asyncio.Queue()
         gone = object()
+        dropped = object()
 
         async def pump(device: InputDevice) -> None:
+            # Any end of the read loop (unplug, a binding error, a normal end) is the device gone (A4).
             try:
                 async for event in device.async_read_loop():
                     if event.type == EV_KEY:
-                        await queue.put(event)
+                        # Stamped when read, before the queue: the status reads of earlier events never skew it.
+                        queue.put_nowait((event.code, event.value, self._clock_ms()))
+                    elif event.type == EV_SYN and event.code == SYN_DROPPED:
+                        queue.put_nowait(dropped)
             except OSError as e:  # ENODEV on unplug
                 logger.info(f"Pad node {device.path} gone: {e}")
-            await queue.put(gone)
+            except Exception as e:
+                logger.warning(f"Reading pad node {device.path} failed: {e!r}")
+            finally:
+                queue.put_nowait(gone)
 
         pumps = [asyncio.create_task(pump(device)) for device in self._devices]
         try:
             while True:
-                event = await queue.get()
-                if event is gone:
+                item = await queue.get()
+                if item is gone:
                     return
-                await self._controller.on_code(event.code, event.value, int(event.timestamp() * 1000))
+                if item is dropped:
+                    self._controller.events_dropped()
+                    continue
+                await self._controller.on_code(*item)
         finally:
             for task in pumps:
                 task.cancel()
@@ -240,6 +326,6 @@ class DeviceManager:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await task
                 self.detach()
-                continue
+            # After a detach too (A4): a node that fails right after the attach never makes a busy loop.
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=self._rescan_seconds)

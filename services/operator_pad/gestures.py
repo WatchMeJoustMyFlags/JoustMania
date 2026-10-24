@@ -16,8 +16,9 @@ Rules:
   until all keys are up;
 - K8 held for its hold time toggles the lock; while locked only the K3 hold (the stop
   direction, decided by the caller) and the K8 unlock produce a gesture;
-- auto-repeat (value 2), a second press of a key already down and a release without a press
-  are ignored; ``reset()`` (device gone) drops every gesture in progress.
+- auto-repeat (value 2) and a release without a press are ignored; a second press of a key
+  already down (its release was lost) re-arms that key: its timing restarts and its layer
+  turns are dropped; ``reset()`` (device gone, events dropped) drops every gesture in progress.
 """
 
 from __future__ import annotations
@@ -111,7 +112,10 @@ class GestureMachine:
 
     def _key_press(self, event: KeyEvent) -> list[Gesture]:
         if event.name in self._down:
-            return []
+            # Its release was lost (BR-007): re-arm the key, so a later tap is not timed from the old press.
+            del self._down[event.name]
+            self._used.discard(event.name)
+            self._layer_steps.pop(event.name, None)
         if self.keys_down():
             self._chord = True
         self._down[event.name] = event.t_ms

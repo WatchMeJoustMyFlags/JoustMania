@@ -95,3 +95,13 @@ async def test_pad_disabled_by_flag_does_nothing(parts):
     await pad.on_code(F13, RELEASE, 100)
     reader.fetch.assert_not_awaited()
     actions.dispatch.assert_not_awaited()
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-007"])
+async def test_events_dropped_resets_the_gesture_in_progress(parts):
+    pad, _, reader, actions, _ = parts
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse()
+    await pad.on_code(F19, PRESS, 0)
+    pad.events_dropped()  # the K4 release may be among the dropped events
+    await pad.on_code(F19, RELEASE, 2000)
+    actions.dispatch.assert_not_awaited()
