@@ -388,9 +388,15 @@ class TestUC040SwellRumble:
         await _effect(manager, CHARGE, 60_000)
         await _spin()
         assert backend.rumble[-1][1] == 255  # inside the first grant pulse
+        pulse = manager.vibration_tasks[SERIAL]
         await manager.set_vibration(SERIAL, 100, 200)
+        warning = manager.vibration_tasks[SERIAL]
         clock.disable_blocking()
+        await _spin()
 
+        # Only the slot's owner clears it: the cancelled pulse leaves the warning's timer in the slot.
+        assert pulse.done()
+        assert manager.vibration_tasks.get(SERIAL) is warning
         await asyncio.sleep(0.35)
 
         assert backend.rumble[-1][1] == 0
