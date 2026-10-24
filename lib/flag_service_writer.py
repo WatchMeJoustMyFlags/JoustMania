@@ -216,8 +216,8 @@ class FlagServiceWriter:
         """Move the flag ``steps`` positions along its ladder with one write (UC-015 BR-005, A7).
 
         The ladder is ``order`` when given (for example ``["off", "on"]`` so that "up" means on),
-        else the declared variants, sorted by value when every value is a number (UC-015 BR-006:
-        the flag service may list them in name order, #2105). Without ``wrap`` the step stops at
+        else the declared variants, ordered by value regardless of listing order when every value
+        is a number (UC-015 BR-006; a guard). Without ``wrap`` the step stops at
         the end of the ladder; a step that cannot move at all writes nothing and returns ``at_limit``. A current variant
         outside the ladder moves to its first entry, as ``cycle_variant`` does.
         """
