@@ -595,13 +595,17 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         except Exception as e:
             logger.warning("Error handling flag change: %s", e)
 
-    @staticmethod
-    def _read_operator_gain() -> float | None:
-        """Read audio_volume.master (the operator's gain); None when flagd cannot be read."""
+    def _read_operator_gain(self) -> float | None:
+        """Read audio_volume.master (the operator's gain); None when flagd cannot be read.
+
+        OpenFeature returns the default on a provider error instead of raising, so the
+        current gain is the default: an unreadable flag keeps the last gain.
+        """
         try:
             from lib.feature_flags import get_flag_client
 
-            return float(get_flag_client("user").get_float_value("audio_volume.master", 1.0))
+            current = self.audio_manager.operator_gain
+            return float(get_flag_client("user").get_float_value("audio_volume.master", current))
         except Exception as e:
             logger.debug("Could not read audio_volume.master flag: %s", e)
             return None
@@ -875,5 +879,6 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         """Set master volume."""
         span = trace.get_current_span()
         span.update_name(f"SetVolume:{request.volume:.0%}")
+        self._refresh_operator_gain()
         success = self.audio_manager.set_volume(request.volume)
         return audio_pb2.SetVolumeResponse(success=success, error="" if success else "Failed to set volume")

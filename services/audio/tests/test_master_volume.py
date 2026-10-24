@@ -8,7 +8,7 @@ replaced (SoundChannel.play opens a miniaudio device, MusicPlayer spawns ALSA).
 import array
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -21,8 +21,9 @@ ASSETS_DIR = Path(servicer_module.__file__).parent / "assets"
 
 
 class _FakeUserFlagClient:
-    def __init__(self, master: float = 1.0):
+    def __init__(self, master: float = 1.0, unreadable: bool = False):
         self.master = master
+        self.unreadable = unreadable  # OpenFeature error path: returns the default, never raises
 
     def get_boolean_value(self, flag_key, default_value, *_a, **_k):
         return default_value
@@ -31,7 +32,9 @@ class _FakeUserFlagClient:
         return default_value
 
     def get_float_value(self, flag_key, default_value, *_a, **_k):
-        return self.master if flag_key == "audio_volume.master" else default_value
+        if flag_key == "audio_volume.master" and not self.unreadable:
+            return self.master
+        return default_value
 
 
 @pytest.fixture
@@ -67,6 +70,7 @@ def _sound_volume(svc) -> float:
     return svc.channel_play.call_args.kwargs["volume"]
 
 
+@pytest.mark.uc("UC-031", flow="main", steps=[5])
 @pytest.mark.uc("UC-015", br=["BR-006"])
 class TestMasterMultiplier:
     def test_play_sound_multiplied_by_master(self, live_servicer):
@@ -110,6 +114,7 @@ class TestMasterMultiplier:
         assert _sound_volume(live_servicer) == pytest.approx(0.15)
 
 
+@pytest.mark.uc("UC-031", flow="main", steps=[5])
 @pytest.mark.uc("UC-015", br=["BR-006"])
 class TestFlagChange:
     def test_flag_change_reapplies_music_volume(self, live_servicer, flags):
@@ -124,9 +129,17 @@ class TestFlagChange:
 
     def test_unreadable_flag_keeps_last_gain(self, live_servicer):
         live_servicer.audio_manager.set_operator_gain(0.6)
-        with patch("lib.feature_flags.get_flag_client", side_effect=RuntimeError("flagd down")):
+        with patch("lib.feature_flags.get_flag_client", return_value=_FakeUserFlagClient(unreadable=True)):
             live_servicer._refresh_operator_gain()
         assert live_servicer.audio_manager.operator_gain == 0.6
+
+    def test_set_volume_rereads_gain_after_missed_event(self, live_servicer, flags):
+        """No change event arrived: SetVolume itself re-reads the flag."""
+        flags.master = 0.4
+        live_servicer.SetVolume(audio_pb2.SetVolumeRequest(volume=0.5), None)
+        manager = live_servicer.audio_manager
+        assert manager.operator_gain == 0.4
+        manager.music_player.set_volume.assert_called_with(pytest.approx(0.2))
 
 
 @pytest.mark.uc("UC-015", br=["BR-006"])
@@ -162,7 +175,7 @@ def test_play_with_volume_scales_samples_with_numpy():
         sample_rate=44100,
     )
     sent = {}
-    device = MagicMock()
+    device = create_autospec(servicer_module.miniaudio.PlaybackDevice, instance=True)
     device.__enter__.return_value = device
 
     def start(stream):
