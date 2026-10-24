@@ -19,20 +19,31 @@ DETACH="${SCRIPT_DIR}/../ci/detach.sh"
 WORK="$(realpath "$(mktemp -d)")"
 trap 'rm -rf "${WORK}" "${FAKE_DOCKER_DIR}"' EXIT
 
-# A fake safe-merge.sh: counts its starts, takes $FAKE_SLEEP s, prints progress on
-# stderr and ONE result line on stdout, exits $FAKE_RC (3 = its own head mismatch).
+# A fake safe-merge.sh: counts its starts, blocks on the fifo $FAKE_GATE (when set)
+# until the test writes to it (#2073: no timing), prints progress on stderr and ONE result line on stdout, exits $FAKE_RC (3 = its own head mismatch).
 FAKE="${WORK}/safe-merge.sh"
 cat >"$FAKE" <<'EOF'
 #!/usr/bin/env bash
 n=$(( $(cat "$FAKE_COUNTER" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$FAKE_COUNTER"
 echo "waiting for CI on #$1" >&2
-sleep "${FAKE_SLEEP:-0}"
+if [[ -n "${FAKE_GATE:-}" ]]; then read -r _ <"$FAKE_GATE"; fi
 if [[ "${FAKE_RC:-0}" == 3 ]]; then echo "HEAD MISMATCH: #$1"; exit 3; fi
 echo "MERGED #$1 at $2"
 EOF
 chmod +x "$FAKE"
 export FAKE_COUNTER="${WORK}/counter"
 starts() { cat "$FAKE_COUNTER" 2>/dev/null || echo 0; }
+
+# gate_open <name>: a fifo the test controls. fd 7 is read-write, so opening never blocks
+# and a byte written to it releases exactly one job blocked in `read` (#2073).
+gate_open() { mkfifo "${WORK}/gate-$1"; exec 7<>"${WORK}/gate-$1"; }
+gate_release() { echo go >&7; exec 7>&-; }
+# wait_for_file <path>: poll for an event (not a duration); fail only after 30 s.
+wait_for_file() {
+  local _
+  for _ in $(seq 300); do [[ -f "$1" ]] && return 0; sleep 0.1; done
+  fail "never appeared: $1"
+}
 
 pass=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -59,10 +70,13 @@ run_d 2 'REFUSED: no command' --dir "${WORK}/w"
 
 # --- PENDING, then the result; the pr-merger loop
 J="${WORK}/merge-1"
-export FAKE_SLEEP=3
+gate_open 1
+export FAKE_GATE="${WORK}/gate-1"
 run_d 3 'VERDICT: PENDING \([0-9]+s\); rerun the same command$' --dir "$J" --wait 1 -- "$FAKE" 1 abc
+wait_for_file "$J/pid"
 [[ -f "$J/pid" && -f "$J/lock" && -f "$J/cmd" && ! -f "$J/rc" ]] || fail "running job dir: want pid/lock/cmd, no rc"
 run_d 2 'REFUSED: .*different command' --dir "$J" --wait 1 -- "$FAKE" 2 abc
+gate_release
 calls=0 rc=3
 while ((rc == 3 && calls < 22)); do
   calls=$((calls + 1))
@@ -79,13 +93,14 @@ run_d 2 'REFUSED: .*different command' --dir "$J" -- "$FAKE" 1 def
 
 # --- the wrapped command's own exit 3 is a result, not PENDING
 rm -f "$FAKE_COUNTER"
-FAKE_SLEEP=0 FAKE_RC=3 run_d 3 'HEAD MISMATCH: #2$' --dir "${WORK}/merge-2" -- "$FAKE" 2 abc
+FAKE_GATE="" FAKE_RC=3 run_d 3 'HEAD MISMATCH: #2$' --dir "${WORK}/merge-2" -- "$FAKE" 2 abc
 out="$("$DETACH" --dir "${WORK}/merge-2" -- "$FAKE" 2 abc 2>&1 || true)"
 [[ "$out" != *"VERDICT: PENDING"* ]] || fail "a real exit 3 read as PENDING"
 pass=$((pass + 1))
 
 # --- concurrent identical first calls: one job
 rm -f "$FAKE_COUNTER"
+export FAKE_GATE=""
 J3="${WORK}/merge-3"
 for _ in 1 2 3; do timeout 60 "$DETACH" --dir "$J3" --wait 0 -- "$FAKE" 3 abc >/dev/null 2>&1 & done
 wait || true
@@ -95,23 +110,28 @@ run_d 0 'MERGED #3 at abc$' --dir "$J3" --wait 10 -- "$FAKE" 3 abc
 # --- a killed waiter (its whole process group) leaves the job alive
 rm -f "$FAKE_COUNTER"
 J4="${WORK}/merge-4"
+gate_open 4
+export FAKE_GATE="${WORK}/gate-4"
 setsid timeout 60 "$DETACH" --dir "$J4" --wait 30 -- "$FAKE" 4 abc >/dev/null 2>&1 &
 waiter=$!
-for _ in $(seq 50); do [[ -f "$J4/pid" ]] && break; sleep 0.1; done
-[[ -f "$J4/pid" ]] || fail "job did not start"
+wait_for_file "$J4/pid"
 kill -KILL -- "-${waiter}" 2>/dev/null || kill -KILL "$waiter"
 wait "$waiter" 2>/dev/null || true
 kill -0 "$(cat "$J4/pid")" 2>/dev/null || fail "job died with its waiter"
+gate_release
 run_d 0 'MERGED #4 at abc$' --dir "$J4" --wait 10 -- "$FAKE" 4 abc
 [[ "$(starts)" == 1 ]] || fail "killed waiter: job restarted"
 
 # --- a job killed before it wrote rc: ERROR: killed, never restarted
 rm -f "$FAKE_COUNTER"
 J5="${WORK}/merge-5"
-FAKE_SLEEP=30 run_d 3 'VERDICT: PENDING' --dir "$J5" --wait 0 -- "$FAKE" 5 abc
-for _ in $(seq 50); do [[ -f "$J5/pid" ]] && break; sleep 0.1; done
+gate_open 5
+FAKE_GATE="${WORK}/gate-5" run_d 3 'VERDICT: PENDING' --dir "$J5" --wait 0 -- "$FAKE" 5 abc
+wait_for_file "$J5/pid"
 pkill -KILL -s "$(cat "$J5/pid")" || true
-for _ in $(seq 50); do flock -n "$J5/lock" true && break; sleep 0.1; done
+for _ in $(seq 300); do flock -n "$J5/lock" true && break; sleep 0.1; done
+flock -n "$J5/lock" true || fail "killed job still holds its lock"
+exec 7>&-
 run_d 1 'VERDICT: ERROR: killed' --dir "$J5" --wait 1 -- "$FAKE" 5 abc
 [[ "$(starts)" == 1 ]] || fail "a killed job was restarted"
 

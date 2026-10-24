@@ -305,8 +305,10 @@ if ((!WORKER)); then
       "$(cat -- "$JOB/tree" 2>/dev/null)" != "$(tree_fingerprint)" ]]; then
       rm -rf -- "$JOB"
     fi
-  elif [[ -f "$JOB/lock" ]] && flock -n "$JOB/lock" true 2>/dev/null; then
-    rm -rf -- "$JOB"  # killed: ended without rc and nobody holds its lock
+  elif [[ -f "$JOB/lock" ]] && flock -n "$JOB/lock" true 2>/dev/null && [[ ! -f "$JOB/rc" ]]; then
+    # killed: ended without rc and nobody holds its lock. The rc re-check matters: a job
+    # that finished between the rc test above and the probe is finished, not killed (#2073).
+    rm -rf -- "$JOB"
   fi
   # Start (or attach) without waiting, still under the lock; then wait without it.
   start_out="$("$DETACH" --dir "$JOB" --wait 0 -- "${worker[@]}" 2>&1 8>&-)"
