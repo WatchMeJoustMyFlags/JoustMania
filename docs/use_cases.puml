@@ -24,6 +24,7 @@ rectangle "JoustMania" {
         usecase "UC-012\nConfigure Settings in Admin Mode" as UC012
         usecase "UC-013\nStop the Agent from the Controller" as UC013
         usecase "UC-014\nForce-Start a Game" as UC014
+        usecase "UC-015\nOperate the Game with the Operator Pad\n(planned, #2050)" as UC015
     }
     package "Playing" {
         usecase "UC-020\nPlay Joust Free-for-All" as UC020
@@ -84,12 +85,14 @@ host --> UC011
 host --> UC012
 host --> UC013
 host --> UC014
+host --> UC015
 host --> UC053
 
 operator --> UC003
 operator --> UC004
 operator --> UC005
 operator --> UC027
+operator --> UC015
 agent --> UC027
 operator --> UC035
 operator --> UC044
@@ -138,6 +141,12 @@ UC042 ..> UC043 : <<include>>
 UC044 ..> UC053 : <<include>>
 UC045 ..> UC053 : <<include>>
 UC013 ..> UC053 : <<include>>
+UC015 ..> UC011 : <<include>>
+UC015 ..> UC012 : <<include>>
+UC015 ..> UC013 : <<include>>
+UC015 ..> UC014 : <<include>>
+UC015 ..> UC027 : <<include>>
+UC015 ..> UC053 : <<include>>
 
 note right of maintainer
   Reviews tier-3 proposals

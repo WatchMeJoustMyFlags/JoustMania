@@ -89,10 +89,10 @@ periods). Sections 4–5 define those compositions precisely.
 | Flag set (baseline `services/flagd/<set>.json`, read-only) | Owner | Writer (through the flag service) | Read by | Lifetime |
 |---|---|---|---|---|
 | `game` | Human admin | Menu admin mode → `FlagServiceWriter` (persisted admin values); agent: experiment arms (shadow only), gated `real` promotion overlay (§1) | Menu builds `StartGameConfig` at start; coordinator freezes at init | Baseline per deployment; admin values persist across restarts; agent overlays in memory |
-| `user` | Human admin | Menu admin mode → `FlagServiceWriter` (persisted admin values) | Menu / audio (volumes, voice, instructions) | Per-deployment |
+| `user` | Human admin | Menu admin mode → `FlagServiceWriter` (persisted admin values); operator pad: `audio_volume.master` (planned, #2050) | Menu / audio (volumes, voice, instructions) | Per-deployment |
 | `interventions` | Agent | Agent ActionSink → `writer.go` (game-scoped values and events) | Coordinator `InterventionManager`, live | One game: dropped when the game ends |
 | `rollout` | Operator (human) for the ladder; agent for `current_controller_count` | Agent `actions/rollout_writer.go` (gated by `rollout_enabled`, `remediation_allowed`); operator via `scripts/flags.sh` | Controller manager rollout router, agent infra loop | In memory until the flag service restarts |
-| `agent` | Operator (human) | Operator / stage scripts (`scripts/flags.sh`, `agent-killswitch.sh`, `talk-stage.sh`: in-memory overlays; `agent-backend.sh`: backend and model persisted, #1682) **and** menu admin mode → `FlagServiceWriter` (`interventions_allowed` only, persisted, #819) | Agent + coordinator policy gates | Baseline per deployment; overlays until restart |
+| `agent` | Operator (human) | Operator / stage scripts (`scripts/flags.sh`, `agent-killswitch.sh`, `talk-stage.sh`: in-memory overlays; `agent-backend.sh`: backend and model persisted, #1682) **and** menu admin mode → `FlagServiceWriter` (`interventions_allowed` only, persisted, #819) **and** the operator pad commands through the menu (planned, #2050: `interventions_allowed` and `decision.backend` persisted, `enabled` in memory only; UC-015 BR-001) | Agent + coordinator policy gates | Baseline per deployment; overlays until restart |
 
 The `agent` set holds the agent's own governor — `enabled`, `decision.backend`, `objectives`,
 `interventions_allowed`, and the `policy.*` budgets. As of #819, **menu admin mode
@@ -175,6 +175,14 @@ game start by [`services/menu/servicer.py`](../services/menu/servicer.py)
 `invincibility_seconds`, `fight_club.min_rounds`, `werewolf.reveal_time_seconds`).
 The controller cycle is defined by `option_names` / `option_colors` in
 [`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py).
+
+**Operator pad (planned, #2050, [UC-015](use_cases/UC-015.md)).** The pad is a human surface equal to admin mode: it
+reaches the flag service only through menu commands (`ProcessInput` `force_start`, `step_setting`, `agent_switch`,
+`set_backend`), never directly. It cycles the same `game` flags as the controller (`sensitivity`, `num_teams`,
+`game_instructions`, `force_all_start`, `current_game`) and adds the agent's `enabled` (in memory, no persist: the kill
+switch does not survive a restart), `decision.backend` (persisted) and the `user` flag `audio_volume.master`. Pad and
+controller admin mode race on the same keys: the last write wins, no lock. The agent still never writes the `agent`
+set; the "menu writes one agent key" statements of §1 and UC-013 BR-001 describe the admin-mode path.
 
 The agent's live intervention surface (all in the `interventions` set, game-scoped, bounded by the flag service's registry):
 
