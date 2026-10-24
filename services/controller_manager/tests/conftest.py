@@ -86,3 +86,12 @@ class FakeMove:
 def fake_move():
     """Provide a FakeMove instance for testing."""
     return FakeMove()
+
+
+@pytest.fixture(autouse=True)
+def _charge_cues_without_flagd(monkeypatch):
+    """Shield charge rumble pattern (#2094) with the flag defaults, without a flagd provider."""
+    from services.controller_manager import feedback_manager
+    from services.controller_manager.effects_base import ChargeCues
+
+    monkeypatch.setattr(feedback_manager, "read_charge_cues", lambda: ChargeCues())

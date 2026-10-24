@@ -139,6 +139,11 @@ flags:
   # experiment+arm or real, so no agent writer can reach them (C-034).
   - {set: game, key: shield.activation, kind: overlay, scope: [stack], bounds: {variants: [instant, trigger]}}
   - {set: game, key: shield.charge_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 120]}}
+  # Shield charge rumble pattern (#2094, UC-040 BR-021): read by the controller manager per charge.
+  - {set: game, key: shield.charge_rumble_intensity, kind: overlay, scope: [stack], bounds: {range: [0, 255]}}
+  - {set: game, key: shield.charge_rumble_pulse_ms, kind: overlay, scope: [stack], bounds: {range: [50, 500]}}
+  - {set: game, key: shield.charge_reminder_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 30]}}
+  - {set: game, key: shield.charge_pre_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 8]}}
 
   # --- user, controller, rollout (flags.md §13.4) ------------------------------
   - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}

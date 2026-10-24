@@ -16,10 +16,13 @@ from proto import controller_manager_pb2
 from services.controller_manager import feedback_manager as fm_module
 from services.controller_manager.effects_base import (
     CHARGE_MAX_DURATION_MS,
+    ChargeCues,
     charge_frame,
     swell_intensity,
 )
 from services.controller_manager.feedback_manager import FeedbackManager
+
+_REAL_READ_CHARGE_CUES = fm_module.read_charge_cues  # before the autouse fixture patches it
 
 WHITE = (255, 255, 255)
 PLAYER = (0, 255, 0)
@@ -50,6 +53,15 @@ class _Backend:
 
     def set_effect_active(self, serial, active):
         self.effect_active[serial] = active
+
+
+@pytest.fixture(autouse=True)
+def no_charge_cues(monkeypatch):
+    """No flagd provider; the charge rumble pattern is off (intensity 0) unless a test turns it on.
+
+    The pattern's sleeps move the shared FakeClock, which would distort the LED timing tests.
+    """
+    monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
 
 
 @pytest.fixture
@@ -124,16 +136,14 @@ class TestUC040ChargeSchedule:
 class TestUC040ChargeLayer:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
-    async def test_charge_breathes_the_players_colour_and_ticks_once(self, manager, backend, clock):
-        """UC-040 A30: first frame 60 % of the base colour, then a rising breath; one 120 tick."""
+    async def test_charge_breathes_the_players_colour(self, manager, backend, clock):
+        """UC-040 A30: first frame 60 % of the base colour, then a rising breath."""
         clock.enable_blocking()
         await _effect(manager, CHARGE, 60_000)
         await _advance(clock, 1.0)
 
         assert backend.history[0] == (0, 153, 0)
         assert backend.colors[SERIAL] == (0, 255, 0) or max(c[1] for c in backend.history) >= 250
-        assert [i for _, i in backend.rumble][:1] == [fm_module.CHARGE_TICK_INTENSITY]
-        assert sum(1 for _, i in backend.rumble if i == fm_module.CHARGE_TICK_INTENSITY) == 1
         await _stop(manager, clock)
 
     @pytest.mark.asyncio
@@ -164,8 +174,12 @@ class TestUC040ChargeLayer:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
-    async def test_resend_extends_without_a_second_tick_or_phase_jump(self, manager, backend, clock):
-        """UC-040 BR-021: the coordinator re-sends while the charge is held; same layer, one tick."""
+    async def test_resend_extends_without_a_second_grant_pattern_or_phase_jump(
+        self, manager, backend, clock, monkeypatch
+    ):
+        """UC-040 BR-021: the coordinator re-sends while the charge is held; same layer, one pattern."""
+        patterns = []
+        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: patterns.append(1) or ChargeCues(intensity=0))
         clock.enable_blocking()
         await _effect(manager, CHARGE, 20_000)
         await _advance(clock, 1.0)
@@ -173,11 +187,12 @@ class TestUC040ChargeLayer:
         start = layer.start
 
         await _effect(manager, CHARGE, 20_000)
+        await _spin()
 
         assert manager._shield_layers[SERIAL]["charge"] is layer
         assert layer.start == start  # breathing phase continues
         assert layer.total_s == pytest.approx(clock.time() - start + 20.0)
-        assert sum(1 for _, i in backend.rumble if i == fm_module.CHARGE_TICK_INTENSITY) == 1
+        assert patterns == [1]  # the pattern (grant included) started once
         await _stop(manager, clock)
 
     @pytest.mark.asyncio
@@ -364,10 +379,17 @@ class TestUC040SwellRumble:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
-    async def test_warning_during_the_start_tick_does_not_leave_rumble_on(self, manager, backend, clock):
-        """UC-040 BR-021: tick (120, 100 ms) then a warning (100, 200 ms): the rumble ends at 0."""
+    async def test_warning_during_the_grant_pattern_does_not_leave_rumble_on(
+        self, manager, backend, clock, monkeypatch
+    ):
+        """UC-040 BR-021: grant pulse (255) then a warning (100, 200 ms): the rumble ends at 0."""
+        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues())
+        clock.enable_blocking()
         await _effect(manager, CHARGE, 60_000)
+        await _spin()
+        assert backend.rumble[-1][1] == 255  # inside the first grant pulse
         await manager.set_vibration(SERIAL, 100, 200)
+        clock.disable_blocking()
 
         await asyncio.sleep(0.35)
 
@@ -378,8 +400,11 @@ class TestUC040SwellRumble:
 class TestUC040DeathRumbleIsNeverShortened:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-021"])
-    async def test_swell_and_charge_tick_skip_a_running_death_rumble(self, manager, backend, clock, monkeypatch):
-        """UC-040 BR-021: while the death rumble runs, a swell or a new charge tick leaves its timer alone."""
+    async def test_swell_and_charge_grant_skip_a_running_death_rumble(self, manager, backend, clock, monkeypatch):
+        """UC-040 BR-021: while the death rumble runs, a swell or a new charge's grant leaves its timer alone."""
+        monkeypatch.setattr(
+            fm_module, "read_charge_cues", lambda: ChargeCues(reminder_s=0, pre_expiry_s=0)
+        )  # grant only
         monkeypatch.setattr(fm_module, "DEATH_RUMBLE_MS", 300)
         monkeypatch.setattr(fm_module, "DEATH_RED_HOLD_MS", 1)
         monkeypatch.setattr(fm_module, "DEATH_FADE_MS", 1)
@@ -392,7 +417,262 @@ class TestUC040DeathRumbleIsNeverShortened:
         await _spin(40)
 
         assert manager.vibration_tasks[SERIAL] is death_stop and not death_stop.done()
-        assert len(backend.rumble) == mark  # no swell step, no 120 tick
+        assert len(backend.rumble) == mark  # no swell step, no grant pulse
         await asyncio.sleep(0.35)
         assert backend.rumble[-1][1] == 0  # the death rumble ran its full length
         await manager.end_shield_effect(SERIAL, restore=False)
+
+
+# ---------------------------------------------------------------------------
+# Charge rumble pattern (#2094, UC-040 A30 / A32, BR-021)
+# ---------------------------------------------------------------------------
+
+
+async def _no_render(*_args):
+    """Stand-in renderer: it neither paints nor sleeps, so only the cue loop moves the fake clock."""
+    await asyncio.Event().wait()
+
+
+@pytest.fixture
+def cue_manager(manager, monkeypatch):
+    monkeypatch.setattr(FeedbackManager, "_shield_render_loop", _no_render)
+    monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues())  # the flag defaults
+    return manager
+
+
+def _on_times(backend, intensity=255):
+    """Offsets (s from the charge start at 1000.0) of every charge pulse switched on."""
+    return [round(t - 1000.0, 3) for t, i in backend.rumble if i == intensity]
+
+
+async def _run_cues_to_end(manager):
+    task = manager._charge_cue_tasks[SERIAL]
+    await asyncio.wait_for(task, timeout=5)
+
+
+async def _step_until(clock, until):
+    """Blocking clock: release sleeps one at a time until the fake time reaches ``until``."""
+    for _ in range(10_000):
+        await _spin(8)
+        if clock.time() >= until - 1e-9:
+            return
+        clock.release_all()
+    raise AssertionError(f"clock stuck at {clock.time()}")
+
+
+async def _finish(manager, clock):
+    clock.disable_blocking()
+    await manager.end_shield_effect(SERIAL, restore=False)
+    await _spin()
+
+
+class TestUC040ChargeRumblePattern:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    async def test_grant_is_three_full_strength_pulses_of_150_ms_with_100_ms_gaps(self, cue_manager, backend):
+        """UC-040 BR-021: on grant 255 on/off at 0/0.15, 0.25/0.40, 0.50/0.65 s; nothing else then."""
+        await _effect(cue_manager, CHARGE, 3500)  # shorter than the grant plus the 3 s lead: no pre-expiry
+        await _run_cues_to_end(cue_manager)
+
+        offsets = [(round(t - 1000.0, 3), i) for t, i in backend.rumble]
+        assert offsets == [(0.0, 255), (0.15, 0), (0.25, 255), (0.4, 0), (0.5, 255), (0.65, 0)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    async def test_reminder_pulses_every_5_seconds_while_the_charge_is_held(self, cue_manager, backend):
+        """UC-040 BR-021: one 150 ms pulse at 5, 10, 15 s after the grant; then the pre-expiry pulse."""
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _run_cues_to_end(cue_manager)
+
+        reminders = [t for t in _on_times(backend) if 1.0 <= t < 16.0]
+        assert reminders == [5.0, 10.0, 15.0]
+        reminder_off = [round(t - 1000.0, 3) for t, i in backend.rumble if i == 0 and 5.0 <= t - 1000.0 < 5.5]
+        assert reminder_off == [5.15]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    async def test_pre_expiry_double_pulse_3_seconds_before_the_expiry_is_the_last_cue(self, cue_manager, backend):
+        """UC-040 BR-021: a 20 s charge pulses twice at 17.00 and 17.25 s and stays quiet until it ends."""
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _run_cues_to_end(cue_manager)
+
+        assert [t for t in _on_times(backend) if t >= 16.0] == [17.0, 17.25]
+        assert backend.rumble[-1] == (pytest.approx(1017.4), 0)
+        assert SERIAL not in cue_manager._charge_cue_tasks
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    async def test_flag_values_shape_the_pattern(self, cue_manager, backend, monkeypatch):
+        """UC-040 BR-021: intensity, pulse length, reminder interval and lead come from the flags."""
+        cues = ChargeCues(intensity=180, pulse_ms=200, reminder_s=3.0, pre_expiry_s=2.0)
+        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: cues)
+        await _effect(cue_manager, CHARGE, 10_000)
+        await _run_cues_to_end(cue_manager)
+
+        assert _on_times(backend, 180) == [0.0, 0.3, 0.6, 3.0, 6.0, 8.0, 8.3]
+        assert {i for _, i in backend.rumble} == {180, 0}
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    async def test_a_resend_moves_the_pre_expiry_pulse_with_the_layer(self, cue_manager, backend, clock):
+        """UC-040 BR-021: a layer re-sent before the lead (expiry never) gives no early double pulse."""
+        clock.enable_blocking()
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _step_until(clock, 1010.0)  # the coordinator re-sends 10 s before the layer's end
+        await _effect(cue_manager, CHARGE, 20_000)  # layer now ends at 1030
+        clock.disable_blocking()
+        await _run_cues_to_end(cue_manager)
+
+        on = _on_times(backend)
+        assert 17.0 not in on
+        assert [t for t in on if t >= 16.0] == [20.0, 25.0, 27.0, 27.25]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    async def test_no_reminder_after_activation(self, cue_manager, backend, clock):
+        """UC-040 A32 / UC-030 A6: SHIELD_CHARGE 0 stops the pattern at once."""
+        clock.enable_blocking()
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _step_until(clock, 1006.0)  # the 5 s reminder has played
+        await _effect(cue_manager, CHARGE, 0)  # the activation
+        clock.disable_blocking()
+        await _spin(40)
+
+        assert _on_times(backend) == [0.0, 0.25, 0.5, 5.0]
+        assert SERIAL not in cue_manager._charge_cue_tasks
+        assert backend.rumble[-1][1] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    async def test_activation_mid_pulse_switches_the_motor_off(self, cue_manager, backend, clock):
+        """UC-040 A32: a pulse in progress is cut, and the motor is not left on."""
+        clock.enable_blocking()
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _spin()
+        assert backend.rumble[-1][1] == 255  # inside the first grant pulse
+
+        await _effect(cue_manager, CHARGE, 0)
+        clock.disable_blocking()
+        await _spin(40)
+
+        assert backend.rumble[-1][1] == 0
+        assert _on_times(backend) == [0.0]
+        assert SERIAL not in cue_manager.vibration_tasks
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    async def test_no_reminder_after_expiry(self, cue_manager, backend, monkeypatch):
+        """UC-040 A32: reminders at 5 and 10 s of a 12 s charge, none after its end."""
+        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(pre_expiry_s=0))
+        await _effect(cue_manager, CHARGE, 12_000)
+        await _run_cues_to_end(cue_manager)
+
+        assert _on_times(backend) == [0.0, 0.25, 0.5, 5.0, 10.0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    async def test_no_reminder_after_death(self, cue_manager, backend, clock, monkeypatch):
+        """UC-040 A32: the death effect ends the charge and its pattern; only the death rumble follows."""
+        monkeypatch.setattr(fm_module, "DEATH_RUMBLE_MS", 50)
+        monkeypatch.setattr(fm_module, "DEATH_RED_HOLD_MS", 1)
+        monkeypatch.setattr(fm_module, "DEATH_FADE_MS", 1)
+        clock.enable_blocking()
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _step_until(clock, 1002.0)
+        mark = len(backend.rumble)
+
+        await _effect(cue_manager, controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        clock.disable_blocking()
+        await asyncio.sleep(0.15)
+
+        assert SERIAL not in cue_manager._charge_cue_tasks
+        assert [i for _, i in backend.rumble[mark:]] == [255, 0]  # the death rumble and its stop
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-021"])
+    async def test_death_rumble_pre_empts_a_grant_pulse_in_progress(self, cue_manager, backend, clock, monkeypatch):
+        """UC-040 BR-021: a death during a grant pulse holds 255 for its full length; no charge pulse after."""
+        monkeypatch.setattr(fm_module, "DEATH_RUMBLE_MS", 300)
+        monkeypatch.setattr(fm_module, "DEATH_RED_HOLD_MS", 1)
+        monkeypatch.setattr(fm_module, "DEATH_FADE_MS", 1)
+        clock.enable_blocking()
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _spin()
+        pulse = cue_manager.vibration_tasks[SERIAL]
+
+        await _effect(cue_manager, controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        death_stop = cue_manager.vibration_tasks[SERIAL]
+        clock.disable_blocking()
+        await _spin(40)
+        await asyncio.sleep(0.1)  # still inside the 300 ms death rumble
+
+        assert pulse.done()
+        assert death_stop.get_name() == fm_module.DEATH_RUMBLE_TASK_NAME and not death_stop.done()
+        assert backend.rumble[-1][1] == 255
+        await asyncio.sleep(0.3)
+        assert backend.rumble[-1][1] == 0  # the death rumble's own stop, at its full length
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    async def test_reminder_skips_a_running_warning_rumble(self, cue_manager, backend, clock):
+        """UC-040 BR-021: a reminder due during the warning rumble waits up to 1 s, then is skipped."""
+        clock.enable_blocking()
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _step_until(clock, 1005.0)  # the cue loop is about to play the 5 s reminder
+        await cue_manager.set_vibration(SERIAL, 100, 5000)  # a warning that outlasts the 1 s wait
+        warning = cue_manager.vibration_tasks[SERIAL]
+        await _step_until(clock, 1007.0)
+
+        assert [t for t in _on_times(backend) if t >= 1.0] == []
+        assert cue_manager.vibration_tasks[SERIAL] is warning and not warning.done()
+        warning.cancel()
+        await _finish(cue_manager, clock)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    async def test_intensity_zero_turns_the_pattern_off(self, cue_manager, backend, monkeypatch):
+        """UC-040 BR-021: shield.charge_rumble_intensity 0 means no charge rumble at all."""
+        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _spin(40)
+
+        assert backend.rumble == []
+        await cue_manager.end_shield_effect(SERIAL, restore=False)
+
+
+class TestUC040ChargeRumbleFlags:
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    def test_read_charge_cues_reads_the_four_game_flags(self, monkeypatch):
+        """flags.md §4: the four game flags are read per charge, without a gameId."""
+        from lib import feature_flags
+
+        values = {
+            "shield.charge_rumble_intensity": 200,
+            "shield.charge_rumble_pulse_ms": 250,
+            "shield.charge_reminder_seconds": 10.0,
+            "shield.charge_pre_expiry_seconds": 5.0,
+        }
+        reads = []
+
+        def fake_read(domain, key, _default, _game_id=None):
+            reads.append((domain, key))
+            return values[key]
+
+        monkeypatch.setattr(feature_flags, "read_int_flag", fake_read)
+        monkeypatch.setattr(feature_flags, "read_float_flag", fake_read)
+
+        cues = _REAL_READ_CHARGE_CUES()
+
+        assert cues == ChargeCues(intensity=200, pulse_ms=250, reminder_s=10.0, pre_expiry_s=5.0)
+        assert sorted(reads) == sorted(("game", key) for key in values)
+
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
+    def test_bad_flag_values_give_the_defaults_and_are_clamped(self):
+        from services.controller_manager.effects_base import resolve_charge_cues
+
+        assert resolve_charge_cues(None, "x", float("nan"), -1) == ChargeCues()
+        assert resolve_charge_cues(999, 10, 100.0, 20.0) == ChargeCues(
+            intensity=255, pulse_ms=50, reminder_s=30.0, pre_expiry_s=8.0
+        )
+        assert resolve_charge_cues(0, 150, 0, 0) == ChargeCues(intensity=0, reminder_s=0.0, pre_expiry_s=0.0)
+        assert resolve_charge_cues(True, 150, 0.2, 3) == ChargeCues(reminder_s=1.0)
