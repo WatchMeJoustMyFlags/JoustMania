@@ -2617,12 +2617,10 @@ class TestSelectionPathsShareSelectGameMode:
         real_servicer.user_prefs_writer.update_default_variant.assert_called_once_with("current_game", "JoustTeams")
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-011", flow="main", steps=[6])
-    async def test_admin_cross_leaves_other_lobby_leds_alone(self, real_servicer):
-        """UC-011 step 6: Cross changes the mode, but no other lobby controller's LED is touched.
-
-        The only LED output of the selection is the pulse on the host's own controller;
-        the CONNECTED controllers keep their state and colour until they next enter CONNECTED.
+    @pytest.mark.uc("UC-011", flow="main", steps=[6], br=["BR-005"])
+    async def test_admin_cross_repaints_the_other_lobby_leds_in_the_new_mode(self, real_servicer):
+        """UC-011 step 6, BR-005 (#2105): Cross changes the mode and every CONNECTED controller takes
+        the new mode's dim colour at once; the host's own controller only gets the pulse.
         """
         real_servicer.state = menu_pb2.MenuState.RUNNING
         await _connect(real_servicer, "s1", "s2", "s3")
@@ -2633,18 +2631,15 @@ class TestSelectionPathsShareSelectGameMode:
         await self._admin_cross(real_servicer)
 
         assert real_servicer.current_selection == Games.JoustTeams
-        touched = {c.args[0] for c in led.mock_calls if c.args}
-        assert touched == {"host"}
+        assert sorted(c.args for c in led.set_connected_color.await_args_list) == [
+            (s, Games.JoustTeams.name) for s in ("s1", "s2", "s3")
+        ]
+        led.set_ready_color.assert_not_awaited()
         led.send_game_effect.assert_awaited_once()
+        assert led.send_game_effect.await_args.args[0] == "host"
         assert {real_servicer.state_manager.get_controller_state(s) for s in ("s1", "s2", "s3")} == {
             ControllerState.CONNECTED
         }
-
-        # The new colour shows the next time a controller enters CONNECTED (here: READY -> Move un-ready).
-        await _ready_up(real_servicer, "s1")
-        led.reset_mock()
-        await real_servicer.on_button("s1", "move", True)
-        led.set_connected_color.assert_awaited_once_with("s1", Games.JoustTeams.name)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="A2", steps=[3])
