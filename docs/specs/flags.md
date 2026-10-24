@@ -74,7 +74,7 @@ effect only on the next start of the flag service (`scripts/flags.sh restart`).
 |---|---|---|---|
 | `game` | Human admin | menu admin mode (persisted admin values); agent experiment writer (experiment-arm values of the experiment catalog only); autonomous promotion (`real` overlay, gated, off in the stock stack) | per deployment (baseline); experiment arm values until teardown; promotion until the flag service restarts |
 | `user` | Human admin | menu (`current_game`, `game_instructions`); operator pad through the menu: `audio_volume.master` (planned, #2050) | per deployment |
-| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays, except the decision backend and model flags that `agent-backend.sh` persists, #1682); menu admin writes `interventions_allowed` only (persisted) | per deployment (baseline); overlays until cleared or the flag service restarts |
+| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays, except the decision backend and model flags that `agent-backend.sh` persists, #1682); menu admin writes `interventions_allowed` only (persisted); the operator pad through the menu also writes `enabled` (in memory) and `decision.backend` (persisted) (planned, #2050) | per deployment (baseline); overlays until cleared or the flag service restarts |
 | `interventions` | Agent | agent action sink only, game-scoped (values and event lists) | per game: dropped when the game ends (UC-053 BR-003) |
 | `rollout` | Operator + agent | operator: `target_backend`, `strategy`, `remediation_allowed`; agent: `current_controller_count` | per rollout |
 | `controller` | Operator | baseline edits; connect-proxy `/canary/*` through the flag service | per deployment (baseline); canary overlays until cleared |
@@ -88,7 +88,7 @@ OWNERSHIP_MODEL.md invariant 1; concurrent writers are serialized by the flag se
 
 File: [`services/flagd/agent.json`](../../services/flagd/agent.json). The three pattern-game flags are listed in §3.1.
 
-The agent's governor: existence (`enabled`), actuation gates, allow-list, policy budgets, objectives and fitness thresholds, decision-backend selection, experiment and verdict knobs, code-improvement promotion, plus the `perception.*` analytics knobs that the **game coordinator** reads. Human-owned (operator); the agent never writes this file; the menu writes only `interventions_allowed` (admin kill switch, #819). See [OWNERSHIP_MODEL.md](../OWNERSHIP_MODEL.md).
+The agent's governor: existence (`enabled`), actuation gates, allow-list, policy budgets, objectives and fitness thresholds, decision-backend selection, experiment and verdict knobs, code-improvement promotion, plus the `perception.*` analytics knobs that the **game coordinator** reads. Human-owned (operator); the agent never writes this file; the menu's admin mode writes only `interventions_allowed` (admin kill switch, #819); the operator pad commands through the menu add `enabled` (in memory) and `decision.backend` (planned, #2050). See [OWNERSHIP_MODEL.md](../OWNERSHIP_MODEL.md).
 
 | Key | Type | Variants | Default | Targeting | Read by (file:line) | Written by | Reload |
 |---|---|---|---|---|---|---|---|
@@ -327,7 +327,7 @@ Venue preferences owned by the host: voice, audio on/off, volumes, the persisted
 |---|---|---|---|---|---|---|---|
 | `menu_voice` | string | aaron="aaron", ivy="ivy" | `ivy` = "ivy" | N | menu: services/menu/servicer.py:336 (StartMenu); audio: services/audio/servicer.py:501 (startup) / :539 (change handler) | manual edit only | menu: per StartMenu; audio: event-refreshed |
 | `play_audio` | bool | on=true, off=false | `on` = true | N | audio: services/audio/servicer.py:483 (startup) / :536 (change handler) / `_read_play_audio_flag` (use time, `PlaySound` / `PlayMusic`, #1387) | manual edit only (ci = off) | event-refreshed and re-read at each `PlaySound` / `PlayMusic`; turning it on opens the audio hardware at runtime (UC-031 A1) |
-| `audio_volume.master` | float | mute=0.0, quiet=0.3, default=0.6, loud=0.8, max=1.0 | `max` = 1.0 | N | **planned (#2050, Open):** audio: services/audio/servicer.py (multiplier on `play_sound`, `play_music`, `set_volume` and `enable_hardware`; re-applied to the running music on a flag change; effective 0 plays nothing) | operator pad through the menu (`step_setting`, knob; persisted); `mute` variant = the pad's mute (UC-015 BR-006) | live (event-refreshed) |
+| `audio_volume.master` | float | mute=0.0, quiet=0.3, normal=0.6, loud=0.8, max=1.0 | `max` = 1.0 | N | **planned (#2050, Open):** audio: services/audio/servicer.py (multiplier on `play_sound`, `play_music`, `set_volume` and `enable_hardware`; re-applied to the running music on a flag change; effective 0 plays nothing) | operator pad through the menu (`step_setting`, knob; persisted); `mute` variant = the pad's mute (UC-015 BR-006) | live (event-refreshed) |
 | `current_game` | string | JoustFFA="JoustFFA", JoustTeams="JoustTeams", JoustRandomTeams="JoustRandomTeams", Traitor="Traitor", Werewolf="Werewolf", Zombies="Zombies", Tournament="Tournament", FightClub="FightClub", Swapper="Swapper", NonStop="NonStop" | `JoustFFA` = "JoustFFA" | N | menu: services/menu/servicer.py:337 (StartMenu) | menu services/menu/servicer.py:217/467/489 update_default_variant (user_prefs_writer, :102) | per StartMenu |
 | `game_instructions` | bool | on=true, off=false | `off` = false (baseline; the host switches it on, #1550) | N | game-coordinator: services/game_coordinator/games/base.py `_instructions_enabled` (fails closed to off); menu admin reads the current variant to toggle it (services/menu/handlers/admin.py:1071) | menu admin services/menu/handlers/admin.py:1072 cycle_variant | use time (each game start, UC-020 A5) |
 | `agent_intervention_cue` | bool | on=true, off=false | `on` = true | N | game-coordinator: services/game_coordinator/interventions.py:1413 (_cue_enabled) | manual edit only (ci = off) | live (per intervention cue) |
@@ -359,7 +359,7 @@ Telemetry export knobs for the Python services and rust-hid. Targeting keys on t
 
 ## 10a. `operator` (planned, #2050, Open)
 
-Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-015.md), FR-195, C-035). A new flag set with its own file `services/flagd/operator.json` (and a `ci/` copy); it lands with its own PR, after the pad code. Nothing reads or writes it today, and no flag of it is in the registry (§13.5: the set is read-only baseline). Operator-owned, changes by a reviewed file edit and a restart of the flag service. Planned keys (names and variants are settled with the code):
+Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-015.md), FR-195, C-035). A new flag set with its own file `services/flagd/operator.json` (and a `ci/` copy); it lands with its own PR (PR5 of #2050), before the pad code (PR6). Nothing reads or writes it today, and no flag of it is in the registry (§13.5: the set is read-only baseline). Operator-owned, changes by a reviewed file edit and a restart of the flag service. Planned keys (names and variants are settled with the code):
 
 | Key | Type | Variants | Default | Read by | Written by | Reload |
 |---|---|---|---|---|---|---|
@@ -372,7 +372,7 @@ Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-0
 
 | Set | Key | Kind | Scope | Bounds | Persist | Today's writer |
 |---|---|---|---|---|---|---|
-| user | `audio_volume.master` | overlay | stack | declared variants (`mute`, `quiet`, `default`, `loud`, `max`); planned (#2050, Open) | **yes** (a volume survives a restart) | operator pad through the menu |
+| user | `audio_volume.master` | overlay | stack | declared variants (`mute`, `quiet`, `normal`, `loud`, `max`); planned (#2050, Open) | **yes** (a volume survives a restart) | operator pad through the menu |
 | user | `play_audio` | overlay | stack | `on`, `off`; planned (#2050, Open) | **no** (a forgotten off must not survive a restart) | dashboard and operator scripts; not the pad (UC-015 BR-006: off stops the music for the rest of the game) |
 
 **Traceability:** FR-195, C-035 / UC-015 / planned `services/flagd/operator.json`, `services/operator_pad/` / planned tests in #2050.

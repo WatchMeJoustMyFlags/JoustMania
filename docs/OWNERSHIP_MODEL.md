@@ -178,8 +178,8 @@ The controller cycle is defined by `option_names` / `option_colors` in
 
 **Operator pad (planned, #2050, [UC-015](use_cases/UC-015.md)).** The pad is a human surface equal to admin mode: it
 reaches the flag service only through menu commands (`ProcessInput` `force_start`, `step_setting`, `agent_switch`,
-`set_backend`), never directly. It cycles the same `game` flags as the controller (`sensitivity`, `num_teams`,
-`game_instructions`, `force_all_start`, `current_game`) and adds the agent's `enabled` (in memory, no persist: the kill
+`set_backend`), never directly. It cycles the same flags as the controller: the `game` flags (`sensitivity`, `num_teams`,
+`force_all_start`) and the `user` flags (`game_instructions`, `current_game`) and adds the agent's `enabled` (in memory, no persist: the kill
 switch does not survive a restart), `decision.backend` (persisted) and the `user` flag `audio_volume.master`. Pad and
 controller admin mode race on the same keys: the last write wins, no lock. The agent still never writes the `agent`
 set; the "menu writes one agent key" statements of §1 and UC-013 BR-001 describe the admin-mode path.
