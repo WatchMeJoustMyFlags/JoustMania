@@ -443,9 +443,10 @@ The infra loop is not gated by the `enabled` kill switch, only by
 
 ### T-24h
 
-- [ ] Pi updated, images pulled with the tag from `.env.local`
-      (`./scripts/setup/joustmania-compose.sh pull`). Run on the
-      Pi itself: arm64 images, **verify in rehearsal**.
+- [ ] Pi on the talk pin: `./scripts/setup/joustmania-upgrade.sh <joustmania-vX.Y.Z | sha>`
+      pulls that pin's images before it switches; `./scripts/setup/joustmania-upgrade.sh --status`
+      shows the pinned image tag (no WARN). Run on the Pi itself: arm64 images,
+      **verify in rehearsal**.
 - [ ] The running agent has its backend keys (values never printed; also
       section 4 of `./scripts/talk-preflight.sh`):
       ```bash

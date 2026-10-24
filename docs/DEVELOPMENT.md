@@ -98,7 +98,8 @@ image tag derives from it, so never set `IMAGE_TAG` in `.env.local`. Change the 
 `./scripts/setup/joustmania-upgrade.sh <joustmania-vX.Y.Z | 40-hex sha>`: it pulls the target's images while
 the current version runs, switches the checkout, restarts the unit and rolls back on its own when the game
 services do not come up healthy (`--no-rollback` keeps the failed version for inspection;
-`--rollback` returns to the previous version offline; `--status` shows both). Put opt-in profiles
+`--rollback` returns to the other recorded version offline, back on its branch when it ran from one, and
+only when every image compose resolves there is on the Pi; `--status` shows both). Put opt-in profiles
 (`COMPOSE_PROFILES=python-hid`) in `.env.local`; a `systemctl edit` drop-in is honoured too.
 
 One-time migration of a Pi still on the `main` branch (once the first pinnable release, `MIN_PINNABLE`, exists):

@@ -6,16 +6,22 @@
 # against stub docker, curl, systemctl, sudo and id. Nothing reaches the network,
 # the real docker stack or systemd.
 #  - release tag and exact sha accepted; latest, main, short sha refused; below
-#    MIN_PINNABLE (version and commit floor) refused; nothing changes on a refusal
+#    MIN_PINNABLE (version and commit floor) refused; nothing changes on a refusal;
+#    with MIN_PINNABLE empty (as shipped) the commit floor and the script check
+#    decide
 #  - registry down (no 200/401) -> no fetch, no checkout, no restart
 #  - prepare pull missing an image -> listed, nothing changed, temp worktree removed
-#  - healthy -> switch, restart, record, prune (only superseded tags of our
-#    repositories; an unrelated image survives); fail-closed prune without a record
-#  - not healthy -> automatic rollback; --no-rollback leaves it; --rollback offline
+#  - healthy -> switch, restart, record, prune (only superseded tags of the
+#    joustmania repositories; third-party images survive); fail-closed prune
+#    without a record; a failed or empty `config --services` is not healthy
+#  - not healthy -> automatic rollback; --no-rollback leaves it; --rollback offline,
+#    HEAD-relative, with an image precheck before and after the switch
+#  - a version that ran from a branch (the migration) is restored on its branch
 #  - a stale worktree registration is pruned; COMPOSE_PROFILES from the unit honoured
 #  - joustmania-compose.sh derives IMAGE_TAG from a pinned HEAD over .env.local
-#    (X.Y.Z of the release tag, else the sha; nothing on a branch); the start
-#    script WARNs about an IMAGE_TAG in .env.local
+#    (X.Y.Z of the release tag, else the sha; nothing on a branch), with a stderr
+#    note when it overrides a shell IMAGE_TAG; the start script WARNs about an
+#    IMAGE_TAG in .env.local
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-upgrade.sh
 # UC: UC-060 A2 A3 A4 BR-003
 set -euo pipefail
@@ -71,6 +77,11 @@ g -C "${SRC}" tag joustmania-v1.0.0
 C_V11="$(commit v1.1.0 1.1.0)"
 g -C "${SRC}" tag joustmania-v1.1.0
 C_MAIN="$(commit main-later 1.1.0)"
+# A side branch off the pre-floor commit that has the scripts but not the floor
+g -C "${SRC}" checkout -q -b side "${C_OLD}"
+add_scripts "${C_FLOOR}"
+C_SIDE="$(commit side 0.1.0)"
+g -C "${SRC}" checkout -q main
 ORIGIN="${WORK}/origin.git"
 g clone -q --bare "${SRC}" "${ORIGIN}"
 : "${C_OLD}" "${C_09}"
@@ -111,7 +122,7 @@ echo "docker \$* | tag=\$tag profiles=\${COMPOSE_PROFILES:-}" >>"\$C/calls.log"
 images() { printf '%s:%s\n%s:%s\ngrafana/grafana:13\n' "${GC}" "\$tag" "${AG}" "\$tag"; }
 case " \$* " in
   *" config --images "*) images; exit 0 ;;
-  *" config --services "*) cat "\$C/services"; exit 0 ;;
+  *" config --services "*) [[ -f "\$C/services-fail" ]] && exit 1; cat "\$C/services"; exit 0 ;;
   *" compose "*" pull "*)
     images | while read -r i; do
       [[ -f "\$C/pull-skip" ]] && grep -qF "\$(cat "\$C/pull-skip")" <<<"\$i" && continue
@@ -178,6 +189,29 @@ for bad in latest main "${C_V11:0:12}" feature/x joustmania-v0.1.0 0.9.0 "${C_OL
   grep -q 'compose.* pull' "${CASE}/calls.log" && fail "refuse ${bad}: images were pulled"
 done
 
+# --- 1b. the floor as shipped: MIN_PINNABLE empty -> commit floor + script check
+# The checkout's command with only the commit floor swapped in (untracked copy)
+shipped() {
+  sed -e "s/^MIN_PINNABLE_COMMIT=.*/MIN_PINNABLE_COMMIT=\"${C_FLOOR}\"/" "${ROOT}/scripts/setup/joustmania-upgrade.sh" \
+    >"${REPO}/scripts/setup/joustmania-upgrade-shipped.sh"
+  grep -q '^MIN_PINNABLE=""$' "${REPO}/scripts/setup/joustmania-upgrade-shipped.sh" || fail "shipped: MIN_PINNABLE is not empty"
+  env PATH="${CASE}/bin:${PATH}" TMPDIR="${CASE}/tmp" JOUSTMANIA_HEALTH_TIMEOUT=1 JOUSTMANIA_HEALTH_POLL=1 \
+    bash "${REPO}/scripts/setup/joustmania-upgrade-shipped.sh" "$@" >"${CASE}/out.log" 2>&1
+}
+for bad in "${C_FLOOR}:no scripts/setup/joustmania-upgrade.sh" "${C_SIDE}:older than the pinnable floor"; do
+  make_case "floor-${bad:0:8}" "${C_V1}"
+  if shipped "${bad%%:*}"; then fail "floor ${bad}: accepted with MIN_PINNABLE empty"; fi
+  grep -q "refusing.*${bad#*:}" "${CASE}/out.log" || fail "floor ${bad}: wrong or no refusal: $(tail -1 "${CASE}/out.log")"
+  grep -q 'git worktree add' "${CASE}/calls.log" && fail "floor ${bad}: prepared the target"
+  nothing_changed "floor ${bad}" "${C_V1}"
+done
+make_case floor-accept-09 "${C_V1}"
+shipped joustmania-v0.9.0 || fail "floor: 0.9.0 refused with MIN_PINNABLE empty: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_09}" ]] || fail "floor: HEAD is not 0.9.0"
+make_case floor-accept-sha "${C_V1}"
+shipped "${C_09}" || fail "floor: the 0.9.0 sha refused with MIN_PINNABLE empty: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_09}" ]] || fail "floor: HEAD is not the 0.9.0 sha"
+
 # --- 2. registry down or a captive portal: no fetch, nothing changed ---------
 for code in 000 302 503; do
   make_case "registry-${code}"
@@ -219,10 +253,10 @@ prune_line="$(grep -n '^git worktree prune$' "${CASE}/calls.log" | head -n 1 | c
 add_line="$(grep -n '^git worktree add' "${CASE}/calls.log" | head -n 1 | cut -d: -f1 || true)"
 [[ -n "${prune_line}" && -n "${add_line}" && "${prune_line}" -lt "${add_line}" ]] \
   || fail "tag: git worktree prune does not run before the temporary worktree is added"
-for keep in "${GC}:1.1.0" "${AG}:1.1.0" "${GC}:1.0.0" "${AG}:1.0.0" grafana/grafana:13 busybox:latest; do
+for keep in "${GC}:1.1.0" "${AG}:1.1.0" "${GC}:1.0.0" "${AG}:1.0.0" grafana/grafana:13 grafana/grafana:12 busybox:latest; do
   grep -qxF "${keep}" "${CASE}/images.local" || fail "tag: prune removed ${keep}"
 done
-for gone in "${GC}:0.9.0" grafana/grafana:12; do
+for gone in "${GC}:0.9.0"; do
   grep -qxF "${gone}" "${CASE}/images.local" && fail "tag: superseded ${gone} not pruned"
 done
 
@@ -237,6 +271,38 @@ grep -qx "sudo systemctl restart joustmania" "${CASE}/calls.log" || fail "rollba
 make_case rollback-norecord "${C_V1}"
 if upgrade --rollback; then fail "rollback-norecord: succeeded without a record"; fi
 nothing_changed rollback-norecord "${C_V1}"
+
+# --rollback is HEAD-relative: a record swapped by an interrupted rollback (HEAD
+# still at 1.1.0) still moves HEAD to 1.0.0, never restarts the running version
+make_case rollback-interrupted "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "rollback-interrupted: upgrade failed: $(tail -2 "${CASE}/out.log")"
+sed -i -e 's/^current_/x_/' -e 's/^previous_/current_/' -e 's/^x_/previous_/' "${REPO}/.joustmania-release"
+[[ "$(rel current_ref)" == "${C_V1}" && "$(head_of)" == "${C_V11}" ]] || fail "rollback-interrupted: setup"
+upgrade --rollback || fail "rollback-interrupted: failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "rollback-interrupted: HEAD is not 1.0.0 (restarted the running version)"
+[[ "$(rel current_ref)" == "${C_V1}" && "$(rel previous_ref)" == "${C_V11}" ]] || fail "rollback-interrupted: record does not name 1.0.0 as current"
+# HEAD matches neither recorded version: refused, nothing changed
+g -C "${REPO}" checkout -q --detach "${C_09}"
+: >"${CASE}/calls.log"
+cp "${REPO}/.joustmania-release" "${CASE}/release.before"
+if upgrade --rollback; then fail "rollback-neither: succeeded"; fi
+[[ "$(head_of)" == "${C_09}" ]] || fail "rollback-neither: HEAD moved"
+grep -q restart "${CASE}/calls.log" && fail "rollback-neither: the unit was restarted"
+cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "rollback-neither: record changed"
+
+# --rollback precheck: a previous image missing -> refused, no checkout, no restart
+make_case rollback-precheck "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "rollback-precheck: upgrade failed: $(tail -2 "${CASE}/out.log")"
+grep -vxF "${AG}:1.0.0" "${CASE}/images.local" >"${CASE}/images.new" || true
+mv "${CASE}/images.new" "${CASE}/images.local"
+cp "${REPO}/.joustmania-release" "${CASE}/release.before"
+: >"${CASE}/calls.log"
+if upgrade --rollback; then fail "rollback-precheck: succeeded with a previous image missing"; fi
+grep -q "not on the Pi: ${AG}:1.0.0" "${CASE}/out.log" || fail "rollback-precheck: missing image not listed: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V11}" ]] || fail "rollback-precheck: HEAD moved"
+grep -q 'git .*checkout' "${CASE}/calls.log" && fail "rollback-precheck: git checkout was called"
+grep -q restart "${CASE}/calls.log" && fail "rollback-precheck: the unit was restarted"
+cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "rollback-precheck: record changed"
 
 # --- 6. sha accepted from a branch checkout (the one-time migration) --------
 make_case sha
@@ -268,6 +334,50 @@ make_case restart-fails "${C_V1}"
 echo 1 >"${CASE}/restart_rc"
 if upgrade --no-rollback joustmania-v1.1.0; then fail "restart-fails: a failed unit start counted as healthy"; fi
 
+# The health check fails closed: `config --services` failing, or no game service
+make_case services-fail "${C_V1}"
+touch "${CASE}/services-fail"
+if upgrade --no-rollback joustmania-v1.1.0; then fail "services-fail: no service list counted as healthy"; fi
+grep -q 'config --services failed' "${CASE}/out.log" || fail "services-fail: not reported"
+make_case services-none "${C_V1}"
+printf 'jaeger\n' >"${CASE}/services"
+if upgrade --no-rollback joustmania-v1.1.0; then fail "services-none: no game service counted as healthy"; fi
+
+# --- 7b. the migration: a version that ran from a branch is restored on it ---
+# The pre-migration Pi runs branch main with .env.local IMAGE_TAG=stale-local
+make_case migrate-unhealthy
+printf '%s:stale-local\n%s:stale-local\n' "${GC}" "${AG}" >>"${CASE}/images.local"
+echo 1.1.0 >"${CASE}/unhealthy-tag"
+if upgrade joustmania-v1.1.0; then fail "migrate-unhealthy: reported success"; fi
+[[ "$(g -C "${REPO}" symbolic-ref -q --short HEAD)" == main ]] || fail "migrate-unhealthy: not back on branch main"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "migrate-unhealthy: not back at the branch commit"
+grep 'compose.* ps ' "${CASE}/calls.log" | tail -n 1 | grep -q 'tag=stale-local' \
+  || fail "migrate-unhealthy: the rollback did not run the tag it ran with (stale-local)"
+[[ "$(rel current_branch)" == main && "$(rel current_tag)" == stale-local ]] || fail "migrate-unhealthy: record lacks branch main / stale-local"
+
+make_case migrate-rollback
+printf '%s:stale-local\n%s:stale-local\n' "${GC}" "${AG}" >>"${CASE}/images.local"
+upgrade "${C_MAIN}" || fail "migrate-rollback: upgrade failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(rel previous_branch)" == main && "$(rel previous_tag)" == stale-local ]] || fail "migrate-rollback: previous branch/tag not recorded"
+# .env.local changed since: compose would resolve images that are not on the Pi
+cp "${REPO}/.env.local" "${CASE}/env.local.orig"
+printf 'IMAGE_TAG=never-pulled\n' >"${REPO}/.env.local"
+cp "${REPO}/.joustmania-release" "${CASE}/release.before"
+: >"${CASE}/calls.log"
+echo 000 >"${CASE}/http_code"
+if upgrade --rollback; then fail "migrate-rollback: rolled back to images that are not on the Pi"; fi
+grep -q "not on the Pi:.*${GC}:never-pulled" "${CASE}/out.log" || fail "migrate-rollback: resolved images not checked: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_MAIN}" ]] || fail "migrate-rollback: not switched back to the running version"
+g -C "${REPO}" symbolic-ref -q HEAD >/dev/null && fail "migrate-rollback: left on a branch after the refusal"
+grep -q restart "${CASE}/calls.log" && fail "migrate-rollback: the unit was restarted"
+cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "migrate-rollback: record changed"
+cp "${CASE}/env.local.orig" "${REPO}/.env.local"
+upgrade --rollback || fail "migrate-rollback: --rollback failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(g -C "${REPO}" symbolic-ref -q --short HEAD)" == main && "$(head_of)" == "${C_V1}" ]] \
+  || fail "migrate-rollback: not back on branch main at the branch commit"
+grep 'compose.* ps ' "${CASE}/calls.log" | tail -n 1 | grep -q 'tag=stale-local' \
+  || fail "migrate-rollback: --rollback did not run stale-local"
+
 # --- 8. prune fails closed without a complete record -------------------------
 make_case prune-closed "${C_V1}"
 (
@@ -285,6 +395,11 @@ grep -q 'image rm' "${CASE}/calls.log" && fail "prune-closed: removed images wit
 pin_tag() { env PATH="${CASE}/bin:${PATH}" "${REPO}/scripts/setup/joustmania-compose.sh" config --images | sed -n "s|^${GC}:||p"; }
 make_case pin "${C_V11}"
 [[ "$(pin_tag)" == 1.1.0 ]] || fail "pin: release tag checkout does not give 1.1.0: $(pin_tag)"
+shell_tag="$(IMAGE_TAG=latest pin_tag 2>"${CASE}/pin.err")"
+[[ "${shell_tag}" == 1.1.0 ]] || fail "pin: a shell IMAGE_TAG beat the pin: ${shell_tag}"
+grep -q 'IMAGE_TAG=latest from the shell is ignored.*1.1.0' "${CASE}/pin.err" || fail "pin: no stderr note for the overridden shell IMAGE_TAG"
+IMAGE_TAG=1.1.0 pin_tag >/dev/null 2>"${CASE}/pin.err"
+[[ -s "${CASE}/pin.err" ]] && fail "pin: stderr note although the shell IMAGE_TAG equals the pin"
 g -C "${REPO}" checkout -q --detach "${C_MAIN}"
 [[ "$(pin_tag)" == "${C_MAIN}" ]] || fail "pin: untagged commit does not give the sha: $(pin_tag)"
 g -C "${REPO}" checkout -q main

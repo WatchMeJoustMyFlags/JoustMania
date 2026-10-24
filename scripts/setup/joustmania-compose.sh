@@ -15,7 +15,8 @@
 # - Pin (UC-060 BR-003, C-040): when the checkout is pinned (detached HEAD at a
 #   release tag or a commit), IMAGE_TAG is derived from HEAD (X.Y.Z of the
 #   joustmania-vX.Y.Z tag, else the 40-character sha) and exported, so it wins
-#   over .env, .env.local and the shell. On a branch nothing is derived.
+#   over .env, .env.local and the shell (a different shell IMAGE_TAG gets one
+#   stderr line). On a branch nothing is derived.
 # Never prints the env files or their values. Never run `config` without
 # `--services`/`--images`/`-q` where output is logged; it prints interpolated
 # secrets.
@@ -28,6 +29,9 @@ if [[ -f scripts/setup/lib-joustmania.sh ]]; then
     # shellcheck source=lib-joustmania.sh
     source scripts/setup/lib-joustmania.sh
     if PIN_IMAGE_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
+        if [[ -n "${IMAGE_TAG:-}" && "$IMAGE_TAG" != "$PIN_IMAGE_TAG" ]]; then
+            echo "joustmania-compose: IMAGE_TAG=$IMAGE_TAG from the shell is ignored; the pinned checkout uses $PIN_IMAGE_TAG (UC-060 BR-003)" >&2
+        fi
         export IMAGE_TAG="$PIN_IMAGE_TAG"
     fi
 fi
