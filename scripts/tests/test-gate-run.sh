@@ -58,7 +58,7 @@ ln -s test-pass.sh "${WT}/scripts/tests/test-link.sh"
 # when set (the test releases it, #2073), else runs for 3 s.
 cat >"${WT}/scripts/tests/test-slow.sh" <<'EOF'
 n=$(( $(cat "$SLOW_COUNTER" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$SLOW_COUNTER"
-if [[ -n "${SLOW_GATE:-}" ]]; then read -r _ <"$SLOW_GATE"; else sleep 3; fi
+if [[ -n "${SLOW_GATE:-}" ]]; then exec 3<>"$SLOW_GATE"; read -r -t 60 _ <&3; else sleep 3; fi
 echo "slow done"
 EOF
 # Fails when the caller's detach state reached the run (#2036 review: a nested
@@ -307,6 +307,9 @@ kill -KILL -- "-${waiter}" 2>/dev/null || kill -KILL "$waiter"
 wait "$waiter" 2>/dev/null || true
 kill -0 "$(cat "${NS}/killed.job/pid")" 2>/dev/null || fail "job died with its waiter"
 echo go >&7
+# Let the job finish before the next call, so the test does not race its rc write.
+for _ in $(seq 300); do [[ -f "${NS}/killed.job/rc" ]] && break; sleep 0.1; done
+[[ -f "${NS}/killed.job/rc" ]] || fail "released job did not finish"
 run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name killed -- scripts/tests/test-slow.sh
 [[ "$(starts)" == 1 ]] || fail "killed waiter: job restarted (starts: $(starts))"
 exec 7>&-
