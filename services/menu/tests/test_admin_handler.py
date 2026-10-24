@@ -2227,6 +2227,7 @@ class TestSingleAdminSession:
             await admin_handler.exit()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11")
     async def test_stop_menu_releases_lock(self, stack):
         """StopMenu releases the admin session."""
         from proto import menu_pb2

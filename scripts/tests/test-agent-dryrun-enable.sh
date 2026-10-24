@@ -12,12 +12,16 @@
 #   ./scripts/tests/test-agent-dryrun-enable.sh
 #
 # UC: UC-070 BR-007
+# UC: UC-043 A16
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 HELPER="${SCRIPT_DIR}/../agent-dryrun-enable.sh"
 SHIPPED="${REPO_ROOT}/services/flagd/ci/agent.json"
+unset COMPOSE DOCKER || true
+# A test that reaches for the real docker fails instead of using it
+export PATH="${REPO_ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 WORK="$(mktemp -d)"
 # shellcheck source=scripts/tests/lib-fake-flag-service.sh
 source "${SCRIPT_DIR}/lib-fake-flag-service.sh"
@@ -59,6 +63,7 @@ line_of() { { grep -n -m1 -E "$1" "${FAKE_FLAG_LOG}" || true; } | cut -d: -f1; }
 
 check "baseline: experiment_seed is off" experiment_seed off
 expect "status shows experiment_seed" 0 "experiment_seed = off" -- status
+expect "status shows decision.backend" 0 "decision.backend = " -- status
 
 # --- on: the seed, then the gates ----------------------------------------------
 expect "on reports the seed" 0 "experiment_seed -> windows_frantic" -- on

@@ -302,6 +302,7 @@ class TestMenuServicerStartStopMenu:
     """StartMenu / StopMenu RPCs on the real servicer."""
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11")
     async def test_start_menu_runs_lobby(self, real_servicer):
         """StartMenu sets RUNNING, un-readies everyone, starts music + idle monitor, publishes menu_started."""
         await _connect(real_servicer, "s1", "s2", "s3")
@@ -342,6 +343,7 @@ class TestMenuServicerStartStopMenu:
         assert real_servicer.current_selection == Games.JoustFFA
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11")
     async def test_start_menu_already_running(self, real_servicer):
         """StartMenu on a running menu fails without side effects."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
@@ -353,6 +355,7 @@ class TestMenuServicerStartStopMenu:
         real_servicer.audio.start_lobby_music.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11")
     async def test_stop_menu_clears_lobby(self, real_servicer):
         """StopMenu sets STOPPED, stops the idle monitor, clears the lobby, publishes menu_stopped."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
@@ -363,10 +366,29 @@ class TestMenuServicerStartStopMenu:
         assert response.success is True
         assert real_servicer.state == menu_pb2.MenuState.STOPPED
         assert real_servicer.connected_controllers == set()
+        assert real_servicer.state_manager.controller_states == {}
         real_servicer.idle_monitor.stop.assert_called_once()
         assert ("menu_stopped", {}) in _published(real_servicer)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11")
+    async def test_stop_menu_releases_admin_lock_and_clears_controllers(self, real_servicer):
+        """StopMenu clears every controller state and calls abandon_session to release the admin lock."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        await _enter_admin(real_servicer, "s1")
+        assert real_servicer.admin_handler.active is True
+        handler = real_servicer.admin_handler
+
+        with patch.object(handler, "abandon_session", autospec=True, side_effect=handler.abandon_session) as abandon:
+            await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+
+        abandon.assert_called_once()
+        assert handler.active is False
+        assert real_servicer.state_manager.controller_states == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11")
     async def test_stop_menu_already_stopped(self, real_servicer):
         """StopMenu on a stopped menu fails."""
         response = await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
@@ -585,6 +607,7 @@ class TestMenuServicerProcessInput:
         }
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A10", br=["BR-008"])
     async def test_reset_menu_cancels_game_start(self, real_servicer):
         """reset_menu in GAME_STARTING returns to RUNNING and publishes game_start_cancelled."""
         real_servicer.state = menu_pb2.MenuState.GAME_STARTING
@@ -595,6 +618,7 @@ class TestMenuServicerProcessInput:
         assert _published(real_servicer) == [("game_start_cancelled", {})]
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A10")
     async def test_reset_menu_while_running_is_noop(self, real_servicer):
         """reset_menu outside GAME_STARTING changes nothing and publishes nothing."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
