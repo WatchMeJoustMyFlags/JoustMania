@@ -102,6 +102,18 @@ services do not come up healthy (`--no-rollback` keeps the failed version for in
 only when every image compose resolves there is on the Pi; `--status` shows both). Put opt-in profiles
 (`COMPOSE_PROFILES=python-hid`) in `.env.local`; a `systemctl edit` drop-in is honoured too.
 
+Cut-off runs (power loss, ssh hang-up) and manual recovery:
+
+- A rollback cut off part-way is finished by running `--rollback` again: it stays on the version it was moving
+  to (`--status` WARNs `a rollback to <sha> was cut off`).
+- An upgrade cut off after its checkout leaves HEAD at the target but `.joustmania-release` naming the version
+  before; `--status` WARNs `HEAD ... is neither recorded version` and `--rollback` refuses. Re-run the same
+  upgrade command: it repairs the record (current = HEAD, previous = the recorded current) without a restart;
+  then run `sudo systemctl restart joustmania`, or `--rollback` to go back.
+- The migration cut off the same way has no record, so the branch it ran from is lost. Go back by hand:
+  `git checkout main && sudo systemctl restart joustmania` (the branch takes `IMAGE_TAG` from `.env.local`
+  again), then repeat the migration.
+
 One-time migration of a Pi still on the `main` branch (once the first pinnable release, `MIN_PINNABLE`, exists):
 
 ```bash

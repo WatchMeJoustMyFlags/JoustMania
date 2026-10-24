@@ -31,6 +31,11 @@
 # from a branch (the one-time migration) gets its branch back, so compose
 # resolves the tag it ran with; the images compose resolves after the switch
 # must all be on the Pi, else the checkout is switched back and nothing runs.
+# The record names the target (rollback_to=) from before the checkout until the
+# restart is judged, so a rollback cut off in between is finished by the next
+# --rollback, never toggled back. A refused or failed switch says "nothing
+# changed"; --status WARNs when HEAD is neither recorded version, and re-running
+# the same upgrade repairs a record an upgrade cut off after its checkout left.
 set -euo pipefail
 
 # The floor (UC-060 BR-003). MIN_PINNABLE is the first pinnable release,
@@ -92,14 +97,23 @@ release_get() {
     sed -n "s/^$1=//p" "$JOUSTMANIA_DIR/$RELEASE_FILE" 2>/dev/null | head -n 1
 }
 
-# write_release <cur_ref> <cur_branch> <cur_tag> <cur_images> <prev_ref> <prev_branch> <prev_tag> <prev_images>
+# write_release <cur_ref> <cur_branch> <cur_tag> <cur_images> <prev_ref> <prev_branch> <prev_tag> <prev_images> [<rollback_to>]
 # Images are space-separated; a branch is empty for a detached (pinned)
-# checkout. Written after the checkout succeeded, to a temp file in the same
-# directory, then renamed, so a crash never leaves half a record.
+# checkout. <rollback_to> marks a rollback in progress (see roll_back_to_previous).
+# Written to a temp file in the same directory, then renamed, so a crash never
+# leaves half a record.
 write_release() {
     local tmp="$JOUSTMANIA_DIR/$RELEASE_FILE.tmp"
     printf 'current_ref=%s\ncurrent_branch=%s\ncurrent_tag=%s\ncurrent_images=%s\nprevious_ref=%s\nprevious_branch=%s\nprevious_tag=%s\nprevious_images=%s\n' \
-        "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" >"$tmp"
+        "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" >"$tmp" || return 1
+    [[ -z "${9:-}" ]] || printf 'rollback_to=%s\n' "$9" >>"$tmp" || return 1
+    mv -f "$tmp" "$JOUSTMANIA_DIR/$RELEASE_FILE"
+}
+
+# write_release_raw <content>: put a saved record back as it was
+write_release_raw() {
+    local tmp="$JOUSTMANIA_DIR/$RELEASE_FILE.tmp"
+    printf '%s\n' "$1" >"$tmp" || return 1
     mv -f "$tmp" "$JOUSTMANIA_DIR/$RELEASE_FILE"
 }
 
@@ -301,6 +315,15 @@ do_status() {
     if [[ -f "$RELEASE_FILE" ]]; then
         say "current:  $(release_get current_ref) (image tag $(release_get current_tag))"
         say "previous: $(release_get previous_ref) (image tag $(release_get previous_tag))"
+        local head pending
+        head="$(git rev-parse -q --verify HEAD 2>/dev/null || true)"
+        pending="$(release_get rollback_to)"
+        if [[ -n "$pending" ]]; then
+            say "WARN: a rollback to $pending was cut off; run --rollback to finish it (it stays on $pending)"
+        fi
+        if [[ "$head" != "$(release_get current_ref)" && "$head" != "$(release_get previous_ref)" ]]; then
+            say "WARN: HEAD $head is neither recorded version, so --rollback is unavailable (an upgrade cut off after its checkout?); see the manual recovery in docs/DEVELOPMENT.md (UC-060 A3)"
+        fi
     else
         say "no $RELEASE_FILE yet (no upgrade has run)"
     fi
@@ -311,6 +334,28 @@ do_status() {
         say "WARN: checkout not pinned (HEAD on a branch, UC-060 A4)"
     fi
     warn_overrides
+}
+
+# repair_stale_record <commit>: an upgrade cut off between its checkout and its
+# record write leaves HEAD at <commit> but the record naming the version
+# before. Record <commit> as current and the recorded current as previous, so
+# --rollback works again. Without a record (the migration) the previous branch
+# is unknown: WARN and point at the manual recovery.
+repair_stale_record() {
+    local commit="$1" cur_ref imgs tag
+    if [[ ! -f "$JOUSTMANIA_DIR/$RELEASE_FILE" ]]; then
+        say "WARN: no $RELEASE_FILE, so --rollback is unavailable; see the manual recovery in docs/DEVELOPMENT.md (UC-060 A3)"
+        return 0
+    fi
+    cur_ref="$(release_get current_ref)"
+    [[ "$cur_ref" != "$commit" && -z "$(release_get rollback_to)" ]] || return 0
+    load_unit_profiles
+    imgs="$(images_of "$JOUSTMANIA_DIR")" || die "compose config --images failed; the stale $RELEASE_FILE was kept. Nothing changed."
+    tag="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"
+    write_release "$commit" "" "$tag" "$(tr '\n' ' ' <<<"$imgs" | sed 's/ $//')" \
+        "$cur_ref" "$(release_get current_branch)" "$(release_get current_tag)" "$(release_get current_images)" ||
+        die "could not write $RELEASE_FILE"
+    say "repaired the stale $RELEASE_FILE: current $commit, previous $cur_ref (an earlier upgrade was cut off after its checkout; the unit was not restarted by this run)"
 }
 
 do_upgrade() {
@@ -327,6 +372,7 @@ do_upgrade() {
     prev_ref="$(git rev-parse HEAD)"
     prev_branch="$(git symbolic-ref -q --short HEAD || true)"
     if [[ "$commit" == "$prev_ref" ]] && joustmania_pin_image_tag "$JOUSTMANIA_DIR" >/dev/null; then
+        repair_stale_record "$commit"
         say "already at $TARGET_REF ($commit); nothing to do"
         return 0
     fi
@@ -355,7 +401,7 @@ do_upgrade() {
     cleanup
     PREP_WT=""
 
-    switch_to "$commit" || die "git checkout of $commit failed; the record is unchanged. Check the tree before retrying."
+    switch_to "$commit" || die "git checkout of $commit failed; nothing changed: $prev_ref still runs and the record is unchanged. Check the tree before retrying."
     write_release "$commit" "" "$tag" "$(tr '\n' ' ' <<<"$new_imgs" | sed 's/ $//')" \
         "$prev_ref" "$prev_branch" "$prev_tag" "$(tr '\n' ' ' <<<"$prev_imgs" | sed 's/ $//')"
     if ! git diff --quiet "$prev_ref" "$commit" -- scripts/setup/joustmania.service; then
@@ -370,30 +416,45 @@ do_upgrade() {
         die "$TARGET_REF is not healthy; left in place for inspection (--no-rollback). Roll back with --rollback."
     fi
     say "$TARGET_REF is not healthy; rolling back to $prev_ref"
-    roll_back_to_previous || die "rollback to $prev_ref did not come up healthy either (state failed)"
-    die "upgrade to $TARGET_REF failed; rolled back to $prev_ref"
+    local rc=0
+    roll_back_to_previous || rc=$?
+    case "$rc" in
+        0) die "upgrade to $TARGET_REF failed; rolled back to $prev_ref" ;;
+        2) die "upgrade to $TARGET_REF failed and the rollback to $prev_ref was not applied (nothing switched back); the unhealthy $TARGET_REF stays checked out (state failed)" ;;
+        *) die "rollback to $prev_ref did not come up healthy either (state failed)" ;;
+    esac
 }
 
-# rollback_plan: from .joustmania-release and HEAD, sets T_* (the target: the
-# recorded version that is not HEAD) and H_* (the recorded version at HEAD).
-# The record names two versions; HEAD must be one of them. That makes --rollback
-# HEAD-relative: an interrupted rollback (checkout failed or never ran) still
-# targets the other version, never the one that is running.
+# rollback_plan: from .joustmania-release and HEAD, sets T_* (the target) and
+# H_* (the other recorded version). The record names two versions; HEAD must be
+# one of them. A rollback in progress (rollback_to=<ref>, written before the
+# checkout and cleared after the restart) keeps its target, so a rollback cut
+# off after its checkout finishes on the version it was moving to and never
+# toggles back. Otherwise the target is the recorded version that is not HEAD.
 rollback_plan() {
-    local head cur_ref prev_ref
+    local head cur_ref prev_ref pending
     head="$(git -C "$JOUSTMANIA_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)"
     cur_ref="$(release_get current_ref)"
     prev_ref="$(release_get previous_ref)"
+    pending="$(release_get rollback_to)"
     local t h
-    if [[ -n "$head" && "$head" == "$cur_ref" ]]; then
+    [[ -n "$head" && ("$head" == "$cur_ref" || "$head" == "$prev_ref") ]] || return 1
+    if [[ -n "$pending" ]]; then
+        if [[ "$pending" == "$cur_ref" ]]; then
+            t=current h=previous
+        elif [[ "$pending" == "$prev_ref" ]]; then
+            t=previous h=current
+        else
+            return 1
+        fi
+    elif [[ "$head" == "$cur_ref" ]]; then
         t=previous h=current
-    elif [[ -n "$head" && "$head" == "$prev_ref" ]]; then
-        t=current h=previous
     else
-        return 1
+        t=current h=previous
     fi
     T_REF="$(release_get "${t}_ref")"
     T_BRANCH="$(release_get "${t}_branch")"
+    T_TAG="$(release_get "${t}_tag")"
     T_IMGS="$(release_get "${t}_images")"
     H_REF="$(release_get "${h}_ref")"
     H_BRANCH="$(release_get "${h}_branch")"
@@ -404,34 +465,61 @@ rollback_plan() {
 # roll_back_to_previous: switch to the target of rollback_plan, check that every
 # image compose resolves there is on the Pi (else switch back and fail), record
 # the swap, restart. Runs under `||` (set -e is off), so every step checks.
+# The record carries rollback_to=<target> from before the checkout until the
+# restart has been judged, so a run cut off anywhere in between is finished by
+# the next --rollback instead of toggling back (rollback_plan).
+# Returns 0 healthy, 1 restarted but not healthy (or stuck between versions),
+# 2 not applied: nothing switched or restarted, the record as it was.
 roll_back_to_previous() {
-    local imgs missing
+    local imgs missing saved
     rollback_plan || {
         say "HEAD is neither recorded version in $RELEASE_FILE"
-        return 1
+        return 2
     }
-    restore_checkout "$T_REF" "$T_BRANCH" || {
+    saved="$(cat "$JOUSTMANIA_DIR/$RELEASE_FILE")"
+    write_release "$H_REF" "$H_BRANCH" "$H_TAG" "$H_IMGS" "$T_REF" "$T_BRANCH" "$T_TAG" "$T_IMGS" "$T_REF" || {
+        say "could not write $RELEASE_FILE"
+        return 2
+    }
+    if ! restore_checkout "$T_REF" "$T_BRANCH"; then
         say "git checkout of $T_REF failed"
-        return 1
-    }
+        write_release_raw "$saved" || say "could not restore $RELEASE_FILE"
+        return 2
+    fi
     if ! imgs="$(images_of "$JOUSTMANIA_DIR")" || [[ -z "$imgs" ]]; then
         say "compose config --images failed at $T_REF; switching back to $H_REF"
-        restore_checkout "$H_REF" "$H_BRANCH" || say "could not switch back to $H_REF"
-        return 1
+        switch_back_and_restore "$saved"
+        return
     fi
     # shellcheck disable=SC2086 # one image per word
     missing="$(missing_images $imgs)"
     if [[ -n "$missing" ]]; then
         say "images compose resolves at $T_REF are not on the Pi:$missing; switching back to $H_REF"
-        restore_checkout "$H_REF" "$H_BRANCH" || say "could not switch back to $H_REF"
-        return 1
+        switch_back_and_restore "$saved"
+        return
     fi
     write_release "$T_REF" "$T_BRANCH" "$(current_tag_of "$imgs")" "$(tr '\n' ' ' <<<"$imgs" | sed 's/ $//')" \
-        "$H_REF" "$H_BRANCH" "$H_TAG" "$H_IMGS" || {
+        "$H_REF" "$H_BRANCH" "$H_TAG" "$H_IMGS" "$T_REF" || {
         say "could not write $RELEASE_FILE"
         return 1
     }
-    apply
+    local rc=0
+    apply || rc=1
+    # The restart was judged: the rollback is over, healthy or not
+    write_release_raw "$(grep -v '^rollback_to=' "$JOUSTMANIA_DIR/$RELEASE_FILE")" ||
+        say "could not clear rollback_to in $RELEASE_FILE"
+    return "$rc"
+}
+
+# switch_back_and_restore <saved record>: undo a rollback checkout before any
+# restart. Returns 2 (nothing changed) when HEAD is back, else 1.
+switch_back_and_restore() {
+    if restore_checkout "$H_REF" "$H_BRANCH"; then
+        write_release_raw "$1" || say "could not restore $RELEASE_FILE"
+        return 2
+    fi
+    say "could not switch back to $H_REF; HEAD is at $T_REF, the unit was not restarted (state failed)"
+    return 1
 }
 
 do_rollback() {
@@ -444,8 +532,14 @@ do_rollback() {
     missing="$(missing_images $T_IMGS)"
     [[ -z "$missing" ]] || die "previous images not on the Pi:$missing; nothing changed"
     say "rolling back to $T_REF${T_BRANCH:+ (branch $T_BRANCH)}"
-    roll_back_to_previous || die "rollback to $T_REF failed or did not come up healthy (state failed)"
-    say "rolled back to $T_REF"
+    local rc=0 running
+    running="$(git rev-parse HEAD)"
+    roll_back_to_previous || rc=$?
+    case "$rc" in
+        0) say "rolled back to $T_REF" ;;
+        2) die "rollback to $T_REF not applied; nothing changed: $running still runs" ;;
+        *) die "rollback to $T_REF failed or did not come up healthy (state failed)" ;;
+    esac
 }
 
 main() {

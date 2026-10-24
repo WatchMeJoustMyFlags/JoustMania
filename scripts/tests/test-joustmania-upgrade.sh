@@ -16,7 +16,12 @@
 #    without a record; a failed or empty `config --services` is not healthy
 #  - not healthy -> automatic rollback; --no-rollback leaves it; --rollback offline,
 #    HEAD-relative, with an image precheck before and after the switch
-#  - a version that ran from a branch (the migration) is restored on its branch
+#  - a version that ran from a branch (the migration) is restored on its branch,
+#    never by moving a branch that moved on
+#  - cut-off runs: a rollback cut off after its checkout finishes on its target
+#    (never toggles back); an upgrade cut off after its checkout is flagged by
+#    --status and repaired by re-running it; failed checkouts change nothing and
+#    the record is written only after the checkout
 #  - a stale worktree registration is pruned; COMPOSE_PROFILES from the unit honoured
 #  - joustmania-compose.sh derives IMAGE_TAG from a pinned HEAD over .env.local
 #    (X.Y.Z of the release tag, else the sha; nothing on a branch), with a stderr
@@ -121,7 +126,15 @@ fi
 echo "docker \$* | tag=\$tag profiles=\${COMPOSE_PROFILES:-}" >>"\$C/calls.log"
 images() { printf '%s:%s\n%s:%s\ngrafana/grafana:13\n' "${GC}" "\$tag" "${AG}" "\$tag"; }
 case " \$* " in
-  *" config --images "*) images; exit 0 ;;
+  *" config --images "*)
+    # kill-on-images: power loss / SIGHUP of the command while it checks images
+    if [[ -f "\$C/kill-on-images" ]]; then
+      rm -f "\$C/kill-on-images"
+      for _ in \$(seq 50); do [[ -s "\$C/upgrade.pid" ]] && break; sleep 0.1; done
+      kill -9 "\$(cat "\$C/upgrade.pid")"
+      exit 1
+    fi
+    images; exit 0 ;;
   *" config --services "*) [[ -f "\$C/services-fail" ]] && exit 1; cat "\$C/services"; exit 0 ;;
   *" compose "*" pull "*)
     images | while read -r i; do
@@ -157,6 +170,7 @@ STUB
   cat >"${CASE}/bin/git" <<STUB
 #!/usr/bin/env bash
 echo "git \$*" >>"${CASE}/calls.log"
+if [[ -f "${CASE}/checkout-fail" && " \$* " == *" checkout "* ]]; then echo "stub: checkout refused" >&2; exit 1; fi
 exec "${REAL_GIT}" -c commit.gpgsign=false "\$@"
 STUB
   chmod +x "${CASE}/bin/"*
@@ -166,6 +180,14 @@ STUB
 upgrade() {
   env PATH="${CASE}/bin:${PATH}" TMPDIR="${CASE}/tmp" JOUSTMANIA_HEALTH_TIMEOUT=1 JOUSTMANIA_HEALTH_POLL=1 \
     bash "${REPO}/scripts/setup/joustmania-upgrade.sh" "$@" >"${CASE}/out.log" 2>&1
+}
+# upgrade_killed <args...>: like upgrade, for a run the docker stub kills (kill-on-images)
+upgrade_killed() {
+  rm -f "${CASE}/upgrade.pid"
+  env PATH="${CASE}/bin:${PATH}" TMPDIR="${CASE}/tmp" JOUSTMANIA_HEALTH_TIMEOUT=1 JOUSTMANIA_HEALTH_POLL=1 \
+    bash "${REPO}/scripts/setup/joustmania-upgrade.sh" "$@" >"${CASE}/out.log" 2>&1 &
+  echo "$!" >"${CASE}/upgrade.pid"
+  { wait "$!"; } 2>/dev/null || true
 }
 head_of() { g -C "${REPO}" rev-parse HEAD; }
 rel() { sed -n "s/^$1=//p" "${REPO}/.joustmania-release" 2>/dev/null; }
@@ -304,6 +326,71 @@ grep -q 'git .*checkout' "${CASE}/calls.log" && fail "rollback-precheck: git che
 grep -q restart "${CASE}/calls.log" && fail "rollback-precheck: the unit was restarted"
 cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "rollback-precheck: record changed"
 
+# --rollback cut off after its checkout, while it checks the images (ssh SIGHUP,
+# power loss): HEAD is at 1.0.0 but nothing restarted. The next --rollback
+# finishes on 1.0.0 and never toggles back to the bad 1.1.0
+make_case rollback-cutoff "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "rollback-cutoff: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/kill-on-images"
+: >"${CASE}/calls.log"
+upgrade_killed --rollback
+[[ -f "${CASE}/kill-on-images" ]] && fail "rollback-cutoff: setup: the run was not cut off"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "rollback-cutoff: setup: the cut-off run had not checked out 1.0.0"
+grep -q restart "${CASE}/calls.log" && fail "rollback-cutoff: setup: restarted before the cut"
+upgrade --status || fail "rollback-cutoff: --status failed"
+grep -q "WARN: a rollback to ${C_V1} was cut off" "${CASE}/out.log" || fail "rollback-cutoff: --status does not warn: $(cat "${CASE}/out.log")"
+: >"${CASE}/calls.log"
+upgrade --rollback || fail "rollback-cutoff: rerun failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "rollback-cutoff: the rerun toggled back to the bad 1.1.0"
+grep -qx "sudo systemctl restart joustmania" "${CASE}/calls.log" || fail "rollback-cutoff: the rerun did not restart 1.0.0"
+[[ "$(rel current_ref)" == "${C_V1}" && "$(rel previous_ref)" == "${C_V11}" ]] || fail "rollback-cutoff: record does not name 1.0.0 as current"
+grep -q '^rollback_to=' "${REPO}/.joustmania-release" && fail "rollback-cutoff: rollback_to left in the record"
+
+# --rollback when the rollback checkout fails: no record swap, no restart
+make_case rollback-checkout-fails "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "rollback-checkout-fails: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/checkout-fail"
+cp "${REPO}/.joustmania-release" "${CASE}/release.before"
+: >"${CASE}/calls.log"
+if upgrade --rollback; then fail "rollback-checkout-fails: succeeded"; fi
+[[ "$(head_of)" == "${C_V11}" ]] || fail "rollback-checkout-fails: HEAD moved"
+grep -q restart "${CASE}/calls.log" && fail "rollback-checkout-fails: the unit was restarted"
+cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "rollback-checkout-fails: record changed"
+grep -q "nothing changed: ${C_V11} still runs" "${CASE}/out.log" || fail "rollback-checkout-fails: no 'nothing changed': $(tail -1 "${CASE}/out.log")"
+grep -q 'state failed' "${CASE}/out.log" && fail "rollback-checkout-fails: says state failed although nothing changed"
+
+# upgrade when its checkout fails: the record is written only after the checkout
+make_case upgrade-checkout-fails "${C_V1}"
+touch "${CASE}/checkout-fail"
+if upgrade joustmania-v1.1.0; then fail "upgrade-checkout-fails: succeeded"; fi
+[[ "$(head_of)" == "${C_V1}" ]] || fail "upgrade-checkout-fails: HEAD moved"
+[[ -e "${REPO}/.joustmania-release" ]] && fail "upgrade-checkout-fails: record written before the checkout"
+grep -q restart "${CASE}/calls.log" && fail "upgrade-checkout-fails: the unit was restarted"
+grep -q 'nothing changed' "${CASE}/out.log" || fail "upgrade-checkout-fails: no 'nothing changed': $(tail -1 "${CASE}/out.log")"
+
+# upgrade cut off after its checkout, before its record write: --status WARNs;
+# re-running the same upgrade repairs the record so --rollback works again
+make_case upgrade-cutoff "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "upgrade-cutoff: upgrade failed: $(tail -2 "${CASE}/out.log")"
+g -C "${REPO}" checkout -q --detach "${C_MAIN}"
+upgrade --status || fail "upgrade-cutoff: --status failed"
+grep -q "WARN: HEAD ${C_MAIN} is neither recorded version" "${CASE}/out.log" || fail "upgrade-cutoff: --status does not warn"
+: >"${CASE}/calls.log"
+upgrade "${C_MAIN}" || fail "upgrade-cutoff: rerun failed: $(tail -2 "${CASE}/out.log")"
+grep -q 'repaired the stale' "${CASE}/out.log" || fail "upgrade-cutoff: record not repaired: $(tail -1 "${CASE}/out.log")"
+[[ "$(rel current_ref)" == "${C_MAIN}" && "$(rel current_tag)" == "${C_MAIN}" ]] || fail "upgrade-cutoff: current not repaired"
+[[ "$(rel previous_ref)" == "${C_V11}" && "$(rel previous_tag)" == 1.1.0 ]] || fail "upgrade-cutoff: previous is not the recorded current"
+grep -q restart "${CASE}/calls.log" && fail "upgrade-cutoff: the repair restarted the unit"
+upgrade --status || fail "upgrade-cutoff: --status failed after the repair"
+grep -q 'neither recorded version' "${CASE}/out.log" && fail "upgrade-cutoff: --status still warns after the repair"
+upgrade --rollback || fail "upgrade-cutoff: --rollback after the repair failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V11}" ]] || fail "upgrade-cutoff: --rollback did not return to 1.1.0"
+# The migration cut off the same way: no record, the previous branch is lost; WARN
+make_case migrate-cutoff
+g -C "${REPO}" checkout -q --detach "${C_MAIN}"
+upgrade "${C_MAIN}" || fail "migrate-cutoff: rerun failed: $(tail -2 "${CASE}/out.log")"
+grep -q 'WARN: no .joustmania-release' "${CASE}/out.log" || fail "migrate-cutoff: no WARN without a record"
+
 # --- 6. sha accepted from a branch checkout (the one-time migration) --------
 make_case sha
 printf 'COMPOSE_PROFILES=python-hid JOUSTMANIA_UNIT_REV=2\n' >"${CASE}/unit-env"
@@ -377,6 +464,23 @@ upgrade --rollback || fail "migrate-rollback: --rollback failed: $(tail -2 "${CA
   || fail "migrate-rollback: not back on branch main at the branch commit"
 grep 'compose.* ps ' "${CASE}/calls.log" | tail -n 1 | grep -q 'tag=stale-local' \
   || fail "migrate-rollback: --rollback did not run stale-local"
+
+# --rollback refuses to move a branch that moved on since the migration:
+# HEAD, the branch and the record unchanged, no restart
+make_case rollback-branch-moved
+printf '%s:stale-local\n%s:stale-local\n' "${GC}" "${AG}" >>"${CASE}/images.local"
+upgrade "${C_MAIN}" || fail "rollback-branch-moved: upgrade failed: $(tail -2 "${CASE}/out.log")"
+g -C "${REPO}" branch -f main "${C_V11}"
+cp "${REPO}/.joustmania-release" "${CASE}/release.before"
+: >"${CASE}/calls.log"
+if upgrade --rollback; then fail "rollback-branch-moved: moved the branch back"; fi
+grep -q "branch main is at ${C_V11}" "${CASE}/out.log" || fail "rollback-branch-moved: refusal not reported: $(tail -2 "${CASE}/out.log")"
+grep -q "nothing changed: ${C_MAIN} still runs" "${CASE}/out.log" || fail "rollback-branch-moved: no 'nothing changed'"
+[[ "$(head_of)" == "${C_MAIN}" ]] || fail "rollback-branch-moved: HEAD moved"
+g -C "${REPO}" symbolic-ref -q HEAD >/dev/null && fail "rollback-branch-moved: HEAD left on a branch"
+[[ "$(g -C "${REPO}" rev-parse main)" == "${C_V11}" ]] || fail "rollback-branch-moved: branch main moved"
+grep -q restart "${CASE}/calls.log" && fail "rollback-branch-moved: the unit was restarted"
+cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "rollback-branch-moved: record changed"
 
 # --- 8. prune fails closed without a complete record -------------------------
 make_case prune-closed "${C_V1}"
