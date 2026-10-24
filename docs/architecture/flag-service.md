@@ -15,7 +15,7 @@
 
 Today every runtime flag change is a read-modify-write of a JSON file in `services/flagd/` that flagd
 picks up by polling the file's mtime (about 1 s). Seven production writers and a dozen test helpers
-edit the same eight files in place, without a cross-process lock, and per-game and per-player state is
+edit the same nine files in place, without a cross-process lock, and per-game and per-player state is
 encoded as targeting ladders that nobody prunes. That design produced a run of safety bugs: game
 scoping (#1269), replayed edge interventions (#1299 / PR #1306), `end_game` ending the wrong game
 (#1310), re-granted shields (#1313, both fixed in PR #1315), and unbounded flag-file growth (#1323).
@@ -154,7 +154,7 @@ Non-writers (checked): the game coordinator (it keeps the in-memory nonce baseli
 
 ### 5.1 One gRPC sync source
 
-flagd gets **one** gRPC sync source instead of eight `--uri file:` sources:
+flagd gets **one** gRPC sync source instead of nine `--uri file:` sources:
 
 ```text
 --sources='[{"uri":"flag-service:50064","provider":"grpc"}]'
@@ -191,7 +191,7 @@ Read from the release tarballs `flagd/v0.16.0` (whose `flagd/go.mod` requires
 - **Duplicate keys.** One payload is a JSON object keyed by flag key, so a key can appear only once
   across all merged sets. Today there is one duplicate, `bluetooth_backend` in
   `services/flagd/controller.ci-rust.json`, a file that nothing loads (flags.md §11); `services/flagd/ci/`
-  has none. The service loads an explicit list of eight files (not a glob) and refuses to start on a
+  has none. The service loads an explicit list of nine files (not a glob) and refuses to start on a
   duplicate key. A future duplicate across sets would need per-set sync paths (§5.3).
 - Clients without a selector (agent RPC, rust-hid) keep working because keys are unique.
 
@@ -519,7 +519,7 @@ deletions of #1416 are in the same PR. Deviations from the plan, all reflected i
 - **connect-proxy.** A fractional canary sets the stable counterpart as the default and the canary backend as a
   fraction overlay, which also fixes #1386 (the rest of the serials no longer resolve an undeclared variant).
 - **`set_not_served`** (409) stays for a set a stack does not list in `FLAG_SERVICE_SETS`; every stack lists all
-  eight. `experiment_unknown` is reserved and not returned.
+  nine. `experiment_unknown` is reserved and not returned.
 
 ## 13. Issues
 

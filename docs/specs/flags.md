@@ -78,6 +78,7 @@ effect only on the next start of the flag service (`scripts/flags.sh restart`).
 | `interventions` | Agent | agent action sink only, game-scoped (values and event lists) | per game: dropped when the game ends (UC-053 BR-003) |
 | `rollout` | Operator + agent | operator: `target_backend`, `strategy`, `remediation_allowed`; agent: `current_controller_count` | per rollout |
 | `controller` | Operator | baseline edits; connect-proxy `/canary/*` through the flag service | per deployment (baseline); canary overlays until cleared |
+| `operator` | Operator | baseline edits only; no runtime writer, no registry row (§10a, §13.5) | per deployment |
 | `system`, `observability` | Operator | hand edits | per deployment |
 
 No runtime writer persists into a flag file (C-033). The experiment writer and the autonomous promoter write
@@ -362,20 +363,25 @@ Telemetry export knobs for the Python services and rust-hid. Targeting keys on t
 
 **Traceability:** FR-080 to FR-082, NFR-022, FR-150, C-035 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `lib/log_level.py`, `services/agent/flags/loglevel.go`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`, `services/agent/flags/loglevel_test.go`.
 
-## 10a. `operator` (planned, #2050, Open)
+## 10a. `operator`
 
-Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-015.md), FR-195, C-035). A new flag set with its own file `services/flagd/operator.json` (and a `ci/` copy); it lands with its own PR (PR5 of #2050), before the pad code (PR6). Nothing reads or writes it today, and no flag of it is in the registry (§13.5: the set is read-only baseline). Operator-owned, changes by a reviewed file edit and a restart of the flag service. Planned keys (names and variants are settled with the code):
+File: [`services/flagd/operator.json`](../../services/flagd/operator.json) (and its `ci/` copy, same keys and values).
+
+Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-015.md), FR-195, C-035). Operator-owned: it changes by a reviewed file edit and a restart of the flag service, and no key of the set is in the registry (§13.5: read-only baseline). The set is served in every stack (`FLAG_SERVICE_SETS`, `FLAG_SERVICE_BASELINE_FILES`). The keys are live in the file, but nothing reads them until the pad code lands (#2050 PR6); every key's status is "read by: planned operator-pad (#2050 PR6)". The pad reads each at use time.
 
 | Key | Type | Variants | Default | Read by | Written by | Reload |
 |---|---|---|---|---|---|---|
-| `operator_pad.enabled` | bool | on=true, off=false | `on` = true | operator-pad (planned) | manual edit only | live |
-| `operator_pad.device` | string | the USB vendor and product id of the pad (default the 0xCB 1337); the PS Move ids are never grabbed (UC-015 BR-014) | the 1337 | operator-pad (planned) | manual edit only | live (next rescan) |
-| `operator_pad.tap_ms` / `operator_pad.hold_ms` | int | tap limit and hold times of the gestures (UC-015 BR-007); a hold time not above the tap limit keeps the default timings | 400 ms; hold per key as in the layout (1 s agent, 1.5 s end, 3 s lock) | operator-pad (planned) | manual edit only | live (per gesture) |
-| `operator_pad.keymap` | string | key code to key name table | F13 to F23 as in UC-015 | operator-pad (planned) | manual edit only | live (next rescan) |
+| `operator_pad.enabled` | bool | on=true, off=false | `on` = true | planned operator-pad (#2050 PR6) | manual edit only | live |
+| `operator_pad.device` | string | unset="" (a `vvvv:pppp` hex USB vendor and product id once the pad's ids are settled on the hardware, #2050 PR6/PR8) | `unset` = "" (no device matches until a variant names one) | planned operator-pad (#2050 PR6) | manual edit only | live (next rescan) |
+| `operator_pad.tap_ms` | int | default=400 | `default` = 400 (tap limit, UC-015 BR-007) | planned operator-pad (#2050 PR6) | manual edit only | live (per gesture) |
+| `operator_pad.hold_agent_ms` | int | default=1000 | `default` = 1000 (K3 hold: agent stop / resume) | planned operator-pad (#2050 PR6) | manual edit only | live (per gesture) |
+| `operator_pad.hold_end_ms` | int | default=1500 | `default` = 1500 (K4 hold: end or force-start) | planned operator-pad (#2050 PR6) | manual edit only | live (per gesture) |
+| `operator_pad.hold_lock_ms` | int | default=3000 | `default` = 3000 (lock hold) | planned operator-pad (#2050 PR6) | manual edit only | live (per gesture) |
+| `operator_pad.keymap` | string | default="K1=F13,...,K8=F20,KNOB_TURN_A=F21,KNOB_TURN_B=F22,KNOB_PRESS=F23" (the table in the file) | `default` | planned operator-pad (#2050 PR6) | manual edit only | live (next rescan) |
 
 The two registry rows this feature needs (`user` / `audio_volume.master` and `user` / `play_audio`) are in §13.4 since PR2 of #2050; the `operator` set itself has no registry row (§13.5).
 
-**Traceability:** FR-195, C-035 / UC-015 / planned `services/flagd/operator.json`, `services/operator_pad/` / planned tests in #2050.
+**Traceability:** FR-195, C-035 / UC-015 / `services/flagd/operator.json`, `services/flag-service/baseline/baseline.go`, planned `services/operator_pad/` / `services/flag-service/baseline/baseline_test.go`, `lib/tests/test_flagd_ci_drift.py`, `tests/contract/test_flagd_resolution.py`.
 
 ## 11. Flags without an effective reader
 
@@ -585,7 +591,7 @@ the flag service restarts; the durable change is the promotion PR (FR-064, C-007
 
 ### 13.5 Read-only sets
 
-`system` has no runtime-mutable flag, and `observability` only the propagation probe and the two logging flags below: everything else changes
+`system` and `operator` (§10a) have no runtime-mutable flag, and `observability` only the propagation probe and the two logging flags below: everything else changes
 by a file edit and a restart. Several of their flags are read only at process start anyway (§1.3).
 
 | Set | Key | Kind | Scope | Bounds | Persist | Today's writer |

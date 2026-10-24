@@ -286,7 +286,7 @@ func TestLifecycleAndEvents(t *testing.T) {
 func TestReadEndpoints(t *testing.T) {
 	e := newEnv(t, true)
 	t.Run("UC-053/main GET /, /state, /{set}, /healthz", func(t *testing.T) {
-		if s, b := e.do("GET", "/", nil); s != 200 || len(b["flag_sets"].([]any)) != 8 {
+		if s, b := e.do("GET", "/", nil); s != 200 || len(b["flag_sets"].([]any)) != 9 {
 			t.Fatalf("%d %v", s, b)
 		}
 		if s, b := e.do("GET", "/state", nil); s != 200 || b["epoch"] != "e1" || b["sync_streams"] != 1.0 {

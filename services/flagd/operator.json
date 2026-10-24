@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "flagSetId": "operator"
+  },
+  "flags": {
+    "operator_pad.enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "operator_pad.device": {
+      "state": "ENABLED",
+      "variants": {
+        "unset": ""
+      },
+      "defaultVariant": "unset"
+    },
+    "operator_pad.tap_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 400
+      },
+      "defaultVariant": "default"
+    },
+    "operator_pad.hold_agent_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1000
+      },
+      "defaultVariant": "default"
+    },
+    "operator_pad.hold_end_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 1500
+      },
+      "defaultVariant": "default"
+    },
+    "operator_pad.hold_lock_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "default": 3000
+      },
+      "defaultVariant": "default"
+    },
+    "operator_pad.keymap": {
+      "state": "ENABLED",
+      "variants": {
+        "default": "K1=F13,K2=F14,K3=F15,K4=F16,K5=F17,K6=F18,K7=F19,K8=F20,KNOB_TURN_A=F21,KNOB_TURN_B=F22,KNOB_PRESS=F23"
+      },
+      "defaultVariant": "default"
+    }
+  }
+}

@@ -216,7 +216,7 @@ One flag set: its read-only baseline file (`services/flagd/<set>.json`), served 
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
-| flag_set_id | `metadata.flagSetId` | String | 20 | Primary Key, Values: agent, controller, game, interventions, observability, rollout, system, user |
+| flag_set_id | `metadata.flagSetId` | String | 20 | Primary Key, Values: agent, controller, game, interventions, observability, operator, rollout, system, user |
 | file | Flag file path | String | 100 | Not Null, Unique |
 | owner | Who owns the values ([OWNERSHIP_MODEL.md](OWNERSHIP_MODEL.md)) | String | 20 | Not Null, Values: human, operator, agent, operator+agent |
 

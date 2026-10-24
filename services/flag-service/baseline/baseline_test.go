@@ -28,12 +28,12 @@ func writeFiles(t *testing.T, files map[string]string) string {
 // UC: UC-053 main BR-007
 func TestLoad(t *testing.T) {
 	for _, sub := range []string{"", "ci"} {
-		t.Run("UC-053/main the eight baseline files of services/flagd/"+sub+" load and merge", func(t *testing.T) {
+		t.Run("UC-053/main the nine baseline files of services/flagd/"+sub+" load and merge", func(t *testing.T) {
 			b, err := Load(flagdDir(t, sub), DefaultFiles)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(b.Order) != 8 {
+			if len(b.Order) != 9 {
 				t.Fatalf("sets %v", b.Order)
 			}
 			for _, id := range b.Order {
