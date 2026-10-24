@@ -59,6 +59,17 @@
       },
       "defaultVariant": "on"
     },
+    "audio_volume.master": {
+      "state": "ENABLED",
+      "variants": {
+        "mute": 0.0,
+        "quiet": 0.3,
+        "normal": 0.6,
+        "loud": 0.8,
+        "max": 1.0
+      },
+      "defaultVariant": "max"
+    },
     "audio_volume.game": {
       "state": "ENABLED",
       "variants": {

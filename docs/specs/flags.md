@@ -327,7 +327,7 @@ Venue preferences owned by the host: voice, audio on/off, volumes, the persisted
 |---|---|---|---|---|---|---|---|
 | `menu_voice` | string | aaron="aaron", ivy="ivy" | `ivy` = "ivy" | N | menu: services/menu/servicer.py:336 (StartMenu); audio: services/audio/servicer.py:501 (startup) / :539 (change handler) | manual edit only | menu: per StartMenu; audio: event-refreshed |
 | `play_audio` | bool | on=true, off=false | `on` = true | N | audio: services/audio/servicer.py:483 (startup) / :536 (change handler) / `_read_play_audio_flag` (use time, `PlaySound` / `PlayMusic`, #1387) | manual edit only (ci = off) | event-refreshed and re-read at each `PlaySound` / `PlayMusic`; turning it on opens the audio hardware at runtime (UC-031 A1) |
-| `audio_volume.master` | float | mute=0.0, quiet=0.3, normal=0.6, loud=0.8, max=1.0 | `max` = 1.0 | N | **planned (#2050, Open):** audio: services/audio/servicer.py (multiplier on `play_sound`, `play_music`, `set_volume` and `enable_hardware`; re-applied to the running music on a flag change; effective 0 plays nothing) | operator pad through the menu (`step_setting`, knob; persisted); `mute` variant = the pad's mute (UC-015 BR-006) | live (event-refreshed) |
+| `audio_volume.master` | float | mute=0.0, quiet=0.3, normal=0.6, loud=0.8, max=1.0 | `max` = 1.0 | N | audio: services/audio/servicer.py `_effective_volume` (`master * operator gain`, applied in `play_sound`, `play_music`, `set_volume` and `enable_hardware`; re-applied to the running music on a flag change; effective 0 plays nothing; read at use time, fails open to 1.0) | operator pad through the menu (`step_setting`, knob; persisted, planned PR3 of #2050); `mute` variant = the pad's mute (UC-015 BR-006) | live (event-refreshed) |
 | `current_game` | string | JoustFFA="JoustFFA", JoustTeams="JoustTeams", JoustRandomTeams="JoustRandomTeams", Traitor="Traitor", Werewolf="Werewolf", Zombies="Zombies", Tournament="Tournament", FightClub="FightClub", Swapper="Swapper", NonStop="NonStop" | `JoustFFA` = "JoustFFA" | N | menu: services/menu/servicer.py:337 (StartMenu) | menu services/menu/servicer.py:217/467/489 update_default_variant (user_prefs_writer, :102) | per StartMenu |
 | `game_instructions` | bool | on=true, off=false | `off` = false (baseline; the host switches it on, #1550) | N | game-coordinator: services/game_coordinator/games/base.py `_instructions_enabled` (fails closed to off); menu admin reads the current variant to toggle it (services/menu/handlers/admin.py:1071) | menu admin services/menu/handlers/admin.py:1072 cycle_variant | use time (each game start, UC-020 A5) |
 | `agent_intervention_cue` | bool | on=true, off=false | `on` = true | N | game-coordinator: services/game_coordinator/interventions.py:1413 (_cue_enabled) | manual edit only (ci = off) | live (per intervention cue) |
@@ -368,12 +368,7 @@ Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-0
 | `operator_pad.tap_ms` / `operator_pad.hold_ms` | int | tap limit and hold times of the gestures (UC-015 BR-007) | 400 ms; hold per key as in the layout (1 s agent, 1.5 s end, 3 s lock) | operator-pad (planned) | manual edit only | live (per gesture) |
 | `operator_pad.keymap` | string | key code to key name table | F13 to F23 as in UC-015 | operator-pad (planned) | manual edit only | live (next rescan) |
 
-**Planned registry rows (#2050, Open).** They move into the §13.4 table in the same PR that adds them to `services/flag-service/registry.yaml` (the registry test pins the two to each other, so they are listed here until then). The headers are those of §13.4.
-
-| Set | Key | Kind | Scope | Bounds | Persist | Today's writer |
-|---|---|---|---|---|---|---|
-| user | `audio_volume.master` | overlay | stack | declared variants (`mute`, `quiet`, `normal`, `loud`, `max`); planned (#2050, Open) | **yes** (a volume survives a restart) | operator pad through the menu |
-| user | `play_audio` | overlay | stack | `on`, `off`; planned (#2050, Open) | **no** (a forgotten off must not survive a restart) | dashboard and operator scripts; not the pad (UC-015 BR-006: off stops the music for the rest of the game) |
+The two registry rows this feature needs (`user` / `audio_volume.master` and `user` / `play_audio`) are in §13.4 since PR2 of #2050; the `operator` set itself has no registry row (§13.5).
 
 **Traceability:** FR-195, C-035 / UC-015 / planned `services/flagd/operator.json`, `services/operator_pad/` / planned tests in #2050.
 
@@ -572,6 +567,8 @@ the flag service restarts; the durable change is the promotion PR (FR-064, C-007
 |---|---|---|---|---|---|---|
 | user | `current_game` | overlay | stack | declared variants (10 modes) | **yes** | menu selection |
 | user | `game_instructions` | overlay | stack | `on`, `off` | **yes** | menu admin |
+| user | `audio_volume.master` | overlay | stack | `mute`, `quiet`, `normal`, `loud`, `max` | **yes** (a volume survives a restart) | operator pad through the menu (planned, #2050) |
+| user | `play_audio` | overlay | stack | `on`, `off` | **no** (a forgotten off must not survive a restart) | dashboard and operator scripts; not the pad (UC-015 BR-006: off stops the music for the rest of the game) |
 | controller | `bluetooth_backend` | overlay | stack or fraction | declared variants, fraction 1 to 100 | no | connect-proxy `/canary/*` |
 | rollout | `current_controller_count` | overlay | stack | `none`, `one`, `three`, `six`, `all` | no | W2 rollout writer |
 | rollout | `target_backend`, `strategy`, `remediation_allowed` | overlay | stack | declared variants | no | hand edits today |
