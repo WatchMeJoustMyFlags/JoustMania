@@ -407,6 +407,18 @@ func (p *MenuProxy) ListGameModes(
 	return connect.NewResponse(resp), nil
 }
 
+// GetMenuStatus forwards the menu's read-only snapshot (#2050, UC-015 A5, services.md §3.1).
+func (p *MenuProxy) GetMenuStatus(
+	ctx context.Context,
+	req *connect.Request[menupb.GetMenuStatusRequest],
+) (*connect.Response[menupb.GetMenuStatusResponse], error) {
+	resp, err := p.client.GetMenuStatus(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // toConnectError maps a backend gRPC error to the Connect error with the same
 // code (the two code sets are identical, numbers and names), keeping the status
 // message. Errors that carry no gRPC status stay CodeInternal (#1560).

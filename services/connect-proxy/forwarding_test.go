@@ -117,6 +117,34 @@ func (f *fakeMenu) ListGameModes(_ context.Context, r *menupb.ListGameModesReque
 	return &menupb.ListGameModesResponse{GameModes: []string{"JoustFFA", "JoustTeams"}, DefaultMode: "JoustFFA"}, nil
 }
 
+// menuStatus is the snapshot fakeMenu answers GetMenuStatus with: every field set.
+var menuStatus = &menupb.GetMenuStatusResponse{
+	MenuState:           menupb.MenuState_RUNNING,
+	LifecycleLive:       true,
+	LifecycleGeneration: 7,
+	Selection:           "Werewolf",
+	ReadyCount:          2,
+	ConnectedCount:      3,
+	AdminSerial:         "adm",
+	AgentEnabled:        true,
+	AgentLevel:          "standard",
+	AgentSavedLevel:     "full",
+	AgentBackend:        "claude",
+	Sensitivity:         3,
+	NumTeams:            4,
+	Instructions:        true,
+	ForceAllStart:       true,
+	AudioVolumeMaster:   "quiet",
+}
+
+func (f *fakeMenu) GetMenuStatus(_ context.Context, r *menupb.GetMenuStatusRequest) (*menupb.GetMenuStatusResponse, error) {
+	f.log.record("GetMenuStatus", r)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return menuStatus, nil
+}
+
 func (f *fakeMenu) StreamMenuEvents(r *menupb.StreamMenuEventsRequest, s grpc.ServerStreamingServer[menupb.MenuEvent]) error {
 	f.log.record("StreamMenuEvents", r)
 	for _, ev := range f.events {
@@ -446,6 +474,27 @@ func TestProxyListGameModes(t *testing.T) {
 		rig.menu.err = status.Error(codes.Unavailable, "menu down")
 		_, err := rig.menuClient.ListGameModes(testCtx(t), connect.NewRequest(&menupb.ListGameModesRequest{}))
 		assertBackendError(t, err, connect.CodeUnavailable, "menu down")
+	})
+}
+
+// UC: UC-015 A5
+func TestProxyGetMenuStatus(t *testing.T) {
+	t.Run("UC-015/A5 every snapshot field comes back from the menu", func(t *testing.T) {
+		rig := newProxyRig(t)
+		resp, err := rig.menuClient.GetMenuStatus(testCtx(t), connect.NewRequest(&menupb.GetMenuStatusRequest{}))
+		if err != nil {
+			t.Fatalf("GetMenuStatus: %v", err)
+		}
+		eq(t, resp.Msg, menuStatus)
+		rig.menu.log.only(t, "GetMenuStatus")
+		rig.otherBackendsUntouched(t, "menu")
+	})
+
+	t.Run("UC-015/A5 menu error keeps its code so the pad treats the status as unknown", func(t *testing.T) {
+		rig := newProxyRig(t)
+		rig.menu.err = status.Error(codes.Unavailable, "menu restarting")
+		_, err := rig.menuClient.GetMenuStatus(testCtx(t), connect.NewRequest(&menupb.GetMenuStatusRequest{}))
+		assertBackendError(t, err, connect.CodeUnavailable, "menu restarting")
 	})
 }
 

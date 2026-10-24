@@ -60,6 +60,11 @@ class MenuServiceStub:
                 request_serializer=menu__pb2.ListGameModesRequest.SerializeToString,
                 response_deserializer=menu__pb2.ListGameModesResponse.FromString,
                 _registered_method=True)
+        self.GetMenuStatus = channel.unary_unary(
+                '/joustmania.menu.MenuService/GetMenuStatus',
+                request_serializer=menu__pb2.GetMenuStatusRequest.SerializeToString,
+                response_deserializer=menu__pb2.GetMenuStatusResponse.FromString,
+                _registered_method=True)
 
 
 class MenuServiceServicer:
@@ -101,6 +106,13 @@ class MenuServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetMenuStatus(self, request, context):
+        """Read-only menu snapshot for the operator pad (#2050, UC-015, services.md §3.1)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_MenuServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -128,6 +140,11 @@ def add_MenuServiceServicer_to_server(servicer, server):
                     servicer.ListGameModes,
                     request_deserializer=menu__pb2.ListGameModesRequest.FromString,
                     response_serializer=menu__pb2.ListGameModesResponse.SerializeToString,
+            ),
+            'GetMenuStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetMenuStatus,
+                    request_deserializer=menu__pb2.GetMenuStatusRequest.FromString,
+                    response_serializer=menu__pb2.GetMenuStatusResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -266,6 +283,33 @@ class MenuService:
             '/joustmania.menu.MenuService/ListGameModes',
             menu__pb2.ListGameModesRequest.SerializeToString,
             menu__pb2.ListGameModesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetMenuStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/joustmania.menu.MenuService/GetMenuStatus',
+            menu__pb2.GetMenuStatusRequest.SerializeToString,
+            menu__pb2.GetMenuStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,

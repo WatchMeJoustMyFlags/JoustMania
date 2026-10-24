@@ -2,7 +2,7 @@
 
 # gRPC services (generated)
 
-Part of [services.md §3](../services.md#3-grpc-services). **37 RPCs in 7 services.**
+Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 services.**
 
 ## `joustmania.audio.AudioService` (`proto/audio.proto`, 6 RPCs)
 
@@ -49,7 +49,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **37 RPCs in 7 servic
 | `GetGameState` | unary | `GetGameStateRequest` → `GetGameStateResponse` | Get current game state (for testing/observability) |
 | `ListGames` | unary | `ListGamesRequest` → `ListGamesResponse` | List all live game sessions (primary + shadow). Lets agents and tests enumerate concurrent games and learn their game_ids; the dashboard uses it to pick the shadow game it follows (UC-070 BR-005). |
 
-## `joustmania.menu.MenuService` (`proto/menu.proto`, 5 RPCs)
+## `joustmania.menu.MenuService` (`proto/menu.proto`, 6 RPCs)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
@@ -58,6 +58,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **37 RPCs in 7 servic
 | `StreamMenuEvents` | server stream | `StreamMenuEventsRequest` → `MenuEvent` | Stream menu events (button presses, selections). The server sends the response headers (empty initial metadata) as soon as the subscriber is registered, before the first event; after `initial_metadata()` every later event is queued for this subscriber (bounded queue, drops on overflow). Direct gRPC clients only, the connect-proxy does not forward the early headers (#1613). |
 | `ProcessInput` | unary | `ProcessInputRequest` → `ProcessInputResponse` | Process menu input. `web_command` `start_game` with a `mode` selects that mode first; an unknown or unimplemented mode returns `success=false` with the error and publishes `game_start_rejected` (UC-010 A6, UC-011 BR-002) |
 | `ListGameModes` | unary | `ListGameModesRequest` → `ListGameModesResponse` | The playable modes (`game_modes`, menu cycle order, UC-011 BR-001) and the mode to preselect (`default_mode`, `JoustFFA`); the dashboard builds its mode selector from it (UC-011 BR-002) |
+| `GetMenuStatus` | unary | `GetMenuStatusRequest` → `GetMenuStatusResponse` | Read-only menu snapshot for the operator pad: menu state, `lifecycle_live`, `lifecycle_generation` (the `force_start` `stale` check, UC-015 A5), selection, controller counts, admin serial, agent switch, level, saved level and backend, and the lobby settings; read from menu memory and the in-process flag clients, never the HTTP flag writer (services.md §3.1) |
 
 ## `joustmania.psmove_hid.PairingService` (`proto/psmove_hid.proto`, 2 RPCs)
 

@@ -150,8 +150,8 @@ services (`services/agent/receiver.go`); they are not JoustMania protos.
 
 ### Browser-reachable RPCs (connect-proxy)
 
-Today (before #2050 lands) four of the six `ControllerManagerService` RPCs (`RenameController`, `GetConnectedControllers`, `IdentifyController` and the proxy-only `WatchGameplayData`), all four `GameCoordinatorService` RPCs and all five `MenuService`
-RPCs are forwarded (the planned `GetMenuStatus`, §3.1, is the sixth; the count and the forwarder change in the PR that adds it) under `/joustmania` (`services/connect-proxy/main.go`, the `ControllerManagerProxy`, `GameCoordinatorProxy` and `MenuProxy` methods). Audio, HID, pairing and mock
+Four of the six `ControllerManagerService` RPCs (`RenameController`, `GetConnectedControllers`, `IdentifyController` and the proxy-only `WatchGameplayData`), all four `GameCoordinatorService` RPCs and all six `MenuService`
+RPCs (`GetMenuStatus`, §3.1, included) are forwarded under `/joustmania` (`services/connect-proxy/main.go`, the `ControllerManagerProxy`, `GameCoordinatorProxy` and `MenuProxy` methods). Audio, HID, pairing and mock
 RPCs are not.
 
 Wire format from the dashboard (`services/dashboard/src/client.ts`, `connect.ts`): unary calls are a plain
@@ -174,36 +174,36 @@ implement `WatchGameplayData` itself (UNIMPLEMENTED).
 
 ### 3.1 Operator pad commands and `GetMenuStatus` (#2050, In Progress)
 
-Spec for [UC-015](../use_cases/UC-015.md). The four `ProcessInput` commands are implemented (#2050 PR3), except the `stale` check: `expected_generation` is accepted but not compared until `lifecycle_generation` lands with `GetMenuStatus` (planned, Open). The `audio_volume.master` option writes a flag that does not exist yet (planned, #2050 PR2): until then that write fails with `flag_service_unavailable`. The generated tables ([generated/grpc-rpcs.md](generated/grpc-rpcs.md)) and [notes/grpc-rpcs.yaml](notes/grpc-rpcs.yaml) gain the `GetMenuStatus` row when `proto/menu.proto` does.
+Spec for [UC-015](../use_cases/UC-015.md). The four `ProcessInput` commands (#2050 PR3) and `GetMenuStatus` with `lifecycle_generation` and the `force_start` `stale` check (#2050 PR4) are implemented; the pad service that calls them is not (In Progress, #2050). `GetMenuStatus` is in the generated tables ([generated/grpc-rpcs.md](generated/grpc-rpcs.md), notes in [notes/grpc-rpcs.yaml](notes/grpc-rpcs.yaml)).
 
 **`MenuService.ProcessInput` `web_command` additions** (`data` keys; no new RPC, so they are forwarded by the existing `MenuProxy`). They share one core with admin mode (`services/menu/settings_ops.py`) and use no controller serial: no LED pulse, no admin session span, no roster entry for the caller.
 
 | `web_command` | `data` | Effect | Errors |
 |---|---|---|---|
-| `force_start` | `expected_generation` (optional int) | force-start as UC-014 steps 3 to 5 with the live roster, closing an open admin session first (`abandon_session`, reason `operator_pad_start`) | `game_active`, `stale` |
+| `force_start` | `expected_generation` (optional int; empty or missing = no check) | force-start as UC-014 steps 3 to 5 with the live roster, closing an open admin session first (`abandon_session`, reason `operator_pad_start`). The generation is compared before anything changes and again after the roster lookup (a game that started and ended during the lookup is `stale`) | `game_active`, `stale` |
 | `step_setting` | `option` (`current_game`, `sensitivity`, `num_teams`, `game_instructions`, `force_all_start`, `audio_volume.master`, `agent_level`), `direction` (`up` / `down`), `steps` (int, default 1) | step the option by `steps`, stopping at the end of its range (no wrap), one write | `game_active` (lobby-only options), `at_limit`, `bad_option`, `flag_service_unavailable` |
 | `agent_switch` | `direction` (`stop` / `resume`) | the kill and resume of UC-015 BR-002, BR-003: reply `ok`, `partial:<key>` or `failed` in `error` | `partial:<key>`, `failed`, `bad_option` |
 | `set_backend` | `backend` (`rules`, `claude`, `openai`, `jev`) | write `decision.backend` persisted | `bad_option`, `flag_service_unavailable` |
 
-Error codes (a refusal is `success=false` and the code in `error`; no state changes unless the code says `partial:<key>`): `game_active` (the menu's game lifecycle is live, the same check as the start guard of UC-010 A8), `at_limit` (the option is at the end of its range), `flag_service_unavailable` (the writer failed closed, UC-053 A7, A8; never retried), `partial:<key>` (a kill wrote one key and failed the other; `<key>` is the failed one), `failed` (a kill's two writes both failed; every other failed write is `flag_service_unavailable`, except a `current_game` step whose persisted write fails: it succeeds, since the selection holds in menu memory and only its survival across a restart is lost, UC-015 A3), `stale` (`expected_generation` differs from the current `lifecycle_generation`), `bad_option` (unknown option, direction or backend). Writers: `enabled` through a writer that sends no `persist` field, `interventions_allowed`, `decision.backend` and the admin settings with `persist` (UC-015 BR-001).
+Error codes (a refusal is `success=false` and the code in `error`; no state changes unless the code says `partial:<key>`): `game_active` (the menu's game lifecycle is live, the same check as the start guard of UC-010 A8), `at_limit` (the option is at the end of its range), `flag_service_unavailable` (the writer failed closed, UC-053 A7, A8; never retried), `partial:<key>` (a kill wrote one key and failed the other; `<key>` is the failed one), `failed` (a kill's two writes both failed; every other failed write is `flag_service_unavailable`, except a `current_game` step whose persisted write fails: it succeeds, since the selection holds in menu memory and only its survival across a restart is lost, UC-015 A3), `stale` (`expected_generation` differs from the current `lifecycle_generation`, or is not an integer), `bad_option` (unknown option, direction or backend). Writers: `enabled` through a writer that sends no `persist` field, `interventions_allowed`, `decision.backend` and the admin settings with `persist` (UC-015 BR-001).
 
-**`MenuService.GetMenuStatus`** (planned, Open; unary, `GetMenuStatusRequest {}`): a small read-only snapshot for the pad and later the dashboard, read from the menu's in-process state and in-process flag clients, never from the HTTP flag writer. It also becomes a browser-reachable RPC: the `MenuProxy` forwarder, the `fakeMenu` test double and the RPC count above change in the same PR.
+**`MenuService.GetMenuStatus`** (unary, `GetMenuStatusRequest {}`, `proto/menu.proto`): a small read-only snapshot for the pad and later the dashboard, read from the menu's in-process state and in-process flag clients, never from the HTTP flag writer. A flag the in-process client cannot resolve reads as its default: an empty variant name, and `agent_enabled` false. It is browser-reachable (the `MenuProxy` forwarder in `services/connect-proxy/main.go`); the dashboard does not call it yet.
 
 | Field | Meaning |
 |---|---|
 | `menu_state` | `MenuState` (STOPPED, RUNNING, GAME_STARTING) |
 | `lifecycle_live` | the game lifecycle task is live (a game is starting or running) |
-| `lifecycle_generation` | integer that goes up on every game start and every lobby restore (UC-015 A5) |
-| `selection` | the selected mode |
+| `lifecycle_generation` | integer that goes up on every game start and every lobby restore (UC-015 A5): +1 when the game lifecycle task starts (a game start, or the lobby restore of `reset_menu`) and +1 when it ends (the lobby is back). Derived at read time from the start count and the task's done state, so it changes in the same event-loop step as `lifecycle_live` and a snapshot never pairs a lifecycle with an older generation. Odd while live, even while idle; it starts at 0 with the menu process, so a menu restart resets it |
+| `selection` | the selected mode (`Games` name) |
 | `ready_count`, `connected_count` | ready and connected controllers |
 | `admin_serial` | serial of the controller in admin mode, empty when none |
-| `agent_enabled`, `agent_level`, `agent_saved_level`, `agent_backend` | the kill switch, the allow-list level, the level a resume restores (empty when none saved), the decision backend |
-| `sensitivity`, `num_teams`, `instructions`, `force_all_start` | the current lobby settings (read-only; the taps of UC-015 BR-011 announce them) |
+| `agent_enabled`, `agent_level`, `agent_saved_level`, `agent_backend` | the kill switch, the allow-list level (`interventions_allowed` variant name), the level a resume restores (empty when none saved), the decision backend (variant name) |
+| `sensitivity`, `num_teams`, `instructions`, `force_all_start` | the current lobby settings as values (sensitivity 0 to 4, team count, `game_instructions`, `force_all_start`; read-only; the taps of UC-015 BR-011 announce them) |
 | `audio_volume_master` | the variant name of `user/audio_volume.master` (UC-015 BR-006: the pad restores it on unmute) |
 
 The display's pages come in phase 2; the proto fields are additive.
 
-**Traceability:** FR-190 to FR-195 / UC-015 / `services/menu/servicer.py`, `services/menu/settings_ops.py`, `lib/flag_service_writer.py`, planned `proto/menu.proto`, `services/connect-proxy/main.go` / `services/menu/tests/test_pad_commands.py`, `lib/tests/test_flag_service_writer.py`.
+**Traceability:** FR-190 to FR-195 / UC-015 / `services/menu/servicer.py`, `services/menu/settings_ops.py`, `lib/flag_service_writer.py`, `proto/menu.proto`, `services/connect-proxy/main.go` / `services/menu/tests/test_pad_commands.py`, `services/menu/tests/test_menu_status.py`, `lib/tests/test_flag_service_writer.py`, `services/connect-proxy/forwarding_test.go` (`TestProxyGetMenuStatus`).
 
 ## 4. Key messages
 
