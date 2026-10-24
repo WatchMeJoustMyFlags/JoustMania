@@ -57,6 +57,8 @@ CODE_ROOTS: dict[str, tuple[str, tuple[Path, ...]]] = {
     "game-coordinator": ("python", (SERVICES / "game_coordinator", LIB)),
     "menu": ("python", (SERVICES / "menu", LIB)),
     "audio": ("python", (SERVICES / "audio", LIB)),
+    # #2050: no compose service yet (PR7), so no stack case is generated for it
+    "operator-pad": ("python", (SERVICES / "operator_pad", LIB)),
     "agent": ("go", (SERVICES / "agent",)),
     "flag-service": ("go", (SERVICES / "flag-service",)),
     "connect-proxy": ("go", (SERVICES / "connect-proxy",)),

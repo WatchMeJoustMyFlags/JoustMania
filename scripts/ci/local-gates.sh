@@ -34,7 +34,7 @@
 #   ci.yml) runs no service tier locally; the summary says so.
 #
 # Services / gate keys accepted by SERVICE:
-#   lib game_coordinator menu controller_manager audio pairing_daemon python_hid
+#   lib game_coordinator menu controller_manager audio pairing_daemon python_hid operator_pad
 #   agent flag-service connect-proxy agent-protos dashboard rust-hid
 #   contract contract-flagd service service-touched grafana compose
 #   (hyphens and underscores are interchangeable)
@@ -65,12 +65,13 @@ declare -A PYTEST_CMD=(
   [audio]="uv run --extra test pytest -q --tb=short -p no:cacheprovider"
   [pairing_daemon]="uv run --extra test pytest -q --tb=short -p no:cacheprovider"
   [python_hid]="uv run --extra test pytest -q --tb=short -p no:cacheprovider"
+  [operator_pad]="uv run --extra test pytest -q --tb=short -p no:cacheprovider"
 )
-PY_SERVICES=(game_coordinator menu controller_manager audio pairing_daemon python_hid)
+PY_SERVICES=(game_coordinator menu controller_manager audio pairing_daemon python_hid operator_pad)
 
 # Gate order in the summary.
 ALL_GATES=(lint spec-lint spec-touched
-  py:lib py:game_coordinator py:menu py:controller_manager py:audio py:pairing_daemon py:python_hid
+  py:lib py:game_coordinator py:menu py:controller_manager py:audio py:pairing_daemon py:python_hid py:operator_pad
   go:agent go:flag-service connect-proxy agent-protos dashboard rust-hid
   contract contract-flagd service service-touched grafana-json compose yaml-dupkeys)
 
@@ -99,7 +100,7 @@ select_key() {  # map a SERVICE key to gates
   local key="${1//-/_}"
   case "$key" in
     lib) selected[py:lib]=1 ;;
-    game_coordinator|menu|controller_manager|audio|pairing_daemon|python_hid) selected[py:$key]=1 ;;
+    game_coordinator|menu|controller_manager|audio|pairing_daemon|python_hid|operator_pad) selected[py:$key]=1 ;;
     agent) selected[go:agent]=1 ;;
     flag_service) selected[go:flag-service]=1 ;;
     connect_proxy) selected[connect-proxy]=1 ;;
@@ -123,9 +124,9 @@ classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
     pyproject.toml|proto/*|lib/*)
       for s in "${PY_SERVICES[@]}"; do selected[py:$s]=1; done ;;
   esac
-  # controller_manager / game_coordinator / menu / audio / pairing_daemon / python_hid
+  # controller_manager / game_coordinator / menu / audio / pairing_daemon / python_hid / operator_pad
   case "$f" in
-    services/game_coordinator/*|services/menu/*|services/controller_manager/*|services/audio/*|services/pairing_daemon/*|services/python_hid/*)
+    services/game_coordinator/*|services/menu/*|services/controller_manager/*|services/audio/*|services/pairing_daemon/*|services/python_hid/*|services/operator_pad/*)
       local s="${f#services/}"; selected[py:${s%%/*}]=1 ;;
   esac
   # lib (lib-tests)

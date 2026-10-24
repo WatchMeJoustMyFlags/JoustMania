@@ -62,7 +62,7 @@ in-memory services).
 
 | Where | Tag |
 |---|---|
-| pytest | `@pytest.mark.uc("UC-040", flow="A2", br=["BR-003"], steps=[9], tc="TC-001")` (`flow` = `main` or `A<n>`; other args optional). A test whose purpose is a pre- or postcondition uses `cond=["Pre-1"]` instead of a flow, see "Condition tag" below. Registered in the root, `lib`, `services/pairing_daemon`, `tests/integration` and `tests/service` `pyproject.toml` |
+| pytest | `@pytest.mark.uc("UC-040", flow="A2", br=["BR-003"], steps=[9], tc="TC-001")` (`flow` = `main` or `A<n>`; other args optional). A test whose purpose is a pre- or postcondition uses `cond=["Pre-1"]` instead of a flow, see "Condition tag" below. Registered in the root, `lib`, `services/pairing_daemon`, `services/operator_pad`, `tests/integration` and `tests/service` `pyproject.toml` |
 | Test tier (pytest) | `pytestmark = pytest.mark.tier("service")` in every `tests/service` module (T2 service tier: services from source on a fresh flag plane, #1422); collection fails without it. The TC's Automation section names the tier in a `**Tier:**` line |
 | Go | `// UC: UC-040 A2 BR-003` directly above `func Test...` and subtests `t.Run("UC-040/A2 ...")`; a condition is another unit token: `// UC: UC-040 Pre-1`, `t.Run("UC-040/Post-F-1 ...")` |
 | Dashboard (vitest) | `describe('UC-040: ...')` / `it('A2: ...')` (AIUP JS convention); a condition test: `it('Pre-1: ...')` |

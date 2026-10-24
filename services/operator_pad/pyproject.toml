@@ -1,0 +1,74 @@
+[project]
+name = "joustmania-operator-pad"
+version = "1.0.0"
+description = "Operator pad service for JoustMania: a USB macro pad as a lobby and agent remote (UC-015)"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    # Workspace packages
+    "joustmania-proto",
+    "joustmania-lib",
+
+    # gRPC (client of the menu, the game coordinator and the audio service)
+    "grpcio>=1.70.0",
+
+    # OpenTelemetry
+    "opentelemetry-distro>=0.49b0",
+    "opentelemetry-exporter-otlp>=1.28.0",
+    "opentelemetry-instrumentation-grpc>=0.49b0",
+
+    # Feature flag tracing
+    "openfeature-hooks-opentelemetry>=0.1.0",
+
+    # Metrics
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+# The evdev binding is only needed on the device host. It ships as a source distribution on
+# arm64 (gcc and kernel headers in the image builder, #2050 PR7); tests run without it.
+device = [
+    "evdev>=1.9.0; sys_platform == 'linux'",
+]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.uv.sources]
+joustmania-proto = { workspace = true }
+joustmania-lib = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Service package - no installable modules, just dependency management
+packages = []
+py-modules = []
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "uc(id, flow=, br=, steps=, tc=, cond=): traceability tag to a use-case flow / business rule (see .claude/skills/README.md)",
+    "nfr(*ids): traceability tag to the non-functional requirement(s) (NFR-XXX in docs/requirements.md) the test measures or verifies (see .claude/skills/README.md)",
+]
+
+# ruff - Linting configuration for this service
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "ASYNC", "B", "C4", "RET", "SIM", "ARG"]
+ignore = ["ANN"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"server.py" = ["E402"]  # logging configured before imports
+"tests/*.py" = ["ARG002", "E402"]
+"tests/fakes.py" = ["N802", "ASYNC109"]  # spec classes mirror the PascalCase gRPC stub methods
+
+[tool.ruff.lint.isort]
+known-first-party = ["lib", "proto", "services"]

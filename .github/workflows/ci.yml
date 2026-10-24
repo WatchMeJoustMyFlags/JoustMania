@@ -303,6 +303,10 @@ jobs:
             python_hid:
               - *shared_python
               - 'services/python_hid/**'
+            # #2050: unit tests only; the image and its build/retag rows land with the compose profile (PR7)
+            operator_pad:
+              - *shared_python
+              - 'services/operator_pad/**'
             connect_proxy:
               # Dockerfile buf-generates Go stubs from proto/ at build time
               - 'services/connect-proxy/**'
@@ -422,6 +426,7 @@ jobs:
           CH_AUDIO: ${{ steps.f.outputs.audio }}
           CH_PAIRING_DAEMON: ${{ steps.f.outputs.pairing_daemon }}
           CH_PYTHON_HID: ${{ steps.f.outputs.python_hid }}
+          CH_OPERATOR_PAD: ${{ steps.f.outputs.operator_pad }}
           CH_CONNECT_PROXY: ${{ steps.f.outputs.connect_proxy }}
           CH_AGENT: ${{ steps.f.outputs.agent }}
           CH_FLAG_SERVICE: ${{ steps.f.outputs.flag_service }}
@@ -435,10 +440,10 @@ jobs:
             if [ "$#" -eq 0 ]; then echo -n '[]'; else printf '%s\n' "$@" | jq -R . | jq -sc .; fi
           }
 
-          # service-checks matrix: changed Python services; all 6 on main push /
+          # service-checks matrix: changed Python services; all 7 on main push /
           # force (keeps full SonarCloud coverage on main)
           checks=()
-          for s in controller_manager game_coordinator menu audio pairing_daemon python_hid; do
+          for s in controller_manager game_coordinator menu audio pairing_daemon python_hid operator_pad; do
             key="CH_${s^^}"
             if [ "$RUN_ALL_CHECKS" = "true" ] || [ "${!key}" = "true" ]; then checks+=("$s"); fi
           done

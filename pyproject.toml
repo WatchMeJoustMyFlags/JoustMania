@@ -45,6 +45,7 @@ members = [
     "services/game_coordinator",
     "services/menu",
     "services/audio",
+    "services/operator_pad",
     "services/pairing_daemon",
     "services/python_hid",
     "tests/integration",

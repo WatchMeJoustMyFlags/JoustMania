@@ -4,8 +4,8 @@
 
 Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the columns.
 
-- **146 unique Python metric names** (167 definitions; 5 names are defined in more than one module).
-- 78 of the 146 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
+- **150 unique Python metric names** (174 definitions; 5 names are defined in more than one module).
+- 82 of the 150 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
 - 0 names are defined but never recorded by any service.
 
 | Metric | Type | Labels | Defined in | Emitted | Consumers | Notes |
@@ -141,13 +141,17 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `menu_stream_disconnections_total` | counter | (none) | menu | yes | (none) |  |
 | `menu_stream_events_published_total` | counter | `event_type` | menu | yes | (none) |  |
 | `menu_stream_publish_drops_total` | counter | `event_type` | menu | yes | (none) |  |
+| `operator_pad_device_attached` | gauge | (none) | operator-pad | yes | (none) |  |
+| `operator_pad_gestures_total` | counter | `action`, `result` | operator-pad | yes | (none) |  |
+| `operator_pad_grab_failures_total` | counter | `reason` | operator-pad | yes | (none) |  |
+| `operator_pad_unknown_keys_total` | counter | (none) | operator-pad | yes | (none) |  |
 | `pairing_bluetooth_adapter_hci_errors_total` | counter | `hci_adapter`, `direction` | pairing-daemon | yes | grafana |  |
 | `pairing_bluetooth_adapter_info` | gauge | `hci_adapter`, `address`, `manufacturer`, `manufacturer_id`, `hci_version`, `bus`, `usb_id`, `onboard` | pairing-daemon | yes | grafana |  |
 | `pairing_bluetooth_link_role_info` | gauge | `serial`, `hci_adapter`, `role` | pairing-daemon | yes | grafana |  |
 | `pairing_control_bind_unbound_addresses` | gauge | (none) | pairing-daemon | yes | (none) |  |
-| `process_cpu_seconds_total` | counter | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |  |
-| `process_resident_memory_bytes` | gauge | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |  |
-| `process_threads` | gauge | (none) | audio, controller-manager, game-coordinator, menu, pairing-daemon, python-hid | yes (each service) | grafana |  |
+| `process_cpu_seconds_total` | counter | (none) | audio, controller-manager, game-coordinator, menu, operator-pad, pairing-daemon, python-hid | yes (each service) | grafana |  |
+| `process_resident_memory_bytes` | gauge | (none) | audio, controller-manager, game-coordinator, menu, operator-pad, pairing-daemon, python-hid | yes (each service) | grafana |  |
+| `process_threads` | gauge | (none) | audio, controller-manager, game-coordinator, menu, operator-pad, pairing-daemon, python-hid | yes (each service) | grafana |  |
 | `psmove_pairing_adapter_device_count_at_selection` | gauge | `adapter` | pairing-daemon | yes | (none) |  |
 | `psmove_pairing_adapter_selected_total` | counter | `adapter` | pairing-daemon | yes | (none) |  |
 | `psmove_pairing_attempts_total` | counter | (none) | pairing-daemon | yes | (none) |  |
