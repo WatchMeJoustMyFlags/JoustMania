@@ -22,13 +22,17 @@
 #    (never toggles back); an upgrade cut off after its checkout is flagged by
 #    --status and repaired by re-running it; failed checkouts change nothing and
 #    the record is written only after the checkout
+#  - the start limit (BR-006): every restart runs reset-failed first, so a 4th
+#    and 5th restart inside the window start; a start systemd still refuses is
+#    retried once, then reported as refused (never unhealthy, never rolled back);
+#    --status shows start-limit-hit with the recovery command
 #  - a stale worktree registration is pruned; COMPOSE_PROFILES from the unit honoured
 #  - joustmania-compose.sh derives IMAGE_TAG from a pinned HEAD over .env.local
 #    (X.Y.Z of the release tag, else the sha; nothing on a branch), with a stderr
 #    note when it overrides a shell IMAGE_TAG; the start script WARNs about an
 #    IMAGE_TAG in .env.local
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-upgrade.sh
-# UC: UC-060 A2 A3 A4 BR-003
+# UC: UC-060 A2 A3 A4 BR-003 BR-006
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -158,11 +162,36 @@ STUB
 echo "curl \$*" >>"${CASE}/calls.log"
 printf '%s' "\$(cat "${CASE}/http_code")"
 STUB
+  # systemctl models the unit's start limit (StartLimitBurst=3 in the window,
+  # BR-006): every start counts, the 4th is refused with start-limit-hit until
+  # reset-failed (a no-op while the file reset-noop exists) zeroes the count
+  echo 0 >"${CASE}/starts"
+  echo success >"${CASE}/result"
   cat >"${CASE}/bin/systemctl" <<STUB
 #!/usr/bin/env bash
-echo "systemctl \$*" >>"${CASE}/calls.log"
-[[ "\$1" == show ]] && { cat "${CASE}/unit-env"; exit 0; }
-[[ "\$1" == restart ]] && exit "\$(cat "${CASE}/restart_rc")"
+C="${CASE}"
+echo "systemctl \$*" >>"\$C/calls.log"
+case "\$1" in
+  show)
+    if [[ " \$* " == *" Result "* ]]; then cat "\$C/result"; else cat "\$C/unit-env"; fi
+    exit 0 ;;
+  reset-failed)
+    [[ -f "\$C/reset-noop" ]] || { echo 0 >"\$C/starts"; echo success >"\$C/result"; }
+    exit 0 ;;
+  restart | start)
+    n="\$(cat "\$C/starts")"
+    if ((n >= 3)); then
+      echo start-limit-hit >"\$C/result"
+      echo "Job for joustmania.service failed. See 'systemctl status joustmania.service'." >&2
+      exit 1
+    fi
+    echo \$((n + 1)) >"\$C/starts"
+    rc="\$(cat "\$C/restart_rc")"
+    # restart-fail-once: only the next start fails (ExecStart exits non-zero)
+    [[ -f "\$C/restart-fail-once" ]] && { rm -f "\$C/restart-fail-once"; rc=1; }
+    if [[ "\$rc" == 0 ]]; then echo success >"\$C/result"; else echo exit-code >"\$C/result"; fi
+    exit "\$rc" ;;
+esac
 exit 0
 STUB
   printf '#!/usr/bin/env bash\necho "sudo $*" >>"%s/calls.log"\nexec "$@"\n' "${CASE}" >"${CASE}/bin/sudo"
@@ -429,6 +458,81 @@ grep -q 'config --services failed' "${CASE}/out.log" || fail "services-fail: not
 make_case services-none "${C_V1}"
 printf 'jaeger\n' >"${CASE}/services"
 if upgrade --no-rollback joustmania-v1.1.0; then fail "services-none: no game service counted as healthy"; fi
+
+# --- 7a. the start limit (BR-006, #2102) -----------------------------------
+# Upgrade, --rollback, upgrade, --rollback inside the window: four operator
+# restarts, each after reset-failed, so the 4th is not refused
+make_case start-limit "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "start-limit: 1st upgrade failed: $(tail -2 "${CASE}/out.log")"
+upgrade --rollback || fail "start-limit: 1st --rollback failed: $(tail -2 "${CASE}/out.log")"
+upgrade joustmania-v1.1.0 || fail "start-limit: 2nd upgrade failed: $(tail -2 "${CASE}/out.log")"
+upgrade --rollback || fail "start-limit: 4th restart (--rollback) refused: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "start-limit: HEAD is not 1.0.0 after the 4th restart"
+[[ "$(grep -c '^sudo systemctl restart joustmania' "${CASE}/calls.log")" == 4 ]] || fail "start-limit: not 4 restarts"
+upgrade joustmania-v1.1.0 || fail "start-limit: 5th restart (upgrade) refused: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V11}" ]] || fail "start-limit: HEAD is not 1.1.0 after the 5th restart"
+
+# The auto-rollback resets first: two starts already spent, the upgrade's
+# restart is the 3rd and its rollback's the 4th, which must still start
+make_case start-limit-autorollback "${C_V1}"
+echo 2 >"${CASE}/starts"
+echo 1.1.0 >"${CASE}/unhealthy-tag"
+if upgrade joustmania-v1.1.0; then fail "start-limit-autorollback: reported success"; fi
+grep -q "failed; rolled back to ${C_V1}" "${CASE}/out.log" || fail "start-limit-autorollback: rollback not healthy: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "start-limit-autorollback: HEAD is not 1.0.0"
+[[ "$(grep -c '^sudo systemctl restart joustmania' "${CASE}/calls.log")" == 2 ]] || fail "start-limit-autorollback: not 2 restarts"
+# every restart directly follows a reset-failed
+grep -E '^sudo systemctl (reset-failed|restart) ' "${CASE}/calls.log" | awk '
+  /restart/ { if (prev !~ /reset-failed/) bad = 1 } { prev = $0 } END { exit bad }' \
+  || fail "start-limit-autorollback: a restart without reset-failed before it"
+
+# A start that fails (Result=exit-code, not refused) is not healthy: the
+# upgrade rolls back, with no refusal retry
+make_case start-fails-exit-code "${C_V1}"
+touch "${CASE}/restart-fail-once"
+if upgrade joustmania-v1.1.0; then fail "start-fails-exit-code: reported success"; fi
+grep -q "failed; rolled back to ${C_V1}" "${CASE}/out.log" || fail "start-fails-exit-code: not rolled back: $(tail -1 "${CASE}/out.log")"
+grep -q 'refused by systemd' "${CASE}/out.log" && fail "start-fails-exit-code: a failed start reported as refused"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "start-fails-exit-code: HEAD is not back on 1.0.0"
+[[ "$(grep -c '^sudo systemctl restart joustmania' "${CASE}/calls.log")" == 2 ]] || fail "start-fails-exit-code: not exactly 2 restarts"
+
+# A start systemd still refuses (reset-failed has no effect): reset, retry once,
+# then reported as refused with the recovery command; never judged unhealthy,
+# never rolled back
+make_case start-limit-refused "${C_V1}"
+echo 3 >"${CASE}/starts"
+touch "${CASE}/reset-noop"
+if upgrade joustmania-v1.1.0; then fail "start-limit-refused: reported success"; fi
+grep -q 'refused by systemd (start-limit-hit)' "${CASE}/out.log" || fail "start-limit-refused: not reported as refused: $(tail -2 "${CASE}/out.log")"
+grep -qF 'sudo systemctl reset-failed joustmania && sudo systemctl start joustmania' "${CASE}/out.log" \
+  || fail "start-limit-refused: no recovery command"
+grep -qE 'not healthy|; rolling back|rolled back' "${CASE}/out.log" && fail "start-limit-refused: a refused start was judged or rolled back"
+[[ "$(head_of)" == "${C_V11}" ]] || fail "start-limit-refused: HEAD moved off the target (rolled back)"
+[[ "$(grep -c '^sudo systemctl restart joustmania' "${CASE}/calls.log")" == 2 ]] || fail "start-limit-refused: not retried exactly once"
+grep -q 'image rm' "${CASE}/calls.log" && fail "start-limit-refused: images pruned"
+# --status shows start-limit-hit with the recovery command
+upgrade --status || fail "start-limit-refused: --status failed"
+grep -q 'start-limit-hit' "${CASE}/out.log" || fail "start-limit-refused: --status does not show start-limit-hit"
+grep -qF 'sudo systemctl reset-failed joustmania && sudo systemctl start joustmania' "${CASE}/out.log" \
+  || fail "start-limit-refused: --status shows no recovery command"
+# a refused --rollback is reported as refused too
+: >"${CASE}/calls.log"
+if upgrade --rollback; then fail "start-limit-refused: --rollback reported success"; fi
+grep -q 'refused by systemd (start-limit-hit)' "${CASE}/out.log" || fail "start-limit-refused: --rollback refusal not reported: $(tail -2 "${CASE}/out.log")"
+grep -q 'did not come up healthy' "${CASE}/out.log" && fail "start-limit-refused: --rollback refusal reported as unhealthy"
+# the refused rollback keeps its target: --status warns, the next --rollback
+# finishes on 1.0.0 and never toggles back to 1.1.0
+[[ "$(head_of)" == "${C_V1}" && "$(rel rollback_to)" == "${C_V1}" ]] || fail "start-limit-refused: rollback_to not kept after a refused start"
+upgrade --status || fail "start-limit-refused: --status failed after the refused --rollback"
+grep -q "WARN: a rollback to ${C_V1} was cut off" "${CASE}/out.log" || fail "start-limit-refused: --status does not warn about the unfinished rollback"
+rm -f "${CASE}/reset-noop"
+upgrade --rollback || fail "start-limit-refused: finishing --rollback failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "start-limit-refused: the finishing --rollback toggled back to 1.1.0"
+grep -q '^rollback_to=' "${REPO}/.joustmania-release" && fail "start-limit-refused: rollback_to left after the finishing --rollback"
+# a healthy unit: no hint
+make_case start-limit-status-ok "${C_V1}"
+upgrade --status || fail "start-limit-status-ok: --status failed"
+grep -q 'start-limit-hit' "${CASE}/out.log" && fail "start-limit-status-ok: hint shown for a healthy unit"
 
 # --- 7b. the migration: a version that ran from a branch is restored on it ---
 # The pre-migration Pi runs branch main with .env.local IMAGE_TAG=stale-local

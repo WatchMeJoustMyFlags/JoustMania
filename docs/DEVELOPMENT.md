@@ -110,6 +110,11 @@ Cut-off runs (power loss, ssh hang-up) and manual recovery:
   before; `--status` WARNs `HEAD ... is neither recorded version` and `--rollback` refuses. Re-run the same
   upgrade command: it repairs the record (current = HEAD, previous = the recorded current) without a restart;
   then run `sudo systemctl restart joustmania`, or `--rollback` to go back.
+- The unit's start limit (3 starts in 15 minutes, UC-060 A5) guards boot crash loops only: every restart the
+  upgrade command does runs `sudo systemctl reset-failed joustmania` first (UC-060 BR-006), so upgrades and
+  rollbacks in quick succession still start. A start systemd refuses anyway is reported as `refused by systemd
+  (start-limit-hit)` and never rolled back; `--status` shows `start-limit-hit`. Recover with
+  `sudo systemctl reset-failed joustmania && sudo systemctl start joustmania`.
 - The migration cut off the same way has no record, so the branch it ran from is lost. Go back by hand:
   `git checkout main && sudo systemctl restart joustmania` (the branch takes `IMAGE_TAG` from `.env.local`
   again), then repeat the migration.

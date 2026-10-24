@@ -111,7 +111,9 @@ Pin and migrate with the upgrade command, never with a hand-made `git checkout`:
 `./scripts/setup/joustmania-upgrade.sh <joustmania-vX.Y.Z | sha>` pulls first, switches, restarts and rolls
 back when the game is not healthy; `--rollback` returns to the previous pin offline (UC-060 A2, A3). One-time
 migration of a Pi still on `main`: `git fetch --tags && ./scripts/setup/joustmania-upgrade.sh <first pinnable>
-&& sudo ./scripts/setup/install_autostart.sh` ([DEVELOPMENT.md](../DEVELOPMENT.md#upgrade-rollback-and-the-one-time-migration-uc-060-a2-a3)).
+&& sudo ./scripts/setup/install_autostart.sh` ([DEVELOPMENT.md](../DEVELOPMENT.md#upgrade-rollback-and-the-one-time-migration-uc-060-a2-a3)). Stack
+down after a run that says `refused by systemd (start-limit-hit)` (or `--status` shows it): `sudo systemctl
+reset-failed joustmania && sudo systemctl start joustmania` (UC-060 BR-006).
 
 The agent reads all of these **once at startup**. (The post-game summary backend is no longer here: it is the flag `inference.backend`, `claude` in the stage baseline, #1810; with flagd down the agent runs the stub, #1907.) Changing one means
 recreating the agent:
