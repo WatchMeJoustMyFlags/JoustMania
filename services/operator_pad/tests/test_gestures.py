@@ -20,7 +20,7 @@ from services.operator_pad.gestures import (
     KeyEvent,
 )
 
-TIMINGS = Timings()  # tap 400 ms; hold K3 1000, K4 1500, K8 3000
+TIMINGS = Timings(knob_events_per_step=1)  # tap 400 ms; hold K3 1000, K4 1500, K8 3000; one event = one step
 
 
 class Pad:
@@ -250,3 +250,115 @@ def test_knob_turn_while_a_non_layer_key_is_down_does_nothing():
     pad.at(0).press("K4")
     assert pad.turn("B") == []
     assert pad.at(1500).release("K4") == [Gesture(HOLD, "K4", held_ms=1500)]
+
+
+# --- smooth knob: events per step (BR-004, BR-005) ----------------------------------------------
+
+N4 = Timings(knob_events_per_step=4)
+
+
+def _volume_steps(pad: Pad, direction: str, count: int, t0: int = 0, gap: int = 10) -> list[int]:
+    steps = []
+    for i in range(count):
+        pad.at(t0 + i * gap)
+        steps += [g.steps for g in pad.turn(direction)]
+    return steps
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005"], steps=[8])
+def test_volume_emits_one_step_per_n_events():
+    pad = Pad(N4)
+    assert _volume_steps(pad, "B", 3) == []
+    assert _volume_steps(pad, "B", 25, t0=1000) == [1] * 6  # 25 events: 6 steps, the remainder of 1 is dropped
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005"], steps=[8])
+def test_a_direction_change_resets_the_volume_accumulator():
+    pad = Pad(N4)
+    assert _volume_steps(pad, "B", 3) == []
+    assert _volume_steps(pad, "A", 3, t0=30) == []  # 3 up are lost, 3 down are not yet a step
+    assert _volume_steps(pad, "A", 1, t0=60) == [-1]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005"], steps=[8])
+def test_the_volume_remainder_is_dropped_after_the_commit_pause():
+    pad = Pad(N4)
+    assert _volume_steps(pad, "B", 3) == []
+    assert _volume_steps(pad, "B", 1, t0=20 + 250) == []  # a pause of 250 ms: 3 events forgotten
+    assert _volume_steps(pad, "B", 3, t0=600) == []
+    assert _volume_steps(pad, "B", 1, t0=630) == [1]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-004", "BR-005"], steps=[5])
+def test_a_layer_counts_net_steps_from_events_and_drops_the_remainder_on_release():
+    pad = Pad(N4)
+    pad.at(0).press("K2")
+    for i in range(25):
+        pad.at(10 + i * 10).turn("B")
+    assert pad.at(400).release("K2") == [Gesture(LAYER, "K2", steps=6, held_ms=400)]
+    pad.at(500).press("K2")
+    for i in range(3):
+        pad.at(510 + i * 10).turn("B")
+    assert pad.at(600).release("K2") == [Gesture(LAYER, "K2", steps=0, held_ms=100)]  # nothing carried over
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-004", "BR-005"], steps=[5])
+def test_a_direction_change_resets_the_layer_accumulator():
+    pad = Pad(N4)
+    pad.at(0).press("K2")
+    for _ in range(3):
+        pad.turn("B")
+    for _ in range(3):
+        pad.turn("A")
+    pad.turn("A")
+    assert pad.at(100).release("K2") == [Gesture(LAYER, "K2", steps=-1, held_ms=100)]
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-005"], steps=[8])
+def test_reset_drops_the_volume_remainder():
+    pad = Pad(N4)
+    assert _volume_steps(pad, "B", 3) == []
+    pad.machine.reset()
+    assert _volume_steps(pad, "B", 1, t0=40) == []
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-005"], steps=[5])
+def test_reset_drops_the_layer_remainder():
+    pad = Pad(N4)
+    pad.at(0).press("K2")
+    for _ in range(3):
+        pad.turn("B")
+    pad.machine.reset()
+    pad.at(10).press("K2")
+    pad.turn("B")
+    assert pad.at(50).release("K2") == [Gesture(LAYER, "K2", steps=0, held_ms=40)]
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-005", "BR-007"], steps=[5])
+def test_a_repress_of_a_down_layer_key_drops_its_remainder():
+    pad = Pad(N4)
+    pad.at(0).press("K2")
+    for _ in range(3):
+        pad.turn("B")
+    pad.at(10).press("K2")  # the release was lost
+    pad.turn("B")
+    assert pad.at(50).release("K2") == [Gesture(LAYER, "K2", steps=0, held_ms=40)]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005", "BR-006"], steps=[8])
+def test_a_knob_press_mute_drops_the_volume_remainder():
+    pad = Pad(N4)
+    assert _volume_steps(pad, "B", 3) == []
+    pad.at(40).press("KNOB_PRESS")
+    pad.release("KNOB_PRESS")
+    assert _volume_steps(pad, "B", 1, t0=60) == []
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005"], steps=[5, 8])
+def test_a_short_layer_interaction_drops_the_volume_remainder():
+    pad = Pad(N4)
+    assert _volume_steps(pad, "B", 3) == []
+    pad.at(30).press("K2")
+    pad.turn("B")
+    pad.at(60).release("K2")
+    assert _volume_steps(pad, "B", 1, t0=80) == []  # 80 ms after the last volume turn: no pause, still dropped

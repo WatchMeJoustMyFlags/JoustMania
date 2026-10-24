@@ -27,6 +27,8 @@ DEFAULT_TAP_MS = 400
 DEFAULT_HOLD_AGENT_MS = 1000
 DEFAULT_HOLD_END_MS = 1500
 DEFAULT_HOLD_LOCK_MS = 3000
+DEFAULT_KNOB_EVENTS_PER_STEP = 4
+KNOB_EVENTS_PER_STEP_RANGE = (1, 12)
 DEFAULT_KEYMAP = (
     "K1=F13,K2=F14,K3=F18,K4=F19,K5=F20,K6=F21,K7=F22,K8=F23,KNOB_PRESS=F15,KNOB_TURN_A=F16,KNOB_TURN_B=F17"
 )
@@ -82,6 +84,7 @@ class Timings:
     hold_ms: dict[str, int] = field(
         default_factory=lambda: {K3: DEFAULT_HOLD_AGENT_MS, K4: DEFAULT_HOLD_END_MS, K8: DEFAULT_HOLD_LOCK_MS}
     )
+    knob_events_per_step: int = DEFAULT_KNOB_EVENTS_PER_STEP  # BR-005: raw knob events per step
 
 
 class PadConfig:
@@ -99,6 +102,18 @@ class PadConfig:
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             logger.warning(f"Malformed {key}={value!r}, using {default}")
             return default
+        return value
+
+    def knob_events_per_step(self) -> int:
+        """Raw knob events that make one step (BR-005); the default outside 1 to 12 or when malformed."""
+        value = self._int("operator_pad.knob_events_per_step", DEFAULT_KNOB_EVENTS_PER_STEP)
+        low, high = KNOB_EVENTS_PER_STEP_RANGE
+        if not low <= value <= high:
+            logger.warning(
+                f"operator_pad.knob_events_per_step={value} outside {low} to {high}, "
+                f"using {DEFAULT_KNOB_EVENTS_PER_STEP}"
+            )
+            return DEFAULT_KNOB_EVENTS_PER_STEP
         return value
 
     def _str(self, key: str, default: str) -> str:
@@ -134,7 +149,9 @@ class PadConfig:
 
     def timings(self) -> Timings:
         """The timings in force; the defaults when a hold time is not above the tap limit (BR-007)."""
+        knob = self.knob_events_per_step()
         timings = Timings(
+            knob_events_per_step=knob,
             tap_ms=self._int("operator_pad.tap_ms", DEFAULT_TAP_MS),
             hold_ms={
                 K3: self._int("operator_pad.hold_agent_ms", DEFAULT_HOLD_AGENT_MS),
@@ -147,5 +164,5 @@ class PadConfig:
                 f"operator_pad timings invalid (tap_ms={timings.tap_ms}, hold={timings.hold_ms}): "
                 "every hold must be longer than the tap limit; using the default timings"
             )
-            return Timings()
+            return Timings(knob_events_per_step=knob)
         return timings

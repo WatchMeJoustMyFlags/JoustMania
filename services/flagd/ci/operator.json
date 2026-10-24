@@ -47,6 +47,15 @@
       },
       "defaultVariant": "default"
     },
+    "operator_pad.knob_events_per_step": {
+      "state": "ENABLED",
+      "variants": {
+        "fine": 2,
+        "default": 4,
+        "coarse": 6
+      },
+      "defaultVariant": "default"
+    },
     "operator_pad.keymap": {
       "state": "ENABLED",
       "variants": {

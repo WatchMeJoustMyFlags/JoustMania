@@ -10,6 +10,10 @@ Rules:
 - K1, K2, K3, K5 and K7 are layer keys: a knob turn while one of them is the only key down
   counts toward that layer and marks the key used, so its release commits the layer
   (``layer``) instead of a tap or hold;
+- the knob turns are raw events (a smooth knob sends about 25 per turn): ``knob_events_per_step``
+  events in one direction make one step, per layer key or, with no layer key, for the volume; a
+  change of direction restarts the count, and the remainder is dropped on the layer key's release,
+  after a pause of ``KNOB_PAUSE_MS`` in turning (the volume commit pause) and on ``reset()``;
 - the knob press is bound when it goes down: to the held layer key (marks it used, never a
   mute), or alone to a mute (``knob_press``, fired at press); its release is swallowed;
 - a chord (a key goes down while another key, or the knob press, is down) blocks every key
@@ -44,6 +48,8 @@ KNOB = "KNOB"
 
 PRESS, RELEASE, REPEAT = 1, 0, 2
 
+KNOB_PAUSE_MS = 250  # BR-005: a pause this long in turning drops the volume remainder
+
 TAP = "tap"
 HOLD = "hold"
 CANCEL = "cancel"
@@ -77,6 +83,9 @@ class GestureMachine:
         self._down: dict[str, int] = {}
         self._used: set[str] = set()
         self._layer_steps: dict[str, int] = {}
+        self._layer_events: dict[str, tuple[int, int]] = {}  # layer key -> (direction, raw events counted)
+        self._volume_events: tuple[int, int] = (0, 0)
+        self._last_volume_turn_ms: int | None = None
         self._chord = False
         self._knob_down = False
 
@@ -85,6 +94,9 @@ class GestureMachine:
         self._down.clear()
         self._used.clear()
         self._layer_steps.clear()
+        self._layer_events.clear()
+        self._volume_events = (0, 0)
+        self._last_volume_turn_ms = None
         self._chord = False
         self._knob_down = False
 
@@ -101,7 +113,7 @@ class GestureMachine:
         if event.name in (KNOB_TURN_A, KNOB_TURN_B):
             if event.value != PRESS:
                 return []  # one detent = one press; its release carries nothing
-            return self._knob_turn(-1 if event.name == KNOB_TURN_A else 1)
+            return self._knob_turn(-1 if event.name == KNOB_TURN_A else 1, event.t_ms, timings)
         if event.name == KNOB_PRESS:
             if event.value == PRESS:
                 return self._knob_press()
@@ -116,6 +128,7 @@ class GestureMachine:
             del self._down[event.name]
             self._used.discard(event.name)
             self._layer_steps.pop(event.name, None)
+            self._layer_events.pop(event.name, None)
         if self.keys_down():
             self._chord = True
         self._down[event.name] = event.t_ms
@@ -129,6 +142,7 @@ class GestureMachine:
         used = key in self._used
         self._used.discard(key)
         steps = self._layer_steps.pop(key, 0)
+        self._layer_events.pop(key, None)  # the remainder of a step is dropped (BR-005)
         if self._chord:
             self._clear_chord_when_idle()
             return []
@@ -164,17 +178,33 @@ class GestureMachine:
         (key,) = self._down
         return key if key in LAYER_KEYS else None
 
-    def _knob_turn(self, step: int) -> list[Gesture]:
+    @staticmethod
+    def _count(events: tuple[int, int], direction: int, per_step: int) -> tuple[tuple[int, int], int]:
+        """One raw event: (new accumulator, steps emitted 0 or +-1); a direction change restarts the count."""
+        last_direction, count = events
+        count = count + 1 if direction == last_direction else 1
+        if count >= per_step:
+            return (direction, 0), direction
+        return (direction, count), 0
+
+    def _knob_turn(self, direction: int, t_ms: int, timings: Timings) -> list[Gesture]:
         if self._chord or self.locked:
             return []
         layer = self._single_layer_key()
         if layer is not None:
+            self._volume_events = (0, 0)  # a layer interaction ends any volume turn in progress
             self._used.add(layer)
+            events, step = self._count(self._layer_events.get(layer, (0, 0)), direction, timings.knob_events_per_step)
+            self._layer_events[layer] = events
             self._layer_steps[layer] = self._layer_steps.get(layer, 0) + step
             return []
         if self._down:
             return []  # a turn while K4, K6 or K8 is down does nothing
-        return [Gesture(KNOB_TURN, KNOB, steps=step)]
+        previous_ms, self._last_volume_turn_ms = self._last_volume_turn_ms, t_ms
+        if previous_ms is None or t_ms - previous_ms >= KNOB_PAUSE_MS:
+            self._volume_events = (0, 0)  # the volume commit pause: a half step never writes
+        self._volume_events, step = self._count(self._volume_events, direction, timings.knob_events_per_step)
+        return [Gesture(KNOB_TURN, KNOB, steps=step)] if step else []
 
     def _knob_press(self) -> list[Gesture]:
         if self._knob_down:
@@ -194,6 +224,7 @@ class GestureMachine:
             self._chord = True
             return []
         self._knob_down = True
+        self._volume_events = (0, 0)  # the mute wins over a turn not yet a step
         return [Gesture(KNOB_PRESS_GESTURE, KNOB)]
 
     def _knob_release(self) -> list[Gesture]:
