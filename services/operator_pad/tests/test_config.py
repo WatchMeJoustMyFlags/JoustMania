@@ -92,3 +92,26 @@ def test_a_hold_not_above_the_tap_limit_keeps_the_default_timings(values):
         timings = PadConfig(_client(values)).timings()
     assert timings == Timings()
     log.warning.assert_called_once()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005"], steps=[8])
+@pytest.mark.parametrize("value", [1, 2, 4, 6, 12])
+def test_knob_events_per_step_in_range_is_used(value):
+    config = PadConfig(_client({"operator_pad.knob_events_per_step": value}))
+    assert config.knob_events_per_step() == value
+    assert config.timings().knob_events_per_step == value
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005"], steps=[8])
+@pytest.mark.parametrize("value", [0, -3, 13, 100, True, "4", 2.5])
+def test_knob_events_per_step_outside_1_to_12_or_malformed_falls_back_to_4_with_a_warning(value):
+    with patch.object(config_module, "logger") as log:
+        config = PadConfig(_client({"operator_pad.knob_events_per_step": value}))
+        assert config.knob_events_per_step() == 4
+    log.warning.assert_called_once()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005", "BR-007"])
+def test_default_timings_after_a_bad_hold_keep_the_valid_knob_setting():
+    config = PadConfig(_client({"operator_pad.hold_end_ms": 400, "operator_pad.knob_events_per_step": 2}))
+    assert config.timings() == Timings(knob_events_per_step=2)

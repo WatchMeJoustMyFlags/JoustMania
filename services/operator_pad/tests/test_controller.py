@@ -22,7 +22,7 @@ UNKNOWN = 115  # KEY_VOLUMEUP of a stock encoder
 def parts():
     config = create_autospec(PadConfig, instance=True)
     config.enabled.return_value = True
-    config.timings.return_value = Timings()
+    config.timings.return_value = Timings(knob_events_per_step=1)
     reader = create_autospec(MenuStatusReader, instance=True)
     actions = create_autospec(Actions, instance=True)
     actions.dispatch.return_value = ("none", "noop")
@@ -105,3 +105,63 @@ async def test_events_dropped_resets_the_gesture_in_progress(parts):
     pad.events_dropped()  # the K4 release may be among the dropped events
     await pad.on_code(F19, RELEASE, 2000)
     actions.dispatch.assert_not_awaited()
+
+
+# --- smooth knob end to end (BR-004, BR-005) -----------------------------------------------------
+
+
+@pytest.fixture
+def real_pad():
+    """The real gesture machine and Actions behind the controller; only the stubs are fakes."""
+    from services.operator_pad.tests.fakes import GatedSleep, MenuStubSpec
+
+    config = create_autospec(PadConfig, instance=True)
+    config.enabled.return_value = True
+    config.timings.return_value = Timings(knob_events_per_step=4)
+    reader = create_autospec(MenuStatusReader, instance=True)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(sensitivity=2)
+    menu = create_autospec(MenuStubSpec, instance=True)
+    menu.ProcessInput.return_value = menu_pb2.ProcessInputResponse(success=True)
+    sleep = GatedSleep()
+    sleep.gate.set()
+    actions = Actions(menu, None, create_autospec(CuePlayer, instance=True), sleep=sleep)
+    pad = PadController(config, reader, actions, create_autospec(CuePlayer, instance=True))
+    pad.attached(KEYMAP)
+    return pad, actions, menu
+
+
+F17, F14 = 187, 184  # knob turn B, K2
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005"], steps=[8])
+async def test_25_raw_events_at_n4_write_the_volume_with_steps_6(real_pad):
+    pad, actions, menu = real_pad
+    for i in range(25):
+        await pad.on_code(F17, PRESS, i * 10)
+        await pad.on_code(F17, RELEASE, i * 10 + 1)
+    await actions.drain()
+    (call,) = menu.ProcessInput.await_args_list
+    assert dict(call.args[0].data) == {
+        "command": "step_setting",
+        "option": "audio_volume.master",
+        "direction": "up",
+        "steps": "6",
+    }
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-004", "BR-005"], steps=[5])
+async def test_25_raw_events_at_n4_write_a_layer_setting_with_steps_6(real_pad):
+    pad, actions, menu = real_pad
+    await pad.on_code(F14, PRESS, 0)
+    for i in range(25):
+        await pad.on_code(F17, PRESS, 10 + i * 10)
+        await pad.on_code(F17, RELEASE, 11 + i * 10)
+    await pad.on_code(F14, RELEASE, 400)
+    await actions.drain()
+    (call,) = menu.ProcessInput.await_args_list
+    assert dict(call.args[0].data) == {
+        "command": "step_setting",
+        "option": "sensitivity",
+        "direction": "up",
+        "steps": "6",
+    }
