@@ -4,6 +4,7 @@
   "packages": {
     ".": {
       "package-name": "joustmania",
+      "bump-minor-pre-major": true,
       "extra-files": [
         {
           "type": "generic",
