@@ -5,7 +5,14 @@ import urllib.error
 
 import pytest
 
-from lib.flag_service_writer import FlagServiceWriter, match_variant, variant_value
+from lib.flag_service_writer import (
+    STEP_AT_LIMIT,
+    STEP_UNAVAILABLE,
+    FlagServiceWriter,
+    VariantStep,
+    match_variant,
+    variant_value,
+)
 
 
 class FakeService:
@@ -180,3 +187,65 @@ def test_base_url_from_env(monkeypatch):
     assert FlagServiceWriter("user").base_url == "http://elsewhere:9"
     monkeypatch.delenv("FLAG_SERVICE_URL")
     assert FlagServiceWriter("user").base_url == "http://flag-service:8070"
+
+
+# --- step_variant: the clamped step of the operator pad (#2050, UC-015 A7, BR-005) -----------
+
+
+def _puts(svc):
+    return [body["variant"] for method, _url, body in svc.requests if method == "PUT"]
+
+
+@pytest.mark.uc("UC-015", flow="A7", br=["BR-005"])
+def test_step_variant_moves_n_steps_with_one_write(svc):
+    w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
+    assert w.step_variant("sensitivity", True, steps=2) == VariantStep("medium", "ultra_fast")
+    assert _puts(svc) == ["ultra_fast"]
+
+
+@pytest.mark.uc("UC-015", flow="A7", br=["BR-005"])
+def test_step_variant_clamps_a_step_past_the_end_to_the_end(svc):
+    w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
+    assert w.step_variant("sensitivity", False, steps=9) == VariantStep("medium", "ultra_slow")
+
+
+@pytest.mark.uc("UC-015", flow="A7")
+@pytest.mark.parametrize(("start", "forward"), [("ultra_fast", True), ("ultra_slow", False)])
+def test_step_variant_at_the_end_writes_nothing_and_reports_at_limit(svc, start, forward):
+    svc.overlay["sensitivity"] = start
+    w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
+    assert w.step_variant("sensitivity", forward) == VariantStep(start, start, STEP_AT_LIMIT)
+    assert _puts(svc) == []
+
+
+def test_step_variant_with_wrap_goes_round_like_cycle_variant(svc):
+    svc.overlay["sensitivity"] = "ultra_fast"
+    w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
+    assert w.step_variant("sensitivity", True, wrap=True) == VariantStep("ultra_fast", "ultra_slow")
+
+
+@pytest.mark.uc("UC-015", flow="A7")
+def test_step_variant_follows_the_given_order_instead_of_the_declared_one():
+    svc = FakeService({"force_all_start": ({"on": True, "off": False}, "off")})
+    w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
+    assert w.step_variant("force_all_start", True, order=["off", "on"]) == VariantStep("off", "on")
+    assert w.step_variant("force_all_start", True, order=["off", "on"]).error == STEP_AT_LIMIT
+
+
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-010"])
+def test_step_variant_fails_closed_when_the_flag_service_is_down(svc):
+    svc.down = True
+    w = FlagServiceWriter("game", "http://fs:8070", transport=svc)
+    assert w.step_variant("sensitivity", True) == VariantStep(None, None, STEP_UNAVAILABLE)
+    assert len(svc.requests) == 1  # one read, no retry
+
+
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-010"])
+def test_step_variant_reports_a_refused_write_as_unavailable(svc):
+    def refuse_puts(method, url, body):
+        if method == "PUT":
+            return 503, {"error": "no_sync_stream"}
+        return svc(method, url, body)
+
+    w = FlagServiceWriter("game", "http://fs:8070", transport=refuse_puts)
+    assert w.step_variant("sensitivity", True) == VariantStep("medium", None, STEP_UNAVAILABLE)

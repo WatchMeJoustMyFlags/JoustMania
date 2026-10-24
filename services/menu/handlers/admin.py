@@ -34,6 +34,16 @@ from lib.flag_service_writer import match_variant, variant_value
 from lib.telemetry import SpanAttr
 from lib.types import Sound
 from services.menu.handlers.base import ButtonDebouncer, ControllerState
+from services.menu.settings_ops import (
+    AGENT_LEVEL_VOICES,
+    AGENT_POLICY_FLAG,
+    NUM_TEAMS_VOICES,
+    SENSITIVITY_VALUES,
+    SENSITIVITY_VOICES,
+    SettingsOps,
+    agent_level_next,
+    variant_to_value,
+)
 
 if TYPE_CHECKING:
     from services.menu.state_manager import StateManager
@@ -50,24 +60,8 @@ AGENT_CONTROL_OPTION = "agent_control"
 # Error cue when the agent-level write fails (UC-013 A3): short fast red pulse.
 AGENT_ERROR_PULSE_MS = 400
 AGENT_ERROR_PULSE_SPEED = 10
-# UC-013 BR-001: the menu writes only this one key of the agent set.
-AGENT_POLICY_FLAG = "interventions_allowed"
-
-# Ordered policy levels for the kill-switch, most-restrictive first. "none" is the
-# panic-off floor (agent applies no deltas — the coordinator allow-list rejects
-# every intervention). Stepping forward escalates permissiveness; the ladder
-# clamps at both ends and never wraps (UC-013).
-AGENT_POLICY_LEVELS = ["none", "ambient", "standard", "full"]
-
-# Voice line per sensitivity level index (0 = ultra_slow ... 4 = ultra_fast),
-# matching original JoustMania. Shared by Circle and Select/Start feedback.
-SENSITIVITY_VOICES = [
-    Sound.MENU_VOX_SENSITIVITY_ULTRA_HIGH,  # ULTRA_SLOW (0)
-    Sound.MENU_VOX_SENSITIVITY_HIGH,  # SLOW (1)
-    Sound.MENU_VOX_SENSITIVITY_MEDIUM,  # MEDIUM (2)
-    Sound.MENU_VOX_SENSITIVITY_LOW,  # FAST (3)
-    Sound.MENU_VOX_SENSITIVITY_ULTRA_LOW,  # ULTRA_FAST (4)
-]
+# The agent key (UC-013 BR-001), the level ladder (clamped, never wrapping) and the voice
+# tables live in services/menu/settings_ops.py, shared with the operator pad commands (#2050).
 
 
 class AdminModeCallbacks(Protocol):
@@ -107,6 +101,7 @@ class AdminModeHandler:
         tracer: trace.Tracer,
         callbacks: AdminModeCallbacks,
         metrics,
+        settings_ops: SettingsOps | None = None,
     ):
         """
         Initialize the admin mode handler.
@@ -116,6 +111,7 @@ class AdminModeHandler:
             tracer: OpenTelemetry tracer for span creation
             callbacks: Menu-specific callbacks (set_menu_state, get_game_options)
             metrics: Prometheus metrics module
+            settings_ops: the menu's shared settings core (#2050); None builds one for this handler
         """
         self.controller_channel = controller_channel
         self.tracer = tracer
@@ -124,6 +120,14 @@ class AdminModeHandler:
 
         # StateManager reference (set via set_state_manager)
         self._state_manager: StateManager | None = None
+
+        # Roster, ghost pruning, agent level reads and value tables shared with the pad commands.
+        self.settings_ops = settings_ops or SettingsOps(
+            get_state_manager=lambda: self._state_manager,
+            controller_channel=controller_channel,
+            metrics=metrics,
+            callbacks=callbacks,
+        )
 
         # Admin mode state
         self.active = False
@@ -760,51 +764,8 @@ class AdminModeHandler:
                 logger.error(f"Error changing game mode: {e}", exc_info=True)
 
     async def _prune_ghosts_with_live_roster(self, controllers: list[str], admin_serial: str, span) -> list[str]:
-        """Drop ghost controllers from ``controllers`` using the CM live roster.
-
-        Queries the controller manager's authoritative ``GetConnectedControllers``
-        RPC (#1153) and removes any serial the backend no longer reports as
-        connected — the residual #551 ghost window where a DISCONNECT was missed
-        and no later event reconciled the menu's view.
-
-        Fail-soft: on any RPC error (or a missing channel), the original list is
-        returned unchanged so force-start is never blocked by a reconcile failure.
-        The admin serial is always preserved even if it is somehow absent from the
-        live roster, so the operator triggering the start is never pruned.
-        """
-        if self.controller_channel is None or not controllers:
-            return controllers
-
-        from proto import controller_manager_pb2, controller_manager_pb2_grpc
-
-        try:
-            stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
-            response = await stub.GetConnectedControllers(controller_manager_pb2.GetConnectedControllersRequest())
-        except Exception as e:
-            logger.warning(f"Live roster query failed, using menu roster as-is: {e}")
-            span.set_attribute("force_start.roster_reconciled", False)
-            self.metrics.force_start_reconcile_failed_total.inc()
-            return controllers
-
-        live_serials = set(response.connected_serials)
-
-        pruned = [s for s in controllers if s in live_serials]
-        ghosts = [s for s in controllers if s not in live_serials]
-
-        if ghosts:
-            logger.warning(f"Force-start: pruning {len(ghosts)} ghost controller(s) via live roster: {ghosts}")
-            for _ in ghosts:
-                self.metrics.ghost_controllers_pruned_total.inc()
-
-        span.set_attribute("force_start.roster_reconciled", True)
-        span.set_attribute("force_start.ghosts_pruned", len(ghosts))
-
-        # Never drop the admin controller that triggered the start, even if the
-        # live roster somehow omits it (avoids starting with an empty roster).
-        if admin_serial and admin_serial not in pruned:
-            pruned.append(admin_serial)
-
-        return pruned
+        """Drop ghost controllers using the CM live roster (#1153); keeps the admin serial (settings_ops)."""
+        return await self.settings_ops.prune_ghosts(controllers, admin_serial, span)
 
     async def handle_force_start(self, serial: str) -> None:
         """
@@ -828,28 +789,9 @@ class AdminModeHandler:
 
             try:
                 # UC-012 BR-001: force_all_start is read at force start, not when it was set.
-                from lib.feature_flags import get_flag_client
-
-                gs_client = get_flag_client("game")
-                force_all = gs_client.get_boolean_value("force_all_start", False)
-                span.set_attribute("force_all_start", force_all)
-
-                # Determine which controllers to include
-                if force_all:
-                    # Use all connected controllers
-                    controllers = list(self._connected_controllers)
-                else:
-                    # Use ready controllers, but include admin if not already ready
-                    controllers = list(self._ready_controllers)
-                    if serial not in controllers:
-                        controllers.append(serial)
-
-                # #1153/#551: prune ghost controllers against the controller
-                # manager's authoritative live roster before starting. Closes the
-                # window where a DISCONNECT was missed (gRPC GOAWAY) and no later
-                # event arrived, so the menu still tracks a phantom controller.
-                # Fail-soft: on any RPC error, keep the menu-derived roster.
-                controllers = await self._prune_ghosts_with_live_roster(controllers, serial, span)
+                # All connected with force_all_start, else the ready ones plus this admin; ghosts
+                # pruned against the controller manager's live roster (#1153/#551), fail-soft.
+                controllers = await self.settings_ops.force_start_roster(serial, span)
 
                 span.set_attribute("controller.count", len(controllers))
 
@@ -981,14 +923,7 @@ class AdminModeHandler:
                     return
 
                 # Map variant name to numeric value for visual feedback
-                variant_to_value = {
-                    "ultra_slow": 0,
-                    "slow": 1,
-                    "medium": 2,
-                    "fast": 3,
-                    "ultra_fast": 4,
-                }
-                new_value = variant_to_value.get(new_variant, 2)
+                new_value = SENSITIVITY_VALUES.get(new_variant, 2)
 
                 # Visual feedback: Color by sensitivity level (5 distinct colors)
                 sensitivity_colors = [
@@ -1445,13 +1380,7 @@ class AdminModeHandler:
 
                 # Voice feedback: "off" announces the panic-off; permissive levels
                 # announce a numbered level (1..3). Reuses existing vox assets.
-                level_voices = {
-                    "none": Sound.MENU_VOX_ADMINOP_OFF,
-                    "ambient": Sound.MENU_VOX_ADMINOP_1,
-                    "standard": Sound.MENU_VOX_ADMINOP_2,
-                    "full": Sound.MENU_VOX_ADMINOP_3,
-                }
-                voice = level_voices.get(new_level)
+                voice = AGENT_LEVEL_VOICES.get(new_level)
                 if voice:
                     await self._play_voice(voice)
 
@@ -1482,71 +1411,12 @@ class AdminModeHandler:
             logger.warning(f"Agent write error pulse failed for {serial}: {e}")
 
     def _current_agent_level(self) -> str | None:
-        """Read the current effective agent policy level (#819).
+        """The current effective agent policy level (#819), live flagd value first. Blocking: to_thread."""
+        return self.settings_ops.current_agent_level()
 
-        Prefers the live flagd value (agent-domain client) so the cycle advances
-        from what the agent is actually using; falls back to the on-disk
-        defaultVariant. Blocking (one flag-service read plus a flagd resolve):
-        run via to_thread.
-        """
-        view = self._state_manager.agent_settings_writer.get_flag_view(AGENT_POLICY_FLAG)
-        file_level = view.get("effective_default") if view else None
-
-        client = getattr(self._state_manager, "agent_settings_client", None)
-        if client is None:
-            return file_level
-        try:
-            # interventions_allowed is a STRING flag (comma-separated ids; #1127),
-            # so resolve it with the string getter and match the string value back
-            # to a variant name. Reading it via get_object_value would TYPE_MISMATCH
-            # to the passed default and break the live-level reconciliation.
-            default_value = variant_value(view, file_level) if file_level else ""
-            resolved = self._resolve_flag_value(client, AGENT_POLICY_FLAG, default_value)
-            return match_variant(view, resolved) or file_level
-        except Exception as e:
-            logger.debug(f"Agent level resolution failed: {e}")
-            return file_level
-
-    @staticmethod
-    def _next_agent_level(current: str | None, forward: bool = True) -> str:
-        """Return the next policy level along AGENT_POLICY_LEVELS, clamped at both ends.
-
-        The ladder deliberately does NOT wrap (UC-013): Start ("restrict") at
-        `none` must stay `none` — a kill switch that escalates to `full` when
-        pressed while already off is unsafe — and Select at `full` stays `full`.
-        """
-        levels = AGENT_POLICY_LEVELS
-        if current not in levels:
-            # Unknown/missing current value: forward starts permissive ladder at
-            # the first level; backward jumps to panic-off. This is also the
-            # benign fail-safe for non-ladder variants — e.g. agent.json's
-            # `probe` variant of interventions_allowed isn't in AGENT_POLICY_LEVELS,
-            # so the next press collapses it to the ladder start (none).
-            return levels[0] if forward else "none"
-        idx = levels.index(current)
-        new_idx = min(idx + 1, len(levels) - 1) if forward else max(idx - 1, 0)
-        return levels[new_idx]
-
-    @staticmethod
-    def _variant_to_value(option_name: str, variant_name: str) -> int | float | bool:
-        """
-        Convert a flag variant name to a typed value for display feedback.
-
-        Args:
-            option_name: Flag key name
-            variant_name: Variant name from the flag file
-
-        Returns:
-            Typed value corresponding to the variant
-        """
-        # UC-012 BR-002: only the controller-cycled options (option_names) need a mapping.
-        variant_maps = {
-            "sensitivity": {"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4},
-            "num_teams": {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6},
-            "force_all_start": {"on": True, "off": False},
-        }
-        mapping = variant_maps.get(option_name, {})
-        return mapping.get(variant_name, 0)
+    # The clamped level ladder (UC-013) and the variant values are shared with the pad (settings_ops).
+    _next_agent_level = staticmethod(agent_level_next)
+    _variant_to_value = staticmethod(variant_to_value)
 
     async def _show_value_feedback(self, serial: str, option_name: str, value: int | float | bool) -> None:
         """
@@ -1614,14 +1484,7 @@ class AdminModeHandler:
                     await self._play_voice(SENSITIVITY_VOICES[value])
             elif option_name == "num_teams":
                 # Play number voice (adminop_2 through adminop_6)
-                num_teams_voices = {
-                    "2": Sound.MENU_VOX_ADMINOP_2,
-                    "3": Sound.MENU_VOX_ADMINOP_3,
-                    "4": Sound.MENU_VOX_ADMINOP_4,
-                    "5": Sound.MENU_VOX_ADMINOP_5,
-                    "6": Sound.MENU_VOX_ADMINOP_6,
-                }
-                voice = num_teams_voices.get(str(value))
+                voice = NUM_TEAMS_VOICES.get(value) if isinstance(value, int) else None
                 if voice:
                     await self._play_voice(voice)
             elif option_name == "force_all_start":
