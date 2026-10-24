@@ -52,7 +52,7 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | rust-hid | Rust | 50058 gRPC | `127.0.0.1:50058` (for the host-networked pairing daemon, #1319; full and lite stack) | HID access: PairingService + ControllerIOService. The default Bluetooth backend; in the full and the lite stack (UC-002 BR-003) | `services/rust-hid/` |
 | pairing-daemon | Python | 8002 `/healthz`, `POST /controllers/{address}/unpair` (host network, bound to `CONTROL_BIND`) | host network | USB pairing loop, Bluetooth monitor (RSSI metrics), unpair a controller (UC-005) | `services/pairing_daemon/` |
 | game-coordinator | Python | 50053 gRPC (metrics are pushed over OTLP) | 50053 via override | Game sessions (primary + shadow), game modes, death detection, events, interventions consumer | `services/game_coordinator/` |
-| menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode; writes admin settings for `game` / `user` / `agent.interventions_allowed` to the flag service as persisted admin values; planned (#2050): also the operator pad commands (§3.1: `agent.enabled` in memory, `agent.decision.backend`, `user.audio_volume.master`) | `services/menu/` |
+| menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode; writes admin settings for `game` / `user` / `agent.interventions_allowed` to the flag service as persisted admin values; also the operator pad commands (§3.1, #2050: `agent.enabled` in memory, `agent.decision.backend`; `user.audio_volume.master` once the flag exists, planned) | `services/menu/` |
 | audio | Python | 50056 gRPC | 50056 via override | Music with tempo (separate process, soxr), 8 effect channels (miniaudio), ALSA | `services/audio/` |
 | agent | Go | 4317 OTLP gRPC (receiver); 13134 HTTP `/healthz`, `/experiments` | no | Observe via OTLP, decide, write interventions / rollout / experiment arms / promotions through the flag service, run experiments and promotion | `services/agent/` |
 | operator-pad | Python | none (a gRPC client of the menu, the game coordinator and the audio service) | no | **Planned (#2050, Open):** optional, `operator-pad` compose profile only, not privileged. Reads a USB macro pad through evdev (exclusive grab, hotplug), turns key gestures into menu commands and force-end (UC-015); writes no flag itself. Its removal leaves every other service unchanged (FR-195) | `services/operator_pad/` (planned) |
@@ -172,11 +172,11 @@ implement `WatchGameplayData` itself (UNIMPLEMENTED).
 
 **Traceability:** C-014 / UC-002, UC-003, UC-004, UC-010, UC-027, UC-031 / `proto/*.proto`, `services/connect-proxy/main.go`, `services/dashboard/src/connect.ts`, `services/dashboard/src/client.ts` / `tests/integration/`, `services/connect-proxy/forwarding_test.go`, `services/connect-proxy/watch_gameplay_test.go`, `services/dashboard/src/__tests__/connect.test.ts`.
 
-### 3.1 Operator pad commands and `GetMenuStatus` (planned, #2050, Open)
+### 3.1 Operator pad commands and `GetMenuStatus` (#2050, In Progress)
 
-Spec for [UC-015](../use_cases/UC-015.md). Nothing here exists yet; each row lands with its code PR. The generated tables ([generated/grpc-rpcs.md](generated/grpc-rpcs.md)) and [notes/grpc-rpcs.yaml](notes/grpc-rpcs.yaml) gain the `GetMenuStatus` row when `proto/menu.proto` does.
+Spec for [UC-015](../use_cases/UC-015.md). The four `ProcessInput` commands are implemented (#2050 PR3), except the `stale` check: `expected_generation` is accepted but not compared until `lifecycle_generation` lands with `GetMenuStatus` (planned, Open). The `audio_volume.master` option writes a flag that does not exist yet (planned, #2050 PR2): until then that write fails with `flag_service_unavailable`. The generated tables ([generated/grpc-rpcs.md](generated/grpc-rpcs.md)) and [notes/grpc-rpcs.yaml](notes/grpc-rpcs.yaml) gain the `GetMenuStatus` row when `proto/menu.proto` does.
 
-**`MenuService.ProcessInput` `web_command` additions** (`data` keys; no new RPC, so they are forwarded by the existing `MenuProxy`). They share one core with admin mode (`services/menu/settings_ops.py`, planned) and use no controller serial: no LED pulse, no admin session span, no roster entry for the caller.
+**`MenuService.ProcessInput` `web_command` additions** (`data` keys; no new RPC, so they are forwarded by the existing `MenuProxy`). They share one core with admin mode (`services/menu/settings_ops.py`) and use no controller serial: no LED pulse, no admin session span, no roster entry for the caller.
 
 | `web_command` | `data` | Effect | Errors |
 |---|---|---|---|
@@ -203,7 +203,7 @@ Error codes (a refusal is `success=false` and the code in `error`; no state chan
 
 The display's pages come in phase 2; the proto fields are additive.
 
-**Traceability:** FR-190 to FR-195 / UC-015 / planned `proto/menu.proto`, `services/menu/servicer.py`, `services/connect-proxy/main.go` / planned tests in #2050.
+**Traceability:** FR-190 to FR-195 / UC-015 / `services/menu/servicer.py`, `services/menu/settings_ops.py`, `lib/flag_service_writer.py`, planned `proto/menu.proto`, `services/connect-proxy/main.go` / `services/menu/tests/test_pad_commands.py`, `lib/tests/test_flag_service_writer.py`.
 
 ## 4. Key messages
 
@@ -370,7 +370,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 
 - Readiness (#1826): gRPC health (`""` and `menu.MenuService`) is NOT_SERVING from server start until the boot lobby entry has run (after the bounded 5 s flag-provider wait), or until that wait ends with `menu_auto_start` off, or until the boot entry times out (`BOOT_LOBBY_ENTRY_TIMEOUT_SECONDS`, 10 s; a hung audio call) or raises (a warning is logged, the menu stays up); then SERVING. A client that trusts health never races the boot entry with StopMenu / StartMenu. A provider that never answers still ends the wait after 5 s and the menu becomes SERVING. The image healthcheck uses `--start-period=10s` so the wait is not counted as failures. The service-tier harness still also waits for the `Menu auto-started` log line (redundant now, kept).
 - Service state STOPPED / RUNNING / GAME_STARTING; controller states CONNECTED / READY / ADMIN / IDLE (UC-010 to UC-014).
-- Writes admin settings through the flag service (`lib/flag_service_writer.py`, `"persist": true`, writer `menu`); it mounts no flag file. Planned (#2050): the operator pad commands of §3.1 use a second writer with no `persist` field for the in-memory `agent/enabled`, and the menu keeps the pad's saved agent level in memory.
+- Writes admin settings through the flag service (`lib/flag_service_writer.py`, `"persist": true`, writer `menu`); it mounts no flag file. The operator pad commands of §3.1 (#2050) use a second writer with no `persist` field for the in-memory `agent/enabled`, and the menu keeps the pad's saved agent level in memory.
 
 ### audio
 

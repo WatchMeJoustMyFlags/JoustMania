@@ -74,7 +74,7 @@ effect only on the next start of the flag service (`scripts/flags.sh restart`).
 |---|---|---|---|
 | `game` | Human admin | menu admin mode (persisted admin values); agent experiment writer (experiment-arm values of the experiment catalog only); autonomous promotion (`real` overlay, gated, off in the stock stack) | per deployment (baseline); experiment arm values until teardown; promotion until the flag service restarts |
 | `user` | Human admin | menu (`current_game`, `game_instructions`); operator pad through the menu: `audio_volume.master` (planned, #2050) | per deployment |
-| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays, except the decision backend and model flags that `agent-backend.sh` persists, #1682); menu admin writes `interventions_allowed` only (persisted); the operator pad through the menu also writes `enabled` (in memory) and `decision.backend` (persisted) (planned, #2050) | per deployment (baseline); overlays until cleared or the flag service restarts |
+| `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays, except the decision backend and model flags that `agent-backend.sh` persists, #1682); menu admin writes `interventions_allowed` only (persisted); the operator pad through the menu also writes `enabled` (in memory) and `decision.backend` (persisted) (#2050) | per deployment (baseline); overlays until cleared or the flag service restarts |
 | `interventions` | Agent | agent action sink only, game-scoped (values and event lists) | per game: dropped when the game ends (UC-053 BR-003) |
 | `rollout` | Operator + agent | operator: `target_backend`, `strategy`, `remediation_allowed`; agent: `current_controller_count` | per rollout |
 | `controller` | Operator | baseline edits; connect-proxy `/canary/*` through the flag service | per deployment (baseline); canary overlays until cleared |
@@ -88,7 +88,7 @@ OWNERSHIP_MODEL.md invariant 1; concurrent writers are serialized by the flag se
 
 File: [`services/flagd/agent.json`](../../services/flagd/agent.json). The three pattern-game flags are listed in §3.1.
 
-The agent's governor: existence (`enabled`), actuation gates, allow-list, policy budgets, objectives and fitness thresholds, decision-backend selection, experiment and verdict knobs, code-improvement promotion, plus the `perception.*` analytics knobs that the **game coordinator** reads. Human-owned (operator); the agent never writes this file; the menu's admin mode writes only `interventions_allowed` (admin kill switch, #819); the operator pad commands through the menu add `enabled` (in memory) and `decision.backend` (planned, #2050). See [OWNERSHIP_MODEL.md](../OWNERSHIP_MODEL.md).
+The agent's governor: existence (`enabled`), actuation gates, allow-list, policy budgets, objectives and fitness thresholds, decision-backend selection, experiment and verdict knobs, code-improvement promotion, plus the `perception.*` analytics knobs that the **game coordinator** reads. Human-owned (operator); the agent never writes this file; the menu's admin mode writes only `interventions_allowed` (admin kill switch, #819); the operator pad commands through the menu add `enabled` (in memory) and `decision.backend` (#2050). See [OWNERSHIP_MODEL.md](../OWNERSHIP_MODEL.md).
 
 | Key | Type | Variants | Default | Targeting | Read by (file:line) | Written by | Reload |
 |---|---|---|---|---|---|---|---|
@@ -480,7 +480,7 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | Key | Kind | Scope | Bounds | Persist | Today's writer |
 |---|---|---|---|---|---|
 | `interventions_allowed` | overlay | stack | declared variants (`none`, `probe`, `ambient`, `standard`, `full`, `shadow_experimental`) | **yes** (admin kill switch, FR-019) | menu admin, `talk-stage.sh permissions` |
-| `enabled` | overlay | stack | `on`, `off` | no | `agent-killswitch.sh`, `agent-dryrun-enable.sh`, `talk-stage.sh`; the operator pad through the menu (planned, #2050): a writer with no `persist` field, because a write asking to persist is `400` (UC-015 BR-001) |
+| `enabled` | overlay | stack | `on`, `off` | no | `agent-killswitch.sh`, `agent-dryrun-enable.sh`, `talk-stage.sh`; the operator pad through the menu (#2050, `agent_enabled_writer`): a writer with no `persist` field, because a write asking to persist is `400` (UC-015 BR-001) |
 | `interventions_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
 | `experiments_enabled`, `experiment_dynamic_enabled` | overlay | stack | `on`, `off` | no | `agent-dryrun-enable.sh`, `talk-stage.sh` |
 | `rollout_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
