@@ -100,7 +100,10 @@ the current version runs, switches the checkout, restarts the unit and rolls bac
 services do not come up healthy (`--no-rollback` keeps the failed version for inspection;
 `--rollback` returns to the other recorded version offline, back on its branch when it ran from one, and
 only when every image compose resolves there is on the Pi; `--status` shows both). Put opt-in profiles
-(`COMPOSE_PROFILES=python-hid`) in `.env.local`; a `systemctl edit` drop-in is honoured too.
+(`COMPOSE_PROFILES=python-hid`, `COMPOSE_PROFILES=operator-pad`, or both comma-separated) in `.env.local`; a `systemctl edit`
+drop-in is honoured too. The start script removes the container of a profile that is off (python-hid, operator-pad), so
+switching a profile off takes effect at the next start. The operator pad ([UC-015](use_cases/UC-015.md)) reads `/dev/input`
+as the host's `input` group: set `INPUT_GID` in `.env.local` when `getent group input` is not 996.
 
 Cut-off runs (power loss, ssh hang-up) and manual recovery:
 
@@ -137,7 +140,7 @@ ghcr.io/watchmejoustmyflags/joustmania/<image>:${IMAGE_TAG:-latest}
 
 Images in `docker-compose.yml`: `agent`, `audio-service`, `connect-proxy`, `controller-manager-service`,
 `dashboard`, `flag-service`, `game-coordinator-service`, `menu-service`, `otel-collector`,
-`pairing-daemon-service`, `python-hid`, `rust-hid`. Third-party images (envoy, flagd, jaeger, victoria-metrics,
+`operator-pad`, `pairing-daemon-service`, `python-hid`, `rust-hid`. Third-party images (envoy, flagd, jaeger, victoria-metrics,
 grafana, loki) are pinned to exact versions in the compose file.
 
 `IMAGE_TAG` defaults to `latest` in the compose file, but a plain `docker compose` also reads `.env`, which
@@ -275,7 +278,7 @@ Use the same `-f` flags the stack was started with, or `docker compose` will not
 lib/            shared Python: types.py (enums), colors.py, telemetry.py, otel_metrics.py,
                 grpc_tracing.py, feature_flags.py, ... (list: services.md section 6)
 proto/          .proto files; generated *_pb2*.py are committed
-services/       controller_manager, game_coordinator, menu, audio, python_hid, pairing_daemon (Python);
+services/       controller_manager, game_coordinator, menu, audio, python_hid, pairing_daemon, operator_pad (Python);
                 agent, flag-service, connect-proxy (Go); rust-hid (Rust); dashboard (TypeScript);
                 flagd, envoy, otel-collector, jaeger, loki, grafana (config)
 tests/          integration/ (docker), service/ (T2), contract/
@@ -336,7 +339,8 @@ checklists below are the code side.
 
 `controller-manager`, `python-hid`, `rust-hid` and `pairing-daemon` run `privileged` for USB/HID and
 Bluetooth access; `pairing-daemon` also uses the host network (raw HCI). `audio` is unprivileged and gets the
-sound devices. Details and the reasons: [services.md](specs/services.md#mode-to-config-message-privileges-libraries-and-proto-files).
+sound devices. `operator-pad` (opt-in profile) is unprivileged: a read-only `/dev/input` mount, the cgroup
+rule `c 13:* rmw` and the host's `input` group (`INPUT_GID`). Details and the reasons: [services.md](specs/services.md#mode-to-config-message-privileges-libraries-and-proto-files).
 Without hardware, `docker-compose.ci.yml` removes the audio devices and moves the hardware services behind
 the `hardware` profile.
 
@@ -351,7 +355,7 @@ images are multi-stage: a builder stage with uv, a slim runtime stage copying th
 | Old behaviour after a rebuild | `.env` pins the release `IMAGE_TAG`; set `IMAGE_TAG=latest` and verify the image, not just the tag |
 | Port in use on 80 or 50052-50056 | Another stack or process holds it: `ss -ltnp \| grep -E ':(80\|5005)'` |
 | gRPC connection refused from the host | Dev ports exist only with `docker-compose.override.yml`; the Pi start path does not publish them |
-| Overlay service missing from `docker compose ps` | Profiles: `agent`, `dashboard`, `hardware`, `python-hid` ([matrix](specs/services.md#compose-variants-and-host-ports)) |
+| Overlay service missing from `docker compose ps` | Profiles: `agent`, `dashboard`, `hardware`, `python-hid`, `operator-pad` ([matrix](specs/services.md#compose-variants-and-host-ports)) |
 | Hardware access denied | The hardware services must run `privileged` with the USB devices; check the compose entry |
 | Traces missing | `docker compose logs otel-collector`; service `OTEL_*` env |
 | `compose config` prints secrets | Use `config -q` or `--services` when output is logged |

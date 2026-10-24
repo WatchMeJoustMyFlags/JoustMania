@@ -48,7 +48,7 @@ name: CI
 # A skipped e2e job is fine for CI Complete unless e2e_required was true.
 #
 # Release contract: release.yml tag-images retags IMAGE:<sha> -> IMAGE:<version>
-# for all 12 release images, so every main push must produce a :<sha> tag for
+# for all 13 release images, so every main push must produce a :<sha> tag for
 # every image. Images skipped by the path filter get a seconds-long manifest
 # retag from :main instead (retag-skipped job).
 
@@ -303,7 +303,7 @@ jobs:
             python_hid:
               - *shared_python
               - 'services/python_hid/**'
-            # #2050: unit tests only; the image and its build/retag rows land with the compose profile (PR7)
+            # #2050: the operator pad (profile-gated image, docker-build-extra like python-hid)
             operator_pad:
               - *shared_python
               - 'services/operator_pad/**'
@@ -473,6 +473,7 @@ jobs:
           maybe_extra "$CH_DASHBOARD"      dashboard      services/dashboard/Dockerfile     . dashboard
           maybe_extra "$CH_RUST"           rust-hid       services/rust-hid/Dockerfile      . rust-hid
           maybe_extra "$CH_PYTHON_HID"     python-hid     services/python_hid/Dockerfile    . python-hid
+          maybe_extra "$CH_OPERATOR_PAD"   operator-pad   services/operator_pad/Dockerfile  . operator-pad
           maybe_extra "$CH_OTEL_COLLECTOR" otel-collector images/otel-collector/Dockerfile  images/otel-collector otel-collector
           if [ "${#extra[@]}" -eq 0 ]; then
             echo "docker_extra=[]" >> "$GITHUB_OUTPUT"
@@ -480,7 +481,7 @@ jobs:
             echo "docker_extra=$(printf '%s\n' "${extra[@]}" | jq -sc .)" >> "$GITHUB_OUTPUT"
           fi
 
-          # retag matrix: the 12 release.yml images NOT built this run — on main
+          # retag matrix: the 13 release.yml images NOT built this run — on main
           # pushes they still need a :<sha> tag for release tagging
           retag=()
           maybe_retag() {
@@ -495,6 +496,7 @@ jobs:
           maybe_retag "$CH_DASHBOARD"          dashboard
           maybe_retag "$CH_RUST"               rust-hid
           maybe_retag "$CH_PYTHON_HID"         python-hid
+          maybe_retag "$CH_OPERATOR_PAD"       operator-pad
           maybe_retag "$CH_OTEL_COLLECTOR"     otel-collector
           maybe_retag "$CH_FLAG_SERVICE"       flag-service
           maybe_retag "$CH_AGENT"              agent
@@ -1734,7 +1736,7 @@ jobs:
       - name: Inspect manifest
         run: docker buildx imagetools inspect "${IMAGE_PREFIX}/${IMAGE_NAME}:${GITHUB_SHA}"
 
-  # Release contract: release.yml tag-images expects IMAGE:<sha> for all 12
+  # Release contract: release.yml tag-images expects IMAGE:<sha> for all 13
   # release images. Images skipped by the path filter get a manifest-only retag
   # from :main (seconds each). Explicit if-condition because the build jobs may
   # legitimately be 'skipped' (plain `needs` semantics would skip this job too).

@@ -23,6 +23,7 @@ flowchart LR
     gc --> cm
     gc --> audio
     cm -. opt-in profile .-> phid[python-hid]
+    pad[operator-pad] -. opt-in profile .-> menu & gc & audio
     cm --> rhid[rust-hid]
     pd[pairing-daemon] --> rhid
     agent -->|shadow games| gc
@@ -30,7 +31,7 @@ flowchart LR
     services_all[all services] -->|OTLP| otel[otel-collector]
     otel -->|fan-out| agent
     otel --> obs
-    flagd[(flagd)] -.flags.-> cm & gc & menu & audio & pd & agent & rhid
+    flagd[(flagd)] -.flags.-> cm & gc & menu & audio & pd & agent & rhid & pad
     envoy -->|/flags/| fsvc[flag-service]
     fsvc -->|sync stream| flagd
     agent & menu & cproxy & gc -->|HTTP writes| fsvc
@@ -52,10 +53,10 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | rust-hid | Rust | 50058 gRPC | `127.0.0.1:50058` (for the host-networked pairing daemon, #1319; full and lite stack) | HID access: PairingService + ControllerIOService. The default Bluetooth backend; in the full and the lite stack (UC-002 BR-003) | `services/rust-hid/` |
 | pairing-daemon | Python | 8002 `/healthz`, `POST /controllers/{address}/unpair` (host network, bound to `CONTROL_BIND`) | host network | USB pairing loop, Bluetooth monitor (RSSI metrics), unpair a controller (UC-005) | `services/pairing_daemon/` |
 | game-coordinator | Python | 50053 gRPC (metrics are pushed over OTLP) | 50053 via override | Game sessions (primary + shadow), game modes, death detection, events, interventions consumer | `services/game_coordinator/` |
-| menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode; writes admin settings for `game` / `user` / `agent.interventions_allowed` to the flag service as persisted admin values; also the operator pad commands (§3.1, #2050: `agent.enabled` in memory, `agent.decision.backend`; `user.audio_volume.master` once the flag exists, planned) | `services/menu/` |
+| menu | Python | 50054 gRPC | 50054 via override | Lobby, ready state, mode selection, admin mode; writes admin settings for `game` / `user` / `agent.interventions_allowed` to the flag service as persisted admin values; also the operator pad commands (§3.1, #2050: `agent.enabled` in memory, `agent.decision.backend`; `user.audio_volume.master`) | `services/menu/` |
 | audio | Python | 50056 gRPC | 50056 via override | Music with tempo (separate process, soxr), 8 effect channels (miniaudio), ALSA | `services/audio/` |
 | agent | Go | 4317 OTLP gRPC (receiver); 13134 HTTP `/healthz`, `/experiments` | no | Observe via OTLP, decide, write interventions / rollout / experiment arms / promotions through the flag service, run experiments and promotion | `services/agent/` |
-| operator-pad | Python | none (a gRPC client of the menu, the game coordinator and the audio service) | no | **In Progress (#2050):** the code is in `services/operator_pad/` (PR6); the image and the `operator-pad` compose profile are planned (PR7), so no stack runs it yet. Optional, `operator-pad` compose profile only, not privileged. Reads a USB macro pad through evdev (exclusive grab, hotplug), turns key gestures into menu commands and force-end (UC-015); writes no flag itself. Its removal leaves every other service unchanged (FR-195) | `services/operator_pad/` |
+| operator-pad | Python | none (a gRPC client of the menu, the game coordinator and the audio service) | no | **In Progress (#2050):** code in `services/operator_pad/` (PR6), image `operator-pad` and compose profile (PR7); the Pi hardware check is PR8. Optional, `operator-pad` compose profile only (full stack; the lite stack has no pad), not privileged: a read-only bind mount of `/dev/input`, the cgroup rule `c 13:* rmw` (evdev nodes, also ones plugged in later), `group_add` with the host's input GID (`INPUT_GID`, default 996, the stage Pi; host identity under C-035), no `/run/udev`; waits only for flagd. Reads a USB macro pad through evdev (exclusive grab, hotplug), turns key gestures into menu commands and force-end (UC-015); writes no flag itself. Its removal leaves every other service unchanged (FR-195) | `services/operator_pad/` |
 | connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*` writes the `controller` set through the flag service | `services/connect-proxy/` |
 | dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005); mode selector from the menu's `ListGameModes` (UC-011 BR-002) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
@@ -90,7 +91,7 @@ service cannot be scaled with `--scale`.
 
 | File | Kind | Adds or changes | Loaded by |
 |---|---|---|---|
-| `docker-compose.yml` | Base (full stack) | Every service of section 2; real hardware through rust-hid; the `python-hid` service only under the `python-hid` profile; loopback host ports below | Always (`-f`); the Pi runs it alone through `scripts/setup/joustmania-compose.sh` |
+| `docker-compose.yml` | Base (full stack) | Every service of section 2; real hardware through rust-hid; the `python-hid` service only under the `python-hid` profile and the `operator-pad` service only under the `operator-pad` profile; loopback host ports below | Always (`-f`); the Pi runs it alone through `scripts/setup/joustmania-compose.sh` |
 | `docker-compose.override.yml` | Dev and test ports | Publishes flagd 8013, flag-service `127.0.0.1:8070`, controller-manager 50052 and `127.0.0.1:50062` (mock control API, loopback only, #1628), game-coordinator 50053, menu 50054, audio 50056. Auto-loaded by a bare `docker compose`; the Pi path names `-f docker-compose.yml` so it never loads it (#1319) | Bare `docker compose`, `make dev`, `make dry-run`, the integration suite |
 | `docker-compose.dev.yml` | Hot reload | Volume-mounts Python service source and `lib/`, `pull_policy: build` for flag-service, `pull_policy` for the collector (`COLLECTOR_PULL_POLICY`, default `always`); rust-hid source mounted read-only for reference (no hot reload) | `make dev`; the integration suite with `USE_DEV_MOUNTS=true` (`make test-dev`) |
 | `docker-compose.ci.yml` | No hardware | Audio without devices (`play_audio=off`), CI flag baseline `services/flagd/ci/` (`backend=mock`). Moves pairing-daemon, rust-hid and python-hid to the `hardware` profile, the agent to `agent`, and connect-proxy, dashboard and envoy to `dashboard`, so none of them starts without that profile. Needs Compose 2.24+ (`!reset`) | `make up-mock` (with the base alone, no override), `make dry-run`, the integration suite |
@@ -98,7 +99,7 @@ service cannot be scaled with `--scale`.
 | `docker-compose.lite.yml` | Standalone Pi stack | Its own project file, not an overlay: no observability (no Jaeger, VictoriaMetrics, Loki, Grafana, collector) and no agent, about 768 MB less memory; still flag-service, flagd, controller-manager, rust-hid, pairing-daemon (host network, as in the full stack), game-coordinator, menu, audio, connect-proxy, dashboard, envoy (UC-002 BR-003, #1318, #1402) | `docker compose -f docker-compose.lite.yml up -d` |
 
 Profiles merge across files: an overlay's `profiles` list is added to the base one, never replaced (python-hid keeps `python-hid` and
-gains `hardware` under the CI overlay). With no profile active, the base file starts everything except python-hid.
+gains `hardware` under the CI overlay). With no profile active, the base file starts everything except python-hid and operator-pad.
 
 **Host ports are loopback-only unless they must be reachable (#1319).** In the production path (`docker-compose.yml` alone, or lite) the only
 port reachable from the venue network is envoy's **80**. Three ports are published on `127.0.0.1` only, because the host-networked
@@ -174,7 +175,7 @@ implement `WatchGameplayData` itself (UNIMPLEMENTED).
 
 ### 3.1 Operator pad commands and `GetMenuStatus` (#2050, In Progress)
 
-Spec for [UC-015](../use_cases/UC-015.md). The four `ProcessInput` commands (#2050 PR3) and `GetMenuStatus` with `lifecycle_generation` and the `force_start` `stale` check (#2050 PR4) are implemented; the pad service that calls them is in `services/operator_pad/` (#2050 PR6) and not deployed yet (PR7). `GetMenuStatus` is in the generated tables ([generated/grpc-rpcs.md](generated/grpc-rpcs.md), notes in [notes/grpc-rpcs.yaml](notes/grpc-rpcs.yaml)).
+Spec for [UC-015](../use_cases/UC-015.md). The four `ProcessInput` commands (#2050 PR3) and `GetMenuStatus` with `lifecycle_generation` and the `force_start` `stale` check (#2050 PR4) are implemented; the pad service that calls them is in `services/operator_pad/` (#2050 PR6) and deploys under the `operator-pad` compose profile (#2050 PR7). `GetMenuStatus` is in the generated tables ([generated/grpc-rpcs.md](generated/grpc-rpcs.md), notes in [notes/grpc-rpcs.yaml](notes/grpc-rpcs.yaml)).
 
 **`MenuService.ProcessInput` `web_command` additions** (`data` keys; no new RPC, so they are forwarded by the existing `MenuProxy`). They share one core with admin mode (`services/menu/settings_ops.py`) and use no controller serial: no LED pulse, no admin session span, no roster entry for the caller.
 
@@ -451,7 +452,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | Werewolf | `WerewolfConfig` | `reveal_time_seconds` (35.0) |
 | Traitor | `TraitorConfig` | `num_teams` (0 = auto from player count) |
 
-Container privileges (`docker-compose.yml`): `controller-manager`, `python-hid`, `rust-hid` and `pairing-daemon` run `privileged` (pairing-daemon also on the host network); `audio` is not privileged but gets sound devices; all other services run as standard containers.
+Container privileges (`docker-compose.yml`): `controller-manager`, `python-hid`, `rust-hid` and `pairing-daemon` run `privileged` (pairing-daemon also on the host network); `audio` is not privileged but gets sound devices; `operator-pad` is not privileged but reads `/dev/input` (read-only mount, cgroup rule `c 13:* rmw`, the host's input group); all other services run as standard containers.
 
 Shared libraries in `lib/`: `types.py` (enums such as `Games`), `colors.py`, `controller_constants.py`, `psmove_hid.py` and `bluez_dbus.py` (controller I/O and BlueZ), `grpc_tracing.py`, `grpc_metrics.py`, `grpc_utils.py`, `telemetry.py`, `otel_metrics.py`, `otel_logging.py`, `otel_resource.py`, `openfeature_otel_hooks.py`, `system_metrics.py`, `feature_flags.py`, `flag_eval_visibility.py`, `flag_service_writer.py`, `clock.py`.
 

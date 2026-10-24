@@ -57,7 +57,8 @@ CODE_ROOTS: dict[str, tuple[str, tuple[Path, ...]]] = {
     "game-coordinator": ("python", (SERVICES / "game_coordinator", LIB)),
     "menu": ("python", (SERVICES / "menu", LIB)),
     "audio": ("python", (SERVICES / "audio", LIB)),
-    # #2050: no compose service yet (PR7), so no stack case is generated for it
+    # #2050: profile-gated (operator-pad); INPUT_GID is a compose-only interpolation
+    # (group_add), never read by the code, so it is not an env read here (flags.md §15.2)
     "operator-pad": ("python", (SERVICES / "operator_pad", LIB)),
     "agent": ("go", (SERVICES / "agent",)),
     "flag-service": ("go", (SERVICES / "flag-service",)),

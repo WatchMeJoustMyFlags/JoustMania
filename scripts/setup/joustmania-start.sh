@@ -212,6 +212,16 @@ if ! grep -qx python-hid <<<"$COMPOSE_SERVICES"; then
     docker rm -f joustmania-python-hid >/dev/null 2>&1 || true
 fi
 
+# The operator pad (UC-015, #2050) is opt-in the same way: COMPOSE_PROFILES=
+# operator-pad in .env.local (comma-separated with python-hid when both run).
+# A pad container left over from a run with the profile on would keep its
+# exclusive grab of the pad and keep sending commands (restart:
+# unless-stopped, and `up -d --remove-orphans` keeps a profile-inactive
+# container), so remove it whenever the profile is off. Idempotent.
+if ! grep -qx operator-pad <<<"$COMPOSE_SERVICES"; then
+    docker rm -f joustmania-operator-pad >/dev/null 2>&1 || true
+fi
+
 # Start services (this must succeed). Not exec: the EXIT trap records the result.
 echo "Starting JoustMania (Bluetooth backend: rust-hid${COMPOSE_PROFILES:+, profiles: ${COMPOSE_PROFILES}})..."
 compose up -d --remove-orphans
