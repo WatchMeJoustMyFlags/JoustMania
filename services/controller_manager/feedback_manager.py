@@ -11,6 +11,7 @@ Phase 57: Backend abstraction for platform independence.
 import asyncio
 import contextlib
 import logging
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -21,16 +22,28 @@ from lib.telemetry import extract_trace_context, get_tracer
 from proto import controller_manager_pb2
 from services.controller_manager import metrics
 from services.controller_manager.effects_base import (
+    CHARGE_GRANT_PULSES,
     CHARGE_MAX_DURATION_MS,
+    CHARGE_PRE_EXPIRY_PULSES,
+    CHARGE_PULSE_GAP_MS,
     CHARGE_RENDER_INTERVAL_S,
-    CHARGE_TICK_INTENSITY,
-    CHARGE_TICK_MS,
+    CHARGE_SLOT_POLL_S,
+    CHARGE_SLOT_WAIT_S,
+    DEFAULT_CHARGE_PRE_EXPIRY_S,
+    DEFAULT_CHARGE_REMINDER_S,
+    DEFAULT_CHARGE_RUMBLE_INTENSITY,
+    DEFAULT_CHARGE_RUMBLE_PULSE_MS,
+    DEFAULT_SHIELD_ENDING_LEAD_S,
     SHIELD_BLINK_WINDOW_S,
+    SHIELD_ENDING_PULSES,
     SWELL_MS,
     SWELL_STEP_S,
     ActiveEffect,
+    ChargeCues,
     ControllerEffectsBase,
     charge_frame,
+    resolve_charge_cues,
+    resolve_shield_ending_lead,
     shield_frame,
     swell_intensity,
 )
@@ -135,6 +148,31 @@ def _on_game_flags_changed(event_details) -> None:
         logger.warning(f"Failed to refresh winner_rainbow_duration_ms from flagd: {e}")
 
 
+def read_charge_cues() -> ChargeCues:
+    """The charge rumble pattern for a new charge, from the four ``game`` flags (flags.md §4, #2094).
+
+    Read when a charge layer starts (never per frame or per pulse), so a stage flip applies
+    from the next charge; any failure gives the defaults.
+    """
+    from lib.feature_flags import read_float_flag, read_int_flag
+
+    return resolve_charge_cues(
+        read_int_flag("game", "shield.charge_rumble_intensity", DEFAULT_CHARGE_RUMBLE_INTENSITY),
+        read_int_flag("game", "shield.charge_rumble_pulse_ms", DEFAULT_CHARGE_RUMBLE_PULSE_MS),
+        read_float_flag("game", "shield.charge_reminder_seconds", DEFAULT_CHARGE_REMINDER_S),
+        read_float_flag("game", "shield.charge_pre_expiry_seconds", DEFAULT_CHARGE_PRE_EXPIRY_S),
+    )
+
+
+def read_shield_ending_lead() -> float:
+    """Seconds before an active shield ends for the "ending soon" pulse (flags.md §4, #2094); read per layer start."""
+    from lib.feature_flags import read_float_flag
+
+    return resolve_shield_ending_lead(
+        read_float_flag("game", "shield.ending_rumble_seconds", DEFAULT_SHIELD_ENDING_LEAD_S)
+    )
+
+
 @dataclass
 class ShieldLayer:
     """One agent shield on one controller (#1301, UC-040 BR-008..BR-010).
@@ -177,8 +215,14 @@ _SHIELD_KIND_BY_EFFECT = {
 }
 # The activation swell lives in the rumble slot (vibration_tasks), so any later rumble replaces it (#1837).
 SWELL_TASK_NAME = "shield_swell"
-# The death rumble owns the slot for its full duration; the swell and the charge tick never replace it.
+# The death rumble owns the slot for its full duration; the swell and the charge pulses never replace it.
 DEATH_RUMBLE_TASK_NAME = "death_rumble"
+# A charge pulse burst (#2094) plays only in a free rumble slot; any later rumble replaces it.
+CHARGE_PULSE_TASK_NAME = "charge_pulse"
+# The "ending soon" double pulse of an active shield (#2094), same slot rules.
+SHIELD_ENDING_PULSE_TASK_NAME = "shield_ending_pulse"
+_SHIELD_PULSE_TASK_NAMES = (CHARGE_PULSE_TASK_NAME, SHIELD_ENDING_PULSE_TASK_NAME)
+_CUE_EPSILON_S = 1e-6
 
 
 class FeedbackManager(ControllerEffectsBase):
@@ -222,6 +266,10 @@ class FeedbackManager(ControllerEffectsBase):
         # base colour only changes what is restored after it (UC-040 BR-010).
         self._shield_layers: dict[str, dict[str, ShieldLayer]] = {}
         self._shield_tasks: dict[str, asyncio.Task] = {}
+        # One charge rumble pattern task per controller while a charge layer is held (#2094).
+        self._charge_cue_tasks: dict[str, asyncio.Task] = {}
+        # One "ending soon" task per controller while a full shield layer runs (#2094).
+        self._shield_ending_tasks: dict[str, asyncio.Task] = {}
 
         # Colour shown before an identify started, for controllers without a base colour (UC-004 BR-002)
         self._identify_fallback: dict[str, tuple[int, int, int] | None] = {}
@@ -330,7 +378,9 @@ class FeedbackManager(ControllerEffectsBase):
 
             will_schedule = duration_ms > 0 and intensity > 0
             previous = self.vibration_tasks.get(serial)
-            if previous is not None and (will_schedule or previous.get_name() == SWELL_TASK_NAME):
+            if previous is not None and (
+                will_schedule or previous.get_name() in (SWELL_TASK_NAME, *_SHIELD_PULSE_TASK_NAMES)
+            ):
                 # Cancel BEFORE writing: a running swell step must not overwrite the new rumble (#1837).
                 previous.cancel()
                 del self.vibration_tasks[serial]
@@ -503,7 +553,7 @@ class FeedbackManager(ControllerEffectsBase):
             await self.set_vibration(serial, 255, rumble_ms)
             stop_timer = self.vibration_tasks.get(serial)
             if stop_timer is not None:
-                stop_timer.set_name(DEATH_RUMBLE_TASK_NAME)  # the swell and the charge tick leave it alone
+                stop_timer.set_name(DEATH_RUMBLE_TASK_NAME)  # the swell and the charge pulses leave it alone
 
             # Solid red briefly (default 300ms) then fade to black (default 700ms)
             # This replaces the awkward slow blink (1Hz over 1500ms)
@@ -752,7 +802,7 @@ class FeedbackManager(ControllerEffectsBase):
         """Start or restart (extend) a shield layer; its schedule starts again at t=0.
 
         A charge layer (#1837) is capped at 120 s and a re-send while it is held only
-        extends it: the breathing phase continues and the start tick is not repeated.
+        extends it: the breathing phase continues and the grant pattern is not repeated.
         """
         kind = "charge" if charge else ("toughness_boost" if toughness_boost else "full")
         now = self._clock.time()
@@ -779,9 +829,14 @@ class FeedbackManager(ControllerEffectsBase):
         else:
             # The running renderer picks the new layer up on its next tick.
             logger.debug(f"Shield layer {kind} (re)started on {serial} for {duration_ms}ms")
-        if newly_charged and not self._death_rumble_running(serial):
-            # One soft tick when the charge starts, not when it is re-sent (UC-040 BR-021).
-            await self.set_vibration(serial, CHARGE_TICK_INTENSITY, CHARGE_TICK_MS)
+        if newly_charged:
+            # The charge rumble pattern starts with the layer, not with a re-send (UC-040 BR-021, #2094).
+            await self._stop_charge_cues(serial)
+            self._charge_cue_tasks[serial] = asyncio.create_task(self._charge_cue_loop(serial))
+        elif kind == "full":
+            # Each (re)start of the protection moves the "ending soon" pulse to the new end (#2094).
+            await self._stop_shield_pulses(serial, self._shield_ending_tasks, SHIELD_ENDING_PULSE_TASK_NAME)
+            self._shield_ending_tasks[serial] = asyncio.create_task(self._shield_ending_loop(serial))
 
     async def _shield_render_loop(self, serial: str, kind: str, trace_context: Context | None) -> None:
         """Paint the top shield layer at 20 Hz (a charge at 10 Hz, on change) while no overlay effect owns the LED."""
@@ -853,9 +908,13 @@ class FeedbackManager(ControllerEffectsBase):
             ended = [layers.pop(kind, None) for kind in kinds]
             if all(layer is None for layer in ended):
                 return False
+            if "charge" in kinds:
+                await self._stop_charge_cues(serial)
             if layers:
                 return True  # another shield layer keeps painting
         self._shield_layers.pop(serial, None)
+        await self._stop_charge_cues(serial)
+        await self._stop_shield_pulses(serial, self._shield_ending_tasks, SHIELD_ENDING_PULSE_TASK_NAME)
         task = self._shield_tasks.pop(serial, None)
         if task is not None and not task.done():
             task.cancel()
@@ -884,6 +943,155 @@ class FeedbackManager(ControllerEffectsBase):
             trace_context=trace_context,
             charge=kind == "charge",
         )
+
+    # =========================================================================
+    # Charge rumble pattern (#2094, UC-040 BR-021)
+    # =========================================================================
+
+    def _rumble_slot_busy(self, serial: str) -> bool:
+        task = self.vibration_tasks.get(serial)
+        return task is not None and not task.done()
+
+    def _held_charge(self, serial: str) -> ShieldLayer | None:
+        return self._live_layer(serial, "charge")
+
+    def _live_layer(self, serial: str, kind: str) -> ShieldLayer | None:
+        layer = self._shield_layers.get(serial, {}).get(kind)
+        if layer is None or layer.remaining(self._clock.time()) <= 0 or serial not in self.tracked_controllers:
+            return None
+        return layer
+
+    async def _stop_charge_cues(self, serial: str) -> None:
+        """Stop the charge rumble pattern now, a pulse in progress included (UC-040 A32)."""
+        await self._stop_shield_pulses(serial, self._charge_cue_tasks, CHARGE_PULSE_TASK_NAME)
+
+    async def _stop_shield_pulses(self, serial: str, cue_tasks: dict[str, asyncio.Task], pulse_name: str) -> None:
+        """Cancel a cue task and its pulse in progress; a cut pulse turns the motor off unless a rumble took over."""
+        task = cue_tasks.pop(serial, None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        pulse = self.vibration_tasks.get(serial)
+        if pulse is not None and pulse.get_name() == pulse_name:
+            del self.vibration_tasks[serial]
+            if not pulse.done():
+                pulse.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await pulse
+                # A rumble that took the slot during the await keeps its motor and its own stop timer.
+                if self.vibration_tasks.get(serial) is None:
+                    await self.backend.set_rumble(serial, 0)
+
+    async def _charge_cue_loop(self, serial: str) -> None:
+        """Grant pattern, reminders and the pre-expiry double pulse of one held charge.
+
+        Sleeps until the next cue (seconds apart), so a held charge costs one idle task and
+        nothing in the 100 Hz state loop. Ends when the charge layer ends; ``end_shield_effect``
+        cancels it at once.
+        """
+        me = asyncio.current_task()
+        try:
+            cues = read_charge_cues()
+            if not cues.enabled:
+                return
+            start = self._clock.time()
+            await self._play_charge_cue(serial, CHARGE_GRANT_PULSES, cues)
+            next_reminder = start + cues.reminder_s if cues.reminder_s > 0 else math.inf
+            pre_expiry_pending = cues.pre_expiry_s > 0
+            first_pass = True
+            while (layer := self._held_charge(serial)) is not None:
+                now = self._clock.time()
+                end = layer.start + layer.total_s
+                pre_expiry_at = end - cues.pre_expiry_s if pre_expiry_pending else math.inf
+                if now >= pre_expiry_at - _CUE_EPSILON_S:
+                    pre_expiry_pending = False
+                    if first_pass:
+                        continue  # shorter than the grant pattern plus the lead: no pre-expiry pulse
+                    await self._play_charge_cue(serial, CHARGE_PRE_EXPIRY_PULSES, cues)
+                    return  # the last cue: no reminder after it
+                first_pass = False
+                if now >= next_reminder - _CUE_EPSILON_S:
+                    await self._play_charge_cue(serial, 1, cues)
+                    while next_reminder <= self._clock.time() + _CUE_EPSILON_S:
+                        next_reminder += cues.reminder_s
+                    continue
+                wake = min(pre_expiry_at, next_reminder, end)
+                await self._clock.sleep(max(CHARGE_SLOT_POLL_S, wake - now))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Charge rumble pattern on {serial} stopped: {e}")
+        finally:
+            if self._charge_cue_tasks.get(serial) is me:
+                del self._charge_cue_tasks[serial]
+
+    async def _shield_ending_loop(self, serial: str) -> None:
+        """The "ending soon" double pulse of an active (full) shield, ``lead`` s before its end (#2094)."""
+        me = asyncio.current_task()
+        try:
+            lead = read_shield_ending_lead()
+            if lead <= 0:
+                return
+            while (layer := self._live_layer(serial, "full")) is not None:
+                now = self._clock.time()
+                pulse_at = layer.start + layer.total_s - lead
+                if pulse_at <= layer.start + _CUE_EPSILON_S:
+                    return  # a shield no longer than the lead gets no pulse
+                if now >= pulse_at - _CUE_EPSILON_S:
+                    await self._play_charge_cue(
+                        serial, SHIELD_ENDING_PULSES, ChargeCues(), kind="full", task_name=SHIELD_ENDING_PULSE_TASK_NAME
+                    )
+                    return
+                await self._clock.sleep(max(CHARGE_SLOT_POLL_S, pulse_at - now))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Shield ending pulse on {serial} stopped: {e}")
+        finally:
+            if self._shield_ending_tasks.get(serial) is me:
+                del self._shield_ending_tasks[serial]
+
+    async def _play_charge_cue(
+        self,
+        serial: str,
+        pulses: int,
+        cues: ChargeCues,
+        kind: str = "charge",
+        task_name: str = CHARGE_PULSE_TASK_NAME,
+    ) -> bool:
+        """Play ``pulses`` charge pulses once the rumble slot is free; False if skipped.
+
+        A busy slot (warning, death rumble, swell, agent rumble) keeps priority: the cue waits
+        up to ``CHARGE_SLOT_WAIT_S`` and is skipped if the slot is still taken.
+        """
+        deadline = self._clock.time() + CHARGE_SLOT_WAIT_S
+        while self._rumble_slot_busy(serial):
+            if self._clock.time() >= deadline - _CUE_EPSILON_S:
+                return False
+            await self._clock.sleep(CHARGE_SLOT_POLL_S)
+        if self._live_layer(serial, kind) is None:
+            return False
+        burst = asyncio.create_task(self._charge_pulse_loop(serial, pulses, cues), name=task_name)
+        self.vibration_tasks[serial] = burst
+        # wait() does not raise when a later rumble cancels the burst, and a cancel of this
+        # loop leaves the burst to _stop_charge_cues, which also switches the motor off.
+        await asyncio.wait({burst})
+        return True
+
+    async def _charge_pulse_loop(self, serial: str, pulses: int, cues: ChargeCues) -> None:
+        me = asyncio.current_task()
+        try:
+            for index in range(pulses):
+                if index:
+                    await self._clock.sleep(CHARGE_PULSE_GAP_MS / 1000.0)
+                await self.backend.set_rumble(serial, cues.intensity)
+                await self._clock.sleep(cues.pulse_ms / 1000.0)
+                await self.backend.set_rumble(serial, 0)
+        finally:
+            # Only the slot's owner clears it: a replacing rumble has already taken the slot.
+            if self.vibration_tasks.get(serial) is me:
+                del self.vibration_tasks[serial]
 
     def _death_rumble_running(self, serial: str) -> bool:
         task = self.vibration_tasks.get(serial)
@@ -1114,6 +1322,10 @@ class FeedbackManager(ControllerEffectsBase):
         shield_task = self._shield_tasks.pop(serial, None)
         if shield_task is not None:
             shield_task.cancel()
+        for cue_tasks in (self._charge_cue_tasks, self._shield_ending_tasks):
+            cue_task = cue_tasks.pop(serial, None)
+            if cue_task is not None:
+                cue_task.cancel()
         self.current_colors.pop(serial, None)
         self._identify_fallback.pop(serial, None)
         self._color_gauges.pop(serial, None)

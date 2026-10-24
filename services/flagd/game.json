@@ -75,6 +75,52 @@
       },
       "defaultVariant": "default"
     },
+    "shield.charge_rumble_intensity": {
+      "state": "ENABLED",
+      "variants": {
+        "soft": 150,
+        "strong": 200,
+        "full": 255
+      },
+      "defaultVariant": "full"
+    },
+    "shield.charge_rumble_pulse_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 100,
+        "default": 150,
+        "long": 250
+      },
+      "defaultVariant": "default"
+    },
+    "shield.charge_reminder_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "frequent": 3,
+        "default": 5,
+        "rare": 10
+      },
+      "defaultVariant": "default"
+    },
+    "shield.charge_pre_expiry_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "default": 3,
+        "early": 5
+      },
+      "defaultVariant": "default"
+    },
+    "shield.ending_rumble_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "default": 1,
+        "early": 2
+      },
+      "defaultVariant": "default"
+    },
     "sensitivity": {
       "state": "ENABLED",
       "variants": {

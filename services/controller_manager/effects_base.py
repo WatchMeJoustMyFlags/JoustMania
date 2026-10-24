@@ -43,13 +43,77 @@ TOUGHNESS_BOOST_MAX = 0.50
 CHARGE_BREATH_HZ = 0.5
 CHARGE_MIN = 0.60
 CHARGE_MAX = 1.00
-CHARGE_TICK_MS = 100
-CHARGE_TICK_INTENSITY = 120
 CHARGE_MAX_DURATION_MS = 120_000  # the game re-sends while the charge is held
 CHARGE_RENDER_INTERVAL_S = 0.1  # 10 Hz is plenty for a 0.5 Hz breath (battery)
 SWELL_MS = 600
 SWELL_PEAK = 180
 SWELL_STEP_S = 0.05
+
+# Charge rumble pattern (#2094, UC-040 BR-021): a moving player must feel the charge without
+# looking at the controller. Defaults of the four ``game`` flags (flags.md §4), read per charge.
+CHARGE_GRANT_PULSES = 3
+CHARGE_PRE_EXPIRY_PULSES = 2
+CHARGE_PULSE_GAP_MS = 100
+DEFAULT_CHARGE_RUMBLE_INTENSITY = 255
+DEFAULT_CHARGE_RUMBLE_PULSE_MS = 150
+DEFAULT_CHARGE_REMINDER_S = 5.0
+DEFAULT_CHARGE_PRE_EXPIRY_S = 3.0
+CHARGE_PULSE_MS_RANGE = (50, 500)
+CHARGE_REMINDER_S_RANGE = (1.0, 30.0)  # 0 stays 0 (off)
+# Below the coordinator's 10 s re-send margin (SHIELD_CHARGE_RESEND_MARGIN_SECONDS), so a
+# layer that is re-sent (expiry never, or more than 120 s ahead) never gets an early pulse.
+CHARGE_PRE_EXPIRY_MAX_S = 8.0
+# Shield ending soon (#2094, UC-040 BR-021): a double pulse this long before an active
+# (full) shield layer ends; ``shield.ending_rumble_seconds``, read per layer start.
+DEFAULT_SHIELD_ENDING_LEAD_S = 1.0
+SHIELD_ENDING_LEAD_MAX_S = 3.0
+SHIELD_ENDING_PULSES = 2
+CHARGE_SLOT_WAIT_S = 1.0  # a cue waits this long for a busy rumble slot, then is skipped
+CHARGE_SLOT_POLL_S = 0.05
+
+
+@dataclass(frozen=True)
+class ChargeCues:
+    """The charge rumble pattern of one charge, fixed when its layer starts (UC-040 BR-021)."""
+
+    intensity: int = DEFAULT_CHARGE_RUMBLE_INTENSITY
+    pulse_ms: int = DEFAULT_CHARGE_RUMBLE_PULSE_MS
+    reminder_s: float = DEFAULT_CHARGE_REMINDER_S
+    pre_expiry_s: float = DEFAULT_CHARGE_PRE_EXPIRY_S
+
+    @property
+    def enabled(self) -> bool:
+        return self.intensity > 0
+
+    def burst_s(self, pulses: int) -> float:
+        """Length of ``pulses`` pulses with their gaps."""
+        return (pulses * self.pulse_ms + (pulses - 1) * CHARGE_PULSE_GAP_MS) / 1000.0
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return number
+
+
+def resolve_charge_cues(intensity: object, pulse_ms: object, reminder_s: object, pre_expiry_s: object) -> ChargeCues:
+    """Validate the four charge rumble flag values (flags.md §4); a bad value gives its default."""
+    level = _finite_number(intensity)
+    level = DEFAULT_CHARGE_RUMBLE_INTENSITY if level is None or level < 0 else min(255.0, level)
+    pulse = _finite_number(pulse_ms)
+    pulse = DEFAULT_CHARGE_RUMBLE_PULSE_MS if pulse is None or pulse <= 0 else pulse
+    pulse = max(CHARGE_PULSE_MS_RANGE[0], min(CHARGE_PULSE_MS_RANGE[1], pulse))
+    reminder = _finite_number(reminder_s)
+    if reminder is None or reminder < 0:
+        reminder = DEFAULT_CHARGE_REMINDER_S
+    elif reminder > 0:
+        reminder = max(CHARGE_REMINDER_S_RANGE[0], min(CHARGE_REMINDER_S_RANGE[1], reminder))
+    lead = _finite_number(pre_expiry_s)
+    lead = DEFAULT_CHARGE_PRE_EXPIRY_S if lead is None or lead < 0 else min(CHARGE_PRE_EXPIRY_MAX_S, lead)
+    return ChargeCues(intensity=int(level), pulse_ms=int(pulse), reminder_s=reminder, pre_expiry_s=lead)
 
 
 def _scale(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
@@ -284,3 +348,11 @@ class ControllerEffectsBase(ABC):
             self.active_effects[serial].task.cancel()
             del self.active_effects[serial]
             logger.debug(f"Cancelled effect for {serial}")
+
+
+def resolve_shield_ending_lead(value: object) -> float:
+    """Validate ``shield.ending_rumble_seconds`` (flags.md §4): bad -> 1 s, clamped to 0..3, 0 = off."""
+    lead = _finite_number(value)
+    if lead is None or lead < 0:
+        return DEFAULT_SHIELD_ENDING_LEAD_S
+    return min(SHIELD_ENDING_LEAD_MAX_S, lead)
