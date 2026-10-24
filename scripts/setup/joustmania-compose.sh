@@ -12,6 +12,11 @@
 #   agent overrides; later files win). Passing --env-file switches off compose's
 #   implicit .env, so both are named. A reboot through systemd therefore comes
 #   back exactly like the runbook's manual bring-up (#1488).
+# - Pin (UC-060 BR-003, C-040): when the checkout is pinned (detached HEAD at a
+#   release tag or a commit), IMAGE_TAG is derived from HEAD (X.Y.Z of the
+#   joustmania-vX.Y.Z tag, else the 40-character sha) and exported, so it wins
+#   over .env, .env.local and the shell (a different shell IMAGE_TAG gets one
+#   stderr line). On a branch nothing is derived.
 # Never prints the env files or their values. Never run `config` without
 # `--services`/`--images`/`-q` where output is logged; it prints interpolated
 # secrets.
@@ -19,6 +24,17 @@ set -euo pipefail
 
 JOUSTMANIA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$JOUSTMANIA_DIR"
+
+if [[ -f scripts/setup/lib-joustmania.sh ]]; then
+    # shellcheck source=lib-joustmania.sh
+    source scripts/setup/lib-joustmania.sh
+    if PIN_IMAGE_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
+        if [[ -n "${IMAGE_TAG:-}" && "$IMAGE_TAG" != "$PIN_IMAGE_TAG" ]]; then
+            echo "joustmania-compose: IMAGE_TAG=$IMAGE_TAG from the shell is ignored; the pinned checkout uses $PIN_IMAGE_TAG (UC-060 BR-003)" >&2
+        fi
+        export IMAGE_TAG="$PIN_IMAGE_TAG"
+    fi
+fi
 
 COMPOSE_FILES=(-f docker-compose.yml)
 [[ -f .env ]] && COMPOSE_FILES+=(--env-file .env)

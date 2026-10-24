@@ -36,7 +36,7 @@ trap 'rm -rf "${WORK}"' EXIT
 make_case() {
   CASE="${WORK}/$1"
   mkdir -p "${CASE}/repo/scripts/setup" "${CASE}/bin" "${CASE}/asound/card0"
-  cp "${ROOT}/scripts/setup/joustmania-start.sh" "${ROOT}/scripts/setup/joustmania-compose.sh" "${CASE}/repo/scripts/setup/"
+  cp "${ROOT}/scripts/setup/joustmania-start.sh" "${ROOT}/scripts/setup/joustmania-compose.sh" "${ROOT}/scripts/setup/lib-joustmania.sh" "${CASE}/repo/scripts/setup/"
   printf 'IMAGE_TAG=0.0.0-test\n' >"${CASE}/repo/.env"
   : >"${CASE}/docker.log"
   # docker stub. ps -a --format prints $CASE/containers (name|project|working_dir);
