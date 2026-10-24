@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 import miniaudio
+import numpy as np
 from opentelemetry import trace
 
 from proto import audio_pb2, audio_pb2_grpc
@@ -96,16 +97,11 @@ class SoundChannel:
             volume: Volume level (0.0 to 1.0, exclusive of 1.0)
             duration: Duration in seconds from file info
         """
-        import array
-
         decoded = miniaudio.decode_file(file_path)
-        samples = array.array("h", decoded.samples)  # 16-bit signed
+        samples = np.frombuffer(decoded.samples, dtype=np.int16)  # 16-bit signed
 
-        # Apply volume scaling
-        for i in range(len(samples)):
-            samples[i] = int(samples[i] * volume)
-
-        scaled_data = samples.tobytes()
+        # Apply volume scaling (truncates toward zero, like int())
+        scaled_data = (samples * np.float32(volume)).astype(np.int16).tobytes()
 
         # Calculate bytes per frame for proper alignment
         # Frame = one sample per channel
@@ -202,7 +198,8 @@ class AudioManager:
             self.music_player = MusicPlayer("background")
 
         self.current_music_file: str | None = None
-        self.master_volume: float = 1.0
+        self.master_volume: float = 1.0  # relative level set by SetVolume (game ramp, agent override)
+        self.operator_gain: float = 1.0  # operator's audio_volume.master, multiplies master_volume (#2050)
         self.music_lock = threading.Lock()
         self.event_loop: asyncio.AbstractEventLoop | None = None  # Set from async context
 
@@ -210,6 +207,19 @@ class AudioManager:
 
         # Track currently playing sounds for status
         self.active_sounds: dict[str, dict] = {}
+
+    @property
+    def effective_volume(self) -> float:
+        """Level every play path uses: the relative SetVolume level times the operator gain."""
+        return self.master_volume * self.operator_gain
+
+    def set_operator_gain(self, gain: float) -> None:
+        """Set the operator's master gain (0.0 to 1.0) and re-apply it to the running music."""
+        self.operator_gain = max(0.0, min(1.0, gain))
+        try:
+            self.music_player.set_volume(self.effective_volume)
+        except Exception as e:
+            logger.error(f"Error applying operator gain: {e}", exc_info=True)
 
     def enable_hardware(self) -> bool:
         """Open the audio hardware of a manager that started silent (#1352).
@@ -226,7 +236,7 @@ class AudioManager:
                 return False
             self.channels = [SoundChannel(i) for i in range(self.MAX_CHANNELS)]
             self.music_player = MusicPlayer("background")
-            self.music_player.set_volume(self.master_volume)
+            self.music_player.set_volume(self.effective_volume)
             self.silent = False
         logger.info(f"AudioManager left silent mode: {self.MAX_CHANNELS} channels and music player initialized")
         return True
@@ -291,6 +301,11 @@ class AudioManager:
             logger.debug(f"Silent mode: skipping sound: {file_path}")
             return True
 
+        effective = self.effective_volume
+        if effective <= 0.0:
+            logger.debug(f"Effective volume is 0, skipping sound: {file_path}")
+            return True
+
         try:
             if not os.path.exists(full_path):
                 logger.error(f"Audio file not found: {full_path} (requested: {file_path})")
@@ -300,7 +315,7 @@ class AudioManager:
             # Find available channel (or force if critical priority)
             channel = self._find_channel(force_priority=(priority == 3), priority=priority)
             if channel:
-                adjusted_volume = volume * self.master_volume
+                adjusted_volume = volume * effective
                 if channel.play(full_path, volume=adjusted_volume, priority=priority):
                     logger.debug(
                         f"Playing sound: {file_path} (channel={channel.channel_id}, volume={adjusted_volume:.2f})"
@@ -382,7 +397,8 @@ class AudioManager:
 
                 # Load and configure music
                 self.music_player.load(full_pattern)
-                self.music_player.set_volume(self.master_volume)
+                # At effective 0 the track still runs (silent), so unmuting brings the music back
+                self.music_player.set_volume(self.effective_volume)
                 self.music_player.set_ratio(tempo)
 
                 # Start playback
@@ -477,8 +493,8 @@ class AudioManager:
         """
         try:
             self.master_volume = max(0.0, min(1.0, volume))
-            self.music_player.set_volume(self.master_volume)
-            logger.debug(f"Master volume set to {self.master_volume:.2f}")
+            self.music_player.set_volume(self.effective_volume)
+            logger.debug(f"Master volume set to {self.master_volume:.2f} (effective {self.effective_volume:.2f})")
             return True
         except Exception as e:
             logger.error(f"Error setting volume: {e}", exc_info=True)
@@ -495,6 +511,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         self.audio_enabled = self._load_play_audio_flag()
         self.audio_manager = AudioManager(silent=not self.audio_enabled)
         self.menu_voice = self._load_menu_voice_flag()
+        self._refresh_operator_gain()
         self.sound_registry: dict[str, tuple[str, str]] = {}  # sound_name -> (type, base_dir)
         self._build_sound_registry()
         self._register_flag_change_handler()
@@ -566,6 +583,9 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             # Check play_audio
             self._apply_play_audio(client.get_boolean_value("play_audio", True))
 
+            # Operator master volume: re-apply to the running music at once
+            self._refresh_operator_gain()
+
             # Check menu_voice
             new_voice = client.get_string_value("menu_voice", "ivy")
             if new_voice in ("aaron", "ivy") and new_voice != self.menu_voice:
@@ -574,6 +594,28 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
         except Exception as e:
             logger.warning("Error handling flag change: %s", e)
+
+    def _read_operator_gain(self) -> float | None:
+        """Read audio_volume.master (the operator's gain); None when flagd cannot be read.
+
+        OpenFeature returns the default on a provider error instead of raising, so the
+        current gain is the default: an unreadable flag keeps the last gain.
+        """
+        try:
+            from lib.feature_flags import get_flag_client
+
+            current = self.audio_manager.operator_gain
+            return float(get_flag_client("user").get_float_value("audio_volume.master", current))
+        except Exception as e:
+            logger.debug("Could not read audio_volume.master flag: %s", e)
+            return None
+
+    def _refresh_operator_gain(self) -> None:
+        """Apply audio_volume.master to the audio manager; an unreadable flag keeps the last gain."""
+        gain = self._read_operator_gain()
+        if gain is not None and gain != self.audio_manager.operator_gain:
+            logger.info("audio_volume.master changed: %.2f -> %.2f", self.audio_manager.operator_gain, gain)
+            self.audio_manager.set_operator_gain(gain)
 
     def _read_play_audio_flag(self) -> bool:
         """Read play_audio at use time (in-process flagd resolver, so cheap).
@@ -758,6 +800,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
         # Check if audio is disabled via settings (read at use time, #1352)
         await self._refresh_play_audio()
+        self._refresh_operator_gain()
         if not self.audio_enabled:
             span.set_attribute("audio.muted", True)
             return audio_pb2.PlaySoundResponse(success=True, error="")  # Silently succeed
@@ -788,6 +831,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
         # Check if audio is disabled via settings (read at use time, #1352)
         await self._refresh_play_audio()
+        self._refresh_operator_gain()
         if not self.audio_enabled:
             span.set_attribute("audio.muted", True)
             return audio_pb2.PlayMusicResponse(track_id="muted", success=True, error="")
@@ -835,5 +879,6 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         """Set master volume."""
         span = trace.get_current_span()
         span.update_name(f"SetVolume:{request.volume:.0%}")
+        self._refresh_operator_gain()
         success = self.audio_manager.set_volume(request.volume)
         return audio_pb2.SetVolumeResponse(success=success, error="" if success else "Failed to set volume")
