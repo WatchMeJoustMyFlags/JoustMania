@@ -124,6 +124,20 @@ if [[ -f .env.local ]]; then
 else
     echo "Env files: .env only (no .env.local: release IMAGE_TAG, no decision-backend keys)"
 fi
+# Pin (UC-060 BR-003): joustmania-compose.sh exports the IMAGE_TAG derived from
+# a pinned HEAD, so an IMAGE_TAG in .env.local is ignored; say so.
+if [[ -f "$SCRIPT_DIR/lib-joustmania.sh" ]]; then
+    # shellcheck source=lib-joustmania.sh
+    source "$SCRIPT_DIR/lib-joustmania.sh"
+    if PIN_IMAGE_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
+        echo "Pinned checkout: IMAGE_TAG $PIN_IMAGE_TAG derived from HEAD"
+        if joustmania_env_local_sets .env.local IMAGE_TAG; then
+            echo "WARN: .env.local sets IMAGE_TAG; it is ignored (the pinned checkout decides, UC-060 BR-003). Remove it."
+        fi
+    else
+        echo "WARN: checkout is not pinned (HEAD on a branch): IMAGE_TAG comes from .env/.env.local (UC-060 A4). Pin with scripts/setup/joustmania-upgrade.sh"
+    fi
+fi
 
 # Attempt docker compose pull (non-fatal)
 echo "Checking for image updates..."

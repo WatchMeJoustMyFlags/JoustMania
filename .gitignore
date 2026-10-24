@@ -2,6 +2,9 @@
 .env
 # Local secrets (API keys) for docker compose --env-file; never commit.
 .env.local
+# Pi upgrade record: current and previous pin (scripts/setup/joustmania-upgrade.sh, UC-060 A2/A3)
+.joustmania-release
+.joustmania-release.tmp
 
 .python_history
 

@@ -91,6 +91,23 @@ A bare `docker compose` also loads `docker-compose.override.yml`, which publishe
 interfaces. That is fine on a dev machine and wrong on the Pi, so the Pi wrapper names
 `-f docker-compose.yml` and the env files explicitly (#1319, #1488).
 
+### Upgrade, rollback and the one-time migration (UC-060 A2, A3)
+
+The Pi runs a pinned checkout (a `joustmania-vX.Y.Z` release tag or an exact commit sha, UC-060 BR-003); the
+image tag derives from it, so never set `IMAGE_TAG` in `.env.local`. Change the version only with
+`./scripts/setup/joustmania-upgrade.sh <joustmania-vX.Y.Z | 40-hex sha>`: it pulls the target's images while
+the current version runs, switches the checkout, restarts the unit and rolls back on its own when the game
+services do not come up healthy (`--no-rollback` keeps the failed version for inspection;
+`--rollback` returns to the previous version offline; `--status` shows both). Put opt-in profiles
+(`COMPOSE_PROFILES=python-hid`) in `.env.local`; a `systemctl edit` drop-in is honoured too.
+
+One-time migration of a Pi still on the `main` branch (once the first pinnable release, `MIN_PINNABLE`, exists):
+
+```bash
+cd ~/JoustMania
+git fetch --tags && ./scripts/setup/joustmania-upgrade.sh joustmania-vX.Y.Z && sudo ./scripts/setup/install_autostart.sh
+```
+
 ### Image names and tags
 
 Each service has both `build:` and `image:` in the compose file, so a local build and a pulled image carry
