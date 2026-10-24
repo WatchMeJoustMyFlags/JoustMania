@@ -1,0 +1,572 @@
+{
+  "data": [
+    {
+      "traceID": "fa0000000000aa01",
+      "spans": [
+        {
+          "traceID": "fa0000000000aa01",
+          "spanID": "gc01",
+          "operationName": "game_cycle",
+          "references": [],
+          "startTime": 1760000000000000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_real000001"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa01",
+          "spanID": "fs01",
+          "operationName": "agent.flag_state",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa01",
+              "spanID": "gc01"
+            }
+          ],
+          "startTime": 1760000000000100,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_real000001"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_real000001"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "real"
+            },
+            {
+              "key": "game.mode",
+              "type": "string",
+              "value": "JoustFFA"
+            },
+            {
+              "key": "agent.flag_state.trigger",
+              "type": "string",
+              "value": "game_start"
+            },
+            {
+              "key": "agent.enabled",
+              "type": "bool",
+              "value": true
+            },
+            {
+              "key": "agent.objectives",
+              "type": "string",
+              "value": "engagement=1.00"
+            },
+            {
+              "key": "interventions.allowed",
+              "type": "string",
+              "value": "grant_shield,end_game"
+            },
+            {
+              "key": "policy.battery_threshold",
+              "type": "int64",
+              "value": 20
+            },
+            {
+              "key": "policy.max_interventions_per_minute",
+              "type": "int64",
+              "value": 6
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.act_confidence_threshold",
+              "type": "float64",
+              "value": 0.7
+            }
+          ],
+          "logs": [
+            {
+              "timestamp": 1760000000000100,
+              "fields": [
+                {
+                  "key": "event",
+                  "type": "string",
+                  "value": "feature_flag.evaluation"
+                },
+                {
+                  "key": "feature_flag.key",
+                  "type": "string",
+                  "value": "decision.backend"
+                },
+                {
+                  "key": "feature_flag.result.value",
+                  "type": "string",
+                  "value": "claude"
+                }
+              ]
+            }
+          ],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa01",
+          "spanID": "sr01",
+          "operationName": "agent.signal_received",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa01",
+              "spanID": "gc01"
+            }
+          ],
+          "startTime": 1760000005000000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_real000001"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa01",
+          "spanID": "dc01",
+          "operationName": "agent.decide",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa01",
+              "spanID": "sr01"
+            }
+          ],
+          "startTime": 1760000005000100,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_real000001"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "real"
+            },
+            {
+              "key": "decide.backend",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "claude"
+            },
+            {
+              "key": "decide.outcome",
+              "type": "string",
+              "value": "act"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa01",
+          "spanID": "db01",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa01",
+              "spanID": "sr01"
+            }
+          ],
+          "startTime": 1760000005000200,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "grant_shield"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": true
+            },
+            {
+              "key": "decision.block_reason",
+              "type": "string",
+              "value": "rate_limit"
+            },
+            {
+              "key": "decision.reason",
+              "type": "string",
+              "value": "weakest player"
+            },
+            {
+              "key": "player.serial",
+              "type": "string",
+              "value": "MOCK0001"
+            },
+            {
+              "key": "player.name",
+              "type": "string",
+              "value": "Ana"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa01",
+          "spanID": "da01",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa01",
+              "spanID": "sr01"
+            }
+          ],
+          "startTime": 1760000005000300,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "end_game"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": false
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        }
+      ],
+      "processes": {
+        "p1": {
+          "serviceName": "agent",
+          "tags": []
+        }
+      },
+      "warnings": null
+    },
+    {
+      "traceID": "fa0000000000aa02",
+      "spans": [
+        {
+          "traceID": "fa0000000000aa02",
+          "spanID": "gc02",
+          "operationName": "game_cycle",
+          "references": [],
+          "startTime": 1760000060000000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_shadow00001"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa02",
+          "spanID": "fs02",
+          "operationName": "agent.flag_state",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa02",
+              "spanID": "gc02"
+            }
+          ],
+          "startTime": 1760000060000100,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_shadow00001"
+            },
+            {
+              "key": "session.id",
+              "type": "string",
+              "value": "game_shadow00001"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "shadow"
+            },
+            {
+              "key": "game.mode",
+              "type": "string",
+              "value": "JoustFFA"
+            },
+            {
+              "key": "agent.flag_state.trigger",
+              "type": "string",
+              "value": "game_start"
+            },
+            {
+              "key": "agent.enabled",
+              "type": "bool",
+              "value": false
+            },
+            {
+              "key": "agent.objectives",
+              "type": "string",
+              "value": "engagement=1.00"
+            },
+            {
+              "key": "interventions.allowed",
+              "type": "string",
+              "value": "grant_shield,end_game"
+            },
+            {
+              "key": "policy.battery_threshold",
+              "type": "int64",
+              "value": 20
+            },
+            {
+              "key": "policy.max_interventions_per_minute",
+              "type": "int64",
+              "value": 6
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.act_confidence_threshold",
+              "type": "float64",
+              "value": 0.7
+            }
+          ],
+          "logs": [
+            {
+              "timestamp": 1760000060000100,
+              "fields": [
+                {
+                  "key": "event",
+                  "type": "string",
+                  "value": "feature_flag.evaluation"
+                },
+                {
+                  "key": "feature_flag.key",
+                  "type": "string",
+                  "value": "decision.backend"
+                },
+                {
+                  "key": "feature_flag.result.value",
+                  "type": "string",
+                  "value": "rules"
+                }
+              ]
+            }
+          ],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa02",
+          "spanID": "sr02",
+          "operationName": "agent.signal_received",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa02",
+              "spanID": "gc02"
+            }
+          ],
+          "startTime": 1760000065000000,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_shadow00001"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa02",
+          "spanID": "dc02",
+          "operationName": "agent.decide",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa02",
+              "spanID": "sr02"
+            }
+          ],
+          "startTime": 1760000065000100,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "game.id",
+              "type": "string",
+              "value": "game_shadow00001"
+            },
+            {
+              "key": "game.kind",
+              "type": "string",
+              "value": "shadow"
+            },
+            {
+              "key": "decide.backend",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.backend.requested",
+              "type": "string",
+              "value": "rules"
+            },
+            {
+              "key": "decide.outcome",
+              "type": "string",
+              "value": "act"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa02",
+          "spanID": "db02",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa02",
+              "spanID": "sr02"
+            }
+          ],
+          "startTime": 1760000065000200,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "grant_shield"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": true
+            },
+            {
+              "key": "decision.block_reason",
+              "type": "string",
+              "value": "not_allowed"
+            },
+            {
+              "key": "decision.reason",
+              "type": "string",
+              "value": "weakest player"
+            },
+            {
+              "key": "player.serial",
+              "type": "string",
+              "value": "MOCK0001"
+            },
+            {
+              "key": "player.name",
+              "type": "string",
+              "value": "Ana"
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        },
+        {
+          "traceID": "fa0000000000aa02",
+          "spanID": "da02",
+          "operationName": "agent.decision",
+          "references": [
+            {
+              "refType": "CHILD_OF",
+              "traceID": "fa0000000000aa02",
+              "spanID": "sr02"
+            }
+          ],
+          "startTime": 1760000065000300,
+          "duration": 500,
+          "tags": [
+            {
+              "key": "decision.action",
+              "type": "string",
+              "value": "end_game"
+            },
+            {
+              "key": "decision.blocked",
+              "type": "bool",
+              "value": false
+            }
+          ],
+          "logs": [],
+          "processID": "p1",
+          "warnings": null,
+          "flags": 1
+        }
+      ],
+      "processes": {
+        "p1": {
+          "serviceName": "agent",
+          "tags": []
+        }
+      },
+      "warnings": null
+    }
+  ],
+  "total": 0,
+  "limit": 0,
+  "offset": 0,
+  "errors": null
+}

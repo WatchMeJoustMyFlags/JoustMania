@@ -1,138 +1,149 @@
 /**
- * Agent data source (issue #792).
+ * Agent data source (issue #792; spans since #2059).
  *
  * The "Agent" tab is the demo's observability focus screen: it shows what the
- * in-game agent is doing live — the decisions it evaluates, the effective flag
- * values it resolved, and the interventions it applied vs blocked.
+ * in-game agent is doing live: the decisions it evaluates (agent.decide), the
+ * effective flag values it resolved, its activity (blocked decisions, rollouts)
+ * and the interventions it applied vs blocked.
  *
- * TRANSPORT — reuse the experiments-tab path, don't invent a new one
- * -----------------------------------------------------------------
- * The experiments tab (#981) established the dashboard's read-only telemetry
- * path: query the Loki HTTP API at `/loki/...` through envoy and fold the agent's
- * raw slog lines client-side. This module reuses that exact path for the decision
- * feed and the intervention "blocked" counts, and adds ONE more already-routed
- * datasource — VictoriaMetrics at `/victoria-metrics/...` (envoy.yaml) — for the
- * applied-intervention count, which is only emitted as a metric (see below), and
- * for the exact blocked tallies (BLOCKED_QUERY; the Loki fold is their fallback).
+ * SOURCES (UC-035 step 3, docs/specs/telemetry.md §6.1)
+ * ------------------------------------------------------
+ *   Jaeger (./jaeger.ts), every query without a browser-clock time:
+ *     agent.decide          decision feed + strip (the decide poll, game traces)
+ *     agent.decision        blocked activity rows: the decide poll's traces
+ *                           already hold them (LinkedDecision), no extra query
+ *     agent.flag_state      flag panel: also in the decide poll's game traces;
+ *                           its own small search (FLAG_STATE_FALLBACK_LIMIT) only
+ *                           when the decide poll brought none newer
+ *     agent.infrastructure.decision  rollout rows, one tag search per
+ *                           remediation.action (ROLLOUT_ACTIONS)
+ *   VictoriaMetrics: the applied write counter and the blocked tallies (UC-040
+ *   A21); `n/a` when it is down (no fallback: a fold over a few traces is not a
+ *   10-minute window).
  *
- * LOKI LABEL CONTRACT — `service_name="agent"`
- * --------------------------------------------
- * Identical to ../experiments.ts: this view is empty unless the agent's container
- * logs arrive in Loki under the stream label `service_name="agent"`, produced by
- * the compose-label -> OTEL `service.name` -> Loki `service_name` chain documented
- * in services/otel-collector/config.yaml (`transform/docker_logs`). If that chain
- * changes the selector below silently returns zero streams and the view goes blank
- * with no error.
- *
- * WHAT THE AGENT EMITS (and where)
- * --------------------------------
- * The agent's full per-decision audit trail lives on OTEL *spans*
- * (agent.signal_received -> agent.decision -> agent.action, see
- * services/agent/decision/telemetry.go) — that is where decision.action /
- * decision.objective_served on the ALLOWED path are recorded. Those are NOT in
- * Loki. The agent DOES emit a useful subset as slog lines we can fold here:
- *
- *   agent.evaluate         one per evaluated cycle — carries the RESOLVED effective
- *                          flag values (decision_backend and the three policy
- *                          numbers). This is our flag-panel source.
- *   agent.decision_blocked blocked decision — intervention, target_serial, reason
- *                          (the BlockReason), decision_reason, allowed.
- *   agent.rollout_expand / agent.rollout_rollback(_recommended) — rollout activity.
- *
- * GAP (documented, not faked): the allowed-path decision detail (action +
- * objective_served) and the boolean agent.json flags (enabled,
- * experiments_enabled, experiment_dynamic_enabled, interventions_allowed list,
- * verdict_*) are span-only / flagd-only and not present in the agent's stdout
- * logs. The decision feed therefore renders the blocked decisions with full
- * detail and the allowed cycles as liveness, and deep-links to Jaeger
- * for the full per-decision audit. The flag panel surfaces the resolved values the
- * agent.evaluate line DOES carry, and links to Jaeger/Grafana for the rest. When a
- * flag-state read endpoint or a flagd evaluation route lands (#505), the flag panel
- * can be upgraded to the full effective set.
+ * An agent image older than #2059 emits no agent.flag_state: the flag panel then
+ * shows a hint, never an error (degrade.ts).
  */
 
-import { parseLogfmt } from "./experiments.js";
+import {
+  incrementalStartMs,
+  searchParams,
+  searchTraces,
+  spanStartMs,
+  spanStartUs,
+  spanTags,
+  spansNamed,
+  tagBool,
+  tagBoolOrNull,
+  tagNumber,
+  tagString,
+  parentSpanId,
+} from "./jaeger.js";
+import type { JaegerSpan, JaegerTracesResponse } from "./jaeger.js";
+
+export type { JaegerSpan, JaegerTag, JaegerTrace, JaegerTracesResponse, JaegerReference } from "./jaeger.js";
 
 const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
 
-/**
- * Loki LogQL selector for the agent's decision/flag activity log lines.
- *
- * `service_name="agent"` is a load-bearing contract — see the LOKI LABEL CONTRACT
- * note in the module header before changing it. The `|~` line filter narrows to
- * the agent.* messages this view folds, so a busy run's experiment.* lines (folded
- * by the experiments tab) don't crowd out the limit.
- */
-const AGENT_LOG_QUERY =
-  '{service_name="agent"} |~ "agent\\\\.(evaluate|decision_blocked|rollout_)"';
-
-/** How far back to look for agent activity (decision feed window). */
+/** Blocked-tally window (UC-040 A21). */
 const LOOKBACK_SECONDS = 10 * 60; // 10 minutes
 
-/** Max log lines Loki returns per query. */
-const QUERY_LIMIT = 2000;
-
-/** Max decision-feed rows kept after folding (newest first). */
+/** Max activity-feed rows (newest first). */
 const MAX_FEED_ROWS = 80;
 
 /**
  * VictoriaMetrics instant-query for the count of applied interventions, by result.
  *
  * `agent_intervention_writes_total{result="ok"|"error"}` is the ActionSink's
- * flag-file write counter (services/agent/actions/writer.go). It is the only
- * signal for the APPLIED count (the dispatched path is not logged to stdout). VM
- * receives the metric under the namespaced job (see MEMORY: prometheusremotewrite
- * maps service.name -> job, prefixed by service.namespace), so we sum across jobs
- * rather than pinning one. This is a best-effort secondary source: if VM is
- * unreachable the overlay still renders the Loki-derived blocked counts.
+ * flag-file write counter (services/agent/actions/writer.go). VM receives the
+ * metric under the namespaced job, so we sum across jobs rather than pinning one.
+ * Best effort: when VM is unreachable the overlay shows `n/a`.
  */
 const APPLIED_QUERY = 'sum(agent_intervention_writes_total) by (result)';
 
 /**
- * VictoriaMetrics query for the blocked decisions of the feed window, by action
- * and reason (UC-040 A21, #1326). The agent logs a `rate_limit` refusal that
- * repeats while its budget is unchanged only at debug level (no
- * agent.decision_blocked line), so the Loki fold undercounts; the counter
- * `agent_decisions_total{blocked="true"}` counts every refusal. The overlay's
- * blocked tallies come from here and fall back to the Loki fold only when VM is
- * unreachable or has no samples.
+ * VictoriaMetrics query for the blocked decisions of the window, by action and
+ * reason (UC-040 A21, #1326): `agent_decisions_total{blocked="true"}` counts every
+ * refusal, including the repeats that emit no agent.decision span.
  */
 const BLOCKED_QUERY =
   `sum by (action, block_reason) (increase(agent_decisions_total{blocked="true"}[${LOOKBACK_SECONDS}s]))`;
 
-/** One row in the rolling decision feed. */
+/** Jaeger operation of the effective flag set per game partition (#2059). */
+export const FLAG_STATE_OPERATION = "agent.flag_state";
+
+/** Traces of the flag-state fallback search (one-span traces or small game traces). */
+export const FLAG_STATE_FALLBACK_LIMIT = 2;
+
+/** Jaeger operation of an active infra-loop cycle (own root). */
+export const ROLLOUT_OPERATION = "agent.infrastructure.decision";
+
+/** The remediation.action values that make an activity row (`none` does not). */
+export const ROLLOUT_ACTIONS = ["expand", "rollback", "recommended_only"] as const;
+export type RolloutAction = (typeof ROLLOUT_ACTIONS)[number];
+
+/** Traces per rollout tag search. */
+export const ROLLOUT_LIMIT = 10;
+
+/** Overlap behind the newest rollout span already held (spans export when they end). */
+export const ROLLOUT_OVERLAP_MS = 30 * 1000;
+
+/** Max rollout rows kept. */
+const MAX_ROLLOUT_ROWS = 20;
+
+/** One row in the activity feed. */
 export interface DecisionFeedRow {
-  /** Epoch ms of the log line. */
+  /** Epoch ms of the span (agent clock). */
   tsMs: number;
-  /** "evaluate" | "blocked" | "rollout" — drives the row style. */
-  kind: "evaluate" | "blocked" | "rollout";
-  /** The raw agent.* message (e.g. "agent.decision_blocked"). */
+  /** "blocked" | "rollout": drives the row style. */
+  kind: "blocked" | "rollout";
+  /** Span name the row came from. */
   msg: string;
-  /** Short human label for the signal/cycle. */
+  /** Short human label. */
   signal: string;
-  /** The action/intervention this row is about, when known ("" otherwise). */
+  /** The intervention (blocked) or rollout target (rollout), "" when unknown. */
   action: string;
   /** Whether this decision was blocked. */
   blocked: boolean;
-  /** Block / rollout reason, when known. */
+  /** Block reason (blocked) or fitness violations (rollout). */
   reason: string;
-  /** Game/session id this row belongs to, when known. */
+  /** Game id the row belongs to ("" for infra rows). */
   sessionId: string;
+  /** Targeted player (name, else serial), "" when session-scoped. */
+  target: string;
+  /** trace/span for the deep link. */
+  traceId: string;
+  spanId: string;
 }
 
-/** The resolved effective flag/policy values from the latest agent.evaluate line. */
+/** The effective flag set of one game, from its newest agent.flag_state span. */
 export interface FlagPanel {
-  /** Epoch ms of the agent.evaluate line these values came from. */
+  /** Span start (agent clock). */
   tsMs: number;
-  /** Requested decision.backend: "rules" | "claude" | "openai" | "jev". */
-  decisionBackend: string;
-  batteryThreshold: string;
-  varianceWindow: string;
-  maxPerMinute: string;
+  /** Span start in µs (agent clock): the ordering key. */
+  startUs: number;
+  traceId: string;
+  spanId: string;
+  gameId: string;
+  gameKind: string;
   gameMode: string;
+  /** agent.flag_state.trigger: game_start | changed. */
+  trigger: string;
+  /** decide.backend.requested: the decision.backend flag value. */
+  decisionBackend: string;
+  /** decide.act_confidence_threshold, null when absent. */
+  actThreshold: number | null;
+  batteryThreshold: string;
+  maxPerMinute: string;
+  /** agent.enabled (the kill switch), null when absent. */
+  enabled: boolean | null;
+  /** agent.objectives summary ("k=v,..."). */
+  objectives: string;
+  /** interventions.allowed summary. */
+  interventionsAllowed: string;
 }
 
-/** A single action's applied/blocked tallies for the intervention overlay. */
+/** A single action's blocked tally for the intervention overlay. */
 export interface InterventionTally {
   action: string;
   blocked: number;
@@ -140,18 +151,15 @@ export interface InterventionTally {
 
 /** Folded intervention overlay state. */
 export interface InterventionOverlay {
-  /** Per-action blocked counts, folded from the Loki window (descending). */
+  /** Per-action blocked counts from VictoriaMetrics (descending). */
   blockedByAction: InterventionTally[];
   /** Blocked counts grouped by reason (descending). */
   blockedByReason: { reason: string; count: number }[];
-  /** Total blocked decisions in the window. */
-  totalBlocked: number;
-  /**
-   * Applied-intervention count from VictoriaMetrics (writes result="ok"), or null
-   * when VM was unreachable / had no samples. A counter total, not windowed.
-   */
+  /** Total blocked decisions in the window; null when VictoriaMetrics is unreachable. */
+  totalBlocked: number | null;
+  /** Applied writes (result="ok"), null when VM was unreachable / had no samples. */
   appliedOk: number | null;
-  /** Failed flag-file writes (writes result="error"), or null when unavailable. */
+  /** Failed flag-file writes (result="error"), or null when unavailable. */
   appliedError: number | null;
 }
 
@@ -162,133 +170,12 @@ export interface AgentView {
   overlay: InterventionOverlay;
 }
 
-interface LokiStreamResult {
-  stream: Record<string, string>;
-  values: [string, string][];
-}
-
-interface LokiQueryResponse {
-  status: string;
-  data: { resultType: string; result: LokiStreamResult[] };
-}
-
 export interface VmQueryResponse {
   status: string;
   data?: {
     resultType: string;
     result: { metric: Record<string, string>; value: [number, string] }[];
   };
-}
-
-/** Classify an agent.* message into a feed row kind (null = ignore). */
-function classify(msg: string): DecisionFeedRow["kind"] | null {
-  if (msg === "agent.evaluate") return "evaluate";
-  if (msg === "agent.decision_blocked") return "blocked";
-  if (msg.startsWith("agent.rollout_")) return "rollout";
-  return null;
-}
-
-/**
- * Fold a batch of agent log lines into the decision feed, flag panel, and the
- * Loki-derived half of the intervention overlay.
- *
- * Pure and order-independent for the aggregates (blocked tallies are additive).
- * The feed itself is sorted newest-first and capped; the flag panel takes the
- * single newest agent.evaluate line.
- *
- * Each entry is { line, tsMs }.
- */
-export function aggregateAgentLogs(
-  lines: { line: string; tsMs: number }[],
-): Omit<AgentView, "overlay"> & {
-  overlay: Omit<InterventionOverlay, "appliedOk" | "appliedError">;
-} {
-  const feed: DecisionFeedRow[] = [];
-  let flags: FlagPanel | null = null;
-  const blockedByAction = new Map<string, number>();
-  const blockedByReason = new Map<string, number>();
-  let totalBlocked = 0;
-
-  for (const { line, tsMs } of lines) {
-    const fields = parseLogfmt(line);
-    const msg = fields["msg"];
-    if (!msg) continue;
-    const kind = classify(msg);
-    if (!kind) continue;
-
-    const sessionId = fields["session_id"] ?? "";
-
-    if (kind === "evaluate") {
-      // Keep the newest agent.evaluate as the flag-panel snapshot.
-      if (!flags || tsMs >= flags.tsMs) {
-        flags = {
-          tsMs,
-          decisionBackend: fields["decision_backend"] ?? "",
-          batteryThreshold: fields["battery_threshold"] ?? "",
-          varianceWindow: fields["variance_window"] ?? "",
-          maxPerMinute: fields["max_per_minute"] ?? "",
-          gameMode: fields["game_mode"] ?? "",
-        };
-      }
-      // agent.evaluate is a high-volume liveness line; don't flood the feed with
-      // it. It feeds the flag panel only.
-      continue;
-    }
-
-    let action = "";
-    let reason = "";
-    let blocked = false;
-
-    if (kind === "blocked") {
-      action = fields["intervention"] ?? "";
-      reason = fields["reason"] ?? "";
-      blocked = true;
-      totalBlocked += 1;
-      if (action) blockedByAction.set(action, (blockedByAction.get(action) ?? 0) + 1);
-      if (reason) blockedByReason.set(reason, (blockedByReason.get(reason) ?? 0) + 1);
-    } else if (kind === "rollout") {
-      reason = fields["reason"] ?? "";
-    }
-
-    feed.push({
-      tsMs,
-      kind,
-      msg,
-      signal: feedSignal(msg),
-      action,
-      blocked,
-      reason,
-      sessionId,
-    });
-  }
-
-  feed.sort((a, b) => b.tsMs - a.tsMs);
-
-  return {
-    feed: feed.slice(0, MAX_FEED_ROWS),
-    flags,
-    overlay: {
-      blockedByAction: toSortedTallies(blockedByAction),
-      blockedByReason: toSortedReasons(blockedByReason),
-      totalBlocked,
-    },
-  };
-}
-
-/** Short, readable signal label for a feed row. */
-function feedSignal(msg: string): string {
-  switch (msg) {
-    case "agent.decision_blocked":
-      return "decision blocked";
-    case "agent.rollout_expand":
-      return "rollout expand";
-    case "agent.rollout_rollback":
-      return "rollout rollback";
-    case "agent.rollout_rollback_recommended":
-      return "rollback recommended";
-    default:
-      return msg.replace(/^agent\./, "").replace(/_/g, " ");
-  }
 }
 
 function toSortedTallies(m: Map<string, number>): InterventionTally[] {
@@ -305,9 +192,8 @@ function toSortedReasons(m: Map<string, number>): { reason: string; count: numbe
 
 /**
  * Parse a VictoriaMetrics instant-query response into the applied/error counts.
- * Sums across all `result` series (the metric may arrive under several namespaced
- * jobs). Returns nulls when the response is empty/malformed so the overlay can show
- * "unavailable" without throwing.
+ * Sums across all `result` series. Returns nulls when the response is empty or
+ * malformed so the overlay can show "n/a" without throwing.
  */
 export function parseAppliedCounts(body: VmQueryResponse): {
   appliedOk: number | null;
@@ -330,16 +216,18 @@ export function parseAppliedCounts(body: VmQueryResponse): {
 }
 
 /** The blocked tallies of the intervention overlay. */
-type BlockedTallies = Pick<InterventionOverlay, "blockedByAction" | "blockedByReason" | "totalBlocked">;
+export type BlockedTallies = Pick<InterventionOverlay, "blockedByAction" | "blockedByReason" | "totalBlocked">;
+
+/** VictoriaMetrics down: every blocked tally is n/a (UC-035 A3, UC-040 A21). */
+export const BLOCKED_UNAVAILABLE: BlockedTallies = { blockedByAction: [], blockedByReason: [], totalBlocked: null };
 
 /**
  * Parse the BLOCKED_QUERY response into the overlay's blocked tallies. `increase`
- * extrapolates, so each series is rounded to a whole count. Returns null when the
- * response is empty or malformed, so the caller keeps the Loki fold.
+ * extrapolates, so each series is rounded to a whole count. A successful empty
+ * answer is zero blocked (no samples in the window), not unavailable.
  */
-export function parseBlockedCounts(body: VmQueryResponse): BlockedTallies | null {
-  const results = body.data?.result;
-  if (!results || results.length === 0) return null;
+export function parseBlockedCounts(body: VmQueryResponse): BlockedTallies {
+  const results = body.data?.result ?? [];
   const byAction = new Map<string, number>();
   const byReason = new Map<string, number>();
   let total = 0;
@@ -359,96 +247,278 @@ export function parseBlockedCounts(body: VmQueryResponse): BlockedTallies | null
   };
 }
 
-/** Best-effort VM read of the blocked tallies; null (never throws) on any failure. */
-async function fetchBlockedCounts(): Promise<BlockedTallies | null> {
+async function vmQuery(query: string, signal?: AbortSignal): Promise<VmQueryResponse | null> {
   try {
-    const params = new URLSearchParams({ query: BLOCKED_QUERY });
+    const params = new URLSearchParams({ query });
     const url = `${BASE_URL}/victoria-metrics/api/v1/query?${params.toString()}`;
-    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    const response = await fetch(url, { headers: { Accept: "application/json" }, signal });
     if (!response.ok) return null;
-    return parseBlockedCounts((await response.json()) as VmQueryResponse);
+    return (await response.json()) as VmQueryResponse;
   } catch {
     return null;
   }
 }
 
-/** Query Loki for the agent's recent decision/flag log lines. */
-async function fetchAgentLogs(): Promise<{ line: string; tsMs: number }[]> {
-  const endNs = BigInt(Date.now()) * 1_000_000n;
-  const startNs = endNs - BigInt(LOOKBACK_SECONDS) * 1_000_000_000n;
+/** The VictoriaMetrics half of the overlay. Never throws: VM down = all n/a. */
+export async function fetchInterventionCounts(signal?: AbortSignal): Promise<InterventionOverlay> {
+  const [applied, blocked] = await Promise.all([vmQuery(APPLIED_QUERY, signal), vmQuery(BLOCKED_QUERY, signal)]);
+  return {
+    ...(blocked ? parseBlockedCounts(blocked) : BLOCKED_UNAVAILABLE),
+    ...(applied ? parseAppliedCounts(applied) : { appliedOk: null, appliedError: null }),
+  };
+}
 
-  const params = new URLSearchParams({
-    query: AGENT_LOG_QUERY,
-    start: startNs.toString(),
-    end: endNs.toString(),
-    limit: String(QUERY_LIMIT),
-    // backward = newest-first: the decision feed is a rolling tail, so when the
-    // window is truncated we want the most RECENT lines, not the oldest. (The
-    // experiments tab uses forward because its aggregates need the complete
-    // lifecycle prefix; this view's feed is the opposite need.)
-    direction: "backward",
-  });
+/* ======================================================================== */
+/* agent.flag_state: the flag panel (#2059)                                  */
+/* ======================================================================== */
 
-  const url = `${BASE_URL}/loki/loki/api/v1/query_range?${params.toString()}`;
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!response.ok) {
-    throw new Error(`Loki query failed: ${response.status} ${response.statusText}`);
-  }
+/** Fold one agent.flag_state span. */
+export function flagPanelFrom(span: JaegerSpan): FlagPanel {
+  const tags = spanTags(span);
+  return {
+    tsMs: spanStartMs(span),
+    startUs: spanStartUs(span),
+    traceId: span.traceID,
+    spanId: span.spanID,
+    gameId: tagString(tags, "game.id"),
+    gameKind: tagString(tags, "game.kind"),
+    gameMode: tagString(tags, "game.mode"),
+    trigger: tagString(tags, "agent.flag_state.trigger"),
+    decisionBackend: tagString(tags, "decide.backend.requested"),
+    actThreshold: tagNumber(tags, "decide.act_confidence_threshold"),
+    batteryThreshold: tagString(tags, "policy.battery_threshold"),
+    maxPerMinute: tagString(tags, "policy.max_interventions_per_minute"),
+    enabled: tagBoolOrNull(tags, "agent.enabled"),
+    objectives: tagString(tags, "agent.objectives"),
+    interventionsAllowed: tagString(tags, "interventions.allowed"),
+  };
+}
 
-  const body = (await response.json()) as LokiQueryResponse;
-  const lines: { line: string; tsMs: number }[] = [];
-  for (const stream of body.data?.result ?? []) {
-    for (const [tsNs, line] of stream.values) {
-      const tsMs = Number(BigInt(tsNs) / 1_000_000n);
-      lines.push({ line, tsMs });
+/** Every agent.flag_state span of a Jaeger response, folded. */
+export function parseFlagStates(body: JaegerTracesResponse): FlagPanel[] {
+  return spansNamed(body, FLAG_STATE_OPERATION).map(flagPanelFrom);
+}
+
+/** Newest first by span time in µs (two flag states can share a ms), then span id. */
+function flagNewestFirst(a: FlagPanel, b: FlagPanel): number {
+  return b.startUs - a.startUs || b.spanId.localeCompare(a.spanId);
+}
+
+/**
+ * The newest flag state per game across polls. The panel shows the followed game
+ * (UC-070 BR-005) chosen by the same anchor rule as the current-backend strip
+ * (`pickAnchor`), so a shadow game's flag state never replaces the stage game's.
+ */
+export class FlagStateStore {
+  private readonly byGame = new Map<string, FlagPanel>();
+
+  constructor(private readonly maxGames = 20) {}
+
+  /**
+   * Fold new flag states in. Over `maxGames` the oldest go, but never the live
+   * primary game's (`follow`): a burst of newer shadow games must not evict the
+   * flag state the panel shows (UC-070 BR-005).
+   */
+  merge(states: FlagPanel[], follow?: DecideFollow): void {
+    for (const s of states) {
+      const held = this.byGame.get(s.gameId);
+      if (!held || flagNewestFirst(s, held) < 0) this.byGame.set(s.gameId, s);
+    }
+    if (this.byGame.size > this.maxGames) {
+      const pinned =
+        follow?.realGameLive === true && follow.primaryGameId ? this.byGame.get(follow.primaryGameId) : undefined;
+      const rest = this.sorted().filter((s) => s !== pinned);
+      const keep = pinned ? [pinned, ...rest.slice(0, this.maxGames - 1)] : rest.slice(0, this.maxGames);
+      this.byGame.clear();
+      for (const s of keep) this.byGame.set(s.gameId, s);
     }
   }
-  return lines;
-}
 
-/**
- * Best-effort query of VictoriaMetrics for the applied-intervention counter.
- * Returns nulls (never throws) on any failure so it can't break the Loki-backed
- * panels — the overlay degrades to showing only blocked counts.
- */
-async function fetchAppliedCounts(): Promise<{
-  appliedOk: number | null;
-  appliedError: number | null;
-}> {
-  try {
-    const params = new URLSearchParams({ query: APPLIED_QUERY });
-    const url = `${BASE_URL}/victoria-metrics/api/v1/query?${params.toString()}`;
-    const response = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!response.ok) return { appliedOk: null, appliedError: null };
-    const body = (await response.json()) as VmQueryResponse;
-    return parseAppliedCounts(body);
-  } catch {
-    return { appliedOk: null, appliedError: null };
+  get size(): number {
+    return this.byGame.size;
+  }
+
+  has(gameId: string): boolean {
+    return this.byGame.has(gameId);
+  }
+
+  /**
+   * The followed game's flag state (null before any agent.flag_state span).
+   * While a real game is live it is that game's (`primaryGameId`) or null (the
+   * hint until its flag state arrives), never an older game's or a shadow game's.
+   */
+  current(follow?: DecideFollow): FlagPanel | null {
+    if (follow?.realGameLive === true) {
+      if (follow.primaryGameId) return this.byGame.get(follow.primaryGameId) ?? null;
+      return this.sorted().find((s) => !isShadowGame(s.gameKind)) ?? null;
+    }
+    return pickAnchor(this.sorted(), follow) ?? null;
+  }
+
+  private sorted(): FlagPanel[] {
+    return Array.from(this.byGame.values()).sort(flagNewestFirst);
   }
 }
 
 /**
- * Fetch and fold the full Agent view. Throws only if the PRIMARY (Loki) source is
- * unreachable; the VictoriaMetrics applied-count is best-effort and never throws.
+ * Whether the flag panel needs its own agent.flag_state search: no flag state is
+ * held, or none for the followed game. While a real game is live that is the
+ * primary game (`follow.primaryGameId`, follow.ts): a new game that has not
+ * decided yet still shows the previous game on the decide strip, so the strip's
+ * game is not enough. Otherwise it is the game the decide strip describes
+ * (`decideGameId`, the UC-070 BR-005 anchor), e.g. a quiet game with no
+ * agent.decide spans, whose game trace the decide poll never fetched. While
+ * decides flow for a game whose flag state is held, the decide poll's traces are
+ * enough.
  */
-export async function fetchAgentView(): Promise<AgentView> {
-  const [lines, applied, blocked] = await Promise.all([
-    fetchAgentLogs(),
-    fetchAppliedCounts(),
-    fetchBlockedCounts(),
-  ]);
-  const folded = aggregateAgentLogs(lines);
-  return {
-    feed: folded.feed,
-    flags: folded.flags,
-    overlay: {
-      ...folded.overlay,
-      // Exact counter tallies when VM answers (UC-040 A21); else the Loki fold.
-      ...(blocked ?? {}),
-      appliedOk: applied.appliedOk,
-      appliedError: applied.appliedError,
+export function needsFlagStateFallback(
+  store: FlagStateStore,
+  decideGameId: string | null,
+  follow?: DecideFollow,
+): boolean {
+  if (store.size === 0) return true;
+  if (follow?.realGameLive === true && follow.primaryGameId) return !store.has(follow.primaryGameId);
+  return decideGameId === null || !store.has(decideGameId);
+}
+
+/**
+ * The flag-state fallback search: the newest FLAG_STATE_FALLBACK_LIMIT traces,
+ * with no `start` (Jaeger's own window; a flag state is emitted once per game and
+ * on change, so an incremental window would miss a long quiet game's). While a
+ * real game is live the search asks for that game's `game.id`: shadow games
+ * started after it would otherwise fill the limit.
+ */
+export async function fetchFlagStates(signal?: AbortSignal, follow?: DecideFollow): Promise<FlagPanel[]> {
+  const primary = follow?.realGameLive === true ? follow.primaryGameId : "";
+  const body = await searchTraces(
+    {
+      operation: FLAG_STATE_OPERATION,
+      limit: FLAG_STATE_FALLBACK_LIMIT,
+      startMs: null,
+      ...(primary ? { tags: { "game.id": primary } } : {}),
     },
+    signal,
+  );
+  return parseFlagStates(body);
+}
+
+/* ======================================================================== */
+/* Activity feed: blocked decisions + rollout rows (#2059, D5)               */
+/* ======================================================================== */
+
+/** The blocked agent.decision spans the decide poll already holds, as feed rows. */
+export function blockedRowsFrom(rows: DecideRow[]): DecisionFeedRow[] {
+  const out: DecisionFeedRow[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    for (const d of r.decisions) {
+      if (!d.blocked) continue;
+      const key = `${r.traceId}/${d.spanId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        tsMs: d.tsMs || r.tsMs,
+        kind: "blocked",
+        msg: "agent.decision",
+        signal: "decision blocked",
+        action: d.action,
+        blocked: true,
+        reason: d.blockReason || d.reason,
+        sessionId: r.gameId,
+        target: decisionTargetLabel(d),
+        traceId: r.traceId,
+        spanId: d.spanId,
+      });
+    }
+  }
+  return out;
+}
+
+const ROLLOUT_SIGNAL: Record<string, string> = {
+  expand: "rollout expand",
+  rollback: "rollout rollback",
+  recommended_only: "rollback recommended",
+};
+
+/** Fold one agent.infrastructure.decision span into a rollout row (null for `none`). */
+export function rolloutRowFrom(span: JaegerSpan): DecisionFeedRow | null {
+  const tags = spanTags(span);
+  const action = tagString(tags, "remediation.action");
+  if (!(ROLLOUT_ACTIONS as readonly string[]).includes(action)) return null;
+  const dryRun = tags.get("rollout.dry_run") === true || tags.get("rollout.dry_run") === "true";
+  const violations = tagString(tags, "fitness.violations");
+  return {
+    tsMs: spanStartMs(span),
+    kind: "rollout",
+    msg: ROLLOUT_OPERATION,
+    signal: ROLLOUT_SIGNAL[action] + (dryRun ? " (dry run)" : ""),
+    action: tagString(tags, "rollout.target"),
+    blocked: false,
+    reason: violations,
+    sessionId: "",
+    target: "",
+    traceId: span.traceID,
+    spanId: span.spanID,
   };
+}
+
+/** Rollout rows across polls, with an incremental window per remediation.action. */
+export class RolloutStore {
+  private readonly rows = new Map<string, DecisionFeedRow>();
+  private readonly newestByAction = new Map<string, number>();
+
+  constructor(private readonly max = MAX_ROLLOUT_ROWS) {}
+
+  merge(action: RolloutAction, body: JaegerTracesResponse): void {
+    for (const span of spansNamed(body, ROLLOUT_OPERATION)) {
+      const ts = spanStartMs(span);
+      const newest = this.newestByAction.get(action);
+      if (newest === undefined || ts > newest) this.newestByAction.set(action, ts);
+      const row = rolloutRowFrom(span);
+      if (row) this.rows.set(`${row.traceId}/${row.spanId}`, row);
+    }
+    if (this.rows.size > this.max) {
+      const keep = this.list().slice(0, this.max);
+      this.rows.clear();
+      for (const r of keep) this.rows.set(`${r.traceId}/${r.spanId}`, r);
+    }
+  }
+
+  /** Next search start for one action (agent clock), null before its first span. */
+  queryStartMs(action: RolloutAction): number | null {
+    return incrementalStartMs(this.newestByAction.get(action) ?? null, ROLLOUT_OVERLAP_MS);
+  }
+
+  list(): DecisionFeedRow[] {
+    return Array.from(this.rows.values()).sort(feedNewestFirst);
+  }
+}
+
+/** One search per rollout action; throws JaegerUnavailableError when Jaeger is down. */
+export async function fetchRollouts(store: RolloutStore, signal?: AbortSignal): Promise<void> {
+  const bodies = await Promise.all(
+    ROLLOUT_ACTIONS.map((action) =>
+      searchTraces(
+        {
+          operation: ROLLOUT_OPERATION,
+          limit: ROLLOUT_LIMIT,
+          startMs: store.queryStartMs(action),
+          tags: { "remediation.action": action },
+        },
+        signal,
+      ),
+    ),
+  );
+  ROLLOUT_ACTIONS.forEach((action, i) => store.merge(action, bodies[i]));
+}
+
+function feedNewestFirst(a: DecisionFeedRow, b: DecisionFeedRow): number {
+  return b.tsMs - a.tsMs || b.spanId.localeCompare(a.spanId);
+}
+
+/** The activity feed: blocked decisions plus rollout rows, newest first, capped. */
+export function activityFeed(blocked: DecisionFeedRow[], rollouts: DecisionFeedRow[]): DecisionFeedRow[] {
+  return [...blocked, ...rollouts].sort(feedNewestFirst).slice(0, MAX_FEED_ROWS);
 }
 
 /* ======================================================================== */
@@ -458,9 +528,9 @@ export async function fetchAgentView(): Promise<AgentView> {
  * The decide contract (#1226) records every decision on an `agent.decide` span:
  * which backend answered (and which one the decision.backend flag requested),
  * the model, the answers + confidence, the confidence-threshold verdict, the
- * outcome and the model's one-line rationale. None of that is in Loki, so this
- * feed reads the spans straight from Jaeger's HTTP query API, which envoy already
- * routes at /jaeger/* (the same Jaeger the deep links open).
+ * outcome and the model's one-line rationale. This feed reads the spans straight
+ * from Jaeger's HTTP query API (./jaeger.ts), which envoy routes at /jaeger/*
+ * (the same Jaeger the deep links open).
  *
  * TRACE SHAPE (services/agent/decision/decide_hook.go)
  *   rules path:  agent.signal_received ─┬─ agent.decide
@@ -535,9 +605,14 @@ const KNOWN_OUTCOMES: ReadonlySet<string> = new Set([
 /** An agent.decision span linked to a decide row via the trace shape. */
 export interface LinkedDecision {
   spanId: string;
+  /** Span start, epoch ms (agent clock). */
+  tsMs: number;
   action: string;
   blocked: boolean;
+  /** decision.reason: why the agent proposed it. */
   reason: string;
+  /** decision.block_reason ("" unless blocked). */
+  blockReason: string;
   /** player.serial of a player-targeted decision ("" when session-scoped), #1295. */
   targetSerial: string;
   /** player.name of the targeted player ("" when the agent knew no name), #1295. */
@@ -604,71 +679,8 @@ export interface DecideCurrent {
 export interface DecideFeed {
   rows: DecideRow[];
   current: DecideCurrent | null;
-}
-
-/* --- Jaeger HTTP API (/api/traces) response shape (the subset we read) --- */
-
-export interface JaegerTag {
-  key: string;
-  type?: string;
-  value: unknown;
-}
-
-export interface JaegerReference {
-  refType: string;
-  traceID: string;
-  spanID: string;
-}
-
-export interface JaegerSpan {
-  traceID: string;
-  spanID: string;
-  operationName: string;
-  references?: JaegerReference[];
-  /** Microseconds since epoch. */
-  startTime: number;
-  /** Microseconds. */
-  duration: number;
-  tags?: JaegerTag[];
-}
-
-export interface JaegerTrace {
-  traceID: string;
-  spans: JaegerSpan[];
-}
-
-export interface JaegerTracesResponse {
-  data?: JaegerTrace[] | null;
-}
-
-function tagMap(span: JaegerSpan): Map<string, unknown> {
-  const m = new Map<string, unknown>();
-  for (const t of span.tags ?? []) m.set(t.key, t.value);
-  return m;
-}
-
-function tagString(tags: Map<string, unknown>, key: string): string {
-  const v = tags.get(key);
-  if (v === undefined || v === null) return "";
-  return String(v);
-}
-
-function tagNumber(tags: Map<string, unknown>, key: string): number | null {
-  const v = tags.get(key);
-  if (v === undefined || v === null || v === "") return null;
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function tagBool(tags: Map<string, unknown>, key: string): boolean {
-  const v = tags.get(key);
-  return v === true || v === "true";
-}
-
-/** The CHILD_OF parent span id ("" for a root). */
-function parentSpanId(span: JaegerSpan): string {
-  const ref = (span.references ?? []).find((r) => r.refType === "CHILD_OF");
-  return ref?.spanID ?? "";
+  /** agent.flag_state spans found in the same game traces (#2059); parse results only. */
+  flagStates?: FlagPanel[];
 }
 
 /**
@@ -706,7 +718,7 @@ function decideRowFrom(
   byParent: Map<string, JaegerSpan[]>,
   byId: Map<string, JaegerSpan>,
 ): DecideRow {
-  const tags = tagMap(span);
+  const tags = spanTags(span);
   const parent = parentSpanId(span);
 
   // Remote path: decision + chat spans are children of the decide span.
@@ -725,7 +737,7 @@ function decideRowFrom(
   let model = tagString(tags, "gen_ai.request.model");
   if (!model) {
     for (const c of children) {
-      const ct = tagMap(c);
+      const ct = spanTags(c);
       if (!isChatSpan(c, ct)) continue;
       model =
         tagString(ct, "gen_ai.response.model") ||
@@ -742,7 +754,7 @@ function decideRowFrom(
   return {
     traceId: span.traceID,
     spanId: span.spanID,
-    tsMs: Math.floor(span.startTime / 1000),
+    tsMs: spanStartMs(span),
     latencyMs: latency ?? Math.round(span.duration / 1000),
     backend: tagString(tags, "decide.backend"),
     requested: tagString(tags, "decide.backend.requested"),
@@ -763,12 +775,14 @@ function decideRowFrom(
       .slice()
       .sort((a, b) => a.startTime - b.startTime)
       .map((d) => {
-        const dt = tagMap(d);
+        const dt = spanTags(d);
         return {
           spanId: d.spanID,
+          tsMs: spanStartMs(d),
           action: tagString(dt, "decision.action"),
           blocked: tagBool(dt, "decision.blocked"),
           reason: tagString(dt, "decision.reason"),
+          blockReason: tagString(dt, "decision.block_reason"),
           targetSerial: tagString(dt, "player.serial"),
           targetName: tagString(dt, "player.name"),
         };
@@ -810,7 +824,7 @@ export function parseDecideTraces(body: JaegerTracesResponse): DecideFeed {
 
   rows.sort(newestFirst);
   const capped = rows.slice(0, MAX_DECIDE_ROWS);
-  return { rows: capped, current: currentFrom(rows) };
+  return { rows: capped, current: currentFrom(rows), flagStates: parseFlagStates(body) };
 }
 
 /** Shadow games are the experiment loop's headless games (game.kind="shadow"). */
@@ -820,11 +834,31 @@ export function isShadowGame(kind: string): boolean {
 
 /**
  * What the dashboard follows (UC-070 BR-005, follow.ts): whether a real game is
- * live (null = unknown) and the followed shadow game ("" = none).
+ * live (null = unknown), the followed shadow game ("" = none) and the primary
+ * (real) game's id ("" = unknown; only the flag panel uses it).
  */
 export interface DecideFollow {
   realGameLive: boolean | null;
   followGameId: string;
+  primaryGameId?: string;
+}
+
+/**
+ * The followed game's newest item (UC-070 BR-005), shared by the current-backend
+ * strip and the flag panel. By default the newest NON-shadow game (the one on
+ * stage); when no real game is live, the followed shadow game, else the newest
+ * item of any kind. Without any non-shadow item, the newest item. `items` must be
+ * newest first; undefined when empty.
+ */
+export function pickAnchor<T extends { gameId: string; gameKind: string }>(
+  items: T[],
+  follow?: DecideFollow,
+): T | undefined {
+  if (items.length === 0) return undefined;
+  const followed = follow?.followGameId ? items.find((r) => r.gameId === follow.followGameId) : undefined;
+  // No real game live and nothing followed with items: the newest item of any kind.
+  const newestOverall = follow?.realGameLive === false ? items[0] : undefined;
+  return followed ?? newestOverall ?? items.find((r) => !isShadowGame(r.gameKind)) ?? items[0];
 }
 
 /**
@@ -837,11 +871,8 @@ export interface DecideFollow {
  * the game of the newest row. `rows` must be newest first.
  */
 export function currentFrom(rows: DecideRow[], follow?: DecideFollow): DecideCurrent | null {
-  if (rows.length === 0) return null;
-  const followed = follow?.followGameId ? rows.find((r) => r.gameId === follow.followGameId) : undefined;
-  // No real game live and nothing followed with rows: the newest row of any kind.
-  const newestOverall = follow?.realGameLive === false ? rows[0] : undefined;
-  const anchor = followed ?? newestOverall ?? rows.find((r) => !isShadowGame(r.gameKind)) ?? rows[0];
+  const anchor = pickAnchor(rows, follow);
+  if (!anchor) return null;
   const gameRows = rows.filter((r) => r.gameId === anchor.gameId);
   const newest = gameRows[0] ?? anchor;
   let threshold = newest.threshold;
@@ -880,18 +911,12 @@ function newestFirst(a: DecideRow, b: DecideRow): number {
  * own server-side default (see CLOCK SKEW above).
  */
 export function decideQueryStartMs(newestSeenMs: number | null): number | null {
-  return newestSeenMs === null ? null : newestSeenMs - DECIDE_OVERLAP_MS;
+  return incrementalStartMs(newestSeenMs, DECIDE_OVERLAP_MS);
 }
 
 /** Query string for the decide search. Never contains browser-clock times. */
 export function decideQueryParams(startMs: number | null): URLSearchParams {
-  const params = new URLSearchParams({
-    service: "agent",
-    operation: DECIDE_OPERATION,
-    limit: String(DECIDE_TRACE_LIMIT),
-  });
-  if (startMs !== null) params.set("start", String(Math.floor(startMs) * 1000));
-  return params;
+  return searchParams({ operation: DECIDE_OPERATION, limit: DECIDE_TRACE_LIMIT, startMs });
 }
 
 /**
@@ -922,6 +947,16 @@ export class DecideStore {
   /** Next query start (agent clock), null before the first decide is held. */
   queryStartMs(): number | null {
     return decideQueryStartMs(this.newestMs);
+  }
+
+  /** Newest decide span time held (agent clock), null before the first one. */
+  newestSeenMs(): number | null {
+    return this.newestMs;
+  }
+
+  /** The follow state the next feed() uses. */
+  get followState(): DecideFollow {
+    return { ...this.follow };
   }
 
   get size(): number {
@@ -973,18 +1008,15 @@ export function jaegerTraceUrl(traceId: string, spanId: string): string {
 
 /**
  * Query Jaeger for the agent.decide spans that started at or after `startMs`
- * (agent clock; null = Jaeger's default window). Throws on transport errors and
- * on abort (the poller's per-request timeout) so the caller can back off. Polled
- * separately from the Loki view so a Loki outage never hides the decide feed.
+ * (agent clock; null = Jaeger's default window). Throws JaegerUnavailableError on
+ * transport errors, non-2xx and on abort (the poller's per-request timeout) so the
+ * caller can back off. The result also carries the agent.flag_state spans of the
+ * same game traces (`flagStates`).
  */
 export async function fetchDecideFeed(
   startMs: number | null,
   signal?: AbortSignal,
 ): Promise<DecideFeed> {
-  const url = `${BASE_URL}/jaeger/api/traces?${decideQueryParams(startMs).toString()}`;
-  const response = await fetch(url, { headers: { Accept: "application/json" }, signal });
-  if (!response.ok) {
-    throw new Error(`Jaeger query failed: ${response.status} ${response.statusText}`);
-  }
-  return parseDecideTraces((await response.json()) as JaegerTracesResponse);
+  const body = await searchTraces({ operation: DECIDE_OPERATION, limit: DECIDE_TRACE_LIMIT, startMs }, signal);
+  return parseDecideTraces(body);
 }

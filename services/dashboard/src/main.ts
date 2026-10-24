@@ -11,31 +11,58 @@ import { UNPAIR_NOTICE_EVENT } from "./unpair.js";
 import { GameStatus } from "./components/GameStatus.js";
 import { Controls } from "./components/Controls.js";
 import { ExperimentsView } from "./components/ExperimentsView.js";
-import { fetchExperiments } from "./experiments.js";
+import { ExperimentStore, pollExperiments } from "./experiments.js";
 import { AgentView } from "./components/AgentView.js";
-import { DecideStore, fetchAgentView, fetchDecideFeed } from "./agent.js";
+import {
+  DecideStore,
+  FlagStateStore,
+  RolloutStore,
+  activityFeed,
+  blockedRowsFrom,
+  fetchDecideFeed,
+  fetchFlagStates,
+  fetchInterventionCounts,
+  fetchRollouts,
+  needsFlagStateFallback,
+} from "./agent.js";
+import type { FlagPanel, InterventionOverlay } from "./agent.js";
 import { createPoller } from "./poller.js";
+import { PageGate } from "./pageGate.js";
 import { ShieldStore } from "./shield.js";
 import { reduceGameEvent } from "./gameEvents.js";
-import { onAgentPollFailed, onDecidePollFailed, onExperimentsPollFailed } from "./degrade.js";
+import {
+  onAgentPollFailed,
+  onDecidePollFailed,
+  onExperimentsPollFailed,
+  paintAgentPanels,
+  settleAgentPoll,
+} from "./degrade.js";
 import { FollowTracker, followBanner, visibleTiles } from "./follow.js";
 import { loadModeChoices, startGameEvent } from "./modes.js";
 import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
-// Poll cadence for the agent experiment view (Loki query). Matches the slow,
-// human-readable refresh rate of the embedded observability panels rather than
-// the 30Hz controller stream — experiment state moves on the order of games.
-const EXPERIMENTS_POLL_MS = 5000;
+// Every telemetry poller below is a createPoller chain (poller.ts): at most one
+// request in flight, a per-request timeout, doubling backoff on errors and slow
+// answers, and it runs only while its tab is shown and the page is visible. The
+// Jaeger searches never carry a browser-clock time (jaeger.ts, CLOCK SKEW).
 
-// Poll cadence for the agent decision/flag/intervention view (Loki + VM query).
-// Faster than the experiment view (state moves per decision, not per game) but
-// still well under the agent's signal rate — this is an observability tail, not
-// a live stream.
-const AGENT_POLL_MS = 2000;
+// Experiments tab (#2059: experiment.progress in Jaeger). Experiment state moves
+// on the order of games.
+const EXPERIMENTS_POLL_MS = 5000;
+const EXPERIMENTS_MAX_BACKOFF_MS = 15_000;
+const EXPERIMENTS_TIMEOUT_MS = 4000;
+
+// Agent tab, everything but the decide feed: VictoriaMetrics counts and, from
+// Jaeger, the flag-state fallback search (only when the decide poll brought no
+// flag state for its game) and the rollout searches (every ROLLOUT_EVERY_TICKS).
+const AGENT_POLL_MS = 5000;
+const AGENT_MAX_BACKOFF_MS = 15_000;
+const AGENT_TIMEOUT_MS = 4000;
+const ROLLOUT_EVERY_TICKS = 2;
 
 // Poll cadence for the agent.decide feed (#1233, Jaeger query). Faster than the
-// Loki view: a live decision.backend switch must show on the very next decision,
+// other agent panels: a live decision.backend switch must show on the very next decision,
 // and the remote cadence (decision.min_interval_ms) is 1.5-3s. Errors and slow
 // responses back off (doubling) to DECIDE_MAX_BACKOFF_MS; each request is aborted
 // after DECIDE_TIMEOUT_MS so a struggling Jaeger is not piled onto.
@@ -84,6 +111,15 @@ let shadowStream: { gameId: string; abort: AbortController } | null = null;
 
 // agent.decide rows across polls; the follow poller tells it which game to describe.
 const decideStore = new DecideStore();
+// Agent-tab span state across polls (#2059): flag states per game, rollout rows.
+const flagStore = new FlagStateStore();
+const rolloutStore = new RolloutStore();
+// The VictoriaMetrics half of the overlay; null until the agent poller ran once.
+let interventionCounts: InterventionOverlay | null = null;
+/** False while the last Agent poll's Jaeger leg failed (UC-035 A3 step 2). */
+let agentJaegerOk = true;
+// Newest experiment.progress snapshot per experiment.
+const experimentStore = new ExperimentStore();
 
 // Components
 let controllerGrid: ControllerGrid;
@@ -124,13 +160,13 @@ async function init() {
   // Start streaming game events
   startGameEventStream();
 
-  // Start polling the agent experiment telemetry (Loki)
+  // Start polling the experiment.progress spans (Jaeger)
   startExperimentsPolling();
 
-  // Start polling the agent decision/flag/intervention telemetry (Loki + VM)
+  // Start polling the agent flag / activity / intervention telemetry (Jaeger + VM)
   startAgentPolling();
 
-  // Start polling the agent.decide spans (Jaeger), independently of Loki
+  // Start polling the agent.decide spans (Jaeger)
   startDecidePolling();
 
   // Start following the live game (real, else the newest live shadow game)
@@ -139,11 +175,22 @@ async function init() {
   console.log("Dashboard initialized");
 }
 
-// The tab currently shown (setupTabs keeps it current). Pollers that only feed
-// one tab check it so a hidden tab costs no queries.
-let activeTab =
-  (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "";
 let decidePoller: Poller | null = null;
+let agentPoller: Poller | null = null;
+let experimentsPoller: Poller | null = null;
+// Pollers that only feed one tab run while it is shown and the page is visible
+// (pageGate.ts): a hidden tab, a hidden page or a page in the back/forward cache
+// costs no queries; coming back resumes them.
+const pageGate = new PageGate(
+  document,
+  globalThis,
+  (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
+  () => [decidePoller, agentPoller, experimentsPoller],
+);
+
+function tabActive(tab: string): boolean {
+  return pageGate.isActive(tab);
+}
 
 // Tab navigation
 function setupTabs() {
@@ -167,8 +214,12 @@ function setupTabs() {
         }
       });
 
-      activeTab = tabId;
-      if (tabId === "agent") decidePoller?.poke();
+      pageGate.activeTab = tabId;
+      if (tabId === "agent") {
+        decidePoller?.poke();
+        agentPoller?.poke();
+      }
+      if (tabId === "experiments") experimentsPoller?.poke();
 
       console.log(`Switched to tab: ${tabId}`);
     });
@@ -204,108 +255,104 @@ function startGameEventStream() {
   return keepGameEventStreamOpen(() => gameClient.streamGameEvents({}), handleGameEvent, undefined, () => shields.clear());
 }
 
-// Poll the agent's experiment telemetry from Loki and refresh the view.
-// Self-rescheduling timeout (not setInterval) so a slow query can never stack
-// overlapping requests. Polling pauses while the tab is hidden (no point hitting
-// Loki for a view nobody is looking at) and resumes on visibility change.
-let experimentsPollTimer: ReturnType<typeof setTimeout> | null = null;
-
+// Poll the experiment.progress spans (#2059): cold start without `start`, then
+// incremental from the newest snapshot held (ExperimentStore).
 function startExperimentsPolling() {
-  const tick = async () => {
-    experimentsPollTimer = null;
-    // Don't burn a Loki query on a hidden tab; the visibility handler resumes.
-    if (document.hidden) return;
-    try {
-      const experiments = await fetchExperiments();
-      experimentsView.render(experiments);
-    } catch (error) {
+  experimentsPoller = createPoller({
+    baseMs: EXPERIMENTS_POLL_MS,
+    maxMs: EXPERIMENTS_MAX_BACKOFF_MS,
+    timeoutMs: EXPERIMENTS_TIMEOUT_MS,
+    isActive: () => tabActive("experiments"),
+    run: async (signal) => {
+      experimentsView.render(await pollExperiments(experimentStore, signal));
+    },
+    onError: (error) => {
       console.error("Experiments poll error:", error);
-      // Keep whatever is on screen if we've rendered before (and flag it stale);
-      // otherwise show why.
+      // Keep what is on screen (flagged stale), else say Jaeger is unreachable.
       onExperimentsPollFailed(experimentsView);
-    } finally {
-      // Only reschedule while visible; visibilitychange restarts an idle loop.
-      if (!document.hidden) {
-        experimentsPollTimer = setTimeout(tick, EXPERIMENTS_POLL_MS);
-      }
-    }
-  };
-
-  // Keep the "updated Ns ago / stale" hint counting up between polls (even while
-  // polls are failing or the loop is paused). The dashboard lives for the page
-  // session, so this interval is never cleared.
-  setInterval(() => experimentsView.updateFreshness(), 1000);
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      // Pause: cancel any pending poll. An in-flight fetch is allowed to settle.
-      if (experimentsPollTimer !== null) {
-        clearTimeout(experimentsPollTimer);
-        experimentsPollTimer = null;
-      }
-    } else if (experimentsPollTimer === null) {
-      // Resume: poll immediately so the operator sees fresh data on return.
-      tick();
-    }
+    },
   });
 
-  tick();
+  // Keep the "updated Ns ago / stale" hint counting up between polls.
+  setInterval(() => experimentsView.updateFreshness(), 1000);
+  experimentsPoller.poke();
 }
 
-// Poll the agent's decision/flag/intervention telemetry and refresh the view.
-// Same self-rescheduling + tab-hidden-pause + staleness model as the experiments
-// poller (#1047): a slow query can't stack, a hidden tab burns no queries, and a
-// failed poll keeps the last good render on screen flagged stale.
-let agentPollTimer: ReturnType<typeof setTimeout> | null = null;
+/** The followed game's flag state (UC-070 BR-005, the strip's anchor rule). */
+function currentFlags(): FlagPanel | null {
+  return flagStore.current(decideStore.followState);
+}
 
+// Render the activity feed, flag panel and overlay from the stores.
+// While the Agent poll's Jaeger leg fails only the overlay renders (UC-035 A3).
+function renderAgentPanels() {
+  paintAgentPanels(agentView, interventionCounts, agentJaegerOk, () => ({
+    feed: activityFeed(blockedRowsFrom(decideStore.feed().rows), rolloutStore.list()),
+    flags: currentFlags(),
+  }));
+}
+
+// Poll the Agent tab's other panels (#2059): VictoriaMetrics counts (never fail),
+// the agent.flag_state fallback search and the rollout searches (Jaeger; a
+// failure keeps the last render, flagged stale).
 function startAgentPolling() {
-  const tick = async () => {
-    agentPollTimer = null;
-    if (document.hidden) return;
-    try {
-      const view = await fetchAgentView();
-      agentView.render(view);
-    } catch (error) {
+  let tick = 0;
+  agentPoller = createPoller({
+    baseMs: AGENT_POLL_MS,
+    maxMs: AGENT_MAX_BACKOFF_MS,
+    timeoutMs: AGENT_TIMEOUT_MS,
+    isActive: () => tabActive("agent"),
+    run: async (signal) => {
+      const rolloutDue = tick % ROLLOUT_EVERY_TICKS === 0;
+      const flagsNeeded = needsFlagStateFallback(
+        flagStore,
+        decideStore.feed().current?.gameId ?? null,
+        decideStore.followState,
+      );
+      // Settled, not all: the VictoriaMetrics counts render even when a Jaeger
+      // leg fails (UC-035 A3 step 2); the Jaeger failure still marks the poll failed.
+      const settled = await Promise.allSettled([
+        fetchInterventionCounts(signal),
+        flagsNeeded ? fetchFlagStates(signal, decideStore.followState) : Promise.resolve([] as FlagPanel[]),
+        rolloutDue ? fetchRollouts(rolloutStore, signal) : Promise.resolve(),
+      ]);
+      tick += 1;
+      const result = settleAgentPoll(settled, interventionCounts, (states) =>
+        flagStore.merge(states, decideStore.followState),
+        { flags: flagsNeeded, rollouts: rolloutDue },
+      );
+      interventionCounts = result.overlay;
+      agentJaegerOk = result.jaegerOk ?? agentJaegerOk;
+      renderAgentPanels();
+      if (result.failed) throw result.failed.reason;
+    },
+    onError: (error) => {
       console.error("Agent poll error:", error);
       onAgentPollFailed(agentView);
-    } finally {
-      if (!document.hidden) {
-        agentPollTimer = setTimeout(tick, AGENT_POLL_MS);
-      }
-    }
-  };
-
-  setInterval(() => agentView.updateFreshness(), 1000);
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      if (agentPollTimer !== null) {
-        clearTimeout(agentPollTimer);
-        agentPollTimer = null;
-      }
-    } else if (agentPollTimer === null) {
-      tick();
-    }
+    },
   });
 
-  tick();
+  setInterval(() => agentView.updateFreshness(), 1000);
+  agentPoller.poke();
 }
 
 // Poll the agent.decide spans from Jaeger (#1233). Only while the Agent tab is
 // shown AND the page is visible; one chain at most (see poller.ts), incremental
-// query window (DecideStore), per-request timeout and backoff. Independent of the
-// Loki poll so either backend being down leaves the other panel live.
+// query window (DecideStore), per-request timeout and backoff. Its game traces
+// also carry the blocked agent.decision and agent.flag_state spans (#2059).
 function startDecidePolling() {
   const store = decideStore;
   decidePoller = createPoller({
     baseMs: DECIDE_POLL_MS,
     maxMs: DECIDE_MAX_BACKOFF_MS,
     timeoutMs: DECIDE_TIMEOUT_MS,
-    isActive: () => activeTab === "agent" && !document.hidden,
+    isActive: () => tabActive("agent"),
     run: async (signal) => {
       const feed = await fetchDecideFeed(store.queryStartMs(), signal);
       store.merge(feed.rows);
+      flagStore.merge(feed.flagStates ?? [], store.followState);
       agentView.renderDecide(store.feed());
+      renderAgentPanels();
     },
     onError: (error) => {
       console.error("Decide feed poll error:", error);
@@ -314,12 +361,6 @@ function startDecidePolling() {
   });
 
   setInterval(() => agentView.updateDecideFreshness(), 1000);
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) decidePoller?.stop();
-    else decidePoller?.poke();
-  });
-
   decidePoller.poke();
 }
 
@@ -386,7 +427,11 @@ function followShadowEvents(gameId: string) {
 function applyFollow() {
   const follow = followTracker.state;
   if (follow.shadowGameId !== (shadowStream?.gameId ?? "")) followShadowEvents(follow.shadowGameId);
-  decideStore.setFollow({ realGameLive: follow.realGameLive, followGameId: follow.shadowGameId });
+  decideStore.setFollow({
+    realGameLive: follow.realGameLive,
+    followGameId: follow.shadowGameId,
+    primaryGameId: follow.primaryGameId,
+  });
   renderFollowBanner();
   if (state.isStreaming) updatePlayerCount(renderGrid());
 }

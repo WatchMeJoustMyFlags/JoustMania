@@ -52,6 +52,8 @@ export interface ListGamesResponseLike {
 export interface FollowState {
   /** A real (primary) game is STARTING or RUNNING; null = unknown (no answer yet). */
   realGameLive: boolean | null;
+  /** The primary (real) game's id from GetGameState ("" when unknown). */
+  primaryGameId: string;
   /** The followed shadow game ("" when following none). */
   shadowGameId: string;
   shadowGameMode: string;
@@ -63,6 +65,7 @@ export interface FollowState {
 
 export const NO_FOLLOW: FollowState = {
   realGameLive: null,
+  primaryGameId: "",
   shadowGameId: "",
   shadowGameMode: "",
   shadowPlayers: new Map(),
@@ -126,6 +129,7 @@ export function chooseFollow(
 
   return {
     realGameLive,
+    primaryGameId: primaryId,
     shadowGameId: followed?.gameId ?? "",
     shadowGameMode: followed?.gameMode ?? "",
     shadowPlayers,

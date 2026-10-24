@@ -6,7 +6,15 @@ import { keepGameEventStreamOpen, keepStreamOpen } from "../stream.js";
 import { CONTROLLER_STREAM_LOST, keepControllerStreamOpen } from "../controllerStream.js";
 import { ShieldStore, type GameEventLike } from "../shield.js";
 import { AgentView } from "../components/AgentView.js";
-import { onAgentPollFailed, onDecidePollFailed, onExperimentsPollFailed } from "../degrade.js";
+import type { InterventionOverlay } from "../agent.js";
+import {
+  onAgentPollFailed,
+  onDecidePollFailed,
+  onExperimentsPollFailed,
+  paintAgentPanels,
+  settleAgentPoll,
+  type AgentPollResults,
+} from "../degrade.js";
 import { ExperimentsView } from "../components/ExperimentsView.js";
 
 /** A stream that yields the events, then ends cleanly or throws. */
@@ -179,19 +187,29 @@ describe("UC-035: A3 a telemetry backend is down (dashboard side)", () => {
   const emptyView = {
     feed: [],
     flags: null,
-    overlay: { blockedByAction: [], blockedByReason: [], totalBlocked: 0, appliedOk: null, appliedError: null },
+    overlay: { blockedByAction: [], blockedByReason: [], totalBlocked: null, appliedOk: null, appliedError: null },
   };
 
-  it("UC-035/A3 an agent panel that never rendered says Loki is unreachable", () => {
+  it("UC-035/A3 an agent panel that never rendered says Jaeger is unreachable", () => {
     const el = stubDom();
     onAgentPollFailed(agentView());
-    expect(el("feed").innerHTML).toContain("Could not reach Loki for agent telemetry.");
+    expect(el("feed").innerHTML).toContain("Could not reach Jaeger for agent telemetry.");
+    expect(el("flags").innerHTML).toContain("Could not reach Jaeger for agent telemetry.");
   });
 
-  it("UC-035/A3 an experiments panel that never rendered says Loki is unreachable", () => {
+  it("UC-035/A3 an experiments panel that never rendered says Jaeger is unreachable", () => {
     const el = stubDom();
     onExperimentsPollFailed(new ExperimentsView("grid", "fresh"));
-    expect(el("grid").innerHTML).toContain("Could not reach Loki for experiment telemetry.");
+    expect(el("grid").innerHTML).toContain("Could not reach Jaeger for experiment telemetry.");
+  });
+
+  it("UC-035/A3 Jaeger up without spans shows the no-data hints, not an error", () => {
+    const el = stubDom();
+    agentView().render(emptyView as never);
+    new ExperimentsView("grid", "fresh").render([]);
+    expect(el("flags").innerHTML).toContain("No agent.flag_state spans in Jaeger yet");
+    expect(el("grid").innerHTML).toContain("No experiment.progress spans in Jaeger yet");
+    expect(el("flags").innerHTML + el("grid").innerHTML).not.toContain("Could not reach");
   });
 
   it("UC-035/A3 a decide strip that never rendered says Jaeger is unreachable", () => {
@@ -211,10 +229,92 @@ describe("UC-035: A3 a telemetry backend is down (dashboard side)", () => {
     expect(el("dfeed").innerHTML).toBe(painted);
   });
 
-  it("UC-035/A3 VictoriaMetrics down shows the Applied count as n/a", () => {
+  it("UC-035/A3 VictoriaMetrics down shows the Applied and Blocked counts as n/a", () => {
     const el = stubDom();
     agentView().render(emptyView as never);
-    expect(el("overlay").innerHTML).toContain('title="VictoriaMetrics unreachable">n/a</span>');
+    const html = el("overlay").innerHTML;
+    expect(html.match(/title="VictoriaMetrics unreachable">n\/a<\/span>/g)?.length).toBe(2);
+  });
+
+  const counts: InterventionOverlay = {
+    blockedByAction: [{ action: "grant_shield", blocked: 3 }],
+    blockedByReason: [],
+    totalBlocked: 3,
+    appliedOk: 7,
+    appliedError: 0,
+  };
+
+  /** One Agent poll: counts fulfilled, flag-state search rejected (Jaeger down). */
+  async function pollWithFlagsDown(view: AgentView, overlay: InterventionOverlay | null) {
+    const settled = (await Promise.allSettled([
+      Promise.resolve(counts),
+      Promise.reject(new Error("Jaeger unreachable")),
+      Promise.resolve(),
+    ])) as AgentPollResults;
+    const result = settleAgentPoll(
+      settled,
+      overlay,
+      () => {
+        throw new Error("a failed search merges nothing");
+      },
+      { flags: true, rollouts: true },
+    );
+    paintAgentPanels(view, result.overlay, result.jaegerOk ?? false, () => ({ feed: [], flags: null }));
+    return result;
+  }
+
+  it("UC-035/A3 flag search down, counts up: overlay renders, Jaeger panels name Jaeger, no no-data hint", async () => {
+    const el = stubDom();
+    const view = agentView();
+    const result = await pollWithFlagsDown(view, null);
+
+    expect(result.jaegerOk).toBe(false);
+    expect(result.failed?.reason).toEqual(new Error("Jaeger unreachable"));
+    expect(el("overlay").innerHTML).toContain('<span class="agent-stat-val agent-stat-applied">7</span>');
+    for (const panel of ["feed", "flags"]) {
+      expect(el(panel).innerHTML).toContain("Could not reach Jaeger for agent telemetry.");
+      expect(el(panel).innerHTML).not.toContain("in Jaeger yet");
+    }
+    onAgentPollFailed(view); // the poller's onError after the throw keeps the overlay
+    expect(el("overlay").innerHTML).toContain("agent-stat-applied");
+  });
+
+  it("UC-035/A3 flag search down after a good render: Jaeger panels go stale, the overlay updates", async () => {
+    vi.useFakeTimers();
+    const el = stubDom();
+    const view = agentView();
+    paintAgentPanels(view, emptyView.overlay, true, () => ({ feed: [], flags: null }));
+    const feed = el("feed").innerHTML;
+
+    vi.advanceTimersByTime(20_000);
+    await pollWithFlagsDown(view, emptyView.overlay);
+
+    expect(el("feed").innerHTML).toBe(feed);
+    expect(el("overlay").innerHTML).toContain("agent-stat-applied");
+    expect(el("fresh").textContent).toBe("stale — last updated 20s ago");
+  });
+
+  it("UC-035/A3 a tick that ran no Jaeger leg keeps the previous verdict, so the panels still go stale", async () => {
+    vi.useFakeTimers();
+    const el = stubDom();
+    const view = agentView();
+    paintAgentPanels(view, emptyView.overlay, true, () => ({ feed: [], flags: null }));
+    vi.advanceTimersByTime(20_000);
+    await pollWithFlagsDown(view, emptyView.overlay);
+
+    // Next tick: flag store is filled and no rollout is due, both legs skipped
+    // (resolved placeholders) while Jaeger is still down.
+    const skipped = (await Promise.allSettled([
+      Promise.resolve(counts),
+      Promise.resolve([]),
+      Promise.resolve(),
+    ])) as AgentPollResults;
+    const result = settleAgentPoll(skipped, counts, () => {}, { flags: false, rollouts: false });
+    expect(result.jaegerOk).toBeNull();
+    const jaegerOk = result.jaegerOk ?? false; // main.ts: ?? previous agentJaegerOk (false)
+    paintAgentPanels(view, result.overlay, jaegerOk, () => ({ feed: [], flags: null }));
+
+    expect(el("fresh").textContent).toBe("stale — last updated 20s ago");
   });
 
   it("UC-035/A3 a rendered agent panel keeps its data and is marked stale", () => {

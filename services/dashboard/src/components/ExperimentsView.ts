@@ -3,10 +3,11 @@
  *
  * Renders one card per cohort experiment with its arms, per-arm sample counts,
  * the fitness delta (experimental − control), and the current verdict. Data
- * comes from the agent's experiment telemetry in Loki (see ../experiments.ts);
- * the view polls on a fixed cadence to update live during a shadow run.
+ * comes from the newest experiment.progress span per experiment in Jaeger (see
+ * ../experiments.ts, #2059); the view polls to update live during a shadow run.
  */
 import type { ArmAggregate, ExperimentView } from "../experiments.js";
+import { EXPERIMENT_PROGRESS_NO_DATA } from "../degrade.js";
 
 /**
  * After this many ms without a successful poll, a kept-on-screen view is flagged
@@ -67,9 +68,7 @@ export class ExperimentsView {
     this.updateFreshness();
 
     if (experiments.length === 0) {
-      this.container.innerHTML =
-        '<div class="loading">No experiments running. ' +
-        "Start a shadow run with the cohort framework enabled to see live arms here.</div>";
+      this.container.innerHTML = `<div class="loading">${escapeHtml(EXPERIMENT_PROGRESS_NO_DATA)}</div>`;
       return;
     }
 
@@ -108,7 +107,7 @@ export class ExperimentsView {
   }
 
   private renderArm(arm: ArmAggregate): string {
-    const inFlight = Math.max(0, arm.assignedCount - arm.sampleCount);
+    const inFlight = Math.max(0, arm.inFlight);
     return `
       <div class="experiment-arm">
         <div class="arm-name">${escapeHtml(prettyArm(arm.arm))}</div>

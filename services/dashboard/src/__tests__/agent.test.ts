@@ -1,272 +1,348 @@
 /**
- * Unit tests for the pure parse + fold in agent.ts (issue #792).
+ * Agent tab data from spans (#2059; UC-035 step 3, UC-040 A21, UC-070 BR-005).
  *
- * Exercise aggregateAgentLogs (decision feed + flag panel + Loki-derived blocked
- * tallies) and parseAppliedCounts (VictoriaMetrics applied count) in isolation —
- * no Loki / VM / DOM. Covers the agent.* log shapes the agent really emits
- * (services/agent/decision/decision.go):
- *   - agent.evaluate feeds the flag panel (newest wins) and never floods the feed
- *   - agent.decision_blocked folds into blocked-by-action and blocked-by-reason
- *   - agent.rollout_* appears in the feed but doesn't count as blocked
- *   - the feed is newest-first
- *   - VM applied-count summing across namespaced jobs, and the empty/unavailable
- *     path returning nulls
+ * Fixtures are shaped like Jaeger's /api/traces JSON:
+ *   jaeger-flag-state-games   two game traces (a real game, then a newer shadow
+ *                             game): game_cycle -> agent.flag_state, and
+ *                             agent.signal_received -> agent.decide + agent.decision
+ *                             (one blocked, one allowed)
+ *   jaeger-rollout-*          one-span agent.infrastructure.decision traces
  */
-import { afterEach, describe, it, expect, vi } from "vitest";
-import { aggregateAgentLogs, fetchAgentView, parseAppliedCounts, parseBlockedCounts } from "../agent.js";
-import type { VmQueryResponse } from "../agent.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  BLOCKED_UNAVAILABLE,
+  DecideStore,
+  FLAG_STATE_FALLBACK_LIMIT,
+  FlagStateStore,
+  ROLLOUT_ACTIONS,
+  ROLLOUT_OVERLAP_MS,
+  RolloutStore,
+  activityFeed,
+  blockedRowsFrom,
+  fetchDecideFeed,
+  fetchFlagStates,
+  fetchInterventionCounts,
+  fetchRollouts,
+  needsFlagStateFallback,
+  parseAppliedCounts,
+  parseBlockedCounts,
+  parseDecideTraces,
+  parseFlagStates,
+  rolloutRowFrom,
+} from "../agent.js";
+import type { JaegerTracesResponse, VmQueryResponse } from "../agent.js";
+import { renderFlagPanel } from "../components/AgentView.js";
+import { FLAG_STATE_NO_DATA } from "../degrade.js";
+import gamesFixture from "./fixtures/jaeger-flag-state-games.json";
+import expandFixture from "./fixtures/jaeger-rollout-expand.json";
+import rollbackFixture from "./fixtures/jaeger-rollout-rollback.json";
 
-/** Build a synthetic slog TextHandler line from key→value pairs. */
-function logfmt(fields: Record<string, string>): string {
-  return Object.entries(fields)
-    .map(([k, v]) => (/[\s"]/.test(v) ? `${k}=${JSON.stringify(v)}` : `${k}=${v}`))
-    .join(" ");
+const games = gamesFixture as unknown as JaegerTracesResponse;
+const expand = expandFixture as unknown as JaegerTracesResponse;
+const rollback = rollbackFixture as unknown as JaegerTracesResponse;
+
+const T0_MS = 1_760_000_000_000;
+
+function vm(result: { metric: Record<string, string>; value: [number, string] }[]): VmQueryResponse {
+  return { status: "success", data: { resultType: "vector", result } };
 }
 
-let ts = 1_700_000_000_000;
-function nextTs(): number {
-  ts += 1000;
-  return ts;
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function line(fields: Record<string, string>, tsMs = nextTs()) {
-  return { line: logfmt({ level: "INFO", ...fields }), tsMs };
+/** Stub fetch; returns every requested URL. */
+function stubFetch(answer: (url: string) => Response | Promise<Response>): string[] {
+  const urls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      return answer(url);
+    }),
+  );
+  return urls;
 }
 
-describe("UC-035: main step 3, aggregateAgentLogs — flag panel", () => {
-  it("takes the resolved values from the newest agent.evaluate line", () => {
-    const out = aggregateAgentLogs([
-      line({
-        msg: "agent.evaluate",
-        session_id: "game_aaa",
-        decision_backend: "rules",
-        battery_threshold: "20",
-        variance_window: "5",
-        max_per_minute: "12",
-        game_mode: "JoustFFA",
-      }),
-      line({
-        msg: "agent.evaluate",
-        session_id: "game_aaa",
-        decision_backend: "claude",
-        battery_threshold: "30",
-        variance_window: "8",
-        max_per_minute: "20",
-        game_mode: "Zombies",
-      }),
-    ]);
-    expect(out.flags).not.toBeNull();
-    // Newest (second) line wins.
-    expect(out.flags?.decisionBackend).toBe("claude");
-    expect(out.flags?.maxPerMinute).toBe("20");
-    expect(out.flags?.gameMode).toBe("Zombies");
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+describe("UC-035: main step 3, flag panel from agent.flag_state", () => {
+  it("UC-035/main step 3 folds the flag set of an agent.flag_state span, booleans included", () => {
+    const states = parseFlagStates(games);
+    const real = states.find((s) => s.gameId === "game_real000001");
+    expect(real).toMatchObject({
+      gameKind: "real",
+      gameMode: "JoustFFA",
+      trigger: "game_start",
+      decisionBackend: "claude",
+      actThreshold: 0.7,
+      batteryThreshold: "20",
+      maxPerMinute: "6",
+      enabled: true,
+      objectives: "engagement=1.00",
+      interventionsAllowed: "grant_shield,end_game",
+    });
+    expect(states.find((s) => s.gameId === "game_shadow00001")?.enabled).toBe(false);
   });
 
-  it("newest wins regardless of input order", () => {
-    const newer = line({ msg: "agent.evaluate", decision_backend: "claude" }, 2000);
-    const older = line({ msg: "agent.evaluate", decision_backend: "rules" }, 1000);
-    // Feed older AFTER newer to prove it's ts-driven, not order-driven.
-    expect(aggregateAgentLogs([newer, older]).flags?.decisionBackend).toBe("claude");
+  it("UC-035/main step 3 the decide poll's game traces carry the flag states (no extra request)", () => {
+    const feed = parseDecideTraces(games);
+    expect(feed.flagStates?.map((s) => s.gameId).sort()).toEqual(["game_real000001", "game_shadow00001"]);
   });
 
-  it("agent.evaluate never appears in the decision feed", () => {
-    const out = aggregateAgentLogs([
-      line({ msg: "agent.evaluate", decision_backend: "rules" }),
-      line({ msg: "agent.evaluate", decision_backend: "rules" }),
-    ]);
-    expect(out.feed).toHaveLength(0);
-    expect(out.flags).not.toBeNull();
+  it("UC-035/main step 3 the panel shows the kill switch, objectives and allow-list, and no variance window", () => {
+    const html = renderFlagPanel(parseFlagStates(games)[0]);
+    expect(html).toContain("agent enabled (kill switch)");
+    expect(html).toContain("interventions allowed");
+    expect(html).toContain("objectives");
+    expect(html).not.toContain("variance window");
   });
 
-  it("is null when no agent.evaluate line is present", () => {
-    const out = aggregateAgentLogs([
-      line({ msg: "agent.decision_blocked", intervention: "grant_shield", reason: "rate_limit" }),
-    ]);
-    expect(out.flags).toBeNull();
+  it("UC-035/A3 no agent.flag_state span (an agent image before #2059) is a hint, not an error", () => {
+    const html = renderFlagPanel(null);
+    expect(html).toContain("No agent.flag_state spans in Jaeger yet");
+    expect(html).toContain(FLAG_STATE_NO_DATA.slice(0, 40));
+    expect(html).not.toMatch(/Could not reach/);
   });
 });
 
-describe("aggregateAgentLogs — blocked tallies", () => {
-  it("folds blocked decisions by action and by reason", () => {
-    const out = aggregateAgentLogs([
-      line({ msg: "agent.decision_blocked", intervention: "grant_shield", reason: "rate_limit" }),
-      line({ msg: "agent.decision_blocked", intervention: "grant_shield", reason: "battery_threshold" }),
-      line({ msg: "agent.decision_blocked", intervention: "raise_demand", reason: "rate_limit" }),
+describe("UC-070: BR-005 the flag panel follows the stage game", () => {
+  it("UC-070/BR-005 a newer shadow game's flag state never replaces the real game's", () => {
+    const store = new FlagStateStore();
+    store.merge(parseFlagStates(games));
+    // The shadow game's flag state is newer, but no follow state / a real game live.
+    expect(store.current()?.gameId).toBe("game_real000001");
+    expect(store.current({ realGameLive: true, followGameId: "" })?.gameId).toBe("game_real000001");
+  });
+
+  it("UC-070/BR-005 with no real game live the followed shadow game's flags show", () => {
+    const store = new FlagStateStore();
+    store.merge(parseFlagStates(games));
+    expect(store.current({ realGameLive: false, followGameId: "game_shadow00001" })?.gameId).toBe(
+      "game_shadow00001",
+    );
+  });
+
+  it("UC-070/BR-005 a newer flag state of the same game replaces the older one", () => {
+    const store = new FlagStateStore();
+    const [first] = parseFlagStates(games).filter((s) => s.gameId === "game_real000001");
+    store.merge([
+      { ...first, tsMs: first.tsMs + 5000, startUs: first.startUs + 5_000_000, spanId: "later", trigger: "changed", enabled: false },
     ]);
-    expect(out.overlay.totalBlocked).toBe(3);
-    // Most-blocked action first.
-    expect(out.overlay.blockedByAction[0]).toEqual({ action: "grant_shield", blocked: 2 });
-    expect(out.overlay.blockedByAction).toContainEqual({ action: "raise_demand", blocked: 1 });
-    // Reasons descending: rate_limit (2) before battery_threshold (1).
-    expect(out.overlay.blockedByReason[0]).toEqual({ reason: "rate_limit", count: 2 });
+    store.merge([first]);
+    expect(store.current()).toMatchObject({ spanId: "later", trigger: "changed", enabled: false });
   });
 
-  it("is order-independent (additive)", () => {
-    const a = line({ msg: "agent.decision_blocked", intervention: "x", reason: "r1" }, 1000);
-    const b = line({ msg: "agent.decision_blocked", intervention: "x", reason: "r1" }, 2000);
-    const fwd = aggregateAgentLogs([a, b]);
-    const rev = aggregateAgentLogs([b, a]);
-    expect(fwd.overlay.totalBlocked).toBe(rev.overlay.totalBlocked);
-    expect(fwd.overlay.blockedByAction).toEqual(rev.overlay.blockedByAction);
+  it("UC-070/BR-005 a flag state later in the same ms replaces the older one, whatever the span ids", () => {
+    const store = new FlagStateStore();
+    const [first] = parseFlagStates(games).filter((s) => s.gameId === "game_real000001");
+    const older = { ...first, startUs: first.startUs + 100, spanId: "zzzz", trigger: "game_start" };
+    const newer = { ...first, startUs: first.startUs + 400, spanId: "aaaa", trigger: "changed" };
+    expect(older.tsMs).toBe(newer.tsMs);
+    store.merge([newer]);
+    store.merge([older]);
+    expect(store.current()).toMatchObject({ spanId: "aaaa", trigger: "changed" });
   });
 
-  it("rollout lines are NOT counted as blocked", () => {
-    const out = aggregateAgentLogs([line({ msg: "agent.rollout_expand", reason: "stable" })]);
-    expect(out.overlay.totalBlocked).toBe(0);
-    expect(out.feed).toHaveLength(1);
+  it("UC-070/BR-005 a new real game that has not decided yet: fallback search, never the old game's flags", () => {
+    const store = new FlagStateStore();
+    store.merge(parseFlagStates(games)); // game_real000001 (decided) + a newer shadow game
+    // Game 2 is live and quiet: the decide strip still shows game 1.
+    const follow = { realGameLive: true, followGameId: "", primaryGameId: "game_real000002" };
+    expect(needsFlagStateFallback(store, "game_real000001", follow)).toBe(true);
+    expect(store.current(follow)).toBeNull();
+    // Even with shadow_policy=allow, a live real game never shows a shadow game's flags.
+    const shadowOnly = new FlagStateStore();
+    shadowOnly.merge(parseFlagStates(games).filter((s) => s.gameKind === "shadow"));
+    expect(shadowOnly.current({ realGameLive: true, followGameId: "" })).toBeNull();
+    // Game 2's flag state arrives (the fallback search found it).
+    const [first] = parseFlagStates(games).filter((s) => s.gameId === "game_real000001");
+    store.merge([{ ...first, gameId: "game_real000002", spanId: "g2" }]);
+    expect(needsFlagStateFallback(store, "game_real000001", follow)).toBe(false);
+    expect(store.current(follow)?.gameId).toBe("game_real000002");
+  });
+
+  it("UC-035/main step 3 the fallback search runs only when the strip's game has no flag state", () => {
+    const store = new FlagStateStore();
+    expect(needsFlagStateFallback(store, null)).toBe(true);
+    store.merge(parseFlagStates(games));
+    expect(needsFlagStateFallback(store, "game_real000001")).toBe(false);
+    expect(needsFlagStateFallback(store, "game_other")).toBe(true);
+    expect(needsFlagStateFallback(store, null)).toBe(true);
+  });
+
+  it("UC-035/main step 3 the fallback search asks for agent.flag_state, limit 2, without a browser-clock time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2031-01-01T00:00:00Z")); // a browser clock far off the agent's
+    const urls = stubFetch(() => json(games));
+    const states = await fetchFlagStates();
+    expect(states.length).toBe(2);
+    const params = new URL(urls[0], "http://x").searchParams;
+    expect(params.get("service")).toBe("agent");
+    expect(params.get("operation")).toBe("agent.flag_state");
+    expect(params.get("limit")).toBe(String(FLAG_STATE_FALLBACK_LIMIT));
+    expect(params.has("start")).toBe(false);
+    expect(params.has("end")).toBe(false);
   });
 });
 
-describe("UC-035: main step 3, aggregateAgentLogs — decision feed", () => {
-  it("includes blocked / rollout rows with the right kind", () => {
-    const out = aggregateAgentLogs([
-      line({ msg: "agent.decision_blocked", intervention: "grant_shield", reason: "rate_limit", session_id: "game_z" }),
-      line({ msg: "agent.rollout_rollback", reason: "regression" }),
-    ]);
-    const kinds = out.feed.map((r) => r.kind).sort();
-    expect(kinds).toEqual(["blocked", "rollout"]);
-    const blocked = out.feed.find((r) => r.kind === "blocked");
-    expect(blocked?.blocked).toBe(true);
-    expect(blocked?.action).toBe("grant_shield");
-    expect(blocked?.reason).toBe("rate_limit");
-    expect(blocked?.sessionId).toBe("game_z");
+describe("UC-070: BR-005 the flag-state search and store keep the live real game", () => {
+  const live = { realGameLive: true, followGameId: "", primaryGameId: "game_real000002" };
+
+  it("UC-035/main step 3 while a real game is live the fallback search filters by its game.id", async () => {
+    const urls = stubFetch(() => json(games));
+    await fetchFlagStates(undefined, live);
+    await fetchFlagStates(undefined, { realGameLive: false, followGameId: "game_shadow00001", primaryGameId: "game_real000002" });
+    const [withGame, without] = urls.map((u) => new URL(u, "http://x").searchParams);
+    expect(JSON.parse(withGame.get("tags") ?? "null")).toEqual({ "game.id": "game_real000002" });
+    expect(withGame.get("operation")).toBe("agent.flag_state");
+    expect(without.has("tags")).toBe(false);
   });
 
-  it("is sorted newest-first", () => {
-    const out = aggregateAgentLogs([
-      line({ msg: "agent.decision_blocked", intervention: "a", reason: "r" }, 1000),
-      line({ msg: "agent.decision_blocked", intervention: "b", reason: "r" }, 3000),
-      line({ msg: "agent.decision_blocked", intervention: "c", reason: "r" }, 2000),
+  it("UC-070/BR-005 newer shadow games never evict the live primary game's flag state", () => {
+    const store = new FlagStateStore(2);
+    const [real] = parseFlagStates(games).filter((s) => s.gameId === "game_real000001");
+    store.merge([{ ...real, gameId: "game_real000002", spanId: "primary" }], live);
+    const shadows = [1, 2, 3].map((i) => ({
+      ...real,
+      gameId: `game_shadow0000${i}`,
+      gameKind: "shadow",
+      spanId: `s${i}`,
+      startUs: real.startUs + i * 1_000_000,
+      tsMs: real.tsMs + i * 1000,
+    }));
+    store.merge(shadows, live);
+    expect(store.size).toBe(2);
+    expect(store.current(live)?.spanId).toBe("primary");
+    expect(store.has("game_shadow00003")).toBe(true);
+  });
+});
+
+describe("UC-035: main step 3, activity feed (blocked decisions + rollout)", () => {
+  it("UC-035/main step 3 blocked rows come from the decide poll's agent.decision spans", () => {
+    const store = new DecideStore();
+    store.merge(parseDecideTraces(games).rows);
+    const rows = blockedRowsFrom(store.feed().rows);
+    expect(rows.map((r) => [r.sessionId, r.action, r.reason, r.target])).toEqual([
+      ["game_shadow00001", "grant_shield", "not_allowed", "Ana"],
+      ["game_real000001", "grant_shield", "rate_limit", "Ana"],
     ]);
-    expect(out.feed.map((r) => r.tsMs)).toEqual([3000, 2000, 1000]);
+    // Allowed decisions stay in the decide feed only.
+    expect(rows.every((r) => r.blocked && r.kind === "blocked")).toBe(true);
   });
 
-  it("ignores unrelated agent.* messages", () => {
-    const out = aggregateAgentLogs([
-      line({ msg: "agent.game.summary_written", session_id: "game_a" }),
-      line({ msg: "agent.llm.retro_captured" }),
-    ]);
-    expect(out.feed).toHaveLength(0);
-    expect(out.overlay.totalBlocked).toBe(0);
+  it("UC-035/main step 3 rollout rows come from agent.infrastructure.decision by remediation.action", () => {
+    const row = rolloutRowFrom(rollback.data![0].spans[0]);
+    expect(row).toMatchObject({ kind: "rollout", signal: "rollout rollback (dry run)", action: "bluez", reason: "event_gap_ms>40" });
+    const none = { ...expand.data![0].spans[0], tags: [{ key: "remediation.action", value: "none" }] };
+    expect(rolloutRowFrom(none)).toBeNull();
+  });
+
+  it("UC-035/main step 3 one tag search per action; later searches start at the newest span minus the overlap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2031-01-01T00:00:00Z"));
+    const store = new RolloutStore();
+    const urls = stubFetch((url) => {
+      const tags = new URL(url, "http://x").searchParams.get("tags") ?? "";
+      if (tags.includes('"expand"')) return json(expand);
+      if (tags.includes('"rollback"')) return json(rollback);
+      return json({ data: [] });
+    });
+
+    await fetchRollouts(store);
+    const first = urls.map((u) => new URL(u, "http://x").searchParams);
+    expect(first.map((p) => JSON.parse(p.get("tags")!)["remediation.action"])).toEqual([...ROLLOUT_ACTIONS]);
+    expect(first.every((p) => p.get("operation") === "agent.infrastructure.decision" && !p.has("start") && !p.has("end"))).toBe(true);
+
+    urls.length = 0;
+    await fetchRollouts(store);
+    const second = new Map(urls.map((u) => {
+      const p = new URL(u, "http://x").searchParams;
+      return [JSON.parse(p.get("tags")!)["remediation.action"], p.get("start")];
+    }));
+    expect(second.get("expand")).toBe(String((T0_MS + 70_000 - ROLLOUT_OVERLAP_MS) * 1000));
+    expect(second.get("rollback")).toBe(String((T0_MS + 80_000 - ROLLOUT_OVERLAP_MS) * 1000));
+    expect(second.get("recommended_only")).toBeNull();
+    expect(store.list().map((r) => r.signal)).toEqual(["rollout rollback (dry run)", "rollout expand"]);
+  });
+
+  it("UC-035/main step 3 the feed merges both, newest first", () => {
+    const decide = new DecideStore();
+    decide.merge(parseDecideTraces(games).rows);
+    const rollouts = new RolloutStore();
+    rollouts.merge("expand", expand);
+    const feed = activityFeed(blockedRowsFrom(decide.feed().rows), rollouts.list());
+    expect(feed.map((r) => r.kind)).toEqual(["rollout", "blocked", "blocked"]);
+  });
+});
+
+describe("UC-035: main step 3, no browser clock in a Jaeger request", () => {
+  it("UC-035/main step 3 the decide search sends neither the browser's now nor an end", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2031-01-01T00:00:00Z"));
+    const browserNowUs = String(Date.now() * 1000);
+    const urls = stubFetch(() => json(games));
+    const store = new DecideStore();
+    store.merge((await fetchDecideFeed(store.queryStartMs())).rows);
+    await fetchDecideFeed(store.queryStartMs());
+    expect(new URL(urls[0], "http://x").searchParams.has("start")).toBe(false);
+    for (const u of urls) {
+      expect(u).not.toContain(browserNowUs.slice(0, 8));
+      expect(new URL(u, "http://x").searchParams.has("end")).toBe(false);
+    }
   });
 });
 
 describe("UC-035: main step 3, parseAppliedCounts", () => {
   it("sums result series across namespaced jobs", () => {
-    const body: VmQueryResponse = {
-      status: "success",
-      data: {
-        resultType: "vector",
-        result: [
-          { metric: { result: "ok", job: "infrastructure/agent-service" }, value: [1700, "7"] as [number, string] },
-          { metric: { result: "ok", job: "other/agent" }, value: [1700, "3"] as [number, string] },
-          { metric: { result: "error" }, value: [1700, "2"] as [number, string] },
-        ],
-      },
-    };
-    expect(parseAppliedCounts(body)).toEqual({ appliedOk: 10, appliedError: 2 });
+    const out = parseAppliedCounts(
+      vm([
+        { metric: { result: "ok", job: "a/agent" }, value: [1, "3"] },
+        { metric: { result: "ok", job: "b/agent" }, value: [1, "2"] },
+        { metric: { result: "error", job: "a/agent" }, value: [1, "1"] },
+      ]),
+    );
+    expect(out).toEqual({ appliedOk: 5, appliedError: 1 });
   });
 
-  it("returns nulls when VM has no samples", () => {
-    expect(parseAppliedCounts({ status: "success", data: { resultType: "vector", result: [] } }))
-      .toEqual({ appliedOk: null, appliedError: null });
-  });
-
-  it("returns nulls on a malformed body", () => {
+  it("returns nulls when VM has no samples or a malformed body", () => {
+    expect(parseAppliedCounts(vm([]))).toEqual({ appliedOk: null, appliedError: null });
     expect(parseAppliedCounts({ status: "error" })).toEqual({ appliedOk: null, appliedError: null });
   });
-
-  it("skips non-finite values", () => {
-    const body: VmQueryResponse = {
-      status: "success",
-      data: {
-        resultType: "vector",
-        result: [{ metric: { result: "ok" }, value: [1700, "NaN"] as [number, string] }],
-      },
-    };
-    // The one ok series had a non-finite value, so ok stays null.
-    expect(parseAppliedCounts(body)).toEqual({ appliedOk: null, appliedError: null });
-  });
 });
 
-describe("UC-040 A21 parseBlockedCounts (blocked tallies from agent_decisions_total)", () => {
-  const vm = (series: [Record<string, string>, string][]): VmQueryResponse => ({
-    status: "success",
-    data: {
-      resultType: "vector",
-      result: series.map(([metric, v]) => ({ metric, value: [1700, v] as [number, string] })),
-    },
-  });
-
-  it("counts repeated rate_limit refusals the Loki lines no longer carry", () => {
-    const out = parseBlockedCounts(vm([
-      [{ action: "grant_shield", block_reason: "rate_limit" }, "48.6"],
-      [{ action: "send_controller_effect", block_reason: "rate_limit" }, "12"],
-      [{ action: "end_game", block_reason: "not_allowed" }, "1"],
-    ]));
-    expect(out).toEqual({
-      blockedByAction: [
-        { action: "grant_shield", blocked: 49 },
-        { action: "send_controller_effect", blocked: 12 },
-        { action: "end_game", blocked: 1 },
-      ],
-      blockedByReason: [
-        { reason: "rate_limit", count: 61 },
-        { reason: "not_allowed", count: 1 },
-      ],
-      totalBlocked: 62,
-    });
-  });
-
-  it("drops zero and non-finite series", () => {
-    const out = parseBlockedCounts(vm([
-      [{ action: "grant_shield", block_reason: "rate_limit" }, "0.2"],
-      [{ action: "play_audio_cue", block_reason: "rate_limit" }, "NaN"],
-    ]));
-    expect(out).toEqual({ blockedByAction: [], blockedByReason: [], totalBlocked: 0 });
-  });
-
-  it("returns null without samples so the Loki fold is kept", () => {
-    expect(parseBlockedCounts(vm([]))).toBeNull();
-    expect(parseBlockedCounts({ status: "error" })).toBeNull();
-  });
-});
-
-describe("UC-040: A21 the Agent tab's blocked tallies cover its 10-minute window", () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("UC-040/A21 asks VictoriaMetrics for agent_decisions_total{blocked=\"true\"} over 600 s and the Loki lines over the same window, and prefers the counter", async () => {
-    const urls: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        urls.push(url);
-        let body: unknown;
-        if (url.includes("/loki/")) {
-          body = {
-            status: "success",
-            data: { result: [{ stream: {}, values: [[String(BigInt(Date.now()) * 1_000_000n), logfmt({ level: "WARN", msg: "agent.decision_blocked", intervention: "grant_shield", reason: "rate_limit" })]] }] },
-          };
-        } else if (url.includes("agent_decisions_total")) {
-          body = { status: "success", data: { resultType: "vector", result: [{ metric: { action: "grant_shield", block_reason: "rate_limit" }, value: [1700, "7"] }] } };
-        } else {
-          body = { status: "success", data: { resultType: "vector", result: [] } };
-        }
-        return new Response(JSON.stringify(body), { status: 200 });
-      }),
+describe("UC-040: A21 blocked tallies from agent_decisions_total", () => {
+  it("UC-040/A21 counts repeated rate_limit refusals that emit no agent.decision span", () => {
+    const out = parseBlockedCounts(
+      vm([
+        { metric: { action: "grant_shield", block_reason: "rate_limit" }, value: [1, "6.6"] },
+        { metric: { action: "end_game", block_reason: "not_allowed" }, value: [1, "1"] },
+        { metric: { action: "x", block_reason: "y" }, value: [1, "NaN"] },
+      ]),
     );
+    expect(out.totalBlocked).toBe(8);
+    expect(out.blockedByAction[0]).toEqual({ action: "grant_shield", blocked: 7 });
+  });
 
-    const view = await fetchAgentView();
+  it("UC-040/A21 no samples in the window is zero blocked, not n/a", () => {
+    expect(parseBlockedCounts(vm([]))).toEqual({ blockedByAction: [], blockedByReason: [], totalBlocked: 0 });
+  });
 
-    const blockedUrl = urls.find((u) => u.includes("agent_decisions_total"));
-    expect(blockedUrl).toBeDefined();
-    const query = new URL(blockedUrl!, "http://x").searchParams.get("query") ?? "";
+  it("UC-040/A21 asks VictoriaMetrics over 600 s; unreachable shows Blocked as n/a, never a span fold", async () => {
+    const urls = stubFetch((url) => {
+      if (url.includes("/victoria-metrics/")) throw new TypeError("Failed to fetch");
+      return json(games);
+    });
+    const overlay = await fetchInterventionCounts();
+    const query = new URL(urls.find((u) => u.includes("agent_decisions_total"))!, "http://x").searchParams.get("query") ?? "";
     expect(query).toContain('agent_decisions_total{blocked="true"}');
     expect(query).toContain("[600s]");
-    const loki = new URL(urls.find((u) => u.includes("/loki/"))!, "http://x").searchParams;
-    expect(BigInt(loki.get("end")!) - BigInt(loki.get("start")!)).toBe(600n * 1_000_000_000n);
-    // The counter wins over the single warning line (repeats log nothing, A21 step 2).
-    expect(view.overlay.totalBlocked).toBe(7);
+    expect(overlay).toEqual({ ...BLOCKED_UNAVAILABLE, appliedOk: null, appliedError: null });
+    expect(overlay.totalBlocked).toBeNull();
+    expect(urls.some((u) => u.includes("/jaeger/"))).toBe(false);
   });
 });

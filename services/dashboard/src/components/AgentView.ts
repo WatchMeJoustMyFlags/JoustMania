@@ -1,16 +1,15 @@
 /**
  * Agent View Component (issue #792).
  *
- * The demo's agent focus screen. Three panels, all fed from the agent's live
- * telemetry (see ../agent.ts):
+ * The demo's agent focus screen. Panels fed from the agent's live telemetry
+ * (see ../agent.ts; spans from Jaeger since #2059):
  *
- *   1. Decision feed     — a rolling tail of the agent's recent decisions
- *                          (blocked decisions + rollout activity),
- *                          allowed-vs-blocked at a glance.
- *   2. Flag panel        — the resolved effective decision backend/policy values the
- *                          agent last evaluated against.
- *   3. Intervention      — applied vs blocked tallies (blocked by action and by
- *      overlay             reason from Loki, applied from VictoriaMetrics).
+ *   1. Activity feed     — blocked agent.decision spans and rollout rows
+ *                          (agent.infrastructure.decision).
+ *   2. Flag panel        — the followed game's effective flag set, from its newest
+ *                          agent.flag_state span (UC-070 BR-005 anchor).
+ *   3. Intervention      — applied and blocked tallies from VictoriaMetrics
+ *      overlay             (`n/a` when it is unreachable).
  *   4. Decide feed       — (#1233) one row per agent.decide span from Jaeger:
  *                          backend/model, answer, confidence vs threshold,
  *                          outcome, rationale, plus a "current backend" strip so
@@ -31,6 +30,7 @@ import type {
   InterventionOverlay,
 } from "../agent.js";
 import { confidenceBar, decisionTargetLabel, jaegerTraceUrl } from "../agent.js";
+import { FLAG_STATE_NO_DATA } from "../degrade.js";
 
 /**
  * After this many ms without a successful poll, a kept-on-screen view is flagged
@@ -149,6 +149,18 @@ export class AgentView {
     this.hasRendered = true;
   }
 
+  /**
+   * Jaeger failed while VictoriaMetrics answered (UC-035 A3 step 2): the
+   * Jaeger-fed panels (activity feed, flag panel) name Jaeger, the overlay is
+   * left to renderOverlay.
+   */
+  setJaegerError(message: string) {
+    const html = `<div class="loading">${escapeHtml(message)}</div>`;
+    this.feedEl.innerHTML = html;
+    this.flagsEl.innerHTML = html;
+    this.hasRendered = true;
+  }
+
   /** A poll just failed; keep the last good render and let the hint go stale. */
   markStale() {
     this.updateFreshness();
@@ -184,9 +196,9 @@ export class AgentView {
   private renderFeed(feed: DecisionFeedRow[]) {
     if (feed.length === 0) {
       this.feedEl.innerHTML =
-        '<div class="loading">No agent decisions in the last 10 minutes. ' +
-        "Allowed decisions appear in the Jaeger trace (link above); this feed shows " +
-        "blocked decisions and rollout activity. Remote-backend fallbacks are in the decide strip below.</div>";
+        '<div class="loading">No blocked agent.decision or rollout spans in Jaeger yet. ' +
+        "Allowed decisions appear in the decide feed below and in the Jaeger trace (link above); this feed shows " +
+        "blocked decisions and rollout activity.</div>";
       return;
     }
     this.feedEl.innerHTML = feed.map((row) => this.renderFeedRow(row)).join("");
@@ -200,6 +212,9 @@ export class AgentView {
     const action = row.action
       ? `<span class="agent-feed-action">${escapeHtml(row.action)}</span>`
       : "";
+    const target = row.target
+      ? `<span class="decide-arrow">→</span> <span class="decide-target">${escapeHtml(row.target)}</span>`
+      : "";
     const reason = row.reason
       ? `<span class="agent-feed-reason" title="${escapeHtml(row.reason)}">${escapeHtml(row.reason)}</span>`
       : "";
@@ -212,6 +227,7 @@ export class AgentView {
         ${badge}
         <span class="agent-feed-signal">${escapeHtml(row.signal)}</span>
         ${action}
+        ${target}
         ${session}
         ${reason}
       </div>
@@ -219,41 +235,11 @@ export class AgentView {
   }
 
   private renderFlags(flags: FlagPanel | null) {
-    if (!flags) {
-      this.flagsEl.innerHTML =
-        '<div class="loading">No agent.evaluate cycle observed yet. ' +
-        "Effective decision backend/policy values appear here once the agent evaluates a game.</div>";
-      return;
-    }
-    const rows: [string, string][] = [
-      ["decision backend", flags.decisionBackend || "—"],
-      ["battery threshold", flags.batteryThreshold || "—"],
-      ["variance window", flags.varianceWindow || "—"],
-      ["max interventions/min", flags.maxPerMinute || "—"],
-      ["game mode", flags.gameMode || "—"],
-    ];
-    const body = rows
-      .map(
-        ([k, v]) => `
-        <div class="agent-flag">
-          <span class="agent-flag-key">${escapeHtml(k)}</span>
-          <span class="agent-flag-val">${escapeHtml(v)}</span>
-        </div>`,
-      )
-      .join("");
-    this.flagsEl.innerHTML = `
-      <div class="agent-flags-grid">${body}</div>
-      <div class="agent-flags-note">
-        Resolved effective values from the latest <code>agent.evaluate</code> cycle.
-        Boolean kill-switch flags (enabled, experiments_enabled, interventions_allowed)
-        live in flagd and are not yet exposed to the dashboard &mdash; see
-        <a href="/jaeger/search?service=agent" target="_blank" rel="noreferrer">Jaeger</a>
-        for the per-decision flag attribution.
-      </div>
-    `;
+    this.flagsEl.innerHTML = renderFlagPanel(flags);
   }
 
-  private renderOverlay(overlay: InterventionOverlay) {
+  /** The VictoriaMetrics overlay alone; leaves the Jaeger panels and their freshness. */
+  renderOverlay(overlay: InterventionOverlay) {
     const applied =
       overlay.appliedOk === null
         ? '<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>'
@@ -262,6 +248,11 @@ export class AgentView {
       overlay.appliedError && overlay.appliedError > 0
         ? `<span class="agent-stat-sub" title="failed flag-file writes">(${overlay.appliedError} failed)</span>`
         : "";
+
+    const blocked =
+      overlay.totalBlocked === null
+        ? '<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>'
+        : `<span class="agent-stat-val agent-stat-blocked">${overlay.totalBlocked}</span>`;
 
     const byAction =
       overlay.blockedByAction.length > 0
@@ -274,7 +265,9 @@ export class AgentView {
               </div>`,
             )
             .join("")
-        : '<div class="agent-tally-empty">none blocked</div>';
+        : overlay.totalBlocked === null
+          ? '<div class="agent-tally-empty">n/a</div>'
+          : '<div class="agent-tally-empty">none blocked</div>';
 
     const byReason =
       overlay.blockedByReason.length > 0
@@ -297,7 +290,7 @@ export class AgentView {
         </div>
         <div class="agent-stat">
           <span class="agent-stat-label">blocked (10m)</span>
-          <span class="agent-stat-val agent-stat-blocked">${overlay.totalBlocked}</span>
+          ${blocked}
         </div>
       </div>
       <div class="agent-overlay-cols">
@@ -340,6 +333,47 @@ export function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/** On / off / unknown for a boolean flag. */
+function onOff(v: boolean | null): string {
+  if (v === null) return "—";
+  return v ? "on" : "off";
+}
+
+/**
+ * The flag panel (#2059): the followed game's newest agent.flag_state. Pure and
+ * exported for tests. A missing span is the no-data hint, never an error.
+ */
+export function renderFlagPanel(flags: FlagPanel | null): string {
+  if (!flags) return `<div class="loading">${escapeHtml(FLAG_STATE_NO_DATA)}</div>`;
+  const rows: [string, string][] = [
+    ["agent enabled (kill switch)", onOff(flags.enabled)],
+    ["decision backend", flags.decisionBackend || "—"],
+    ["act confidence threshold", flags.actThreshold === null ? "—" : flags.actThreshold.toFixed(2)],
+    ["battery threshold", flags.batteryThreshold || "—"],
+    ["max interventions/min", flags.maxPerMinute || "—"],
+    ["interventions allowed", flags.interventionsAllowed || "—"],
+    ["objectives", flags.objectives || "—"],
+    ["game mode", flags.gameMode || "—"],
+  ];
+  const body = rows
+    .map(
+      ([k, v]) => `
+        <div class="agent-flag">
+          <span class="agent-flag-key">${escapeHtml(k)}</span>
+          <span class="agent-flag-val">${escapeHtml(v)}</span>
+        </div>`,
+    )
+    .join("");
+  return `
+      <div class="agent-flags-grid">${body}</div>
+      <div class="agent-flags-note">
+        Effective flags of ${renderGameBadge(flags.gameId, flags.gameKind)} from its newest
+        <a href="${escapeHtml(jaegerTraceUrl(flags.traceId, flags.spanId))}" target="_blank" rel="noreferrer"><code>agent.flag_state</code></a>
+        span (${escapeHtml(flags.trigger || "?")}, ${formatTime(flags.tsMs)}).
+      </div>
+    `;
 }
 
 /* ---------------- agent.decide rendering (#1233) ---------------- */
