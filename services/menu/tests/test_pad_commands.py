@@ -184,7 +184,7 @@ async def test_force_start_starts_with_the_ready_roster_and_no_host_serial(servi
         live_roster({"a", "b", "c"}),
         patch.object(servicer, "_run_game_lifecycle", autospec=True) as lifecycle,
     ):
-        reply = await pad(servicer, "force_start", expected_generation=7)
+        reply = await pad(servicer, "force_start", expected_generation=0)
         await servicer._game_lifecycle_task
 
     assert (reply.success, reply.error) == (True, "")

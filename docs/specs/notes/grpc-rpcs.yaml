@@ -71,6 +71,10 @@ joustmania.menu.MenuService/ProcessInput: 'Process menu input. `web_command` `st
   `game_start_rejected` (UC-010 A6, UC-011 BR-002)'
 joustmania.menu.MenuService/ListGameModes: The playable modes (`game_modes`, menu cycle order, UC-011 BR-001) and the
   mode to preselect (`default_mode`, `JoustFFA`); the dashboard builds its mode selector from it (UC-011 BR-002)
+joustmania.menu.MenuService/GetMenuStatus: 'Read-only menu snapshot for the operator pad: menu state, `lifecycle_live`,
+  `lifecycle_generation` (the `force_start` `stale` check, UC-015 A5), selection, controller counts, admin serial, agent
+  switch, level, saved level and backend, and the lobby settings; read from menu memory and the in-process flag
+  clients, never the HTTP flag writer (services.md §3.1)'
 joustmania.psmove_hid.PairingService/GetUSBControllers: 'List USB-attached controllers: device path, serial and
   USB product id (`product_id`, `0x03D5` / `0x0C5E`, for the BlueZ device record of UC-001 BR-008)'
 joustmania.psmove_hid.PairingService/PairController: Write the host adapter address into a controller

@@ -29,10 +29,14 @@ from services.menu.handlers import AdminModeHandler, ConnectedHandler, IdleHandl
 from services.menu.handlers.base import ControllerState
 from services.menu.idle_monitor import IdleMonitor, read_sentinel_animation
 from services.menu.settings_ops import (
+    AGENT_ENABLED_FLAG,
+    AGENT_POLICY_FLAG,
     BAD_OPTION,
+    DECISION_BACKEND_FLAG,
     GAME_ACTIVE,
     LOBBY_ONLY_OPTIONS,
     OK,
+    STALE,
     Result,
     SettingsOps,
     is_failure,
@@ -46,6 +50,11 @@ logger = logging.getLogger(__name__)
 
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
+
+
+def _variant(details) -> str:
+    """The resolved variant name of an OpenFeature evaluation, empty when the client fell back to the default."""
+    return details.variant or ""
 
 
 @dataclass
@@ -191,14 +200,42 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             metrics=metrics,
         )
 
-        # Track game lifecycle task for clean shutdown
-        self._game_lifecycle_task: asyncio.Task | None = None
+        # Track game lifecycle task for clean shutdown. Every non-None assignment counts one
+        # lifecycle start; lifecycle_generation derives from that count (UC-015 A5).
+        self._lifecycle_starts = 0
+        self._lifecycle_task: asyncio.Future | None = None
+        self._game_lifecycle_task = None
         # True while the lifecycle task restores the lobby after a game (UC-010 A8 lobby-restart window).
         self._lobby_restarting = False
         # game_id of the game the lifecycle follows once its start is confirmed; None before (UC-010 BR-009).
         self._followed_game_id: str | None = None
 
         logger.info("Menu service initialized")
+
+    # Game lifecycle task and its generation (UC-015 A5, services.md §3.1)
+
+    @property
+    def _game_lifecycle_task(self) -> asyncio.Future | None:
+        """The game lifecycle task: a game starting or running, or a lobby restore."""
+        return self._lifecycle_task
+
+    @_game_lifecycle_task.setter
+    def _game_lifecycle_task(self, task: asyncio.Future | None) -> None:
+        # The start count moves in the same statement as the task, so no read sees one without the other.
+        if task is not None:
+            self._lifecycle_starts += 1
+        self._lifecycle_task = task
+
+    @property
+    def lifecycle_generation(self) -> int:
+        """Goes up when a lifecycle task starts and again when it ends (the lobby is back).
+
+        Derived at read time from the start count and the task's own done state, so a snapshot never
+        pairs a lifecycle with an older generation: the end counts in the same event-loop step as the
+        task finishing, before any done callback, also for a task cancelled before it ran. Odd while
+        live, even while idle; starts at 0 with the menu process.
+        """
+        return 2 * self._lifecycle_starts - (1 if self._lifecycle_live() else 0)
 
     # AdminModeCallbacks protocol implementation
 
@@ -466,6 +503,34 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         finally:
             metrics.grpc_request_duration_seconds.labels(method="ProcessInput").observe(time.time() - start_time)
 
+    async def GetMenuStatus(self, _request, _context):
+        """Read-only menu snapshot (services.md §3.1): menu memory and in-process flag clients only.
+
+        Never the HTTP flag writer (0.5 s per flag). A flag the client cannot resolve reads as its
+        default: empty variant names, and the kill switch as off.
+        """
+        game = self.game_settings_client
+        user = self.user_prefs_client
+        agent = self.agent_settings_client
+        return menu_pb2.GetMenuStatusResponse(
+            menu_state=self.state,
+            lifecycle_live=self._lifecycle_live(),
+            lifecycle_generation=self.lifecycle_generation,
+            selection=self.current_selection.name,
+            ready_count=self.ready_controller_count,
+            connected_count=len(self.connected_controllers),
+            admin_serial=(self.admin_handler.admin_controller or "") if self.admin_handler.is_active else "",
+            agent_enabled=bool(agent.get_boolean_value(AGENT_ENABLED_FLAG, False)),
+            agent_level=_variant(agent.get_string_details(AGENT_POLICY_FLAG, "")),
+            agent_saved_level=self.settings_ops.saved_agent_level or "",
+            agent_backend=_variant(agent.get_string_details(DECISION_BACKEND_FLAG, "")),
+            sensitivity=game.get_integer_value("sensitivity", 2),
+            num_teams=game.get_integer_value("num_teams", 2),
+            instructions=bool(user.get_boolean_value("game_instructions", False)),
+            force_all_start=bool(game.get_boolean_value("force_all_start", False)),
+            audio_volume_master=_variant(user.get_float_details("audio_volume.master", 1.0)),
+        )
+
     async def ListGameModes(self, _request, _context):
         """List the playable game modes (UC-011 BR-001) for the dashboard selector."""
         metrics.grpc_requests_total.labels(method="ListGameModes", status="ok").inc()
@@ -552,7 +617,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         command = data.get("command", "")
         span.set_attribute("command", command)
         if command == "force_start":
-            result = await self._pad_force_start(span)
+            result = await self._pad_force_start(data, span)
         elif command == "step_setting":
             result = await self._pad_step_setting(data)
         elif command == "agent_switch":
@@ -585,12 +650,16 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             await self.settings_ops.announce(option, result.new)
         return result
 
-    async def _pad_force_start(self, span) -> Result:
+    async def _pad_force_start(self, data: dict, span) -> Result:
         """force_start: UC-014 steps 3-5 with the live roster and no host serial (UC-015 BR-008, A2).
 
-        ``expected_generation`` is accepted; the ``stale`` check (UC-015 A5) needs
-        ``lifecycle_generation``, which lands with ``GetMenuStatus`` (#2050 PR4).
+        A non-empty ``expected_generation`` that differs from ``lifecycle_generation`` (or is not an
+        integer) is refused with ``stale`` before anything changes, and again after the roster lookup
+        (UC-015 A5).
         """
+        expected = data.get("expected_generation", "")
+        if self._generation_stale(expected):
+            return Result(None, None, STALE)
         if self._lifecycle_live():
             return Result(None, None, GAME_ACTIVE)
         if self.admin_handler.is_active:
@@ -600,6 +669,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         if self._lifecycle_live():
             # A start won the race during the roster lookup (ready auto start, another caller).
             return Result(None, None, GAME_ACTIVE)
+        if self._generation_stale(expected):
+            # A game started and ended during the roster lookup: the lobby is back but not the one held.
+            return Result(None, None, STALE)
         self.set_menu_state(menu_pb2.MenuState.GAME_STARTING)
         await self.event_publisher.publish(
             "game_requested",
@@ -611,6 +683,15 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         )
         await self._start_game(serial="", source="operator_pad", controllers=controllers)
         return Result(None, self.current_selection.name)
+
+    def _generation_stale(self, expected: str) -> bool:
+        """UC-015 A5: an ``expected_generation`` was sent and is not the current one (empty = no check)."""
+        if expected == "":
+            return False
+        try:
+            return int(expected) != self.lifecycle_generation
+        except ValueError:
+            return True
 
     async def _reject_web_start_mode(self, requested_mode: str, span) -> str:
         """Reject a web start_game naming an unknown or unimplemented mode (UC-011 BR-002).

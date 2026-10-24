@@ -20,6 +20,9 @@ service MenuService {
 
   // List the playable game modes (what the dashboard mode selector offers)
   rpc ListGameModes(ListGameModesRequest) returns (ListGameModesResponse);
+
+  // Read-only menu snapshot for the operator pad (#2050, UC-015, services.md §3.1)
+  rpc GetMenuStatus(GetMenuStatusRequest) returns (GetMenuStatusResponse);
 }
 
 // Menu state
@@ -67,4 +70,26 @@ message ListGameModesRequest {}
 message ListGameModesResponse {
   repeated string game_modes = 1;  // Games enum names of the implemented modes, in menu cycle order
   string default_mode = 2;         // Mode a client preselects ("JoustFFA")
+}
+
+message GetMenuStatusRequest {}
+
+// Read from menu memory and the in-process flag clients, never from the HTTP flag writer.
+message GetMenuStatusResponse {
+  MenuState menu_state = 1;
+  bool lifecycle_live = 2;          // the game lifecycle task is live (starting, running, restoring the lobby)
+  int64 lifecycle_generation = 3;   // goes up when the lifecycle starts and when it ends (UC-015 A5)
+  string selection = 4;             // Games enum name of the selected mode
+  int32 ready_count = 5;
+  int32 connected_count = 6;
+  string admin_serial = 7;          // controller in admin mode, empty when none
+  bool agent_enabled = 8;           // agent/enabled (the kill switch)
+  string agent_level = 9;           // agent/interventions_allowed variant name
+  string agent_saved_level = 10;    // level a resume restores, empty when none saved
+  string agent_backend = 11;        // agent/decision.backend variant name
+  int32 sensitivity = 12;           // game/sensitivity (0-4)
+  int32 num_teams = 13;             // game/num_teams
+  bool instructions = 14;           // user/game_instructions
+  bool force_all_start = 15;        // game/force_all_start
+  string audio_volume_master = 16;  // user/audio_volume.master variant name
 }
