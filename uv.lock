@@ -11,6 +11,7 @@ members = [
     "joustmania-integration-tests",
     "joustmania-lib",
     "joustmania-menu",
+    "joustmania-operator-pad",
     "joustmania-pairing-daemon",
     "joustmania-proto",
     "joustmania-python-hid",
@@ -218,6 +219,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/91/9b/4a2ea29aeba624712
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e3/26/57c6fb270950d476074c087527a558ccb6f4436657314bfb6cdf484114c4/docker-7.1.0-py3-none-any.whl", hash = "sha256:c96b93b7f0a746f9e77d325bcfb87422a3d8bd4f03136ae8a85b37f1898d5fc0", size = 147774, upload-time = "2024-05-23T11:13:55.01Z" },
 ]
+
+[[package]]
+name = "evdev"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/07/eb30593524303d1367f0dc00c1c66582c994dba412a47751e34bad9fa29b/evdev-2.0.0.tar.gz", hash = "sha256:442fb3f4c8dfc9e61e901133c356220c02d663eca8f34722e0cecdd637eba504", size = 33766, upload-time = "2026-08-23T10:31:26.835Z" }
 
 [[package]]
 name = "googleapis-common-protos"
@@ -601,6 +608,48 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
 ]
 provides-extras = ["test"]
+
+[[package]]
+name = "joustmania-operator-pad"
+version = "1.0.0"
+source = { editable = "services/operator_pad" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "joustmania-lib" },
+    { name = "joustmania-proto" },
+    { name = "openfeature-hooks-opentelemetry" },
+    { name = "opentelemetry-distro" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-instrumentation-grpc" },
+    { name = "psutil" },
+]
+
+[package.optional-dependencies]
+device = [
+    { name = "evdev", marker = "sys_platform == 'linux'" },
+]
+test = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "evdev", marker = "sys_platform == 'linux' and extra == 'device'", specifier = ">=1.9.0" },
+    { name = "grpcio", specifier = ">=1.70.0" },
+    { name = "joustmania-lib", editable = "lib" },
+    { name = "joustmania-proto", editable = "proto" },
+    { name = "openfeature-hooks-opentelemetry", specifier = ">=0.1.0" },
+    { name = "opentelemetry-distro", specifier = ">=0.49b0" },
+    { name = "opentelemetry-exporter-otlp", specifier = ">=1.28.0" },
+    { name = "opentelemetry-instrumentation-grpc", specifier = ">=0.49b0" },
+    { name = "psutil", specifier = ">=5.9.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
+]
+provides-extras = ["device", "test"]
 
 [[package]]
 name = "joustmania-pairing-daemon"

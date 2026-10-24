@@ -369,8 +369,8 @@ Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-0
 | Key | Type | Variants | Default | Read by | Written by | Reload |
 |---|---|---|---|---|---|---|
 | `operator_pad.enabled` | bool | on=true, off=false | `on` = true | operator-pad (planned) | manual edit only | live |
-| `operator_pad.device` | string | the USB vendor and product id of the pad (default the 0xCB 1337) | the 1337 | operator-pad (planned) | manual edit only | live (next rescan) |
-| `operator_pad.tap_ms` / `operator_pad.hold_ms` | int | tap limit and hold times of the gestures (UC-015 BR-007) | 400 ms; hold per key as in the layout (1 s agent, 1.5 s end, 3 s lock) | operator-pad (planned) | manual edit only | live (per gesture) |
+| `operator_pad.device` | string | the USB vendor and product id of the pad (default the 0xCB 1337); the PS Move ids are never grabbed (UC-015 BR-014) | the 1337 | operator-pad (planned) | manual edit only | live (next rescan) |
+| `operator_pad.tap_ms` / `operator_pad.hold_ms` | int | tap limit and hold times of the gestures (UC-015 BR-007); a hold time not above the tap limit keeps the default timings | 400 ms; hold per key as in the layout (1 s agent, 1.5 s end, 3 s lock) | operator-pad (planned) | manual edit only | live (per gesture) |
 | `operator_pad.keymap` | string | key code to key name table | F13 to F23 as in UC-015 | operator-pad (planned) | manual edit only | live (next rescan) |
 
 The two registry rows this feature needs (`user` / `audio_volume.master` and `user` / `play_audio`) are in §13.4 since PR2 of #2050; the `operator` set itself has no registry row (§13.5).
