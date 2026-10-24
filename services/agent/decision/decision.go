@@ -326,6 +326,12 @@ type Loop struct {
 
 	// flagState is this partition's agent.flag_state digest (#2059, flag_state.go).
 	flagState flagStateTracker
+	// applied is this game's applied-value ledger (UC-040 A35, BR-023,
+	// appliedledger.go), guarded by its own mutex. suppressReapplied switches the
+	// already-applied check on; alreadyAppliedRecorder is its timeline seam.
+	applied                appliedLedger
+	suppressReapplied      bool
+	alreadyAppliedRecorder func(intervention, serial string)
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -787,6 +793,12 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		l.recordRepeatRefusal(ctx, d, cost, state, ReasonRateLimit)
 		return
 	}
+	if blocked && perm.repeatApplied {
+		// UC-040 A35 (as A21): the same value was already suppressed against this
+		// entry; count it, but emit no span, log line or timeline entry.
+		l.recordRepeatRefusal(ctx, d, cost, state, ReasonAlreadyApplied)
+		return
+	}
 	if blocked && perm.repeatShield {
 		// UC-040 A31 step 1, A33 (as A21): the shield ledger already refused a
 		// grant with this reason against this entry; count it, but emit no span,
@@ -854,6 +866,18 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// the existing audit span/log, not in place of it.
 	l.recordDecision(ctx, d.Intervention, blocked, reason)
 
+	if blocked && reason == ReasonAlreadyApplied {
+		// UC-040 A35: not a refusal by a gate, the value is already in place. Info,
+		// not the agent.decision_blocked warning, and the timeline says "already in
+		// place", so the narrative does not read as the agent being stopped.
+		state.recordBlocked(d, reason, cost)
+		l.recordAlreadyApplied(d.Intervention, d.TargetSerial)
+		l.Log.Info("agent.decision_already_applied",
+			"intervention", d.Intervention,
+			"target_serial", d.TargetSerial,
+			"decision_reason", d.Reason)
+		return
+	}
 	if blocked {
 		state.recordBlocked(d, reason, cost)
 		// Feed the BLOCKED outcome into this game's #916 rolling narrative timeline
@@ -886,7 +910,11 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// BR-011): the sink needs it so end_game can never end another game (#1310).
 	addressed := d
 	addressed.GameID = c.SessionID
+	// UC-040 A35: an applied state or level value is recorded only after the write
+	// went out; a failed write or an overlapping one deletes the entry.
+	flight := l.beginApplied(d)
 	wrote, err := applyAction(dCtx, l.Actions, addressed)
+	flight.end(wrote, err, l.nowOrDefault()())
 	if err != nil {
 		aSpan.RecordError(err)
 		// semconv.ErrorType derives the low-cardinality error class from the
@@ -976,11 +1004,14 @@ type permission struct {
 	// shield_cap_reached, shield_cooldown) that repeats an earlier one with the same
 	// reason against the same entry (quiet, as A21).
 	repeatShield bool
+	// repeatApplied marks an already_applied suppression that repeats an earlier one
+	// against the same entry (quiet, UC-040 A35).
+	repeatApplied bool
 }
 
 // evaluatePermission runs the permission chain over one decision in order:
-// allow-list gate (#727), battery threshold, the shield ledger (UC-040 A31, A33),
-// then the weighted rate limit (#728). It returns the verdict. The
+// allow-list gate (#727), battery threshold, the already-applied check (UC-040
+// A35), the shield ledger (UC-040 A31, A33), then the weighted rate limit (#728). It returns the verdict. The
 // rate limit is charged ONLY when the decision passes the allow-list and
 // battery gates AND fits the budget — so the budget is spent on decisions the
 // agent actually dispatches, the unification chosen over #726's
@@ -1000,10 +1031,15 @@ func (l *Loop) evaluatePermission(ctx context.Context, snapshot flags.Snapshot, 
 	if l.batteryBlocks(snapshot, c, d) {
 		return permission{reason: ReasonBatteryThreshold, blocked: true}
 	}
-	// Check-only steps that reserve nothing go here, ahead of every step that
-	// reserves, so their refusal can leak nothing (#2046 already_applied).
-	//
-	// 3. Shield ledger (UC-040 A31 step 1, BR-020; A33, BR-022): a targeted
+	// 3. Already applied (UC-040 A35, BR-023): a state or level decision that
+	// repeats the value this loop last wrote for its key is blocked already_applied.
+	// Check-only, ahead of every step that reserves, so its refusal leaks nothing;
+	// before the rate limit, so it charges no budget and does not end rank-order
+	// admission.
+	if match, first := l.alreadyApplied(c, d, now); match {
+		return permission{reason: ReasonAlreadyApplied, blocked: true, repeatApplied: !first}
+	}
+	// 4. Shield ledger (UC-040 A31 step 1, BR-020; A33, BR-022): a targeted
 	// grant_shield is refused already_charged (trigger mode), shield_cap_reached or
 	// shield_cooldown, else reserved. Before the rate limit, so a refusal charges no
 	// budget and does not end rank-order admission.
@@ -1011,7 +1047,7 @@ func (l *Loop) evaluatePermission(ctx context.Context, snapshot flags.Snapshot, 
 	if refused != "" {
 		return permission{reason: refused, blocked: true, repeatShield: !firstRefusal}
 	}
-	// 4. Weighted rate limit: block when the per-minute budget is exhausted. The
+	// 5. Weighted rate limit: block when the per-minute budget is exhausted. The
 	// limiter charges the cost only when it admits, so blocked decisions above do
 	// not draw down the budget. Budget-aware (UC-040 BR-014/BR-015, budget.go):
 	// rank order is kept within a cycle and nudges leave a protective reserve.

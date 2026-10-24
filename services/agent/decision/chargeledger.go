@@ -347,7 +347,7 @@ func shieldSeconds(d Decision) time.Duration {
 }
 
 // reserveShield runs the shield-ledger step of the permission chain (decide-contract
-// §4.5 step 3): for a targeted grant_shield it checks, in order, the trigger-mode
+// §4.5 step 4): for a targeted grant_shield it checks, in order, the trigger-mode
 // charge (already_charged, A31), the cap (shield_cap_reached) and the cooldown
 // (shield_cooldown, A33), and reserves. It returns the reservation to finish (nil
 // when the ledger does not apply or refused), the refusal reason ("" when not

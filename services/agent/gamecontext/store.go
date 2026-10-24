@@ -918,6 +918,22 @@ func (s *Store) AppendInterventionEvent(intervention, serial string, blocked boo
 	})
 }
 
+// AppendInterventionInPlace records in the rolling narrative an intervention the
+// agent did not write because the same value was already applied (UC-040 A35). It
+// reads "already in place", not "blocked": nothing stopped the agent, so the
+// narrative must not invite a retry. The dispatched / blocked tally is unchanged.
+func (s *Store) AppendInterventionInPlace(intervention, serial string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history.append(TimelineEvent{
+		At:      s.now(),
+		Kind:    EventIntervention,
+		Detail:  intervention,
+		Serial:  serial,
+		InPlace: true,
+	})
+}
+
 // RecordElimination is the span-event confirmation path; it appends the serial
 // with the same dedupe as the deaths fallback.
 func (s *Store) RecordElimination(serial string) {

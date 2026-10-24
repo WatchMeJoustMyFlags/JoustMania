@@ -399,11 +399,13 @@ func buildEngagementTrend(events []gamecontext.TimelineEvent, anchor time.Time) 
 
 // buildInterventions folds the timeline's intervention entries into the outcome
 // list with a best-effort before/after effect (#928). The effect compares the
-// engagement-trend windows on either side of each intervention's timestamp.
+// engagement-trend windows on either side of each intervention's timestamp. An
+// "already in place" entry (UC-040 A35) is skipped: the agent wrote nothing, so it
+// is neither dispatched nor blocked and has no effect to measure.
 func buildInterventions(events []gamecontext.TimelineEvent, anchor time.Time) []InterventionOutcome {
 	out := make([]InterventionOutcome, 0)
 	for _, e := range events {
-		if e.Kind != gamecontext.EventIntervention {
+		if e.Kind != gamecontext.EventIntervention || e.InPlace {
 			continue
 		}
 		out = append(out, InterventionOutcome{

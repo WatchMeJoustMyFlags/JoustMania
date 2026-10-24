@@ -1016,7 +1016,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Agent decisions per minute: applied (blocked=false, dispatched) and blocked before dispatch by reason (not_allowed, battery_threshold, rate_limit, ...). Source: agent_decisions_total{blocked,block_reason}.",
+      "description": "Agent decisions per minute: applied (blocked=false, dispatched) and blocked before dispatch by reason (not_allowed, battery_threshold, rate_limit, ...). already_applied is not a refusal: the decided value was already in place, so nothing was written (UC-040 A35). Source: agent_decisions_total{blocked,block_reason}.",
       "fieldConfig": {
         "defaults": {
           "color": {

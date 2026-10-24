@@ -29,6 +29,10 @@ const (
 	// policy.shield_cooldown_seconds ago, or another grant to them is in flight
 	// (UC-040 A33, BR-022).
 	ReasonShieldCooldown BlockReason = "shield_cooldown"
+	// ReasonAlreadyApplied: a state or level decision repeats the value the agent
+	// last wrote for the same intervention and target in this game; nothing is
+	// written (UC-040 A35, BR-023). Not a refusal by a gate: the value is in place.
+	ReasonAlreadyApplied BlockReason = "already_applied"
 )
 
 // DecisionOutcome records what happened to one candidate decision this cycle:

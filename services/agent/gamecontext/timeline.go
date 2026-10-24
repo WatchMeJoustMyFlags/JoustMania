@@ -88,6 +88,10 @@ type TimelineEvent struct {
 	// Blocked marks an EventIntervention that a permission gate rejected (true) vs
 	// one that dispatched (false); unused for other kinds.
 	Blocked bool
+
+	// InPlace marks an EventIntervention the agent did not write because the same
+	// value was already applied (UC-040 A35): rendered "already in place".
+	InPlace bool
 }
 
 // timeline is the fixed-capacity ring buffer. It is NOT independently locked:
@@ -184,7 +188,10 @@ func renderEvent(e TimelineEvent, now time.Time) string {
 		return fmt.Sprintf("%s elimination: %s (#%d)", prefix, e.Serial, e.Order)
 	case EventIntervention:
 		outcome := "dispatched"
-		if e.Blocked {
+		switch {
+		case e.InPlace:
+			outcome = "already in place"
+		case e.Blocked:
 			outcome = "blocked"
 		}
 		if e.Serial != "" {
