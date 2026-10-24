@@ -106,6 +106,22 @@ drop-in is honoured too. Set the whole comma-separated list in one place: a unit
 switching a profile off takes effect at the next start. The operator pad ([UC-015](use_cases/UC-015.md)) reads `/dev/input`
 as the host's `input` group: set `INPUT_GID` in `.env.local` when `getent group input` is not 996.
 
+Operator pad keys on stage (short form; the full table and rules are in [UC-015](use_cases/UC-015.md), Pre-2 and BR-011).
+"Knob" means: hold the key, turn the knob, release the key to commit.
+
+| F key | Pad key | Tap | Hold | Knob |
+|---|---|---|---|---|
+| F13 | K1 | start a game (lobby) | | choose the mode (voice + colour pulse on the lobby controllers) |
+| F14 | K2 | announce sensitivity | | sensitivity (lobby) |
+| F18 | K3 | announce agent status | 1 s: stop / resume the agent | intervention level |
+| F19 | K4 | | 1.5 s: force-end (game) / force-start (lobby) | |
+| F20 | K5 | announce teams | | number of teams (lobby) |
+| F21 | K6 | toggle spoken instructions (lobby) | | |
+| F22 | K7 | announce backend | | decision backend |
+| F23 | K8 | reserved | 3 s: lock / unlock the pad | |
+| F15 | knob press | mute / unmute | | |
+| F16 / F17 | knob left / right | volume down / up (no key held) | | |
+
 Cut-off runs (power loss, ssh hang-up) and manual recovery:
 
 - A rollback cut off part-way is finished by running `--rollback` again: it stays on the version it was moving

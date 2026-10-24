@@ -249,3 +249,69 @@ def test_step_variant_reports_a_refused_write_as_unavailable(svc):
 
     w = FlagServiceWriter("game", "http://fs:8070", transport=refuse_puts)
     assert w.step_variant("sensitivity", True) == VariantStep("medium", None, STEP_UNAVAILABLE)
+
+
+# --- step_variant: numeric variants step by value (#2105, UC-015 BR-006) ----------------------
+
+
+def _real_master_volume() -> tuple[dict, str]:
+    """`user/audio_volume.master` exactly as services/flagd/user.json declares it."""
+    import json
+    from pathlib import Path
+
+    user = json.loads((Path(__file__).resolve().parents[2] / "services/flagd/user.json").read_text())
+    flag = user["flags"]["audio_volume.master"]
+    return flag["variants"], flag["defaultVariant"]
+
+
+class _NameOrderedService(FakeService):
+    """A flag service that lists the variant names alphabetically (as a map without order does)."""
+
+    def __call__(self, method, url, body):
+        status, resp = super().__call__(method, url, body)
+        if method == "GET" and status == 200:
+            resp["variants"] = sorted(resp["variants"])
+        return status, resp
+
+
+def _walk(writer, flag: str, forward: bool) -> list[str]:
+    """Step one detent at a time until the end of the range; the variants written, in order."""
+    seen: list[str] = []
+    for _ in range(10):
+        step = writer.step_variant(flag, forward)
+        if step.error == STEP_AT_LIMIT:
+            return seen
+        seen.append(step.new)
+    raise AssertionError(f"no limit reached: {seen}")
+
+
+@pytest.mark.uc("UC-015", br=["BR-006", "BR-005"])
+@pytest.mark.parametrize("service_cls", [FakeService, _NameOrderedService])
+def test_master_volume_steps_by_value_in_both_directions_and_stops_at_the_ends(service_cls):
+    variants, _default = _real_master_volume()
+    svc = service_cls({"audio_volume.master": (variants, "mute")})
+    w = FlagServiceWriter("user", "http://fs:8070", transport=svc)
+
+    assert _walk(w, "audio_volume.master", True) == ["quiet", "normal", "loud", "max"]
+    assert w.step_variant("audio_volume.master", True) == VariantStep("max", "max", STEP_AT_LIMIT)
+
+    assert _walk(w, "audio_volume.master", False) == ["loud", "normal", "quiet", "mute"]
+    assert w.step_variant("audio_volume.master", False) == VariantStep("mute", "mute", STEP_AT_LIMIT)
+    assert [variants[name] for name in _puts(svc)] == [0.3, 0.6, 0.8, 1.0, 0.8, 0.6, 0.3, 0.0]
+
+
+@pytest.mark.uc("UC-015", br=["BR-006"])
+def test_master_volume_multi_step_counts_by_value_under_a_name_ordered_listing():
+    variants, default = _real_master_volume()
+    svc = _NameOrderedService({"audio_volume.master": (variants, default)})
+    w = FlagServiceWriter("user", "http://fs:8070", transport=svc)
+    assert w.step_variant("audio_volume.master", False) == VariantStep("max", "loud")
+    assert w.step_variant("audio_volume.master", False, steps=2) == VariantStep("loud", "quiet")
+
+
+@pytest.mark.uc("UC-015", br=["BR-004"])
+def test_non_numeric_variants_keep_the_declared_order():
+    svc = _NameOrderedService({"interventions_allowed": ALLOWED})
+    w = FlagServiceWriter("agent", "http://fs:8070", transport=svc)
+    # Listed alphabetically (ambient, full, none, standard): no value sort, the listing is the ladder.
+    assert w.step_variant("interventions_allowed", True) == VariantStep("ambient", "full")

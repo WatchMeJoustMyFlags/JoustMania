@@ -59,6 +59,20 @@ def match_variant(view: dict | None, value) -> str | None:
     return None
 
 
+def _is_number(value) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _value_ordered(view: dict) -> list[str]:
+    """The declared variants, low to high by value when all values are numbers, else as declared."""
+    names = list(view["variants"])
+    values = view.get("variant_values") or {}
+    if names and all(_is_number(values.get(name)) for name in names):
+        # Stable: variants with equal values keep their declared order.
+        return sorted(names, key=lambda name: values[name])
+    return names
+
+
 def _urllib_transport(method: str, url: str, body: dict | None) -> tuple[int, dict]:
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, method=method, data=data, headers={"Content-Type": "application/json"})
@@ -202,14 +216,15 @@ class FlagServiceWriter:
         """Move the flag ``steps`` positions along its ladder with one write (UC-015 BR-005, A7).
 
         The ladder is ``order`` when given (for example ``["off", "on"]`` so that "up" means on),
-        else the declared variants. Without ``wrap`` the step stops at the end of the ladder; a
-        step that cannot move at all writes nothing and returns ``at_limit``. A current variant
+        else the declared variants, sorted by value when every value is a number (UC-015 BR-006:
+        the flag service may list them in name order, #2105). Without ``wrap`` the step stops at
+        the end of the ladder; a step that cannot move at all writes nothing and returns ``at_limit``. A current variant
         outside the ladder moves to its first entry, as ``cycle_variant`` does.
         """
         view = self._view(flag_key)
         if not view or not view.get("variants"):
             return VariantStep(None, None, STEP_UNAVAILABLE)
-        ladder = list(order) if order is not None else list(view["variants"])
+        ladder = list(order) if order is not None else _value_ordered(view)
         current = view.get("effective_default")
         if current not in ladder:
             new_variant = ladder[0]

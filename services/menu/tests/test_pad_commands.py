@@ -17,13 +17,16 @@ from opentelemetry import trace
 from lib.flag_service_writer import FlagServiceWriter
 from lib.types import Sound
 from proto import controller_manager_pb2, controller_manager_pb2_grpc, menu_pb2
+from services.menu import metrics as menu_metrics
 from services.menu import settings_ops
+from services.menu.event_publisher import EventPublisher
 from services.menu.handlers.base import ControllerState
 from services.menu.tests.servicer_harness import (
     cancel_background_tasks,
     default_returning_flag_client,
     make_real_servicer,
 )
+from services.menu.utils.led import GAME_MODE_COLORS
 from services.menu.utils.settings import GAME_MODES
 
 AGENT_LEVELS = {
@@ -666,6 +669,80 @@ async def test_set_backend_refused(servicer, flags):
     reply = await pad(servicer, "set_backend", backend="claude")
     assert (reply.success, reply.error) == (False, "flag_service_unavailable")
     assert failure_cues(servicer) == 2
+
+
+# --- Mode feedback on every lobby controller (#2105, UC-015 BR-015, UC-011 A4) ---------------
+
+
+def _pulses(menu) -> list[tuple]:
+    return [
+        (c.args[0], c.args[1], c.kwargs["color"], c.kwargs["duration_ms"])
+        for c in menu.state_manager.led.send_game_effect.await_args_list
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="main", steps=[4], br=["BR-015", "BR-005"])
+@pytest.mark.uc("UC-011", flow="A4")
+async def test_pad_mode_change_voices_the_final_mode_and_pulses_every_lobby_controller(servicer):
+    servicer.state_manager.controller_states = {
+        "dim": ControllerState.CONNECTED,
+        "ready": ControllerState.READY,
+        "admin": ControllerState.ADMIN,
+        "idle": ControllerState.IDLE,
+    }
+    reply = await pad(servicer, "step_setting", option="current_game", direction="up", steps=3)
+
+    assert reply.success
+    final = GAME_MODES[3]
+    # One voice line, for the final mode only (the turns are coalesced into one step).
+    servicer.state_manager.audio.play_game_mode_voice.assert_awaited_once_with(final)
+    pulse = (controller_manager_pb2.GAME_EFFECT_PULSE, GAME_MODE_COLORS[final], settings_ops.MODE_PULSE_MS)
+    assert sorted(_pulses(servicer)) == [("dim", *pulse), ("ready", *pulse)]
+    # The pulse is an effect: the base (lobby) colours are not repainted, so each controller
+    # returns to its own dim / bright colour when the pulse ends.
+    servicer.state_manager.led.send_base_color.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A7", br=["BR-015"])
+async def test_pad_mode_step_at_the_limit_gives_no_voice_and_no_pulse(servicer):
+    servicer.state_manager.controller_states = {"dim": ControllerState.CONNECTED}
+    reply = await pad(servicer, "step_setting", option="current_game", direction="down")
+    assert (reply.success, reply.error) == (False, "at_limit")
+    servicer.state_manager.audio.play_game_mode_voice.assert_not_awaited()
+    servicer.state_manager.led.send_game_effect.assert_not_awaited()
+
+
+# --- Refused start: the not-enough-players path with a real publisher (#2105, UC-010 A3) -------
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="A3", br=["BR-001"])
+@pytest.mark.uc("UC-015", flow="main", steps=[7])
+@pytest.mark.parametrize("command", ["force_start", "start_game"])
+async def test_refused_start_publishes_string_data_and_plays_not_enough_players(servicer, command):
+    """The pad force-start and the web start below the minimum: the event carries strings, the voice plays."""
+    publisher = EventPublisher(trace.get_tracer(__name__), menu_metrics)
+    servicer.event_publisher = publisher
+    events = await publisher.subscribe("test")
+    servicer.state_manager.controller_states = {}
+
+    with live_roster(set()):
+        reply = await pad(servicer, command)
+        # Without the fix the lifecycle task dies with a TypeError from MenuEvent(data=...).
+        await servicer._game_lifecycle_task
+
+    assert reply.success
+    published = []
+    while not events.empty():
+        published.append(events.get_nowait())
+    cancelled = [e for e in published if e.event_type == "game_start_cancelled"]
+    assert len(cancelled) == 1
+    data = {k: v for k, v in cancelled[0].data.items() if not k.startswith("_")}
+    assert data == {"game_name": "JoustFFA", "player_count": "0", "minimum_players": "2"}
+    servicer.audio.play_voice.assert_awaited_with(Sound.MENU_VOX_NOT_ENOUGH_PLAYERS)
+    assert servicer.state != menu_pb2.MenuState.GAME_STARTING  # never left stuck in a start
 
 
 # --- Construction ----------------------------------------------------------------------------

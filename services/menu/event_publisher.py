@@ -60,13 +60,14 @@ class EventPublisher:
                 del self._subscribers[subscriber_id]
         logger.info(f"Event subscriber disconnected: {subscriber_id}")
 
-    async def publish(self, event_type: str, data: dict[str, str]) -> None:
+    async def publish(self, event_type: str, data: dict) -> None:
         """
         Publish an event to all subscribers.
 
         Args:
             event_type: Type of event (e.g., "game_start", "selection_change")
-            data: Event payload as key-value pairs
+            data: Event payload as key-value pairs; non-string values are sent as ``str(value)``
+                (``MenuEvent.data`` is a ``map<string, string>``, #2105)
         """
         self._metrics.stream_events_published_total.labels(event_type=event_type).inc()
 
@@ -76,7 +77,8 @@ class EventPublisher:
             span.set_attribute("event.type", event_type)
 
             # Inject W3C Trace Context into event data for cross-service propagation
-            event_data = dict(data)  # Copy to avoid mutating original
+            # A copy with string keys and values: the proto map rejects an int (#2105).
+            event_data = {str(key): value if isinstance(value, str) else str(value) for key, value in data.items()}
             propagator = TraceContextTextMapPropagator()
             carrier: dict[str, str] = {}
             propagator.inject(carrier)

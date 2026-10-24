@@ -136,3 +136,19 @@ class TestEventPublisherPublish:
     async def test_publish_no_subscribers(self, publisher):
         """Publishing with no subscribers should not raise."""
         await publisher.publish("test_event", {"key": "value"})
+
+
+class TestEventDataIsStringified:
+    """MenuEvent.data is a map<string, string>: every caller's values arrive as strings (#2105)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3")
+    async def test_non_string_values_are_sent_as_strings(self, publisher):
+        queue = await publisher.subscribe("sub")
+        data = {"game_name": "JoustFFA", "player_count": 0, "minimum_players": 2, "ok": True}
+
+        await publisher.publish("game_start_cancelled", data)
+
+        event = queue.get_nowait()
+        assert dict(event.data) == {"game_name": "JoustFFA", "player_count": "0", "minimum_players": "2", "ok": "True"}
+        assert data["player_count"] == 0  # the caller's dict is not mutated

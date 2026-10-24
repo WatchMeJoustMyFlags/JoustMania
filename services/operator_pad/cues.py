@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from lib.types import Sound
 from proto import audio_pb2
@@ -27,6 +28,11 @@ CANCEL_CUE = Sound.MENU_SFX_SENSITIVITY_SLOW
 UNKNOWN_KEY_CUE = Sound.SFX_EXPLOSION_22
 FAILURE_CUE = Sound.SFX_BEEP_LOUD
 FAILURE_CUE_GAP_SECONDS = 0.3
+# UC-015 BR-009: the limit cue plays at most once per this gap, so a burst of `at_limit` refusals
+# (a knob turned on at the end of the range) gives one cue, not one per refusal (#2105). A constant,
+# not an `operator` flag: it paces one fixed asset (about as long as the cue itself) and is nothing
+# an operator tunes per venue.
+LIMIT_CUE_MIN_GAP_SECONDS = 1.0
 
 # Lock directions: own voice lines, distinct from the agent stop / resume lines (ADMINOP_OFF / _ON).
 LOCK_VOICES = {True: Sound.MENU_VOX_ADMINOP_TRUE, False: Sound.MENU_VOX_ADMINOP_FALSE}
@@ -59,9 +65,11 @@ AGENT_STOPPED_VOICE = Sound.MENU_VOX_ADMINOP_OFF
 class CuePlayer:
     """Best-effort `PlaySound` calls; a failed cue is logged, never raised."""
 
-    def __init__(self, audio_stub, sleep=asyncio.sleep) -> None:
+    def __init__(self, audio_stub, sleep=asyncio.sleep, clock=time.monotonic) -> None:
         self._stub = audio_stub
         self._sleep = sleep
+        self._clock = clock
+        self._last_limit_cue: float | None = None
 
     async def play(self, sound: Sound, volume: float = SOUND_VOLUME) -> None:
         try:
@@ -79,6 +87,12 @@ class CuePlayer:
         await self.play(REFUSAL_CUE)
 
     async def limit(self) -> None:
+        """The limit cue, skipped within LIMIT_CUE_MIN_GAP_SECONDS of the last one played."""
+        now = self._clock()
+        if self._last_limit_cue is not None and now - self._last_limit_cue < LIMIT_CUE_MIN_GAP_SECONDS:
+            logger.debug("Limit cue skipped: played less than the minimum gap ago")
+            return
+        self._last_limit_cue = now
         await self.play(LIMIT_CUE)
 
     async def cancel(self) -> None:
