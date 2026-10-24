@@ -562,6 +562,33 @@ class TestUC040ChargeRumblePattern:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    @pytest.mark.parametrize("ticks", range(8))
+    async def test_a_rumble_arriving_while_the_pattern_stops_is_not_cut(self, cue_manager, backend, clock, ticks):
+        """UC-040 BR-021: stopping the pattern never cuts a rumble that took the slot meanwhile; its timer stays."""
+        clock.enable_blocking()
+        await _effect(cue_manager, CHARGE, 20_000)
+        await _spin()
+        assert backend.rumble[-1][1] == 255  # inside the first grant pulse
+        pulse = cue_manager.vibration_tasks[SERIAL]
+
+        async def concurrent_rumble():
+            await _spin(ticks)
+            await cue_manager.set_vibration(SERIAL, 200, 50)
+
+        await asyncio.gather(_effect(cue_manager, CHARGE, 0), concurrent_rumble())
+        clock.disable_blocking()
+        await _spin(40)
+
+        stop_timer = cue_manager.vibration_tasks.get(SERIAL)
+        assert pulse.done()
+        assert stop_timer is not None and stop_timer.get_name() != fm_module.CHARGE_PULSE_TASK_NAME
+        assert not stop_timer.done()
+        assert backend.rumble[-1][1] == 200  # the concurrent rumble is still on
+        await asyncio.wait_for(stop_timer, timeout=1)
+        assert backend.rumble[-1][1] == 0  # switched off by its own timer, at its full length
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
     async def test_charge_zero_under_a_toughness_boost_stops_the_pattern_mid_pulse(self, cue_manager, backend, clock):
         """UC-040 A32: the charge ends while another shield layer keeps painting: the pulse is cut too."""
         clock.enable_blocking()
@@ -646,6 +673,8 @@ class TestUC040ChargeRumblePattern:
         await asyncio.sleep(0.1)  # still inside the 300 ms death rumble
 
         assert pulse.done()
+        # Only the slot's owner clears it: the cancelled pulse must not drop the death timer that replaced it.
+        assert cue_manager.vibration_tasks.get(SERIAL) is death_stop
         assert death_stop.get_name() == fm_module.DEATH_RUMBLE_TASK_NAME and not death_stop.done()
         assert backend.rumble[-1][1] == 255
         await asyncio.sleep(0.3)

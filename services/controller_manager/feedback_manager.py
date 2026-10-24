@@ -966,7 +966,7 @@ class FeedbackManager(ControllerEffectsBase):
         await self._stop_shield_pulses(serial, self._charge_cue_tasks, CHARGE_PULSE_TASK_NAME)
 
     async def _stop_shield_pulses(self, serial: str, cue_tasks: dict[str, asyncio.Task], pulse_name: str) -> None:
-        """Cancel a cue task and its pulse in progress; the motor is switched off if a pulse was cut."""
+        """Cancel a cue task and its pulse in progress; a cut pulse turns the motor off unless a rumble took over."""
         task = cue_tasks.pop(serial, None)
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
@@ -979,7 +979,9 @@ class FeedbackManager(ControllerEffectsBase):
                 pulse.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await pulse
-                await self.backend.set_rumble(serial, 0)
+                # A rumble that took the slot during the await keeps its motor and its own stop timer.
+                if self.vibration_tasks.get(serial) is None:
+                    await self.backend.set_rumble(serial, 0)
 
     async def _charge_cue_loop(self, serial: str) -> None:
         """Grant pattern, reminders and the pre-expiry double pulse of one held charge.
