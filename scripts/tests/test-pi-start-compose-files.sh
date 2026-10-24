@@ -14,12 +14,16 @@
 #    `--env-file .env.local` (last, so it wins) exactly when .env.local exists
 #    (#1488); it ends in `up -d --remove-orphans`, never prints the env values, and removes a
 #    stale joustmania-python-hid container only while the python-hid profile
-#    is inactive (#1402 I1). The env files are dummies created by the test.
+#    is inactive (#1402 I1), and a stale joustmania-operator-pad container
+#    only while the operator-pad profile is inactive (#2050: an old pad
+#    container would keep its exclusive grab). The env files are dummies
+#    created by the test.
 # Runs as part of `make lint`, or directly:
 #   ./scripts/tests/test-pi-start-compose-files.sh
 # UC: UC-035 BR-001
 # UC: UC-070 Pre-2
 # UC: UC-002 BR-003
+# UC: UC-015 Pre-1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -161,6 +165,8 @@ check_compose_calls "${log}" no-profile "${BASE_PREFIX}"
 if grep -q 'env.local' "${log}"; then fail "no-profile: .env.local passed although it does not exist"; fi
 grep -qx 'rm -f joustmania-python-hid' "${log}" \
   || fail "no-profile: stale joustmania-python-hid not removed"
+grep -qx 'rm -f joustmania-operator-pad' "${log}" \
+  || fail "no-profile: stale joustmania-operator-pad not removed"
 
 # .env.local present, python-hid profile active: .env then .env.local (later
 # wins) on every call; the container is left to compose
@@ -172,6 +178,17 @@ grep -q 'Env files: .env + .env.local' "${WORK}/python-profile/out.log" \
 if grep -qx 'rm -f joustmania-python-hid' "${log}"; then
   fail "python-profile: joustmania-python-hid removed although its profile is active"
 fi
+
+# operator-pad profile active (#2050): the pad container is left to compose,
+# while the inactive python-hid one is still removed
+run_start "flagd rust-hid operator-pad controller-manager" pad-profile with-env-local
+log="${WORK}/pad-profile/docker.log"
+check_compose_calls "${log}" pad-profile "${BASE_PREFIX} --env-file .env.local"
+if grep -qx 'rm -f joustmania-operator-pad' "${log}"; then
+  fail "pad-profile: joustmania-operator-pad removed although its profile is active"
+fi
+grep -qx 'rm -f joustmania-python-hid' "${log}" \
+  || fail "pad-profile: stale joustmania-python-hid not removed"
 
 if [[ "${fails}" -ne 0 ]]; then
   exit 1

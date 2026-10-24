@@ -52,6 +52,7 @@ jobs:
           - dashboard
           - rust-hid
           - python-hid
+          - operator-pad
           - otel-collector
           - flag-service
           - agent

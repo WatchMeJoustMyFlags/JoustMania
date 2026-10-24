@@ -31,6 +31,12 @@
 #   3. bluetooth_backend=python, so serials (and pairing) are routed to it;
 #      its default "rust" keeps every controller on rust-hid otherwise.
 #
+# Operator pad (UC-015, #2050): opt-in with the "operator-pad" profile
+# (COMPOSE_PROFILES=operator-pad in .env.local on the Pi; set the whole
+# comma-separated list in one place, e.g. python-hid,operator-pad: a unit
+# drop-in Environment= wins over .env.local). INPUT_GID sets the host's input group GID [default: 996,
+# the stage Pi]; a stack without the profile behaves exactly as before.
+#
 # Host ports: only envoy's 80 is reachable from the network. flagd sync (8015),
 # OTLP (4317) and rust-hid (50058) are bound to 127.0.0.1 for the host-networked
 # pairing daemon. docker-compose.override.yml (auto-loaded by a bare
@@ -533,6 +539,57 @@ services:
         limits:
           memory: 320m
           cpus: '0.5'
+    logging: *default-logging
+
+  # Operator pad (UC-015, #2050): a USB macro pad as a lobby and agent remote.
+  # OPT-IN ONLY: starts with the `operator-pad` profile (COMPOSE_PROFILES in
+  # .env.local on the Pi, UC-060). Not privileged: it reads only /dev/input
+  # (read-only bind mount: it guards the directory only, the nodes stay
+  # writable, which EVIOCGRAB and the keyboard LEDs need), the cgroup rule
+  # allows read/write (no mknod) on the evdev char devices (major 13),
+  # including ones plugged in later, and group_add gives the nonroot user the host's input
+  # group. INPUT_GID is host identity (C-035): the input group's GID differs
+  # per host (996 on the stage Pi; `getent group input` shows it). No
+  # /run/udev: evdev does not need it. Serves no port, so no healthcheck.
+  operator-pad:
+    profiles:
+      - operator-pad
+    image: ghcr.io/watchmejoustmyflags/joustmania/operator-pad:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: services/operator_pad/Dockerfile
+    container_name: joustmania-operator-pad
+    volumes:
+      - /dev/input:/dev/input:ro
+    device_cgroup_rules:
+      - "c 13:* rw"
+    group_add:
+      - "${INPUT_GID:-996}"
+    environment:
+      - OTEL_SERVICE_NAME=operator-pad
+      - OTEL_SERVICE_NAMESPACE=joustmania
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
+      - SERVICE_VERSION=${IMAGE_TAG:-dev}
+      - FLAGD_HOST=flagd
+      - FLAGD_PORT=8015
+      - MENU_HOST=menu
+      - MENU_PORT=50054
+      - GAME_COORDINATOR_HOST=game-coordinator
+      - GAME_COORDINATOR_PORT=50053
+      - AUDIO_HOST=audio
+      - AUDIO_PORT=50056
+    depends_on:
+      flagd:
+        condition: service_started
+    networks:
+      - joustmania
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.25'
     logging: *default-logging
 
   # VictoriaMetrics: the only metrics store (the Prometheus container was removed

@@ -24,7 +24,7 @@ rectangle "JoustMania" {
         usecase "UC-012\nConfigure Settings in Admin Mode" as UC012
         usecase "UC-013\nStop the Agent from the Controller" as UC013
         usecase "UC-014\nForce-Start a Game" as UC014
-        usecase "UC-015\nOperate the Game with the Operator Pad\n(planned, #2050)" as UC015
+        usecase "UC-015\nOperate the Game with the Operator Pad" as UC015
     }
     package "Playing" {
         usecase "UC-020\nPlay Joust Free-for-All" as UC020

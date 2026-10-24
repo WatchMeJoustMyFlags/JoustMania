@@ -2,7 +2,7 @@
 # The Pi start script never tears a running stack down (UC-060 BR-001, NFR-026, #2027 PR 2a).
 #
 # joustmania-start.sh runs against a stub docker (and a stub git, amixer):
-#  - no `rm -f` except a foreign joustmania-* container (or python-hid when its
+#  - no `rm -f` except a foreign joustmania-* container (or python-hid / operator-pad when its
 #    profile is inactive), no `prune`, no `down`; the last call is `up -d --remove-orphans`
 #  - "ours" is what `compose ps -a` lists (so a COMPOSE_PROJECT_NAME in .env.local
 #    counts), and when compose cannot list them nothing is removed; a container from
@@ -82,7 +82,7 @@ if grep -qE '(^| )(prune|down)( |$)' "${log}"; then fail "teardown: prune or dow
 grep -qE 'joustmania-(menu|audio)' <(grep -E '^(rm|container rm)' "${log}" || true) && fail "teardown: our own container was removed"
 grep -qx 'rm -f joustmania-old' "${log}" || fail "teardown: foreign container (no project label) not removed"
 grep -qx 'rm -f joustmania-other' "${log}" || fail "teardown: foreign container (other project) not removed"
-rm_calls="$(grep -E '^rm ' "${log}" | grep -vxE 'rm -f (joustmania-old|joustmania-other|joustmania-python-hid)' || true)"
+rm_calls="$(grep -E '^rm ' "${log}" | grep -vxE 'rm -f (joustmania-old|joustmania-other|joustmania-python-hid|joustmania-operator-pad)' || true)"
 [[ -z "${rm_calls}" ]] || fail "teardown: unexpected rm call(s): ${rm_calls}"
 [[ "$(tail -1 "${log}")" == "compose -f docker-compose.yml --env-file .env up -d --remove-orphans" ]] \
   || fail "teardown: last docker call is not 'up -d --remove-orphans': $(tail -1 "${log}")"

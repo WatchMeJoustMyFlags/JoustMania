@@ -89,10 +89,10 @@ periods). Sections 4–5 define those compositions precisely.
 | Flag set (baseline `services/flagd/<set>.json`, read-only) | Owner | Writer (through the flag service) | Read by | Lifetime |
 |---|---|---|---|---|
 | `game` | Human admin | Menu admin mode → `FlagServiceWriter` (persisted admin values); agent: experiment arms (shadow only), gated `real` promotion overlay (§1) | Menu builds `StartGameConfig` at start; coordinator freezes at init | Baseline per deployment; admin values persist across restarts; agent overlays in memory |
-| `user` | Human admin | Menu admin mode → `FlagServiceWriter` (persisted admin values); operator pad: `audio_volume.master` (planned, #2050) | Menu / audio (volumes, voice, instructions) | Per-deployment |
+| `user` | Human admin | Menu admin mode → `FlagServiceWriter` (persisted admin values); operator pad through the menu: `audio_volume.master` (#2050, `step_setting`) | Menu / audio (volumes, voice, instructions) | Per-deployment |
 | `interventions` | Agent | Agent ActionSink → `writer.go` (game-scoped values and events) | Coordinator `InterventionManager`, live | One game: dropped when the game ends |
 | `rollout` | Operator (human) for the ladder; agent for `current_controller_count` | Agent `actions/rollout_writer.go` (gated by `rollout_enabled`, `remediation_allowed`); operator via `scripts/flags.sh` | Controller manager rollout router, agent infra loop | In memory until the flag service restarts |
-| `operator` | Operator (human) | None at runtime: a reviewed edit of `services/flagd/operator.json` and a restart of the flag service (read-only baseline, flags.md §13.5; #2050) | `services/operator_pad` (planned, #2050 PR6) | Per-deployment |
+| `operator` | Operator (human) | None at runtime: a reviewed edit of `services/flagd/operator.json` and a restart of the flag service (read-only baseline, flags.md §13.5; #2050) | `services/operator_pad` (#2100; deployed under the `operator-pad` compose profile) | Per-deployment |
 | `agent` | Operator (human) | Operator / stage scripts (`scripts/flags.sh`, `agent-killswitch.sh`, `talk-stage.sh`: in-memory overlays; `agent-backend.sh`: backend and model persisted, #1682) **and** menu admin mode → `FlagServiceWriter` (`interventions_allowed` only, persisted, #819) **and** the operator pad commands through the menu (#2050: `interventions_allowed` and `decision.backend` persisted, `enabled` in memory only; UC-015 BR-001) | Agent + coordinator policy gates | Baseline per deployment; overlays until restart |
 
 The `agent` set holds the agent's own governor — `enabled`, `decision.backend`, `objectives`,
@@ -177,7 +177,7 @@ game start by [`services/menu/servicer.py`](../services/menu/servicer.py)
 The controller cycle is defined by `option_names` / `option_colors` in
 [`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py).
 
-**Operator pad (#2050, [UC-015](use_cases/UC-015.md); the menu commands exist, the pad service is planned).** The pad is a human surface equal to admin mode: it
+**Operator pad (#2050, [UC-015](use_cases/UC-015.md); the menu commands exist; the pad service deploys under the `operator-pad` compose profile).** The pad is a human surface equal to admin mode: it
 reaches the flag service only through menu commands (`ProcessInput` `force_start`, `step_setting`, `agent_switch`,
 `set_backend`), never directly. It cycles the same flags as the controller: the `game` flags (`sensitivity`, `num_teams`,
 `force_all_start`) and the `user` flags (`game_instructions`, `current_game`) and adds the agent's `enabled` (in memory, no persist: the kill

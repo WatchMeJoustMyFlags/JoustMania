@@ -14,7 +14,8 @@
 # the pairing daemon runs on the host network (raw HCI, as in docker-compose.yml)
 # and reaches rust-hid and flagd through their loopback-published ports
 # (#1402). python-hid is not part of the lite stack (opt-in on the full stack
-# only, `docker compose --profile python-hid up -d`).
+# only, `docker compose --profile python-hid up -d`), and neither is the
+# operator pad (`operator-pad` profile, full stack only, #2050).
 #
 # All images use canonical GHCR names for consistency.
 # Use IMAGE_TAG environment variable to specify version (default: latest)

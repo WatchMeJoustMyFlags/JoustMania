@@ -35,7 +35,7 @@ expect_rc() {
 
 # 1. Every retagged image resolves to the same globs as its ci.yml filter.
 for img in controller-manager-service game-coordinator-service menu-service audio-service \
-  pairing-daemon-service connect-proxy dashboard rust-hid python-hid otel-collector flag-service agent; do
+  pairing-daemon-service connect-proxy dashboard rust-hid python-hid operator-pad otel-collector flag-service agent; do
   out="$(CI_WORKFLOW="$WORKFLOW" "$CHECK" --paths "$img")" || fail "--paths ${img}"
   [[ -n "$out" ]] || fail "--paths ${img} printed nothing"
   pass=$((pass + 1))
