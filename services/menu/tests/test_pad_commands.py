@@ -59,6 +59,8 @@ class FakeFlagService:
         self.values = {key: default for key, (_variants, default) in BASELINE.items()}
         self.puts: list[tuple[str, str, dict]] = []
         self.failing: set[tuple[str, str]] = set()
+        # Keys whose GET answers 503 while their PUT still works.
+        self.failing_get: set[tuple[str, str]] = set()
         self.down = False
 
     def __call__(self, method, url, body):
@@ -68,6 +70,8 @@ class FakeFlagService:
             raise urllib.error.URLError("connection refused")
         variants, _default = BASELINE[(flag_set, key)]
         if method == "GET":
+            if (flag_set, key) in self.failing_get:
+                return 503, {"error": "no_sync_stream"}
             return 200, {
                 "variants": list(variants),
                 "variant_values": dict(variants),
@@ -237,6 +241,35 @@ async def test_force_start_refuses_while_a_game_is_live(servicer):
     assert servicer._game_lifecycle_task is live
     assert failure_cues(servicer) == 0
     live.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A1", br=["BR-012"])
+async def test_force_start_refuses_when_a_start_wins_during_the_roster_lookup(servicer):
+    """A start that becomes live while the live roster is queried wins: no second start."""
+    servicer.state_manager.controller_states = {"a": ControllerState.READY, "b": ControllerState.READY}
+    state_before = servicer.state
+    started: list[asyncio.Future] = []
+
+    async def roster_lookup(_request):
+        started.append(live_lifecycle(servicer))
+        return controller_manager_pb2.GetConnectedControllersResponse(connected_serials=["a", "b"])
+
+    stub = create_autospec(controller_manager_pb2_grpc.ControllerManagerServiceStub, instance=True)
+    stub.GetConnectedControllers = AsyncMock(side_effect=roster_lookup)
+    with (
+        patch("proto.controller_manager_pb2_grpc.ControllerManagerServiceStub", return_value=stub),
+        patch.object(servicer, "_run_game_lifecycle", autospec=True) as lifecycle,
+    ):
+        reply = await pad(servicer, "force_start")
+
+    assert (reply.success, reply.error) == (False, "game_active")
+    lifecycle.assert_not_called()
+    assert servicer._game_lifecycle_task is started[0]
+    assert servicer.state == state_before
+    published = [c.args[0] for c in servicer.event_publisher.publish.await_args_list]
+    assert "game_requested" not in published
+    started[0].cancel()
 
 
 # --- step_setting (steps 4, 5, 8, A1, A7, A8, BR-005) ---------------------------------------------
@@ -474,7 +507,8 @@ async def test_resume_without_a_saved_level_falls_back_to_ambient(servicer, flag
 @pytest.mark.uc("UC-015", flow="A3", br=["BR-003", "BR-010"])
 async def test_resume_never_enables_when_the_level_is_unreadable(servicer, flags):
     flags.values[("agent", "enabled")] = "off"
-    flags.down = True
+    # Only the level read fails: the enabled read and its PUT would still work.
+    flags.failing_get = {("agent", "interventions_allowed")}
     reply = await pad(servicer, "agent_switch", direction="resume")
     assert (reply.success, reply.error) == (False, "failed")
     assert flags.puts == []
@@ -546,6 +580,64 @@ async def test_ladder_while_stopped_never_saves_none(servicer, flags):
     assert (reply.success, reply.error) == (False, "at_limit")
     assert servicer.settings_ops.saved_agent_level is None
     assert flags.puts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", br=["BR-002", "BR-003", "BR-004"])
+async def test_ladder_step_down_to_none_saves_the_level_it_left(servicer, flags):
+    reply = await pad(servicer, "step_setting", option="agent_level", direction="down", steps=5)
+    assert reply.success
+    assert flags.written() == [("agent", "interventions_allowed", "none")]
+    assert servicer.settings_ops.saved_agent_level == "standard"
+
+    flags.puts.clear()
+    await pad(servicer, "agent_switch", direction="resume")
+    assert flags.written() == [("agent", "interventions_allowed", "standard"), ("agent", "enabled", "on")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-003", "BR-010"])
+@pytest.mark.parametrize("direction", ["up", "down"])
+async def test_ladder_with_the_switch_unreadable_writes_nothing(servicer, flags, direction):
+    servicer.settings_ops.saved_agent_level = "standard"
+    flags.failing_get = {("agent", "enabled")}
+
+    reply = await pad(servicer, "step_setting", option="agent_level", direction=direction)
+
+    assert (reply.success, reply.error) == (False, "flag_service_unavailable")
+    assert flags.puts == []
+    assert servicer.settings_ops.saved_agent_level == "standard"
+    servicer.state_manager.audio.play_voice.assert_not_awaited()
+    assert failure_cues(servicer) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-002"])
+async def test_stop_with_the_switch_unreadable_still_writes_both_keys(servicer, flags):
+    flags.failing_get = {("agent", "enabled")}
+    reply = await pad(servicer, "agent_switch", direction="stop")
+    assert (reply.success, reply.error) == (True, "ok")
+    assert flags.written() == [("agent", "interventions_allowed", "none"), ("agent", "enabled", "off")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A7", br=["BR-005"])
+async def test_ladder_caps_a_huge_step_count(servicer, flags):
+    """``steps`` is unbounded input: the ladder moves at most once per rung, then clamps."""
+    real_next = settings_ops.agent_level_next
+    calls = []
+
+    def counting_next(current, forward=True):
+        calls.append(current)
+        if len(calls) > len(settings_ops.AGENT_POLICY_LEVELS):
+            raise AssertionError("ladder looped past its length")
+        return real_next(current, forward)
+
+    with patch.object(settings_ops, "agent_level_next", side_effect=counting_next):
+        reply = await pad(servicer, "step_setting", option="agent_level", direction="up", steps=10**9)
+
+    assert (reply.success, reply.error) == (True, "")
+    assert flags.written() == [("agent", "interventions_allowed", "full")]
 
 
 # --- set_backend (BR-004) --------------------------------------------------------------------

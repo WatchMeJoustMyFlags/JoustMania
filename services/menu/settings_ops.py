@@ -136,6 +136,8 @@ def agent_level_next(current: str | None, forward: bool = True) -> str:
 
 def _ladder_step(ladder: list[str], current: str | None, forward: bool, steps: int) -> str:
     """``steps`` clamped moves along ``ladder``; a value outside it starts at the first move's result."""
+    # ``steps`` comes unbounded from ProcessInput: more moves than rungs only repeat the clamp.
+    steps = min(steps, len(ladder))
     new = current
     for _ in range(steps):
         if ladder is AGENT_POLICY_LEVELS:
@@ -371,10 +373,11 @@ class SettingsOps:
         """The level ladder of BR-004; while the agent is stopped only the saved level moves (BR-003)."""
         async with self._agent_lock:
             level, enabled = await asyncio.to_thread(self._read_agent_state)
-            if level is None:
+            if level is None or enabled is None:
+                # Fail closed in both directions: with the switch unreadable it is unknown whether
+                # the step moves the live level or the saved one, so nothing is written (BR-010).
                 return Result(None, None, FLAG_SERVICE_UNAVAILABLE)
-            # BR-002 "stopped": enabled off or level none. An unreadable switch counts as stopped
-            # (fail closed): the ladder then never raises a level the agent might act on.
+            # BR-002 "stopped": enabled off or level none; only the saved level moves (BR-003).
             if enabled != "on" or level == "none":
                 old = self.saved_agent_level or AGENT_RESUME_FALLBACK_LEVEL
                 new = _ladder_step(AGENT_SAVED_LEVELS, old, forward, steps)
@@ -390,7 +393,8 @@ class SettingsOps:
             if not await asyncio.to_thread(self._write, writer, AGENT_POLICY_FLAG, new):
                 return Result(level, None, FLAG_SERVICE_UNAVAILABLE)
             if new == "none" and level in AGENT_SAVED_LEVELS:
-                # Stepping down to "none" stops the agent like the kill does: a resume restores this level.
+                # BR-002 / BR-003: a step down to "none" stops the agent like the kill does, so a
+                # resume restores the level it left.
                 self.saved_agent_level = level
             return Result(level, new)
 
