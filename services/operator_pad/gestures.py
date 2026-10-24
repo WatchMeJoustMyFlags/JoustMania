@@ -85,7 +85,7 @@ class GestureMachine:
         self._layer_steps: dict[str, int] = {}
         self._layer_events: dict[str, tuple[int, int]] = {}  # layer key -> (direction, raw events counted)
         self._volume_events: tuple[int, int] = (0, 0)
-        self._last_turn_ms: int | None = None
+        self._last_volume_turn_ms: int | None = None
         self._chord = False
         self._knob_down = False
 
@@ -96,7 +96,7 @@ class GestureMachine:
         self._layer_steps.clear()
         self._layer_events.clear()
         self._volume_events = (0, 0)
-        self._last_turn_ms = None
+        self._last_volume_turn_ms = None
         self._chord = False
         self._knob_down = False
 
@@ -188,11 +188,11 @@ class GestureMachine:
         return (direction, count), 0
 
     def _knob_turn(self, direction: int, t_ms: int, timings: Timings) -> list[Gesture]:
-        previous_ms, self._last_turn_ms = self._last_turn_ms, t_ms
         if self._chord or self.locked:
             return []
         layer = self._single_layer_key()
         if layer is not None:
+            self._volume_events = (0, 0)  # a layer interaction ends any volume turn in progress
             self._used.add(layer)
             events, step = self._count(self._layer_events.get(layer, (0, 0)), direction, timings.knob_events_per_step)
             self._layer_events[layer] = events
@@ -200,6 +200,7 @@ class GestureMachine:
             return []
         if self._down:
             return []  # a turn while K4, K6 or K8 is down does nothing
+        previous_ms, self._last_volume_turn_ms = self._last_volume_turn_ms, t_ms
         if previous_ms is None or t_ms - previous_ms >= KNOB_PAUSE_MS:
             self._volume_events = (0, 0)  # the volume commit pause: a half step never writes
         self._volume_events, step = self._count(self._volume_events, direction, timings.knob_events_per_step)
@@ -223,6 +224,7 @@ class GestureMachine:
             self._chord = True
             return []
         self._knob_down = True
+        self._volume_events = (0, 0)  # the mute wins over a turn not yet a step
         return [Gesture(KNOB_PRESS_GESTURE, KNOB)]
 
     def _knob_release(self) -> list[Gesture]:
