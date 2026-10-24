@@ -187,6 +187,8 @@ case "\$1" in
     fi
     echo \$((n + 1)) >"\$C/starts"
     rc="\$(cat "\$C/restart_rc")"
+    # restart-fail-once: only the next start fails (ExecStart exits non-zero)
+    [[ -f "\$C/restart-fail-once" ]] && { rm -f "\$C/restart-fail-once"; rc=1; }
     if [[ "\$rc" == 0 ]]; then echo success >"\$C/result"; else echo exit-code >"\$C/result"; fi
     exit "\$rc" ;;
 esac
@@ -484,6 +486,16 @@ grep -E '^sudo systemctl (reset-failed|restart) ' "${CASE}/calls.log" | awk '
   /restart/ { if (prev !~ /reset-failed/) bad = 1 } { prev = $0 } END { exit bad }' \
   || fail "start-limit-autorollback: a restart without reset-failed before it"
 
+# A start that fails (Result=exit-code, not refused) is not healthy: the
+# upgrade rolls back, with no refusal retry
+make_case start-fails-exit-code "${C_V1}"
+touch "${CASE}/restart-fail-once"
+if upgrade joustmania-v1.1.0; then fail "start-fails-exit-code: reported success"; fi
+grep -q "failed; rolled back to ${C_V1}" "${CASE}/out.log" || fail "start-fails-exit-code: not rolled back: $(tail -1 "${CASE}/out.log")"
+grep -q 'refused by systemd' "${CASE}/out.log" && fail "start-fails-exit-code: a failed start reported as refused"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "start-fails-exit-code: HEAD is not back on 1.0.0"
+[[ "$(grep -c '^sudo systemctl restart joustmania' "${CASE}/calls.log")" == 2 ]] || fail "start-fails-exit-code: not exactly 2 restarts"
+
 # A start systemd still refuses (reset-failed has no effect): reset, retry once,
 # then reported as refused with the recovery command; never judged unhealthy,
 # never rolled back
@@ -508,6 +520,15 @@ grep -qF 'sudo systemctl reset-failed joustmania && sudo systemctl start joustma
 if upgrade --rollback; then fail "start-limit-refused: --rollback reported success"; fi
 grep -q 'refused by systemd (start-limit-hit)' "${CASE}/out.log" || fail "start-limit-refused: --rollback refusal not reported: $(tail -2 "${CASE}/out.log")"
 grep -q 'did not come up healthy' "${CASE}/out.log" && fail "start-limit-refused: --rollback refusal reported as unhealthy"
+# the refused rollback keeps its target: --status warns, the next --rollback
+# finishes on 1.0.0 and never toggles back to 1.1.0
+[[ "$(head_of)" == "${C_V1}" && "$(rel rollback_to)" == "${C_V1}" ]] || fail "start-limit-refused: rollback_to not kept after a refused start"
+upgrade --status || fail "start-limit-refused: --status failed after the refused --rollback"
+grep -q "WARN: a rollback to ${C_V1} was cut off" "${CASE}/out.log" || fail "start-limit-refused: --status does not warn about the unfinished rollback"
+rm -f "${CASE}/reset-noop"
+upgrade --rollback || fail "start-limit-refused: finishing --rollback failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "start-limit-refused: the finishing --rollback toggled back to 1.1.0"
+grep -q '^rollback_to=' "${REPO}/.joustmania-release" && fail "start-limit-refused: rollback_to left after the finishing --rollback"
 # a healthy unit: no hint
 make_case start-limit-status-ok "${C_V1}"
 upgrade --status || fail "start-limit-status-ok: --status failed"

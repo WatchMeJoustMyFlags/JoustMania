@@ -355,7 +355,7 @@ do_status() {
         head="$(git rev-parse -q --verify HEAD 2>/dev/null || true)"
         pending="$(release_get rollback_to)"
         if [[ -n "$pending" ]]; then
-            say "WARN: a rollback to $pending was cut off; run --rollback to finish it (it stays on $pending)"
+            say "WARN: a rollback to $pending was cut off or its start refused; run --rollback to finish it (it stays on $pending)"
         fi
         if [[ "$head" != "$(release_get current_ref)" && "$head" != "$(release_get previous_ref)" ]]; then
             say "WARN: HEAD $head is neither recorded version, so --rollback is unavailable (an upgrade cut off after its checkout?); see the manual recovery in docs/DEVELOPMENT.md (UC-060 A3)"
@@ -466,7 +466,7 @@ do_upgrade() {
     case "$rc" in
         0) die "upgrade to $TARGET_REF failed; rolled back to $prev_ref" ;;
         2) die "upgrade to $TARGET_REF failed and the rollback to $prev_ref was not applied (nothing switched back); the unhealthy $TARGET_REF stays checked out (state failed)" ;;
-        3) die "upgrade to $TARGET_REF failed; $prev_ref is checked out but its start was refused by systemd (start-limit-hit); recover with: $RECOVER_CMD" ;;
+        3) die "upgrade to $TARGET_REF failed; $prev_ref is checked out but its start was refused by systemd (start-limit-hit); recover with: $RECOVER_CMD (or re-run --rollback, which finishes on $prev_ref)" ;;
         *) die "rollback to $prev_ref did not come up healthy either (state failed)" ;;
     esac
 }
@@ -516,7 +516,8 @@ rollback_plan() {
 # the next --rollback instead of toggling back (rollback_plan).
 # Returns 0 healthy, 1 restarted but not healthy (or stuck between versions),
 # 2 not applied: nothing switched or restarted, the record as it was,
-# 3 switched and recorded, but systemd refused the start (BR-006).
+# 3 switched and recorded, but systemd refused the start (BR-006); rollback_to
+# stays, so the next --rollback finishes on the same target.
 roll_back_to_previous() {
     local imgs missing saved
     rollback_plan || {
@@ -552,8 +553,10 @@ roll_back_to_previous() {
     }
     local rc=0
     apply || rc=$?
-    # The restart was judged (or refused, with HEAD and the record on the
-    # target): the rollback is over, healthy or not
+    # A start systemd refused was never judged: keep rollback_to, so the next
+    # --rollback finishes on this target instead of toggling back (BR-006)
+    ((rc == 3)) && return 3
+    # The restart was judged: the rollback is over, healthy or not
     write_release_raw "$(grep -v '^rollback_to=' "$JOUSTMANIA_DIR/$RELEASE_FILE")" ||
         say "could not clear rollback_to in $RELEASE_FILE"
     return "$rc"
@@ -586,7 +589,7 @@ do_rollback() {
     case "$rc" in
         0) say "rolled back to $T_REF" ;;
         2) die "rollback to $T_REF not applied; nothing changed: $running still runs" ;;
-        3) die "rollback to $T_REF is checked out, but its start was refused by systemd (start-limit-hit); recover with: $RECOVER_CMD" ;;
+        3) die "rollback to $T_REF is checked out, but its start was refused by systemd (start-limit-hit); recover with: $RECOVER_CMD (or re-run --rollback, which finishes on $T_REF)" ;;
         *) die "rollback to $T_REF failed or did not come up healthy (state failed)" ;;
     esac
 }
