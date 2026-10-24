@@ -368,6 +368,13 @@ Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-0
 | `operator_pad.tap_ms` / `operator_pad.hold_ms` | int | tap limit and hold times of the gestures (UC-015 BR-007) | 400 ms; hold per key as in the layout (1 s agent, 1.5 s end, 3 s lock) | operator-pad (planned) | manual edit only | live (per gesture) |
 | `operator_pad.keymap` | string | key code to key name table | F13 to F23 as in UC-015 | operator-pad (planned) | manual edit only | live (next rescan) |
 
+**Planned registry rows (#2050, Open).** They move into the §13.4 table in the same PR that adds them to `services/flag-service/registry.yaml` (the registry test pins the two to each other, so they are listed here until then). The headers are those of §13.4.
+
+| Set | Key | Kind | Scope | Bounds | Persist | Today's writer |
+|---|---|---|---|---|---|---|
+| user | `audio_volume.master` | overlay | stack | declared variants (`mute`, `quiet`, `default`, `loud`, `max`); planned (#2050, Open) | **yes** (a volume survives a restart) | operator pad through the menu |
+| user | `play_audio` | overlay | stack | `on`, `off`; planned (#2050, Open) | **no** (a forgotten off must not survive a restart) | dashboard and operator scripts; not the pad (UC-015 BR-006: off stops the music for the rest of the game) |
+
 **Traceability:** FR-195, C-035 / UC-015 / planned `services/flagd/operator.json`, `services/operator_pad/` / planned tests in #2050.
 
 ## 11. Flags without an effective reader
@@ -565,8 +572,6 @@ the flag service restarts; the durable change is the promotion PR (FR-064, C-007
 |---|---|---|---|---|---|---|
 | user | `current_game` | overlay | stack | declared variants (10 modes) | **yes** | menu selection |
 | user | `game_instructions` | overlay | stack | `on`, `off` | **yes** | menu admin |
-| user | `audio_volume.master` | overlay | stack | declared variants (`mute`, `quiet`, `default`, `loud`, `max`); planned (#2050, Open) | **yes** (a volume survives a restart) | operator pad through the menu |
-| user | `play_audio` | overlay | stack | `on`, `off`; planned (#2050, Open) | **no** (a forgotten off must not survive a restart) | dashboard and operator scripts; not the pad (UC-015 BR-006: off stops the music for the rest of the game) |
 | controller | `bluetooth_backend` | overlay | stack or fraction | declared variants, fraction 1 to 100 | no | connect-proxy `/canary/*` |
 | rollout | `current_controller_count` | overlay | stack | `none`, `one`, `three`, `six`, `all` | no | W2 rollout writer |
 | rollout | `target_backend`, `strategy`, `remediation_allowed` | overlay | stack | declared variants | no | hand edits today |
