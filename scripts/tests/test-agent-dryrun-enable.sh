@@ -63,6 +63,7 @@ line_of() { { grep -n -m1 -E "$1" "${FAKE_FLAG_LOG}" || true; } | cut -d: -f1; }
 
 check "baseline: experiment_seed is off" experiment_seed off
 expect "status shows experiment_seed" 0 "experiment_seed = off" -- status
+expect "status shows decision.backend" 0 "decision.backend = " -- status
 
 # --- on: the seed, then the gates ----------------------------------------------
 expect "on reports the seed" 0 "experiment_seed -> windows_frantic" -- on

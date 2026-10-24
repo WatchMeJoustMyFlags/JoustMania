@@ -302,7 +302,7 @@ class TestMenuServicerStartStopMenu:
     """StartMenu / StopMenu RPCs on the real servicer."""
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-010", flow="A11", br=["BR-003"])
+    @pytest.mark.uc("UC-010", flow="A11")
     async def test_start_menu_runs_lobby(self, real_servicer):
         """StartMenu sets RUNNING, un-readies everyone, starts music + idle monitor, publishes menu_started."""
         await _connect(real_servicer, "s1", "s2", "s3")
@@ -376,12 +376,15 @@ class TestMenuServicerStartStopMenu:
         """StopMenu clears every controller state and calls abandon_session to release the admin lock."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
         await _connect(real_servicer, "s1", "s2")
-        real_servicer.admin_handler.abandon_session = MagicMock(wraps=real_servicer.admin_handler.abandon_session)
+        await _enter_admin(real_servicer, "s1")
+        assert real_servicer.admin_handler.active is True
+        handler = real_servicer.admin_handler
 
-        await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+        with patch.object(handler, "abandon_session", autospec=True, side_effect=handler.abandon_session) as abandon:
+            await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
 
-        real_servicer.admin_handler.abandon_session.assert_called_once()
-        assert real_servicer.admin_handler.active is False
+        abandon.assert_called_once()
+        assert handler.active is False
         assert real_servicer.state_manager.controller_states == {}
 
     @pytest.mark.asyncio
