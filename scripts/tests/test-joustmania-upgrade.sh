@@ -215,6 +215,10 @@ grep -q "compose.* pull | tag=1.1.0" "${CASE}/calls.log" || fail "tag: target im
 grep -q 'dummy-secret-2027' "${CASE}/out.log" && fail "tag: a secret was printed"
 grep -q 'WARN: .env.local sets IMAGE_TAG' "${CASE}/out.log" || fail "tag: no WARN for IMAGE_TAG in .env.local"
 [[ "$(worktrees)" == 1 ]] || fail "tag: a worktree is left (stale one not pruned, or the temporary one kept)"
+prune_line="$(grep -n '^git worktree prune$' "${CASE}/calls.log" | head -n 1 | cut -d: -f1)"
+add_line="$(grep -n '^git worktree add' "${CASE}/calls.log" | head -n 1 | cut -d: -f1)"
+[[ -n "${prune_line}" && -n "${add_line}" && "${prune_line}" -lt "${add_line}" ]] \
+  || fail "tag: git worktree prune does not run before the temporary worktree is added"
 for keep in "${GC}:1.1.0" "${AG}:1.1.0" "${GC}:1.0.0" "${AG}:1.0.0" grafana/grafana:13 busybox:latest; do
   grep -qxF "${keep}" "${CASE}/images.local" || fail "tag: prune removed ${keep}"
 done
