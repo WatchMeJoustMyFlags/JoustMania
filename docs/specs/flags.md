@@ -372,12 +372,12 @@ Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-0
 | Key | Type | Variants | Default | Read by | Written by | Reload |
 |---|---|---|---|---|---|---|
 | `operator_pad.enabled` | bool | on=true, off=false | `on` = true | planned operator-pad (#2050 PR6) | manual edit only | live |
-| `operator_pad.device` | string | unset="" (a `vvvv:pppp` hex USB vendor and product id once the pad's ids are settled on the hardware, #2050 PR6/PR8) | `unset` = "" (no device matches until a variant names one) | planned operator-pad (#2050 PR6) | manual edit only | live (next rescan) |
+| `operator_pad.device` | string | unset="", vial="cb00:1337" (a `vvvv:pppp` hex USB vendor and product id; `cb00:1337` is the maintainer's Vial pad, 0xCB 1337, whose evdev events arrive on the main keyboard interface `usb-0xCB_1337_vial:*-event-kbd`; hardware-verified on the stage Pi 2026-10-24) | `vial` = "cb00:1337" (`unset` = "" matches no device) | planned operator-pad (#2050 PR6/PR8) | manual edit only | live (next rescan) |
 | `operator_pad.tap_ms` | int | default=400 | `default` = 400 (tap limit, UC-015 BR-007) | planned operator-pad (#2050 PR6) | manual edit only | live (per gesture) |
 | `operator_pad.hold_agent_ms` | int | default=1000 | `default` = 1000 (K3 hold: agent stop / resume) | planned operator-pad (#2050 PR6) | manual edit only | live (per gesture) |
 | `operator_pad.hold_end_ms` | int | default=1500 | `default` = 1500 (K4 hold: end or force-start) | planned operator-pad (#2050 PR6) | manual edit only | live (per gesture) |
 | `operator_pad.hold_lock_ms` | int | default=3000 | `default` = 3000 (lock hold) | planned operator-pad (#2050 PR6) | manual edit only | live (per gesture) |
-| `operator_pad.keymap` | string | default="K1=F13,...,K8=F20,KNOB_TURN_A=F21,KNOB_TURN_B=F22,KNOB_PRESS=F23" (the table in the file) | `default` | planned operator-pad (#2050 PR6) | manual edit only | live (next rescan) |
+| `operator_pad.keymap` | string | default="K1=F13,K2=F14,K3=F18,K4=F19,K5=F20,K6=F21,K7=F22,K8=F23,KNOB_PRESS=F15,KNOB_TURN_A=F16,KNOB_TURN_B=F17" (Linux codes: F13=183 to F23=193; F15=185, F16=186, F17=187) | `default` | planned operator-pad (#2050 PR6) | manual edit only | live (next rescan) |
 
 The two registry rows this feature needs (`user` / `audio_volume.master` and `user` / `play_audio`) are in §13.4 since PR2 of #2050; the `operator` set itself has no registry row (§13.5).
 

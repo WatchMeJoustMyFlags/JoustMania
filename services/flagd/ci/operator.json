@@ -14,9 +14,10 @@
     "operator_pad.device": {
       "state": "ENABLED",
       "variants": {
-        "unset": ""
+        "unset": "",
+        "vial": "cb00:1337"
       },
-      "defaultVariant": "unset"
+      "defaultVariant": "vial"
     },
     "operator_pad.tap_ms": {
       "state": "ENABLED",
@@ -49,7 +50,7 @@
     "operator_pad.keymap": {
       "state": "ENABLED",
       "variants": {
-        "default": "K1=F13,K2=F14,K3=F15,K4=F16,K5=F17,K6=F18,K7=F19,K8=F20,KNOB_TURN_A=F21,KNOB_TURN_B=F22,KNOB_PRESS=F23"
+        "default": "K1=F13,K2=F14,K3=F18,K4=F19,K5=F20,K6=F21,K7=F22,K8=F23,KNOB_PRESS=F15,KNOB_TURN_A=F16,KNOB_TURN_B=F17"
       },
       "defaultVariant": "default"
     }
