@@ -73,11 +73,12 @@ effect only on the next start of the flag service (`scripts/flags.sh restart`).
 | Flag set | Owner | Writers | Lifetime |
 |---|---|---|---|
 | `game` | Human admin | menu admin mode (persisted admin values); agent experiment writer (experiment-arm values of the experiment catalog only); autonomous promotion (`real` overlay, gated, off in the stock stack) | per deployment (baseline); experiment arm values until teardown; promotion until the flag service restarts |
-| `user` | Human admin | menu (`current_game`, `game_instructions`); operator pad through the menu: `audio_volume.master` (planned, #2050) | per deployment |
+| `user` | Human admin | menu (`current_game`, `game_instructions`); operator pad through the menu: `audio_volume.master` (menu `step_setting`, #2084; sent by `services/operator_pad`, #2100) | per deployment |
 | `agent` | Operator | stage and operator scripts through the flag service (in-memory overlays, except the decision backend and model flags that `agent-backend.sh` persists, #1682); menu admin writes `interventions_allowed` only (persisted); the operator pad through the menu also writes `enabled` (in memory) and `decision.backend` (persisted) (#2050) | per deployment (baseline); overlays until cleared or the flag service restarts |
 | `interventions` | Agent | agent action sink only, game-scoped (values and event lists) | per game: dropped when the game ends (UC-053 BR-003) |
 | `rollout` | Operator + agent | operator: `target_backend`, `strategy`, `remediation_allowed`; agent: `current_controller_count` | per rollout |
 | `controller` | Operator | baseline edits; connect-proxy `/canary/*` through the flag service | per deployment (baseline); canary overlays until cleared |
+| `operator` | Operator | baseline edits only; no runtime writer, no registry row (§10a, §13.5) | per deployment |
 | `system`, `observability` | Operator | hand edits | per deployment |
 
 No runtime writer persists into a flag file (C-033). The experiment writer and the autonomous promoter write
@@ -332,7 +333,7 @@ Venue preferences owned by the host: voice, audio on/off, volumes, the persisted
 |---|---|---|---|---|---|---|---|
 | `menu_voice` | string | aaron="aaron", ivy="ivy" | `ivy` = "ivy" | N | menu: services/menu/servicer.py:336 (StartMenu); audio: services/audio/servicer.py:AudioServiceServicer._load_menu_voice_flag (startup) / services/audio/servicer.py:AudioServiceServicer._on_flags_changed (change handler) | manual edit only | menu: per StartMenu; audio: event-refreshed |
 | `play_audio` | bool | on=true, off=false | `on` = true | N | audio: services/audio/servicer.py:AudioServiceServicer._load_play_audio_flag (startup) / services/audio/servicer.py:AudioServiceServicer._on_flags_changed (change handler) / services/audio/servicer.py:AudioServiceServicer._read_play_audio_flag (use time, `PlaySound` / `PlayMusic`, #1387) | manual edit only (ci = off) | event-refreshed and re-read at each `PlaySound` / `PlayMusic`; turning it on opens the audio hardware at runtime (UC-031 A1) |
-| `audio_volume.master` | float | mute=0.0, quiet=0.3, normal=0.6, loud=0.8, max=1.0 | `max` = 1.0 | N | audio: services/audio/servicer.py `_effective_volume` (`master * operator gain`, applied in `play_sound`, `play_music`, `set_volume` and `enable_hardware`; re-applied to the running music on a flag change; effective 0 plays nothing; read at use time, also at each `SetVolume`; an unreadable flag keeps the last value, 1.0 before the first read) | operator pad through the menu (`step_setting`, knob; persisted, planned PR3 of #2050); `mute` variant = the pad's mute (UC-015 BR-006) | live (event-refreshed) |
+| `audio_volume.master` | float | mute=0.0, quiet=0.3, normal=0.6, loud=0.8, max=1.0 | `max` = 1.0 | N | audio: services/audio/servicer.py `_effective_volume` (`master * operator gain`, applied in `play_sound`, `play_music`, `set_volume` and `enable_hardware`; re-applied to the running music on a flag change; effective 0 plays nothing; read at use time, also at each `SetVolume`; an unreadable flag keeps the last value, 1.0 before the first read) | operator pad through the menu (`step_setting`, knob; persisted; the menu command is live since #2084, sent by `services/operator_pad`, #2100); `mute` variant = the pad's mute (UC-015 BR-006) | live (event-refreshed) |
 | `current_game` | string | JoustFFA="JoustFFA", JoustTeams="JoustTeams", JoustRandomTeams="JoustRandomTeams", Traitor="Traitor", Werewolf="Werewolf", Zombies="Zombies", Tournament="Tournament", FightClub="FightClub", Swapper="Swapper", NonStop="NonStop" | `JoustFFA` = "JoustFFA" | N | menu: services/menu/servicer.py:337 (StartMenu) | menu services/menu/servicer.py:217/467/489 update_default_variant (user_prefs_writer, :102) | per StartMenu |
 | `game_instructions` | bool | on=true, off=false | `off` = false (baseline; the host switches it on, #1550) | N | game-coordinator: services/game_coordinator/games/base.py `_instructions_enabled` (fails closed to off); menu admin reads the current variant to toggle it (services/menu/handlers/admin.py:1071) | menu admin services/menu/handlers/admin.py:1072 cycle_variant | use time (each game start, UC-020 A5) |
 | `agent_intervention_cue` | bool | on=true, off=false | `on` = true | N | game-coordinator: services/game_coordinator/interventions.py:1413 (_cue_enabled) | manual edit only (ci = off) | live (per intervention cue) |
@@ -362,20 +363,25 @@ Telemetry export knobs for the Python services and rust-hid. Targeting keys on t
 
 **Traceability:** FR-080 to FR-082, NFR-022, FR-150, C-035 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `lib/log_level.py`, `services/agent/flags/loglevel.go`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`, `services/agent/flags/loglevel_test.go`.
 
-## 10a. `operator` (planned, #2050, Open)
+## 10a. `operator`
 
-Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-015.md), FR-195, C-035). A new flag set with its own file `services/flagd/operator.json` (and a `ci/` copy); it lands with its own PR (PR5 of #2050), before the pad code (PR6). Nothing reads or writes it today, and no flag of it is in the registry (§13.5: the set is read-only baseline). Operator-owned, changes by a reviewed file edit and a restart of the flag service. Planned keys (names and variants are settled with the code):
+File: [`services/flagd/operator.json`](../../services/flagd/operator.json) (and its `ci/` copy, same keys and values).
+
+Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-015.md), FR-195, C-035). Operator-owned: it changes by a reviewed file edit and a restart of the flag service, and no key of the set is in the registry (§13.5: read-only baseline). The set is served in every stack (`FLAG_SERVICE_SETS`, `FLAG_SERVICE_BASELINE_FILES`). Every key is read by `services/operator_pad/config.py` (`PadConfig`) at use time through the in-process OpenFeature client; an unreadable or malformed value falls back to the same default as the file (`DEFAULT_*` in `config.py`).
 
 | Key | Type | Variants | Default | Read by | Written by | Reload |
 |---|---|---|---|---|---|---|
-| `operator_pad.enabled` | bool | on=true, off=false | `on` = true | operator-pad (planned) | manual edit only | live |
-| `operator_pad.device` | string | the USB vendor and product id of the pad (default the 0xCB 1337); the PS Move ids are never grabbed (UC-015 BR-014) | the 1337 | operator-pad (planned) | manual edit only | live (next rescan) |
-| `operator_pad.tap_ms` / `operator_pad.hold_ms` | int | tap limit and hold times of the gestures (UC-015 BR-007); a hold time not above the tap limit keeps the default timings | 400 ms; hold per key as in the layout (1 s agent, 1.5 s end, 3 s lock) | operator-pad (planned) | manual edit only | live (per gesture) |
-| `operator_pad.keymap` | string | key code to key name table | F13 to F23 as in UC-015 | operator-pad (planned) | manual edit only | live (next rescan) |
+| `operator_pad.enabled` | bool | on=true, off=false | `on` = true | `services/operator_pad/config.py` `PadConfig` | manual edit only | live |
+| `operator_pad.device` | string | unset="", vial="cb00:1337" (a `vvvv:pppp` hex USB vendor and product id; `cb00:1337` is the maintainer's Vial pad, 0xCB 1337, whose evdev events arrive on the main keyboard interface `usb-0xCB_1337_vial:*-event-kbd`; hardware-verified on the stage Pi 2026-10-24) | `vial` = "cb00:1337" (`unset` = "" matches no device) | `services/operator_pad/config.py` `PadConfig.device` | manual edit only | live (next rescan) |
+| `operator_pad.tap_ms` | int | default=400 | `default` = 400 (tap limit, UC-015 BR-007) | `services/operator_pad/config.py` `PadConfig` | manual edit only | live (per gesture) |
+| `operator_pad.hold_agent_ms` | int | default=1000 | `default` = 1000 (K3 hold: agent stop / resume) | `services/operator_pad/config.py` `PadConfig` | manual edit only | live (per gesture) |
+| `operator_pad.hold_end_ms` | int | default=1500 | `default` = 1500 (K4 hold: end or force-start) | `services/operator_pad/config.py` `PadConfig` | manual edit only | live (per gesture) |
+| `operator_pad.hold_lock_ms` | int | default=3000 | `default` = 3000 (lock hold) | `services/operator_pad/config.py` `PadConfig` | manual edit only | live (per gesture) |
+| `operator_pad.keymap` | string | default="K1=F13,K2=F14,K3=F18,K4=F19,K5=F20,K6=F21,K7=F22,K8=F23,KNOB_PRESS=F15,KNOB_TURN_A=F16,KNOB_TURN_B=F17" (Linux codes: F13=183 to F23=193; F15=185, F16=186, F17=187) | `default` | `services/operator_pad/config.py` `PadConfig` | manual edit only | live (next rescan) |
 
 The two registry rows this feature needs (`user` / `audio_volume.master` and `user` / `play_audio`) are in §13.4 since PR2 of #2050; the `operator` set itself has no registry row (§13.5).
 
-**Traceability:** FR-195, C-035 / UC-015 / planned `services/flagd/operator.json`, `services/operator_pad/` / planned tests in #2050.
+**Traceability:** FR-195, C-035 / UC-015 / `services/flagd/operator.json`, `services/flag-service/baseline/baseline.go`, `services/operator_pad/config.py` / `services/flag-service/baseline/baseline_test.go`, `lib/tests/test_flagd_ci_drift.py`, `tests/contract/test_flagd_resolution.py`.
 
 ## 11. Flags without an effective reader
 
@@ -577,7 +583,7 @@ the flag service restarts; the durable change is the promotion PR (FR-064, C-007
 |---|---|---|---|---|---|---|
 | user | `current_game` | overlay | stack | declared variants (10 modes) | **yes** | menu selection |
 | user | `game_instructions` | overlay | stack | `on`, `off` | **yes** | menu admin |
-| user | `audio_volume.master` | overlay | stack | `mute`, `quiet`, `normal`, `loud`, `max` | **yes** (a volume survives a restart) | operator pad through the menu (planned, #2050) |
+| user | `audio_volume.master` | overlay | stack | `mute`, `quiet`, `normal`, `loud`, `max` | **yes** (a volume survives a restart) | operator pad through the menu (`step_setting`, #2084; sent by `services/operator_pad`, #2100) |
 | user | `play_audio` | overlay | stack | `on`, `off` | **no** (a forgotten off must not survive a restart) | dashboard and operator scripts; not the pad (UC-015 BR-006: off stops the music for the rest of the game) |
 | controller | `bluetooth_backend` | overlay | stack or fraction | declared variants, fraction 1 to 100 | no | connect-proxy `/canary/*` |
 | rollout | `current_controller_count` | overlay | stack | `none`, `one`, `three`, `six`, `all` | no | W2 rollout writer |
@@ -585,7 +591,7 @@ the flag service restarts; the durable change is the promotion PR (FR-064, C-007
 
 ### 13.5 Read-only sets
 
-`system` has no runtime-mutable flag, and `observability` only the propagation probe and the two logging flags below: everything else changes
+`system` and `operator` (§10a) have no runtime-mutable flag, and `observability` only the propagation probe and the two logging flags below: everything else changes
 by a file edit and a restart. Several of their flags are read only at process start anyway (§1.3).
 
 | Set | Key | Kind | Scope | Bounds | Persist | Today's writer |

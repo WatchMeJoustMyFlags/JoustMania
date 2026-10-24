@@ -2,7 +2,7 @@
 Feature Flag Wrapper for JoustMania
 Integrates OpenFeature with flagd provider using domain-scoped providers.
 
-Supports multiple flag domains (system, controller, game, user, observability,
+Supports multiple flag domains (system, controller, game, user, observability, operator,
 and others) via flagd's flagSetId-based domain scoping. Each domain maps to a
 separate flag file and OpenFeature provider.
 

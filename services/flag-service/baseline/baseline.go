@@ -28,6 +28,7 @@ var DefaultFiles = []string{
 	"agent.json",
 	"interventions.json",
 	"rollout.json",
+	"operator.json",
 }
 
 // ReservedSetIDs cannot be flag-set ids: they are HTTP API paths (services.md §7.2).

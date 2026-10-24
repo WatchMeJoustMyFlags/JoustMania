@@ -41,7 +41,7 @@ services:
       - "50064"
       - "8070"
     environment:
-      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller
+      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller,operator
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       # The registry comes from the same checkout as the baseline (mounted below):
       # the image copy would reject a renamed flag (#1838).

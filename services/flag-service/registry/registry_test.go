@@ -366,3 +366,27 @@ func TestCredentialBearingURLsAcceptOnlyDeclaredVariants(t *testing.T) {
 		}
 	}
 }
+
+// UC: UC-015 main
+// The operator set is the read-only baseline (flags.md §13.5, §10a): it is loaded with
+// seven keys in both flag directories and the registry holds no row for it.
+func TestOperatorSetIsReadOnlyBaseline(t *testing.T) {
+	for _, dir := range []string{"", "ci"} {
+		t.Run("UC-015/main operator set in services/flagd/"+dir+" has no registry row", func(t *testing.T) {
+			b, err := baseline.Load(filepath.Join(root(t), "..", "flagd", dir), baseline.DefaultFiles)
+			if err != nil {
+				t.Fatal(err)
+			}
+			set := b.Sets["operator"]
+			if set == nil || len(set.Flags) != 7 {
+				t.Fatalf("operator set: %+v", set)
+			}
+			reg := loadReal(t, dir)
+			for key := range set.Flags {
+				if reg.Get("operator", key) != nil {
+					t.Fatalf("operator/%s must not be mutable at runtime", key)
+				}
+			}
+		})
+	}
+}

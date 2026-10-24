@@ -39,7 +39,7 @@ import flagd_harness as fh  # noqa: E402  (tests/contract, shared with the contr
 import infra_config as ic  # noqa: E402
 
 FLAG_SERVICE_SRC = REPO_ROOT / "services" / "flag-service"
-FLAG_SERVICE_SETS = "system,observability,interventions,rollout,agent,game,user,controller"
+FLAG_SERVICE_SETS = "system,observability,interventions,rollout,agent,game,user,controller,operator"
 
 # Service tier containers: own label prefix, so the contract tier's stale sweep
 # and this one never touch each other's containers.

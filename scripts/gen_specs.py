@@ -268,6 +268,7 @@ FLAG_SET_ORDER = (
     "interventions",
     "controller",
     "rollout",
+    "operator",
     "system",
     "user",
     "observability",

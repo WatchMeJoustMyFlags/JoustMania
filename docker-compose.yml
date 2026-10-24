@@ -57,7 +57,7 @@ services:
   # Flag service (epic #1407, UC-053, docs/specs/services.md §7): holds the
   # runtime flag state in memory and serves it to flagd as ONE flagd.sync.v1
   # gRPC sync source; every flag carries its metadata.flagSetId, so clients keep
-  # their flagSetId selectors. It loads the flag files (all eight sets) read-only
+  # their flagSetId selectors. It loads the flag files (all nine sets) read-only
   # at start and never writes them (C-030, C-033); flagd has no other source.
   # Writers: HTTP/JSON on 8070 (envoy /flags/ from the host, C-015). flagd: 50064.
   flag-service:
@@ -70,7 +70,7 @@ services:
       - "50064"  # flagd.sync.v1 gRPC (flagd only)
       - "8070"   # HTTP/JSON write/read API + /healthz
     environment:
-      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller
+      - FLAG_SERVICE_SETS=system,observability,interventions,rollout,agent,game,user,controller,operator
       - FLAG_SERVICE_BASELINE_DIR=/etc/flagd
       # The registry comes from the same checkout as the baseline (mounted below):
       # the image copy would reject a renamed flag (#1838).
