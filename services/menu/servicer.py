@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import time
@@ -27,6 +28,15 @@ from services.menu.event_publisher import EventPublisher
 from services.menu.handlers import AdminModeHandler, ConnectedHandler, IdleHandler, ReadyHandler
 from services.menu.handlers.base import ControllerState
 from services.menu.idle_monitor import IdleMonitor, read_sentinel_animation
+from services.menu.settings_ops import (
+    BAD_OPTION,
+    GAME_ACTIVE,
+    LOBBY_ONLY_OPTIONS,
+    OK,
+    Result,
+    SettingsOps,
+    is_failure,
+)
 from services.menu.state_manager import StateManager
 from services.menu.utils import AudioHelper, LedController
 from services.menu.utils.audio import GAME_MODE_VOICE
@@ -97,6 +107,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # served by the flag service (#1412): the kill switch is a persisted admin
         # setting (PUT /agent/interventions_allowed {"persist": true}, FR-019, D10).
         self.agent_settings_writer = FlagServiceWriter("agent")
+        # The operator pad's kill switch (#2050, UC-015 BR-001): agent/enabled has no persist in
+        # the registry (a persisted write is 400) and must not survive a restart (UC-045 step 7).
+        self.agent_enabled_writer = FlagServiceWriter("agent", persist=False)
 
         # OpenFeature clients for reading settings
         self.game_settings_client = get_flag_client("game")
@@ -135,12 +148,22 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # Voice actor setting (aaron or ivy)
         self.voice_actor = "ivy"
 
+        # Settings core shared by admin mode and the operator pad commands (#2050, UC-015).
+        self.settings_ops = SettingsOps(
+            get_state_manager=lambda: self.state_manager,
+            controller_channel=self.controller_channel,
+            metrics=metrics,
+            callbacks=self,
+            agent_enabled_writer=self.agent_enabled_writer,
+        )
+
         # Admin mode handler
         self.admin_handler = AdminModeHandler(
             controller_channel=self.controller_channel,
             tracer=tracer,
             callbacks=self,
             metrics=metrics,
+            settings_ops=self.settings_ops,
         )
         self.state_manager.register_handler(self.admin_handler)
 
@@ -416,6 +439,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             input_type = request.input_type
             data = dict(request.data)
 
+            if input_type == "web_command" and data.get("command", "") in self.PAD_COMMANDS:
+                success, error = await self._handle_pad_command(data, span)
+                status = "ok" if success else "error"
+                metrics.grpc_requests_total.labels(method="ProcessInput", status=status).inc()
+                return menu_pb2.ProcessInputResponse(success=success, error=error)
             if input_type == "button_press":
                 await self._handle_button_input(data, span)
             elif input_type == "web_command":
@@ -515,6 +543,74 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 if voice_file:
                     await self.audio.play_voice(voice_file)
         return None
+
+    # Operator pad commands (#2050, UC-015, services.md §3.1): no serial, no LEDs, error codes.
+    PAD_COMMANDS = frozenset({"force_start", "step_setting", "agent_switch", "set_backend"})
+
+    async def _handle_pad_command(self, data: dict, span) -> tuple[bool, str]:
+        """Run one pad command; (success, error code). A failed write plays the failure cue (BR-009)."""
+        command = data.get("command", "")
+        span.set_attribute("command", command)
+        if command == "force_start":
+            result = await self._pad_force_start(span)
+        elif command == "step_setting":
+            result = await self._pad_step_setting(data)
+        elif command == "agent_switch":
+            direction = data.get("direction", "")
+            result = await self.settings_ops.agent_switch(direction)
+            if result.error == OK:
+                await self.settings_ops.announce("agent_switch", direction)
+        else:
+            result = await self.settings_ops.set_backend(data.get("backend", ""))
+        error = result.error or ""
+        if error and error != OK:
+            span.set_attribute("error", error)
+            logger.warning(f"Pad command {command} refused: {error}")
+        if is_failure(error):
+            # UC-015 A3: fail closed, never queued or retried; the host hears two loud beeps.
+            await self.settings_ops.play_failure_cue()
+        return error in ("", OK), error
+
+    async def _pad_step_setting(self, data: dict) -> Result:
+        """step_setting: lobby-only refusal (UC-015 A1), then one clamped write (A7, BR-005)."""
+        option = data.get("option", "")
+        try:
+            steps = int(data.get("steps", "1") or "1")
+        except ValueError:
+            return Result(None, None, BAD_OPTION)
+        if option in LOBBY_ONLY_OPTIONS and self._lifecycle_live():
+            return Result(None, None, GAME_ACTIVE)
+        result = await self.settings_ops.step_setting(option, data.get("direction", ""), steps)
+        if result.error is None:
+            await self.settings_ops.announce(option, result.new)
+        return result
+
+    async def _pad_force_start(self, span) -> Result:
+        """force_start: UC-014 steps 3-5 with the live roster and no host serial (UC-015 BR-008, A2).
+
+        ``expected_generation`` is accepted; the ``stale`` check (UC-015 A5) needs
+        ``lifecycle_generation``, which lands with ``GetMenuStatus`` (#2050 PR4).
+        """
+        if self._lifecycle_live():
+            return Result(None, None, GAME_ACTIVE)
+        if self.admin_handler.is_active:
+            # A2: close the admin session (lock and span) before the start; its serial joins no roster.
+            self.admin_handler.abandon_session("operator_pad_start")
+        controllers = await self.settings_ops.force_start_roster(None, span)
+        if self._lifecycle_live():
+            # A start won the race during the roster lookup (ready auto start, another caller).
+            return Result(None, None, GAME_ACTIVE)
+        self.set_menu_state(menu_pb2.MenuState.GAME_STARTING)
+        await self.event_publisher.publish(
+            "game_requested",
+            {
+                "game_name": self.current_selection.name,
+                "source": "operator_pad",
+                "controllers": json.dumps(controllers),
+            },
+        )
+        await self._start_game(serial="", source="operator_pad", controllers=controllers)
+        return Result(None, self.current_selection.name)
 
     async def _reject_web_start_mode(self, requested_mode: str, span) -> str:
         """Reject a web start_game naming an unknown or unimplemented mode (UC-011 BR-002).
@@ -647,6 +743,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             game_coordinator_pb2.GameState.RUNNING,
         )
 
+    def _lifecycle_live(self) -> bool:
+        """A game is starting or running, or the lobby is being restored (UC-010 A8, UC-015 A1)."""
+        return self._game_lifecycle_task is not None and not self._game_lifecycle_task.done()
+
     async def _reject_start_while_active(self, serial: str, source: str, game_mode: Games | None) -> None:
         """Refuse a start request while the game lifecycle task is live (UC-010 A8).
 
@@ -689,7 +789,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """
         # UC-010 A8 (#2054): a live lifecycle task is a game that is starting or running. Refuse
         # the start; never cancel the live game's stream. A finished task needs no cancel.
-        if self._game_lifecycle_task is not None and not self._game_lifecycle_task.done():
+        if self._lifecycle_live():
             await self._reject_start_while_active(serial, source, game_mode)
             return
 

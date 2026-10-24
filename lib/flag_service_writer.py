@@ -29,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,25 @@ def _urllib_transport(method: str, url: str, body: dict | None) -> tuple[int, di
             return err.code, (json.loads(raw) if raw else {})
         except ValueError:
             return err.code, {}
+
+
+# VariantStep.error values.
+STEP_AT_LIMIT = "at_limit"
+STEP_UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class VariantStep:
+    """Result of ``step_variant``: the variant before, the variant after, and an error.
+
+    ``error`` is None on a write, ``STEP_AT_LIMIT`` when a non-wrapping step is already
+    at the end of the ladder (nothing written), ``STEP_UNAVAILABLE`` when the flag
+    service could not be read or refused the write (nothing applied, never retried).
+    """
+
+    old: str | None
+    new: str | None
+    error: str | None = None
 
 
 class FlagServiceWriter:
@@ -169,3 +189,37 @@ class FlagServiceWriter:
             idx = variants.index(current)
             new_variant = variants[(idx + 1) % len(variants) if forward else (idx - 1) % len(variants)]
         return new_variant if self.update_default_variant(flag_key, new_variant) else None
+
+    def step_variant(
+        self,
+        flag_key: str,
+        forward: bool,
+        wrap: bool = False,
+        *,
+        steps: int = 1,
+        order: list[str] | None = None,
+    ) -> VariantStep:
+        """Move the flag ``steps`` positions along its ladder with one write (UC-015 BR-005, A7).
+
+        The ladder is ``order`` when given (for example ``["off", "on"]`` so that "up" means on),
+        else the declared variants. Without ``wrap`` the step stops at the end of the ladder; a
+        step that cannot move at all writes nothing and returns ``at_limit``. A current variant
+        outside the ladder moves to its first entry, as ``cycle_variant`` does.
+        """
+        view = self._view(flag_key)
+        if not view or not view.get("variants"):
+            return VariantStep(None, None, STEP_UNAVAILABLE)
+        ladder = list(order) if order is not None else list(view["variants"])
+        current = view.get("effective_default")
+        if current not in ladder:
+            new_variant = ladder[0]
+        else:
+            idx = ladder.index(current)
+            target = idx + steps if forward else idx - steps
+            new_idx = target % len(ladder) if wrap else min(max(target, 0), len(ladder) - 1)
+            new_variant = ladder[new_idx]
+            if new_idx == idx and not wrap:
+                return VariantStep(current, current, STEP_AT_LIMIT)
+        if not self.update_default_variant(flag_key, new_variant):
+            return VariantStep(current, None, STEP_UNAVAILABLE)
+        return VariantStep(current, new_variant)

@@ -28,22 +28,26 @@ def default_returning_flag_client(_domain: str):
     return client
 
 
-def make_real_servicer():
+def make_real_servicer(writer_factory=None):
     """A real MenuServicer with real StateManager and handlers.
 
     Only the I/O edges are replaced, each by an autospec of the real class:
     gRPC channels, flagd clients/writers, LED, audio, the event publisher,
-    the controller event loop and the idle monitor.
+    the controller event loop and the idle monitor. ``writer_factory`` builds the
+    flag-service writers instead (called with the production arguments), for
+    tests that need real writers over a fake transport.
     """
+    if writer_factory is None:
+
+        def writer_factory(*_args, **_kwargs):
+            return create_autospec(FlagServiceWriter, instance=True)
+
     channel = create_autospec(grpc.aio.Channel, instance=True)
     with (
         patch("lib.grpc_utils.create_channel", return_value=channel),
         patch("services.menu.servicer.init_flag_domain", autospec=True),
         patch("services.menu.servicer.get_flag_client", side_effect=default_returning_flag_client),
-        patch(
-            "services.menu.servicer.FlagServiceWriter",
-            side_effect=lambda _path: create_autospec(FlagServiceWriter, instance=True),
-        ),
+        patch("services.menu.servicer.FlagServiceWriter", side_effect=writer_factory),
         patch("services.menu.servicer.LedController", autospec=True),
         patch("services.menu.servicer.AudioHelper", autospec=True),
         patch("services.menu.servicer.EventPublisher", autospec=True),
