@@ -272,6 +272,67 @@ class TestUC004IdentifyEffect:
 # ---------------------------------------------------------------------------
 
 
+class TestUC004PulseNeverCutsShortAnIdentify:
+    """UC-004 BR-005 / UC-015 BR-015 (#2105): the lobby mode pulse yields to identify and battery display."""
+
+    PINK = (255, 105, 180)
+
+    async def _mode_change(self, manager):
+        # What the menu sends on a mode change: the new lobby base colour, then the pulse.
+        await manager.apply_base_color(SERIAL, NEW_BASE, label="test")
+        return await manager.handle_game_effect(
+            SERIAL, controller_manager_pb2.GAME_EFFECT_PULSE, color=self.PINK, duration_ms=600, speed=6
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", br=["BR-005", "BR-002"])
+    @pytest.mark.uc("UC-015", br=["BR-015"])
+    async def test_pulse_during_identify_is_skipped_and_the_new_base_shows_after(self, manager, backend, clock):
+        clock.enable_blocking()
+        task = await _identify(manager)
+        clock.release_all()
+        await asyncio.sleep(0)
+
+        await self._mode_change(manager)
+        active = manager.active_effects[SERIAL]
+        assert active.task is task
+        assert active.effect_type == controller_manager_pb2.GAME_EFFECT_IDENTIFY
+
+        clock.disable_blocking()
+        clock.release_all()
+        await task
+        assert self.PINK not in backend.history
+        assert backend.colors[SERIAL] == NEW_BASE
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-004", br=["BR-005"])
+    @pytest.mark.uc("UC-015", br=["BR-015"])
+    async def test_pulse_during_battery_display_is_skipped(self, manager, backend, clock):
+        clock.enable_blocking()
+        await manager.handle_game_effect(SERIAL, controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY)
+        task = manager.active_effects[SERIAL].task
+        clock.release_all()
+        await asyncio.sleep(0)
+
+        await self._mode_change(manager)
+        assert manager.active_effects[SERIAL].task is task
+        assert manager.active_effects[SERIAL].effect_type == controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY
+
+        clock.disable_blocking()
+        clock.release_all()
+        await task
+        assert self.PINK not in backend.history
+        assert backend.colors[SERIAL] == NEW_BASE
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-015", br=["BR-015"])
+    async def test_pulse_on_an_idle_controller_still_plays(self, manager, backend):
+        await self._mode_change(manager)
+        await manager.active_effects[SERIAL].task
+        assert self.PINK in backend.history
+        assert backend.colors[SERIAL] == NEW_BASE
+
+
 class _ServicerBackend(_Backend):
     def initialize(self):
         pass

@@ -218,6 +218,10 @@ SWELL_TASK_NAME = "shield_swell"
 # The death rumble owns the slot for its full duration; the swell and the charge pulses never replace it.
 DEATH_RUMBLE_TASK_NAME = "death_rumble"
 # A charge pulse burst (#2094) plays only in a free rumble slot; any later rumble replaces it.
+# Effects a GAME_EFFECT_PULSE (the lobby mode pulse, UC-015 BR-015) must not take over (UC-004 BR-005).
+PULSE_PROOF_EFFECTS = frozenset(
+    {controller_manager_pb2.GAME_EFFECT_IDENTIFY, controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY}
+)
 CHARGE_PULSE_TASK_NAME = "charge_pulse"
 # The "ending soon" double pulse of an active shield (#2094), same slot rules.
 SHIELD_ENDING_PULSE_TASK_NAME = "shield_ending_pulse"
@@ -690,6 +694,13 @@ class FeedbackManager(ControllerEffectsBase):
         effect_duration = duration_ms if duration_ms > 0 else 400
         effect_speed = speed if speed > 0 else 5
         await self.play_effect_with_restore(serial, "flash", effect_color, effect_duration, effect_speed, restore_color)
+
+    def _pulse_yields(self, serial: str, effect: int) -> bool:
+        """A PULSE that would take over a running identify or battery display (caller holds effect_lock)."""
+        if effect != controller_manager_pb2.GAME_EFFECT_PULSE:
+            return False
+        active = self.active_effects.get(serial)
+        return active is not None and active.effect_type in PULSE_PROOF_EFFECTS and not active.task.done()
 
     def _identify_running(self, serial: str) -> bool:
         active = self.active_effects.get(serial)
@@ -1219,6 +1230,11 @@ class FeedbackManager(ControllerEffectsBase):
                 # Store effect_type; if there's already an ActiveEffect, update its type.
                 # The handler will replace the full ActiveEffect when it creates its task.
                 async with self.effect_lock:
+                    if self._pulse_yields(target_serial, effect):
+                        # UC-004 BR-005 / UC-015 BR-015 (#2105): a pulse never cuts short an identify
+                        # or a battery display; the base colour still shows when that effect ends.
+                        logger.debug(f"Pulse for {target_serial} skipped: identify / battery display running")
+                        continue
                     if target_serial in self.active_effects:
                         self.active_effects[target_serial].effect_type = effect
                     else:

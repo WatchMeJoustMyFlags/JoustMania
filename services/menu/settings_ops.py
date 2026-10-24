@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any
 
 from lib.flag_service_writer import STEP_AT_LIMIT, match_variant, variant_value
 from lib.types import Sound
+from proto import controller_manager_pb2
+from services.menu.utils.led import DEFAULT_COLOR, GAME_MODE_COLORS
 
 if TYPE_CHECKING:
     from lib.flag_service_writer import FlagServiceWriter
@@ -148,6 +150,12 @@ def _ladder_step(ladder: list[str], current: str | None, forward: bool, steps: i
             idx = ladder.index(new)
             new = ladder[min(idx + 1, len(ladder) - 1) if forward else max(idx - 1, 0)]
     return new
+
+
+# UC-015 BR-015: the mode pulse on every lobby controller, the pulse admin mode shows on its own
+# controller (UC-011 step 3, ``AdminModeHandler.handle_game_mode``).
+MODE_PULSE_MS = 600
+MODE_PULSE_SPEED = 6
 
 
 # --- Options of step_setting ----------------------------------------------------------------
@@ -459,13 +467,17 @@ class SettingsOps:
     # --- Feedback ---------------------------------------------------------------------------
 
     async def announce(self, option: str, variant: str | None) -> None:
-        """The voice line for a new value (UC-012 voices, UC-015 step 4, 5, 8). Best effort."""
+        """The voice line for a new value (UC-012 voices, UC-015 step 4, 5, 8). Best effort.
+
+        A new mode also pulses its colour on every lobby controller (UC-015 BR-015).
+        """
         manager = self.state_manager
         if manager is None or variant is None:
             return
         audio = manager.audio
         try:
             if option == "current_game":
+                await self.show_mode_on_lobby(variant)
                 await audio.play_game_mode_voice(variant)
             elif option == "sensitivity":
                 index = SENSITIVITY_VALUES.get(variant)
@@ -493,6 +505,33 @@ class SettingsOps:
                     await audio.play_voice(voice)
         except Exception as e:
             logger.warning(f"Announcing {option}={variant} failed: {e}")
+
+    async def show_mode_on_lobby(self, game_mode: str) -> None:
+        """UC-015 BR-015: a short pulse of the mode's colour on every CONNECTED or READY controller.
+
+        The controller manager restores each controller's base colour (its dim / bright lobby
+        colour) when the pulse ends; the admin controller and IDLE controllers are left alone.
+        """
+        # Imported here: services.menu.handlers imports this module (admin mode).
+        from services.menu.handlers.base import ControllerState
+
+        manager = self.state_manager
+        if manager is None:
+            return
+        color = GAME_MODE_COLORS.get(game_mode, DEFAULT_COLOR)
+        for serial, state in list(manager.controller_states.items()):
+            if state not in (ControllerState.CONNECTED, ControllerState.READY):
+                continue
+            try:
+                await manager.led.send_game_effect(
+                    serial,
+                    controller_manager_pb2.GAME_EFFECT_PULSE,
+                    color=color,
+                    duration_ms=MODE_PULSE_MS,
+                    speed=MODE_PULSE_SPEED,
+                )
+            except Exception as e:
+                logger.warning(f"Mode pulse for {serial} failed: {e}")
 
     async def play_failure_cue(self) -> None:
         """UC-015 BR-009: two loud beeps for a write that failed. Best effort."""
