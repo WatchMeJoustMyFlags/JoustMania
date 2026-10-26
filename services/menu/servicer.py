@@ -132,8 +132,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # served by the flag service (#1412): the kill switch is a persisted admin
         # setting (PUT /agent/interventions_allowed {"persist": true}, FR-019, D10).
         self.agent_settings_writer = FlagServiceWriter("agent")
-        # The operator pad's kill switch (#2050, UC-015 BR-001): agent/enabled has no persist in
-        # the registry (a persisted write is 400) and must not survive a restart (UC-045 step 7).
+        # The operator pad's kill switch and write gate (#2050, #2093, UC-015 BR-001): agent/enabled and
+        # agent/interventions_enabled have no persist in the registry (a persisted write is 400) and
+        # must not survive a restart (UC-045 step 7).
         self.agent_enabled_writer = FlagServiceWriter("agent", persist=False)
 
         # OpenFeature clients for reading settings

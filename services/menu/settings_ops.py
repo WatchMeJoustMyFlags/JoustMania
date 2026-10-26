@@ -38,8 +38,10 @@ logger = logging.getLogger(__name__)
 
 # UC-013 BR-001: the only agent key admin mode writes (persisted).
 AGENT_POLICY_FLAG = "interventions_allowed"
-# UC-015 BR-001: the pad also writes the kill switch (in memory only) and the backend (persisted).
+# UC-015 BR-001: the pad also writes the kill switch and the write gate (in memory only) and the backend (persisted).
 AGENT_ENABLED_FLAG = "enabled"
+# UC-015 BR-003 (#2093): the agent's write gate (FR-051); only the resume writes it, in memory only.
+AGENT_WRITE_GATE_FLAG = "interventions_enabled"
 DECISION_BACKEND_FLAG = "decision.backend"
 
 # Ordered policy levels, most restrictive first. The ladder clamps and never wraps (UC-013, UC-015 BR-004).
@@ -60,7 +62,7 @@ PARTIAL_PREFIX = "partial:"
 FAILED = "failed"
 STALE = "stale"
 BAD_OPTION = "bad_option"
-# agent_switch reply when both writes (or the no-op of UC-015 A9) succeeded.
+# agent_switch reply when every write (or the no-op of UC-015 A9) succeeded.
 OK = "ok"
 
 
@@ -420,7 +422,9 @@ class SettingsOps:
             self._write, self.state_manager.agent_settings_writer, AGENT_POLICY_FLAG, "none"
         )
         enabled_ok = await asyncio.to_thread(self._write, self.agent_enabled_writer, AGENT_ENABLED_FLAG, "off")
-        return Result("running", "stopped", _pair_result(level_ok, enabled_ok))
+        return Result(
+            "running", "stopped", _writes_result([(AGENT_POLICY_FLAG, level_ok), (AGENT_ENABLED_FLAG, enabled_ok)])
+        )
 
     async def _resume_agent(self) -> Result:
         level, enabled = await asyncio.to_thread(self._read_agent_state)
@@ -437,8 +441,13 @@ class SettingsOps:
             level_ok = await asyncio.to_thread(
                 self._write, self.state_manager.agent_settings_writer, AGENT_POLICY_FLAG, target
             )
+        # BR-003 order: the level, then the write gate, then enabled last, so the agent never runs
+        # with the gate still closed. Every write is attempted whatever an earlier one did (A3).
+        gate_ok = await asyncio.to_thread(self._write, self.agent_enabled_writer, AGENT_WRITE_GATE_FLAG, "on")
         enabled_ok = await asyncio.to_thread(self._write, self.agent_enabled_writer, AGENT_ENABLED_FLAG, "on")
-        result = _pair_result(level_ok, enabled_ok)
+        result = _writes_result(
+            [(AGENT_POLICY_FLAG, level_ok), (AGENT_WRITE_GATE_FLAG, gate_ok), (AGENT_ENABLED_FLAG, enabled_ok)]
+        )
         if result == OK:
             self.saved_agent_level = None
         return Result("stopped", "running", result)
@@ -536,14 +545,16 @@ class SettingsOps:
             logger.warning(f"Failure cue failed: {e}")
 
 
-def _pair_result(first_ok: bool | None, enabled_ok: bool) -> str:
-    """BR-002 result of a level write (None = not attempted) and an ``enabled`` write."""
-    if first_ok is None:
-        return OK if enabled_ok else FAILED
-    if first_ok and enabled_ok:
+def _writes_result(writes: list[tuple[str, bool | None]]) -> str:
+    """UC-015 A3 result of ordered writes (None = not attempted).
+
+    ``ok`` when every attempted write succeeded, ``failed`` when none did, else
+    ``partial:<key>`` naming the first key in write order that failed.
+    """
+    attempted = [(key, ok) for key, ok in writes if ok is not None]
+    failed = [key for key, ok in attempted if not ok]
+    if not failed:
         return OK
-    if first_ok:
-        return PARTIAL_PREFIX + AGENT_ENABLED_FLAG
-    if enabled_ok:
-        return PARTIAL_PREFIX + AGENT_POLICY_FLAG
-    return FAILED
+    if len(failed) == len(attempted):
+        return FAILED
+    return PARTIAL_PREFIX + failed[0]
