@@ -9,6 +9,7 @@ import type {
   GameplayDataUpdate,
   IdentifyControllerRequest,
   IdentifyControllerResponse,
+  GetConnectedControllersResponse,
 } from "./gen/controller_manager_pb.js";
 import type {
   ForceEndGameRequest,
@@ -70,6 +71,15 @@ export const controllerClient = {
       "joustmania.controller_manager.ControllerManagerService",
       "WatchGameplayData",
       request,
+      signal
+    );
+  },
+  // UC-035 A5: the live roster with the last-known battery (#2111)
+  getConnectedControllers(signal?: AbortSignal): Promise<GetConnectedControllersResponse> {
+    return unaryCall(
+      "joustmania.controller_manager.ControllerManagerService",
+      "GetConnectedControllers",
+      {},
       signal
     );
   },

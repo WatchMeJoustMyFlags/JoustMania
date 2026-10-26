@@ -27,6 +27,8 @@ import {
 } from "./agent.js";
 import type { FlagPanel, InterventionOverlay } from "./agent.js";
 import { createPoller } from "./poller.js";
+import { BatteryRoster } from "./components/BatteryRoster.js";
+import { ROSTER_POLL_MS } from "./roster.js";
 import { PageGate } from "./pageGate.js";
 import { ShieldStore } from "./shield.js";
 import { reduceGameEvent } from "./gameEvents.js";
@@ -162,6 +164,7 @@ async function init() {
 
   // Start polling the experiment.progress spans (Jaeger)
   startExperimentsPolling();
+  startRosterPolling();
 
   // Start polling the agent flag / activity / intervention telemetry (Jaeger + VM)
   startAgentPolling();
@@ -175,6 +178,7 @@ async function init() {
   console.log("Dashboard initialized");
 }
 
+let rosterPoller: Poller | null = null;
 let decidePoller: Poller | null = null;
 let agentPoller: Poller | null = null;
 let experimentsPoller: Poller | null = null;
@@ -185,7 +189,7 @@ const pageGate = new PageGate(
   document,
   globalThis,
   (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
-  () => [decidePoller, agentPoller, experimentsPoller],
+  () => [decidePoller, agentPoller, experimentsPoller, rosterPoller],
 );
 
 function tabActive(tab: string): boolean {
@@ -220,6 +224,7 @@ function setupTabs() {
         agentPoller?.poke();
       }
       if (tabId === "experiments") experimentsPoller?.poke();
+      if (tabId === "controllers") rosterPoller?.poke();
 
       console.log(`Switched to tab: ${tabId}`);
     });
@@ -473,6 +478,23 @@ function startFollowPolling() {
     else poller.poke();
   });
   poller.poke();
+}
+
+// Battery roster (UC-035 A5, #2111): a unary poll about every 5 s while the
+// Controllers tab and the page are shown; a failed poll marks the panel stale.
+function startRosterPolling() {
+  const roster = new BatteryRoster("battery-roster");
+  rosterPoller = createPoller({
+    baseMs: ROSTER_POLL_MS,
+    maxMs: ROSTER_POLL_MS * 3,
+    timeoutMs: ROSTER_POLL_MS,
+    isActive: () => tabActive("controllers"),
+    run: async (signal) => {
+      roster.update(await controllerClient.getConnectedControllers(signal));
+    },
+    onError: () => roster.fail(),
+  });
+  rosterPoller.poke();
 }
 
 // Handle game events
