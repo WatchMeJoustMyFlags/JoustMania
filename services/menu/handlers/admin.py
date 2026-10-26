@@ -1345,6 +1345,11 @@ class AdminModeHandler:
 
             try:
                 old_level = await asyncio.to_thread(self._current_agent_level)
+                if old_level is None and forward:
+                    # UC-013 A5: never raise a level that cannot be read; a restrict still writes none.
+                    logger.warning("Agent level unreadable: escalation refused")
+                    await self._signal_agent_write_failed(serial, controller_manager_pb2)
+                    return
                 new_level = self._next_agent_level(old_level, forward=forward)
 
                 if not await asyncio.to_thread(writer.update_default_variant, AGENT_POLICY_FLAG, new_level):
@@ -1411,7 +1416,7 @@ class AdminModeHandler:
             logger.warning(f"Agent write error pulse failed for {serial}: {e}")
 
     def _current_agent_level(self) -> str | None:
-        """The current effective agent policy level (#819), live flagd value first. Blocking: to_thread."""
+        """The agent policy level the flag service serves (UC-013 BR-003), None if unreadable. Blocking: to_thread."""
         return self.settings_ops.current_agent_level()
 
     # The clamped level ladder (UC-013) and the variant values are shared with the pad (settings_ops).
