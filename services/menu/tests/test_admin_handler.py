@@ -2534,6 +2534,39 @@ class TestAgentLadderAgainstTheFlagService:
         mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_OFF)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A3")
+    @pytest.mark.parametrize("applies", [True, False])
+    @pytest.mark.parametrize("put_error", ["malformed_json", "broken_response"])
+    async def test_malformed_put_answer_is_settled_by_a_reread(self, handler, mock_state_manager, put_error, applies):
+        """A PUT whose answer is malformed or broken has an unknown outcome: the re-read decides,
+        so the host gets the level feedback or the error cue, never silence."""
+        import http.client
+
+        service = _AgentFlagService("standard")
+        self._wire(handler, mock_state_manager, service, stale_flagd_level="standard")
+        error = ValueError("Expecting value") if put_error == "malformed_json" else http.client.IncompleteRead(b"")
+
+        def transport(method, url, body):
+            if method == "PUT":
+                service.puts.append(body["variant"])
+                if applies:
+                    service.level = body["variant"]
+                raise error
+            return service(method, url, body)
+
+        mock_state_manager.agent_settings_writer._transport = transport
+
+        await handler.handle_decrease_value("test_serial")
+
+        assert service.puts == ["ambient"]
+        if applies:
+            assert not self._error_cue_shown(mock_state_manager)
+            mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_1)
+        else:
+            assert self._error_cue_shown(mock_state_manager)
+            mock_state_manager.audio.play_voice.assert_not_called()
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="A5", steps=[1])
     @pytest.mark.parametrize("read_error", ["malformed_json", "broken_response"])
     async def test_restrict_with_a_malformed_read_still_writes_none(self, handler, mock_state_manager, read_error):

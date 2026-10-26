@@ -98,9 +98,11 @@ def _gated_count(stack) -> float:
 async def _restrict_from_controller(stack, mock_client, host: str) -> None:
     """TC-006 steps 1 to 4: admin combo, agent_control, Start twice; flagd serves none.
 
-    The second press follows as soon as the flag service holds ``ambient``, while flagd may still
-    serve ``standard``: the menu must step from the flag service's view (UC-013 BR-003, #2095), so
-    this sequence is the end-to-end repro of that race. flagd is awaited after the last press only.
+    The second press follows as soon as the flag service holds ``ambient``; the menu steps from the
+    flag service's view (UC-013 BR-003, #2095). On this tier flagd usually catches up before the
+    second press, so this test does NOT reproduce that race: it is pinned by the unit test
+    ``services/menu/tests/test_admin_handler.py::TestAgentLadderAgainstTheFlagService::
+    test_second_press_steps_from_a_timed_out_write_that_applied``. flagd is awaited after the last press only.
     """
     await enter_admin_mode(mock_client, host)
     # Move x3 reaches agent_control (index 0 -> 3); the LED colour confirms it (#1845).
