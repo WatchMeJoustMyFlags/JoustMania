@@ -30,7 +30,6 @@ from opentelemetry import trace
 from lib.colors import Colors
 from lib.controller_constants import ButtonTrackingKey
 from lib.feature_flags import read_float_flag
-from lib.flag_service_writer import match_variant, variant_value
 from lib.telemetry import SpanAttr
 from lib.types import Sound
 from services.menu.handlers.base import ButtonDebouncer, ControllerState
@@ -911,11 +910,11 @@ class AdminModeHandler:
                 # admin is actually making: cycle_variant() advances the on-disk
                 # defaultVariant (the human-owned baseline), so old_variant must
                 # be the baseline value being cycled FROM, captured before the
-                # mutation. Using _effective_variant here would announce the
+                # mutation. Using the effective value here would announce the
                 # agent's override (e.g. ultra_fast) as the source while we
                 # actually write baseline medium->fast — incoherent. Selecting an
                 # option and the agent-overlay follow-up after a step announce
-                # the effective value via _effective_variant (#818, UC-012 BR-006).
+                # the effective value from the flag-service view (_overlay_variant, #818, UC-012 BR-006).
                 old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, "sensitivity", True)
 
                 if new_variant is None:
@@ -1222,12 +1221,13 @@ class AdminModeHandler:
         After a host step: when an agent overlay makes the EFFECTIVE value differ from the
         new baseline, follow the baseline announcement with the agent cue (magenta pulse,
         as the coordinator's #818 cue) and the effective value. Equal or unknown: silent.
+        The overlay is read from the flag service (#2092), not the lagging in-process client.
         """
         from proto import controller_manager_pb2
 
         try:
-            effective = await asyncio.to_thread(self._effective_variant, option_name)
-            if effective is None or effective == new_variant:
+            effective = await asyncio.to_thread(self._overlay_variant, option_name, new_variant)
+            if effective is None:
                 return
             await self._send_game_effect(
                 serial,
@@ -1242,6 +1242,24 @@ class AdminModeHandler:
         except Exception as e:
             logger.error(f"Error announcing agent overlay for {option_name}: {e}", exc_info=True)
 
+    def _overlay_variant(self, option_name: str, new_variant: str) -> str | None:
+        """
+        The variant an overlay holds when it overrides the baseline just written, else None.
+
+        Reads the flag service, whose answer is synchronous with the write, not the
+        in-process flagd client: that one lags the write by up to a sync interval, and
+        its stale value was mistaken for an agent overlay (#2092). The flag service's
+        effective default is the stack overlay, else the admin value just written, so a
+        difference from ``new_variant`` is a real overlay. Unreadable: None (silent).
+
+        Blocking (one flag-service read): run via to_thread.
+        """
+        view = self._state_manager.game_settings_writer.get_flag_view(option_name)
+        effective = view.get("effective_default") if view else None
+        if effective is None or effective == new_variant:
+            return None
+        return effective
+
     @staticmethod
     def _cycle_baseline(writer, flag_key: str, forward: bool) -> tuple[str | None, str | None]:
         """(baseline variant before, variant after) one cycle step. Blocking: run via to_thread."""
@@ -1249,65 +1267,20 @@ class AdminModeHandler:
 
     def _effective_variant(self, option_name: str) -> str | None:
         """
-        Resolve the EFFECTIVE variant for a game.json option through flagd (#818).
+        The EFFECTIVE variant of a game.json option, from the flag service (#818, #2092).
 
-        The admin announcement must reflect the value the game would actually resolve
-        — including any agent override applied to the same flag domain — not the
-        stale game.json ``defaultVariant`` on disk. We read the live value via the
-        OpenFeature "game" client and map it back to a variant name.
+        The flag service's ``effective_default`` ranks the stack overlay above the admin
+        value above the promotion overlay above the baseline, and it is synchronous with
+        every write. The in-process flagd client is not read: it lags a write by up to a
+        sync interval and would announce the previous value.
 
-        Falls back to the on-disk ``defaultVariant`` when no client is wired, the
-        resolved value matches no known variant, or anything fails — so the
-        announcement degrades to the baseline rather than going silent.
-
-        Args:
-            option_name: game.json flag key
-
-        Blocking (one flag-service read plus a flagd resolve): run via to_thread.
+        Blocking (one flag-service read): run via to_thread.
 
         Returns:
-            Effective variant name, or the on-disk default on fallback.
+            Effective variant name, or None when the flag service cannot be read (silent).
         """
         view = self._state_manager.game_settings_writer.get_flag_view(option_name)
-        file_variant = view.get("effective_default") if view else None
-
-        client = getattr(self._state_manager, "game_settings_client", None)
-        if client is None:
-            return file_variant
-
-        try:
-            # Use the on-disk default's value as the resolution fallback so a
-            # provider miss returns the file value unchanged.
-            default_value = variant_value(view, file_variant)
-            resolved = self._resolve_flag_value(client, option_name, default_value)
-            if resolved is None:
-                return file_variant
-            return match_variant(view, resolved) or file_variant
-        except Exception as e:
-            logger.debug(f"Effective-variant resolution failed for '{option_name}': {e}")
-            return file_variant
-
-    @staticmethod
-    def _resolve_flag_value(client, flag_key: str, default):
-        """
-        Resolve a flag value through an OpenFeature client, typed by ``default``.
-
-        OpenFeature requires the correct typed getter; pick it from the default's
-        Python type so booleans/ints/floats/strings/objects each resolve cleanly.
-        """
-        if isinstance(default, bool):
-            return client.get_boolean_value(flag_key, default)
-        if isinstance(default, int):
-            return client.get_integer_value(flag_key, default)
-        if isinstance(default, float):
-            return client.get_float_value(flag_key, default)
-        if isinstance(default, str):
-            return client.get_string_value(flag_key, default)
-        if isinstance(default, (list, dict)):
-            return client.get_object_value(flag_key, default)
-        # Unknown/None default: try a string read (most game.json variants are
-        # scalar); a TYPE_MISMATCH returns the default, which is None here.
-        return client.get_string_value(flag_key, "") or None
+        return view.get("effective_default") if view else None
 
     async def handle_agent_control(self, serial: str, forward: bool = True) -> None:
         """
