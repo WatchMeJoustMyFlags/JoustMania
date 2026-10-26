@@ -484,7 +484,7 @@ class TestHandleSensitivityLocalStorage:
         from proto import controller_manager_pb2
 
         mock_state_manager.game_settings_writer.cycle_variant.return_value = variant
-        mock_state_manager.game_settings_client.get_integer_value.return_value = SENSITIVITY_VALUES[variant]
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, variant)
 
         await handler.handle_sensitivity("test_serial")
 
@@ -1567,7 +1567,7 @@ class TestPlayValueVoice:
         """SELECT on the sensitivity option pulses and announces the new level (UC-012 step 5)."""
         handler.current_option = handler.option_names.index("sensitivity")
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
-        mock_state_manager.game_settings_client.get_integer_value.return_value = 3  # no overlay
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "fast")
 
         await handler.handle_increase_value("test_serial")
 
@@ -1580,7 +1580,7 @@ class TestPlayValueVoice:
         """START on the sensitivity option announces the new level (UC-012 step 5)."""
         handler.current_option = handler.option_names.index("sensitivity")
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "slow"
-        mock_state_manager.game_settings_client.get_integer_value.return_value = 1  # no overlay
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "slow")
 
         await handler.handle_decrease_value("test_serial")
 
@@ -2698,7 +2698,7 @@ class TestOptionAnnouncementUsesEffectiveValue:
         """Baseline steps to fast; agent overlay holds ultra_fast: new setting, magenta cue, effective value."""
         handler.current_option = handler.option_names.index("sensitivity")
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
-        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "ultra_fast")
         order = []
 
         async def show(_serial, _option, value):
@@ -2729,7 +2729,7 @@ class TestOptionAnnouncementUsesEffectiveValue:
     async def test_step_without_overlay_announces_only_baseline(self, handler, mock_state_manager):
         handler.current_option = handler.option_names.index("sensitivity")
         mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
-        mock_state_manager.game_settings_client.get_integer_value.return_value = 3
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "fast")
         handler._show_value_feedback = AsyncMock()
         handler._play_value_voice = AsyncMock()
         handler._send_game_effect = AsyncMock()
@@ -2737,4 +2737,29 @@ class TestOptionAnnouncementUsesEffectiveValue:
         await handler.handle_decrease_value("test_serial")
 
         handler._show_value_feedback.assert_awaited_once_with("test_serial", "sensitivity", 3)
+        handler._send_game_effect.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5], br=["BR-006"])
+    @pytest.mark.parametrize("option", ["sensitivity", "num_teams"])
+    async def test_step_with_lagging_flagd_client_announces_once(self, handler, mock_state_manager, option):
+        """The in-process client still serves the OLD value after the write (#2092): one announcement, no cue."""
+        from services.menu.settings_ops import _VARIANT_VALUES
+
+        handler.current_option = handler.option_names.index(option)
+        values = _VARIANT_VALUES[option]
+        old, new = list(values)[1], list(values)[2]
+        writer = mock_state_manager.game_settings_writer
+        writer.cycle_variant.return_value = new
+        writer.get_flag_view.return_value = flag_view(values, new)  # flag service: the write is applied
+        client = mock_state_manager.game_settings_client
+        client.get_integer_value.return_value = values[old]  # in-process provider: one write behind
+        handler._show_value_feedback = AsyncMock()
+        handler._play_value_voice = AsyncMock()
+        handler._send_game_effect = AsyncMock()
+
+        await handler.handle_increase_value("test_serial")
+
+        handler._show_value_feedback.assert_awaited_once_with("test_serial", option, values[new])
+        handler._play_value_voice.assert_awaited_once_with(option, values[new])
         handler._send_game_effect.assert_not_awaited()

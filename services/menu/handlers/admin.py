@@ -1222,12 +1222,13 @@ class AdminModeHandler:
         After a host step: when an agent overlay makes the EFFECTIVE value differ from the
         new baseline, follow the baseline announcement with the agent cue (magenta pulse,
         as the coordinator's #818 cue) and the effective value. Equal or unknown: silent.
+        The overlay is read from the flag service (#2092), not the lagging in-process client.
         """
         from proto import controller_manager_pb2
 
         try:
-            effective = await asyncio.to_thread(self._effective_variant, option_name)
-            if effective is None or effective == new_variant:
+            effective = await asyncio.to_thread(self._overlay_variant, option_name, new_variant)
+            if effective is None:
                 return
             await self._send_game_effect(
                 serial,
@@ -1241,6 +1242,24 @@ class AdminModeHandler:
             await self._play_value_voice(option_name, value)
         except Exception as e:
             logger.error(f"Error announcing agent overlay for {option_name}: {e}", exc_info=True)
+
+    def _overlay_variant(self, option_name: str, new_variant: str) -> str | None:
+        """
+        The variant an overlay holds when it overrides the baseline just written, else None.
+
+        Reads the flag service, whose answer is synchronous with the write, not the
+        in-process flagd client: that one lags the write by up to a sync interval, and
+        its stale value was mistaken for an agent overlay (#2092). The flag service's
+        effective default is the stack overlay, else the admin value just written, so a
+        difference from ``new_variant`` is a real overlay. Unreadable: None (silent).
+
+        Blocking (one flag-service read): run via to_thread.
+        """
+        view = self._state_manager.game_settings_writer.get_flag_view(option_name)
+        effective = view.get("effective_default") if view else None
+        if effective is None or effective == new_variant:
+            return None
+        return effective
 
     @staticmethod
     def _cycle_baseline(writer, flag_key: str, forward: bool) -> tuple[str | None, str | None]:
