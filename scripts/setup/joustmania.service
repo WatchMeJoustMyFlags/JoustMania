@@ -18,8 +18,9 @@ Wants=network-online.target bluetooth.service
 After=docker.service network-online.target bluetooth.service
 # 3 starts in 15 minutes, then systemd stops retrying (UC-060 A5). This bounds
 # fast failures only: an attempt that runs into TimeoutStartSec (900 s) plus
-# RestartSec ends outside the window; #2027 PR 2b bounds those (pull timeout,
-# phase split).
+# RestartSec ends outside the window. The start script bounds an attempt: it
+# pulls nothing at boot and a failing game phase ends at its 120 s readiness
+# timeout, before observability starts.
 StartLimitIntervalSec=900
 StartLimitBurst=3
 

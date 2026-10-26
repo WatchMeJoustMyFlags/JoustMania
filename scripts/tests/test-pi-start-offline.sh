@@ -13,6 +13,11 @@
 #  - a missing observability image, or an observability phase that fails:
 #    exit 0, state degraded, the game is not touched
 #  - a game service that never runs: exit 1, observability not started
+#  - depends_on: the stub `up` aborts like compose when a named service's
+#    dependency chain has a missing image; such services are left out and
+#    named, everything else starts (BR-002)
+#  - docker not reachable: exit 1 with "docker not reachable", no missing-image
+#    report and no `up`
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-pi-start-offline.sh
 # UC: UC-060 BR-001 BR-002 BR-004 A1 A5
 set -euo pipefail
@@ -33,6 +38,16 @@ trap 'rm -rf "${WORK}"' EXIT
 
 GAME="flag-service flagd rust-hid controller-manager pairing-daemon game-coordinator menu audio connect-proxy dashboard envoy"
 OBS="agent grafana jaeger loki otel-collector victoria-metrics"
+# depends_on as in docker-compose.yml (service: deps)
+deps_of() {
+  case "$1" in
+    flagd) echo flag-service ;;
+    controller-manager) echo flagd rust-hid ;;
+    pairing-daemon) echo rust-hid ;;
+    game-coordinator | menu | audio | agent) echo flagd ;;
+    grafana) echo jaeger loki victoria-metrics ;;
+  esac
+}
 
 # make_case <name>: ${WORK}/<name>/{repo,bin,docker.log,git.log,curl.log}; sets CASE
 #   $CASE/missing: images `docker image inspect` does not find (one per line)
@@ -51,13 +66,36 @@ make_case() {
   : >"${CASE}/down"
   {
     printf 'name: repo\nservices:\n'
-    for s in ${GAME} ${OBS}; do printf '  %s:\n    environment:\n      K: v\n    image: ghcr.io/o/joustmania/%s:0.0.0-test\n' "$s" "$s"; done
+    for s in ${GAME} ${OBS}; do
+      printf '  %s:\n' "$s"
+      d="$(deps_of "$s")"
+      if [[ -n "$d" ]]; then
+        printf '    depends_on:\n'
+        for x in $d; do printf '      %s:\n        condition: service_started\n        required: true\n' "$x"; done
+      fi
+      printf '    environment:\n      K: v\n    image: ghcr.io/o/joustmania/%s:0.0.0-test\n' "$s"
+    done
     printf 'networks:\n  joustmania:\n    name: j\n'
   } >"${CASE}/config"
+  # deps: "service dep" lines, for the stub `up` (compose starts dependencies
+  # and aborts the whole up on a missing image anywhere in that chain)
+  for s in ${GAME} ${OBS}; do for x in $(deps_of "$s"); do echo "$s $x"; done; done >"${CASE}/deps"
   cat >"${CASE}/bin/docker" <<STUB
 #!/usr/bin/env bash
 C="${CASE}"
 echo "\$*" >>"\$C/docker.log"
+[[ "\$1" == info ]] && { [[ -e "\$C/info-fails" ]] && exit 1; exit 0; }
+if [[ "\$1" == compose && " \$* " == *" up "* ]]; then
+  todo=(); seen=" "
+  for a in "\$@"; do [[ "\$a" == -* || "\$a" =~ ^[0-9]+\$ || "\$a" == compose || "\$a" == up || "\$a" == never || "\$a" == *docker-compose.yml || "\$a" == .env* ]] || todo+=("\$a"); done
+  while ((\${#todo[@]})); do
+    s="\${todo[0]}"; todo=("\${todo[@]:1}")
+    [[ "\$seen" == *" \$s "* ]] && continue
+    seen+="\$s "
+    if grep -qxF "ghcr.io/o/joustmania/\$s:0.0.0-test" "\$C/missing"; then echo "No such image for \$s" >&2; exit 1; fi
+    for x in \$(sed -n "s/^\$s //p" "\$C/deps"); do todo+=("\$x"); done
+  done
+fi
 case " \$* " in
   *" config --services "*) sed -n 's/^  \([a-z-]*\):\$/\1/p' "\$C/config"; exit 0 ;;
   *" config --images "*) sed -n 's/^    image: //p' "\$C/config"; exit 0 ;;
@@ -140,7 +178,8 @@ make_case obs-missing
 echo "ghcr.io/o/joustmania/jaeger:0.0.0-test" >"${CASE}/missing"
 run_start || fail "obs-missing: start failed: $(tail -3 "${CASE}/out.log")"
 no_network obs-missing
-grep -qxF "${OBS_UP} ${OBS/ jaeger / }" "${CASE}/docker.log" || fail "obs-missing: the other observability services did not start: $(grep ' up ' "${CASE}/docker.log")"
+grep -qxF "${OBS_UP} agent loki otel-collector victoria-metrics" "${CASE}/docker.log" \
+  || fail "obs-missing: the other observability services (not grafana, which needs jaeger) did not start: $(grep ' up ' "${CASE}/docker.log")"
 grep -q 'jaeger(ghcr.io/o/joustmania/jaeger:0.0.0-test)' "${CASE}/out.log" || fail "obs-missing: the missing image is not named"
 grep -q 'joustmania-upgrade.sh' "${CASE}/out.log" || fail "obs-missing: no recovery command"
 [[ "$(state result)" == degraded ]] || fail "obs-missing: state is not degraded: $(state result)"
@@ -159,6 +198,31 @@ if run_start; then fail "game-down: start succeeded with controller-manager exit
 grep -q 'controller-manager(exited)' "${CASE}/out.log" || fail "game-down: the service that is down is not named"
 grep -q -- '--wait' "${CASE}/docker.log" && fail "game-down: observability was started"
 [[ "$(state down)" == *"controller-manager(exited)"* ]] || fail "game-down: start.env does not list it: $(state down)"
+
+# --- 6. a dependency's image is missing: its dependents are left out ---------
+make_case dep-obs
+echo "ghcr.io/o/joustmania/loki:0.0.0-test" >"${CASE}/missing"
+run_start || fail "dep-obs: start failed: $(tail -3 "${CASE}/out.log")"
+grep -qxF "${OBS_UP} agent jaeger otel-collector victoria-metrics" "${CASE}/docker.log" \
+  || fail "dep-obs: observability phase does not leave out loki and grafana (which needs it): $(grep ' up ' "${CASE}/docker.log")"
+grep -q 'need a service whose image is missing: grafana' "${CASE}/out.log" || fail "dep-obs: grafana not named as not started"
+[[ "$(state result)" == degraded ]] || fail "dep-obs: state is not degraded: $(state result)"
+make_case dep-game
+echo "ghcr.io/o/joustmania/flag-service:0.0.0-test" >"${CASE}/missing"
+if run_start; then fail "dep-game: start succeeded with the flag-service image missing"; fi
+grep -qxF "${GAME_UP} rust-hid pairing-daemon connect-proxy dashboard envoy" "${CASE}/docker.log" \
+  || fail "dep-game: the services that do not need flag-service did not start: $(grep ' up ' "${CASE}/docker.log")"
+grep -q 'waiting on those: flagd controller-manager game-coordinator menu audio' "${CASE}/out.log" \
+  || fail "dep-game: the blocked game services are not named: $(grep FAIL "${CASE}/out.log")"
+[[ "$(state down)" == *"flagd"* ]] || fail "dep-game: start.env does not list the blocked services: $(state down)"
+
+# --- 7. docker not reachable: not reported as missing images -----------------
+make_case no-docker
+touch "${CASE}/info-fails"
+if run_start; then fail "no-docker: start succeeded without docker"; fi
+grep -q 'FAIL: docker not reachable' "${CASE}/out.log" || fail "no-docker: no 'docker not reachable': $(tail -2 "${CASE}/out.log")"
+grep -qi 'missing\|joustmania-upgrade.sh [^w]' "${CASE}/out.log" && fail "no-docker: reported as missing images: $(grep -i missing "${CASE}/out.log")"
+grep -q ' up ' "${CASE}/docker.log" && fail "no-docker: up was called"
 
 if [[ "${fails}" -ne 0 ]]; then
   exit 1

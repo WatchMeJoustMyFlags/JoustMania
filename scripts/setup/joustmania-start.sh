@@ -69,6 +69,12 @@ for _ in $(seq 1 "${JOUSTMANIA_DOCKER_WAIT_S:-60}"); do
     docker info >/dev/null 2>&1 && break
     sleep 1
 done
+# compose config works without the daemon, so without this check every image
+# would look missing and the operator would be sent to re-pull them.
+if ! docker info >/dev/null 2>&1; then
+    echo "FAIL: docker not reachable (daemon not running, or $(id -un 2>/dev/null || echo this user) not in the docker group); nothing started"
+    exit 1
+fi
 
 # shellcheck source=lib-joustmania.sh
 source "$SCRIPT_DIR/lib-joustmania.sh"
@@ -186,31 +192,53 @@ if ! grep -qx operator-pad <<<"$COMPOSE_SERVICES"; then
     docker rm -f joustmania-operator-pad >/dev/null 2>&1 || true
 fi
 
-# Which active service runs which image, and which images are on the Pi. The
-# full config holds interpolated secrets: it goes straight into the parser.
-if ! SERVICE_IMAGES="$(compose config 2>/dev/null | joustmania_service_images)" || [[ -z "$SERVICE_IMAGES" ]]; then
+# Which active service runs which image and needs which others, and which
+# images are on the Pi. The full config holds interpolated secrets: it goes
+# straight into the parser.
+if ! SERVICE_GRAPH="$(compose config 2>/dev/null | joustmania_service_graph)" || [[ -z "$SERVICE_GRAPH" ]]; then
     echo "FAIL: compose config failed or lists no service; nothing started"
     exit 1
 fi
-GAME_PHASE=()
-OBS_PHASE=()
+MISSING_SVCS=()
 MISSING_GAME=""
 MISSING_OTHER=""
-while IFS='|' read -r svc img; do
+while IFS='|' read -r svc img _; do
     [[ -n "$svc" ]] || continue
-    if joustmania_in_list "$svc" "${JOUSTMANIA_OBS_SERVICES[@]}"; then
-        if docker image inspect "$img" >/dev/null 2>&1; then OBS_PHASE+=("$svc"); else MISSING_OTHER+=" $svc($img)"; fi
-    elif docker image inspect "$img" >/dev/null 2>&1; then
-        GAME_PHASE+=("$svc")
-    elif joustmania_in_list "$svc" "${JOUSTMANIA_GAME_SERVICES[@]}"; then
+    docker image inspect "$img" >/dev/null 2>&1 && continue
+    MISSING_SVCS+=("$svc")
+    if joustmania_in_list "$svc" "${JOUSTMANIA_GAME_SERVICES[@]}"; then
         MISSING_GAME+=" $svc($img)"
     else
         MISSING_OTHER+=" $svc($img)"
     fi
-done <<<"$SERVICE_IMAGES"
+done <<<"$SERVICE_GRAPH"
+# `up` starts a named service's dependencies and aborts as a whole on a missing
+# image, so a service whose depends_on chain reaches a missing image is not
+# named either (BR-002): everything else still starts.
+BLOCKED=()
+if ((${#MISSING_SVCS[@]})); then
+    mapfile -t BLOCKED < <(joustmania_blocked "$SERVICE_GRAPH" "${MISSING_SVCS[@]}")
+fi
+BLOCKED_GAME=""
+BLOCKED_OTHER=""
+GAME_PHASE=()
+OBS_PHASE=()
+while IFS='|' read -r svc _ _; do
+    [[ -n "$svc" ]] || continue
+    ((${#MISSING_SVCS[@]})) && joustmania_in_list "$svc" "${MISSING_SVCS[@]}" && continue
+    if ((${#BLOCKED[@]})) && joustmania_in_list "$svc" "${BLOCKED[@]}"; then
+        if joustmania_in_list "$svc" "${JOUSTMANIA_GAME_SERVICES[@]}"; then BLOCKED_GAME+=" $svc"; else BLOCKED_OTHER+=" $svc"; fi
+    elif joustmania_in_list "$svc" "${JOUSTMANIA_OBS_SERVICES[@]}"; then
+        OBS_PHASE+=("$svc")
+    else
+        GAME_PHASE+=("$svc")
+    fi
+done <<<"$SERVICE_GRAPH"
 STATE_MISSING="$MISSING_GAME$MISSING_OTHER"
+STATE_DOWN="$BLOCKED_GAME$BLOCKED_OTHER"
 if [[ -n "$STATE_MISSING" ]]; then
     echo "Images missing on the Pi (boot never pulls, UC-060 BR-001):$STATE_MISSING"
+    [[ -z "$STATE_DOWN" ]] || echo "Not started, they need a service whose image is missing:$STATE_DOWN"
     echo "Recover: $(joustmania_missing_hint "$JOUSTMANIA_DIR")"
 fi
 
@@ -224,8 +252,8 @@ echo "Phase 1/2: starting the game (Bluetooth backend: rust-hid${COMPOSE_PROFILE
 UP_RC=0
 compose up -d --pull never --remove-orphans "${GAME_PHASE[@]}" || UP_RC=$?
 [[ $UP_RC -eq 0 ]] || echo "compose up exited $UP_RC (only a hint; judging the containers)"
-if [[ -n "$MISSING_GAME" ]]; then
-    echo "FAIL: game images missing on the Pi:$MISSING_GAME. Recover: $(joustmania_missing_hint "$JOUSTMANIA_DIR")"
+if [[ -n "$MISSING_GAME$BLOCKED_GAME" ]]; then
+    echo "FAIL: game services cannot start: images missing on the Pi:${MISSING_GAME:- none}${BLOCKED_GAME:+; waiting on those:$BLOCKED_GAME}. Recover: $(joustmania_missing_hint "$JOUSTMANIA_DIR")"
     exit 1
 fi
 
@@ -252,7 +280,7 @@ while :; do
     NOT_READY="$(game_not_ready)"
     [[ -z "$NOT_READY" ]] && break
     if ((SECONDS >= READY_DEADLINE)); then
-        STATE_DOWN="$NOT_READY"
+        STATE_DOWN+="$NOT_READY"
         echo "FAIL: game services not ready after ${JOUSTMANIA_GAME_READY_S:-120} s:$NOT_READY; observability not started"
         exit 1
     fi
@@ -274,7 +302,7 @@ if [[ ${#OBS_PHASE[@]} -gt 0 ]]; then
         echo "WARN: observability did not come up (exit $OBS_RC); the game keeps running (UC-060 A1)"
     fi
 fi
-if [[ -n "$MISSING_OTHER" ]]; then
+if [[ -n "$MISSING_OTHER$BLOCKED_OTHER" ]]; then
     START_RESULT="degraded"
 fi
 echo "JoustMania started: state $START_RESULT"

@@ -6,8 +6,10 @@
 #  - start-limit-hit: FAIL with the recovery command, exit 2
 #  - a game image missing: FAIL naming it, the exact joustmania-upgrade.sh
 #    command, exit 2
-#  - an observability service exited, or the clock not NTP synchronised: WARN,
-#    `state: degraded`, exit 1
+#  - an observability service exited: WARN, `state: degraded`, exit 1
+#  - the clock not NTP synchronised: INFO only (no RTC, accepted), `state: ok`
+#  - docker not reachable: FAIL "not reachable", no image reported missing
+#  - the unit still activating, a game service not running yet: `state: starting`, exit 1
 #  - a branch checkout: WARN not pinned (A4)
 #  - no env value is printed
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-status.sh
@@ -52,6 +54,7 @@ make_case() {
   cat >"${CASE}/bin/docker" <<STUB
 #!/usr/bin/env bash
 C="${CASE}"
+[[ "\$1" == info ]] && { [[ -e "\$C/info-fails" ]] && exit 1; exit 0; }
 case " \$* " in
   *" compose "*" config "*)
     printf 'services:\n'
@@ -128,8 +131,22 @@ grep -qx 'WARN service jaeger: exited' "${CASE}/out.log" || fail "obs-down: jaeg
 # --- clock not synchronised -------------------------------------------------
 make_case clock
 echo no >"${CASE}/ntp"
-expect clock 1 degraded
-grep -q '^WARN clock: not NTP synchronised' "${CASE}/out.log" || fail "clock: no clock warning"
+expect clock 0 ok
+grep -q '^INFO clock: not NTP synchronised' "${CASE}/out.log" || fail "clock: the unsynced clock is not reported as INFO"
+
+# --- docker not reachable: never "images missing" ---------------------------
+make_case no-docker
+touch "${CASE}/info-fails"
+expect no-docker 2 failed
+grep -q '^FAIL docker: not reachable' "${CASE}/out.log" || fail "no-docker: no 'docker: not reachable'"
+grep -qi 'missing' "${CASE}/out.log" && fail "no-docker: reported as missing images: $(grep -i missing "${CASE}/out.log")"
+
+# --- the unit is still starting ---------------------------------------------
+make_case activating
+echo activating >"${CASE}/active"
+echo menu >"${CASE}/exited"
+expect activating 1 starting
+grep -qx 'INFO service menu: exited' "${CASE}/out.log" || fail "activating: a game service not yet up is not INFO"
 
 # --- a branch checkout (A4) -------------------------------------------------
 make_case branch

@@ -14,11 +14,16 @@
 #   - images: images missing on the Pi, with the joustmania-upgrade.sh command
 #     that pulls them (boot never pulls, BR-001)
 #   - service <name>: running / healthy, per active service
-#   - clock: NTP synchronised; WARN when not (no RTC: until NTP sync TLS to
-#     the registry fails, so an upgrade cannot pull; the start does not need it)
+#   - clock: NTP synchronised, or INFO when not (no RTC, accepted: until NTP
+#     sync TLS to the registry fails, so an upgrade cannot pull; the start does
+#     not need it, so it never changes the state)
+#   - docker not reachable (daemon down, user not in the docker group): FAIL,
+#     and the image and service checks are skipped
 # The last line is `state: ok|starting|degraded|failed`.
-# Exit: 0 ok, 1 starting or degraded (any WARN, an observability or agent
-# problem), 2 failed (a game service down or missing, the unit failed).
+# Exit: 0 ok, 1 starting or degraded (any WARN: an observability or agent
+# problem, a branch checkout), 2 failed (a game service down or its image
+# missing, the unit failed, docker not reachable). While the unit is starting,
+# a game service that is not running yet is INFO and the state is `starting`.
 # The ACT LED cue (C-042) is not part of this command yet (#2027 PR 4).
 set -uo pipefail
 
@@ -28,7 +33,14 @@ JOUSTMANIA_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 source "$SCRIPT_DIR/lib-joustmania.sh"
 
 UNIT="joustmania"
-STATE_FILE="${JOUSTMANIA_STATUS_DIR:-/run/joustmania}/start.env"
+# Where joustmania-start.sh writes it: the unit's RuntimeDirectory, else /tmp
+if [[ -n "${JOUSTMANIA_STATUS_DIR:-}" ]]; then
+    STATE_FILE="$JOUSTMANIA_STATUS_DIR/start.env"
+elif [[ -r /run/joustmania/start.env ]]; then
+    STATE_FILE=/run/joustmania/start.env
+else
+    STATE_FILE=/tmp/joustmania/start.env
+fi
 RECOVER_CMD="sudo systemctl reset-failed $UNIT && sudo systemctl start $UNIT"
 WORST=0 # 0 ok, 1 warn, 2 fail
 STARTING=0
@@ -76,15 +88,21 @@ fi
 if [[ -r "$STATE_FILE" ]]; then
     LAST="$(grep -E '^(result|missing|down|ts)=' "$STATE_FILE" | grep -vE '^[a-z]+=$' | tr '\n' ' ')"
     report INFO "last start: ${LAST% }"
+else
+    report INFO "last start: no start.env (not started since boot)"
 fi
 
 # --- images and services ----------------------------------------------------
 # The full config holds interpolated secrets: it goes straight into the parser.
-if ! SERVICE_IMAGES="$(compose config 2>/dev/null | joustmania_service_images)" || [[ -z "$SERVICE_IMAGES" ]]; then
-    report FAIL "docker: compose cannot read the project (docker not running, or this user not in the docker group?)"
+# compose config works without the daemon: check docker first, or every image
+# would look missing.
+if ! docker info >/dev/null 2>&1; then
+    report FAIL "docker: not reachable (daemon not running, or $(id -un 2>/dev/null || echo this user) not in the docker group); images and services not checked"
+elif ! SERVICE_IMAGES="$(compose config 2>/dev/null | joustmania_service_graph)" || [[ -z "$SERVICE_IMAGES" ]]; then
+    report FAIL "docker: compose cannot read the project (compose config failed)"
 else
     MISSING=0
-    while IFS='|' read -r svc img; do
+    while IFS='|' read -r svc img _; do
         [[ -n "$svc" ]] || continue
         docker image inspect "$img" >/dev/null 2>&1 && continue
         MISSING=1
@@ -107,7 +125,8 @@ else
         text="service $svc: ${state:-no container}${health:+ ($health)}"
         if [[ "$state" == running && (-z "$health" || "$health" == healthy) ]]; then
             report OK "$text"
-        elif [[ "$state" == running && "$health" == starting ]]; then
+        elif [[ ("$state" == running && "$health" == starting) || "${ACTIVE:-}" == activating ]]; then
+            # Still coming up (the unit is starting): not a failure yet
             STARTING=1
             report INFO "$text"
         elif joustmania_in_list "$svc" "${JOUSTMANIA_GAME_SERVICES[@]}"; then
@@ -123,7 +142,7 @@ if command -v timedatectl >/dev/null 2>&1; then
     if [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)" == yes ]]; then
         report OK "clock: NTP synchronised"
     else
-        report WARN "clock: not NTP synchronised (no RTC, the time may be hours off): TLS to the registry fails until it syncs, so an upgrade cannot pull yet; the start does not need it"
+        report INFO "clock: not NTP synchronised (no RTC, the time may be hours off): TLS to the registry fails until it syncs, so an upgrade cannot pull yet; the start does not need it"
     fi
 else
     report SKIP "clock: no timedatectl"

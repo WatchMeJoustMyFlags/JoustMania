@@ -49,16 +49,51 @@ joustmania_in_list() {
     return 1
 }
 
-# joustmania_service_images: reads `docker compose config` (canonical YAML) on
-# stdin and prints `service|image` for every active service. The full config
-# holds interpolated secrets: pipe it straight in, never log or store it.
-joustmania_service_images() {
+# joustmania_service_graph: reads `docker compose config` (canonical YAML) on
+# stdin and prints `service|image|dep1,dep2` for every active service (deps =
+# its depends_on keys). The full config holds interpolated secrets: pipe it
+# straight in, never log or store it.
+joustmania_service_graph() {
     awk '
+        function flush() { if (svc != "") print svc "|" img "|" deps; svc = ""; img = ""; deps = "" }
         /^services:$/ { in_services = 1; next }
-        in_services && /^[^ ]/ { in_services = 0 }
-        in_services && /^  [^ ][^ ]*:$/ { svc = $1; sub(/:$/, "", svc); next }
-        in_services && /^    image: / { img = $2; sub(/@.*$/, "", img); print svc "|" img }
+        in_services && /^[^ ]/ { flush(); in_services = 0 }
+        !in_services { next }
+        /^  [^ ][^ ]*:$/ { flush(); svc = $1; sub(/:$/, "", svc); in_deps = 0; next }
+        /^    [^ ]/ { in_deps = ($0 ~ /^    depends_on:$/) }
+        /^    image: / { img = $2; sub(/@.*$/, "", img) }
+        in_deps && /^      [^ ][^ ]*:$/ { d = $1; sub(/:$/, "", d); deps = deps (deps == "" ? "" : ",") d }
+        in_deps && /^      - / { deps = deps (deps == "" ? "" : ",") $2 }
+        END { flush() }
     '
+}
+
+# joustmania_blocked <graph> <unavailable services...>: prints the services
+# (one per line) whose depends_on chain reaches an unavailable one. `up`
+# starts a named service's dependencies and aborts as a whole on a missing
+# image, so these must not be named (UC-060 BR-002).
+joustmania_blocked() {
+    local graph="$1" svc img deps dep changed=1
+    shift
+    local -a bad=("$@") blocked=()
+    while ((changed)); do
+        changed=0
+        while IFS='|' read -r svc img deps; do
+            [[ -n "$svc" && -n "$deps" ]] || continue
+            joustmania_in_list "$svc" "${bad[@]}" && continue
+            for dep in ${deps//,/ }; do
+                if joustmania_in_list "$dep" "${bad[@]}"; then
+                    bad+=("$svc")
+                    blocked+=("$svc")
+                    changed=1
+                    break
+                fi
+            done
+        done <<<"$graph"
+    done
+    : "$img"
+    ((${#blocked[@]})) && printf '%s\n' "${blocked[@]}"
+    return 0
 }
 
 # joustmania_pin_ref <checkout dir>: the ref the upgrade command takes for the
