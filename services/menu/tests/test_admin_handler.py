@@ -1906,13 +1906,13 @@ class TestAgentControlOption:
 class TestEffectiveValueDisplay:
     """Tests for the truthful admin value display resolved through flagd (#818)."""
 
-    def test_effective_variant_reflects_live_value(self, handler, mock_state_manager):
-        """The display shows the LIVE flagd value, not the flag service's default."""
-        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "medium")
-        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
+    def test_effective_variant_reads_flag_service_not_lagging_client(self, handler, mock_state_manager):
+        """The flag service's effective value wins over an in-process client one write behind (#2092)."""
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "ultra_fast")
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 2  # stale
 
         assert handler._effective_variant("sensitivity") == "ultra_fast"
-        mock_state_manager.game_settings_client.get_integer_value.assert_called_once_with("sensitivity", 2)
+        mock_state_manager.game_settings_client.get_integer_value.assert_not_called()
 
     def test_effective_variant_reads_flag_state_once(self, handler, mock_state_manager):
         """One flag-service GET per display, not one per variant lookup."""
@@ -1922,32 +1922,26 @@ class TestEffectiveValueDisplay:
         writer.get_flag_view.assert_called_once_with("sensitivity")
         writer.get_current_variant.assert_not_called()
 
-    def test_effective_variant_falls_back_to_file_without_client(self, handler, mock_state_manager):
-        """No client wired -> degrade to the flag service's default."""
-        mock_state_manager.game_settings_client = None
-        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "fast")
-
-        assert handler._effective_variant("sensitivity") == "fast"
-
-    def test_effective_variant_falls_back_on_no_match(self, handler, mock_state_manager):
-        """Resolved value matching no known variant -> file default."""
-        mock_state_manager.game_settings_client.get_integer_value.return_value = 99
-
-        assert handler._effective_variant("sensitivity") == "medium"
-
-    def test_effective_variant_falls_back_on_exception(self, handler, mock_state_manager):
-        """Any resolution error -> file default (never blank)."""
-        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "slow")
-        mock_state_manager.game_settings_client.get_integer_value.side_effect = RuntimeError("boom")
-
-        assert handler._effective_variant("sensitivity") == "slow"
-
     def test_effective_variant_flag_service_down(self, handler, mock_state_manager):
         """Flag service unreachable (view None) -> None, without raising."""
         mock_state_manager.game_settings_writer.get_flag_view.return_value = None
-        mock_state_manager.game_settings_client.get_string_value.return_value = ""
 
         assert handler._effective_variant("sensitivity") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-006"])
+    async def test_move_right_after_a_step_announces_the_new_value(self, handler, mock_state_manager):
+        """Step 3 right after a step: the lagging in-process client must not announce the old value (#2092)."""
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "fast")
+        mock_state_manager.game_settings_client.get_integer_value.return_value = 2  # one write behind
+        handler.current_option = len(handler.option_names) - 1
+        handler._show_value_feedback = AsyncMock()
+        handler._play_value_voice = AsyncMock()
+
+        await handler.handle_cycle_option("test_serial")
+
+        handler._show_value_feedback.assert_awaited_once_with("test_serial", "sensitivity", 3)
+        handler._play_value_voice.assert_awaited_once_with("sensitivity", 3)
 
 
 class TestCycleFeedbackIsBaselineTransition:
@@ -2612,7 +2606,7 @@ class TestOptionAnnouncementUsesEffectiveValue:
     async def test_selecting_sensitivity_announces_agent_override(self, handler, mock_state_manager):
         """Baseline medium, agent override ultra_fast: colour and voice are ultra_fast's."""
         handler.current_option = len(handler.option_names) - 1  # next Move press wraps to sensitivity
-        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "ultra_fast")
         handler._show_value_feedback = AsyncMock()
         handler._play_value_voice = AsyncMock()
 
@@ -2638,9 +2632,8 @@ class TestOptionAnnouncementUsesEffectiveValue:
     @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-006"])
     async def test_selecting_num_teams_announces_effective_value(self, handler, mock_state_manager):
         mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(
-            {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}, "two"
+            {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}, "four"
         )
-        mock_state_manager.game_settings_client.get_integer_value.return_value = 4
         handler.current_option = handler.option_names.index("sensitivity")
         handler._show_value_feedback = AsyncMock()
         handler._play_value_voice = AsyncMock()
@@ -2653,10 +2646,7 @@ class TestOptionAnnouncementUsesEffectiveValue:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[3], br=["BR-006"])
     async def test_selecting_force_all_start_announces_effective_value(self, handler, mock_state_manager):
-        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(
-            {"on": True, "off": False}, "off"
-        )
-        mock_state_manager.game_settings_client.get_boolean_value.return_value = True
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view({"on": True, "off": False}, "on")
         handler.current_option = handler.option_names.index("num_teams")
         handler._show_value_feedback = AsyncMock()
         handler._play_value_voice = AsyncMock()
