@@ -33,7 +33,9 @@ from services.operator_pad.state import is_known, is_stopped
 logger = logging.getLogger(__name__)
 tracer = get_tracer(__name__)
 
-COMMAND_TIMEOUT_SECONDS = 3.0  # a kill is two flag writes of at most 0.5 s each, plus the menu's own work
+# A stop is the menu's worst case: two flag reads (0.5 s each) and two writes whose timeout is settled by a
+# re-read (0.5 s + 0.5 s each, #2095), 3.0 s of flag-service deadlines, plus the menu's own work.
+COMMAND_TIMEOUT_SECONDS = 4.0
 VOLUME_PAUSE_SECONDS = 0.25  # BR-005: the volume is committed after this pause in turning
 FORCE_END_REASON = "operator_pad"
 

@@ -125,8 +125,9 @@ def agent_level_next(current: str | None, forward: bool = True) -> str:
 
     The ladder never wraps: restrict at ``none`` stays ``none`` (a kill switch that
     escalates to ``full`` when pressed while off is unsafe) and escalate at ``full``
-    stays ``full``. A current value outside the ladder (``probe``, an unreadable flag)
-    collapses to ``none``, the benign fail-safe.
+    stays ``full``. A current value outside the ladder (``probe``, UC-013 A1) collapses to
+    ``none``, the benign fail-safe. ``None`` (an unreadable level) also maps to ``none``, but
+    only the restrict uses it: the callers refuse an escalation from an unreadable level (UC-013 A5).
     """
     levels = AGENT_POLICY_LEVELS
     if current not in levels:

@@ -98,9 +98,9 @@ def _gated_count(stack) -> float:
 async def _restrict_from_controller(stack, mock_client, host: str) -> None:
     """TC-006 steps 1 to 4: admin combo, agent_control, Start twice; flagd serves none.
 
-    Each press waits until the flag service holds the level AND flagd serves it before the
-    next one (#2095): the menu steps from the flag service's view (UC-013 BR-003), and the
-    flagd wait keeps the step-5 window from starting while the agent still sees the old level.
+    The second press follows as soon as the flag service holds ``ambient``, while flagd may still
+    serve ``standard``: the menu must step from the flag service's view (UC-013 BR-003, #2095), so
+    this sequence is the end-to-end repro of that race. flagd is awaited after the last press only.
     """
     await enter_admin_mode(mock_client, host)
     # Move x3 reaches agent_control (index 0 -> 3); the LED colour confirms it (#1845).
@@ -109,18 +109,19 @@ async def _restrict_from_controller(stack, mock_client, host: str) -> None:
         lambda: get_controller_color(mock_client, host),
         Colors.Purple.value,
     )
-    with flagd_probe_client(stack, AGENT) as probe:
-        for level in ("ambient", "none"):
-            await press_admin_button(mock_client, host, _Button.START)
-            assert await async_poll_until(
-                lambda level=level: _persisted_admin_variant() == level, timeout=PERSIST_TIMEOUT_SECONDS
-            ), f"after Start: persisted {FLAG} is {_persisted_admin_variant()!r}, expected {level!r}"
-            expected = variant_value(AGENT, FLAG, level)
-            assert await async_poll_until(
-                lambda expected=expected: probe.get_string_value(FLAG, "unset", EvaluationContext()) == expected,
-                timeout=PERSIST_TIMEOUT_SECONDS,
-            ), f"flagd did not serve {FLAG}={level}"
+    for level in ("ambient", "none"):
+        await press_admin_button(mock_client, host, _Button.START)
+        assert await async_poll_until(
+            lambda level=level: _persisted_admin_variant() == level, timeout=PERSIST_TIMEOUT_SECONDS
+        ), f"after Start: persisted {FLAG} is {_persisted_admin_variant()!r}, expected {level!r}"
     await exit_admin_mode(mock_client, host)
+
+    expected = variant_value(AGENT, FLAG, "none")
+    with flagd_probe_client(stack, AGENT) as probe:
+        assert await async_poll_until(
+            lambda: probe.get_string_value(FLAG, "unset", EvaluationContext()) == expected,
+            timeout=PERSIST_TIMEOUT_SECONDS,
+        ), f"flagd did not serve {FLAG}=none"
 
 
 @pytest.mark.asyncio

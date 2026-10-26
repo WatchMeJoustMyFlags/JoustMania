@@ -25,6 +25,7 @@ callers run it through ``asyncio.to_thread``.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -144,7 +145,9 @@ class FlagServiceWriter:
     def _view(self, flag_key: str) -> dict | None:
         try:
             status, body = self._transport("GET", self._flag_url(flag_key), None)
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError, http.client.HTTPException) as e:
+            # Any failed read is "unreadable" (None), so a caller's fail-closed path always runs
+            # (UC-013 A5): a malformed body (ValueError) or a broken response counts too.
             logger.error(f"Flag service unreachable reading {self.flag_set}/{flag_key}: {e}")
             return None
         if status != 200:

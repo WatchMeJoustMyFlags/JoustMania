@@ -1893,11 +1893,14 @@ class TestAgentControlOption:
         assert AdminModeHandler._next_agent_level("none", forward=False) == "none"
 
     @pytest.mark.uc("UC-013", flow="A1")
+    @pytest.mark.uc("UC-013", flow="A5", steps=[1])
     def test_next_agent_level_unknown_or_missing_goes_to_none(self):
-        """UC-013 A1: an unknown or unreadable current value lands on none in either direction."""
-        for current in (None, "bogus", "probe", "shadow_experimental"):
+        """UC-013 A1: an off-ladder value lands on none in either direction; A5 step 1: an unreadable
+        level (None) restricts to none. The handler refuses Select from None before the ladder (A5 step 2)."""
+        for current in ("bogus", "probe", "shadow_experimental"):
             assert AdminModeHandler._next_agent_level(current, forward=True) == "none"
             assert AdminModeHandler._next_agent_level(current, forward=False) == "none"
+        assert AdminModeHandler._next_agent_level(None, forward=False) == "none"
 
 
 class TestEffectiveValueDisplay:
@@ -2528,6 +2531,29 @@ class TestAgentLadderAgainstTheFlagService:
 
         assert service.puts == ["none"]
         assert service.level == "none"
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_OFF)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A5", steps=[1])
+    @pytest.mark.parametrize("read_error", ["malformed_json", "broken_response"])
+    async def test_restrict_with_a_malformed_read_still_writes_none(self, handler, mock_state_manager, read_error):
+        """A read that fails in any way (a malformed body, a broken HTTP response) is unreadable: Start writes none."""
+        import http.client
+
+        service = _AgentFlagService("full")
+        self._wire(handler, mock_state_manager, service, stale_flagd_level="full")
+        error = ValueError("Expecting value") if read_error == "malformed_json" else http.client.IncompleteRead(b"")
+
+        def transport(method, url, body):
+            if method == "GET":
+                raise error
+            return service(method, url, body)
+
+        mock_state_manager.agent_settings_writer._transport = transport
+
+        await handler.handle_decrease_value("test_serial")
+
+        assert service.puts == ["none"]
         mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_OFF)
 
     @pytest.mark.asyncio
