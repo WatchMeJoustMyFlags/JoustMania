@@ -27,6 +27,8 @@ def status(**kw) -> menu_pb2.GetMenuStatusResponse:
         "audio_volume_master": "normal",
     }
     base.update(kw)
+    # A resolved kill switch unless the test says otherwise (services.md §3.1, #2101).
+    base.setdefault("agent_enabled_state", "on" if base["agent_enabled"] else "off")
     return menu_pb2.GetMenuStatusResponse(**base)
 
 
@@ -346,8 +348,30 @@ async def test_k3_status_changed_during_the_hold_cancels_and_sends_nothing(actio
         (status(agent_enabled=False), None),  # a resume hold whose release read failed
         (status(agent_enabled=False, agent_level=""), status(agent_enabled=False, agent_level="")),  # unresolvable
         (status(agent_level="bogus"), status(agent_level="bogus")),
+        # `enabled` unresolvable (#2101): the menu reports it off, so without the state it read as stopped.
+        (status(agent_enabled=False, agent_enabled_state="unknown"), status(agent_enabled=False)),
+        (status(agent_enabled=False), status(agent_enabled=False, agent_enabled_state="unknown")),
+        # A kill hold whose release read lost `enabled`: a stop, not the cancel of a disagreement.
+        (status(), status(agent_enabled=False, agent_enabled_state="unknown")),
+        # A menu older than #2101 sends no state.
+        (status(agent_enabled=False, agent_enabled_state=""), status(agent_enabled=False, agent_enabled_state="")),
+        # probe and shadow_experimental are off the ladder (BR-013).
+        (status(agent_level="probe"), status(agent_level="probe")),
+        (status(agent_level="shadow_experimental"), status(agent_level="shadow_experimental")),
     ],
-    ids=["both-unread", "press-unread", "release-unread", "flags-unresolvable", "level-off-the-ladder"],
+    ids=[
+        "both-unread",
+        "press-unread",
+        "release-unread",
+        "flags-unresolvable",
+        "level-off-the-ladder",
+        "enabled-unknown-at-press",
+        "enabled-unknown-at-release",
+        "enabled-lost-during-a-kill-hold",
+        "enabled-state-missing",
+        "level-probe",
+        "level-shadow-experimental",
+    ],
 )
 async def test_k3_hold_with_an_unknown_status_sends_the_stop_never_the_resume(
     actions, menu, at_press, at_release, locked

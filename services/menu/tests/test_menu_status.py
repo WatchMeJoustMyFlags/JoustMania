@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock, call, create_autospec, patch
 import pytest
 import pytest_asyncio
 from openfeature.client import OpenFeatureClient
-from openfeature.flag_evaluation import FlagEvaluationDetails
+from openfeature.exception import ErrorCode
+from openfeature.flag_evaluation import FlagEvaluationDetails, Reason
+from openfeature.provider.no_op_provider import PASSED_IN_DEFAULT
 
 from lib.types import Games
 from proto import controller_manager_pb2, controller_manager_pb2_grpc, menu_pb2
@@ -48,7 +50,10 @@ def in_process_client(values: dict[str, tuple[str, object]]):
         if key in values:
             variant, resolved = values[key]
             return FlagEvaluationDetails(flag_key=key, value=resolved, variant=variant)
-        return FlagEvaluationDetails(flag_key=key, value=default, variant=None)
+        # What the in-process provider answers for a key it cannot resolve.
+        return FlagEvaluationDetails(
+            flag_key=key, value=default, variant=None, reason=Reason.ERROR, error_code=ErrorCode.FLAG_NOT_FOUND
+        )
 
     for getter in ("boolean", "string", "integer", "float"):
         getattr(client, f"get_{getter}_value").side_effect = value
@@ -132,6 +137,7 @@ async def test_status_reports_every_field_from_memory_and_the_in_process_clients
         instructions=True,
         force_all_start=True,
         audio_volume_master="quiet",
+        agent_enabled_state="on",
     )
     # Never the HTTP flag writer (0.5 s per flag): in-process clients and menu memory only.
     for writer in (
@@ -153,8 +159,64 @@ async def test_status_empty_values_when_nothing_is_set_or_resolvable(menu):
 
     assert (reply.admin_serial, reply.agent_saved_level) == ("", "")
     assert (reply.agent_level, reply.agent_backend, reply.audio_volume_master) == ("", "", "")
-    # The kill switch fails closed: unreadable reads as off.
+    # The kill switch fails closed: unreadable reads as off, and says it is unknown (#2101).
     assert reply.agent_enabled is False
+    assert reply.agent_enabled_state == "unknown"
+
+
+def details_client(details: FlagEvaluationDetails):
+    """An agent client whose `enabled` evaluation returns ``details`` (every other key resolves)."""
+    client = in_process_client(FLAGS["agent"])
+    resolve = client.get_boolean_details.side_effect
+
+    def boolean_details(key, default, *args, **kwargs):
+        return details if key == "enabled" else resolve(key, default, *args, **kwargs)
+
+    client.get_boolean_details.side_effect = boolean_details
+    return client
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A10", br=["BR-013"])
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        (FlagEvaluationDetails(flag_key="enabled", value=True, variant="on", reason=Reason.STATIC), "on"),
+        (FlagEvaluationDetails(flag_key="enabled", value=False, variant="off", reason=Reason.STATIC), "off"),
+        # flagd's own default variant is a real resolution.
+        (FlagEvaluationDetails(flag_key="enabled", value=False, variant="off", reason=Reason.DEFAULT), "off"),
+        # A provider that is not ready: the SDK answers the caller's default with an error code.
+        (
+            FlagEvaluationDetails(
+                flag_key="enabled",
+                value=False,
+                reason=Reason.ERROR,
+                error_code=ErrorCode.PROVIDER_NOT_READY,
+            ),
+            "unknown",
+        ),
+        # An error code without the ERROR reason is still not a resolution.
+        (
+            FlagEvaluationDetails(flag_key="enabled", value=False, variant="off", error_code=ErrorCode.GENERAL),
+            "unknown",
+        ),
+        # No provider set yet: the no-op provider passes the default back with reason DEFAULT.
+        (
+            FlagEvaluationDetails(flag_key="enabled", value=False, variant=PASSED_IN_DEFAULT, reason=Reason.DEFAULT),
+            "unknown",
+        ),
+        # No variant: the client fell back to the default.
+        (FlagEvaluationDetails(flag_key="enabled", value=False, variant=None), "unknown"),
+    ],
+    ids=["on", "off", "flagd-default-variant", "not-ready", "error-code", "no-op-provider", "no-variant"],
+)
+async def test_status_agent_enabled_state_tells_unknown_from_off(menu, details, expected):
+    menu.agent_settings_client = details_client(details)
+
+    reply = await status(menu)
+
+    assert reply.agent_enabled_state == expected
+    assert reply.agent_enabled is (expected == "on")
 
 
 @pytest.mark.asyncio
@@ -174,7 +236,7 @@ async def test_status_records_the_grpc_request_metrics(requests_total, duration,
 @pytest.mark.uc("UC-015", flow="A5")
 @patch("services.menu.metrics.grpc_requests_total")
 async def test_status_counts_a_failed_read_as_an_error(requests_total, menu):
-    menu.agent_settings_client.get_boolean_value.side_effect = RuntimeError("provider gone")
+    menu.agent_settings_client.get_boolean_details.side_effect = RuntimeError("provider gone")
 
     with pytest.raises(RuntimeError):
         await status(menu)

@@ -8,6 +8,8 @@ import os
 import time
 from dataclasses import dataclass
 
+from openfeature.flag_evaluation import Reason
+from openfeature.provider.no_op_provider import PASSED_IN_DEFAULT
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
@@ -55,6 +57,20 @@ tracer = get_tracer(__name__)
 def _variant(details) -> str:
     """The resolved variant name of an OpenFeature evaluation, empty when the client fell back to the default."""
     return details.variant or ""
+
+
+def _enabled_state(details) -> str:
+    """`on`, `off` or `unknown` for the kill switch's evaluation (services.md §3.1, UC-015 BR-013, #2101).
+
+    Unknown is any evaluation that did not come from a resolved flag: an error code, reason ERROR
+    (provider not ready, flag not found, ...), no variant (the client fell back to the default),
+    or the no-op provider's passed-in default before a provider is set.
+    """
+    if details.error_code is not None or details.reason == Reason.ERROR:
+        return "unknown"
+    if not details.variant or details.variant == PASSED_IN_DEFAULT:
+        return "unknown"
+    return "on" if details.value is True else "off"
 
 
 @dataclass
@@ -510,7 +526,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """Read-only menu snapshot (services.md §3.1): menu memory and in-process flag clients only.
 
         Never the HTTP flag writer (0.5 s per flag). A flag the client cannot resolve reads as its
-        default: empty variant names, and the kill switch as off.
+        default: empty variant names, and the kill switch as off with `agent_enabled_state` unknown.
         """
         start_time = time.time()
         try:
@@ -528,6 +544,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         game = self.game_settings_client
         user = self.user_prefs_client
         agent = self.agent_settings_client
+        enabled_state = _enabled_state(agent.get_boolean_details(AGENT_ENABLED_FLAG, False))
         return menu_pb2.GetMenuStatusResponse(
             menu_state=self.state,
             lifecycle_live=self._lifecycle_live(),
@@ -536,7 +553,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             ready_count=self.ready_controller_count,
             connected_count=len(self.connected_controllers),
             admin_serial=(self.admin_handler.admin_controller or "") if self.admin_handler.is_active else "",
-            agent_enabled=bool(agent.get_boolean_value(AGENT_ENABLED_FLAG, False)),
+            agent_enabled=enabled_state == "on",
+            agent_enabled_state=enabled_state,
             agent_level=_variant(agent.get_string_details(AGENT_POLICY_FLAG, "")),
             agent_saved_level=self.settings_ops.saved_agent_level or "",
             agent_backend=_variant(agent.get_string_details(DECISION_BACKEND_FLAG, "")),

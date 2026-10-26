@@ -135,6 +135,7 @@ var menuStatus = &menupb.GetMenuStatusResponse{
 	Instructions:        true,
 	ForceAllStart:       true,
 	AudioVolumeMaster:   "quiet",
+	AgentEnabledState:   "on",
 }
 
 func (f *fakeMenu) GetMenuStatus(_ context.Context, r *menupb.GetMenuStatusRequest) (*menupb.GetMenuStatusResponse, error) {
