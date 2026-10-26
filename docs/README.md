@@ -63,6 +63,7 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 | [agent-dry-run-runbook.md](agent-dry-run-runbook.md) | Run the experiment loop as a dry run |
 | [agent-trace-viz.md](agent-trace-viz.md) | Show agent traces on stage |
 | [talk/two-standards-runbook.md](talk/two-standards-runbook.md) | Run the "Two Standards Walk Into an Agent" talk (with `scripts/talk-preflight.sh`) |
+| [talk/stage-test-checklist.md](talk/stage-test-checklist.md) | Hardware test checklist for the stage Pi on the real power bank (#1465) |
 
 Service READMEs (`services/*/README.md`) hold code-level detail; where they disagree with the specs, the
 specs win and the [inventory](specs-inventory.md#3-service-tool-and-test-docs) records the difference.
