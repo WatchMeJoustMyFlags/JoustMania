@@ -249,8 +249,15 @@ if [[ ${#GAME_PHASE[@]} -eq 0 ]]; then
     exit 1
 fi
 echo "Phase 1/2: starting the game (Bluetooth backend: rust-hid${COMPOSE_PROFILES:+, profiles: ${COMPOSE_PROFILES}}): ${GAME_PHASE[*]}"
+# One bound for the whole game phase, `up` (which waits for the health-gated
+# depends_on) and the readiness poll together: JOUSTMANIA_GAME_READY_S, default
+# 180 s. With the docker wait (60 s) a failing attempt stays under the 270 s
+# for which the unit's start limit holds (UC-060 A5), and a full start (game
+# 180 s + observability 330 s) stays well inside TimeoutStartSec=900.
+GAME_TIMEOUT="${JOUSTMANIA_GAME_READY_S:-180}"
+READY_DEADLINE=$((SECONDS + GAME_TIMEOUT))
 UP_RC=0
-compose up -d --pull never --remove-orphans "${GAME_PHASE[@]}" || UP_RC=$?
+timeout "$GAME_TIMEOUT" "$COMPOSE_WRAPPER" up -d --pull never --remove-orphans "${GAME_PHASE[@]}" || UP_RC=$?
 [[ $UP_RC -eq 0 ]] || echo "compose up exited $UP_RC (only a hint; judging the containers)"
 if [[ -n "$MISSING_GAME$BLOCKED_GAME" ]]; then
     echo "FAIL: game services cannot start: images missing on the Pi:${MISSING_GAME:- none}${BLOCKED_GAME:+; waiting on those:$BLOCKED_GAME}. Recover: $(joustmania_missing_hint "$JOUSTMANIA_DIR")"
@@ -275,13 +282,12 @@ game_not_ready() { # prints the services that are not ready
     [[ $judged -eq 1 ]] || bad=" (no game service active)"
     printf '%s' "$bad"
 }
-READY_DEADLINE=$((SECONDS + ${JOUSTMANIA_GAME_READY_S:-120}))
 while :; do
     NOT_READY="$(game_not_ready)"
     [[ -z "$NOT_READY" ]] && break
     if ((SECONDS >= READY_DEADLINE)); then
         STATE_DOWN+="$NOT_READY"
-        echo "FAIL: game services not ready after ${JOUSTMANIA_GAME_READY_S:-120} s:$NOT_READY; observability not started"
+        echo "FAIL: game services not ready within ${GAME_TIMEOUT} s:$NOT_READY; observability not started"
         exit 1
     fi
     sleep "${JOUSTMANIA_POLL_S:-2}"

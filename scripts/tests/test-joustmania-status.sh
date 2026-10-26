@@ -17,7 +17,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-unset COMPOSE_PROJECT_NAME COMPOSE_PROFILES IMAGE_TAG RUNTIME_DIRECTORY || true
+unset COMPOSE_PROJECT_NAME COMPOSE_PROFILES IMAGE_TAG RUNTIME_DIRECTORY JOUSTMANIA_STATUS_DIR || true
 # A test that reaches for the real docker fails instead of using it
 export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 fails=0
@@ -153,6 +153,19 @@ make_case branch
 git -C "${CASE}/repo" checkout -q -b stage
 expect branch 1 degraded
 grep -q '^WARN version: not pinned (branch stage' "${CASE}/out.log" || fail "branch: not-pinned not reported"
+
+# --- start.env fallback: no RuntimeDirectory -> /tmp/joustmania -------------
+make_case fallback
+mkdir -p "${CASE}/tmpstate"
+printf 'phase=start\nresult=degraded\nts=x\n' >"${CASE}/tmpstate/start.env"
+env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_RUN_STATE_DIR="${CASE}/no-run" JOUSTMANIA_TMP_STATE_DIR="${CASE}/tmpstate" \
+  bash "${CASE}/repo/scripts/setup/joustmania-status.sh" >"${CASE}/out.log" 2>&1 || true
+grep -qx 'INFO last start: result=degraded ts=x' "${CASE}/out.log" || fail "fallback: /tmp start.env not read: $(grep 'last start' "${CASE}/out.log")"
+mkdir -p "${CASE}/run"
+printf 'phase=start\nresult=ok\nts=y\n' >"${CASE}/run/start.env"
+env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_RUN_STATE_DIR="${CASE}/run" JOUSTMANIA_TMP_STATE_DIR="${CASE}/tmpstate" \
+  bash "${CASE}/repo/scripts/setup/joustmania-status.sh" >"${CASE}/out.log" 2>&1 || true
+grep -qx 'INFO last start: result=ok ts=y' "${CASE}/out.log" || fail "fallback: the RuntimeDirectory start.env does not win: $(grep 'last start' "${CASE}/out.log")"
 
 if [[ "${fails}" -ne 0 ]]; then
   exit 1

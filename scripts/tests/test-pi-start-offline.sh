@@ -36,7 +36,8 @@ fail() {
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
-GAME="flag-service flagd rust-hid controller-manager pairing-daemon game-coordinator menu audio connect-proxy dashboard envoy"
+# In `compose config` order: sorted by name, like real compose (bytewise)
+GAME="audio connect-proxy controller-manager dashboard envoy flag-service flagd game-coordinator menu pairing-daemon rust-hid"
 OBS="agent grafana jaeger loki otel-collector victoria-metrics"
 # depends_on as in docker-compose.yml (service: deps)
 deps_of() {
@@ -53,6 +54,7 @@ deps_of() {
 #   $CASE/missing: images `docker image inspect` does not find (one per line)
 #   $CASE/down: game services `compose ps` shows as exited
 #   $CASE/obs-up-fails: the observability `up --wait` exits 1
+#   $CASE/up-hangs: the game `up` never returns
 make_case() {
   CASE="${WORK}/$1"
   mkdir -p "${CASE}/repo/scripts/setup" "${CASE}/bin"
@@ -66,7 +68,7 @@ make_case() {
   : >"${CASE}/down"
   {
     printf 'name: repo\nservices:\n'
-    for s in ${GAME} ${OBS}; do
+    for s in $(printf '%s\n' ${GAME} ${OBS} | LC_ALL=C sort); do
       printf '  %s:\n' "$s"
       d="$(deps_of "$s")"
       if [[ -n "$d" ]]; then
@@ -86,6 +88,7 @@ C="${CASE}"
 echo "\$*" >>"\$C/docker.log"
 [[ "\$1" == info ]] && { [[ -e "\$C/info-fails" ]] && exit 1; exit 0; }
 if [[ "\$1" == compose && " \$* " == *" up "* ]]; then
+  [[ -e "\$C/up-hangs" && " \$* " != *" --wait "* ]] && exec sleep 60
   todo=(); seen=" "
   for a in "\$@"; do [[ "\$a" == -* || "\$a" =~ ^[0-9]+\$ || "\$a" == compose || "\$a" == up || "\$a" == never || "\$a" == *docker-compose.yml || "\$a" == .env* ]] || todo+=("\$a"); done
   while ((\${#todo[@]})); do
@@ -210,11 +213,21 @@ grep -q 'need a service whose image is missing: grafana' "${CASE}/out.log" || fa
 make_case dep-game
 echo "ghcr.io/o/joustmania/flag-service:0.0.0-test" >"${CASE}/missing"
 if run_start; then fail "dep-game: start succeeded with the flag-service image missing"; fi
-grep -qxF "${GAME_UP} rust-hid pairing-daemon connect-proxy dashboard envoy" "${CASE}/docker.log" \
+grep -qxF "${GAME_UP} connect-proxy dashboard envoy pairing-daemon rust-hid" "${CASE}/docker.log" \
   || fail "dep-game: the services that do not need flag-service did not start: $(grep ' up ' "${CASE}/docker.log")"
-grep -q 'waiting on those: flagd controller-manager game-coordinator menu audio' "${CASE}/out.log" \
+grep -q 'waiting on those: audio controller-manager flagd game-coordinator menu' "${CASE}/out.log" \
   || fail "dep-game: the blocked game services are not named: $(grep FAIL "${CASE}/out.log")"
 [[ "$(state down)" == *"flagd"* ]] || fail "dep-game: start.env does not list the blocked services: $(state down)"
+
+# --- 6b. the game `up` hangs: bounded by the game-phase timeout -------------
+make_case up-hangs
+touch "${CASE}/up-hangs"
+echo controller-manager >"${CASE}/down"
+start_s="${SECONDS}"
+if run_start; then fail "up-hangs: start succeeded although up hung"; fi
+((SECONDS - start_s <= 8)) || fail "up-hangs: took $((SECONDS - start_s)) s (the game up is not bounded)"
+grep -q 'compose up exited 124' "${CASE}/out.log" || fail "up-hangs: the hung up was not cut off by timeout: $(grep -i 'up exited' "${CASE}/out.log")"
+grep -q -- '--wait' "${CASE}/docker.log" && fail "up-hangs: observability was started"
 
 # --- 7. docker not reachable: not reported as missing images -----------------
 make_case no-docker

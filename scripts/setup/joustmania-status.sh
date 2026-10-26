@@ -34,12 +34,15 @@ source "$SCRIPT_DIR/lib-joustmania.sh"
 
 UNIT="joustmania"
 # Where joustmania-start.sh writes it: the unit's RuntimeDirectory, else /tmp
+# (an old unit, or a start by hand). The two *_STATE_DIR overrides are for tests.
+RUN_STATE_DIR="${JOUSTMANIA_RUN_STATE_DIR:-/run/joustmania}"
+TMP_STATE_DIR="${JOUSTMANIA_TMP_STATE_DIR:-/tmp/joustmania}"
 if [[ -n "${JOUSTMANIA_STATUS_DIR:-}" ]]; then
     STATE_FILE="$JOUSTMANIA_STATUS_DIR/start.env"
-elif [[ -r /run/joustmania/start.env ]]; then
-    STATE_FILE=/run/joustmania/start.env
+elif [[ -r "$RUN_STATE_DIR/start.env" ]]; then
+    STATE_FILE="$RUN_STATE_DIR/start.env"
 else
-    STATE_FILE=/tmp/joustmania/start.env
+    STATE_FILE="$TMP_STATE_DIR/start.env"
 fi
 RECOVER_CMD="sudo systemctl reset-failed $UNIT && sudo systemctl start $UNIT"
 WORST=0 # 0 ok, 1 warn, 2 fail
