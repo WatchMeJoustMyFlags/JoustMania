@@ -2,6 +2,7 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/joustmania/agent/gamecontext"
@@ -45,6 +46,33 @@ func TestGateOff_SpansRecordNotApplied(t *testing.T) {
 		})
 	}
 }
+
+// UC: UC-040 A27
+// A write that errors is recorded as not applied with write_failed on both spans.
+func TestWriteFailed_SpansRecordNotApplied(t *testing.T) {
+	l, sr, _ := newTestLoop(t)
+	l.Actions = &failingSink{}
+	l.Rules = fakeRules{out: []Decision{{Intervention: "grant_shield", Reason: "x"}}}
+
+	l.OnEvaluate(context.Background(), gamecontext.GameContext{SessionID: "s"}, testTrigger())
+
+	for _, name := range []string{SpanDecision, SpanAction} {
+		spans := spansByName(sr.Ended(), name)
+		if len(spans) != 1 {
+			t.Fatalf("%s spans = %d, want 1", name, len(spans))
+		}
+		if v, ok := attrValue(spans[0], AttrDecisionApplied); !ok || v.AsBool() {
+			t.Errorf("%s %s = %v (present %v), want false", name, AttrDecisionApplied, v.Emit(), ok)
+		}
+		if r, _ := attrValue(spans[0], AttrDecisionNotAppliedReason); r.AsString() != NotAppliedWriteFailed {
+			t.Errorf("%s reason = %q, want %q", name, r.AsString(), NotAppliedWriteFailed)
+		}
+	}
+}
+
+type failingSink struct{}
+
+func (failingSink) Apply(context.Context, Decision) error { return errors.New("flag service refused") }
 
 // UC: UC-035 5
 // agent.flag_state carries the live write gate, so a re-emit shows it flipping (#2093).

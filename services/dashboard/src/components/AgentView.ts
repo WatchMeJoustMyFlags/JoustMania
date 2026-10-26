@@ -410,6 +410,7 @@ export const WRITE_GATE_OFF_HINT =
 /** decision.not_applied_reason -> text; an unknown reason is shown as is. */
 const NOT_APPLIED_LABEL: Record<string, string> = {
   write_gate_off: "write gate off (interventions_enabled)",
+  write_failed: "write failed",
 };
 
 /** The status of one agent.decision chip: blocked, not applied (with reason) or allowed. */

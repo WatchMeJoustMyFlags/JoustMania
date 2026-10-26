@@ -916,6 +916,12 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	wrote, err := applyAction(dCtx, l.Actions, addressed)
 	flight.end(wrote, err, l.nowOrDefault()())
 	if err != nil {
+		failed := []attribute.KeyValue{
+			attribute.Bool(AttrDecisionApplied, false),
+			attribute.String(AttrDecisionNotAppliedReason, NotAppliedWriteFailed),
+		}
+		dSpan.SetAttributes(failed...)
+		aSpan.SetAttributes(failed...)
 		aSpan.RecordError(err)
 		// semconv.ErrorType derives the low-cardinality error class from the
 		// Go error's dynamic type, per the error.type convention.

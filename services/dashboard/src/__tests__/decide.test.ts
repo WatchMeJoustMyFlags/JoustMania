@@ -628,6 +628,16 @@ describe("UC-040: A11, a write the actuation gate dropped is not 'allowed' (#209
     expect(html).toContain("decide-decision-blocked");
   });
 
+  it("UC-040/A27 decision.not_applied_reason=write_failed reads as not applied: write failed", () => {
+    const row = withDecisionTags([
+      { key: "decision.applied", type: "bool", value: false },
+      { key: "decision.not_applied_reason", type: "string", value: "write_failed" },
+    ]);
+    const html = renderDecideRow(row);
+    expect(html).toContain("not applied: write failed");
+    expect(html).not.toMatch(/agent\.decision:[^<]*· allowed/);
+  });
+
   it("UC-040/main a written decision (applied=true) and a pre-#2093 span still read allowed", () => {
     const written = withDecisionTags([{ key: "decision.applied", type: "bool", value: true }]);
     expect(renderDecideRow(written)).toMatch(/agent\.decision:[^<]*· allowed/);

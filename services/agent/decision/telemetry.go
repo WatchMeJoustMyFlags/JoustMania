@@ -214,6 +214,8 @@ const (
 	// NotAppliedWriteGateOff is the decision.not_applied_reason of a write the
 	// interventions_enabled gate dropped.
 	NotAppliedWriteGateOff = "write_gate_off"
+	// NotAppliedWriteFailed is the reason of a write that returned an error (A27).
+	NotAppliedWriteFailed = "write_failed"
 	// AttrInterventionsEnabled is the live interventions_enabled actuation gate on
 	// agent.flag_state (#2093).
 	AttrInterventionsEnabled = "interventions.enabled"
