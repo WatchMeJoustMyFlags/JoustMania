@@ -23,7 +23,7 @@ Conventions:
 | Version (`--status` current) | |
 | Power source | power bank, model / capacity: |
 | Controllers (count, ZCM1 / ZCM2) | |
-| Operator pad attached | yes / no |
+| Operator pad attached (`operator-pad` profile on: 18 containers, off: 17) | yes / no |
 
 ## 1. Boot
 
@@ -32,7 +32,7 @@ Conventions:
 | ST-1.1 | Cold boot with **no network** (no WiFi, no hotspot, no cable): power on and start a stopwatch | The ACT LED goes solid on; `Finished joustmania.service` appears about 30 s after boot in `journalctl -b -u joustmania`; no pull error stops the start (a failed `git pull` / `compose pull` is logged and skipped) | UC-060 main 1-5, BR-001, BR-002 | |
 | ST-1.2 | Same boot: read the game state | Dashboard (`http://PI/`) opens from the presenter laptop once on the Pi's network; `docker ps` lists the stack with every healthcheck `healthy` (`docker ps --filter health=unhealthy` is empty) | UC-060 main 5, BR-005 | |
 | ST-1.3 | Power swap: pull the power, switch to the power bank, boot again | Same result as ST-1.1. The clock is stale at boot (the RTC battery is dead, [#2089](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2089)): the stack starts anyway, `docker ps` may show "Up 2 hours" after the NTP jump (cosmetic), and traces from the first minutes carry the stale time. Stale clock is **accepted**; a registry TLS error must not stop the start | UC-060 BR-001, BR-002 | |
-| ST-1.4 | **Time to playable**: stopwatch from power on to the first controller in the lobby (press PS on a known controller) and to a started FFA | Write both times down. Target: lobby within about 90 s of power on (the start script ends at about 30 s; add controller connect time). Anything over 2 min is a finding | UC-002, UC-060 | |
+| ST-1.4 | **Time to playable**: stopwatch from power on to the first controller in the lobby (press PS on a known controller) and to a started FFA | Write both times down. Target (proposed limit): lobby within about 90 s of power on (the start script ends at about 30 s; add controller connect time). Anything over 2 min is a finding | UC-002, UC-060 | |
 | ST-1.5 | `./scripts/setup/joustmania-upgrade.sh --status` | Prints `current:` and `previous:` with image tags, no `WARN` (no cut-off rollback, HEAD equals a recorded version) and no `start-limit-hit`; `joustmania-status` lists no service that is down | UC-060 BR-005, A2, A3 | |
 | ST-1.6 | Agent defaults after the reboot: dashboard Agent tab, or `./scripts/flags.sh` read of `enabled` and `interventions_enabled` | Back at the fail-closed defaults (`enabled=off`, `interventions_enabled=off`); the persisted level and backend stay. Run `./scripts/talk-stage.sh reset` and then `./scripts/talk-preflight.sh` before block 6 | UC-045, UC-070 | |
 
@@ -44,7 +44,7 @@ Conventions:
 | ST-2.2 | USB-pair **three controllers in a row** (plug the next one as soon as the last is unplugged) | All three pair and connect; note how many Bluetooth restarts happen and which already-connected controllers drop each time (#2091: lobby controllers drop on every restart and must reconnect with PS). Pair them **before** the lobby is full, not in front of the audience | UC-001 BR-002, BR-005, UC-002 | |
 | ST-2.3 | Reconnect after a Bluetooth restart: with 3 or more controllers in the lobby run `sudo systemctl restart bluetooth` | Controllers drop (LED off), then each reconnects after a PS press and returns to the lobby (CONNECTED, dim LED) without a stack restart; nobody is stuck as a ghost on the dashboard | UC-002 A-flows, UC-001 BR-005 | |
 | ST-2.4 | Identify: dashboard, controller card or battery roster row, **Identify** | The right controller flashes white at 2 Hz with a short rumble, then restores its lobby colour. Starting a game during the flash shows a clean countdown | UC-004 main, BR-001, BR-006 | |
-| ST-2.5 | Battery roster (dashboard, [#2111](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2111)) | One row per connected controller with its battery percentage that matches the controller's own battery display (admin mode, Triangle: [UC-012](../use_cases/UC-012.md) A2); the lowest controller is flagged. Record the lowest percentage. Swap or charge any controller under 40 % before the talk (the #2088 data had 40 % and 60 %) | UC-035 A5, BR-007, UC-012 A2 | |
+| ST-2.5 | Battery roster (dashboard, [#2111](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2111)) | One row per connected controller with its battery percentage that falls in the same colour band as the Triangle display (admin mode, Triangle: [UC-012](../use_cases/UC-012.md) A2); the lowest controller is flagged. Record the lowest percentage. Swap or charge any controller under 40 % before the talk (the #2088 data had 40 % and 60 %) | UC-035 A5, BR-007, UC-012 A2 | |
 | ST-2.6 | Unpair one controller from the dashboard | It leaves the roster and is removed on every adapter; it pairs again over USB (ST-2.1). In a running game the player would be eliminated (do not test in front of players) | UC-005 | |
 | ST-2.7 | Connection quality: look at the quality badge on each controller near and at the far end of the stage | `good` near the Pi; note any `poor` at the stage distance, and the adapter in use per controller | UC-035 BR-005 | |
 
@@ -52,7 +52,7 @@ Conventions:
 
 | Id | Action | Expected result | Verifies | Result |
 |---|---|---|---|---|
-| ST-3.1 | Ready up: press Trigger on 3 or more controllers | Each goes bright (CONNECTED dim to READY bright) and the dashboard shows the same; un-ready (release the ready state) returns it to dim | UC-010 main, UC-002 | |
+| ST-3.1 | Ready up all but one of the connected controllers (3 or more connected): press Trigger | Each goes bright (CONNECTED dim to READY bright) and the dashboard shows the same; the one controller left alone stays dim | UC-010 main, UC-002 | |
 | ST-3.2 | Mode select with a controller (admin mode, Cross) | Mode colour pulse and the mode's voice line; the dashboard shows the new mode. Cycle through all modes once | UC-011, UC-012 BR-005 | |
 | ST-3.3 | Sensitivity: admin mode, Circle (cycle) or Move to the sensitivity option then Select / Start | Colour per level (blue, turquoise, green, orange, red) and one voice line. **(known, [#2092](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2092))**: the level is announced **twice**; note whether it still is | UC-012 main, A1, BR-005, BR-006 | |
 | ST-3.4 | Teams: admin mode, Move to `num_teams`, Select / Start | Gradient colour from green (2) to red (6) and the team count by voice; the value stays within 2 to 6 | UC-012 BR-005, UC-021 | |
@@ -84,7 +84,7 @@ knob-step fix ([#2109](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/
 | ST-4.13 | **Unplug and replug** the pad (also unplug while a layer key is held) | The pad container detaches without an error and re-attaches on the next rescan; keys work again without a restart; a half-held gesture is dropped | UC-015 A4, BR-014 | |
 | ST-4.14 | **K4 stale**: open the dashboard on a second tab, force-start from the dashboard, then within a second hold K4 on the pad (or hold K4 over the moment the state changes) | The pad refuses a command whose state changed meanwhile (`stale`) with the refusal cue; nothing is ended or started by mistake | UC-015 A5, BR-012 | |
 | ST-4.15 | **K3 with an unknown agent state** ([#2101](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2101)): hold K3 right after boot or while the flag service is restarting (`docker restart flag-service`) | An unknown status takes the fail-closed direction: the hold **stops** the agent (idempotent), it never resumes it. **(known, #2101)**: the menu may report an agent flag it cannot resolve as an empty variant; note what K3 did | UC-015 A10, BR-013, BR-010 | |
-| ST-4.16 | Flag service down: stop the flag service, press K1 / K2 / knob | Refused with the failure cue, never queued; after the flag service is back, nothing replays | UC-015 A3, BR-010 | |
+| ST-4.16 | Flag service down: stop the flag service, then hold K2 / K5 / K7 and turn the knob, and hold K3 for 1 s | The flag-writing gestures are refused with the failure cue (K1 tap and volume still work), never queued; after the flag service is back, nothing replays | UC-015 A3, BR-010 | |
 | ST-4.17 | Cancelled gestures: do ten taps and ten holds at your normal speed | Few `cancelled` gestures; the #2088 data had 26 cancelled: note how many of the 20 cancel, and which key (tap / hold bands too tight?) | UC-015 BR-007 | |
 
 ## 5. Game
@@ -124,7 +124,7 @@ A new version needs the images built by CI on main first.
 
 | Id | Action | Expected result | Verifies | Result |
 |---|---|---|---|---|
-| ST-7.1 | `joustmania-upgrade.sh <joustmania-vX.Y.Z or sha>` (not the running one) | Pulls into a temporary worktree while the old version runs, switches, restarts and health-checks; about 1.5 to 2 min; record written; `--status` shows the new `current:` and the old `previous:`; 17 containers, none unhealthy | UC-060 A2, BR-003 | |
+| ST-7.1 | `joustmania-upgrade.sh <joustmania-vX.Y.Z or sha>` (not the running one) | Pulls into a temporary worktree while the old version runs, switches, restarts and health-checks; about 1.5 to 2 min; record written; `--status` shows the new `current:` and the old `previous:`; 17 containers (18 with the `operator-pad` profile on), none unhealthy | UC-060 A2, BR-003 | |
 | ST-7.2 | `joustmania-upgrade.sh --rollback` | Back on the previous version in about 1 min with **local images only** (works with the network off); `--status` swaps `current` and `previous` | UC-060 A3 | |
 | ST-7.3 | **Upgrade within 15 min of the last restart** ([#2102](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2102), fixed in #2103): upgrade, then upgrade again at once, then `--rollback` at once | All three succeed; no `refused by systemd (start-limit-hit)`; unit `Result=success`. Needs the fixed script on **both** sides (the first run on the fixed version may still use the old script) | UC-060 BR-006, A5 | |
 | ST-7.4 | `--status` after each step | No `WARN`; `joustmania-status` reports `ok` and the ACT LED is solid | UC-060 BR-005 | |
@@ -142,11 +142,11 @@ first readings at the start and the rest every 10 minutes.
 | Id | Action | Expected result | Verifies | Result |
 |---|---|---|---|---|
 | ST-8.1 | `vcgencmd get_throttled` at the start and every 10 min | `throttled=0x0` all session. Bit 0 (`0x1`) is undervoltage now, bit 1 (`0x2`) frequency capped, bit 2 (`0x4`) throttled, bit 3 (`0x8`) soft temperature limit; bits 16 to 19 (`0x10000`...) mean it happened since boot. Any non-zero value: note the bits, the power bank and the cable | NFR-020, C-011 | |
-| ST-8.2 | `vcgencmd measure_temp` and `vcgencmd measure_clock arm` every 10 min | Under about 75 C at the end and the ARM clock stays at its maximum (2.4 GHz on a Pi 5); note the case and fan | NFR-020 | |
+| ST-8.2 | `vcgencmd measure_temp` and `vcgencmd measure_clock arm` every 10 min | Target (untested; no 75 C figure in #2088): under about 75 C at the end and the ARM clock stays at its maximum (2.4 GHz on a Pi 5); note the case and fan | NFR-020 | |
 | ST-8.3 | **Input lag p99** (query below) | p50 about 11 ms, p95 under about 112 ms, **p99 well under the #2088 baseline of 467 ms**; note the value per 10 min and whether the tail follows a power or Bluetooth event | NFR-004, NFR-002, UC-030 | |
 | ST-8.4 | **Dropped frames and frame consistency** (queries below) | The dropped-frame count stays small (the #2088 data: 4533 dropped frames across 44 games, 149 stream frame overruns, frame consistency average 96.7 %); record the per-game consistency and the increase over the session | NFR-002, UC-030 | |
 | ST-8.5 | Controllers over the session | `controller_disconnect_total` does not grow with the controllers in place; batteries in the roster drop by a plausible amount | UC-035 | |
-| ST-8.6 | Memory and containers at the end | Same 17 containers, none unhealthy or restarted (`docker ps`, `docker inspect -f '{{.RestartCount}}'` on the services); `free -m` shows no growth trend | NFR-020 | |
+| ST-8.6 | Memory and containers at the end | Same 17 containers (18 with the `operator-pad` profile on), none unhealthy or restarted (`docker ps`, `docker inspect -f '{{.RestartCount}}'` on the services); `free -m` shows no growth trend | NFR-020 | |
 | ST-8.7 | Power bank: note the remaining charge at the start and the end | The session cost, so the venue run time can be planned; the bank holds the Pi plus the pad and the Bluetooth adapters without a throttled flag | C-011 | |
 
 ### Where to read the numbers
@@ -154,7 +154,7 @@ first readings at the start and the rest every 10 minutes.
 **Dashboard.** `http://PI/` shows the controller roster with battery and connection quality, and the Agent tab with
 decisions and writes. **Grafana** is at `http://PI/grafana/` (dashboards from `services/grafana/dashboards/`): use the
 game loop and controller panels for lag and frame health. **Jaeger** (`http://PI/jaeger/`) has the `agent.decide` and game
-spans. **VictoriaMetrics** (Prometheus query API) is at `http://PI/victoria-metrics/`: the query UI at
+spans (Jaeger service `game-coordinator-service` for the game spans). **VictoriaMetrics** (Prometheus query API) is at `http://PI/victoria-metrics/`: the query UI at
 `http://PI/victoria-metrics/vmui/` or the API from the Pi:
 
 ```bash
@@ -164,7 +164,8 @@ q 'histogram_quantile(0.99, sum by (le) (rate(controller_input_lag_seconds_bucke
 q 'histogram_quantile(0.50, sum by (le) (rate(controller_input_lag_seconds_bucket[10m])))'
 # dropped frames over the session (30 m) and since the metrics began
 q 'sum(increase(game_loop_frames_dropped_total[30m]))'
-q 'sum(game_loop_frames_dropped_total)'
+# last 3 days (the #2088 window)
+q 'sum(last_over_time(game_loop_frames_dropped_total[3d]))'
 # stream frame overruns
 q 'sum(increase(controller_stream_frame_overruns_total[30m]))'
 # frame consistency and jitter of live games
@@ -176,6 +177,8 @@ q 'histogram_quantile(0.99, sum by (le) (rate(controller_poll_loop_lateness_seco
 q 'sum(increase(controller_disconnect_total[30m]))'
 q 'controller_battery_pct'
 ```
+
+The VictoriaMetrics label and series APIs only look back a short window by default: pass `start=` (for example `start=-3d`).
 
 Metric definitions: [telemetry spec](../specs/telemetry.md) (controller-manager and game-coordinator rows). Host side:
 `vcgencmd get_throttled`, `vcgencmd measure_temp` and `journalctl -b -k | grep -i -E 'under-voltage|throttl'` (the
