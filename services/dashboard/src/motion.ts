@@ -29,9 +29,21 @@ export function normalizeGameplay(data: Partial<GameplayData> & { serial: string
   };
 }
 
-/** Battery bar: level 0-5 as a percentage and its colour class. */
+/**
+ * Battery as 0-100, like `battery_to_pct` in the controller manager: the Rust HID
+ * path reports a percentage in steps of 20, the psmoveapi path a 0-5 level
+ * (UC-035 BR-007, #2111). 5 or less is a level times 20, anything above is
+ * already a percentage; clamped to 0-100.
+ */
+export function batteryPercent(level: number | undefined): number {
+  const raw = level ?? 0;
+  const percent = raw <= 5 ? raw * 20 : raw;
+  return Math.min(100, Math.max(0, percent));
+}
+
+/** Battery bar: the level as a percentage and its colour class. */
 export function batteryView(level: number | undefined): { percent: number; className: "high" | "medium" | "low" } {
-  const percent = Math.min(100, Math.max(0, ((level ?? 0) / 5) * 100));
+  const percent = batteryPercent(level);
   return { percent, className: percent > 50 ? "high" : percent > 20 ? "medium" : "low" };
 }
 
