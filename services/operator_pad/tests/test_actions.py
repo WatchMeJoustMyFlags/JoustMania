@@ -27,6 +27,8 @@ def status(**kw) -> menu_pb2.GetMenuStatusResponse:
         "audio_volume_master": "normal",
     }
     base.update(kw)
+    # A resolved kill switch unless the test says otherwise (services.md §3.1, #2101).
+    base.setdefault("agent_enabled_state", "on" if base["agent_enabled"] else "off")
     return menu_pb2.GetMenuStatusResponse(**base)
 
 
@@ -346,8 +348,30 @@ async def test_k3_status_changed_during_the_hold_cancels_and_sends_nothing(actio
         (status(agent_enabled=False), None),  # a resume hold whose release read failed
         (status(agent_enabled=False, agent_level=""), status(agent_enabled=False, agent_level="")),  # unresolvable
         (status(agent_level="bogus"), status(agent_level="bogus")),
+        # `enabled` unresolvable (#2101): the menu reports it off, so without the state it read as stopped.
+        (status(agent_enabled=False, agent_enabled_state="unknown"), status(agent_enabled=False)),
+        (status(agent_enabled=False), status(agent_enabled=False, agent_enabled_state="unknown")),
+        # A kill hold whose release read lost `enabled`: a stop, not the cancel of a disagreement.
+        (status(), status(agent_enabled=False, agent_enabled_state="unknown")),
+        # A menu older than #2101 sends no state.
+        (status(agent_enabled=False, agent_enabled_state=""), status(agent_enabled=False, agent_enabled_state="")),
+        # probe and shadow_experimental are off the ladder (BR-013).
+        (status(agent_level="probe"), status(agent_level="probe")),
+        (status(agent_level="shadow_experimental"), status(agent_level="shadow_experimental")),
     ],
-    ids=["both-unread", "press-unread", "release-unread", "flags-unresolvable", "level-off-the-ladder"],
+    ids=[
+        "both-unread",
+        "press-unread",
+        "release-unread",
+        "flags-unresolvable",
+        "level-off-the-ladder",
+        "enabled-unknown-at-press",
+        "enabled-unknown-at-release",
+        "enabled-lost-during-a-kill-hold",
+        "enabled-state-missing",
+        "level-probe",
+        "level-shadow-experimental",
+    ],
 )
 async def test_k3_hold_with_an_unknown_status_sends_the_stop_never_the_resume(
     actions, menu, at_press, at_release, locked
@@ -407,3 +431,19 @@ async def test_taps_announce_from_the_status_and_send_nothing(actions, menu, cue
         assert await actions.dispatch(Gesture(TAP, key), status()) == ("announce", "ok")
     assert cues.voice.await_count == 4
     menu.ProcessInput.assert_not_awaited()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-013"])
+@pytest.mark.parametrize("state", ["unknown", ""], ids=["unknown", "missing"])
+async def test_k3_tap_with_an_unresolved_kill_switch_refuses_never_announces_stopped(actions, menu, cues, state):
+    result = await actions.dispatch(Gesture(TAP, "K3"), status(agent_enabled=False, agent_enabled_state=state))
+    assert result == ("announce", "ok")
+    cues.refusal.assert_awaited_once()
+    cues.voice.assert_not_awaited()
+    menu.ProcessInput.assert_not_awaited()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-013"])
+async def test_k3_tap_with_a_resolved_off_and_an_empty_level_announces_stopped(actions, cues):
+    await actions.dispatch(Gesture(TAP, "K3"), status(agent_enabled=False, agent_level=""))
+    cues.voice.assert_awaited_once_with(actions_module.cues.AGENT_STOPPED_VOICE)

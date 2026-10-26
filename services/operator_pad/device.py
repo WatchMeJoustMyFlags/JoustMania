@@ -107,11 +107,11 @@ def find_pad_nodes(vendor: str, product: str, list_devices: Callable[[], list[st
     return sorted(matches)
 
 
-def open_node(backend: Backend, path: str) -> InputDevice | None:
+def open_node(backend: Backend, path: str, warn: Callable[[str], None] = logger.warning) -> InputDevice | None:
     try:
         return backend.open(path)
     except OSError as e:
-        logger.warning(f"Opening pad node {path} failed: {e}")
+        warn(f"Opening pad node {path} failed: {e}")
         metrics.grab_failures_total.labels(reason="error").inc()
         return None
 
@@ -146,6 +146,7 @@ async def grab_device(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     retries: int = GRAB_RETRIES,
     delay: float = GRAB_RETRY_SECONDS,
+    warn: Callable[[str], None] = logger.warning,
 ) -> InputDevice | None:
     """Grab an open node; retry EBUSY up to ``retries`` times. None (node closed) when it cannot be grabbed."""
     for attempt in range(retries + 1):
@@ -158,7 +159,7 @@ async def grab_device(
                 await sleep(delay)
                 continue
             reason = "ebusy" if e.errno == errno.EBUSY else "error"
-            logger.warning(f"Grabbing pad node {path} failed ({reason}): {e}")
+            warn(f"Grabbing pad node {path} failed ({reason}): {e}")
             metrics.grab_failures_total.labels(reason=reason).inc()
             with contextlib.suppress(Exception):
                 device.close()
@@ -188,6 +189,8 @@ class DeviceManager:
         self._rescan_seconds = rescan_seconds
         self._clock_ms = clock_ms
         self._denied_warned = False
+        # Attach failures already warned about: a rescan every 2 s logs each one once (#2101), until an attach works.
+        self._warned: set[str] = set()
         self._devices: list[InputDevice] = []
 
     def set_lock_led(self, on: bool) -> None:
@@ -197,6 +200,13 @@ class DeviceManager:
                 device.set_led(LED_SCROLLL, 1 if on else 0)
             except Exception as e:
                 logger.debug(f"Scroll Lock LED on {device.path}: {e}")
+
+    def _warn_once(self, message: str) -> None:
+        if message in self._warned:
+            logger.debug(message)
+            return
+        self._warned.add(message)
+        logger.warning(message)
 
     def _ensure_backend(self) -> Backend | None:
         if self._backend is None:
@@ -232,7 +242,7 @@ class DeviceManager:
             devices: list[InputDevice] = []
             failed: list[str] = []
             for path in paths:
-                device = open_node(backend, path)
+                device = open_node(backend, path, self._warn_once)
                 if device is None:
                     failed.append(path)
                     continue
@@ -241,7 +251,7 @@ class DeviceManager:
                     with contextlib.suppress(Exception):
                         device.close()
                     continue
-                if await grab_device(device, path, self._sleep) is None:
+                if await grab_device(device, path, self._sleep, warn=self._warn_once) is None:
                     failed.append(path)
                 else:
                     devices.append(device)
@@ -250,10 +260,11 @@ class DeviceManager:
                 # BR-014: a pad node left ungrabbed would type into the console; release all, retry at the rescan.
                 self._release(devices)
                 reason = f"pad nodes not grabbed: {failed}" if failed else "no pad node reports a keymap key"
-                logger.warning(f"Pad attach failed ({reason}); retrying at the next rescan")
+                self._warn_once(f"Pad attach failed ({reason}); retrying at the next rescan")
                 span.set_status(trace.Status(trace.StatusCode.ERROR, reason))
                 return False
         self._devices = devices
+        self._warned.clear()
         self._controller.attached(keymap)
         metrics.device_attached.set(1)
         logger.info(f"Pad attached: {[d.path for d in devices]}")

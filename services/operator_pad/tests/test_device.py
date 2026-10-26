@@ -2,6 +2,7 @@
 
 import asyncio
 import errno
+import logging
 from pathlib import Path
 from unittest.mock import create_autospec, patch
 
@@ -306,3 +307,47 @@ async def test_a_node_that_fails_right_after_the_attach_waits_the_rescan_interva
     stop.set()
     await asyncio.wait_for(task, timeout=2)
     assert 1 <= len(backend.opened) <= 4  # without the wait: hundreds of attach / detach cycles
+
+
+class DeniedBackend(FakeBackend):
+    """Every open fails with EACCES (the container cannot read the node)."""
+
+    def open(self, path: str) -> FakeDevice:
+        self.opened.append(path)
+        raise OSError(errno.EACCES, "Permission denied")
+
+
+def _warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.uc("UC-015", flow="A4")
+async def test_an_unopenable_node_warns_once_not_on_every_rescan(tmp_path, caplog):
+    make_sysfs(tmp_path, {"event3": PAD})
+    backend = DeniedBackend({"/dev/input/event3": FakeDevice("/dev/input/event3")})
+    manager, _, _ = _manager(tmp_path, backend)
+    caplog.set_level(logging.DEBUG, logger=device_module.logger.name)
+    for _ in range(3):
+        assert not await manager.attach()
+    assert backend.opened == ["/dev/input/event3"] * 3  # still retried at every rescan
+    warnings = _warnings(caplog)
+    assert len(warnings) == 2, warnings  # the open and the attach failure, once each
+    assert any("Permission denied" in w for w in warnings)
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-014"])
+async def test_no_keymap_node_warns_once_and_again_after_a_successful_attach(tmp_path, caplog):
+    make_sysfs(tmp_path, {"event4": PAD})
+    mouse = FakeDevice("/dev/input/event4", keys=[272])
+    manager, _, _ = _manager(tmp_path, FakeBackend({mouse.path: mouse}))
+    caplog.set_level(logging.DEBUG, logger=device_module.logger.name)
+    for _ in range(3):
+        assert not await manager.attach()
+    assert _warnings(caplog) == ["Pad attach failed (no pad node reports a keymap key); retrying at the next rescan"]
+    mouse.keys = PAD_KEYS  # a pad attaches, then the same failure comes back: it warns again
+    assert await manager.attach()
+    manager.detach()
+    mouse.keys = [272]
+    caplog.clear()
+    assert not await manager.attach()
+    assert len([w for w in _warnings(caplog) if "keymap key" in w]) == 1
