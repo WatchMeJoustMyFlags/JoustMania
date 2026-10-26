@@ -1893,11 +1893,14 @@ class TestAgentControlOption:
         assert AdminModeHandler._next_agent_level("none", forward=False) == "none"
 
     @pytest.mark.uc("UC-013", flow="A1")
+    @pytest.mark.uc("UC-013", flow="A5", steps=[1])
     def test_next_agent_level_unknown_or_missing_goes_to_none(self):
-        """UC-013 A1: an unknown or unreadable current value lands on none in either direction."""
-        for current in (None, "bogus", "probe", "shadow_experimental"):
+        """UC-013 A1: an off-ladder value lands on none in either direction; A5 step 1: an unreadable
+        level (None) restricts to none. The handler refuses Select from None before the ladder (A5 step 2)."""
+        for current in ("bogus", "probe", "shadow_experimental"):
             assert AdminModeHandler._next_agent_level(current, forward=True) == "none"
             assert AdminModeHandler._next_agent_level(current, forward=False) == "none"
+        assert AdminModeHandler._next_agent_level(None, forward=False) == "none"
 
 
 class TestEffectiveValueDisplay:
@@ -2410,6 +2413,195 @@ class TestAgentWriteErrorCue:
         for other in (mock_state_manager.game_settings_writer, mock_state_manager.user_prefs_writer):
             other.update_default_variant.assert_not_called()
             other.cycle_variant.assert_not_called()
+
+
+class _AgentFlagService:
+    """A fake flag service for agent/interventions_allowed (#2095), driven through the real FlagServiceWriter.
+
+    ``slow_put``: a PUT applies (``applies``) but answers after the client deadline (TimeoutError).
+    ``get_down``: every GET fails, a PUT still lands. ``reread_down``: the GET after a timed-out PUT fails.
+    """
+
+    def __init__(self, level: str):
+        self.level = level
+        self.puts: list[str] = []
+        self.slow_put = False
+        self.applies = True
+        self.get_down = False
+        self.reread_down = False
+        self._timed_out = False
+
+    def __call__(self, method, url, body):
+        if method == "PUT":
+            self.puts.append(body["variant"])
+            if self.slow_put:
+                if self.applies:
+                    self.level = body["variant"]
+                self._timed_out = True
+                raise TimeoutError("timed out")
+            self.level = body["variant"]
+            return 200, {"variant": body["variant"], "persisted": True}
+        if self.get_down or (self._timed_out and self.reread_down):
+            raise TimeoutError("timed out")
+        return 200, {
+            "variants": list(AGENT_LEVEL_VALUES),
+            "variant_values": dict(AGENT_LEVEL_VALUES),
+            "effective_default": self.level,
+        }
+
+
+class TestAgentLadderAgainstTheFlagService:
+    """UC-013 A3, A5, BR-003 (#2095): the ladder steps from the flag service's own view, and reports truthfully.
+
+    The real FlagServiceWriter runs over a fake flag service; flagd (the in-process client) keeps serving a
+    stale level, as it does while a write propagates (NFR-050).
+    """
+
+    @staticmethod
+    def _wire(handler, manager, service: _AgentFlagService, stale_flagd_level: str):
+        from lib.flag_service_writer import FlagServiceWriter
+
+        handler.current_option = handler.option_names.index("agent_control")
+        manager.agent_settings_writer = FlagServiceWriter("agent", "http://flag-service:8070", transport=service)
+        manager.agent_settings_client.get_string_value.return_value = AGENT_LEVEL_VALUES[stale_flagd_level]
+
+    @staticmethod
+    def _error_cue_shown(manager) -> bool:
+        return any(c.kwargs.get("duration_ms") == 400 for c in manager.led.send_game_effect.call_args_list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A3", br=["BR-003"])
+    @pytest.mark.uc("UC-013", flow="main", steps=[3])
+    async def test_second_press_steps_from_a_timed_out_write_that_applied(self, handler, mock_state_manager):
+        """Start, Start from standard: the first PUT times out but lands, flagd still serves standard; the
+        second press steps ambient -> none, not standard -> ambient again."""
+        service = _AgentFlagService("standard")
+        self._wire(handler, mock_state_manager, service, stale_flagd_level="standard")
+
+        service.slow_put = True
+        await handler.handle_decrease_value("test_serial")
+        service.slow_put = False
+        await handler.handle_decrease_value("test_serial")
+
+        assert service.puts == ["ambient", "none"]
+        assert service.level == "none"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A3")
+    @pytest.mark.uc("UC-013", flow="main", steps=[4])
+    async def test_timed_out_write_that_applied_gives_level_feedback_not_the_error_cue(
+        self, handler, mock_state_manager
+    ):
+        """Truthful report: the re-read shows the level landed, so the host sees and hears the new level."""
+        service = _AgentFlagService("standard")
+        service.slow_put = True
+        self._wire(handler, mock_state_manager, service, stale_flagd_level="standard")
+
+        await handler.handle_decrease_value("test_serial")
+
+        assert not self._error_cue_shown(mock_state_manager)
+        assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == Colors.Turquoise.value
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A3")
+    @pytest.mark.parametrize("outcome", ["not_applied", "reread_failed"])
+    async def test_timed_out_write_not_confirmed_gives_the_error_cue(self, handler, mock_state_manager, outcome):
+        """Truthful report: a timed-out write the re-read does not confirm gets the error cue, no level voice."""
+        service = _AgentFlagService("standard")
+        service.slow_put = True
+        service.applies = outcome != "not_applied"
+        service.reread_down = outcome == "reread_failed"
+        self._wire(handler, mock_state_manager, service, stale_flagd_level="standard")
+
+        await handler.handle_decrease_value("test_serial")
+
+        assert self._error_cue_shown(mock_state_manager)
+        mock_state_manager.audio.play_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A5", steps=[1])
+    async def test_restrict_with_the_level_unreadable_still_writes_none(self, handler, mock_state_manager):
+        """Kill direction fails closed: Start with the flag service unreadable still writes none."""
+        service = _AgentFlagService("full")
+        service.get_down = True
+        self._wire(handler, mock_state_manager, service, stale_flagd_level="full")
+
+        await handler.handle_decrease_value("test_serial")
+
+        assert service.puts == ["none"]
+        assert service.level == "none"
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_OFF)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A3")
+    @pytest.mark.parametrize("applies", [True, False])
+    @pytest.mark.parametrize("put_error", ["malformed_json", "broken_response"])
+    async def test_malformed_put_answer_is_settled_by_a_reread(self, handler, mock_state_manager, put_error, applies):
+        """A PUT whose answer is malformed or broken has an unknown outcome: the re-read decides,
+        so the host gets the level feedback or the error cue, never silence."""
+        import http.client
+
+        service = _AgentFlagService("standard")
+        self._wire(handler, mock_state_manager, service, stale_flagd_level="standard")
+        error = ValueError("Expecting value") if put_error == "malformed_json" else http.client.IncompleteRead(b"")
+
+        def transport(method, url, body):
+            if method == "PUT":
+                service.puts.append(body["variant"])
+                if applies:
+                    service.level = body["variant"]
+                raise error
+            return service(method, url, body)
+
+        mock_state_manager.agent_settings_writer._transport = transport
+
+        await handler.handle_decrease_value("test_serial")
+
+        assert service.puts == ["ambient"]
+        if applies:
+            assert not self._error_cue_shown(mock_state_manager)
+            mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_1)
+        else:
+            assert self._error_cue_shown(mock_state_manager)
+            mock_state_manager.audio.play_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A5", steps=[1])
+    @pytest.mark.parametrize("read_error", ["malformed_json", "broken_response"])
+    async def test_restrict_with_a_malformed_read_still_writes_none(self, handler, mock_state_manager, read_error):
+        """A read that fails in any way (a malformed body, a broken HTTP response) is unreadable: Start writes none."""
+        import http.client
+
+        service = _AgentFlagService("full")
+        self._wire(handler, mock_state_manager, service, stale_flagd_level="full")
+        error = ValueError("Expecting value") if read_error == "malformed_json" else http.client.IncompleteRead(b"")
+
+        def transport(method, url, body):
+            if method == "GET":
+                raise error
+            return service(method, url, body)
+
+        mock_state_manager.agent_settings_writer._transport = transport
+
+        await handler.handle_decrease_value("test_serial")
+
+        assert service.puts == ["none"]
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_OFF)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A5", steps=[2])
+    async def test_escalate_with_the_level_unreadable_is_refused(self, handler, mock_state_manager):
+        """Select with the flag service unreadable writes nothing and gives the error cue only."""
+        service = _AgentFlagService("ambient")
+        service.get_down = True
+        self._wire(handler, mock_state_manager, service, stale_flagd_level="ambient")
+
+        await handler.handle_increase_value("test_serial")
+
+        assert service.puts == []
+        assert self._error_cue_shown(mock_state_manager)
+        mock_state_manager.audio.play_voice.assert_not_called()
 
 
 class TestOptionAnnouncementUsesEffectiveValue:

@@ -16,12 +16,16 @@ flag service serves (the effective default: an in-memory stage overlay, else
 the persisted admin value, else the baseline).
 
 Every call has a short deadline (0.5 s) and fails closed: a failed write returns
-False / None and is logged; nothing is retried. The API is blocking: async
+False / None and is logged; nothing is retried. A write that times out has an
+unknown outcome (the flag service may apply it after the deadline, #2095): the
+writer re-reads the flag once, with the same deadline, and reports the write as
+applied only when the flag service now serves the written variant (UC-013 A3). The API is blocking: async
 callers run it through ``asyncio.to_thread``.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -71,6 +75,11 @@ def _value_ordered(view: dict) -> list[str]:
         # Stable: variants with equal values keep their declared order.
         return sorted(names, key=lambda name: values[name])
     return names
+
+
+def _is_timeout(err: BaseException) -> bool:
+    """A client-side deadline, raised bare by a read or wrapped in URLError by a connect."""
+    return isinstance(err, TimeoutError) or isinstance(getattr(err, "reason", None), TimeoutError)
 
 
 def _urllib_transport(method: str, url: str, body: dict | None) -> tuple[int, dict]:
@@ -136,7 +145,9 @@ class FlagServiceWriter:
     def _view(self, flag_key: str) -> dict | None:
         try:
             status, body = self._transport("GET", self._flag_url(flag_key), None)
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError, http.client.HTTPException) as e:
+            # Any failed read is "unreadable" (None), so a caller's fail-closed path always runs
+            # (UC-013 A5): a malformed body (ValueError) or a broken response counts too.
             logger.error(f"Flag service unreachable reading {self.flag_set}/{flag_key}: {e}")
             return None
         if status != 200:
@@ -155,7 +166,11 @@ class FlagServiceWriter:
             body["persist"] = True
         try:
             status, resp = self._transport("PUT", self._flag_url(flag_key), body)
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError, http.client.HTTPException) as e:
+            # A timeout, a malformed answer or a broken response leaves the outcome unknown: the
+            # flag service may have applied the write. Settle it with one re-read (UC-013 A3).
+            if _is_timeout(e) or isinstance(e, ValueError | http.client.HTTPException):
+                return self._confirm_after_timeout(flag_key, variant_name, e)
             logger.critical(
                 f"Flag service unreachable: admin setting {self.flag_set}/{flag_key}={variant_name} NOT applied: {e}"
             )
@@ -171,6 +186,30 @@ class FlagServiceWriter:
             # survive a flag-service restart (flagservice_admin_persist_errors_total).
             logger.error(f"Admin setting {self.flag_set}/{flag_key}={variant_name} applied but NOT persisted")
         logger.info(f"Updated flag '{self.flag_set}/{flag_key}' -> '{variant_name}' via the flag service")
+        return True
+
+    def _confirm_after_timeout(self, flag_key: str, variant_name: str, err: BaseException) -> bool:
+        """Settle a PUT without a clear answer (timeout, malformed or broken response) with one re-read.
+
+        True only when the flag service serves ``variant_name``.
+
+        The flag service applies a write before it answers, under the same lock its reads take,
+        so a read sent after the PUT normally sees the PUT's outcome (UC-013 A3, #2095).
+        """
+        name = f"{self.flag_set}/{flag_key}={variant_name}"
+        view = self._view(flag_key)
+        if view is None:
+            logger.critical(
+                f"Flag service gave no clear answer: admin setting {name} outcome UNKNOWN (re-read failed): {err}"
+            )
+            return False
+        served = view.get("effective_default")
+        if served != variant_name:
+            logger.critical(
+                f"Flag service gave no clear answer: admin setting {name} NOT applied (it serves {served!r}): {err}"
+            )
+            return False
+        logger.warning(f"Flag service gave no clear answer ({err}), but the re-read shows admin setting {name} applied")
         return True
 
     def get_variant_names(self, flag_key: str) -> list[str]:

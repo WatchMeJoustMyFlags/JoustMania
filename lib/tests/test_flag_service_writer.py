@@ -315,3 +315,83 @@ def test_non_numeric_variants_keep_the_declared_order():
     w = FlagServiceWriter("agent", "http://fs:8070", transport=svc)
     # Listed alphabetically (ambient, full, none, standard): no value sort, the listing is the ladder.
     assert w.step_variant("interventions_allowed", True) == VariantStep("ambient", "full")
+
+
+# --- A PUT that times out client-side (#2095) ---------------------------------------------
+
+
+class _SlowPutService(FakeService):
+    """A flag service whose PUT answers after the client deadline.
+
+    ``applies`` says whether the write landed server-side anyway; ``reread_down`` makes the
+    GET after the timed-out PUT fail too; ``as_url_error`` wraps the timeout as urllib does on connect.
+    """
+
+    def __init__(self, *, applies: bool, reread_down: bool = False, as_url_error: bool = False):
+        super().__init__({"interventions_allowed": ALLOWED})
+        self.applies = applies
+        self.reread_down = reread_down
+        self.as_url_error = as_url_error
+        self._timed_out = False
+
+    def __call__(self, method, url, body):
+        if method == "PUT":
+            self.requests.append((method, url, body))
+            if self.applies:
+                self.overlay["interventions_allowed"] = body["variant"]
+            self._timed_out = True
+            timeout = TimeoutError("timed out")
+            raise urllib.error.URLError(timeout) if self.as_url_error else timeout
+        if self._timed_out and self.reread_down:
+            self.requests.append((method, url, body))
+            raise TimeoutError("timed out")
+        return super().__call__(method, url, body)
+
+
+@pytest.mark.uc("UC-013", flow="A3", br=["BR-003"])
+@pytest.mark.uc("UC-053", flow="A8")
+@pytest.mark.parametrize("as_url_error", [False, True])
+def test_timed_out_put_that_applied_counts_as_applied_after_a_reread(caplog, as_url_error):
+    """UC-013 A3: a timeout is an unknown outcome; the re-read shows the write landed, so it is reported applied."""
+    svc = _SlowPutService(applies=True, as_url_error=as_url_error)
+    writer = FlagServiceWriter("agent", "http://fs:8070", transport=svc)
+    with caplog.at_level(logging.INFO, logger="lib.flag_service_writer"):
+        assert writer.update_default_variant("interventions_allowed", "none") is True
+    assert [m for m, _u, _b in svc.requests] == ["PUT", "GET"]
+    assert not any("NOT applied" in r.getMessage() for r in caplog.records)
+    assert any("timed out" in r.getMessage() and "applied" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.uc("UC-013", flow="A3")
+@pytest.mark.uc("UC-053", flow="A8")
+def test_timed_out_put_that_did_not_apply_is_reported_not_applied(caplog):
+    """UC-013 A3: the re-read serves another level, so the write is reported as not applied (critical)."""
+    svc = _SlowPutService(applies=False)
+    writer = FlagServiceWriter("agent", "http://fs:8070", transport=svc)
+    with caplog.at_level(logging.CRITICAL, logger="lib.flag_service_writer"):
+        assert writer.update_default_variant("interventions_allowed", "none") is False
+    assert svc.overlay == {}
+    assert any(r.levelname == "CRITICAL" and "NOT applied" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.uc("UC-013", flow="A3")
+@pytest.mark.uc("UC-053", flow="A8")
+def test_timed_out_put_with_a_failed_reread_is_reported_unknown_not_as_applied(caplog):
+    """UC-013 A3: neither answer arrived: report a failure, and say the outcome is unknown, never "NOT applied"."""
+    svc = _SlowPutService(applies=True, reread_down=True)
+    writer = FlagServiceWriter("agent", "http://fs:8070", transport=svc)
+    with caplog.at_level(logging.CRITICAL, logger="lib.flag_service_writer"):
+        assert writer.update_default_variant("interventions_allowed", "none") is False
+    assert [m for m, _u, _b in svc.requests] == ["PUT", "GET"]
+    messages = [r.getMessage() for r in caplog.records if r.levelname == "CRITICAL"]
+    assert any("UNKNOWN" in m for m in messages), messages
+    assert not any("NOT applied" in m for m in messages), messages
+
+
+@pytest.mark.uc("UC-053", flow="A8")
+def test_connection_refused_is_not_reread(svc):
+    """A refused connection is a certain failure: no re-read, nothing retried."""
+    svc.down = True
+    writer = FlagServiceWriter("agent", "http://fs:8070", transport=svc)
+    assert writer.update_default_variant("interventions_allowed", "none") is False
+    assert [m for m, _u, _b in svc.requests] == ["PUT"]

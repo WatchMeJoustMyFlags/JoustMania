@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from lib.flag_service_writer import STEP_AT_LIMIT, match_variant, variant_value
+from lib.flag_service_writer import STEP_AT_LIMIT
 from lib.types import Sound
 from proto import controller_manager_pb2
 from services.menu.utils.led import DEFAULT_COLOR, GAME_MODE_COLORS
@@ -125,8 +125,9 @@ def agent_level_next(current: str | None, forward: bool = True) -> str:
 
     The ladder never wraps: restrict at ``none`` stays ``none`` (a kill switch that
     escalates to ``full`` when pressed while off is unsafe) and escalate at ``full``
-    stays ``full``. A current value outside the ladder (``probe``, an unreadable flag)
-    collapses to ``none``, the benign fail-safe.
+    stays ``full``. A current value outside the ladder (``probe``, UC-013 A1) collapses to
+    ``none``, the benign fail-safe. ``None`` (an unreadable level) also maps to ``none``, but
+    only the restrict uses it: the callers refuse an escalation from an unreadable level (UC-013 A5).
     """
     levels = AGENT_POLICY_LEVELS
     if current not in levels:
@@ -284,26 +285,15 @@ class SettingsOps:
     # --- Agent level reads ---------------------------------------------------------------
 
     def current_agent_level(self) -> str | None:
-        """The effective agent level: the live flagd value mapped to a variant, else the flag service's.
+        """The agent level the flag service serves (``effective_default``), None when it cannot be read.
 
-        Blocking (one flag-service read plus a flagd resolve): run via to_thread. None when
-        the flag service cannot be read.
+        UC-013 BR-003 (#2095): never the in-process flagd value. The flag service applies a
+        write before it answers, while flagd catches up only within NFR-050, so a step read
+        from flagd right after a write (or after a write that timed out but landed) steps
+        from the old level again. Blocking (one flag-service read): run via to_thread.
         """
-        manager = self.state_manager
-        view = manager.agent_settings_writer.get_flag_view(AGENT_POLICY_FLAG)
-        file_level = view.get("effective_default") if view else None
-
-        client = getattr(manager, "agent_settings_client", None)
-        if client is None or view is None:
-            return file_level
-        try:
-            # interventions_allowed is a STRING flag (comma-separated ids; #1127).
-            default_value = variant_value(view, file_level) if file_level else ""
-            resolved = client.get_string_value(AGENT_POLICY_FLAG, default_value)
-            return match_variant(view, resolved) or file_level
-        except Exception as e:
-            logger.debug(f"Agent level resolution failed: {e}")
-            return file_level
+        view = self.state_manager.agent_settings_writer.get_flag_view(AGENT_POLICY_FLAG)
+        return view.get("effective_default") if view else None
 
     def _agent_enabled(self) -> str | None:
         """The kill switch as the flag service serves it (``on`` / ``off``), None when unreadable."""

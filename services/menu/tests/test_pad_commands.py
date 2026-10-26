@@ -64,6 +64,8 @@ class FakeFlagService:
         self.failing: set[tuple[str, str]] = set()
         # Keys whose GET answers 503 while their PUT still works.
         self.failing_get: set[tuple[str, str]] = set()
+        # Keys whose PUT lands but answers after the client deadline (#2095).
+        self.slow_put: set[tuple[str, str]] = set()
         self.down = False
 
     def __call__(self, method, url, body):
@@ -86,6 +88,8 @@ class FakeFlagService:
         if body.get("persist") and (flag_set, key) in NO_PERSIST:
             return 400, {"error": "bad_request", "detail": f"{key} cannot persist in scope stack"}
         self.values[(flag_set, key)] = body["variant"]
+        if (flag_set, key) in self.slow_put:
+            raise TimeoutError("timed out")
         return 200, {"variant": body["variant"], "persisted": bool(body.get("persist"))}
 
     def written(self) -> list[tuple[str, str, str]]:
@@ -449,6 +453,47 @@ async def test_stop_with_the_flag_service_down_fails(servicer, flags):
     reply = await pad(servicer, "agent_switch", direction="stop")
     assert (reply.success, reply.error) == (False, "failed")
     assert failure_cues(servicer) == 2
+
+
+def stale_flagd(menu, level: str) -> None:
+    """flagd keeps serving ``level`` while the flag service already holds a newer write (NFR-050)."""
+    menu.state_manager.agent_settings_client = default_returning_flag_client("agent")
+    menu.state_manager.agent_settings_client.get_string_value.side_effect = None
+    menu.state_manager.agent_settings_client.get_string_value.return_value = AGENT_LEVELS[level]
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-002"])
+@pytest.mark.uc("UC-013", flow="A3")
+async def test_stop_with_a_timed_out_level_write_that_landed_reports_ok(servicer, flags):
+    """Truthful result (#2095): the level PUT times out but lands; the re-read confirms it, so no partial."""
+    flags.slow_put = {("agent", "interventions_allowed")}
+    reply = await pad(servicer, "agent_switch", direction="stop")
+
+    assert (reply.success, reply.error) == (True, "ok")
+    assert flags.values[("agent", "interventions_allowed")] == "none"
+    assert failure_cues(servicer) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", br=["BR-002", "BR-004"])
+@pytest.mark.uc("UC-013", flow="A3", br=["BR-003"])
+async def test_ladder_steps_from_the_flag_service_not_from_stale_flagd(servicer, flags):
+    """A down step whose PUT timed out but landed, then another: the second steps from the landed level."""
+    stale_flagd(servicer, "full")
+    flags.values[("agent", "interventions_allowed")] = "full"
+    flags.slow_put = {("agent", "interventions_allowed")}
+
+    first = await pad(servicer, "step_setting", option="agent_level", direction="down")
+    flags.slow_put = set()
+    second = await pad(servicer, "step_setting", option="agent_level", direction="down")
+
+    assert (first.success, second.success) == (True, True)
+    assert flags.written() == [
+        ("agent", "interventions_allowed", "standard"),
+        ("agent", "interventions_allowed", "ambient"),
+    ]
+    assert failure_cues(servicer) == 0
 
 
 @pytest.mark.asyncio
