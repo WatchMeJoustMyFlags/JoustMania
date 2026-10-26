@@ -203,6 +203,20 @@ const (
 	// interventions.allowed. Blocked actions are recorded, never silently
 	// dropped: the agent.action span still exists, carrying this attribute.
 	AttrDecisionBlocked = "decision.blocked"
+	// AttrDecisionApplied / AttrDecisionNotAppliedReason (#2093) say whether a
+	// decision that passed every permission gate was actually written. Absent on a
+	// blocked decision (decision.blocked already says so) and on a failed write
+	// (the span carries the error). decision.applied=false carries the reason
+	// NotAppliedWriteGateOff when the interventions_enabled actuation gate (UC-040
+	// A11) turned the write into a no-op.
+	AttrDecisionApplied          = "decision.applied"
+	AttrDecisionNotAppliedReason = "decision.not_applied_reason"
+	// NotAppliedWriteGateOff is the decision.not_applied_reason of a write the
+	// interventions_enabled gate dropped.
+	NotAppliedWriteGateOff = "write_gate_off"
+	// AttrInterventionsEnabled is the live interventions_enabled actuation gate on
+	// agent.flag_state (#2093).
+	AttrInterventionsEnabled = "interventions.enabled"
 	// AttrFitnessEvaluated lists the fitness values evaluated for the
 	// decision (#731). Empty until fitness functions exist.
 	AttrFitnessEvaluated = "fitness.evaluated"

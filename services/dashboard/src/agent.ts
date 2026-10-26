@@ -141,6 +141,8 @@ export interface FlagPanel {
   objectives: string;
   /** interventions.allowed summary. */
   interventionsAllowed: string;
+  /** interventions.enabled, the write gate (#2093); null on an older agent image. */
+  interventionsEnabled: boolean | null;
 }
 
 /** A single action's blocked tally for the intervention overlay. */
@@ -291,6 +293,7 @@ export function flagPanelFrom(span: JaegerSpan): FlagPanel {
     enabled: tagBoolOrNull(tags, "agent.enabled"),
     objectives: tagString(tags, "agent.objectives"),
     interventionsAllowed: tagString(tags, "interventions.allowed"),
+    interventionsEnabled: tagBoolOrNull(tags, "interventions.enabled"),
   };
 }
 
@@ -613,6 +616,14 @@ export interface LinkedDecision {
   reason: string;
   /** decision.block_reason ("" unless blocked). */
   blockReason: string;
+  /**
+   * decision.applied (#2093): false when a permitted decision was not written,
+   * true when it was, null when the span predates the attribute or the decision
+   * was blocked / failed.
+   */
+  applied: boolean | null;
+  /** decision.not_applied_reason ("" unless applied is false), e.g. write_gate_off. */
+  notAppliedReason: string;
   /** player.serial of a player-targeted decision ("" when session-scoped), #1295. */
   targetSerial: string;
   /** player.name of the targeted player ("" when the agent knew no name), #1295. */
@@ -783,6 +794,8 @@ function decideRowFrom(
           blocked: tagBool(dt, "decision.blocked"),
           reason: tagString(dt, "decision.reason"),
           blockReason: tagString(dt, "decision.block_reason"),
+          applied: tagBoolOrNull(dt, "decision.applied"),
+          notAppliedReason: tagString(dt, "decision.not_applied_reason"),
           targetSerial: tagString(dt, "player.serial"),
           targetName: tagString(dt, "player.name"),
         };

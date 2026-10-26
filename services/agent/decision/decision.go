@@ -931,9 +931,19 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// increments this: an apply error returns above, and a gated no-op
 	// (interventions_enabled off, UC-040 A11) is not counted (#1681).
 	if !wrote {
+		// #2093: the write never left the agent, so the spans must not read as an
+		// effective decision. Both spans, so a Jaeger search on either finds it.
+		notApplied := []attribute.KeyValue{
+			attribute.Bool(AttrDecisionApplied, false),
+			attribute.String(AttrDecisionNotAppliedReason, NotAppliedWriteGateOff),
+		}
+		dSpan.SetAttributes(notApplied...)
+		aSpan.SetAttributes(notApplied...)
 		l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeGatedOff)
 		return
 	}
+	dSpan.SetAttributes(attribute.Bool(AttrDecisionApplied, true))
+	aSpan.SetAttributes(attribute.Bool(AttrDecisionApplied, true))
 	applied = true
 	l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeApplied)
 	l.recordInterventionApplied(ctx, d.Intervention)

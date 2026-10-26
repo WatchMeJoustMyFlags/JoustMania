@@ -84,6 +84,7 @@ func TestFlagState_AttributeSet(t *testing.T) {
 	l, sr, fl := newTestLoop(t)
 	fl.snap.Objectives = map[string]float64{"endurance": 0.7, "balanced": 0.3}
 	fl.snap.InterventionsAllowed = []string{"grant_shield", "noop"}
+	fl.snap.InterventionsEnabled = true
 	fl.snap.Policy = flags.Policy{BatteryThreshold: 2, MaxInterventionsPerMinute: 6}
 	fl.snap.Decision = flags.DecisionBackend{Backend: flags.DecisionBackendJev, ActConfidenceThreshold: 0.6}
 	l.OnEvaluate(context.Background(), modeCtx("game_fs02", "FFA"), testTrigger())
@@ -101,6 +102,7 @@ func TestFlagState_AttributeSet(t *testing.T) {
 		AttrEnabled:                attribute.BoolValue(true),
 		AttrObjectives:             attribute.StringValue("balanced=0.3,endurance=0.7"),
 		AttrInterventionsAllowed:   attribute.StringValue("grant_shield,noop"),
+		AttrInterventionsEnabled:   attribute.BoolValue(true),
 		AttrPolicyBatteryThreshold: attribute.IntValue(2),
 		AttrPolicyMaxPerMinute:     attribute.IntValue(6),
 		AttrDecideBackendRequested: attribute.StringValue(flags.DecisionBackendJev),

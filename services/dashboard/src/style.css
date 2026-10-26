@@ -926,6 +926,15 @@ body {
   color: var(--text-primary);
 }
 
+.agent-flags-warn {
+  margin-bottom: 10px;
+  padding: 6px 8px;
+  font-size: 0.78rem;
+  color: var(--accent-primary);
+  border: 1px solid var(--accent-primary);
+  border-radius: 4px;
+}
+
 .agent-flags-note {
   margin-top: 10px;
   font-size: 0.72rem;
