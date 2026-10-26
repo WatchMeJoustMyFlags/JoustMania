@@ -9,6 +9,7 @@ import {
   ROSTER_UNAVAILABLE_TEXT,
   RosterModel,
   renderRoster,
+  identifyTarget,
   rosterRows,
 } from "../roster.js";
 import { identifyController } from "../identify.js";
@@ -96,5 +97,35 @@ describe("UC-035 battery roster (A5, BR-007)", () => {
     const status = await identifyController("AA:BB", call);
     expect(call).toHaveBeenCalledWith({ serial: "AA:BB", durationMs: 3000 }, expect.any(AbortSignal));
     expect(status).toMatchObject({ text: "In game", ok: false });
+  });
+
+  it("UC-004 BR-006 resolves a click on an Identify button to its serial, any other click to null", () => {
+    const button = { dataset: { serial: "AA:BB" } };
+    expect(identifyTarget({ closest: (sel) => (sel === ".roster-identify" ? button : null) })).toBe("AA:BB");
+    expect(identifyTarget({ closest: () => null })).toBeNull();
+    expect(identifyTarget({ closest: () => ({ dataset: {} }) })).toBeNull();
+    expect(identifyTarget({})).toBeNull();
+    expect(identifyTarget(null)).toBeNull();
+  });
+
+  it("UC-004 BR-006 a poll during an identify keeps the button disabled and the Identifying label", () => {
+    const model = new RosterModel();
+    const controllers = [{ serial: "A", name: "Amy", battery: 40 }];
+    model.update({ controllers });
+    model.startIdentify("A");
+    model.update({ controllers }); // the 5 s poll re-renders
+    const html = renderRoster(model);
+    expect(html).toContain("disabled>Identify");
+    expect(html).toContain("Identifying");
+
+    model.finishIdentify("A", { text: "In game", ok: false });
+    model.update({ controllers });
+    const done = renderRoster(model);
+    expect(done).not.toContain("disabled>Identify");
+    expect(done).toContain("In game");
+    expect(done).toContain("roster-status refused");
+
+    model.clearStatus("A");
+    expect(renderRoster(model)).not.toContain("In game");
   });
 });

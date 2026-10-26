@@ -4,7 +4,7 @@
  */
 import { controllerClient } from "../client.js";
 import { identifyController, type IdentifyStatus } from "../identify.js";
-import { RosterModel, renderRoster } from "../roster.js";
+import { RosterModel, identifyTarget, renderRoster } from "../roster.js";
 import type { GetConnectedControllersResponse } from "../gen/controller_manager_pb.js";
 
 export class BatteryRoster {
@@ -21,8 +21,8 @@ export class BatteryRoster {
     if (!container) throw new Error(`Container element not found: ${containerId}`);
     this.container = container;
     this.container.addEventListener("click", (event) => {
-      const button = (event.target as HTMLElement).closest?.(".roster-identify") as HTMLButtonElement | null;
-      if (button?.dataset.serial) void this.onIdentify(button, button.dataset.serial);
+      const serial = identifyTarget(event.target as HTMLElement | null);
+      if (serial) void this.onIdentify(serial);
     });
     this.render();
   }
@@ -41,23 +41,19 @@ export class BatteryRoster {
     this.container.innerHTML = renderRoster(this.model);
   }
 
-  private async onIdentify(button: HTMLButtonElement, serial: string): Promise<void> {
-    button.disabled = true;
+  private async onIdentify(serial: string): Promise<void> {
+    if (this.model.identifying.has(serial)) return;
+    this.model.startIdentify(serial);
+    this.render();
     const status = await this.identify(serial);
-    // A poll may have re-rendered the row while the call ran: look it up again.
-    const row = this.container.querySelector(`.roster-row[data-serial="${CSS.escape(serial)}"]`);
-    const label = row?.querySelector(".roster-status") as HTMLElement | null;
-    const rowButton = row?.querySelector(".roster-identify") as HTMLButtonElement | null;
-    if (rowButton) rowButton.disabled = false;
-    if (!label) return;
-    label.hidden = false;
-    label.textContent = status.text;
-    label.classList.toggle("refused", !status.ok);
+    this.model.finishIdentify(serial, status);
+    this.render();
     clearTimeout(this.statusTimers.get(serial));
     this.statusTimers.set(
       serial,
       setTimeout(() => {
-        label.hidden = true;
+        this.model.clearStatus(serial);
+        this.render();
       }, status.showForMs),
     );
   }
