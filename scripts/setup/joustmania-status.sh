@@ -1,0 +1,143 @@
+#!/bin/bash
+# joustmania-status: the state of the stage Pi on one screen (UC-060 BR-005,
+# FR-183, A1, A4, A5; #2027). Read-only: it never starts, pulls or changes
+# anything, and never prints env values.
+#
+#   ./scripts/setup/joustmania-status.sh
+#
+# One line per check, `OK`, `WARN`, `FAIL`, `SKIP` or `INFO`:
+#   - version: the pinned version (release tag or sha) and its image tag, or
+#     WARN when the checkout is on a branch (A4)
+#   - unit: the joustmania unit's state; start-limit-hit (systemd refuses to
+#     start it, A5) is FAIL with the recovery command (BR-006, #2102)
+#   - last start: what joustmania-start.sh recorded (start.env)
+#   - images: images missing on the Pi, with the joustmania-upgrade.sh command
+#     that pulls them (boot never pulls, BR-001)
+#   - service <name>: running / healthy, per active service
+#   - clock: NTP synchronised; WARN when not (no RTC: until NTP sync TLS to
+#     the registry fails, so an upgrade cannot pull; the start does not need it)
+# The last line is `state: ok|starting|degraded|failed`.
+# Exit: 0 ok, 1 starting or degraded (any WARN, an observability or agent
+# problem), 2 failed (a game service down or missing, the unit failed).
+# The ACT LED cue (C-042) is not part of this command yet (#2027 PR 4).
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JOUSTMANIA_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
+# shellcheck source=lib-joustmania.sh
+source "$SCRIPT_DIR/lib-joustmania.sh"
+
+UNIT="joustmania"
+STATE_FILE="${JOUSTMANIA_STATUS_DIR:-/run/joustmania}/start.env"
+RECOVER_CMD="sudo systemctl reset-failed $UNIT && sudo systemctl start $UNIT"
+WORST=0 # 0 ok, 1 warn, 2 fail
+STARTING=0
+
+report() { # $1 = OK|WARN|FAIL|SKIP|INFO, $2 = text
+    printf '%-4s %s\n' "$1" "$2"
+    case "$1" in
+        WARN) ((WORST < 1)) && WORST=1 ;;
+        FAIL) WORST=2 ;;
+    esac
+    return 0
+}
+compose() { "$SCRIPT_DIR/joustmania-compose.sh" "$@"; }
+
+# --- version (BR-003, A4) ---------------------------------------------------
+if PIN_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
+    report OK "version: $(joustmania_pin_ref "$JOUSTMANIA_DIR") (image tag $PIN_TAG)"
+else
+    BRANCH="$(git -C "$JOUSTMANIA_DIR" symbolic-ref -q --short HEAD 2>/dev/null || echo unknown)"
+    report WARN "version: not pinned (branch $BRANCH at $(git -C "$JOUSTMANIA_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)); pin with scripts/setup/joustmania-upgrade.sh <joustmania-vX.Y.Z | sha> (UC-060 A4)"
+fi
+
+# --- unit (A5, BR-006) ------------------------------------------------------
+if command -v systemctl >/dev/null 2>&1; then
+    ACTIVE="$(systemctl show -p ActiveState --value "$UNIT" 2>/dev/null || true)"
+    SUB="$(systemctl show -p SubState --value "$UNIT" 2>/dev/null || true)"
+    RESULT="$(systemctl show -p Result --value "$UNIT" 2>/dev/null || true)"
+    if [[ "$RESULT" == start-limit-hit ]]; then
+        report FAIL "unit: start-limit-hit (systemd refuses to start it after 3 failed starts in 15 min); recover with: $RECOVER_CMD"
+    elif [[ "$ACTIVE" == failed ]]; then
+        report FAIL "unit: failed (result ${RESULT:-unknown}); see: journalctl -u $UNIT -b"
+    elif [[ "$ACTIVE" == activating ]]; then
+        STARTING=1
+        report INFO "unit: starting"
+    elif [[ "$ACTIVE" == active ]]; then
+        report OK "unit: active (${SUB:-unknown})"
+    else
+        report WARN "unit: ${ACTIVE:-unknown} (not started; autostart installed? sudo scripts/setup/install_autostart.sh)"
+    fi
+else
+    report SKIP "unit: no systemctl"
+fi
+
+# --- last start (start.env) -------------------------------------------------
+if [[ -r "$STATE_FILE" ]]; then
+    LAST="$(grep -E '^(result|missing|down|ts)=' "$STATE_FILE" | grep -vE '^[a-z]+=$' | tr '\n' ' ')"
+    report INFO "last start: ${LAST% }"
+fi
+
+# --- images and services ----------------------------------------------------
+# The full config holds interpolated secrets: it goes straight into the parser.
+if ! SERVICE_IMAGES="$(compose config 2>/dev/null | joustmania_service_images)" || [[ -z "$SERVICE_IMAGES" ]]; then
+    report FAIL "docker: compose cannot read the project (docker not running, or this user not in the docker group?)"
+else
+    MISSING=0
+    while IFS='|' read -r svc img; do
+        [[ -n "$svc" ]] || continue
+        docker image inspect "$img" >/dev/null 2>&1 && continue
+        MISSING=1
+        if joustmania_in_list "$svc" "${JOUSTMANIA_GAME_SERVICES[@]}"; then
+            report FAIL "image missing: $svc ($img)"
+        else
+            report WARN "image missing: $svc ($img)"
+        fi
+    done <<<"$SERVICE_IMAGES"
+    if [[ $MISSING -eq 1 ]]; then
+        report INFO "images: boot never pulls (UC-060 BR-001); $(joustmania_missing_hint "$JOUSTMANIA_DIR")"
+    else
+        report OK "images: all present"
+    fi
+    PS="$(compose ps -a --format '{{.Service}}|{{.State}}|{{.Health}}' 2>/dev/null || true)"
+    while IFS='|' read -r svc _; do
+        [[ -n "$svc" ]] || continue
+        line="$(grep -m 1 "^$svc|" <<<"$PS" || true)"
+        IFS='|' read -r _ state health <<<"$line"
+        text="service $svc: ${state:-no container}${health:+ ($health)}"
+        if [[ "$state" == running && (-z "$health" || "$health" == healthy) ]]; then
+            report OK "$text"
+        elif [[ "$state" == running && "$health" == starting ]]; then
+            STARTING=1
+            report INFO "$text"
+        elif joustmania_in_list "$svc" "${JOUSTMANIA_GAME_SERVICES[@]}"; then
+            report FAIL "$text"
+        else
+            report WARN "$text"
+        fi
+    done <<<"$SERVICE_IMAGES"
+fi
+
+# --- clock ------------------------------------------------------------------
+if command -v timedatectl >/dev/null 2>&1; then
+    if [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)" == yes ]]; then
+        report OK "clock: NTP synchronised"
+    else
+        report WARN "clock: not NTP synchronised (no RTC, the time may be hours off): TLS to the registry fails until it syncs, so an upgrade cannot pull yet; the start does not need it"
+    fi
+else
+    report SKIP "clock: no timedatectl"
+fi
+
+if ((WORST == 2)); then
+    echo "state: failed"
+    exit 2
+elif ((STARTING == 1)); then
+    echo "state: starting"
+    exit 1
+elif ((WORST == 1)); then
+    echo "state: degraded"
+    exit 1
+fi
+echo "state: ok"
+exit 0

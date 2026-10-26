@@ -14,6 +14,8 @@
 #  - healthy -> switch, restart, record, prune (only superseded tags of the
 #    joustmania repositories; third-party images survive); fail-closed prune
 #    without a record; a failed or empty `config --services` is not healthy
+#  - the version already checked out: images missing on the Pi are pulled and the
+#    unit restarted (the recovery the start names, BR-001); none missing: no-op
 #  - not healthy -> automatic rollback; --no-rollback leaves it; --rollback offline,
 #    HEAD-relative, with an image precheck before and after the switch
 #  - a version that ran from a branch (the migration) is restored on its branch,
@@ -140,6 +142,9 @@ case " \$* " in
     fi
     images; exit 0 ;;
   *" config --services "*) [[ -f "\$C/services-fail" ]] && exit 1; cat "\$C/services"; exit 0 ;;
+  *" compose "*" config "*)
+    printf 'services:\n'; while read -r s; do printf '  %s:\n    image: %s:%s\n' "\$s" "${GC}" "\$tag"; done <"\$C/services"
+    exit 0 ;;
   *" compose "*" pull "*)
     images | while read -r i; do
       [[ -f "\$C/pull-skip" ]] && grep -qF "\$(cat "\$C/pull-skip")" <<<"\$i" && continue
@@ -402,6 +407,7 @@ grep -q 'nothing changed' "${CASE}/out.log" || fail "upgrade-checkout-fails: no 
 make_case upgrade-cutoff "${C_V1}"
 upgrade joustmania-v1.1.0 || fail "upgrade-cutoff: upgrade failed: $(tail -2 "${CASE}/out.log")"
 g -C "${REPO}" checkout -q --detach "${C_MAIN}"
+printf '%s:%s\n%s:%s\n' "${GC}" "${C_MAIN}" "${AG}" "${C_MAIN}" >>"${CASE}/images.local" # pulled before the cut
 upgrade --status || fail "upgrade-cutoff: --status failed"
 grep -q "WARN: HEAD ${C_MAIN} is neither recorded version" "${CASE}/out.log" || fail "upgrade-cutoff: --status does not warn"
 : >"${CASE}/calls.log"
@@ -417,8 +423,31 @@ upgrade --rollback || fail "upgrade-cutoff: --rollback after the repair failed: 
 # The migration cut off the same way: no record, the previous branch is lost; WARN
 make_case migrate-cutoff
 g -C "${REPO}" checkout -q --detach "${C_MAIN}"
+printf '%s:%s\n%s:%s\n' "${GC}" "${C_MAIN}" "${AG}" "${C_MAIN}" >>"${CASE}/images.local"
 upgrade "${C_MAIN}" || fail "migrate-cutoff: rerun failed: $(tail -2 "${CASE}/out.log")"
 grep -q 'WARN: no .joustmania-release' "${CASE}/out.log" || fail "migrate-cutoff: no WARN without a record"
+
+# --- 5c. the version already checked out: images missing on the Pi are pulled
+# and the unit restarted (the recovery joustmania-start.sh names, BR-001);
+# nothing missing: nothing to do, no pull, no restart
+make_case same-present "${C_V1}"
+upgrade joustmania-v1.0.0 || fail "same-present: failed: $(tail -2 "${CASE}/out.log")"
+grep -q 'already at joustmania-v1.0.0; nothing to do' "${CASE}/out.log" || fail "same-present: not 'nothing to do': $(tail -1 "${CASE}/out.log")"
+grep -q ' pull ' "${CASE}/calls.log" && fail "same-present: pulled although nothing is missing"
+grep -q restart "${CASE}/calls.log" && fail "same-present: restarted although nothing is missing"
+make_case same-missing "${C_V1}"
+grep -vxF "${AG}:1.0.0" "${CASE}/images.local" >"${CASE}/images.new" && mv "${CASE}/images.new" "${CASE}/images.local"
+upgrade joustmania-v1.0.0 || fail "same-missing: failed: $(tail -2 "${CASE}/out.log")"
+grep -q "images are missing on the Pi: ${AG}:1.0.0; pulling them" "${CASE}/out.log" || fail "same-missing: missing image not named: $(cat "${CASE}/out.log")"
+grep -q "compose.* pull | tag=1.0.0" "${CASE}/calls.log" || fail "same-missing: not pulled"
+grep -qxF "${AG}:1.0.0" "${CASE}/images.local" || fail "same-missing: image still missing"
+grep -qx "sudo systemctl restart joustmania" "${CASE}/calls.log" || fail "same-missing: unit not restarted"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "same-missing: HEAD moved"
+make_case same-missing-offline "${C_V1}"
+grep -vxF "${AG}:1.0.0" "${CASE}/images.local" >"${CASE}/images.new" && mv "${CASE}/images.new" "${CASE}/images.local"
+echo 000 >"${CASE}/http_code"
+if upgrade joustmania-v1.0.0; then fail "same-missing-offline: succeeded offline"; fi
+grep -q restart "${CASE}/calls.log" && fail "same-missing-offline: restarted"
 
 # --- 6. sha accepted from a branch checkout (the one-time migration) --------
 make_case sha
@@ -616,8 +645,9 @@ g -C "${REPO}" checkout -q --detach "${C_V11}"
 mkdir -p "${CASE}/asound"
 printf '#!/usr/bin/env bash\nexit 0\n' >"${CASE}/bin/amixer"
 chmod +x "${CASE}/bin/amixer"
+echo "${GC}:1.1.0" >>"${CASE}/images.local"
 env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_DOCKER_WAIT_S=1 JOUSTMANIA_ASOUND_DIR="${CASE}/asound" \
-  JOUSTMANIA_STATUS_DIR="${CASE}/status" JOUSTMANIA_UNIT_REV=2 \
+  JOUSTMANIA_STATUS_DIR="${CASE}/status" JOUSTMANIA_UNIT_REV=2 JOUSTMANIA_GAME_READY_S=1 \
   bash "${REPO}/scripts/setup/joustmania-start.sh" >"${CASE}/start.log" 2>&1 || fail "pin: start script failed"
 grep -q 'IMAGE_TAG 1.1.0' "${CASE}/start.log" || fail "pin: start script does not run the derived tag"
 grep -q 'WARN: .env.local sets IMAGE_TAG' "${CASE}/start.log" || fail "pin: start script does not WARN about IMAGE_TAG in .env.local"

@@ -31,3 +31,55 @@ joustmania_pin_image_tag() {
 joustmania_env_local_sets() {
     [[ -f "$1" ]] && grep -qE "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*=" "$1"
 }
+
+# Second start phase (UC-060 main step 4, BR-004): the observability backends,
+# the collector and the agent. The game never waits for them and none of them
+# can fail the unit (a missing image or a failed start is `degraded`, BR-002).
+# Every other active service (the game services above plus connect-proxy,
+# dashboard, envoy and the opt-in operator-pad) starts in the first phase.
+JOUSTMANIA_OBS_SERVICES=(jaeger loki victoria-metrics otel-collector grafana agent)
+
+# joustmania_in_list <word> <list...>: true when <word> is one of <list>
+joustmania_in_list() {
+    local word="$1" item
+    shift
+    for item in "$@"; do
+        [[ "$item" == "$word" ]] && return 0
+    done
+    return 1
+}
+
+# joustmania_service_images: reads `docker compose config` (canonical YAML) on
+# stdin and prints `service|image` for every active service. The full config
+# holds interpolated secrets: pipe it straight in, never log or store it.
+joustmania_service_images() {
+    awk '
+        /^services:$/ { in_services = 1; next }
+        in_services && /^[^ ]/ { in_services = 0 }
+        in_services && /^  [^ ][^ ]*:$/ { svc = $1; sub(/:$/, "", svc); next }
+        in_services && /^    image: / { img = $2; sub(/@.*$/, "", img); print svc "|" img }
+    '
+}
+
+# joustmania_pin_ref <checkout dir>: the ref the upgrade command takes for the
+# version checked out (the joustmania-vX.Y.Z tag at HEAD, else the full sha),
+# for the recovery hint. Prints nothing when git cannot read HEAD.
+joustmania_pin_ref() {
+    local tag
+    tag="$(joustmania_pin_image_tag "$1")" || tag=""
+    if [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        printf 'joustmania-v%s\n' "$tag"
+    else
+        git -C "$1" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null || true
+    fi
+}
+
+# joustmania_missing_hint <checkout dir>: the recovery for images missing on
+# the Pi. Boot never pulls (UC-060 BR-001); the upgrade command pulls the
+# pinned version's images while online, and re-running it for the version
+# already checked out pulls only what is missing (A2).
+joustmania_missing_hint() {
+    local ref
+    ref="$(joustmania_pin_ref "$1")"
+    printf 'when online, run: %s/scripts/setup/joustmania-upgrade.sh %s\n' "$1" "${ref:-<joustmania-vX.Y.Z | sha>}"
+}

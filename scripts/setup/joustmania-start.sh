@@ -1,6 +1,13 @@
 #!/bin/bash
-# JoustMania startup script with optional auto-update
-# Gracefully handles missing internet connection
+# JoustMania start on the stage Pi (UC-060, #2027). Run by joustmania.service.
+#
+# Offline-safe (UC-060 BR-001, D1): no `git pull` and no image pull at boot.
+# The checkout changes only through joustmania-upgrade.sh, which pulls in its
+# prepare step. Boot runs `up --pull never` with the images on the Pi; a
+# missing image is named with the upgrade command that recovers it.
+# Two phases (BR-004, R2): the game services (and connect-proxy, dashboard,
+# envoy) start and are judged first; observability and the agent start after,
+# and only make the state `degraded`, never fail the unit.
 
 set -euo pipefail
 
@@ -19,11 +26,14 @@ cd "$JOUSTMANIA_DIR"
 # unit is outdated (it still has the teardown ExecStartPre and `down` at stop)
 # or the script runs by hand: say so on every start, and never fail, so the
 # old unit's Restart=on-failure cannot loop.
+STATE_MISSING=""
+STATE_DOWN=""
 write_state() { # $1 = phase, $2 = result
     {
         mkdir -p "$STATE_DIR" &&
-            printf 'phase=%s\nresult=%s\nhead=%s\nimage_tag=%s\nts=%s\n' \
-                "$1" "$2" "${HEAD_SHORT:-unknown}" "${EFFECTIVE_IMAGE_TAG:-unknown}" "$(date -Iseconds)" \
+            printf 'phase=%s\nresult=%s\nhead=%s\nimage_tag=%s\nmissing=%s\ndown=%s\nts=%s\n' \
+                "$1" "$2" "${HEAD_SHORT:-unknown}" "${EFFECTIVE_IMAGE_TAG:-unknown}" \
+                "${STATE_MISSING# }" "${STATE_DOWN# }" "$(date -Iseconds)" \
                 >"$STATE_FILE"
     } 2>/dev/null || true
 }
@@ -40,8 +50,7 @@ trap on_exit EXIT
 # Every compose call goes through joustmania-compose.sh: docker-compose.yml
 # only, never the dev override that publishes the mock control and gRPC ports
 # to the venue network (#1319), with .env and, when present, the git-ignored
-# .env.local (stage IMAGE_TAG and decision-backend API keys, #1488). It is
-# resolved after the git pull below, so an updated wrapper applies at once.
+# .env.local (stage IMAGE_TAG and decision-backend API keys, #1488).
 COMPOSE_WRAPPER="$SCRIPT_DIR/joustmania-compose.sh"
 compose() {
     "$COMPOSE_WRAPPER" "$@"
@@ -61,44 +70,12 @@ for _ in $(seq 1 "${JOUSTMANIA_DOCKER_WAIT_S:-60}"); do
     sleep 1
 done
 
-# Files to track for updates
-TRACKED_FILES=(
-    "scripts/setup/joustmania.service"
-    "scripts/setup/joustmania-start.sh"
-    "scripts/setup/joustmania-compose.sh"
-    "scripts/setup/install_autostart.sh"
-)
+# shellcheck source=lib-joustmania.sh
+source "$SCRIPT_DIR/lib-joustmania.sh"
 
-# Calculate checksums before git pull
-declare -A CHECKSUMS_BEFORE
-for file in "${TRACKED_FILES[@]}"; do
-    if [[ -f "$file" ]]; then
-        CHECKSUMS_BEFORE["$file"]=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1 || true)
-    fi
-done
-
-# Attempt git pull (non-fatal)
-echo "Checking for code updates..."
-GIT_PULL_STATUS="success"
-if git pull --ff-only 2>&1; then
-    echo "Code updated successfully"
-else
-    echo "Could not update code (offline or conflict) - continuing with current version"
-    GIT_PULL_STATUS="failed"
-fi
-
-# Check which files changed
-CHANGED_FILES=()
-for file in "${TRACKED_FILES[@]}"; do
-    if [[ -f "$file" ]]; then
-        CHECKSUM_AFTER=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1 || true)
-        if [[ "${CHECKSUMS_BEFORE[$file]:-}" != "$CHECKSUM_AFTER" ]]; then
-            CHANGED_FILES+=("$file")
-            echo "Service file changed: $file"
-        fi
-    fi
-done
-
+# No git operation that changes the checkout and no registry contact at boot
+# (UC-060 BR-001, D1): the clock may be hours stale before NTP sync (no RTC),
+# so TLS fails, and a pull would only recreate containers (R1).
 HEAD_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 HEAD_TAG="$(git describe --tags --exact-match 2>/dev/null || echo none)"
 # Effective IMAGE_TAG as compose resolves it (shell env, then .env.local, then
@@ -111,12 +88,8 @@ GC_IMAGE="${GC_IMAGE%%@*}"
 if [[ "${GC_IMAGE##*/}" == *:* ]]; then
     EFFECTIVE_IMAGE_TAG="${GC_IMAGE##*:}"
 fi
-echo "Version: commit $HEAD_SHORT, tag $HEAD_TAG, IMAGE_TAG $EFFECTIVE_IMAGE_TAG (git pull: $GIT_PULL_STATUS)"
+echo "Version: commit $HEAD_SHORT, tag $HEAD_TAG, IMAGE_TAG $EFFECTIVE_IMAGE_TAG (boot pulls nothing; upgrade with scripts/setup/joustmania-upgrade.sh)"
 write_state start starting
-
-if [[ ${#CHANGED_FILES[@]} -gt 0 ]]; then
-    echo "WARNING: Service files have changed. Run 'sudo ./scripts/setup/install_autostart.sh' to apply updates."
-fi
 
 # Say which env files apply, never their contents (they hold API keys)
 if [[ -f .env.local ]]; then
@@ -126,25 +99,13 @@ else
 fi
 # Pin (UC-060 BR-003): joustmania-compose.sh exports the IMAGE_TAG derived from
 # a pinned HEAD, so an IMAGE_TAG in .env.local is ignored; say so.
-if [[ -f "$SCRIPT_DIR/lib-joustmania.sh" ]]; then
-    # shellcheck source=lib-joustmania.sh
-    source "$SCRIPT_DIR/lib-joustmania.sh"
-    if PIN_IMAGE_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
-        echo "Pinned checkout: IMAGE_TAG $PIN_IMAGE_TAG derived from HEAD"
-        if joustmania_env_local_sets .env.local IMAGE_TAG; then
-            echo "WARN: .env.local sets IMAGE_TAG; it is ignored (the pinned checkout decides, UC-060 BR-003). Remove it."
-        fi
-    else
-        echo "WARN: checkout is not pinned (HEAD on a branch): IMAGE_TAG comes from .env/.env.local (UC-060 A4). Pin with scripts/setup/joustmania-upgrade.sh"
+if PIN_IMAGE_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
+    echo "Pinned checkout: IMAGE_TAG $PIN_IMAGE_TAG derived from HEAD"
+    if joustmania_env_local_sets .env.local IMAGE_TAG; then
+        echo "WARN: .env.local sets IMAGE_TAG; it is ignored (the pinned checkout decides, UC-060 BR-003). Remove it."
     fi
-fi
-
-# Attempt docker compose pull (non-fatal)
-echo "Checking for image updates..."
-if compose pull 2>&1; then
-    echo "Images updated successfully"
 else
-    echo "Could not pull images (offline) - continuing with cached images"
+    echo "WARN: checkout is not pinned (HEAD on a branch): IMAGE_TAG comes from .env/.env.local (UC-060 A4). Pin with scripts/setup/joustmania-upgrade.sh"
 fi
 
 # Targeted cleanup only: a joustmania-* container that is not ours blocks the
@@ -225,7 +186,95 @@ if ! grep -qx operator-pad <<<"$COMPOSE_SERVICES"; then
     docker rm -f joustmania-operator-pad >/dev/null 2>&1 || true
 fi
 
-# Start services (this must succeed). Not exec: the EXIT trap records the result.
-echo "Starting JoustMania (Bluetooth backend: rust-hid${COMPOSE_PROFILES:+, profiles: ${COMPOSE_PROFILES}})..."
-compose up -d --remove-orphans
+# Which active service runs which image, and which images are on the Pi. The
+# full config holds interpolated secrets: it goes straight into the parser.
+if ! SERVICE_IMAGES="$(compose config 2>/dev/null | joustmania_service_images)" || [[ -z "$SERVICE_IMAGES" ]]; then
+    echo "FAIL: compose config failed or lists no service; nothing started"
+    exit 1
+fi
+GAME_PHASE=()
+OBS_PHASE=()
+MISSING_GAME=""
+MISSING_OTHER=""
+while IFS='|' read -r svc img; do
+    [[ -n "$svc" ]] || continue
+    if joustmania_in_list "$svc" "${JOUSTMANIA_OBS_SERVICES[@]}"; then
+        if docker image inspect "$img" >/dev/null 2>&1; then OBS_PHASE+=("$svc"); else MISSING_OTHER+=" $svc($img)"; fi
+    elif docker image inspect "$img" >/dev/null 2>&1; then
+        GAME_PHASE+=("$svc")
+    elif joustmania_in_list "$svc" "${JOUSTMANIA_GAME_SERVICES[@]}"; then
+        MISSING_GAME+=" $svc($img)"
+    else
+        MISSING_OTHER+=" $svc($img)"
+    fi
+done <<<"$SERVICE_IMAGES"
+STATE_MISSING="$MISSING_GAME$MISSING_OTHER"
+if [[ -n "$STATE_MISSING" ]]; then
+    echo "Images missing on the Pi (boot never pulls, UC-060 BR-001):$STATE_MISSING"
+    echo "Recover: $(joustmania_missing_hint "$JOUSTMANIA_DIR")"
+fi
+
+# Phase 1: the game. Services whose image is on the Pi start, nothing is torn
+# down (BR-002). Not exec: the EXIT trap records the result.
+if [[ ${#GAME_PHASE[@]} -eq 0 ]]; then
+    echo "FAIL: no game service has its image on the Pi; nothing started"
+    exit 1
+fi
+echo "Phase 1/2: starting the game (Bluetooth backend: rust-hid${COMPOSE_PROFILES:+, profiles: ${COMPOSE_PROFILES}}): ${GAME_PHASE[*]}"
+UP_RC=0
+compose up -d --pull never --remove-orphans "${GAME_PHASE[@]}" || UP_RC=$?
+[[ $UP_RC -eq 0 ]] || echo "compose up exited $UP_RC (only a hint; judging the containers)"
+if [[ -n "$MISSING_GAME" ]]; then
+    echo "FAIL: game images missing on the Pi:$MISSING_GAME. Recover: $(joustmania_missing_hint "$JOUSTMANIA_DIR")"
+    exit 1
+fi
+
+# The game is up when every judged game service runs (and is healthy where it
+# has a healthcheck) within the readiness timeout (UC-060 main step 3, FR-181).
+# Fails closed when none of the game services is active.
+game_not_ready() { # prints the services that are not ready
+    local ps svc line state health bad="" judged=0
+    ps="$(compose ps -a --format '{{.Service}}|{{.State}}|{{.Health}}' 2>/dev/null || true)"
+    for svc in "${GAME_PHASE[@]}"; do
+        joustmania_in_list "$svc" "${JOUSTMANIA_GAME_SERVICES[@]}" || continue
+        judged=1
+        line="$(grep -m 1 "^$svc|" <<<"$ps" || true)"
+        IFS='|' read -r _ state health <<<"$line"
+        if [[ "$state" != running || (-n "$health" && "$health" != healthy) ]]; then
+            bad+=" $svc(${state:-missing}${health:+/$health})"
+        fi
+    done
+    [[ $judged -eq 1 ]] || bad=" (no game service active)"
+    printf '%s' "$bad"
+}
+READY_DEADLINE=$((SECONDS + ${JOUSTMANIA_GAME_READY_S:-120}))
+while :; do
+    NOT_READY="$(game_not_ready)"
+    [[ -z "$NOT_READY" ]] && break
+    if ((SECONDS >= READY_DEADLINE)); then
+        STATE_DOWN="$NOT_READY"
+        echo "FAIL: game services not ready after ${JOUSTMANIA_GAME_READY_S:-120} s:$NOT_READY; observability not started"
+        exit 1
+    fi
+    sleep "${JOUSTMANIA_POLL_S:-2}"
+done
+echo "Game services ready"
 START_RESULT="ok"
+
+# Phase 2: observability and the agent, inline, with their own timeout. A
+# failure only makes the state degraded (UC-060 A1); the unit still succeeds.
+if [[ ${#OBS_PHASE[@]} -gt 0 ]]; then
+    OBS_TIMEOUT="${JOUSTMANIA_OBS_TIMEOUT_S:-300}"
+    echo "Phase 2/2: starting observability (timeout ${OBS_TIMEOUT} s): ${OBS_PHASE[*]}"
+    OBS_RC=0
+    timeout "$((OBS_TIMEOUT + 30))" "$COMPOSE_WRAPPER" up -d --pull never --wait --wait-timeout "$OBS_TIMEOUT" "${OBS_PHASE[@]}" || OBS_RC=$?
+    if [[ $OBS_RC -ne 0 ]]; then
+        STATE_DOWN+=" observability(exit $OBS_RC)"
+        START_RESULT="degraded"
+        echo "WARN: observability did not come up (exit $OBS_RC); the game keeps running (UC-060 A1)"
+    fi
+fi
+if [[ -n "$MISSING_OTHER" ]]; then
+    START_RESULT="degraded"
+fi
+echo "JoustMania started: state $START_RESULT"
