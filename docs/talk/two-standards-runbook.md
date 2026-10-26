@@ -27,6 +27,8 @@ see [Fallback: Bluetooth down](#fallback-bluetooth-down).
 | **Claude** | The **backup backend** in game (one manual flip, no automatic jev -> claude chain), and the **post-game summary** (retro; the proposer belongs to the experiments act and stays off) | backup: `agent-backend.sh claude`; summary: flag `inference.backend=claude` (in the stage baseline, applied by `talk-stage.sh`; needs `ANTHROPIC_API_KEY`) |
 | **rules** | The **automatic floor**: any remote failure (no key, timeout, error, invalid answer, budget) falls back to rules in the same cycle; the game never waits | always; also `agent-backend.sh rules` |
 
+The hardware proof on the real power bank is the [stage test checklist](stage-test-checklist.md).
+
 Every command below was checked against the code on `main`. Anything that
 needs the demo hardware, live keys or a stopwatch is marked
 **verify in rehearsal**.
