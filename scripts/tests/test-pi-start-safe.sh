@@ -3,7 +3,8 @@
 #
 # joustmania-start.sh runs against a stub docker (and a stub git, amixer):
 #  - no `rm -f` except a foreign joustmania-* container (or python-hid / operator-pad when its
-#    profile is inactive), no `prune`, no `down`; the last call is `up -d --remove-orphans`
+#    profile is inactive), no `prune`, no `down`; the game starts with
+#    `up -d --pull never --remove-orphans <services>`
 #  - "ours" is what `compose ps -a` lists (so a COMPOSE_PROJECT_NAME in .env.local
 #    counts), and when compose cannot list them nothing is removed; a container from
 #    this checkout under another project name is foreign (it would block `up -d`)
@@ -43,31 +44,39 @@ make_case() {
   # compose ps -a prints $CASE/own (name|project; fails when $CASE/ps-fails exists);
   # compose config --services / --images print $CASE/services / $CASE/images (exec:
   # like the real compose, the writer dies of SIGPIPE when the reader exits early);
-  # "up" fails when $CASE/up-fails exists.
+  # bare compose config prints $CASE/config (service -> image YAML); compose ps
+  # --format {{.Service}}... prints every configured service running, nothing
+  # when "up" failed; "up" fails when $CASE/up-fails exists.
   cat >"${CASE}/bin/docker" <<STUB
 #!/usr/bin/env bash
 echo "\$*" >>"${CASE}/docker.log"
 if [[ "\$1" == ps ]]; then cat "${CASE}/containers" 2>/dev/null; exit 0; fi
+if [[ "\$1" == compose && " \$* " == *" ps "*"{{.Service}}"* ]]; then
+  [[ -e "${CASE}/up-fails" ]] && exit 0
+  sed -n 's/^  \([a-z-]*\):\$/\1|running|/p' "${CASE}/config"; exit 0
+fi
 if [[ "\$1" == compose && " \$* " == *" ps "* ]]; then
   [[ -e "${CASE}/ps-fails" ]] && exit 1
   cat "${CASE}/own" 2>/dev/null; exit 0
 fi
 if [[ "\$1" == compose && " \$* " == *" config --services "* ]]; then exec cat "${CASE}/services"; fi
 if [[ "\$1" == compose && " \$* " == *" config --images "* ]]; then exec cat "${CASE}/images"; fi
+if [[ "\$1" == compose && " \$* " == *" config "* ]]; then exec cat "${CASE}/config"; fi
 if [[ "\$1" == compose && " \$* " == *" up "* && -e "${CASE}/up-fails" ]]; then exit 1; fi
 exit 0
 STUB
-  printf '#!/usr/bin/env bash\nexit 1\n' >"${CASE}/bin/git" # offline: pull fails, non-fatal
+  printf '#!/usr/bin/env bash\nexit 1\n' >"${CASE}/bin/git" # no readable checkout: not pinned
   printf '#!/usr/bin/env bash\nexit 0\n' >"${CASE}/bin/amixer"
   chmod +x "${CASE}/bin/"*
   printf 'rust-hid\nflagd\n' >"${CASE}/services"
   printf 'ghcr.io/o/joustmania/flag-service:0.0.0-test\nghcr.io/o/joustmania/game-coordinator-service:0.0.0-test\n' >"${CASE}/images"
+  printf 'name: repo\nservices:\n  flagd:\n    image: f:1\n  game-coordinator:\n    image: g:1\n  rust-hid:\n    image: r:1\nvolumes:\n  x:\n    name: y\n' >"${CASE}/config"
 }
 
 # run_start <extra env...>; returns the script's exit code
 run_start() {
   env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_DOCKER_WAIT_S=1 JOUSTMANIA_ASOUND_DIR="${CASE}/asound" \
-    JOUSTMANIA_STATUS_DIR="${CASE}/status" "$@" \
+    JOUSTMANIA_GAME_READY_S=1 JOUSTMANIA_POLL_S=0.2 JOUSTMANIA_STATUS_DIR="${CASE}/status" "$@" \
     bash "${CASE}/repo/scripts/setup/joustmania-start.sh" >"${CASE}/out.log" 2>&1
 }
 
@@ -84,8 +93,8 @@ grep -qx 'rm -f joustmania-old' "${log}" || fail "teardown: foreign container (n
 grep -qx 'rm -f joustmania-other' "${log}" || fail "teardown: foreign container (other project) not removed"
 rm_calls="$(grep -E '^rm ' "${log}" | grep -vxE 'rm -f (joustmania-old|joustmania-other|joustmania-python-hid|joustmania-operator-pad)' || true)"
 [[ -z "${rm_calls}" ]] || fail "teardown: unexpected rm call(s): ${rm_calls}"
-[[ "$(tail -1 "${log}")" == "compose -f docker-compose.yml --env-file .env up -d --remove-orphans" ]] \
-  || fail "teardown: last docker call is not 'up -d --remove-orphans': $(tail -1 "${log}")"
+grep -qx "compose -f docker-compose.yml --env-file .env up -d --pull never --remove-orphans flagd game-coordinator rust-hid" "${log}" \
+  || fail "teardown: no 'up -d --pull never --remove-orphans <game services>' call: $(grep ' up ' "${log}")"
 grep -q 'IMAGE_TAG 0.0.0-test' "${CASE}/out.log" || fail "teardown: the effective IMAGE_TAG is not logged"
 if grep -q '^jq\|jq ' "${ROOT}/scripts/setup/joustmania-start.sh"; then fail "teardown: the start script still needs jq"; fi
 grep -q 'unit outdated or not run by the rev-2 unit' "${CASE}/out.log" \
@@ -145,7 +154,7 @@ grep -q 'Audio volume configured' "${CASE}/out.log" || fail "amixer: start did n
 make_case state
 mkdir "${CASE}/run"
 env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_DOCKER_WAIT_S=1 JOUSTMANIA_ASOUND_DIR="${CASE}/asound" \
-  RUNTIME_DIRECTORY="${CASE}/run" bash "${CASE}/repo/scripts/setup/joustmania-start.sh" >"${CASE}/out.log" 2>&1 \
+  JOUSTMANIA_GAME_READY_S=1 RUNTIME_DIRECTORY="${CASE}/run" bash "${CASE}/repo/scripts/setup/joustmania-start.sh" >"${CASE}/out.log" 2>&1 \
   || fail "state: start exited non-zero"
 grep -q '^result=ok$' "${CASE}/run/start.env" 2>/dev/null || fail "state: ${CASE}/run/start.env lacks result=ok"
 grep -q '^image_tag=0.0.0-test$' "${CASE}/run/start.env" 2>/dev/null || fail "state: start.env lacks the image tag"

@@ -39,6 +39,9 @@
 # --rollback, never toggled back. A refused or failed switch says "nothing
 # changed"; --status WARNs when HEAD is neither recorded version, and re-running
 # the same upgrade repairs a record an upgrade cut off after its checkout left.
+# Re-running it for the version already checked out also pulls the images
+# missing on the Pi and restarts the unit: boot never pulls (BR-001), so this is
+# the recovery joustmania-start.sh names for a missing image.
 set -euo pipefail
 
 # The floor (UC-060 BR-003). MIN_PINNABLE is the first pinnable release,
@@ -397,6 +400,34 @@ repair_stale_record() {
     say "repaired the stale $RELEASE_FILE: current $commit, previous $cur_ref (an earlier upgrade was cut off after its checkout; the unit was not restarted by this run)"
 }
 
+# repair_missing_images: the target is the version already checked out. Boot
+# never pulls (UC-060 BR-001), so this is how an image missing on the Pi comes
+# back: pull while online, then restart and judge the game services. Nothing
+# missing: nothing to do. No rollback: the version does not change.
+repair_missing_images() {
+    local imgs missing rc=0
+    load_unit_profiles
+    imgs="$(images_of "$JOUSTMANIA_DIR")" || die "compose config --images failed; nothing changed"
+    # shellcheck disable=SC2086 # one image ref per word
+    missing="$(missing_images $imgs)"
+    if [[ -z "$missing" ]]; then
+        say "already at $TARGET_REF; nothing to do"
+        return 0
+    fi
+    say "already at $TARGET_REF, but images are missing on the Pi:$missing; pulling them"
+    timeout "$PULL_TIMEOUT" "$JOUSTMANIA_DIR/scripts/setup/joustmania-compose.sh" pull ||
+        say "pull reported errors; checking which images are present"
+    # shellcheck disable=SC2086
+    missing="$(missing_images $imgs)"
+    [[ -z "$missing" ]] || die "images still missing after the pull:$missing; nothing restarted"
+    apply || rc=$?
+    case "$rc" in
+        0) say "missing images pulled; $TARGET_REF restarted and healthy" ;;
+        3) die "missing images pulled, but the start was refused by systemd (start-limit-hit); recover with: $RECOVER_CMD" ;;
+        *) die "missing images pulled, but $TARGET_REF is not healthy (state failed); see joustmania-status" ;;
+    esac
+}
+
 do_upgrade() {
     local arg="$1" no_rollback="$2" commit version="" tag prev_ref prev_branch prev_imgs prev_tag new_imgs missing img
     resolve_target_syntax "$arg"
@@ -412,7 +443,7 @@ do_upgrade() {
     prev_branch="$(git symbolic-ref -q --short HEAD || true)"
     if [[ "$commit" == "$prev_ref" ]] && joustmania_pin_image_tag "$JOUSTMANIA_DIR" >/dev/null; then
         repair_stale_record "$commit"
-        say "already at $TARGET_REF ($commit); nothing to do"
+        repair_missing_images
         return 0
     fi
     load_unit_profiles

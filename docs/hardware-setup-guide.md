@@ -465,8 +465,8 @@ python-hid backend takes all three of (#1402):
 3. `scripts/flags.sh set controller bluetooth_backend python`, so serials and USB pairing go to python-hid.
 
 On the Pi, set the profile in a systemd drop-in (`sudo systemctl edit joustmania`, `[Service]`
-`Environment=COMPOSE_PROFILES=python-hid`), not in `.env`: `.env` is tracked, and editing it breaks the start
-script's `git pull --ff-only`. With the profile off, `scripts/setup/joustmania-start.sh` removes a stale
+`Environment=COMPOSE_PROFILES=python-hid`), not in `.env`: `.env` is tracked, and a modified tracked file
+makes `scripts/setup/joustmania-upgrade.sh` refuse to switch versions (the start itself never pulls, UC-060 BR-001). With the profile off, `scripts/setup/joustmania-start.sh` removes a stale
 `joustmania-python-hid` container. Adapter and routing details:
 [services.md, controller-manager "Backend layering"](specs/services.md#backend-layering).
 
