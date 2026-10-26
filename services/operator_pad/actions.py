@@ -28,7 +28,7 @@ from services.operator_pad.gestures import (
     TAP,
     Gesture,
 )
-from services.operator_pad.state import is_known, is_stopped
+from services.operator_pad.state import ENABLED_STATES, is_known, is_stopped
 
 logger = logging.getLogger(__name__)
 tracer = get_tracer(__name__)
@@ -180,7 +180,14 @@ class Actions:
         if key == K2 and 0 <= status.sensitivity < len(cues.SENSITIVITY_VOICES):
             voice = cues.SENSITIVITY_VOICES[status.sensitivity]
         elif key == K3:
-            voice = cues.AGENT_STOPPED_VOICE if is_stopped(status) else cues.AGENT_LEVEL_VOICES.get(status.agent_level)
+            # BR-013: an unresolved kill switch is never announced as stopped (a false all-clear); the
+            # level is not checked here, since a resolved `off` with an empty level is really stopped.
+            if status.agent_enabled_state not in ENABLED_STATES:
+                voice = None
+            elif is_stopped(status):
+                voice = cues.AGENT_STOPPED_VOICE
+            else:
+                voice = cues.AGENT_LEVEL_VOICES.get(status.agent_level)
         elif key == K5:
             voice = cues.NUMBER_VOICES.get(status.num_teams)
         elif key == K7 and status.agent_backend in BACKENDS:

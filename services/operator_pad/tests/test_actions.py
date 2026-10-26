@@ -431,3 +431,19 @@ async def test_taps_announce_from_the_status_and_send_nothing(actions, menu, cue
         assert await actions.dispatch(Gesture(TAP, key), status()) == ("announce", "ok")
     assert cues.voice.await_count == 4
     menu.ProcessInput.assert_not_awaited()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-013"])
+@pytest.mark.parametrize("state", ["unknown", ""], ids=["unknown", "missing"])
+async def test_k3_tap_with_an_unresolved_kill_switch_refuses_never_announces_stopped(actions, menu, cues, state):
+    result = await actions.dispatch(Gesture(TAP, "K3"), status(agent_enabled=False, agent_enabled_state=state))
+    assert result == ("announce", "ok")
+    cues.refusal.assert_awaited_once()
+    cues.voice.assert_not_awaited()
+    menu.ProcessInput.assert_not_awaited()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-013"])
+async def test_k3_tap_with_a_resolved_off_and_an_empty_level_announces_stopped(actions, cues):
+    await actions.dispatch(Gesture(TAP, "K3"), status(agent_enabled=False, agent_level=""))
+    cues.voice.assert_awaited_once_with(actions_module.cues.AGENT_STOPPED_VOICE)
