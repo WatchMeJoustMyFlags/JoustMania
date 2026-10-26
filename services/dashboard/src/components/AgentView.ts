@@ -28,6 +28,7 @@ import type {
   DecisionFeedRow,
   FlagPanel,
   InterventionOverlay,
+  LinkedDecision,
 } from "../agent.js";
 import { confidenceBar, decisionTargetLabel, jaegerTraceUrl } from "../agent.js";
 import { FLAG_STATE_NO_DATA } from "../degrade.js";
@@ -354,6 +355,7 @@ export function renderFlagPanel(flags: FlagPanel | null): string {
     ["battery threshold", flags.batteryThreshold || "—"],
     ["max interventions/min", flags.maxPerMinute || "—"],
     ["interventions allowed", flags.interventionsAllowed || "—"],
+    ["interventions enabled (write gate)", onOff(flags.interventionsEnabled)],
     ["objectives", flags.objectives || "—"],
     ["game mode", flags.gameMode || "—"],
   ];
@@ -366,7 +368,13 @@ export function renderFlagPanel(flags: FlagPanel | null): string {
         </div>`,
     )
     .join("");
+  // #2093: enabled=on with the write gate off looks live but writes nothing.
+  const gateHint =
+    flags.enabled === true && flags.interventionsEnabled === false
+      ? `<div class="agent-flags-warn" role="status">${escapeHtml(WRITE_GATE_OFF_HINT)}</div>`
+      : "";
   return `
+      ${gateHint}
       <div class="agent-flags-grid">${body}</div>
       <div class="agent-flags-note">
         Effective flags of ${renderGameBadge(flags.gameId, flags.gameKind)} from its newest
@@ -394,6 +402,26 @@ const OUTCOME_LABEL: Record<DecideRow["outcome"], string> = {
   discarded: "discarded",
   unknown: "?",
 };
+
+/** Shown in the flag panel while the agent is enabled but the write gate is off (#2093). */
+export const WRITE_GATE_OFF_HINT =
+  "Agent is enabled but interventions_enabled is off: decisions are made and recorded, but no intervention is written.";
+
+/** decision.not_applied_reason -> text; an unknown reason is shown as is. */
+const NOT_APPLIED_LABEL: Record<string, string> = {
+  write_gate_off: "write gate off (interventions_enabled)",
+  write_failed: "write failed",
+};
+
+/** The status of one agent.decision chip: blocked, not applied (with reason) or allowed. */
+export function decisionStatusLabel(d: Pick<LinkedDecision, "blocked" | "applied" | "notAppliedReason">): string {
+  if (d.blocked) return "blocked";
+  if (d.applied === false) {
+    const reason = d.notAppliedReason ? (NOT_APPLIED_LABEL[d.notAppliedReason] ?? d.notAppliedReason) : "";
+    return reason ? `not applied: ${reason}` : "not applied";
+  }
+  return "allowed";
+}
 
 /** What the strip shows; a change re-renders (and flashes) it. */
 export function decideStripKey(c: DecideCurrent): string {
@@ -547,9 +575,11 @@ export function renderDecideRow(row: DecideRow, isNew = false): string {
                   d.targetName && d.targetSerial ? ` title="${escapeHtml(d.targetSerial)}"` : ""
                 }>${escapeHtml(target)}</span>`
               : "";
-            return `<span class="decide-decision ${d.blocked ? "decide-decision-blocked" : "decide-decision-allowed"}"${
+            const status = decisionStatusLabel(d);
+            const notWritten = d.blocked || d.applied === false;
+            return `<span class="decide-decision ${notWritten ? "decide-decision-blocked" : "decide-decision-allowed"}"${
               d.reason ? ` title="${escapeHtml(d.reason)}"` : ""
-            }>agent.decision: ${escapeHtml(d.action || "?")}${targetHtml} · ${d.blocked ? "blocked" : "allowed"}</span>`;
+            }>agent.decision: ${escapeHtml(d.action || "?")}${targetHtml} · ${escapeHtml(status)}</span>`;
           })
           .join("")}</div>`
       : "";

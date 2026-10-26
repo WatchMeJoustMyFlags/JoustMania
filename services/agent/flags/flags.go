@@ -715,6 +715,11 @@ type Snapshot struct {
 	// the decide contract, the act-confidence threshold, content capture, and
 	// each remote backend's model / base URL / timeout. Read every cycle.
 	Decision DecisionBackend
+	// InterventionsEnabled is the live interventions_enabled actuation gate
+	// (fail-closed false), carried so agent.flag_state shows a write gate that is
+	// off while the agent is enabled (#2093). The write path reads the gate itself
+	// at use time (GatedActionSink); this copy is for observability only.
+	InterventionsEnabled bool
 	// ProbeDecisions is decision.probe_decisions (#1810, C-035): when true the
 	// loop swaps the rules engine for the probe engine (synthetic noop only),
 	// except in pattern games. Read every cycle.
@@ -779,6 +784,8 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 		BluetoothFitness: f.BluetoothFitness(ctx),
 		Decision:         f.DecisionBackend(ctx),
 		ProbeDecisions:   f.probeDecisions(ctx),
+
+		InterventionsEnabled: f.InterventionsEnabled(ctx),
 	}
 }
 

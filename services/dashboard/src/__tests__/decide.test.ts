@@ -219,7 +219,7 @@ describe("rendering + escaping", () => {
       target: evil,
       outcomeReason: evil,
       decisions: [
-        { spanId: "z", tsMs: 0, action: evil, blocked: true, reason: evil, blockReason: evil, targetSerial: evil, targetName: evil + "n" },
+        { spanId: "z", tsMs: 0, action: evil, blocked: true, reason: evil, blockReason: evil, applied: null, notAppliedReason: "", targetSerial: evil, targetName: evil + "n" },
       ],
     };
     const html = renderDecideRow(row);
@@ -565,7 +565,7 @@ describe("UC-040 main: the Decisions row names the targeted player (#1295)", () 
       const action = (span.tags ?? []).find((t) => t.key === "decision.action")?.value;
       if (action !== "grant_shield") continue;
       span.tags = [...(span.tags ?? []), { key: "player.serial", type: "string", value: serial }];
-      if (name) span.tags.push({ key: "player.name", type: "string", value: name });
+      if (name) span.tags?.push({ key: "player.name", type: "string", value: name });
     }
     return f;
   }
@@ -600,5 +600,47 @@ describe("UC-040 main: the Decisions row names the targeted player (#1295)", () 
     }
     const html = renderDecideRow(parseDecideTraces(f).rows[0]);
     expect(html).toMatch(/grant_shield <span class="decide-arrow">→<\/span> <span class="decide-target" title="MOCK0004">Calm Lion<\/span> · blocked/);
+  });
+});
+
+describe("UC-040: A11, a write the actuation gate dropped is not 'allowed' (#2093)", () => {
+  /** The act fixture with extra tags on its agent.decision span. */
+  function withDecisionTags(tags: { key: string; type: string; value: string | boolean }[]): DecideRow {
+    const body = structuredClone(actFixture) as unknown as JaegerTracesResponse;
+    for (const trace of body.data ?? []) {
+      for (const span of trace.spans) {
+        if (span.operationName === "agent.decision") span.tags?.push(...tags);
+      }
+    }
+    return only(body);
+  }
+
+  it("UC-040/A11 decision.applied=false + write_gate_off reads as not applied with the reason", () => {
+    const row = withDecisionTags([
+      { key: "decision.applied", type: "bool", value: false },
+      { key: "decision.not_applied_reason", type: "string", value: "write_gate_off" },
+    ]);
+    expect(row.decisions[0].applied).toBe(false);
+    expect(row.decisions[0].notAppliedReason).toBe("write_gate_off");
+    const html = renderDecideRow(row);
+    expect(html).toContain("not applied: write gate off (interventions_enabled)");
+    expect(html).not.toMatch(/agent\.decision:[^<]*· allowed/);
+    expect(html).toContain("decide-decision-blocked");
+  });
+
+  it("UC-040/A27 decision.not_applied_reason=write_failed reads as not applied: write failed", () => {
+    const row = withDecisionTags([
+      { key: "decision.applied", type: "bool", value: false },
+      { key: "decision.not_applied_reason", type: "string", value: "write_failed" },
+    ]);
+    const html = renderDecideRow(row);
+    expect(html).toContain("not applied: write failed");
+    expect(html).not.toMatch(/agent\.decision:[^<]*· allowed/);
+  });
+
+  it("UC-040/main a written decision (applied=true) and a pre-#2093 span still read allowed", () => {
+    const written = withDecisionTags([{ key: "decision.applied", type: "bool", value: true }]);
+    expect(renderDecideRow(written)).toMatch(/agent\.decision:[^<]*· allowed/);
+    expect(renderDecideRow(only(actFixture))).toMatch(/agent\.decision:[^<]*· allowed/);
   });
 });

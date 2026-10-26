@@ -31,7 +31,7 @@ import {
   rolloutRowFrom,
 } from "../agent.js";
 import type { JaegerTracesResponse, VmQueryResponse } from "../agent.js";
-import { renderFlagPanel } from "../components/AgentView.js";
+import { WRITE_GATE_OFF_HINT, renderFlagPanel } from "../components/AgentView.js";
 import { FLAG_STATE_NO_DATA } from "../degrade.js";
 import gamesFixture from "./fixtures/jaeger-flag-state-games.json";
 import expandFixture from "./fixtures/jaeger-rollout-expand.json";
@@ -100,6 +100,33 @@ describe("UC-035: main step 3, flag panel from agent.flag_state", () => {
     expect(html).toContain("interventions allowed");
     expect(html).toContain("objectives");
     expect(html).not.toContain("variance window");
+  });
+
+  it("UC-035/main step 3 enabled=on with interventions_enabled=off shows the write-gate hint (#2093)", () => {
+    const base = parseFlagStates(games)[0];
+    const off = renderFlagPanel({ ...base, enabled: true, interventionsEnabled: false });
+    expect(off).toContain("interventions enabled (write gate)");
+    expect(off).toContain(WRITE_GATE_OFF_HINT);
+    for (const quiet of [
+      { enabled: true, interventionsEnabled: true },
+      { enabled: true, interventionsEnabled: null },
+      { enabled: false, interventionsEnabled: false },
+    ]) {
+      expect(renderFlagPanel({ ...base, ...quiet })).not.toContain(WRITE_GATE_OFF_HINT);
+    }
+  });
+
+  it("UC-035/main step 3 interventions.enabled is read from the agent.flag_state span (#2093)", () => {
+    const body = structuredClone(games);
+    for (const trace of body.data ?? []) {
+      for (const span of trace.spans) {
+        if (span.operationName === "agent.flag_state") {
+          span.tags?.push({ key: "interventions.enabled", type: "bool", value: false });
+        }
+      }
+    }
+    expect(parseFlagStates(body).every((s) => s.interventionsEnabled === false)).toBe(true);
+    expect(parseFlagStates(games).every((s) => s.interventionsEnabled === null)).toBe(true);
   });
 
   it("UC-035/A3 no agent.flag_state span (an agent image before #2059) is a hint, not an error", () => {

@@ -112,6 +112,7 @@ func flagStateAttributes(snapshot flags.Snapshot, c gamecontext.GameContext, mod
 		attribute.String(AttrFlagStateTrigger, trigger),
 	}
 	attrs = append(attrs, layerStateAttributes(&state)...)
+	attrs = append(attrs, attribute.Bool(AttrInterventionsEnabled, snapshot.InterventionsEnabled))
 	return append(attrs,
 		attribute.String(AttrDecideBackendRequested, requestedBackend(snapshot)),
 		attribute.Float64(AttrDecideActThreshold, snapshot.Decision.ActConfidenceThreshold),
