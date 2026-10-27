@@ -32,6 +32,16 @@
       },
       "defaultVariant": "rust",
       "targeting": {}
+    },
+    "rust_hid.output_rate_hz": {
+      "state": "ENABLED",
+      "variants": {
+        "slow": 10,
+        "normal": 20,
+        "fast": 30,
+        "max": 60
+      },
+      "defaultVariant": "normal"
     }
   }
 }
