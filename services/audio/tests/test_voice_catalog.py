@@ -28,11 +28,11 @@ _JOUST_UNUSED = {
     "explosiondeath", "game_over", "werewolf intro_1", "werewolf reveal 2", "red team win",
     "orange team win", "pink team win", "purple team win",
 }  # fmt: skip
+# ivy-only "-32" duplicates still on disk; eight more were deleted by maintainer decision (#2147).
 _JOUST_32 = {
-    "1 minute", "10 werewolf", "3 minutes", "30 werewolf", "5 minutes", "Fakedout", "FakedoutCounter",
-    "blue team win", "countered", "cyan team win", "explosiondeath", "green team win", "human win",
-    "magenta team win", "orange team win", "pink team win", "purple team win", "red team win", "traitor win",
-    "werewolf intro", "werewolf reveal 2", "werewolf reveal", "werewolf win", "yellow team win",
+    "10 werewolf", "3 minutes", "5 minutes", "FakedoutCounter", "blue team win", "green team win", "human win",
+    "magenta team win", "orange team win", "pink team win", "purple team win", "red team win", "werewolf intro",
+    "werewolf reveal 2", "werewolf reveal", "yellow team win",
 }  # fmt: skip
 _COMMANDER = {
     "10 seconds begins", "blue overdrive", "blue revive", "blue shift", "blue winner", "blue_power_ready",
