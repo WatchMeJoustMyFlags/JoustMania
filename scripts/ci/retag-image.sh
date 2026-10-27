@@ -16,6 +16,9 @@
 #        2 = :main does not exist (first run / fork; caller decides).
 set -euo pipefail
 
+# shellcheck source=scripts/ci/lib-image-config.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-image-config.sh"
+
 image="${1:?usage: $0 <image>}"
 : "${IMAGE_PREFIX:?IMAGE_PREFIX must be set}"
 sha="${TARGET_SHA:-${GITHUB_SHA:-}}"
@@ -31,7 +34,7 @@ trap 'rm -f "$errf"' EXIT
 # digest_of <ref>: print the manifest digest; stderr is kept in $errf so a
 # real not-found can be told from an auth/network/registry error.
 digest_of() { "$DOCKER" buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}' 2>"$errf"; }
-is_not_found() { grep -qiE 'not found|404|manifest unknown|name unknown' "$errf"; }
+is_not_found() { is_registry_not_found "$errf"; }
 
 # Source lookup: retried like the verify loop; exit 2 only for a persistent
 # not-found, any other persistent error is a failure (exit 1).

@@ -118,6 +118,8 @@ if grep -q '^pull' "$DOCKER_LOG"; then fail "retag check pulled the image"; fi
 run_reg() { bash -c "cd '$repo' && IMAGE_PREFIX=x/y CI_WORKFLOW=.github/workflows/ci.yml '$CHECK' otel-collector"; }
 expect_rc 2 "registry not found -> exit 2" env STUB_ERR="ghcr.io/x/y:main: not found" bash -c "$(declare -f run_reg); repo='$repo' CHECK='$CHECK' run_reg"
 expect_rc 1 "registry auth error -> exit 1" env STUB_ERR="denied: requested access to the resource is denied" bash -c "$(declare -f run_reg); repo='$repo' CHECK='$CHECK' run_reg"
+expect_rc 1 "port 404 error -> exit 1" env STUB_ERR="dial tcp 10.0.4.404:5000: connection refused" bash -c "$(declare -f run_reg); repo='$repo' CHECK='$CHECK' run_reg"
+expect_rc 1 "missing credential helper -> exit 1" env STUB_ERR='exec: "docker-credential-x": executable file not found in $PATH' bash -c "$(declare -f run_reg); repo='$repo' CHECK='$CHECK' run_reg"
 grep -q "registry error" "${WORK}/out" || fail "registry error message missing"
 
 echo "test-check-retag-source: ${pass} checks passed"

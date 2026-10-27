@@ -83,4 +83,9 @@ reset; set_main
 run 1 "persistent non-not-found inspect error is exit 1" FAKE_INSPECT_FAILS=99
 grep -q "cannot read" "${WORK}/out" || fail "no registry error message"
 
+reset
+run 1 "port 404 in a connection error is not a missing tag" FAKE_NOTFOUND="dial tcp 10.0.4.404:5000: connection refused"
+reset
+run 1 "missing credential helper is not a missing tag" FAKE_NOTFOUND='error getting credentials: exec: "docker-credential-x": executable file not found in $PATH'
+
 echo "OK: ${pass} checks"
