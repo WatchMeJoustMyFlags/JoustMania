@@ -516,14 +516,51 @@ class TestUC030OneWriteInFlight:
         assert any(m.game_effect.effect == pb.GAME_EFFECT_PLAYER_WARNING for m in stream.writes)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", br=["BR-026"])
-    async def test_the_agent_cue_broadcast_writes_one_at_a_time(self):
-        """UC-040 step 13: the gathered magenta cue writes are serialised on the call too."""
+    @pytest.mark.uc("UC-040", flow="main", steps=[13], br=["BR-026"])
+    async def test_the_agent_cue_never_queues_a_batch_ahead_of_a_frame_write(self):
+        """UC-040 BR-026: the cue pulses one player after the other, so a frame write waits for one pulse only."""
+        from unittest.mock import AsyncMock
+
+        from services.game_coordinator.interventions import INTERVENTION_SPECS, InterventionManager
         from services.game_coordinator.stream_writes import serialized_write
 
-        stream = OverlapCheckingStream()
-        await asyncio.gather(*(serialized_write(stream, pb.GameplayStreamControl()) for _ in range(8)))
-        assert stream.max_in_flight == 1 and len(stream.writes) == 8
+        class GatedStream:
+            def __init__(self):
+                self.order = []
+                self.in_flight = 0
+                self.max_in_flight = 0
+                self.release = asyncio.Event()
+                self.first_started = asyncio.Event()
+
+            async def write(self, message):
+                self.in_flight += 1
+                self.max_in_flight = max(self.max_in_flight, self.in_flight)
+                self.first_started.set()
+                try:
+                    await self.release.wait()
+                    self.release.clear()
+                    self.order.append(message.game_effect.serial or "frame")
+                finally:
+                    self.in_flight -= 1
+
+        stream = GatedStream()
+        players = {s: Player(serial=s, alive=True, color=(0, 255, 0)) for s in ("a", "b", "c", "d")}
+        game = type("Game", (), {"players": players, "gameplay_stream": stream})()
+        manager = InterventionManager(event_publisher=AsyncMock(), get_game=lambda: None)
+        manager._user_client = None  # the cue is on by default
+        spec = next(s for s in INTERVENTION_SPECS if s.type_id == "end_game")
+
+        cue = asyncio.create_task(manager._emit_agent_cue(spec, None, game))
+        await asyncio.wait_for(stream.first_started.wait(), timeout=1)  # pulse 1 in flight
+        frame = asyncio.create_task(serialized_write(stream, pb.GameplayStreamControl()))
+        for _ in range(5):
+            await drain()
+            stream.release.set()
+        await asyncio.wait_for(asyncio.gather(cue, frame), timeout=2)
+
+        assert stream.max_in_flight == 1
+        assert len(stream.order) == 5
+        assert stream.order[1] == "frame", stream.order  # right after the one pulse in flight
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-006", "BR-008"])

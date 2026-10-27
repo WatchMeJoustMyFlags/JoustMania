@@ -18,7 +18,10 @@ write would have taken.
 """
 
 import asyncio
+import logging
 import weakref
+
+logger = logging.getLogger(__name__)
 
 _LOCKS: "weakref.WeakKeyDictionary[object, asyncio.Lock]" = weakref.WeakKeyDictionary()
 
@@ -30,11 +33,15 @@ def _lock_for(stream: object) -> asyncio.Lock:
     return lock
 
 
-def _release_when_done(lock: asyncio.Lock):
+def _release_when_done(lock: asyncio.Lock, caller: asyncio.Task | None):
     def _done(task: asyncio.Future) -> None:
         lock.release()
-        if not task.cancelled():
-            task.exception()  # retrieved: the caller (if still waiting) gets it through the shield
+        if task.cancelled():
+            return
+        error = task.exception()  # retrieved: a caller still waiting gets it through the shield
+        if error is not None and caller is not None and (caller.cancelled() or caller.cancelling()):
+            # The caller was cancelled while this write ran on: nobody sees the failure but the log.
+            logger.debug(f"A gameplay write left running by a cancelled caller failed: {error!r}")
 
     return _done
 
@@ -55,5 +62,5 @@ async def serialized_write(stream, message) -> None:
         lock.release()
         write.result()
         return
-    write.add_done_callback(_release_when_done(lock))
+    write.add_done_callback(_release_when_done(lock, asyncio.current_task()))
     await asyncio.shield(write)

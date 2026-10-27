@@ -101,3 +101,26 @@ def test_no_gameplay_stream_write_bypasses_serialized_write():
             continue
         offenders += _raw_stream_writes(path)
     assert offenders == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-030", br=["BR-006"])
+async def test_a_failed_write_left_by_a_cancelled_caller_is_logged(caplog):
+    """The orphaned write's failure is not lost: it is logged at debug level."""
+    gate = asyncio.Event()
+
+    class FailsLater:
+        async def write(self, _message):
+            await gate.wait()
+            raise asyncio.InvalidStateError("RPC already finished")
+
+    caller = asyncio.create_task(serialized_write(FailsLater(), "m"))
+    await asyncio.sleep(0)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    with caplog.at_level("DEBUG", logger="services.game_coordinator.stream_writes"):
+        gate.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+    assert "left running by a cancelled caller failed" in caplog.text
