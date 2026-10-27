@@ -152,8 +152,13 @@ async fn follow_output_rate(rate: OutputRate) {
     let mut tick = tokio::time::interval(DRAIN_INTERVAL);
     loop {
         tick.tick().await;
-        rate.set(output_rate_hz().await);
+        refresh_output_rate(&rate).await;
     }
+}
+
+/// One follower step: the flag's current value into the writers' shared rate.
+async fn refresh_output_rate(rate: &OutputRate) {
+    rate.set(output_rate_hz().await);
 }
 
 /// `rust_hid.output_rate_hz` from the `controller` set; the code default until it resolves.
@@ -285,3 +290,84 @@ mod live_tests {
         println!("RUST_HID_LIVE_FLIP_RAN");
     }
 }
+
+/// The output rate cap's key, domain and follower (#2138 review): a wrong key or
+/// domain would silently serve the code default for good.
+#[cfg(test)]
+mod output_rate_tests {
+    use super::*;
+    use open_feature::provider::{FeatureProvider, ProviderMetadata, ResolutionDetails};
+    use open_feature::{EvaluationError, EvaluationErrorCode, EvaluationResult, StructValue};
+
+    /// Serves one int flag; everything else is FLAG_NOT_FOUND.
+    struct OneIntFlag {
+        metadata: ProviderMetadata,
+        key: &'static str,
+        value: i64,
+    }
+
+    fn not_found<T>() -> EvaluationResult<T> {
+        Err(EvaluationError::builder().code(EvaluationErrorCode::FlagNotFound).build())
+    }
+
+    #[tonic::async_trait]
+    impl FeatureProvider for OneIntFlag {
+        fn metadata(&self) -> &ProviderMetadata {
+            &self.metadata
+        }
+        async fn resolve_bool_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<bool>> {
+            not_found()
+        }
+        async fn resolve_int_value(&self, key: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<i64>> {
+            if key == self.key { Ok(ResolutionDetails::new(self.value)) } else { not_found() }
+        }
+        async fn resolve_float_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<f64>> {
+            not_found()
+        }
+        async fn resolve_string_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<String>> {
+            not_found()
+        }
+        async fn resolve_struct_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<StructValue>> {
+            not_found()
+        }
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    #[tokio::test]
+    async fn test_follower_reads_the_rate_flag_from_the_controller_domain() {
+        let rate = OutputRate::default();
+        assert_eq!(rate.hz(), DEFAULT_RATE_HZ);
+        {
+            let mut of = OpenFeature::singleton_mut().await;
+            of.set_named_provider(
+                "controller",
+                OneIntFlag {
+                    metadata: ProviderMetadata::new("test"),
+                    key: "rust_hid.output_rate_hz",
+                    value: 30,
+                },
+            )
+            .await;
+        }
+        refresh_output_rate(&rate).await;
+        assert_eq!(rate.hz(), 30, "the follower did not read rust_hid.output_rate_hz from domain controller");
+    }
+
+    // UC: UC-002 BR-005
+    #[test]
+    fn test_rate_flag_is_declared_in_the_controller_set_with_the_code_default() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../flagd/controller.json");
+        let text = std::fs::read_to_string(path).expect("services/flagd/controller.json");
+        assert!(text.contains(r#""flagSetId": "controller""#));
+        let start = text
+            .find(&format!("\"{OUTPUT_RATE_FLAG}\""))
+            .expect("rust_hid.output_rate_hz missing from controller.json");
+        let block = &text[start..text[start..].find('}').map_or(text.len(), |e| start + e)];
+        assert!(block.contains(&format!(r#""normal": {DEFAULT_RATE_HZ}"#)), "{block}");
+        let rest = &text[start..];
+        assert!(rest.contains(r#""defaultVariant": "normal""#), "default variant is not normal");
+        assert_eq!(CONTROLLER_SET, "controller");
+    }
+}
+
