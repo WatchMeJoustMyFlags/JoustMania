@@ -906,6 +906,9 @@ class GameSession:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    if done.done():  # taken in the last moment: surface its result
+                        done.result()
+                        return
                     logger.warning(
                         f"Game loop of {self.game_id} did not take the force-end within {timeout_s}s; "
                         "it stays queued and applies when the loop runs again"

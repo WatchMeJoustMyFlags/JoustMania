@@ -306,3 +306,35 @@ async def test_a_mode_force_end_failing_after_the_caller_stopped_waiting_is_logg
 
     game.force_end.assert_called_once_with("operator")
     assert any("failed after the caller stopped waiting" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.uc("UC-027", flow="A4", br=["BR-003"])
+@pytest.mark.asyncio
+async def test_a_mode_force_end_failing_right_at_the_end_of_the_wait_reaches_the_caller():
+    """The loop takes the force-end and it raises just as the wait runs out: the caller
+    gets the exception (BR-003 retry), not a "stays queued" warning."""
+    game = create_autospec(BaseGameMode, instance=True)
+    taken = threading.Event()
+
+    def fail(_reason):
+        taken.set()
+        raise RuntimeError("mode failed")
+
+    game.force_end.side_effect = fail
+    loop = _SignallingLoop()
+    game_thread = _GameThread(loop)
+    # The servicer side resumes only once the loop ran it, and the wait is already over.
+    loop.on_threadsafe = lambda: taken.wait(5.0)
+    session = _running_session(game, loop)
+
+    try:
+        with patch.object(game_session_mod, "FORCE_END_WAIT_S", 0.0):
+            async with asyncio.timeout(5.0):
+                with pytest.raises(RuntimeError, match="mode failed"):
+                    await session.force_end("operator")
+    finally:
+        loop.on_threadsafe = None
+        game_thread.stop()
+
+    game.force_end.assert_called_once_with("operator")
+    assert session.game_state == game_coordinator_pb2.GameState.RUNNING
