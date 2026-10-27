@@ -54,6 +54,9 @@ case "$*" in
     [[ -f "${S}/profile" ]] && echo "$UUID" || exit 10 ;;
   "-e no -s -g 802-11-wireless-security.psk connection show uuid $UUID")
     if [[ -f "${S}/psk-override" ]]; then cat "${S}/psk-override"; else sed -n 's/^psk=//p' "$(get keyfile-path)"; fi ;;
+  "-e no -g 802-11-wireless.ssid,802-11-wireless.channel connection show uuid $UUID")
+    if [[ -f "${S}/ssid-override" ]]; then cat "${S}/ssid-override"; else
+      sed -n 's/^ssid=//p' "$(get keyfile-path)"; sed -n 's/^channel=//p' "$(get keyfile-path)"; fi ;;
   "-g GENERAL.STATE device show "* | "-g GENERAL.STATE,"*" device show "* | "-g IP4.ADDRESS device show "*)
     dev="${*: -1}"
     [[ -f "${S}/${dev}-state" ]] || exit 10
@@ -308,6 +311,104 @@ for c in "${WORK}"/*/; do
   done
 done
 
+# --- a refused setup is never armed (review F1): enabled=no, the hook does nothing ---
+not_armed() { # <case>
+  grep -qx 'enabled=no' "${R}/etc/joustmania/hotspot.conf" || fail "$1: conf not enabled=no: $(cat "${R}/etc/joustmania/hotspot.conf" 2>/dev/null)"
+  # a Wi-Fi-only Pi whose router reboots: wlan0 down, the hook starts a check
+  echo "20 (unavailable)" >"${S}/eth0-state"; echo "30 (disconnected)" >"${S}/wlan0-state"; : >"${S}/wlan0-uuid"
+  : >"${CASE}/nmcli.argv"
+  echo 20000 >"${CASE}/now"
+  JOUSTMANIA_HOTSPOT_CONF="${R}/etc/joustmania/hotspot.conf" "${R}/usr/local/lib/joustmania/joustmania-hotspot" evaluate --once >/dev/null
+  echo 20100 >"${CASE}/now"
+  JOUSTMANIA_HOTSPOT_CONF="${R}/etc/joustmania/hotspot.conf" "${R}/usr/local/lib/joustmania/joustmania-hotspot" evaluate --once >/dev/null
+  ! grep -q "connection up" "${CASE}/nmcli.argv" || fail "$1: a refused setup brought the hotspot up later"
+}
+make_case halfarm-client
+echo "20 (unavailable)" >"${S}/eth0-state"
+echo "100 (connected)" >"${S}/wlan0-state"; echo "11111111-2222-3333-4444-555555555555" >"${S}/wlan0-uuid"
+if run_install --hold 0; then fail "halfarm-client: finished over a Wi-Fi client"; fi
+not_armed halfarm-client
+make_case halfarm-selftest; echo 40 >"${S}/ap-channel"
+run_install --hold 0 || true
+not_armed halfarm-selftest
+make_case halfarm-psk; echo 'other-pass-1' >"${S}/psk-override"
+run_install --hold 0 || true
+not_armed halfarm-psk
+make_case halfarm-ssid; printf 'Other\n36\n' >"${S}/ssid-override"
+if run_install --hold 0; then fail "halfarm-ssid: a profile with another SSID was accepted"; fi
+grep -q "did not take the new SSID or channel" "${CASE}/out" || fail "halfarm-ssid: no refusal line"
+not_armed halfarm-ssid
+# a re-install that fails disarms a working setup too
+make_case rearm
+run_install --hold 0 || fail "rearm: first install exit $?"
+grep -qx 'enabled=yes' "${R}/etc/joustmania/hotspot.conf" || fail "rearm: first install not armed"
+echo 40 >"${S}/ap-channel"
+run_install --hold 0 || true
+not_armed rearm
+
+# --- leftover hidden temp keyfiles (review F3) ----------------------------------------
+make_case tempfile
+mkdir -p "${R}/etc/NetworkManager/system-connections"
+printf 'psk=old-secret\n' >"${R}/etc/NetworkManager/system-connections/.joustmania-hotspot.123.456"
+run_install --hold 0 || fail "tempfile: exit $?"
+[[ ! -e "${R}/etc/NetworkManager/system-connections/.joustmania-hotspot.123.456" ]] || fail "tempfile: a leftover temp keyfile survived the install"
+printf 'psk=old-secret\n' >"${R}/etc/NetworkManager/system-connections/.joustmania-hotspot.789.1"
+"$INSTALL" --remove >/dev/null 2>&1 || fail "tempfile: remove exit $?"
+[[ -z "$(find "${R}/etc/NetworkManager/system-connections" -name '.joustmania-hotspot.*' 2>/dev/null)" ]] || fail "tempfile: remove left a temp keyfile"
+# a failure between render and the move leaves no temp keyfile (the EXIT trap)
+make_case tempfile-crash
+mkdir -p "${R}/etc/NetworkManager/system-connections/joustmania-hotspot.nmconnection/blocker"
+if run_install --hold 0; then fail "tempfile-crash: finished"; fi
+grep -q "cannot move the keyfile into place" "${CASE}/out" || fail "tempfile-crash: no refusal line: $(tail -n 2 "${CASE}/out")"
+[[ -z "$(find "${R}/etc/NetworkManager/system-connections" -name '.joustmania-hotspot.*')" ]] || fail "tempfile-crash: the temp keyfile with the password was left behind"
+no_psk_leak
+
+# --- --psk-stdin never reads a terminal (review F4) -----------------------------------
+make_case stdin-tty
+if command -v script >/dev/null 2>&1; then
+  script -qec "\"$INSTALL\" --psk-stdin --hold 0" /dev/null </dev/null >"${CASE}/out" 2>&1 || true
+  grep -q -- "--psk-stdin reads a pipe, not a terminal" "${CASE}/out" || fail "stdin-tty: no refusal on a terminal: $(tail -n 2 "${CASE}/out")"
+  ! installed || fail "stdin-tty: installed"
+fi
+
+# --- A8: no channel change over the hotspot (review F6) ---------------------------------
+make_case a8-channel
+mkdir -p "${R}/etc/joustmania"
+printf 'enabled=yes\nssid=JoustMania\nchannel=36\nuplink_iface=eth0\n' >"${R}/etc/joustmania/hotspot.conf"
+echo "20 (unavailable)" >"${S}/eth0-state"
+echo "100 (connected)" >"${S}/wlan0-state"; echo "$UUID" >"${S}/wlan0-uuid"
+if run_install --channel 40; then fail "a8-channel: changed the channel over the hotspot"; fi
+grep -q "cannot be tested: plug the cable in" "${CASE}/out" || fail "a8-channel: no refusal line"
+grep -qx 'channel=36' "${R}/etc/joustmania/hotspot.conf" && grep -qx 'enabled=yes' "${R}/etc/joustmania/hotspot.conf" ||
+  fail "a8-channel: the working setup was changed"
+
+# --- the self-test takes the hotspot down on Ctrl-C, SIGTERM and SIGHUP (review F2) -----
+for sg in SIGINT SIGTERM SIGHUP; do
+  make_case "signal-${sg}"
+  unset JOUSTMANIA_HOTSPOT_NOW_FILE
+  PSK_IN="$PSK" python3 -I - "$sg" "${CASE}/nmcli.argv" "$INSTALL" --psk-stdin --hold 20 >"${CASE}/out" 2>&1 <<'PY' || fail "signal-${sg}: harness"
+import os, signal, subprocess, sys, time
+sig, argv_log, cmd = getattr(signal, sys.argv[1]), sys.argv[2], sys.argv[3:]
+def dfl():
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, signal.SIG_DFL)
+p = subprocess.Popen(cmd, start_new_session=True, preexec_fn=dfl, stdin=subprocess.PIPE)
+p.stdin.write(os.environ["PSK_IN"].encode() + b"\n"); p.stdin.close()
+deadline = time.time() + 20
+while time.time() < deadline:
+    if "connection up" in open(argv_log).read():
+        break
+    time.sleep(0.1)
+time.sleep(0.5)  # into the hold
+os.killpg(p.pid, sig)
+p.wait(timeout=20)
+PY
+  grep -q "connection up uuid ${UUID}" "${CASE}/nmcli.argv" || fail "signal-${sg}: the self-test never started"
+  grep -q "connection down uuid ${UUID}" "${CASE}/nmcli.argv" || fail "signal-${sg}: the hotspot was left up"
+  [[ "$(cat "${S}/wlan0-state")" == "30 (disconnected)" ]] || fail "signal-${sg}: wlan0 is $(cat "${S}/wlan0-state")"
+  grep -qx 'enabled=no' "${R}/etc/joustmania/hotspot.conf" || fail "signal-${sg}: armed after an interrupted setup"
+done
+
 # --- A8: over the hotspot ------------------------------------------------------------
 make_case a8
 echo "20 (unavailable)" >"${S}/eth0-state"
@@ -329,27 +430,32 @@ left="$(cd "${R}" && find . -type f ! -path './boot/*' | sort | tr '\n' ' ')"
 [[ "$left" == "./etc/sysctl.d/90-joustmania-ip-forward.conf " ]] || fail "remove: left behind: $left"
 grep -q "disable --now joustmania-hotspot.timer joustmania-hotspot.service" "${CASE}/systemctl.argv" || fail "remove: units not disabled"
 
-# --- the upgrade's stale-files hint (lib-joustmania.sh) --------------------------------
-HREPO="${WORK}/hint-repo"
-g() { git -c init.defaultBranch=main -c commit.gpgsign=false -c user.name=t -c user.email=t@example.invalid -C "${HREPO}" "$@"; }
-mkdir -p "${HREPO}/scripts/setup"
-g init -q
-echo a >"${HREPO}/scripts/setup/joustmania-hotspot.sh"; echo a >"${HREPO}/README"
-g add -A; g commit -q -m one; H1="$(g rev-parse HEAD)"
-echo b >"${HREPO}/README"; g commit -q -am two; H2="$(g rev-parse HEAD)"
-echo b >"${HREPO}/scripts/setup/joustmania-hotspot.sh"; g commit -q -am three; H3="$(g rev-parse HEAD)"
+# --- the upgrade's stale-files hint (lib-joustmania.sh): installed vs checkout -----
 # shellcheck source=../setup/lib-joustmania.sh
 source "${ROOT}/scripts/setup/lib-joustmania.sh"
-touch "${WORK}/installed-helper"
-export JOUSTMANIA_HOTSPOT_INSTALLED="${WORK}/installed-helper"
-[[ -z "$(joustmania_hotspot_hint "${HREPO}" "$H1" "$H2")" ]] || fail "hint: printed without a hotspot change"
-joustmania_hotspot_hint "${HREPO}" "$H2" "$H3" | grep -q "hotspot files changed: run sudo ${HREPO}/scripts/setup/install_hotspot.sh" ||
-  fail "hint: no line for a changed helper"
-joustmania_hotspot_hint "${HREPO}" "$H3" "$H1" | grep -q "hotspot files changed" || fail "hint: no line on a rollback"
-export JOUSTMANIA_HOTSPOT_INSTALLED="${WORK}/not-installed"
-[[ -z "$(joustmania_hotspot_hint "${HREPO}" "$H2" "$H3")" ]] || fail "hint: printed although the hotspot is not installed"
-grep -q 'joustmania_hotspot_hint "$JOUSTMANIA_DIR" "$prev_ref" "$commit"' "${ROOT}/scripts/setup/joustmania-upgrade.sh" &&
-  grep -q 'joustmania_hotspot_hint "$JOUSTMANIA_DIR" "$running" "$T_REF"' "${ROOT}/scripts/setup/joustmania-upgrade.sh" ||
+make_case hint
+run_install --hold 0 || fail "hint: install exit $?"
+export JOUSTMANIA_HOTSPOT_INSTALL_ROOT="${R}"
+[[ -z "$(joustmania_hotspot_hint "${ROOT}")" ]] || fail "hint: printed although the installed copies match the checkout"
+CO="${CASE}/checkout"
+mkdir -p "${CO}/scripts/setup"
+cp "${ROOT}/scripts/setup/install_hotspot.sh" "${ROOT}/scripts/setup/joustmania-hotspot.sh" "${ROOT}/scripts/setup/joustmania-hotspot.service" \
+  "${ROOT}/scripts/setup/joustmania-hotspot.timer" "${ROOT}/scripts/setup/90-joustmania-hotspot" "${CO}/scripts/setup/"
+for f in joustmania-hotspot.sh joustmania-hotspot.service joustmania-hotspot.timer 90-joustmania-hotspot; do
+  cp "${CO}/scripts/setup/${f}" "${CASE}/keep"
+  echo '# newer' >>"${CO}/scripts/setup/${f}"
+  joustmania_hotspot_hint "${CO}" | grep -qx "hotspot files changed: run sudo ${CO}/scripts/setup/install_hotspot.sh (UC-061; the password is asked again)" ||
+    fail "hint: no line for a changed ${f}"
+  cp "${CASE}/keep" "${CO}/scripts/setup/${f}"
+done
+[[ -z "$(joustmania_hotspot_hint "${CO}")" ]] || fail "hint: printed for an identical checkout"
+rm -f "${CO}/scripts/setup/install_hotspot.sh"
+joustmania_hotspot_hint "${CO}" | grep -q "remove it with: sudo /usr/local/lib/joustmania/joustmania-hotspot remove" ||
+  fail "hint: a version without the setup does not name the installed remover"
+export JOUSTMANIA_HOTSPOT_INSTALL_ROOT="${CASE}/nothing-installed"
+[[ -z "$(joustmania_hotspot_hint "${CO}")" ]] || fail "hint: printed although the hotspot is not installed"
+unset JOUSTMANIA_HOTSPOT_INSTALL_ROOT
+[[ "$(grep -c 'joustmania_hotspot_hint "$JOUSTMANIA_DIR"' "${ROOT}/scripts/setup/joustmania-upgrade.sh")" == 2 ]] ||
   fail "hint: joustmania-upgrade does not call it on upgrade and rollback"
 
 if [[ "$fails" -gt 0 ]]; then

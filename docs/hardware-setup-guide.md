@@ -548,12 +548,14 @@ an access point, `dnsmasq-base` (installed when missing), no other DNS or DHCP
 server, and ufw or firewalld (it prints the exact allow rules; re-run with
 `--firewall-rules-added` after adding them). Then it brings the hotspot up for
 20 s as a self-test while the cable stays in: join it from a phone during those
-20 s to check the password. Only when the self-test passes is the fallback armed.
+20 s to check the password. Only when the self-test passes is the fallback armed
+(`enabled=yes` in `/etc/joustmania/hotspot.conf`); a refused or interrupted
+setup leaves `enabled=no`.
 
 The password: 8 to 63 characters, printable ASCII, no space and no backslash.
 It is stored only in the root-owned NetworkManager profile. Re-run the setup to
 change it, the SSID or the channel; over the hotspot itself your session drops
-and you rejoin with the new password.
+and you rejoin with the new password (a channel change needs the cable in).
 
 Undo: `sudo scripts/setup/install_hotspot.sh --remove` (or
 `sudo /usr/local/lib/joustmania/joustmania-hotspot remove` from any checkout).

@@ -572,6 +572,8 @@ remove() {
         "$CONF"; do
         rm -f "$f"
     done
+    # hidden temp keyfiles a crashed setup left behind (they hold the password)
+    rm -f "$ROOT/etc/NetworkManager/system-connections"/.joustmania-hotspot.*
     rm -rf "$STATE_DIR"
     systemctl daemon-reload >/dev/null 2>&1 || true
     log "removed the hotspot profile, unit, timer, hook and configuration"

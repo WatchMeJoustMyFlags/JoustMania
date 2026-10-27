@@ -478,7 +478,7 @@ do_upgrade() {
         say "unit file or LED helper changed: run sudo $JOUSTMANIA_DIR/scripts/setup/install_autostart.sh"
     fi
     local hint
-    hint="$(joustmania_hotspot_hint "$JOUSTMANIA_DIR" "$prev_ref" "$commit")"
+    hint="$(joustmania_hotspot_hint "$JOUSTMANIA_DIR")"
     [[ -z "$hint" ]] || say "$hint"
     local apply_rc=0
     apply || apply_rc=$?
@@ -623,7 +623,7 @@ do_rollback() {
     case "$rc" in
         0)
             say "rolled back to $T_REF"
-            hint="$(joustmania_hotspot_hint "$JOUSTMANIA_DIR" "$running" "$T_REF")"
+            hint="$(joustmania_hotspot_hint "$JOUSTMANIA_DIR")"
             [[ -z "$hint" ]] || say "$hint"
             ;;
         2) die "rollback to $T_REF not applied; nothing changed: $running still runs" ;;

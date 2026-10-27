@@ -192,6 +192,12 @@ precheck() {
         fi
     fi
 }
+# A8: a channel change cannot be proven over the hotspot itself (no uplink for
+# the self-test), and a channel that fails to start would lock a cable-less Pi out
+OLD_CHANNEL="$(sed -n 's/^channel=\([0-9]\{2\}\)$/\1/p' "$CONF" 2>/dev/null | tail -n 1)"
+if hotspot_active && [[ -n "$OLD_CHANNEL" && "$OLD_CHANNEL" != "$CHANNEL" ]]; then
+    problem "changing the channel ($OLD_CHANNEL to $CHANNEL) over the hotspot cannot be tested: plug the cable in and re-run (UC-061 A8)"
+fi
 precheck
 if ((${#problems[@]})); then
     for p in "${problems[@]}"; do echo "install_hotspot: REFUSED: $p" >&2; done
@@ -208,9 +214,27 @@ fi
 # --- the password (BR-004) ---------------------------------------------------------
 PSK=""
 TMP_KEYFILE=""
+CONF_WRITTEN=0
+ARMED=0
+# write_conf yes|no: the settings, atomically. `enabled=yes` only once the
+# self-test passed (or A8): until then neither the hook nor the timer may bring
+# the hotspot up (a refused setup must never leave a half-armed fallback)
+write_conf() {
+    local tmp="$CONF_DIR/.hotspot.conf.$$"
+    {
+        echo "# Stage hotspot settings (UC-061 BR-010), written by install_hotspot.sh; no password here"
+        echo "enabled=$1"
+        echo "ssid=$SSID"
+        echo "channel=$CHANNEL"
+        echo "uplink_iface=$UPLINK"
+    } >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$CONF"
+}
 cleanup() {
     PSK=""
     [[ -n "$TMP_KEYFILE" ]] && rm -f "$TMP_KEYFILE"
+    if ((CONF_WRITTEN && !ARMED)); then
+        write_conf no && echo "install_hotspot: the fallback is NOT armed (enabled=no in $CONF)" >&2
+    fi
 }
 trap cleanup EXIT
 
@@ -224,6 +248,7 @@ if [[ -n "$PSK_FILE" ]]; then
     [[ "$(stat -c %U "$PSK_FILE")" == "$caller" ]] || die "--psk-file must be owned by $caller"
     IFS= read -r PSK <"$PSK_FILE" || [[ -n "$PSK" ]] || die "--psk-file is empty"
 elif ((PSK_STDIN)); then
+    [[ ! -t 0 ]] || die "--psk-stdin reads a pipe, not a terminal (it would echo the password); run without it to be prompted"
     IFS= read -r PSK || [[ -n "$PSK" ]] || die "no password on stdin"
 else
     [[ -r /dev/tty ]] || die "no terminal for the password prompt: use --psk-file or --psk-stdin"
@@ -252,14 +277,10 @@ install "${own[@]}" -m 0755 "$SCRIPT_DIR/joustmania-hotspot.sh" "$HELPER" &&
     install "${own[@]}" -m 0644 "$SCRIPT_DIR/joustmania-hotspot.timer" "$UNIT_DIR/joustmania-hotspot.timer" &&
     install "${own[@]}" -m 0755 "$SCRIPT_DIR/90-joustmania-hotspot" "$HOOK" || die "cannot install the hotspot files"
 
-conf_tmp="$CONF_DIR/.hotspot.conf.$$"
-{
-    echo "# Stage hotspot settings (UC-061 BR-010), written by install_hotspot.sh; no password here"
-    echo "enabled=yes"
-    echo "ssid=$SSID"
-    echo "channel=$CHANNEL"
-    echo "uplink_iface=$UPLINK"
-} >"$conf_tmp" && chmod 0644 "$conf_tmp" && mv -f "$conf_tmp" "$CONF" || die "cannot write $CONF"
+CONF_WRITTEN=1
+write_conf no || die "cannot write $CONF"
+# A crash of an earlier run may have left a hidden temp keyfile with a password
+rm -f "$KEYFILE_DIR"/.joustmania-hotspot.*
 
 # Docker needs forwarding; NM's shared mode must not leave it off when the
 # hotspot goes down again (UC-061 Notes)
@@ -273,7 +294,7 @@ sysctl -q -p "$SYSCTL_FILE" >/dev/null 2>&1 || say "could not apply $SYSCTL_FILE
 TMP_KEYFILE="$KEYFILE_DIR/.joustmania-hotspot.$$.$RANDOM"
 printf '%s\n' "$PSK" | "$HELPER" render "$SCRIPT_DIR/joustmania-hotspot.nmconnection.template" "$TMP_KEYFILE" "$SSID" "$CHANNEL" ||
     die "could not render the profile"
-chmod 0600 "$TMP_KEYFILE" && mv -f "$TMP_KEYFILE" "$KEYFILE" || die "cannot move the keyfile into place"
+chmod 0600 "$TMP_KEYFILE" && mv -fT "$TMP_KEYFILE" "$KEYFILE" || die "cannot move the keyfile into place"
 TMP_KEYFILE=""
 ((EUID == 0)) && chown root:root "$KEYFILE"
 nmcli connection load "$KEYFILE" >/dev/null 2>&1 || die "nmcli connection load $KEYFILE failed"
@@ -285,6 +306,10 @@ if ! nmcli -e no -s -g 802-11-wireless-security.psk connection show uuid "$UUID"
     nmcli connection delete uuid "$UUID" >/dev/null 2>&1 || true
     rm -f "$KEYFILE"
     die "NetworkManager stored a different password than the one entered; profile removed"
+fi
+# and the SSID and channel are the new ones (a re-install finds the old profile too)
+if [[ "$(nmcli -e no -g 802-11-wireless.ssid,802-11-wireless.channel connection show uuid "$UUID" 2>/dev/null)" != "$SSID"$'\n'"$CHANNEL" ]]; then
+    die "NetworkManager did not take the new SSID or channel from $KEYFILE"
 fi
 say "profile joustmania-hotspot loaded (SSID '$SSID', 5 GHz channel $CHANNEL)"
 
@@ -305,7 +330,12 @@ else
     fi
 fi
 
-systemctl enable --now joustmania-hotspot.timer >/dev/null || die "cannot enable joustmania-hotspot.timer"
+write_conf yes || die "cannot write $CONF"
+ARMED=1
+systemctl enable --now joustmania-hotspot.timer >/dev/null || {
+    ARMED=0
+    die "cannot enable joustmania-hotspot.timer"
+}
 if ((HOTSPOT_ACTIVE)); then
     say "you will be disconnected in a few seconds; rejoin '$SSID' with the new password"
     systemd-run --no-block --collect --unit=joustmania-hotspot-reapply --on-active=5 \
