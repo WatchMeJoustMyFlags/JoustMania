@@ -60,6 +60,8 @@ NOOP = "noop"
 
 # Layer keys and the setting each one steps (UC-015 BR-011).
 LAYER_OPTIONS = {K1: "current_game", K2: "sensitivity", K3: "agent_level", K5: "num_teams"}
+# Tap keys that announce a setting (BR-011) and the setting whose label they say first.
+ANNOUNCE_OPTIONS = {K2: "sensitivity", K3: "agent_level", K5: "num_teams", K7: "decision.backend"}
 LOBBY_ONLY_OPTIONS = frozenset({"current_game", "sensitivity", "num_teams", "game_instructions"})
 # UC-044 decision backends in knob order (BR-004; clamped, no wrap) and the `user/audio_volume.master`
 # variants low to high (flags.md §9; `mute` is the pad's mute, BR-006): lib/setting_ladders.py, the
@@ -182,7 +184,7 @@ class Actions:
         return "announce", OK
 
     async def _announce(self, key: str, status) -> None:
-        """Taps of K2, K3, K5 and K7 announce the value read from `GetMenuStatus` (BR-011)."""
+        """Taps of K2, K3, K5 and K7 announce the label, then the value read from `GetMenuStatus` (BR-011)."""
         voice = None
         if key == K2 and 0 <= status.sensitivity < len(cues.SENSITIVITY_VOICES):
             voice = cues.SENSITIVITY_VOICES[status.sensitivity]
@@ -200,14 +202,13 @@ class Actions:
             else:
                 voice = cues.AGENT_LEVEL_VOICES.get(status.agent_level)
         elif key == K5:
-            voice = cues.NUMBER_VOICES.get(status.num_teams)
-        elif key == K7 and status.agent_backend in BACKENDS:
-            # No backend voice asset exists (no new asset in phase 1, BR-009): its 1-based knob position.
-            voice = cues.NUMBER_VOICES.get(BACKENDS.index(status.agent_backend) + 1)
+            voice = cues.NUM_TEAMS_VOICES.get(status.num_teams)
+        elif key == K7:
+            voice = cues.BACKEND_VOICES.get(status.agent_backend)  # by name (#2106)
         if voice is None:
             await self._cues.refusal()
             return
-        await self._cues.voice(voice)
+        await self._cues.announce(cues.LABEL_VOICES[ANNOUNCE_OPTIONS[key]], voice)  # in the background (BR-009)
 
     async def _agent_switch(self, status, press_status, locked: bool) -> tuple[str, str]:
         """K3 hold (step 6, BR-002, BR-003, BR-013, A10); while locked always the stop (A6).
@@ -277,7 +278,7 @@ class Actions:
             return "set_backend", REFUSED
         target, at_limit = setting_ladders.clamp_step(BACKENDS, status.agent_backend, steps)
         if at_limit:
-            await self._cues.limit()  # A7: already at the end
+            await self._cues.limit(steps > 0)  # A7: already at the end
             return "set_backend", AT_LIMIT
         return "set_backend", await self._send({"command": "set_backend", "backend": target})
 
@@ -349,7 +350,7 @@ class Actions:
             await self._cues.failure()
             return MENU_UNAVAILABLE
         error = response.error if not response.success else (response.error or OK)
-        await self._cue_for(error)
+        await self._cue_for(error, up=data.get("direction") != "down")
         return result_label(error)
 
     async def _force_end(self) -> str:
@@ -367,12 +368,12 @@ class Actions:
             return REFUSED
         return OK
 
-    async def _cue_for(self, error: str) -> None:
+    async def _cue_for(self, error: str, up: bool = True) -> None:
         """Menu error code -> pad cue. Success and failed writes are voiced by the menu itself."""
         if error in (GAME_ACTIVE, BAD_OPTION):
             await self._cues.refusal()
         elif error == AT_LIMIT:
-            await self._cues.limit()
+            await self._cues.limit(up)  # "Maximum" stepping up, "Minimum" stepping down
         elif error == STALE:
             await self._cues.cancel()
         # ok, flag_service_unavailable, failed, partial:<key>: the menu played the voice or the failure cue

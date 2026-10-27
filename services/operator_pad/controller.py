@@ -51,6 +51,7 @@ class PadController:
         self.machine.reset()
         self._press_status.clear()
         self._actions.cancel_pending()
+        self._cues.cancel_all()  # no announcement plays on after an unplug
 
     def events_dropped(self) -> None:
         """The kernel dropped input events (SYN_DROPPED, A4 step 2): a release may be lost, reset the gestures."""

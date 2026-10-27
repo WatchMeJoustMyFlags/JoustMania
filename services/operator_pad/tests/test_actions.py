@@ -7,6 +7,7 @@ import grpc
 import pytest
 
 from lib.setting_ladders import BACKENDS, preview_value
+from lib.types import Sound
 from proto import game_coordinator_pb2, menu_pb2
 from services.operator_pad import actions as actions_module
 from services.operator_pad.actions import Actions
@@ -189,6 +190,15 @@ async def test_error_codes_map_to_cues(actions, menu, cues, success, error, labe
             mock.assert_not_awaited()
 
 
+@pytest.mark.uc("UC-015", flow="A7", br=["BR-009"])
+@pytest.mark.parametrize(("steps", "up"), [(2, True), (-3, False)])
+async def test_a_menu_at_limit_says_maximum_up_and_minimum_down(actions, menu, cues, steps, up):
+    """#2106: the limit word follows the direction of the step the menu refused."""
+    menu.ProcessInput.return_value = reply(False, "at_limit")
+    await actions.dispatch(Gesture(LAYER, "K2", steps=steps), status())
+    cues.limit.assert_awaited_once_with(up)
+
+
 # --- coalescing (BR-005) --------------------------------------------------------------------
 
 
@@ -296,7 +306,7 @@ async def test_backend_already_at_the_end_is_at_limit_and_sends_nothing(actions,
     result = await actions.dispatch(Gesture(LAYER, "K7", steps=steps), status(agent_backend=current))
     assert result == ("set_backend", "at_limit")
     menu.ProcessInput.assert_not_awaited()
-    cues.limit.assert_awaited_once()
+    cues.limit.assert_awaited_once_with(steps > 0)  # "Maximum" up, "Minimum" down (#2106)
 
 
 @pytest.mark.uc("UC-015", flow="A7", br=["BR-004", "BR-005"])
@@ -495,11 +505,40 @@ async def test_unmute_without_a_remembered_variant_restores_the_default(actions,
 
 
 @pytest.mark.uc("UC-015", flow="main", br=["BR-011"])
-async def test_taps_announce_from_the_status_and_send_nothing(actions, menu, cues):
+async def test_taps_announce_the_label_then_the_value_and_send_nothing(actions, menu, cues):
+    """#2106: each tap says what it is before the value; K7 says the backend by name."""
     for key in ("K2", "K3", "K5", "K7"):
-        assert await actions.dispatch(Gesture(TAP, key), status()) == ("announce", "ok")
-    assert cues.voice.await_count == 4
+        assert await actions.dispatch(Gesture(TAP, key), status(num_teams=3)) == ("announce", "ok")
+    assert [c.args for c in cues.announce.await_args_list] == [
+        (Sound.MENU_VOX_LABEL_SENSITIVITY, Sound.MENU_VOX_SENSITIVITY_MEDIUM),
+        (Sound.MENU_VOX_LABEL_AGENT, Sound.MENU_VOX_ADMINOP_2),
+        (Sound.MENU_VOX_LABEL_TEAMS, Sound.MENU_VOX_ADMINOP_3),
+        (Sound.MENU_VOX_LABEL_BACKEND, Sound.MENU_VOX_BACKEND_CLAUDE),
+    ]
+    cues.voice.assert_not_awaited()
     menu.ProcessInput.assert_not_awaited()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-011"])
+@pytest.mark.parametrize(
+    ("backend", "voice"),
+    [
+        ("rules", Sound.MENU_VOX_BACKEND_RULES),
+        ("claude", Sound.MENU_VOX_BACKEND_CLAUDE),
+        ("openai", Sound.MENU_VOX_BACKEND_OPENAI),
+        ("jev", Sound.MENU_VOX_BACKEND_JEV),
+    ],
+)
+async def test_k7_tap_says_the_backend_by_name(actions, cues, backend, voice):
+    await actions.dispatch(Gesture(TAP, "K7"), status(agent_backend=backend))
+    cues.announce.assert_awaited_once_with(Sound.MENU_VOX_LABEL_BACKEND, voice)
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-009"])
+async def test_k7_tap_with_an_unknown_backend_refuses(actions, cues):
+    await actions.dispatch(Gesture(TAP, "K7"), status(agent_backend="mystery"))
+    cues.refusal.assert_awaited_once()
+    cues.announce.assert_not_awaited()
 
 
 @pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-013"])
@@ -508,21 +547,21 @@ async def test_k3_tap_with_an_unresolved_kill_switch_refuses_never_announces_sto
     result = await actions.dispatch(Gesture(TAP, "K3"), status(agent_enabled=False, agent_enabled_state=state))
     assert result == ("announce", "ok")
     cues.refusal.assert_awaited_once()
-    cues.voice.assert_not_awaited()
+    cues.announce.assert_not_awaited()
     menu.ProcessInput.assert_not_awaited()
 
 
 @pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-013"])
 async def test_k3_tap_with_a_resolved_off_and_an_empty_level_announces_stopped(actions, cues):
     await actions.dispatch(Gesture(TAP, "K3"), status(agent_enabled=False, agent_level=""))
-    cues.voice.assert_awaited_once_with(actions_module.cues.AGENT_STOPPED_VOICE)
+    cues.announce.assert_awaited_once_with(Sound.MENU_VOX_LABEL_AGENT, actions_module.cues.AGENT_STOPPED_VOICE)
 
 
 @pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-002"])
 async def test_k3_tap_with_the_write_gate_off_announces_stopped(actions, cues):
     """#2093: a running agent whose write gate is off cannot act, so the tap says stopped."""
     await actions.dispatch(Gesture(TAP, "K3"), status(agent_interventions_enabled_state="off"))
-    cues.voice.assert_awaited_once_with(actions_module.cues.AGENT_STOPPED_VOICE)
+    cues.announce.assert_awaited_once_with(Sound.MENU_VOX_LABEL_AGENT, actions_module.cues.AGENT_STOPPED_VOICE)
 
 
 @pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-013"])
@@ -532,5 +571,5 @@ async def test_k3_tap_with_an_unresolved_write_gate_refuses(actions, menu, cues,
     result = await actions.dispatch(Gesture(TAP, "K3"), status(agent_interventions_enabled_state=state))
     assert result == ("announce", "ok")
     cues.refusal.assert_awaited_once()
-    cues.voice.assert_not_awaited()
+    cues.announce.assert_not_awaited()
     menu.ProcessInput.assert_not_awaited()
