@@ -24,6 +24,10 @@
 #    (never toggles back); an upgrade cut off after its checkout is flagged by
 #    --status and repaired by re-running it; failed checkouts change nothing and
 #    the record is written only after the checkout
+#  - guards: a rollback cut off during its restart keeps rollback_to (the rerun
+#    finishes on the target); re-running an already repaired upgrade changes
+#    nothing; a rollback and then an upgrade both cut off: the stale marker is
+#    dropped and the re-run repairs the record (previous = the rollback target)
 #  - the start limit (BR-006): every restart runs reset-failed first, so a 4th
 #    and 5th restart inside the window start; a start systemd still refuses is
 #    retried once, then reported as refused (never unhealthy, never rolled back);
@@ -184,6 +188,13 @@ case "\$1" in
     [[ -f "\$C/reset-noop" ]] || { echo 0 >"\$C/starts"; echo success >"\$C/result"; }
     exit 0 ;;
   restart | start)
+    # kill-on-restart: power loss / SIGHUP of the command during the restart
+    if [[ -f "\$C/kill-on-restart" ]]; then
+      rm -f "\$C/kill-on-restart"
+      for _ in \$(seq 50); do [[ -s "\$C/upgrade.pid" ]] && break; sleep 0.1; done
+      kill -9 "\$(cat "\$C/upgrade.pid")"
+      exit 1
+    fi
     n="\$(cat "\$C/starts")"
     if ((n >= 3)); then
       echo start-limit-hit >"\$C/result"
@@ -418,8 +429,54 @@ grep -q 'repaired the stale' "${CASE}/out.log" || fail "upgrade-cutoff: record n
 grep -q restart "${CASE}/calls.log" && fail "upgrade-cutoff: the repair restarted the unit"
 upgrade --status || fail "upgrade-cutoff: --status failed after the repair"
 grep -q 'neither recorded version' "${CASE}/out.log" && fail "upgrade-cutoff: --status still warns after the repair"
+# running the same upgrade again: the record is current, so nothing changes
+cp "${REPO}/.joustmania-release" "${CASE}/release.before"
+: >"${CASE}/calls.log"
+upgrade "${C_MAIN}" || fail "upgrade-cutoff: second rerun failed: $(tail -2 "${CASE}/out.log")"
+cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "upgrade-cutoff: the second rerun changed the record"
+grep -q restart "${CASE}/calls.log" && fail "upgrade-cutoff: the second rerun restarted the unit"
 upgrade --rollback || fail "upgrade-cutoff: --rollback after the repair failed: $(tail -2 "${CASE}/out.log")"
 [[ "$(head_of)" == "${C_V11}" ]] || fail "upgrade-cutoff: --rollback did not return to 1.1.0"
+# --rollback cut off during the restart (after the second record write): rollback_to
+# is still there, so the rerun finishes on 1.0.0 and does not toggle back
+make_case rollback-cutoff-restart "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "rollback-cutoff-restart: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/kill-on-restart"
+upgrade_killed --rollback
+[[ -f "${CASE}/kill-on-restart" ]] && fail "rollback-cutoff-restart: setup: the run was not cut off"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "rollback-cutoff-restart: setup: HEAD is not 1.0.0"
+[[ "$(rel rollback_to)" == "${C_V1}" ]] || fail "rollback-cutoff-restart: rollback_to dropped before the restart was judged"
+: >"${CASE}/calls.log"
+upgrade --rollback || fail "rollback-cutoff-restart: rerun failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "rollback-cutoff-restart: the rerun toggled back to 1.1.0"
+grep -qx "sudo systemctl restart joustmania" "${CASE}/calls.log" || fail "rollback-cutoff-restart: the rerun did not restart 1.0.0"
+grep -q '^rollback_to=' "${REPO}/.joustmania-release" && fail "rollback-cutoff-restart: rollback_to left after the judged restart"
+
+# Two cut-offs in a row: a rollback cut off (marker left), then an upgrade cut off
+# after its checkout. HEAD is neither recorded version: --status WARNs once (no
+# "rollback cut off"), the same upgrade repairs the record (previous = the
+# rollback target 1.0.0), clears the marker and restarts nothing, --rollback works
+make_case double-cutoff "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "double-cutoff: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/kill-on-images"
+upgrade_killed --rollback
+[[ "$(rel rollback_to)" == "${C_V1}" && "$(head_of)" == "${C_V1}" ]] || fail "double-cutoff: setup: rollback not cut off with its marker"
+g -C "${REPO}" checkout -q --detach "${C_MAIN}"
+printf '%s:%s\n%s:%s\n' "${GC}" "${C_MAIN}" "${AG}" "${C_MAIN}" >>"${CASE}/images.local"
+upgrade --status || fail "double-cutoff: --status failed"
+grep -q "neither recorded version" "${CASE}/out.log" || fail "double-cutoff: --status does not warn about HEAD"
+grep -q "was cut off" "${CASE}/out.log" && fail "double-cutoff: --status also warns about a rollback cut off: $(cat "${CASE}/out.log")"
+: >"${CASE}/calls.log"
+upgrade "${C_MAIN}" || fail "double-cutoff: rerun failed: $(tail -2 "${CASE}/out.log")"
+grep -q 'repaired the stale' "${CASE}/out.log" || fail "double-cutoff: record not repaired: $(tail -1 "${CASE}/out.log")"
+[[ "$(rel current_ref)" == "${C_MAIN}" && "$(rel previous_ref)" == "${C_V1}" && "$(rel previous_tag)" == 1.0.0 ]] \
+  || fail "double-cutoff: record is not current MAIN / previous 1.0.0"
+grep -q '^rollback_to=' "${REPO}/.joustmania-release" && fail "double-cutoff: stale rollback_to kept"
+grep -q restart "${CASE}/calls.log" && fail "double-cutoff: the repair restarted the unit"
+upgrade --status || fail "double-cutoff: --status failed after the repair"
+grep -qE 'neither recorded version|was cut off' "${CASE}/out.log" && fail "double-cutoff: --status still warns after the repair"
+upgrade --rollback || fail "double-cutoff: --rollback after the repair failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "double-cutoff: --rollback did not return to 1.0.0"
 # The migration cut off the same way: no record, the previous branch is lost; WARN
 make_case migrate-cutoff
 g -C "${REPO}" checkout -q --detach "${C_MAIN}"
@@ -591,6 +648,9 @@ grep -q "not on the Pi:.*${GC}:never-pulled" "${CASE}/out.log" || fail "migrate-
 g -C "${REPO}" symbolic-ref -q HEAD >/dev/null && fail "migrate-rollback: left on a branch after the refusal"
 grep -q restart "${CASE}/calls.log" && fail "migrate-rollback: the unit was restarted"
 cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "migrate-rollback: record changed"
+# switch_back_and_restore returned 2: the command says nothing changed
+grep -q "nothing changed: ${C_MAIN} still runs" "${CASE}/out.log" || fail "migrate-rollback: no 'nothing changed': $(tail -1 "${CASE}/out.log")"
+grep -q 'state failed' "${CASE}/out.log" && fail "migrate-rollback: says state failed although nothing changed"
 cp "${CASE}/env.local.orig" "${REPO}/.env.local"
 upgrade --rollback || fail "migrate-rollback: --rollback failed: $(tail -2 "${CASE}/out.log")"
 [[ "$(g -C "${REPO}" symbolic-ref -q --short HEAD)" == main && "$(head_of)" == "${C_V1}" ]] \
