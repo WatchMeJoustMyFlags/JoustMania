@@ -287,6 +287,9 @@ HOLD_CUE_FULL = 1
 HOLD_CUE_TOP_UP = 2
 HOLD_CUE_EMPTY = 3
 _HOLD_CUE_PRIORITY = {HOLD_CUE_NONE: 0, HOLD_CUE_TOP_UP: 1, HOLD_CUE_FULL: 2, HOLD_CUE_EMPTY: 3}
+# A living player's player_shield_energy is re-published after this long without one (UC-035 BR-008):
+# a dashboard opened mid-game, a reopened stream or a dropped event gets the bar back.
+HOLD_ENERGY_KEYFRAME_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -1070,6 +1073,8 @@ class BaseGameMode(ABC):
         self._hold_sound_at: dict[str, float] = {}
         # Serials granted energy since their last player_shield_energy event (source=agent, UC-035 BR-008).
         self._hold_granted_pending: set[str] = set()
+        # serial -> loop time of the last player_shield_energy (the keyframe clock, UC-035 BR-008).
+        self._hold_energy_published_at: dict[str, float] = {}
         # Set at the game end (and error teardown): no hold command after SHIELD 0 (UC-040 BR-026).
         self._hold_feedback_stopped = False
 
@@ -3749,8 +3754,13 @@ class BaseGameMode(ABC):
         """Send the marked players' hold state, in mark order, one write at a time (UC-040 BR-026)."""
         wakeup = self._hold_feedback_wakeup
         while True:
-            await wakeup.wait()
+            try:
+                await asyncio.wait_for(wakeup.wait(), timeout=HOLD_ENERGY_KEYFRAME_SECONDS)
+            except TimeoutError:
+                await self._publish_hold_energy_keyframes()
+                continue
             wakeup.clear()
+            await self._publish_hold_energy_keyframes()
             pending, self._hold_feedback_pending = self._hold_feedback_pending, {}
             granted, self._hold_granted_pending = self._hold_granted_pending, set()
             for serial, cue in pending.items():
@@ -3803,6 +3813,18 @@ class BaseGameMode(ABC):
             "remaining_ms": ms(remaining),
         }
 
+    async def _publish_hold_energy_keyframes(self) -> None:
+        """Re-publish the energy of every living player without an event for a keyframe interval (UC-035 BR-008).
+
+        Pending marks are skipped: their event follows in the same pass of the outbound task.
+        """
+        now = asyncio.get_running_loop().time()
+        for serial, player in list(self.players.items()):
+            if not player.alive or serial in self._hold_feedback_pending:
+                continue
+            if now - self._hold_energy_published_at.get(serial, -math.inf) >= HOLD_ENERGY_KEYFRAME_SECONDS:
+                await self._publish_hold_energy(serial, False)
+
     async def _publish_hold_energy(self, serial: str, granted: bool) -> None:
         """Publish a player's ``player_shield_energy`` for the dashboard bar (UC-035 BR-008); best effort.
 
@@ -3813,6 +3835,7 @@ class BaseGameMode(ABC):
         player = self.players.get(serial)
         if player is None or not player.alive or self._shield_hold is None or self._hold_feedback_stopped:
             return
+        self._hold_energy_published_at[serial] = asyncio.get_running_loop().time()
         try:
             await self.event_publisher(
                 GameEvent.PLAYER_SHIELD_ENERGY, self._hold_energy_event(player, time.time(), granted)

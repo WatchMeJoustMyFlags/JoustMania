@@ -344,3 +344,15 @@ class _RecordingSpan:
 
     def get_span_context(self):
         return INVALID_SPAN_CONTEXT
+
+
+@pytest.mark.uc("UC-035", br=["BR-008"])
+@pytest.mark.asyncio
+async def test_energy_events_never_hold_more_than_a_quarter_of_a_queue():
+    """UC-035 BR-008: a burst of energy events stops at a quarter of the queue; three quarters stay for deaths."""
+    bus = EventBus()
+    queue = await bus.subscribe("dashboard", max_queue_size=12)
+    await _publish_from_game_thread(bus, [GameEvent.PLAYER_SHIELD_ENERGY] * 8 + [GameEvent.PLAYER_DEATH] * 9)
+
+    delivered = [queue.get_nowait().event_type for _ in range(queue.qsize())]
+    assert delivered == ["player_shield_energy"] * 3 + ["player_death"] * 9

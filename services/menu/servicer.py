@@ -1213,7 +1213,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                     return result
                 game_started = True
 
-            logger.info(f"Game event received: {event.event_type}")
+            # High-rate, droppable events (the hold energy bar, UC-035 BR-008) log at DEBUG.
+            log = logger.debug if event.event_type == GameEvent.PLAYER_SHIELD_ENERGY else logger.info
+            log(f"Game event received: {event.event_type}")
 
             if GameEvent.is_game_ending(event.event_type):
                 logger.info(f"Game ended: {event.event_type}")

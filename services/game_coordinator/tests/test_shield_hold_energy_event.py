@@ -268,3 +268,33 @@ class TestUC035HoldEnergyEvent:
         await start_holding(game, clock, energy=3.0)
         await drain()
         assert [n for n, _, _ in game.gameplay_stream.effects("p1")] == ["GAME_EFFECT_SHIELD_HOLD"]
+
+
+class TestUC035HoldEnergyKeyframe:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", br=["BR-008"], flow="A4")
+    async def test_an_idle_pool_is_republished_after_the_keyframe_interval(self, game):
+        """UC-035 BR-008 / A4: with no transition, each living player's state is published again, so a
+        dashboard opened mid-game or a reopened stream gets the bar back."""
+        with patch.object(base_module, "HOLD_ENERGY_KEYFRAME_SECONDS", 0.02):
+            game._wake_hold_feedback()  # restart the wait with the short interval
+            await drain()
+            clear_events(game)
+            game.players["p2"].alive = False
+            await asyncio.sleep(0.1)
+            await drain()
+
+        p1 = events(game, "p1")
+        assert 1 <= len(p1) <= 6  # coalesced: about one per interval
+        assert p1[0]["state"] == "empty" and p1[0]["source"] == "none"
+        assert events(game, "p2") == []  # a dead player gets no keyframe
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", br=["BR-008"])
+    async def test_no_keyframe_inside_the_interval(self, game):
+        """UC-035 BR-008: a player whose event went out within the interval gets no keyframe."""
+        await drain()
+        clear_events(game)
+        await asyncio.sleep(0.05)
+        await drain()
+        assert events(game) == []
