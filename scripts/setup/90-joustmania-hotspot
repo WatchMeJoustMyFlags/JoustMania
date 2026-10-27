@@ -1,0 +1,46 @@
+#!/bin/bash
+# NetworkManager dispatcher hook for the stage hotspot (UC-061 main step 1, A1,
+# A6, A7; #2099). Installed root-owned, mode 0755, as
+# /etc/NetworkManager/dispatcher.d/90-joustmania-hotspot.
+#
+# NM calls it as `$1 = interface, $2 = action` with CONNECTION_UUID in the
+# environment. It only starts the check, it never decides: on an uplink up,
+# down or dhcp4-change, and on any wlan0 down (the hotspot's own down included,
+# A7), it runs `systemctl start --no-block joustmania-hotspot.service`. A start
+# while a check runs joins that check, and the check decides from recorded
+# state, so a burst of events neither restarts a wait nor spends a start limit
+# (A6; the unit has none). Never a restart. Nothing during shutdown.
+#
+# Test overrides: JOUSTMANIA_HOTSPOT_CONF and PATH stubs.
+set -u
+export LC_ALL=C
+CONF="${JOUSTMANIA_HOTSPOT_CONF:-/etc/joustmania/hotspot.conf}"
+iface="${1:-}"
+action="${2:-}"
+
+[[ -f "$CONF" ]] || exit 0
+
+# uplink_iface from the conf: parsed, never sourced (UC-061 BR-010)
+uplink=eth0
+while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^uplink_iface=([A-Za-z0-9_.-]{1,15})$ && "${BASH_REMATCH[1]}" != wlan0 ]]; then
+        uplink="${BASH_REMATCH[1]}"
+    fi
+done <"$CONF"
+
+case "$iface" in
+    "$uplink")
+        case "$action" in
+            up | down | dhcp4-change) ;;
+            *) exit 0 ;;
+        esac
+        ;;
+    wlan0)
+        [[ "$action" == down ]] || exit 0
+        ;;
+    *) exit 0 ;;
+esac
+
+[[ "$(systemctl is-system-running 2>/dev/null)" == stopping ]] && exit 0
+systemctl start --no-block joustmania-hotspot.service >/dev/null 2>&1
+exit 0
