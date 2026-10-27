@@ -24,7 +24,10 @@ use tracing_subscriber::EnvFilter;
 /// The gRPC port (health, pairing, controller I/O); the watchdog probes it on loopback.
 const GRPC_PORT: u16 = 50058;
 
-#[tokio::main]
+// Four runtime workers, pinned (#2125): tokio sizes the pool from
+// available_parallelism, which follows the container's cgroup CPU limit, so a
+// limit at or below 1 CPU gave ONE worker and any blocking call stalled every RPC.
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize OTLP log export (must live until end of main to flush)
     let log_provider = init_logs();

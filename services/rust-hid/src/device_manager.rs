@@ -22,6 +22,9 @@ use crate::watchdog::Heartbeat;
 /// at ~1 kHz, so 1 ms keeps up with it without busy-waiting (UC-030 step 2).
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+/// Commands handled per loop pass before the devices are polled again (#2125).
+const MAX_CMDS_PER_PASS: usize = 64;
+
 /// Discovered controller info returned from discovery.
 #[derive(Debug, Clone)]
 pub struct DiscoveredControllerInfo {
@@ -148,8 +151,9 @@ fn run_device_loop<B: HidBackend>(
     loop {
         heartbeat.beat();
 
-        // Process all pending commands (non-blocking)
-        loop {
+        // Process pending commands (non-blocking), at most MAX_CMDS_PER_PASS per
+        // pass, so a flood of commands cannot starve the poll or the heartbeat
+        for _ in 0..MAX_CMDS_PER_PASS {
             match cmd_rx.try_recv() {
                 Ok(cmd) => {
                     if !handle_command(cmd, &mut api, &mut devices, &mut stream_sender, outputs) {
@@ -695,7 +699,7 @@ mod tests {
                 let mut i = 0u32;
                 while start.elapsed() < RUN {
                     for s in &serials {
-                        router.submit(s, (i % 256) as u8, 0, 0, if i % 20 == 0 { 255 } else { 0 });
+                        router.submit(s, (i % 256) as u8, 0, 0, if i.is_multiple_of(20) { 255 } else { 0 });
                     }
                     i += 1;
                     std::thread::sleep(Duration::from_millis(10));

@@ -245,10 +245,13 @@ pub(crate) mod tests {
         Block,
     }
 
-    /// A device that records its writes: (time, report).
+    /// Every write a fake device accepted: (time, report).
+    type WriteLog = Arc<Mutex<Vec<(Instant, Vec<u8>)>>>;
+
+    /// A device that records its writes.
     #[derive(Clone)]
     pub(crate) struct RecordingDevice {
-        pub writes: Arc<Mutex<Vec<(Instant, Vec<u8>)>>>,
+        pub writes: WriteLog,
         pub mode: Arc<Mutex<WriteMode>>,
         pub release: Arc<AtomicBool>,
     }
