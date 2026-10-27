@@ -1,7 +1,7 @@
 """Tests for psmove_pairing.daemon module."""
 
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
 
@@ -170,6 +170,32 @@ class TestRun:
 
         assert usb_loop_started
         assert bt_loop_started
+
+    @pytest.mark.uc("UC-001", flow="main", steps=[7], br=["BR-010"])
+    async def test_shutdown_ends_the_led_cues(self, daemon):
+        """#2091: cancelling the daemon cancels the LED cue tasks on the controllers on USB."""
+        import asyncio
+
+        from psmove_pairing.usb_led import UsbLedCue
+
+        async def run_forever():
+            await asyncio.Event().wait()
+
+        daemon._usb_poll_loop = run_forever
+        daemon._bt_monitor_loop = run_forever
+        daemon.usb_pairing.led_cue = create_autospec(UsbLedCue, instance=True)
+
+        with (
+            patch.object(daemon, "validate_prerequisites", AsyncMock(return_value=True)),
+            patch("psmove_pairing.daemon.register_pairing_agent", AsyncMock()),
+        ):
+            task = asyncio.create_task(daemon.run())
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        daemon.usb_pairing.led_cue.close.assert_awaited_once()
 
 
 @pytest.mark.uc("UC-001", br=["BR-009"])

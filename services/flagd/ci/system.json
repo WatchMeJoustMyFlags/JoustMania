@@ -76,6 +76,16 @@
       },
       "defaultVariant": "when_idle"
     },
+    "pairing.restart_quiet_period": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "short": 10,
+        "normal": 20,
+        "long": 60
+      },
+      "defaultVariant": "normal"
+    },
     "sentinel.update_hz": {
       "state": "ENABLED",
       "variants": {
