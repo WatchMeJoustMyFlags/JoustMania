@@ -9,6 +9,10 @@
 //! a local evaluation. The provider is built in the background once flagd's sync port
 //! accepts a connection, and built again if that fails: the crate gives up on its first
 //! sync after 5 s, and a provider that never got one would serve code defaults for good.
+//!
+//! A second provider, the named domain `controller` (selector `flagSetId=controller`),
+//! serves `rust_hid.output_rate_hz`, the per-controller output rate cap (UC-002 BR-005,
+//! #2125); a 1 s follower copies it into the writers' shared `OutputRate`.
 
 use open_feature::{EvaluationContext, OpenFeature};
 use open_feature_flagd::{FlagdOptions, FlagdProvider, ResolverType};
@@ -17,8 +21,14 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tracing::{info, warn};
 
+use crate::output::{OutputRate, DEFAULT_RATE_HZ};
+
 /// The flag set rust-hid reads (`metadata.flagSetId` of services/flagd/observability.json).
 const FLAG_SET: &str = "observability";
+/// The flag set (and OpenFeature domain) of the output rate cap.
+const CONTROLLER_SET: &str = "controller";
+/// Per-controller output reports per second (services/flagd/controller.json).
+const OUTPUT_RATE_FLAG: &str = "rust_hid.output_rate_hz";
 /// flagd's sync port (in-process resolver).
 const DEFAULT_SYNC_PORT: u16 = 8015;
 /// Pause between two attempts to reach flagd: doubles from the first to the max.
@@ -37,7 +47,7 @@ static STARTED: OnceLock<()> = OnceLock::new();
 ///
 /// Until flagd has sent the first flag sync every read returns its code default.
 /// Safe to call multiple times: only the first call starts it.
-pub async fn init_flagd() {
+pub async fn init_flagd(output_rate: OutputRate) {
     if STARTED.set(()).is_err() {
         return;
     }
@@ -47,15 +57,20 @@ pub async fn init_flagd() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_SYNC_PORT);
     info!(host = %host, port = port, flag_set = FLAG_SET, "Connecting to flagd (in-process resolver)");
-    tokio::spawn(connect_when_reachable(host, port));
+    tokio::spawn(connect_when_reachable(host.clone(), port));
+    tokio::spawn(connect_controller_set(host, port, output_rate));
 }
 
 fn provider_options(host: String, port: u16) -> FlagdOptions {
+    set_provider_options(host, port, FLAG_SET)
+}
+
+fn set_provider_options(host: String, port: u16, flag_set: &str) -> FlagdOptions {
     FlagdOptions {
         host,
         port,
         resolver_type: ResolverType::InProcess,
-        selector: Some(format!("flagSetId={FLAG_SET}")),
+        selector: Some(format!("flagSetId={flag_set}")),
         retry_backoff_ms: STREAM_RETRY_BACKOFF_MS,
         retry_backoff_max_ms: STREAM_RETRY_BACKOFF_MAX_MS,
         // The cache stays on (crate default): on the in-process resolver it is purged on
@@ -103,6 +118,56 @@ pub(crate) async fn connect_when_reachable(host: String, port: u16) {
         tick.tick().await;
         grpc_rpc_spans_enabled().await;
     }
+}
+
+/// The `controller` domain: build its provider like the default one (same backoff),
+/// and copy `rust_hid.output_rate_hz` into `rate` every second, before and after
+/// the first sync (until then the read is the code default).
+async fn connect_controller_set(host: String, port: u16, rate: OutputRate) {
+    tokio::spawn(follow_output_rate(rate));
+    let mut pause = FIRST_PAUSE;
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        if reachable(&host, port).await {
+            match FlagdProvider::new(set_provider_options(host.clone(), port, CONTROLLER_SET)).await {
+                Ok(provider) => {
+                    let mut of = OpenFeature::singleton_mut().await;
+                    of.set_named_provider(CONTROLLER_SET, provider).await;
+                    drop(of);
+                    info!(attempt, flag_set = CONTROLLER_SET, "OpenFeature flagd provider synced (in-process)");
+                    return;
+                }
+                Err(e) => {
+                    warn!(attempt, flag_set = CONTROLLER_SET, error = %e, "flagd provider got no first sync; flags use defaults, retrying")
+                }
+            }
+        }
+        tokio::time::sleep(pause).await;
+        pause = (pause * 2).min(MAX_PAUSE);
+    }
+}
+
+async fn follow_output_rate(rate: OutputRate) {
+    let mut tick = tokio::time::interval(DRAIN_INTERVAL);
+    loop {
+        tick.tick().await;
+        refresh_output_rate(&rate).await;
+    }
+}
+
+/// One follower step: the flag's current value into the writers' shared rate.
+async fn refresh_output_rate(rate: &OutputRate) {
+    rate.set(output_rate_hz().await);
+}
+
+/// `rust_hid.output_rate_hz` from the `controller` set; the code default until it resolves.
+pub async fn output_rate_hz() -> i64 {
+    let of = OpenFeature::singleton().await;
+    of.create_named_client(CONTROLLER_SET)
+        .get_int_value(OUTPUT_RATE_FLAG, None, None)
+        .await
+        .unwrap_or(i64::from(DEFAULT_RATE_HZ))
 }
 
 /// Check if the `grpc_rpc_spans` feature flag is enabled.
@@ -225,3 +290,84 @@ mod live_tests {
         println!("RUST_HID_LIVE_FLIP_RAN");
     }
 }
+
+/// The output rate cap's key, domain and follower (#2138 review): a wrong key or
+/// domain would silently serve the code default for good.
+#[cfg(test)]
+mod output_rate_tests {
+    use super::*;
+    use open_feature::provider::{FeatureProvider, ProviderMetadata, ResolutionDetails};
+    use open_feature::{EvaluationError, EvaluationErrorCode, EvaluationResult, StructValue};
+
+    /// Serves one int flag; everything else is FLAG_NOT_FOUND.
+    struct OneIntFlag {
+        metadata: ProviderMetadata,
+        key: &'static str,
+        value: i64,
+    }
+
+    fn not_found<T>() -> EvaluationResult<T> {
+        Err(EvaluationError::builder().code(EvaluationErrorCode::FlagNotFound).build())
+    }
+
+    #[tonic::async_trait]
+    impl FeatureProvider for OneIntFlag {
+        fn metadata(&self) -> &ProviderMetadata {
+            &self.metadata
+        }
+        async fn resolve_bool_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<bool>> {
+            not_found()
+        }
+        async fn resolve_int_value(&self, key: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<i64>> {
+            if key == self.key { Ok(ResolutionDetails::new(self.value)) } else { not_found() }
+        }
+        async fn resolve_float_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<f64>> {
+            not_found()
+        }
+        async fn resolve_string_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<String>> {
+            not_found()
+        }
+        async fn resolve_struct_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<StructValue>> {
+            not_found()
+        }
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    #[tokio::test]
+    async fn test_follower_reads_the_rate_flag_from_the_controller_domain() {
+        let rate = OutputRate::default();
+        assert_eq!(rate.hz(), DEFAULT_RATE_HZ);
+        {
+            let mut of = OpenFeature::singleton_mut().await;
+            of.set_named_provider(
+                "controller",
+                OneIntFlag {
+                    metadata: ProviderMetadata::new("test"),
+                    key: "rust_hid.output_rate_hz",
+                    value: 30,
+                },
+            )
+            .await;
+        }
+        refresh_output_rate(&rate).await;
+        assert_eq!(rate.hz(), 30, "the follower did not read rust_hid.output_rate_hz from domain controller");
+    }
+
+    // UC: UC-002 BR-005
+    #[test]
+    fn test_rate_flag_is_declared_in_the_controller_set_with_the_code_default() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../flagd/controller.json");
+        let text = std::fs::read_to_string(path).expect("services/flagd/controller.json");
+        assert!(text.contains(r#""flagSetId": "controller""#));
+        let start = text
+            .find(&format!("\"{OUTPUT_RATE_FLAG}\""))
+            .expect("rust_hid.output_rate_hz missing from controller.json");
+        let block = &text[start..text[start..].find('}').map_or(text.len(), |e| start + e)];
+        assert!(block.contains(&format!(r#""normal": {DEFAULT_RATE_HZ}"#)), "{block}");
+        let rest = &text[start..];
+        assert!(rest.contains(r#""defaultVariant": "normal""#), "default variant is not normal");
+        assert_eq!(CONTROLLER_SET, "controller");
+    }
+}
+

@@ -213,7 +213,11 @@ services:
       resources:
         limits:
           memory: 64m
-          cpus: '0.25'
+          # 1.0, not 0.25 (#2125): with 3 controllers on the stage Pi rust-hid used
+          # 14.7 % of a core (mostly syscalls of the 1 kHz poll) and was CFS-throttled
+          # in 117 periods; about 9 controllers exceed 0.25, and every throttled 100 ms
+          # period stalls input, output and gRPC for up to 75 ms.
+          cpus: '1.0'
 
   # Game Coordinator Service
   game-coordinator:

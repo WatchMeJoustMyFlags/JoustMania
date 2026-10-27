@@ -8,6 +8,7 @@ mod device_manager;
 mod feature_flags;
 mod grpc_tracing;
 mod hid;
+mod output;
 mod service;
 mod watchdog;
 
@@ -23,7 +24,10 @@ use tracing_subscriber::EnvFilter;
 /// The gRPC port (health, pairing, controller I/O); the watchdog probes it on loopback.
 const GRPC_PORT: u16 = 50058;
 
-#[tokio::main]
+// Four runtime workers, pinned (#2125): tokio sizes the pool from
+// available_parallelism, which follows the container's cgroup CPU limit, so a
+// limit at or below 1 CPU gave ONE worker and any blocking call stalled every RPC.
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize OTLP log export (must live until end of main to flush)
     let log_provider = init_logs();
@@ -40,7 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _meter_provider = init_metrics();
 
     // Initialize OpenFeature flagd provider for feature flags
-    feature_flags::init_flagd().await;
+    // Output side of the device loop: per-controller writers, rate cap from a flag
+    let outputs = device_manager::DeviceOutputs::default();
+    feature_flags::init_flagd(outputs.rate.clone()).await;
 
     let addr = format!("[::]:{GRPC_PORT}").parse()?;
     info!(%addr, "Starting rust-hid gRPC server");
@@ -59,16 +65,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let device_heartbeat = watchdog::Heartbeat::new();
     let loop_heartbeat = device_heartbeat.clone();
+    let loop_outputs = outputs.clone();
     std::thread::Builder::new()
         .name("device-manager".into())
-        .spawn(move || device_manager::run_device_manager(cmd_rx, loop_heartbeat))
+        .spawn(move || device_manager::run_device_manager(cmd_rx, loop_heartbeat, loop_outputs))
         .expect("Failed to spawn device manager thread");
 
     // Self-healing (UC-002 A7, NFR-054, #2125): exits when this server or the
     // device loop hangs, so the compose restart policy brings rust-hid back.
     watchdog::spawn(format!("127.0.0.1:{GRPC_PORT}"), device_heartbeat);
 
-    let controller_io_service = ControllerIoServiceImpl::new(cmd_tx);
+    let controller_io_service = ControllerIoServiceImpl::new(cmd_tx, outputs.router.clone());
 
     health_reporter
         .set_serving::<ControllerIoServiceServer<ControllerIoServiceImpl>>()

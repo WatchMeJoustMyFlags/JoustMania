@@ -159,6 +159,8 @@ flags:
   - {set: user, key: audio_volume.master, kind: overlay, scope: [stack], persist: true, bounds: {variants: [mute, quiet, normal, loud, max]}}
   - {set: user, key: play_audio, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   - {set: controller, key: bluetooth_backend, kind: overlay, scope: [stack, fraction], bounds: {fraction: [1, 100]}}
+  # rust-hid's per-controller output rate cap (#2125, UC-002 BR-005): tunable on stage.
+  - {set: controller, key: rust_hid.output_rate_hz, kind: overlay, scope: [stack], persist: true, bounds: {variants: [slow, normal, fast, max]}}
   - {set: rollout, key: current_controller_count, kind: overlay, scope: [stack], bounds: {variants: [none, one, three, six, all]}}
   - {set: rollout, key: target_backend, kind: overlay, scope: [stack]}
   - {set: rollout, key: strategy, kind: overlay, scope: [stack]}
