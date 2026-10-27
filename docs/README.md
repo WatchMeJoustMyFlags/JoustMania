@@ -32,7 +32,7 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 | Observability | [UC-035](use_cases/UC-035.md) observe the system |
 | Agent | [UC-040](use_cases/UC-040.md) decide an intervention, [UC-041](use_cases/UC-041.md) observe a game, [UC-042](use_cases/UC-042.md) retro and proposals, [UC-043](use_cases/UC-043.md) shadow experiments and promotion, [UC-044](use_cases/UC-044.md) switch backend live, [UC-045](use_cases/UC-045.md) kill switch, [UC-046](use_cases/UC-046.md) repeatable pattern-driven shadow games (#1258) |
 | Infrastructure | [UC-050](use_cases/UC-050.md) progressive rollout, [UC-051](use_cases/UC-051.md) automatic rollback, [UC-052](use_cases/UC-052.md) manual canary (all three parked since 2026-10-19) |
-| Operations | [UC-060](use_cases/UC-060.md) operate the stage Pi (planned, #2027), [UC-061](use_cases/UC-061.md) reach the stage Pi over its own hotspot (planned, #2099) |
+| Operations | [UC-060](use_cases/UC-060.md) operate the stage Pi (planned, #2027), [UC-061](use_cases/UC-061.md) reach the stage Pi over its own hotspot (#2099) |
 | Talk | [UC-070](use_cases/UC-070.md) present the demo |
 
 ## 4. Exact contracts: technical specs

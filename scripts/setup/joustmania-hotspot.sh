@@ -137,9 +137,18 @@ read_conf() {
 
 # --- NetworkManager reads (never with secrets) --------------------------------
 
-profile_loaded() {
-    [[ "$(nmcli -g connection.uuid connection show uuid "$UUID" 2>/dev/null)" == "$UUID" ]]
+# Three-way: 0 present, 1 absent (nmcli exit 10: no such connection), 2 unknown
+# (a D-Bus error, a timeout, NetworkManager not running: say nothing is wrong)
+PROFILE_RC=0
+profile_state() {
+    local out
+    PROFILE_RC=0
+    out="$(nmcli -g connection.uuid connection show uuid "$UUID" 2>/dev/null)" || PROFILE_RC=$?
+    if ((PROFILE_RC == 0)) && [[ "$out" == "$UUID" ]]; then return 0; fi
+    ((PROFILE_RC == 10)) && return 1
+    return 2
 }
+profile_loaded() { profile_state; }
 
 # The leading number of "100 (connected)"
 state_number() {
@@ -256,7 +265,7 @@ write_status() { # $1 = state, $2 = reason
 
 # One pass: sets STATE, REASON and DONE (1 = no reason to look again soon)
 evaluate_pass() {
-    local now uplink wlan since conn_for=-1 unstable_for need up
+    local now uplink wlan since conn_for=-1 unstable_for need up rc
     STATE="" REASON="" DONE=1
     if ! read_conf; then
         hotspot_down
@@ -268,8 +277,14 @@ evaluate_pass() {
         STATE=disabled REASON="enabled=no in $CONF (UC-061 A5)"
         return
     fi
-    if ! profile_loaded; then
+    profile_state && rc=0 || rc=$?
+    if ((rc == 1)); then
+        hotspot_down
         STATE=not-set-up REASON="the joustmania-hotspot profile is not loaded in NetworkManager"
+        return
+    elif ((rc == 2)); then
+        # a failed query changes nothing: a running hotspot is the Host's only access
+        STATE=waiting REASON="cannot ask NetworkManager (rc ${PROFILE_RC})"
         return
     fi
     now="$(now)"
