@@ -73,3 +73,24 @@ class TestUnaryCallsCarryADeadline:
 
         adapter._stub.StreamIO.assert_called_once()
         assert "timeout" not in adapter._stub.StreamIO.call_args.kwargs
+
+
+class TestAdapterNameOnRediscovery:
+    """A rediscovery with an empty adapter name must not keep the old hciN (UC-035 BR-009, #2133)."""
+
+    @pytest.mark.uc("UC-002", flow="A4")
+    @pytest.mark.uc("UC-035", br=["BR-009"])
+    def test_rediscovery_with_empty_adapter_name_clears_the_old_adapter(self):
+        adapter = _make_adapter()
+        ctrl = MagicMock()
+        ctrl.serial = SERIAL
+        ctrl.product_id = 0x03D5
+        ctrl.adapter_name = "hci1"
+        adapter._stub.Discover.return_value = MagicMock(controllers=[ctrl])
+        adapter.discover()
+        assert adapter.get_adapter_for_serial(SERIAL) == "hci1"
+
+        ctrl.adapter_name = ""
+        adapter.discover()
+
+        assert adapter.get_adapter_for_serial(SERIAL) is None

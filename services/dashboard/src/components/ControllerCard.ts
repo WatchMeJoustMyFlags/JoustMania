@@ -42,6 +42,7 @@ export class ControllerCard {
   private readonly holdBudget: HTMLElement;
   private readonly holdText: HTMLElement;
   private readonly qualityElement: HTMLElement;
+  private readonly adapterElement: HTMLElement;
   private readonly identifyButton: HTMLButtonElement;
   private readonly identifyElement: HTMLElement;
   private identifyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -62,6 +63,7 @@ export class ControllerCard {
     this.holdBudget = this.element.querySelector(".hold-budget-fill")!;
     this.holdText = this.element.querySelector(".hold-energy-text")!;
     this.qualityElement = this.element.querySelector(".quality-badge")!;
+    this.adapterElement = this.element.querySelector(".adapter-badge")!;
     this.identifyButton = this.element.querySelector(".identify-btn")!;
     this.identifyElement = this.element.querySelector(".identify-status")!;
     this.identifyButton.addEventListener("click", () => void this.identify());
@@ -125,6 +127,7 @@ export class ControllerCard {
         <div class="hold-energy-text"></div>
       </div>
       <div class="quality-badge" hidden></div>
+      <div class="adapter-badge" hidden></div>
       <button type="button" class="identify-btn" title="Flash and rumble this controller">Identify</button>
       <div class="identify-status" hidden></div>
       <button type="button" class="unpair-btn" title="Remove this controller from every Bluetooth adapter">Unpair</button>
@@ -200,6 +203,18 @@ export class ControllerCard {
     this.holdFill.style.width = `${bar.fillPercent}%`;
     this.holdBudget.style.width = `${bar.budgetPercent}%`;
     this.holdText.textContent = `${bar.text} · ${bar.label}${bar.source ? ` · ${bar.source}` : ""}`;
+  }
+
+  /** The HCI adapter badge (UC-035 BR-009); undefined hides it. `stale`: VictoriaMetrics is down (A3). */
+  updateAdapter(adapter: string | undefined, stale = false) {
+    if (!adapter) {
+      this.adapterElement.hidden = true;
+      return;
+    }
+    this.adapterElement.hidden = false;
+    this.adapterElement.textContent = adapter;
+    this.adapterElement.classList.toggle("stale", stale);
+    this.adapterElement.title = stale ? `Bluetooth adapter ${adapter} (stale: VictoriaMetrics unreachable)` : `Bluetooth adapter ${adapter}`;
   }
 
   private updateQuality(quality: ConnectionQuality | undefined) {

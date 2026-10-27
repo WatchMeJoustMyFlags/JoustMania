@@ -39,11 +39,13 @@ import {
   tagString,
   parentSpanId,
 } from "./jaeger.js";
+import { vmQuery } from "./vm.js";
+import type { VmQueryResponse } from "./vm.js";
 import type { JaegerSpan, JaegerTracesResponse } from "./jaeger.js";
 
+export type { VmQueryResponse } from "./vm.js";
 export type { JaegerSpan, JaegerTag, JaegerTrace, JaegerTracesResponse, JaegerReference } from "./jaeger.js";
 
-const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
 
 /** Blocked-tally window (UC-040 A21). */
 const LOOKBACK_SECONDS = 10 * 60; // 10 minutes
@@ -172,14 +174,6 @@ export interface AgentView {
   overlay: InterventionOverlay;
 }
 
-export interface VmQueryResponse {
-  status: string;
-  data?: {
-    resultType: string;
-    result: { metric: Record<string, string>; value: [number, string] }[];
-  };
-}
-
 function toSortedTallies(m: Map<string, number>): InterventionTally[] {
   return Array.from(m.entries())
     .map(([action, blocked]) => ({ action, blocked }))
@@ -247,18 +241,6 @@ export function parseBlockedCounts(body: VmQueryResponse): BlockedTallies {
     blockedByReason: toSortedReasons(byReason),
     totalBlocked: total,
   };
-}
-
-async function vmQuery(query: string, signal?: AbortSignal): Promise<VmQueryResponse | null> {
-  try {
-    const params = new URLSearchParams({ query });
-    const url = `${BASE_URL}/victoria-metrics/api/v1/query?${params.toString()}`;
-    const response = await fetch(url, { headers: { Accept: "application/json" }, signal });
-    if (!response.ok) return null;
-    return (await response.json()) as VmQueryResponse;
-  } catch {
-    return null;
-  }
 }
 
 /** The VictoriaMetrics half of the overlay. Never throws: VM down = all n/a. */

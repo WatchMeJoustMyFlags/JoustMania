@@ -63,7 +63,7 @@ type ObjectiveRules struct {
 	// once per ranking, after the throttle. charged feeds the state the ranking
 	// builds, noShield the no-shield filter. nil (the golden harness, every older
 	// test) means no player is charged or limited.
-	shieldSource func() (charged, noShield map[string]bool)
+	shieldSource func(c gamecontext.GameContext) (charged, noShield map[string]bool)
 
 	// appliedSource is the loop's applied-value view (UC-040 A35, Loop.AppliedValues):
 	// read once per ranking. nil (the golden harness, every older test) filters
@@ -87,26 +87,27 @@ func (r *ObjectiveRules) SetChargedSource(src func() map[string]bool) {
 		r.SetShieldSource(nil)
 		return
 	}
-	r.SetShieldSource(func() (map[string]bool, map[string]bool) {
+	r.SetShieldSource(func(gamecontext.GameContext) (map[string]bool, map[string]bool) {
 		charged := src()
 		return charged, charged
 	})
 }
 
-// SetShieldSource installs the shield-ledger view (Loop.ShieldSerials). It is called
-// under the engine lock, so it must not call back into the engine.
-func (r *ObjectiveRules) SetShieldSource(src func() (charged, noShield map[string]bool)) {
+// SetShieldSource installs the shield-ledger view (Loop.ShieldSerials) for the ranked
+// game context. It is called under the engine lock, so it must not call back into the
+// engine.
+func (r *ObjectiveRules) SetShieldSource(src func(c gamecontext.GameContext) (charged, noShield map[string]bool)) {
 	r.mu.Lock()
 	r.shieldSource = src
 	r.mu.Unlock()
 }
 
 // shieldLocked takes the one ledger snapshot of a ranking. Caller holds r.mu.
-func (r *ObjectiveRules) shieldLocked() (charged, noShield map[string]bool) {
+func (r *ObjectiveRules) shieldLocked(c gamecontext.GameContext) (charged, noShield map[string]bool) {
 	if r.shieldSource == nil {
 		return nil, nil
 	}
-	return r.shieldSource()
+	return r.shieldSource(c)
 }
 
 // SetLateSeedHook installs the callback for a seed that arrived after chaos draws.
@@ -222,7 +223,7 @@ func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func(charged 
 
 	// One ledger snapshot per ranking: the no-shield filter and the state built
 	// below read the same snapshot (#1870, UC-040 A33).
-	charged, noShield := r.shieldLocked()
+	charged, noShield := r.shieldLocked(c)
 	ranked, weights, fitEval := r.rankLocked(c, now, noShield)
 	r.lastFitness = fitEval
 

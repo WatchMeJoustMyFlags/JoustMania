@@ -280,6 +280,7 @@ func buildRetroUser(ctx gamecontext.GameContext, summary gamesummary.Summary, no
 	// fully gated game reads "0 applied, 8 blocked by a gate", never "8 interventions".
 	fmt.Fprintf(&b, "  interventions: %d applied, %d blocked by a gate (permission chain or interventions_enabled)\n",
 		summary.InterventionsApplied, summary.InterventionsBlocked)
+	writeShieldHold(&b, summary.ShieldHold)
 
 	// The same rolling-narrative section as the in-game prompt (#916): the retro
 	// analyst sees the trend over the whole session (when players faded, when the
@@ -348,6 +349,35 @@ func writePlayerArc(b *strings.Builder, arc gamesummary.PlayerArc, eliminationSe
 	fmt.Fprintf(b, "    final_intensity=%s final_skill=%s",
 		floatPtrOrUnknown(arc.FinalIntensity),
 		floatPtrOrUnknown(arc.FinalSkill))
+	if len(arc.ShieldTotals) > 0 {
+		b.WriteString("\n    shield:" + sortedKV(arc.ShieldTotals))
+	}
+}
+
+// writeShieldHold renders a hold game's latched shield values (UC-042 BR-007,
+// #2096); nothing outside a hold game, so every other retro prompt is unchanged.
+func writeShieldHold(b *strings.Builder, hold *gamesummary.ShieldHoldSummary) {
+	if hold == nil {
+		return
+	}
+	fmt.Fprintf(b, "  shield_activation: %s (latched for the game)\n", hold.Activation)
+	if len(hold.Settings) > 0 {
+		b.WriteString("  shield_settings:" + sortedKV(hold.Settings) + "\n")
+	}
+}
+
+// sortedKV renders m as " k=v" pairs in key order (deterministic).
+func sortedKV(m map[string]float64) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(" " + k + "=" + strconv.FormatFloat(m[k], 'f', -1, 64))
+	}
+	return b.String()
 }
 
 // sparklineOrUnknown renders a movement sparkline string, or the "unknown" literal

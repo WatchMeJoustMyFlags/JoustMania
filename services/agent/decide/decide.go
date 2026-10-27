@@ -131,6 +131,15 @@ type PlayerState struct {
 	// UC-040 A31; #1870): the player holds an agent shield charge or has just
 	// used it, and another grant_shield is refused.
 	ShieldCharged bool `json:"shield_charged,omitempty"`
+
+	// Hold mode only (#2096, UC-040 A36, A37; decide-contract.md §1.2), set for alive
+	// players of a game whose game_shield_activation_mode is hold, from the
+	// game_player_shield_* gauges (up to one export interval old). ShieldEnergyS is
+	// the energy plus the agent's grants in flight, at most the cap; ShieldActive
+	// means the player holds the trigger and is protected now.
+	ShieldEnergyS          *float64 `json:"shield_energy_s,omitempty"`
+	ShieldBudgetRemainingS *float64 `json:"shield_budget_remaining_s,omitempty"`
+	ShieldActive           bool     `json:"shield_active,omitempty"`
 }
 
 // State is the game state a backend decides on, built from a
@@ -155,6 +164,15 @@ type State struct {
 	// Struggling is the alive player with the strictly highest current
 	// intensity when their danger is elevated or near_threshold, else "".
 	Struggling string `json:"struggling,omitempty"`
+
+	// Hold mode only (#2096; decide-contract.md §1.2): ShieldActivation is "hold"
+	// and the latched hold values come from the game_shield_hold_setting gauge.
+	// Empty / nil in every other game, so their wire and digest are unchanged.
+	ShieldActivation   string   `json:"shield_activation,omitempty"`
+	ShieldEnergyMaxS   *float64 `json:"shield_energy_max_s,omitempty"`
+	ShieldBudgetS      *float64 `json:"shield_budget_s,omitempty"`
+	ShieldRechargePerS *float64 `json:"shield_recharge_per_s,omitempty"`
+	ShieldMinBurstS    *float64 `json:"shield_min_burst_s,omitempty"`
 }
 
 // Elapsed returns ElapsedSeconds as a time.Duration.

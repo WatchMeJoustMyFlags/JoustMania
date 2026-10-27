@@ -28,6 +28,10 @@ type Annotations struct {
 	// Charged holds the serials the agent's shield-charge ledger holds a live
 	// entry for at the moment the state is built (UC-040 A31; #1870).
 	Charged map[string]bool
+	// ShieldInFlight holds, per serial, the seconds of the agent's grant_shield
+	// writes in flight (reserved, not finished) at the moment the state is built. In
+	// a hold game they are added to the player's energy (#2096; UC-040 A37).
+	ShieldInFlight map[string]float64
 }
 
 // BuildStateWith is BuildState plus the decision loop's annotations: an alive
@@ -40,6 +44,7 @@ func BuildStateWith(c gamecontext.GameContext, ann Annotations) State {
 		Players:        buildPlayers(c, ann),
 		ElapsedSeconds: elapsedSeconds(c),
 	}
+	applyHoldState(&st, c, ann)
 	st.MostHeadroom, st.Struggling = applyDangerSignals(st.Players, c.Session.DeathThreshold)
 	st.Narrative = renderNarrative(c, st)
 	st.Digest = digest(st)
@@ -64,7 +69,7 @@ func buildPlayers(c gamecontext.GameContext, ann Annotations) []PlayerState {
 			elimOrder[serial] = i + 1
 		}
 	}
-	shielded := recentlyShielded(c, ann.Charged)
+	shielded := recentlyShielded(c, ann.Charged, c.Session.IsShieldHold())
 	out := make([]PlayerState, 0, len(c.Players))
 	for key, p := range c.Players {
 		if p == nil {
@@ -117,6 +122,7 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 	if st.Struggling != "" {
 		b.WriteString(" struggling=" + st.Struggling)
 	}
+	b.WriteString(holdSessionNarrative(st))
 	b.WriteString("\n")
 
 	b.WriteString("players:\n")
@@ -134,6 +140,7 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 		writeOpt(&b, "variance", p.Variance)
 		writeOpt(&b, "skill", p.Skill)
 		writeOpt(&b, "battery", p.BatteryPct)
+		b.WriteString(holdNarrative(p, st))
 		if src := c.Players[p.Serial]; src != nil && len(src.History) > 0 {
 			b.WriteString(" movement=" + gamecontext.RenderSparkline(src.History, c.Session.DeathThreshold))
 		}
@@ -176,7 +183,20 @@ func digest(st State) string {
 		if p.ShieldCharged {
 			b.WriteString(" shield_charged=true")
 		}
+		// Hold mode only (#2096), so instant and trigger digests stay the same.
+		if st.ShieldActivation != "" {
+			b.WriteString(" shield_energy_s=" + exact(p.ShieldEnergyS) +
+				" shield_budget_remaining_s=" + exact(p.ShieldBudgetRemainingS) +
+				" shield_active=" + strconv.FormatBool(p.ShieldActive))
+		}
 		b.WriteString("\n")
+	}
+	if st.ShieldActivation != "" {
+		b.WriteString("shield_activation=" + strconv.Quote(st.ShieldActivation) +
+			" shield_energy_max_s=" + exact(st.ShieldEnergyMaxS) +
+			" shield_budget_s=" + exact(st.ShieldBudgetS) +
+			" shield_recharge_per_s=" + exact(st.ShieldRechargePerS) +
+			" shield_min_burst_s=" + exact(st.ShieldMinBurstS) + "\n")
 	}
 	b.WriteString("most_headroom=" + strconv.Quote(st.MostHeadroom) + " struggling=" + strconv.Quote(st.Struggling) + "\n")
 	b.WriteString("narrative=" + strconv.Quote(st.Narrative) + "\n")
