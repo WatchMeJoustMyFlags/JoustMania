@@ -636,3 +636,62 @@ class TestStopSound:
         response = await servicer.StopSound(audio_pb2.StopSoundRequest(), mock_grpc_context)
         assert response.success is False
         assert response.error
+
+
+class TestVoiceProfileSelection:
+    """UC-031 A4 / BR-007 (#2107): menu_voice accepts the manifest's profiles and plays through the partner."""
+
+    @pytest.fixture
+    def servicer(self, mock_audio_servicer):
+        return mock_audio_servicer
+
+    @staticmethod
+    def _flag_event(servicer, voice):
+        mock_client = MagicMock()
+        mock_client.get_boolean_value.return_value = True
+        mock_client.get_string_value.return_value = voice
+        with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
+            servicer._on_flags_changed(None)
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    @pytest.mark.parametrize("voice", ["gen_male", "gen_female"])
+    def test_accepts_generated_profiles(self, servicer, voice):
+        servicer.menu_voice = "ivy"
+        self._flag_event(servicer, voice)
+        assert servicer.menu_voice == voice
+        assert servicer._resolve_sound_path("high") == f"Menu/vox/{voice}/high.ogg"
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_flag_change_rebuilds_the_partner_table(self, servicer):
+        """ivy plays the generated label from gen_female; after a switch to aaron it plays from gen_male."""
+        servicer.menu_voice = "ivy"
+        assert servicer._resolve_sound_path("label_sensitivity") == "Menu/vox/gen_female/label_sensitivity.ogg"
+        self._flag_event(servicer, "aaron")
+        assert servicer._resolve_sound_path("label_sensitivity") == "Menu/vox/gen_male/label_sensitivity.ogg"
+        assert servicer._resolve_sound_path("high") == "Menu/vox/aaron/high.ogg"
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_unknown_voice_keeps_the_current_one_and_its_table(self, servicer):
+        self._flag_event(servicer, "gen_male")
+        self._flag_event(servicer, "robot")
+        assert servicer.menu_voice == "gen_male"
+        assert servicer._resolve_sound_path("zombie_death") == "Zombie/vox/aaron/zombie_death.ogg"
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_unknown_voice_at_start_gives_ivy(self):
+        from services.audio.servicer import AudioServiceServicer
+
+        client = MagicMock()
+        client.get_string_value.return_value = "robot"
+        with (
+            patch.object(AudioServiceServicer, "_load_play_audio_flag", return_value=False),
+            patch("lib.feature_flags.get_flag_client", return_value=client),
+            patch("lib.feature_flags.init_flag_domain"),
+        ):
+            servicer = AudioServiceServicer()
+        assert servicer.menu_voice == "ivy"
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_path_naming_a_generated_profile_is_used_as_is(self, servicer):
+        servicer.menu_voice = "ivy"
+        assert servicer._resolve_sound_path("Menu/vox/gen_male/high.ogg") == "Menu/vox/gen_male/high.ogg"

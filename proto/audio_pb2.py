@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x61udio.proto\x12\x10joustmania.audio\"h\n\x10PlaySoundRequest\x12\x11\n\tfile_path\x18\x01 \x01(\t\x12\x0e\n\x06volume\x18\x02 \x01(\x02\x12\x31\n\x08priority\x18\x03 \x01(\x0e\x32\x1f.joustmania.audio.AudioPriority\"M\n\x11PlaySoundResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x18\n\x10\x64uration_seconds\x18\x03 \x01(\x02\"\x12\n\x10StopSoundRequest\"D\n\x11StopSoundResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x0f\n\x07stopped\x18\x03 \x01(\x05\"x\n\x10PlayMusicRequest\x12\x14\n\x0c\x66ile_pattern\x18\x01 \x01(\t\x12\x0c\n\x04loop\x18\x02 \x01(\x08\x12\r\n\x05tempo\x18\x03 \x01(\x02\x12\x31\n\x08priority\x18\x04 \x01(\x0e\x32\x1f.joustmania.audio.AudioPriority\"E\n\x11PlayMusicResponse\x12\x10\n\x08track_id\x18\x01 \x01(\t\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\r\n\x05\x65rror\x18\x03 \x01(\t\"$\n\x10StopMusicRequest\x12\x10\n\x08track_id\x18\x01 \x01(\t\"3\n\x11StopMusicResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"V\n\x12\x43hangeTempoRequest\x12\x10\n\x08track_id\x18\x01 \x01(\t\x12\x11\n\tnew_tempo\x18\x02 \x01(\x02\x12\x1b\n\x13transition_duration\x18\x03 \x01(\x02\"5\n\x13\x43hangeTempoResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"\"\n\x10SetVolumeRequest\x12\x0e\n\x06volume\x18\x01 \x01(\x02\"3\n\x11SetVolumeResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t*<\n\rAudioPriority\x12\x07\n\x03LOW\x10\x00\x12\n\n\x06MEDIUM\x10\x01\x12\x08\n\x04HIGH\x10\x02\x12\x0c\n\x08\x43RITICAL\x10\x03\x32\x98\x04\n\x0c\x41udioService\x12T\n\tPlaySound\x12\".joustmania.audio.PlaySoundRequest\x1a#.joustmania.audio.PlaySoundResponse\x12T\n\tStopSound\x12\".joustmania.audio.StopSoundRequest\x1a#.joustmania.audio.StopSoundResponse\x12T\n\tPlayMusic\x12\".joustmania.audio.PlayMusicRequest\x1a#.joustmania.audio.PlayMusicResponse\x12T\n\tStopMusic\x12\".joustmania.audio.StopMusicRequest\x1a#.joustmania.audio.StopMusicResponse\x12Z\n\x0b\x43hangeTempo\x12$.joustmania.audio.ChangeTempoRequest\x1a%.joustmania.audio.ChangeTempoResponse\x12T\n\tSetVolume\x12\".joustmania.audio.SetVolumeRequest\x1a#.joustmania.audio.SetVolumeResponseB/Z-github.com/joustmania/connect-proxy/gen/audiob\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x61udio.proto\x12\x10joustmania.audio\"w\n\x10PlaySoundRequest\x12\x11\n\tfile_path\x18\x01 \x01(\t\x12\x0e\n\x06volume\x18\x02 \x01(\x02\x12\x31\n\x08priority\x18\x03 \x01(\x0e\x32\x1f.joustmania.audio.AudioPriority\x12\r\n\x05group\x18\x04 \x01(\t\"M\n\x11PlaySoundResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x18\n\x10\x64uration_seconds\x18\x03 \x01(\x02\"!\n\x10StopSoundRequest\x12\r\n\x05group\x18\x01 \x01(\t\"D\n\x11StopSoundResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x0f\n\x07stopped\x18\x03 \x01(\x05\"x\n\x10PlayMusicRequest\x12\x14\n\x0c\x66ile_pattern\x18\x01 \x01(\t\x12\x0c\n\x04loop\x18\x02 \x01(\x08\x12\r\n\x05tempo\x18\x03 \x01(\x02\x12\x31\n\x08priority\x18\x04 \x01(\x0e\x32\x1f.joustmania.audio.AudioPriority\"E\n\x11PlayMusicResponse\x12\x10\n\x08track_id\x18\x01 \x01(\t\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\r\n\x05\x65rror\x18\x03 \x01(\t\"$\n\x10StopMusicRequest\x12\x10\n\x08track_id\x18\x01 \x01(\t\"3\n\x11StopMusicResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"V\n\x12\x43hangeTempoRequest\x12\x10\n\x08track_id\x18\x01 \x01(\t\x12\x11\n\tnew_tempo\x18\x02 \x01(\x02\x12\x1b\n\x13transition_duration\x18\x03 \x01(\x02\"5\n\x13\x43hangeTempoResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"\"\n\x10SetVolumeRequest\x12\x0e\n\x06volume\x18\x01 \x01(\x02\"3\n\x11SetVolumeResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t*<\n\rAudioPriority\x12\x07\n\x03LOW\x10\x00\x12\n\n\x06MEDIUM\x10\x01\x12\x08\n\x04HIGH\x10\x02\x12\x0c\n\x08\x43RITICAL\x10\x03\x32\x98\x04\n\x0c\x41udioService\x12T\n\tPlaySound\x12\".joustmania.audio.PlaySoundRequest\x1a#.joustmania.audio.PlaySoundResponse\x12T\n\tStopSound\x12\".joustmania.audio.StopSoundRequest\x1a#.joustmania.audio.StopSoundResponse\x12T\n\tPlayMusic\x12\".joustmania.audio.PlayMusicRequest\x1a#.joustmania.audio.PlayMusicResponse\x12T\n\tStopMusic\x12\".joustmania.audio.StopMusicRequest\x1a#.joustmania.audio.StopMusicResponse\x12Z\n\x0b\x43hangeTempo\x12$.joustmania.audio.ChangeTempoRequest\x1a%.joustmania.audio.ChangeTempoResponse\x12T\n\tSetVolume\x12\".joustmania.audio.SetVolumeRequest\x1a#.joustmania.audio.SetVolumeResponseB/Z-github.com/joustmania/connect-proxy/gen/audiob\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,32 +32,32 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'audio_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'Z-github.com/joustmania/connect-proxy/gen/audio'
-  _globals['_AUDIOPRIORITY']._serialized_start=824
-  _globals['_AUDIOPRIORITY']._serialized_end=884
+  _globals['_AUDIOPRIORITY']._serialized_start=854
+  _globals['_AUDIOPRIORITY']._serialized_end=914
   _globals['_PLAYSOUNDREQUEST']._serialized_start=33
-  _globals['_PLAYSOUNDREQUEST']._serialized_end=137
-  _globals['_PLAYSOUNDRESPONSE']._serialized_start=139
-  _globals['_PLAYSOUNDRESPONSE']._serialized_end=216
-  _globals['_STOPSOUNDREQUEST']._serialized_start=218
-  _globals['_STOPSOUNDREQUEST']._serialized_end=236
-  _globals['_STOPSOUNDRESPONSE']._serialized_start=238
-  _globals['_STOPSOUNDRESPONSE']._serialized_end=306
-  _globals['_PLAYMUSICREQUEST']._serialized_start=308
-  _globals['_PLAYMUSICREQUEST']._serialized_end=428
-  _globals['_PLAYMUSICRESPONSE']._serialized_start=430
-  _globals['_PLAYMUSICRESPONSE']._serialized_end=499
-  _globals['_STOPMUSICREQUEST']._serialized_start=501
-  _globals['_STOPMUSICREQUEST']._serialized_end=537
-  _globals['_STOPMUSICRESPONSE']._serialized_start=539
-  _globals['_STOPMUSICRESPONSE']._serialized_end=590
-  _globals['_CHANGETEMPOREQUEST']._serialized_start=592
-  _globals['_CHANGETEMPOREQUEST']._serialized_end=678
-  _globals['_CHANGETEMPORESPONSE']._serialized_start=680
-  _globals['_CHANGETEMPORESPONSE']._serialized_end=733
-  _globals['_SETVOLUMEREQUEST']._serialized_start=735
-  _globals['_SETVOLUMEREQUEST']._serialized_end=769
-  _globals['_SETVOLUMERESPONSE']._serialized_start=771
-  _globals['_SETVOLUMERESPONSE']._serialized_end=822
-  _globals['_AUDIOSERVICE']._serialized_start=887
-  _globals['_AUDIOSERVICE']._serialized_end=1423
+  _globals['_PLAYSOUNDREQUEST']._serialized_end=152
+  _globals['_PLAYSOUNDRESPONSE']._serialized_start=154
+  _globals['_PLAYSOUNDRESPONSE']._serialized_end=231
+  _globals['_STOPSOUNDREQUEST']._serialized_start=233
+  _globals['_STOPSOUNDREQUEST']._serialized_end=266
+  _globals['_STOPSOUNDRESPONSE']._serialized_start=268
+  _globals['_STOPSOUNDRESPONSE']._serialized_end=336
+  _globals['_PLAYMUSICREQUEST']._serialized_start=338
+  _globals['_PLAYMUSICREQUEST']._serialized_end=458
+  _globals['_PLAYMUSICRESPONSE']._serialized_start=460
+  _globals['_PLAYMUSICRESPONSE']._serialized_end=529
+  _globals['_STOPMUSICREQUEST']._serialized_start=531
+  _globals['_STOPMUSICREQUEST']._serialized_end=567
+  _globals['_STOPMUSICRESPONSE']._serialized_start=569
+  _globals['_STOPMUSICRESPONSE']._serialized_end=620
+  _globals['_CHANGETEMPOREQUEST']._serialized_start=622
+  _globals['_CHANGETEMPOREQUEST']._serialized_end=708
+  _globals['_CHANGETEMPORESPONSE']._serialized_start=710
+  _globals['_CHANGETEMPORESPONSE']._serialized_end=763
+  _globals['_SETVOLUMEREQUEST']._serialized_start=765
+  _globals['_SETVOLUMEREQUEST']._serialized_end=799
+  _globals['_SETVOLUMERESPONSE']._serialized_start=801
+  _globals['_SETVOLUMERESPONSE']._serialized_end=852
+  _globals['_AUDIOSERVICE']._serialized_start=917
+  _globals['_AUDIOSERVICE']._serialized_end=1453
 # @@protoc_insertion_point(module_scope)

@@ -25,6 +25,9 @@ message PlaySoundRequest {
   string file_path = 1;
   float volume = 2;
   AudioPriority priority = 3;
+  // Clip group (#2107). When not empty, a clip of the same group still playing
+  // is stopped first, so the latest clip of a group wins. Empty: no group.
+  string group = 4;
 }
 
 message PlaySoundResponse {
@@ -35,9 +38,13 @@ message PlaySoundResponse {
   float duration_seconds = 3;
 }
 
-// Stops every playing sound effect (not music). Used on a force-end during the
+// Stops playing sound effects (not music): all of them, or one group. Used on a force-end during the
 // pre-game instruction clip (UC-020 A5, #1586). Nothing playing is still success.
-message StopSoundRequest {}
+message StopSoundRequest {
+  // Empty stops every playing effect (UC-020 A5); a name stops only the clips
+  // played with that PlaySoundRequest.group (#2107). Music is never stopped.
+  string group = 1;
+}
 
 message StopSoundResponse {
   bool success = 1;
