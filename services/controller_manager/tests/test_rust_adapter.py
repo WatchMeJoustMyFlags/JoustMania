@@ -357,6 +357,42 @@ class TestStreamReconnection:
         # Should not have changed the thread
         assert adapter._stream_thread is old_thread
 
+    @pytest.mark.uc("UC-002", flow="A7")
+    def test_stream_reopens_and_rediscovers_after_rust_hid_restart(self):
+        """A7 step 2: StreamIO ends when rust-hid exits; the next discover() reopens it."""
+        import threading
+
+        import grpc
+
+        adapter = _make_adapter()
+        stream_calls = []
+        second_stream_open = threading.Event()
+
+        def stream_io(_command_iterator):
+            stream_calls.append(1)
+            if len(stream_calls) == 1:
+                raise grpc.RpcError()  # rust-hid exited (watchdog, code 70)
+            second_stream_open.set()
+            return iter(())
+
+        adapter._stub.StreamIO.side_effect = stream_io
+        adapter._stub.Discover.return_value = MagicMock(controllers=[])
+
+        adapter._ensure_stream()
+        adapter._stream_thread.join(timeout=2.0)
+        assert adapter._stream_running is False  # the first stream ended
+
+        # Discovery pass after the restart: no controllers yet (A1), stream reopened
+        assert adapter.discover(force=True) == []
+        assert second_stream_open.wait(timeout=2.0)
+        assert len(stream_calls) == 2
+
+        # Controllers reappear once rust-hid has re-enumerated them (A4)
+        ctrl = MagicMock(serial="AABBCCDDEEFF", adapter_name="hci0", product_id=0x03D5)
+        adapter._stub.Discover.return_value = MagicMock(controllers=[ctrl])
+        adapter._stream_thread.join(timeout=2.0)
+        assert adapter.discover(force=True) == ["AABBCCDDEEFF"]
+
 
 class TestSensorDataConversion:
     """Tests for _sensor_data_to_dict proto -> dict conversion."""

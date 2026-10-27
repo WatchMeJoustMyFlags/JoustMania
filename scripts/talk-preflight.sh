@@ -350,6 +350,18 @@ elif jev_url.get("defaultVariant") == "blackhole":
 else:
     print(f"PASS  decision.jev.base_url = {shown(jev_url)}; blackhole variant present")
 
+# Variants the beats flip to must exist: agent-backend.sh refuses an undeclared one on stage (#743).
+jev_threshold = flags.get("decision.jev.act_confidence_threshold", {}).get("variants", {})
+missing_threshold = [v for v in ("strict", "gate") if v not in jev_threshold]
+if missing_threshold:
+    print(f"FAIL  decision.jev.act_confidence_threshold has no {'/'.join(missing_threshold)} variant: "
+          "the threshold beat (3a) cannot run (restore services/flagd/agent.json from git, restart the flag service)")
+else:
+    print("PASS  decision.jev.act_confidence_threshold has the strict and gate variants")
+if "patient" not in flags.get("decision.claude.timeout_ms", {}).get("variants", {}):
+    print("WARN  decision.claude.timeout_ms has no patient variant: the Claude timeout recovery (UC-070 A3) "
+          "cannot be flipped")
+
 # The optional second vendor (beat 6b) needs a model and a base URL variant the presenter adds.
 model = flags.get("decision.openai.model", {})
 model_value = model.get("variants", {}).get(model.get("defaultVariant"))

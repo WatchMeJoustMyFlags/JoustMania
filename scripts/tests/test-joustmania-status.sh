@@ -7,13 +7,19 @@
 #  - a game image missing: FAIL naming it, the exact joustmania-upgrade.sh
 #    command, exit 2
 #  - an observability service exited: WARN, `state: degraded`, exit 1
+#  - a game service running but unhealthy (rust-hid wedged, #2125): FAIL with
+#    `docker restart <container>`, exit 2; an unhealthy observability service: WARN
 #  - the clock not NTP synchronised: INFO only (no RTC, accepted), `state: ok`
 #  - docker not reachable: FAIL "not reachable", no image reported missing
 #  - the unit still activating, a game service not running yet: `state: starting`, exit 1
 #  - a branch checkout: WARN not pinned (A4)
 #  - no env value is printed
+#  - the ACT LED line (C-042): the recorded state and the live trigger; a stale
+#    installed helper is named
+#  - --led (ExecStartPost, #2027 PR 4): the unit still activating counts as
+#    started, the state (never `starting`) is written to led.request
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-status.sh
-# UC: UC-060 BR-005 A4 A5 BR-006
+# UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,16 +34,17 @@ fail() {
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
-SERVICES="flagd game-coordinator menu jaeger"
+SERVICES="flagd rust-hid game-coordinator menu jaeger"
 SECRET="dummy-secret-status-2027"
 
 # make_case <name>: ${WORK}/<name>/{repo,bin}; sets CASE
-#   $CASE/missing: images not on the Pi; $CASE/exited: services not running
+#   $CASE/missing: images not on the Pi; $CASE/exited: services not running;
+#   $CASE/unhealthy: services running but unhealthy
 #   $CASE/active, $CASE/result: the unit's ActiveState / Result; $CASE/ntp
 make_case() {
   CASE="${WORK}/$1"
-  mkdir -p "${CASE}/repo/scripts/setup" "${CASE}/bin" "${CASE}/status"
-  cp "${ROOT}/scripts/setup/joustmania-status.sh" "${ROOT}/scripts/setup/joustmania-compose.sh" \
+  mkdir -p "${CASE}/repo/scripts/setup" "${CASE}/bin" "${CASE}/status" "${CASE}/run" "${CASE}/ledstate" "${CASE}/sys"
+  cp "${ROOT}/scripts/setup/joustmania-status.sh" "${ROOT}/scripts/setup/joustmania-led.sh" "${ROOT}/scripts/setup/joustmania-compose.sh" \
     "${ROOT}/scripts/setup/lib-joustmania.sh" "${CASE}/repo/scripts/setup/"
   printf 'IMAGE_TAG=0.0.0-test\n' >"${CASE}/repo/.env"
   printf 'JEV_API_KEY=%s\n' "${SECRET}" >"${CASE}/repo/.env.local"
@@ -47,6 +54,7 @@ make_case() {
   git -C "${CASE}/repo" checkout -q --detach
   : >"${CASE}/missing"
   : >"${CASE}/exited"
+  : >"${CASE}/unhealthy"
   echo active >"${CASE}/active"
   echo success >"${CASE}/result"
   echo yes >"${CASE}/ntp"
@@ -62,7 +70,9 @@ case " \$* " in
     exit 0 ;;
   *" compose "*" ps "*)
     for s in ${SERVICES}; do
-      if grep -qxF "\$s" "\$C/exited"; then echo "\$s|exited|"; else echo "\$s|running|healthy"; fi
+      if grep -qxF "\$s" "\$C/exited"; then echo "\$s|exited||joustmania-\$s"
+      elif grep -qxF "\$s" "\$C/unhealthy"; then echo "\$s|running|unhealthy|joustmania-\$s"
+      else echo "\$s|running|healthy|joustmania-\$s"; fi
     done; exit 0 ;;
   " image inspect "*) grep -qxF "\$3" "\$C/missing" && exit 1; exit 0 ;;
 esac
@@ -83,11 +93,13 @@ STUB
 # run_status: returns the command's exit code; output in $CASE/out.log
 run_status() {
   env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_STATUS_DIR="${CASE}/status" \
-    bash "${CASE}/repo/scripts/setup/joustmania-status.sh" >"${CASE}/out.log" 2>&1
+    JOUSTMANIA_RUN_STATE_DIR="${CASE}/run" JOUSTMANIA_LED_STATE_DIR="${CASE}/ledstate" \
+    JOUSTMANIA_LED_SYSFS="${CASE}/sys" JOUSTMANIA_LED_HELPER="${CASE}/helper" \
+    bash "${CASE}/repo/scripts/setup/joustmania-status.sh" "$@" >"${CASE}/out.log" 2>&1
 }
-expect() { # $1 = case, $2 = expected exit, $3 = expected state
+expect() { # $1 = case, $2 = expected exit, $3 = expected state, $4.. = status args
   local rc=0
-  run_status || rc=$?
+  run_status "${@:4}" || rc=$?
   [[ "${rc}" == "$2" ]] || fail "$1: exit ${rc}, expected $2: $(cat "${CASE}/out.log")"
   [[ "$(tail -n 1 "${CASE}/out.log")" == "state: $3" ]] || fail "$1: last line is not 'state: $3': $(tail -n 1 "${CASE}/out.log")"
   grep -q "${SECRET}" "${CASE}/out.log" && fail "$1: an env value was printed"
@@ -103,6 +115,9 @@ grep -qx 'OK   service menu: running (healthy)' "${CASE}/out.log" || fail "healt
 grep -qx 'OK   images: all present' "${CASE}/out.log" || fail "healthy: images not checked"
 grep -qx 'OK   clock: NTP synchronised' "${CASE}/out.log" || fail "healthy: clock not checked"
 grep -q '^INFO last start: result=ok ts=' "${CASE}/out.log" || fail "healthy: last start not shown"
+grep -qx 'INFO led: not set since boot' "${CASE}/out.log" || fail "led: no 'not set since boot' line: $(grep 'led' "${CASE}/out.log")"
+[[ ! -e "${CASE}/run/led.request" ]] || fail "led: a plain status wrote led.request"
+grep -q '^INFO led helper: .* not installed' "${CASE}/out.log" || fail "led: a missing helper is not named"
 
 # --- start-limit-hit (A5, BR-006, #2102) -------------------------------------
 make_case start-limit
@@ -127,6 +142,20 @@ make_case obs-down
 echo jaeger >"${CASE}/exited"
 expect obs-down 1 degraded
 grep -qx 'WARN service jaeger: exited' "${CASE}/out.log" || fail "obs-down: jaeger not reported"
+
+# --- a game service running but unhealthy: FAIL with the restart (#2125) ----
+make_case unhealthy
+echo rust-hid >"${CASE}/unhealthy"
+expect unhealthy 2 failed
+grep -qx 'FAIL service rust-hid: running (unhealthy); recover with: docker restart joustmania-rust-hid' "${CASE}/out.log" \
+  || fail "unhealthy: rust-hid not FAIL with its restart command: $(grep rust-hid "${CASE}/out.log")"
+
+# --- an observability service unhealthy: degraded, with the restart ---------
+make_case obs-unhealthy
+echo jaeger >"${CASE}/unhealthy"
+expect obs-unhealthy 1 degraded
+grep -qx 'WARN service jaeger: running (unhealthy); recover with: docker restart joustmania-jaeger' "${CASE}/out.log" \
+  || fail "obs-unhealthy: jaeger not WARN with its restart command: $(grep jaeger "${CASE}/out.log")"
 
 # --- clock not synchronised -------------------------------------------------
 make_case clock
@@ -158,14 +187,53 @@ grep -q '^WARN version: not pinned (branch stage' "${CASE}/out.log" || fail "bra
 make_case fallback
 mkdir -p "${CASE}/tmpstate"
 printf 'phase=start\nresult=degraded\nts=x\n' >"${CASE}/tmpstate/start.env"
-env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_RUN_STATE_DIR="${CASE}/no-run" JOUSTMANIA_TMP_STATE_DIR="${CASE}/tmpstate" \
+env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_LED_STATE_DIR="${CASE}/ledstate" JOUSTMANIA_LED_SYSFS="${CASE}/sys" JOUSTMANIA_RUN_STATE_DIR="${CASE}/no-run" JOUSTMANIA_TMP_STATE_DIR="${CASE}/tmpstate" \
   bash "${CASE}/repo/scripts/setup/joustmania-status.sh" >"${CASE}/out.log" 2>&1 || true
 grep -qx 'INFO last start: result=degraded ts=x' "${CASE}/out.log" || fail "fallback: /tmp start.env not read: $(grep 'last start' "${CASE}/out.log")"
 mkdir -p "${CASE}/run"
 printf 'phase=start\nresult=ok\nts=y\n' >"${CASE}/run/start.env"
-env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_RUN_STATE_DIR="${CASE}/run" JOUSTMANIA_TMP_STATE_DIR="${CASE}/tmpstate" \
+env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_LED_STATE_DIR="${CASE}/ledstate" JOUSTMANIA_LED_SYSFS="${CASE}/sys" JOUSTMANIA_RUN_STATE_DIR="${CASE}/run" JOUSTMANIA_TMP_STATE_DIR="${CASE}/tmpstate" \
   bash "${CASE}/repo/scripts/setup/joustmania-status.sh" >"${CASE}/out.log" 2>&1 || true
 grep -qx 'INFO last start: result=ok ts=y' "${CASE}/out.log" || fail "fallback: the RuntimeDirectory start.env does not win: $(grep 'last start' "${CASE}/out.log")"
+
+# --- the ACT LED line (C-042) -----------------------------------------------
+make_case led-line
+mkdir -p "${CASE}/sys/ACT"
+printf 'none [timer] heartbeat default-on mmc0\n' >"${CASE}/sys/ACT/trigger"
+echo failed >"${CASE}/ledstate/state"
+printf '#!/bin/bash\n# an older copy\n' >"${CASE}/helper"
+expect led-line 0 ok
+grep -qx 'INFO led: failed (ACT trigger timer)' "${CASE}/out.log" || fail "led-line: $(grep 'led' "${CASE}/out.log")"
+grep -q '^INFO led helper: .* differs from this checkout; update it with: sudo .*install_autostart.sh' "${CASE}/out.log" \
+  || fail "led-line: a stale installed helper is not named"
+cp "${CASE}/repo/scripts/setup/joustmania-led.sh" "${CASE}/helper"
+run_status || true
+grep -q '^INFO led helper' "${CASE}/out.log" && fail "led-line: an up-to-date helper is reported"
+
+# --- --led: ExecStartPost, the start has ended (A1, A5) ---------------------
+make_case led-ok
+echo activating >"${CASE}/active"
+expect led-ok 0 ok --led
+grep -qx 'OK   unit: start ended (ExecStartPost)' "${CASE}/out.log" || fail "led-ok: activating not taken as started"
+[[ "$(cat "${CASE}/run/led.request" 2>/dev/null)" == ok ]] || fail "led-ok: led.request is not ok"
+
+make_case led-degraded
+echo activating >"${CASE}/active"
+echo jaeger >"${CASE}/exited"
+expect led-degraded 1 degraded --led
+[[ "$(cat "${CASE}/run/led.request" 2>/dev/null)" == degraded ]] || fail "led-degraded: led.request is not degraded"
+
+make_case led-failed
+echo activating >"${CASE}/active"
+echo menu >"${CASE}/exited"
+printf 'stale\n' >"${CASE}/elsewhere"
+ln -s "${CASE}/elsewhere" "${CASE}/run/led.request"
+expect led-failed 2 failed --led
+[[ ! -L "${CASE}/run/led.request" && "$(cat "${CASE}/run/led.request")" == failed ]] || fail "led-failed: led.request not replaced with failed"
+[[ "$(cat "${CASE}/elsewhere")" == stale ]] || fail "led-failed: followed a symlink"
+
+make_case led-usage
+run_status --bogus && fail "led-usage: an unknown argument exits 0"
 
 if [[ "${fails}" -ne 0 ]]; then
   exit 1

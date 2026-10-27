@@ -166,7 +166,11 @@ class PairingDaemon:
         await register_pairing_agent()
 
         # Run both loops concurrently
-        await asyncio.gather(
-            self._usb_poll_loop(),
-            self._bt_monitor_loop(),
-        )
+        try:
+            await asyncio.gather(
+                self._usb_poll_loop(),
+                self._bt_monitor_loop(),
+            )
+        finally:
+            # Shutdown: end the LED cues on the controllers on USB (UC-001 BR-010, #2091)
+            await self.usb_pairing.led_cue.close()

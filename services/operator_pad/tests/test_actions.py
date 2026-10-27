@@ -29,6 +29,8 @@ def status(**kw) -> menu_pb2.GetMenuStatusResponse:
     base.update(kw)
     # A resolved kill switch unless the test says otherwise (services.md §3.1, #2101).
     base.setdefault("agent_enabled_state", "on" if base["agent_enabled"] else "off")
+    # An open, resolved write gate unless the test says otherwise (#2093).
+    base.setdefault("agent_interventions_enabled_state", "on")
     return menu_pb2.GetMenuStatusResponse(**base)
 
 
@@ -313,13 +315,36 @@ async def test_k3_hold_stops_a_running_agent_and_resumes_a_stopped_one(actions, 
     assert sent(menu) == [{"command": "agent_switch", "direction": direction}]
 
 
-@pytest.mark.uc("UC-015", flow="A6", br=["BR-002"])
-async def test_locked_pad_still_stops_the_agent_but_never_resumes_it(actions, menu):
-    stopped = status(agent_enabled=False)
-    await actions.dispatch(Gesture(HOLD, "K3", locked=True), stopped, stopped)
-    menu.ProcessInput.assert_not_awaited()
-    await actions.dispatch(Gesture(HOLD, "K3", locked=True), status(), status())
+@pytest.mark.uc("UC-015", flow="A6", br=["BR-002", "BR-013"])
+@pytest.mark.parametrize(
+    ("at_press", "at_release"),
+    [
+        (status(), status()),
+        # Fully stopped: the stop goes out anyway and the menu's A9 makes it a no-op.
+        (status(agent_enabled=False), status(agent_enabled=False)),
+        (status(agent_level="none"), status(agent_level="none")),
+        # Only the write gate closed (#2093): the stop still ends remote decide calls.
+        (status(agent_interventions_enabled_state="off"), status(agent_interventions_enabled_state="off")),
+        # A change during the hold does not cancel a locked hold: it is kill only.
+        (status(agent_enabled=False), status()),
+    ],
+    ids=["running", "enabled-off", "level-none", "gate-closed", "changed-during-the-hold"],
+)
+async def test_locked_k3_hold_always_sends_the_stop(actions, menu, cues, at_press, at_release):
+    """A6: a locked pad is kill only; a locked K3 hold sends the stop whatever the status, never the resume."""
+    result = await actions.dispatch(Gesture(HOLD, "K3", held_ms=1200, locked=True), at_release, at_press)
+    assert result == ("agent_switch", "ok")
     assert sent(menu) == [{"command": "agent_switch", "direction": "stop"}]
+    cues.cancel.assert_not_awaited()
+
+
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-002", "BR-003"])
+async def test_agent_switch_waits_for_the_slowest_resume(actions, menu):
+    """The resume from none is 2 reads + 3 settled writes (4.0 s of flag-service deadlines, #2093)."""
+    stopped = status(agent_level="none")
+    await actions.dispatch(Gesture(HOLD, "K3", held_ms=1200), stopped, stopped)
+    assert sent(menu) == [{"command": "agent_switch", "direction": "resume"}]
+    assert menu.ProcessInput.await_args.kwargs["timeout"] >= 5.0
 
 
 @pytest.mark.uc("UC-015", flow="A10", br=["BR-009", "BR-013"])
@@ -358,6 +383,11 @@ async def test_k3_status_changed_during_the_hold_cancels_and_sends_nothing(actio
         # probe and shadow_experimental are off the ladder (BR-013).
         (status(agent_level="probe"), status(agent_level="probe")),
         (status(agent_level="shadow_experimental"), status(agent_level="shadow_experimental")),
+        # The write gate unresolvable (#2093): a closed gate would read as stopped and send the resume.
+        (status(agent_interventions_enabled_state="unknown"), status(agent_interventions_enabled_state="unknown")),
+        (status(agent_interventions_enabled_state="off"), status(agent_interventions_enabled_state="unknown")),
+        # A menu older than #2093 sends no gate state.
+        (status(agent_interventions_enabled_state=""), status(agent_interventions_enabled_state="")),
     ],
     ids=[
         "both-unread",
@@ -371,6 +401,9 @@ async def test_k3_status_changed_during_the_hold_cancels_and_sends_nothing(actio
         "enabled-state-missing",
         "level-probe",
         "level-shadow-experimental",
+        "gate-unknown",
+        "gate-lost-during-a-resume-hold",
+        "gate-state-missing",
     ],
 )
 async def test_k3_hold_with_an_unknown_status_sends_the_stop_never_the_resume(
@@ -379,6 +412,25 @@ async def test_k3_hold_with_an_unknown_status_sends_the_stop_never_the_resume(
     result = await actions.dispatch(Gesture(HOLD, "K3", held_ms=1200, locked=locked), at_release, at_press)
     assert result == ("agent_switch", "ok")
     assert sent(menu) == [{"command": "agent_switch", "direction": "stop"}]
+
+
+@pytest.mark.uc("UC-015", flow="A9", br=["BR-002", "BR-003", "BR-013"])
+async def test_k3_hold_with_the_write_gate_off_sends_the_resume(actions, menu):
+    """#2093: enabled on and a level set but the gate off is stopped, so the hold resumes (opens the gate)."""
+    gate_off = status(agent_interventions_enabled_state="off")
+    result = await actions.dispatch(Gesture(HOLD, "K3", held_ms=1200), gate_off, gate_off)
+    assert result == ("agent_switch", "ok")
+    assert sent(menu) == [{"command": "agent_switch", "direction": "resume"}]
+
+
+@pytest.mark.uc("UC-015", flow="A10", br=["BR-002", "BR-013"])
+async def test_k3_hold_whose_write_gate_opened_during_the_hold_cancels(actions, menu, cues):
+    """#2093: the gate is part of "stopped", so a gate opened by someone else mid-hold is a disagreement."""
+    at_press = status(agent_interventions_enabled_state="off")
+    result = await actions.dispatch(Gesture(HOLD, "K3", held_ms=1200), status(), at_press)
+    assert result == ("agent_switch", "cancelled")
+    menu.ProcessInput.assert_not_awaited()
+    cues.cancel.assert_awaited_once()
 
 
 @pytest.mark.uc("UC-015", flow="A6", br=["BR-009"])
@@ -447,3 +499,21 @@ async def test_k3_tap_with_an_unresolved_kill_switch_refuses_never_announces_sto
 async def test_k3_tap_with_a_resolved_off_and_an_empty_level_announces_stopped(actions, cues):
     await actions.dispatch(Gesture(TAP, "K3"), status(agent_enabled=False, agent_level=""))
     cues.voice.assert_awaited_once_with(actions_module.cues.AGENT_STOPPED_VOICE)
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-002"])
+async def test_k3_tap_with_the_write_gate_off_announces_stopped(actions, cues):
+    """#2093: a running agent whose write gate is off cannot act, so the tap says stopped."""
+    await actions.dispatch(Gesture(TAP, "K3"), status(agent_interventions_enabled_state="off"))
+    cues.voice.assert_awaited_once_with(actions_module.cues.AGENT_STOPPED_VOICE)
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-011", "BR-013"])
+@pytest.mark.parametrize("state", ["unknown", ""], ids=["unknown", "missing"])
+async def test_k3_tap_with_an_unresolved_write_gate_refuses(actions, menu, cues, state):
+    """#2093: an unresolved gate is neither announced as running nor as stopped."""
+    result = await actions.dispatch(Gesture(TAP, "K3"), status(agent_interventions_enabled_state=state))
+    assert result == ("announce", "ok")
+    cues.refusal.assert_awaited_once()
+    cues.voice.assert_not_awaited()
+    menu.ProcessInput.assert_not_awaited()

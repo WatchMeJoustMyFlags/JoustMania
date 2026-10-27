@@ -104,6 +104,14 @@ RETAG_IF = (
     " && needs.docker-build-merge.result != 'failure' && needs.docker-build-extra-merge.result != 'failure'"
 )
 check(retag == RETAG_IF, f"retag-skipped: unexpected if: {retag}")
+# #2120: the copy must be verified and must fail the job; it used to be
+# continue-on-error + a warning, so a missing :<sha> image passed CI.
+for st in jobs["retag-skipped"]["steps"]:
+    if "retag-image.sh" in st.get("run", ""):
+        check("continue-on-error" not in st, "retag-skipped: the retag-and-verify step must not be continue-on-error (#2120)")
+        break
+else:
+    check(False, "retag-skipped: no step runs scripts/ci/retag-image.sh (#2120)")
 
 # CI Complete's check step: fails on failure OR cancelled, exits 1, nothing
 # softens it (`|| true`, success(), always(), a 'skipped' check). The second
