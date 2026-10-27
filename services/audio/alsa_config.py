@@ -167,6 +167,7 @@ def _write_asound_conf(card_number: int) -> None:
 PROC_CARDS_PATH = "/proc/asound/cards"
 CARD_CHANGE_EXIT_CODE = 75  # EX_TEMPFAIL: the compose restart policy restarts the container
 CARD_WATCH_INTERVAL_S = 5.0
+CARD_STABLE_POLLS = 2  # a change must persist this many polls in a row
 
 _playback_failed: bool = False
 
@@ -224,22 +225,50 @@ def should_restart_for_card_change(configured: int, cards: list[tuple[int, str]]
     return failed
 
 
-async def watch_card_changes(configured: int, on_change, interval_s: float = CARD_WATCH_INTERVAL_S) -> None:
-    """Poll /proc/asound/cards; log one WARN and call on_change() when a restart is due."""
+async def watch_card_changes(
+    configured: int,
+    on_change,
+    interval_s: float = CARD_WATCH_INTERVAL_S,
+    is_busy=lambda: False,
+    max_polls: int | None = None,
+) -> None:
+    """Poll /proc/asound/cards; log one WARN and call on_change() when a restart is due.
+
+    Keeps only counters and flags between polls (nothing grows per poll). A change must be seen on
+    CARD_STABLE_POLLS polls in a row (a flapping card resets the count), and while is_busy() (music
+    playing, i.e. a game runs) the restart is deferred, with one log line, unless playback has failed.
+    max_polls bounds the loop (tests); None = until cancelled.
+    """
     import asyncio
 
-    while True:
+    seen = 0
+    deferred_logged = False
+    polls = 0
+    while max_polls is None or polls < max_polls:
+        polls += 1
         await asyncio.sleep(interval_s)
         cards = read_proc_cards()
-        if should_restart_for_card_change(configured, cards, _playback_failed):
-            logger.warning(
-                "ALSA card change: configured card %d, preferred card %s, cards %s, playback_failed=%s; "
-                "exiting with code %d so the container restarts and re-detects the card",
-                configured,
-                preferred_card(cards),
-                cards,
-                _playback_failed,
-                CARD_CHANGE_EXIT_CODE,
-            )
-            on_change()
-            return
+        failed = _playback_failed
+        if not should_restart_for_card_change(configured, cards, failed):
+            seen = 0
+            deferred_logged = False
+            continue
+        seen += 1
+        if not failed and seen < CARD_STABLE_POLLS:
+            continue
+        if not failed and is_busy():
+            if not deferred_logged:
+                logger.info("ALSA card change seen (cards %s); restart deferred until the music stops", cards)
+                deferred_logged = True
+            continue
+        logger.warning(
+            "ALSA card change: configured card %d, preferred card %s, cards %s, playback_failed=%s; "
+            "exiting with code %d so the container restarts and re-detects the card",
+            configured,
+            preferred_card(cards),
+            cards,
+            failed,
+            CARD_CHANGE_EXIT_CODE,
+        )
+        on_change()
+        return

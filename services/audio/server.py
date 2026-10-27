@@ -114,7 +114,13 @@ async def serve():
     if alsa_card_setting == "auto":
         from services.audio.alsa_config import get_detected_card, watch_card_changes
 
-        watcher = asyncio.create_task(watch_card_changes(get_detected_card(), _on_card_change))
+        watcher = asyncio.create_task(
+            watch_card_changes(
+                get_detected_card(),
+                _on_card_change,
+                is_busy=lambda: bool(audio_servicer.audio_manager.music_player.is_playing),
+            )
+        )
 
     await shutdown_event.wait()
 
