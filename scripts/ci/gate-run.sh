@@ -58,9 +58,12 @@
 # JOUSTMANIA_GATE_SLOT_DIR); otherwise it prints `waiting for a gate slot` once and polls.
 # The kernel releases the lock when the worker exits, also when it is killed.
 # Memory cap: every run is a systemd user scope with MemoryMax=${JOUSTMANIA_GATE_MEM:-3G}
-# and MemorySwapMax=0 (a runaway pytest grew to 14.5 GB and froze the host); without
-# `systemd-run --user` it falls back to `ulimit -v`. Exit 137 (or 143, systemd-oomd) is reported as
-# `killed: memory cap`. (A safety ceiling, C-035.)
+# (256M-99999G, else the default) and MemorySwapMax=0; a runaway pytest grew to 14.5 GB and
+# froze the host (a safety ceiling, C-035). Without `systemd-run --user` the run is uncapped
+# and prints `memory cap: none`. When the cap was active, exit 137 (cgroup OOM kill) or 143
+# (systemd stops the scope; the normal case on systemd 255) is reported as `killed: memory cap`.
+# Docker containers and a nested `systemd-run --user` in a command are NOT under the cap.
+# The commands inherit the slot fd, so children of a killed worker keep the slot until they exit.
 #
 # Exit: 0 verdict as expected (PASS, or MUTATION CAUGHT (assertion) with --expect-fail),
 #       1 any other verdict (also ERROR: killed), 2 REFUSED, 3 PENDING.
@@ -351,19 +354,22 @@ while ((!have_slot)); do
   ((announced)) || { echo "waiting for a gate slot ($SLOTS in use on this host)"; announced=1; }
   sleep 1
 done
-# Memory cap (#2210): [0-9]+[MG], else the default.
+# Memory cap (#2210): [0-9]+[MG] of at least 256M, else the default.
 MEM="${JOUSTMANIA_GATE_MEM:-3G}"
-[[ "$MEM" =~ ^([0-9]{1,5})([MG])$ ]] || MEM=3G
-[[ "$MEM" =~ ^([0-9]+)([MG])$ ]]
-MEM_KB=$((BASH_REMATCH[1] * 1024 * $([[ "${BASH_REMATCH[2]}" == G ]] && echo 1024 || echo 1)))
-CAP=()
+if [[ "$MEM" =~ ^([0-9]{1,5})([MG])$ ]]; then
+  mem_mb=$((BASH_REMATCH[1])); [[ "${BASH_REMATCH[2]}" == G ]] && mem_mb=$((mem_mb * 1024))
+  ((mem_mb >= 256)) || MEM=3G
+else
+  MEM=3G
+fi
+CAP=() CAP_ON=0
 if systemd-run --user --scope -q -p MemoryMax="$MEM" -p MemorySwapMax=0 -- true >/dev/null 2>&1; then
   CAP=(systemd-run --user --scope -q -p MemoryMax="$MEM" -p MemorySwapMax=0 --)
-  CAP_KIND=systemd
+  CAP_ON=1
+  echo "memory cap: $MEM (systemd scope, no swap)"
 else
-  CAP_KIND=ulimit
+  echo "memory cap: none"
 fi
-echo "memory cap $MEM ($CAP_KIND)"
 # Record the state this run sees, then run.
 { tree_fingerprint >"$JOB/tree"; } 2>/dev/null
 
@@ -379,14 +385,10 @@ for ((i = 1; i <= REPEAT; i++)); do
   log="$LOGS/$NAME-$i.log"
   logs+=("$log")
   start=$SECONDS
-  (
-    cd "$RUN_DIR" || exit 1
-    [[ "$CAP_KIND" == ulimit ]] && ulimit -v "$MEM_KB"
-    exec "${CAP[@]}" "${CMD[@]}"
-  ) >"$log" 2>&1 </dev/null 7>&-
+  (cd "$RUN_DIR" && exec "${CAP[@]}" "${CMD[@]}") >"$log" 2>&1 </dev/null
   rc=$?
   echo "run $i/$REPEAT: exit $rc $((SECONDS - start))s"
-  if ((rc == 137 || rc == 143)); then  # SIGKILL from the cgroup OOM killer, or systemd-oomd's SIGTERM
+  if ((CAP_ON && (rc == 137 || rc == 143))); then
     oom=$((oom + 1))
     echo "run $i/$REPEAT: killed: memory cap $MEM"
   fi

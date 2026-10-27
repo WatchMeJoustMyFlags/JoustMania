@@ -9,7 +9,6 @@ unset COMPOSE DOCKER GATE_RUN_WORKER GATE_RUN_WAIT GATE_RUN_DRY_RUN DETACH_WAIT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE_RUN="${SCRIPT_DIR}/../ci/gate-run.sh"
 WORK="$(realpath "$(mktemp -d)")"
-trap 'rm -rf "${WORK}"' EXIT
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export JOUSTMANIA_GATE_SLOTS=1 JOUSTMANIA_GATE_SLOT_DIR="${WORK}/slots"
 MAIN="${WORK}/main" WT="${WORK}/main/.worktrees/wt" LOGS="${WORK}/logs"
@@ -24,13 +23,21 @@ export GATE
 printf 'read -r _ <"$GATE"\necho held\n' >"$WT/scripts/tests/test-hold.sh"
 printf 'echo quick\n' >"$WT/scripts/tests/test-quick.sh"
 
-fail() { echo "FAIL: $*"; exit 1; }
+cleanup() {
+  exec 5<>"$GATE" 2>/dev/null && printf 'go\ngo\ngo\n' >&5 # release any blocked job
+  pkill -KILL -f "$WT/scripts/tests/" 2>/dev/null || true
+  rm -rf "${WORK}"
+}
+trap cleanup EXIT
+fail() { echo "FAIL: $*" >&2; exit 1; }
+slot_held() { ! flock -n "$WORK/slots/slot.1" true 2>/dev/null; } # false when the file is missing or free
+slot_held_probe() { [[ -e "$WORK/slots/slot.1" ]] && slot_held; }
 run() { GATE_RUN_WAIT="$1" "$GATE_RUN" --worktree "$WT" --logs "$LOGS" --name "$2" -- "scripts/tests/test-$2.sh"; }
 
 run 0 hold >"$WORK/hold.out" || true
 # wait until the first worker holds the slot
-for _ in $(seq 50); do flock -n "$WORK/slots/slot.1" true 2>/dev/null || break; sleep 0.2; done
-flock -n "$WORK/slots/slot.1" true 2>/dev/null && fail "first job does not hold slot.1"
+wait_slot() { for _ in $(seq 100); do slot_held_probe && return 0; sleep 0.2; done; return 1; }
+wait_slot || fail "first job does not hold slot.1"
 
 run 0 quick >"$WORK/quick.out" || true
 sleep 2
@@ -50,15 +57,17 @@ grep -q 'waiting for a gate slot' <<<"$out" || fail "waiting line missing from t
 # a killed worker frees the slot
 printf 'read -r _ <"$GATE"\n' >"$WT/scripts/tests/test-doomed.sh"
 run 0 doomed >/dev/null || true
-for _ in $(seq 50); do flock -n "$WORK/slots/slot.1" true 2>/dev/null || break; sleep 0.2; done
+wait_slot || fail "doomed job does not hold slot.1"
 pkill -KILL -f "gate-run.sh --_worker.*--name doomed" || fail "no doomed worker found"
 pkill -KILL -f "scripts/tests/test-doomed.sh" || true
-for _ in $(seq 25); do flock -n "$WORK/slots/slot.1" true 2>/dev/null && break; sleep 0.2; done
-flock -n "$WORK/slots/slot.1" true 2>/dev/null || fail "slot not released after kill"
+for _ in $(seq 25); do slot_held_probe || break; sleep 0.2; done
+[[ -e "$WORK/slots/slot.1" ]] && flock -n "$WORK/slots/slot.1" true || fail "slot not released after kill"
 # memory cap: a run above the cap gets the cap verdict (systemd scopes only)
 if systemd-run --user --scope -q -p MemoryMax=64M -p MemorySwapMax=0 -- true >/dev/null 2>&1; then
-  printf 'python3 -c "b = bytearray(600*1024*1024); b[::4096] = b\"x\" * len(b[::4096]); print(len(b))"\n' >"$WT/scripts/tests/test-hog.sh"
-  out="$(JOUSTMANIA_GATE_MEM=100M run 60 hog)" && fail "hog should not pass: $out"
+  cat >"$WT/scripts/tests/test-hog.sh" <<'HOG'
+python3 -c "b = bytearray(600*1024*1024); b[::4096] = b'x' * len(b[::4096]); print(len(b))"
+HOG
+  out="$(JOUSTMANIA_GATE_MEM=256M run 60 hog)" && fail "hog should not pass: $out"
   grep -q 'killed: memory cap' <<<"$out" || fail "no cap verdict: $out"
   grep -q '^VERDICT: FAIL' <<<"$out" || fail "hog verdict: $out"
 else
