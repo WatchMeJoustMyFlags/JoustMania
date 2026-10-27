@@ -11,7 +11,8 @@
 #    start.env) swapped for a symlink between the check and the open (#2135);
 #    no request falls back to the start.env result, else restores; starting
 #    drops a stale request
-#  - a change waits while another holder has the lock (#2135)
+#  - a change waits while another holder has the lock (#2135); it waits at
+#    most 10 s (flock -w 10), then goes on without it (not tested: 10 s)
 #  - the UC-061 hotspot cue (#2137): its own pattern (timer 200/1800 ms), kept
 #    apart from the state; it wins over ok, degraded and the board's trigger,
 #    loses to starting and failed, comes back after them, and clearing it shows
@@ -175,11 +176,12 @@ REAL_TIMEOUT="$(command -v timeout)"
 mkdir -p "${WORK}/swap-bin"
 cat >"${WORK}/swap-bin/timeout" <<STUB
 #!/usr/bin/env bash
-# swap <path> for a symlink to <target>, once, then run the real timeout
+# swap <path> for a symlink to <target> (FIFO: a FIFO), once, then run the real timeout
 if [[ -s "\${SWAP_SPEC:-}" ]]; then
   read -r path target <"\$SWAP_SPEC"
   : >"\$SWAP_SPEC"
-  rm -f "\$path" && ln -s "\$target" "\$path"
+  rm -f "\$path"
+  if [[ "\$target" == FIFO ]]; then mkfifo "\$path"; else ln -s "\$target" "\$path"; fi
 fi
 exec "${REAL_TIMEOUT}" "\$@"
 STUB
@@ -192,6 +194,18 @@ printf 'failed\n' >"${CASE}/run/led.request"
 printf '%s %s\n' "${CASE}/run/led.request" "${CASE}/elsewhere" >"${CASE}/swap"
 led_swap from-request
 [[ ! -s "${CASE}/swap" ]] || fail "request-swapped: the read did not go through timeout (test stub unused)"
+expect "${CASE}/state/state" degraded
+
+# Swapped for a FIFO with no writer: the open must not block (O_NONBLOCK);
+# without it the read hangs until `timeout 2` kills it
+make_case request-swapped-fifo
+printf 'ok\n' >"${CASE}/run/led.request"
+printf '%s FIFO\n' "${CASE}/run/led.request" >"${CASE}/swap"
+started_ms=$(($(date +%s%N) / 1000000))
+led_swap from-request
+elapsed_ms=$(($(date +%s%N) / 1000000 - started_ms))
+[[ -p "${CASE}/run/led.request" ]] || fail "request-swapped-fifo: the stub did not swap in a FIFO"
+((elapsed_ms < 1500)) || fail "request-swapped-fifo: the read blocked ${elapsed_ms} ms on a FIFO (no O_NONBLOCK)"
 expect "${CASE}/state/state" degraded
 
 make_case start-env-swapped
@@ -339,6 +353,7 @@ if command -v flock >/dev/null 2>&1; then
     flock -n "${CASE}/state/lock" true || break
     sleep 0.05
   done
+  flock -n "${CASE}/state/lock" true && fail "lock-held: the holder never took the lock"
   led ok &
   writer=$!
   sleep 1
