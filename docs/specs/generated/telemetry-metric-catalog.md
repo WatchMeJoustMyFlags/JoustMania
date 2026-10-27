@@ -110,13 +110,19 @@ The totals (the number of names, of names without a consumer and of names never 
 | `game_player_movement_zone` | gauge | `serial`, `game_id` | game-coordinator | yes | grafana |  |
 | `game_player_peak_accel` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana |  |
 | `game_player_playstyle` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana |  |
+| `game_player_shield_active` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
+| `game_player_shield_budget_remaining_seconds` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
+| `game_player_shield_energy_seconds` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
+| `game_player_shield_total` | gauge | `serial`, `game_id`, `total` | game-coordinator | yes | agent |  |
 | `game_player_skill_level` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |  |
 | `game_player_warnings_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |  |
 | `game_players_alive` | gauge | (none) | game-coordinator | yes | grafana |  |
 | `game_sensitivity` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |  |
 | `game_shadow_games_blocked_total` | counter | (none) | game-coordinator | yes | grafana |  |
 | `game_shadow_games_preempted_total` | counter | (none) | game-coordinator | yes | grafana |  |
+| `game_shield_activation_mode` | gauge | `mode`, `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent |  |
 | `game_shield_hold_activations_total` | counter | `mode`, `game_kind`, `outcome` | game-coordinator | yes | (none) |  |
+| `game_shield_hold_setting` | gauge | `setting`, `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent |  |
 | `game_trace_correlation` | gauge | `game_kind`, `game_id`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id` | game-coordinator | yes | agent |  |
 | `games_completed_total` | counter | `mode`, `game_kind`, `outcome` (winner\|tie\|completed\|force_ended\|error) | game-coordinator | yes | grafana | `outcome` = `winner`, `tie`, `completed`, `force_ended`, or `error` when the session published `game_error`; #1427 |
 | `games_started_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana |  |

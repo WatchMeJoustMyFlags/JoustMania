@@ -879,6 +879,11 @@ class Player:
     # with min(raw, warning threshold) instead of the raw sample.
     hold_prime_cap: bool = False
     hold_budget_exhausted_noted: bool = False
+    # Per-game totals for the agent's view and the retro (UC-042 BR-007): energy the
+    # agent's grants added, activations started, activations that ran out.
+    hold_granted_total: float = 0.0
+    hold_activations: int = 0
+    hold_empties: int = 0
     _shield_hold_span: trace.Span | None = None
     # Per-player countdown span (created before countdown, ended after)
     _countdown_span: trace.Span | None = None
@@ -1060,6 +1065,9 @@ class BaseGameMode(ABC):
         # The mode a non-hold game latched (instant or trigger): a mid-game `hold`
         # read maps back to it, so a running game keeps its mode (UC-040 BR-027).
         self._shield_mode_at_start: str = SHIELD_ACTIVATION_INSTANT
+        # The game_shield_activation_mode / game_shield_hold_setting series this game set (removed at game end).
+        self._shield_metric_mode: str | None = None
+        self._shield_metric_settings: tuple[str, ...] = ()
         # Hold feedback (#2096, UC-040 BR-026): the cue values latched with the hold values,
         # and one ordered outbound task per game. The frame path only marks a player
         # (serial -> strongest pending cue); the task sends the player's state when it runs.
@@ -3469,6 +3477,7 @@ class BaseGameMode(ABC):
             return self._shield_hold
         if not self.SHIELD_TRIGGER_ALLOWED or self.game_kind == GAME_KIND_SHADOW:
             self._shield_hold_latched = True
+            self._publish_shield_mode_metrics(SHIELD_ACTIVATION_INSTANT)
             return None
         # Before the latch is set this read keeps `hold` (it is not mapped to instant).
         mode = self._shield_activation_mode()
@@ -3476,6 +3485,7 @@ class BaseGameMode(ABC):
         if mode != SHIELD_ACTIVATION_HOLD:
             self._shield_mode_at_latch = mode
             self._shield_mode_at_start = mode
+            self._publish_shield_mode_metrics(mode)
             return None
         raw = {
             "shield.energy_max_seconds": read_float_flag(
@@ -3523,8 +3533,86 @@ class BaseGameMode(ABC):
             player.hold_energy = initial
             player.hold_energy_at = 0.0
         self._shield_hold = params
+        self._publish_shield_mode_metrics(SHIELD_ACTIVATION_HOLD, values)
         logger.info(f"Shield hold latched for {self.game_id}: {params}")
         return params
+
+    def _shield_metric_labels(self) -> dict[str, str]:
+        return {
+            "game_kind": self.game_kind,
+            "game_id": self.game_id,
+            "experiment_id": self.experiment_id or "",
+            "arm": self.arm or "",
+        }
+
+    def _publish_shield_mode_metrics(self, mode: str, hold_values: dict[str, float] | None = None) -> None:
+        """Set the latched mode and, in a hold game, every latched hold value (telemetry.md §6; #2096).
+
+        The agent reads the mode and the values from these gauges, never from flagd, so an
+        experiment arm or a latched promotion reads right (decide-contract.md §1.2).
+        """
+        with contextlib.suppress(Exception):
+            labels = self._shield_metric_labels()
+            metrics.shield_activation_mode.labels(mode=mode, **labels).set(1)
+            self._shield_metric_mode = mode
+            if hold_values is not None:
+                cues = self._shield_hold_cues or ShieldHoldCues()
+                settings = {
+                    **hold_values,
+                    "shield.charge_rumble_intensity": cues.rumble_intensity,
+                    "shield.charge_rumble_pulse_ms": cues.pulse_ms,
+                    "shield.ending_rumble_seconds": cues.ending_lead_ms / 1000.0,
+                    "shield.hold_rumble_intensity": cues.hold_rumble_intensity,
+                    "shield.empty_pulse_ms": cues.empty_pulse_ms,
+                }
+                for key, value in settings.items():
+                    metrics.shield_hold_setting.labels(setting=key, **labels).set(float(value))
+                self._shield_metric_settings = tuple(settings)
+
+    def _clear_shield_metrics(self) -> None:
+        """Remove this game's shield mode and hold-value series (game end; idempotent)."""
+        labels = tuple(self._shield_metric_labels().values())
+        mode, self._shield_metric_mode = self._shield_metric_mode, None
+        if mode is not None:
+            with contextlib.suppress(KeyError, ValueError):
+                metrics.shield_activation_mode.remove(mode, *labels)
+        settings, self._shield_metric_settings = self._shield_metric_settings, ()
+        for key in settings:
+            with contextlib.suppress(KeyError, ValueError):
+                metrics.shield_hold_setting.remove(key, *labels)
+
+    def _set_hold_gauges(self, player: "Player", now: float) -> None:
+        """Set a player's hold gauges for the agent (telemetry.md §6, UC-040 A37, UC-042 BR-007); no I/O.
+
+        A dead player's pool reads 0 and inactive; the totals keep their last value
+        (energy + used = initial + granted + recharged holds only while the pool lives).
+        """
+        hold = self._shield_hold
+        if hold is None:
+            return
+        with contextlib.suppress(Exception):
+            serial, game_id = player.serial, self.game_id
+            alive = player.alive
+            energy = self._shield_hold_energy(player, now) if alive else 0.0
+            budget_left = self._shield_hold_budget_left(player, now)
+            active = alive and bool(player.hold_started_at) and now < player.hold_until
+            used = max(0.0, hold.budget - budget_left)
+            totals = {
+                "granted_seconds": player.hold_granted_total,
+                "used_seconds": used,
+                "activations": player.hold_activations,
+                "empties": player.hold_empties,
+            }
+            if alive:
+                initial = min(hold.initial, hold.cap, hold.budget)
+                totals["recharged_seconds"] = max(0.0, energy + used - initial - player.hold_granted_total)
+            metrics.player_shield_energy_seconds.labels(serial=serial, game_id=game_id).set(round(energy, 3))
+            metrics.player_shield_budget_remaining_seconds.labels(serial=serial, game_id=game_id).set(
+                round(budget_left, 3)
+            )
+            metrics.player_shield_active.labels(serial=serial, game_id=game_id).set(1 if active else 0)
+            for total, value in totals.items():
+                metrics.player_shield_total.labels(serial=serial, game_id=game_id, total=total).set(round(value, 3))
 
     def _read_shield_hold_cues(self) -> ShieldHoldCues:
         """Read the hold feedback cue values once, with the hold values (UC-040 BR-026, BR-027)."""
@@ -3627,6 +3715,7 @@ class BaseGameMode(ABC):
         player.hold_until = now + usable
         player.hold_last_pressed_at = now
         player.hold_min_burst_applied = False
+        player.hold_activations += 1
         self._queue_hold_feedback(player)  # UC-040 BR-026: SHIELD_HOLD, sent by the outbound task
         if player.span:
             with contextlib.suppress(Exception):
@@ -3665,6 +3754,8 @@ class BaseGameMode(ABC):
         player.hold_energy_start = 0.0
         player.hold_budget_start = 0.0
         player.hold_usable_start = 0.0
+        if outcome in (HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED):
+            player.hold_empties += 1
         if outcome in (HOLD_OUTCOME_RELEASED, HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED):
             player.hold_prime_cap = True  # UC-030 BR-009
             # UC-040 BR-026: SHIELD_HOLD 0 and the idle energy, with the empty pulse when it ran out.
@@ -3705,6 +3796,7 @@ class BaseGameMode(ABC):
         player.hold_energy = 0.0
         player.hold_energy_at = 0.0
         player.hold_prime_cap = False
+        self._set_hold_gauges(player, now)  # the agent sees the dropped pool
 
     def _force_release_shield_holds(self) -> None:
         """Release every held activation at its last held frame (UC-030 BR-008, stream reopen)."""
@@ -3836,6 +3928,7 @@ class BaseGameMode(ABC):
         if player is None or not player.alive or self._shield_hold is None or self._hold_feedback_stopped:
             return
         self._hold_energy_published_at[serial] = asyncio.get_running_loop().time()
+        self._set_hold_gauges(player, time.time())  # the agent's view, with every event and keyframe
         try:
             await self.event_publisher(
                 GameEvent.PLAYER_SHIELD_ENERGY, self._hold_energy_event(player, time.time(), granted)
@@ -3976,6 +4069,7 @@ class BaseGameMode(ABC):
             player.hold_energy = energy + added
             if player.hold_energy_at:
                 player.hold_energy_at = now
+        player.hold_granted_total += added
         self._record_agent_shield(player.serial, now, seconds)
         self._hold_granted_pending.add(player.serial)  # UC-035 BR-008: the next energy event says source=agent
         energy_after = energy + added
@@ -4872,6 +4966,7 @@ class BaseGameMode(ABC):
                 logger.exception(f"Closing the grouping spans failed: {self.game_id}")
         # Ensure this session's analytics are always cleared, even on error
         # (#775) — per-session targeted cleanup, never a global wipe.
+        self._clear_shield_metrics()
         metrics.clear_session_player_analytics(
             list(self.players.keys()),
             self.game_id,
@@ -4989,6 +5084,7 @@ class BaseGameMode(ABC):
                 # the game is over, without clobbering other concurrent sessions
                 # (#775). Game-state gauges are per game_id, so each session
                 # removes only its own series (FR-041).
+                self._clear_shield_metrics()
                 metrics.clear_session_player_analytics(
                     list(self.players.keys()),
                     self.game_id,

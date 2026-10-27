@@ -117,6 +117,17 @@ type Summary struct {
 	// Interventions is the list of agent interventions that fired and their outcome
 	// + best-effort before/after effect (#928 "intervention outcomes").
 	Interventions []InterventionOutcome `json:"interventions"`
+	// ShieldHold is a hold game's latched shield values (UC-042 BR-007, #2096), from
+	// the game_shield_* gauges; nil in every other game.
+	ShieldHold *ShieldHoldSummary `json:"shield_hold,omitempty"`
+}
+
+// ShieldHoldSummary is the latched hold-mode configuration of a hold game: the
+// activation mode and every latched value by flag key (cap, budget, starting energy,
+// recharge rate, minimum burst and the cue values).
+type ShieldHoldSummary struct {
+	Activation string             `json:"activation"`
+	Settings   map[string]float64 `json:"settings,omitempty"`
 }
 
 // InterventionTypeCount is one intervention type's whole-game tally.
@@ -174,6 +185,10 @@ type PlayerArc struct {
 	// NearDeathOffsetSeconds is WHEN that closest call happened, relative to game
 	// start; nil when NearDeathRatio is nil.
 	NearDeathOffsetSeconds *float64 `json:"near_death_offset_seconds,omitempty"`
+	// ShieldTotals are the player's hold-mode totals in this game (UC-042 BR-007,
+	// #2096): granted_seconds, recharged_seconds, used_seconds, activations, empties,
+	// as of the last export before the game ended. Empty outside a hold game.
+	ShieldTotals map[string]float64 `json:"shield_totals,omitempty"`
 }
 
 // EliminationEvent is one (offset, serial, order) point in the elimination
@@ -302,7 +317,27 @@ func BuildSummary(c gamecontext.GameContext, opts BuildOptions) Summary {
 		SpeedSparkline:       gamecontext.RenderSpeedTrack(c.SpeedTrack),
 		Dominance:            dom,
 		Interventions:        interventions,
+		ShieldHold:           shieldHoldSummary(c),
 	}
+}
+
+// shieldHoldSummary is the hold game's latched values, nil outside a hold game.
+func shieldHoldSummary(c gamecontext.GameContext) *ShieldHoldSummary {
+	if !c.Session.IsShieldHold() {
+		return nil
+	}
+	return &ShieldHoldSummary{Activation: *c.Session.ShieldActivation, Settings: copyFloatMap(c.Session.ShieldSettings)}
+}
+
+func copyFloatMap(m map[string]float64) map[string]float64 {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // interventionsByType flattens the session's per-type tally into a sorted slice.
@@ -515,6 +550,9 @@ func buildPlayerArcs(c gamecontext.GameContext, elims []EliminationEvent, anchor
 		if p := c.Players[serial]; p != nil {
 			arc.FinalSkill = copyFloatPtr(p.SkillLevel)
 			arc.FinalIntensity = copyFloatPtr(p.MovementIntensity)
+			if c.Session.IsShieldHold() {
+				arc.ShieldTotals = copyFloatMap(p.ShieldTotals)
+			}
 			// Per-player movement TIME-SERIES (#1082): the sparkline (scaled against the
 			// session death threshold), the activity classification, and the closest call
 			// to the death threshold + when it happened (offset from game start). All

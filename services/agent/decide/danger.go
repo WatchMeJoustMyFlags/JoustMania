@@ -163,14 +163,16 @@ const ShieldWindow = 10 * time.Second
 // grant_shield to a charged player does not count: in trigger mode it gave a
 // charge, which is no protection until the player activates it (#1870). A
 // toughness_boost is protection in either mode.
-func recentlyShielded(c gamecontext.GameContext, charged map[string]bool) map[string]bool {
+func recentlyShielded(c gamecontext.GameContext, charged map[string]bool, hold bool) map[string]bool {
 	out := map[string]bool{}
 	for _, e := range c.Timeline {
 		if e.Kind != gamecontext.EventIntervention || e.Blocked || e.InPlace || e.Serial == "" ||
 			(e.Detail != "grant_shield" && e.Detail != "toughness_boost") {
 			continue
 		}
-		if e.Detail == "grant_shield" && charged[e.Serial] {
+		// In trigger mode a charge is not protection; in a hold game a grant is
+		// energy, and the protection is shield_active (#2096).
+		if e.Detail == "grant_shield" && (hold || charged[e.Serial]) {
 			continue
 		}
 		if age := c.UpdatedAt.Sub(e.At); age >= 0 && age <= ShieldWindow {

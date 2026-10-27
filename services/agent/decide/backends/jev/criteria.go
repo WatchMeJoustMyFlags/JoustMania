@@ -378,7 +378,16 @@ func suitability(iv string, p decide.PlayerState, st decide.State) string {
 		if iv == "grant_shield" && p.ShieldCharged {
 			return "Already holds an agent shield charge, or has just used it: another shield is refused."
 		}
-		if p.Shielded {
+		// Hold game (#2096): a grant adds energy; the pool or the budget can refuse it.
+		if iv == "grant_shield" && st.ShieldActivation != "" {
+			switch st.HoldRefusal(p) {
+			case decide.HoldRefusalBudgetExhausted:
+				return "Shield budget for this game used up: another shield is refused."
+			case decide.HoldRefusalPoolFull:
+				return "Shield energy already full: another shield is refused."
+			}
+		}
+		if p.Shielded && (iv != "grant_shield" || st.ShieldActivation == "") {
 			return "Already shielded a moment ago: another shield would be wasted."
 		}
 		switch p.Danger {
@@ -440,6 +449,7 @@ func describeCandidates(st decide.State, iv string) map[string]string {
 		if p.ShieldCharged {
 			b.WriteString(" Holds an agent shield charge, or has just used it.")
 		}
+		b.WriteString(holdPhrase(p, st))
 		if v := finiteOrNil(p.Skill); v != nil {
 			b.WriteString(" Skill " + strconv.FormatFloat(*v, 'f', 2, 64) + ".")
 		}
@@ -648,4 +658,29 @@ func conditionedMagnitude(q decide.Question, iv string, levels []float64) (strin
 		ladder[i] = text + "."
 	}
 	return interventionPhrase(iv) + ". Which setting should it use?", ladder
+}
+
+// holdPhrase describes a hold-mode player's shield pool (#2096), e.g. " Shield energy
+// 2.4 of 5 s, 9.1 s of shield budget left. Holding the shield now." Empty outside a
+// hold game.
+func holdPhrase(p decide.PlayerState, st decide.State) string {
+	if st.ShieldActivation == "" {
+		return ""
+	}
+	var s string
+	if v := finiteOrNil(p.ShieldEnergyS); v != nil {
+		s += " Shield energy " + strconv.FormatFloat(*v, 'f', 1, 64)
+		if c := finiteOrNil(st.ShieldEnergyMaxS); c != nil {
+			s += " of " + strconv.FormatFloat(*c, 'f', -1, 64)
+		}
+		s += " s"
+		if b := finiteOrNil(p.ShieldBudgetRemainingS); b != nil {
+			s += ", " + strconv.FormatFloat(*b, 'f', 1, 64) + " s of shield budget left"
+		}
+		s += "."
+	}
+	if p.ShieldActive {
+		s += " Holding the shield now."
+	}
+	return s
 }
