@@ -63,5 +63,35 @@ if grep -qx 'http://localhost/flags/agent/decision.jev.model' "${FAKE_CURL_LOG}"
 else
   echo "not ok - curl was not called with the FLAG_SERVICE_URL host ($(cat "${FAKE_CURL_LOG}"))"; fail=$((fail + 1))
 fi
+
+# --- scripts/flagservice.py: curl is the default transport for every caller (#2057) ---
+PY="$(command -v python3)"
+: >"${FAKE_CURL_LOG}"
+transport() { # use_curl arg (None|True|False) -> prints use_curl, then the number of curl calls
+  FAKE_CURL_CODE=200 FAKE_CURL_BODY='{"flags":[]}' "$@" "${PY}" -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from flagservice import FlagService
+fs = FlagService.from_env(use_curl={"None": None, "True": True, "False": False}[sys.argv[2]])
+print(fs.use_curl)
+try:
+    fs.state()
+except Exception:
+    pass
+' "${SCRIPT_DIR}/.." "${ARG}"
+}
+ARG=None; got="$(transport env)"
+[[ "${got}" == "True" ]] && { echo "ok - default transport is curl"; pass=$((pass + 1)); } \
+  || { echo "not ok - default transport is not curl (${got})"; fail=$((fail + 1)); }
+[[ "$(wc -l <"${FAKE_CURL_LOG}")" -eq 1 ]] && { echo "ok - the default request went through curl"; pass=$((pass + 1)); } \
+  || { echo "not ok - default request did not call curl once"; fail=$((fail + 1)); }
+ARG=False; got="$(transport env)"
+[[ "${got}" == "False" ]] && { echo "ok - use_curl=False keeps urllib"; pass=$((pass + 1)); } \
+  || { echo "not ok - use_curl=False was not honoured (${got})"; fail=$((fail + 1)); }
+ARG=None; got="$(transport env PATH="$(dirname "${PY}")")"
+if [[ ! -x "$(dirname "${PY}")/curl" ]]; then
+  [[ "${got}" == "False" ]] && { echo "ok - without curl the default falls back to urllib"; pass=$((pass + 1)); } \
+    || { echo "not ok - no curl on PATH but use_curl=${got}"; fail=$((fail + 1)); }
+fi
 echo; echo "${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
