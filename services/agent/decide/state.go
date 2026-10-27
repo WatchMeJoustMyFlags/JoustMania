@@ -50,18 +50,29 @@ type Annotations struct {
 func LevelKey(intervention, serial string) string { return intervention + "|" + serial }
 
 // levelFactor is the per-player factor of intervention in levels for serial: the
-// value as a finite number, nil when absent, unparsable or the neutral value of
-// the intervention's magnitude bounds.
+// value as a finite number, or for an empty value (the writer then writes its
+// default) the Default of the intervention's magnitude bounds; nil when absent,
+// unparsable or the neutral value.
 func levelFactor(levels map[string]string, intervention, serial string) *float64 {
 	v, ok := levels[LevelKey(intervention, serial)]
 	if !ok {
 		return nil
 	}
-	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-	if err != nil || !finite(f) {
-		return nil
+	b, hasBounds := MagnitudeBounds(intervention)
+	var f float64
+	if t := strings.TrimSpace(v); t == "" {
+		if !hasBounds {
+			return nil
+		}
+		f = b.Default
+	} else {
+		parsed, err := strconv.ParseFloat(t, 64)
+		if err != nil || !finite(parsed) {
+			return nil
+		}
+		f = parsed
 	}
-	if b, ok := MagnitudeBounds(intervention); ok && b.HasNeutral && f == b.Neutral {
+	if hasBounds && b.HasNeutral && f == b.Neutral {
 		return nil
 	}
 	return &f

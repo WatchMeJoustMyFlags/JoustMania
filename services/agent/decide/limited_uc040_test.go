@@ -93,6 +93,19 @@ func TestBuildState_AppliedLevels(t *testing.T) {
 			t.Error("digest must change with an applied factor")
 		}
 	})
+	t.Run("UC-040/A35 an empty applied value shows the writer's default", func(t *testing.T) {
+		st := BuildStateWith(sampleCtx(), Annotations{Levels: map[string]string{
+			LevelKey("adjust_player_sensitivity", "A"): "",
+			LevelKey("set_player_handicap", "A"):       " ",
+		}})
+		a := playerByID(t, st, "A")
+		if a.SensitivityFactor == nil || *a.SensitivityFactor != 1.5 || a.HandicapFactor == nil || *a.HandicapFactor != 1.25 {
+			t.Fatalf("A factors = %v / %v, want the defaults 1.5 / 1.25", a.SensitivityFactor, a.HandicapFactor)
+		}
+		if !strings.Contains(st.Narrative, " sensitivity_factor=1.50 handicap_factor=1.25\n") {
+			t.Errorf("narrative lacks the default factor tokens:\n%s", st.Narrative)
+		}
+	})
 	t.Run("UC-040/A35 neutral, unparsable, dead and game-wide values add nothing", func(t *testing.T) {
 		c := sampleCtx()
 		only := map[string]string{}
