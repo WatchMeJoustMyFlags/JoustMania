@@ -123,6 +123,27 @@ func ledgerTrigger(mode, first string) bool {
 	}
 }
 
+// LatchShieldMode records the game's first shield.activation when the agent first sees the
+// game (main.go calls it from the per-game Loop factory, on the game's first signal), so a
+// later flip to `hold` before the first grant_shield decision does not become the game's
+// first mode (UC-040 A31 step 1, BR-027, #2096). Quiet: an unreadable flag latches nothing
+// and logs at debug level; ShieldCharge warns when it really needs the flag.
+func (f *Flags) LatchShieldMode(ctx context.Context, gameID string) {
+	if f == nil || f.game == nil || gameID == "" {
+		return
+	}
+	mode, err := f.game.StringValue(ctx, "shield.activation", "instant", shieldChargeContext(gameID))
+	if err != nil {
+		f.log.Debug("flags shield.activation unreadable at the game's first signal", "game_id", gameID, "error", err)
+		return
+	}
+	clock := f.now
+	if clock == nil {
+		clock = time.Now
+	}
+	f.gameModes.latch(gameID, strings.ToLower(strings.TrimSpace(mode)), clock())
+}
+
 // ShieldCharge reads the game's shield activation mode and charge expiry from the game
 // set for the agent's charge ledger (UC-040 A31 step 1). The mode, trimmed and
 // lower-cased (as resolve_shield_activation in games/base.py), counts as trigger when it

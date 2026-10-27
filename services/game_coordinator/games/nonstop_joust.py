@@ -30,6 +30,7 @@ from services.game_coordinator.games.base import (
     resolve_non_negative_duration,
 )
 from services.game_coordinator.runtime_config import get_config_manager
+from services.game_coordinator.stream_writes import serialized_write
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
@@ -392,7 +393,7 @@ class NonstopJoustGame(BaseGameMode):
                 # Send initial configuration (see _build_initial_stream_control —
                 # extracted so the message construction is unit-testable after the
                 # ``serials`` proto-field regression crashed every NonStop game).
-                await self.gameplay_stream.write(self._build_initial_stream_control(update_frequency_hz))
+                await serialized_write(self.gameplay_stream, self._build_initial_stream_control(update_frequency_hz))
             finally:
                 # This stream replaces the one run() opened for the countdown and
                 # warm-up: close that one, after the new one claimed the players
@@ -461,7 +462,7 @@ class NonstopJoustGame(BaseGameMode):
                     filter_msg = controller_manager_pb2.GameplayStreamControl(
                         filter_update=controller_manager_pb2.FilterUpdate(serials=list(current_alive_serials))
                     )
-                    await self.gameplay_stream.write(filter_msg)
+                    await serialized_write(self.gameplay_stream, filter_msg)
 
                     logger.info(
                         f"Nonstop filter updated: {len(last_alive_serials)} → "
@@ -529,7 +530,7 @@ class NonstopJoustGame(BaseGameMode):
                         color=controller_manager_pb2.RGB(r=255, g=255, b=255),  # White
                     )
                 )
-                await self.gameplay_stream.write(base_color_cmd)
+                await serialized_write(self.gameplay_stream, base_color_cmd)
 
     async def _show_respawn_countdown(self, serial: str, time_remaining: float):
         """
@@ -564,7 +565,7 @@ class NonstopJoustGame(BaseGameMode):
                     color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
                 )
             )
-            await self.gameplay_stream.write(base_color_cmd)
+            await serialized_write(self.gameplay_stream, base_color_cmd)
 
     async def _respawn_player(self, serial: str) -> bool:
         """
@@ -623,7 +624,7 @@ class NonstopJoustGame(BaseGameMode):
                 color=controller_manager_pb2.RGB(r=255, g=255, b=255),  # White
             )
         )
-        await self.gameplay_stream.write(base_color_cmd)
+        await serialized_write(self.gameplay_stream, base_color_cmd)
 
         # Publish respawn event
         await self.event_publisher(

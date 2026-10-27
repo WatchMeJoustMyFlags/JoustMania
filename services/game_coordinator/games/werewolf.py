@@ -27,6 +27,7 @@ from services.game_coordinator.games.base import (
     Sensitivity,
     resolve_mode_thresholds,
 )
+from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -274,7 +275,7 @@ class WerewolfGame(BaseGameMode):
                             speed=5,
                         )
                     )
-                    await self.gameplay_stream.write(rumble_cmd)
+                    await serialized_write(self.gameplay_stream, rumble_cmd)
             except Exception as e:
                 logger.error(f"Failed to rumble werewolves: {e}", exc_info=True)
 
@@ -299,7 +300,7 @@ class WerewolfGame(BaseGameMode):
                     color=controller_manager_pb2.RGB(r=r, g=g, b=b),
                 )
             )
-            await self.gameplay_stream.write(base_color_cmd)
+            await serialized_write(self.gameplay_stream, base_color_cmd)
 
     async def _reveal_werewolves(self):
         """

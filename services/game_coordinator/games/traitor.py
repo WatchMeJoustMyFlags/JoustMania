@@ -21,6 +21,7 @@ from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.teams_base import TeamsGameBase
+from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -313,7 +314,7 @@ class TraitorGame(TeamsGameBase):
                             speed=5,
                         )
                     )
-                    await self.gameplay_stream.write(rumble_cmd)
+                    await serialized_write(self.gameplay_stream, rumble_cmd)
             except Exception as e:
                 logger.error(f"Failed to rumble traitors: {e}", exc_info=True)
 

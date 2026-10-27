@@ -90,3 +90,24 @@ func TestShieldCharge_UnreadableModeDoesNotLatch(t *testing.T) {
 		t.Fatal("UC-040/A31 hold after a first trigger read: want trigger")
 	}
 }
+
+// UC: UC-040 A31 BR-027
+func TestLatchShieldMode_TheFirstSignalFixesTheGamesMode(t *testing.T) {
+	stub := stubEvaluator{strings: map[string]string{"shield.activation": "trigger"}, floats: map[string]float64{}, errs: map[string]error{}}
+	f := gameFlags(stub, nil)
+	f.LatchShieldMode(context.Background(), "g-early") // the game's first signal: trigger
+	stub.strings["shield.activation"] = "hold"         // flipped before the first grant decision
+	if trigger, _ := f.ShieldCharge(context.Background(), "g-early"); !trigger {
+		t.Fatal("UC-040/A31 the first read at the game's first signal was trigger: a hold read must stay trigger")
+	}
+
+	stub.errs["shield.activation"] = errUnreadable
+	f.LatchShieldMode(context.Background(), "g-unread") // unreadable: latches nothing
+	delete(stub.errs, "shield.activation")
+	stub.strings["shield.activation"] = "trigger"
+	if trigger, _ := f.ShieldCharge(context.Background(), "g-unread"); !trigger {
+		t.Fatal("UC-040/A31 an unreadable first signal must not latch the game")
+	}
+	var nilFlags *Flags
+	nilFlags.LatchShieldMode(context.Background(), "g-nil") // no panic
+}

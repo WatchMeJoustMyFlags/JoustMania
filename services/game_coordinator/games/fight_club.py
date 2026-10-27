@@ -30,6 +30,7 @@ from services.game_coordinator.games.base import (
     Player,
     resolve_non_negative_duration,
 )
+from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -246,7 +247,7 @@ class FightClubGame(BaseGameMode):
                             ),
                         )
                     )
-                    await self.gameplay_stream.write(color_cmd)
+                    await serialized_write(self.gameplay_stream, color_cmd)
         except Exception as e:
             logger.error(f"Failed to set the Fight Club intro colours: {e}", exc_info=True)
 

@@ -33,6 +33,7 @@ from services.game_coordinator.games.base import (
     resolve_mode_thresholds,
     resolve_non_negative_duration,
 )
+from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -299,7 +300,7 @@ class ZombieGame(BaseGameMode):
                         color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
                     )
                 )
-                await self.gameplay_stream.write(base_color_cmd)
+                await serialized_write(self.gameplay_stream, base_color_cmd)
         except Exception as e:
             logger.error(f"Failed to set the zombie intro colours: {e}", exc_info=True)
 
@@ -489,7 +490,7 @@ class ZombieGame(BaseGameMode):
                     effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
                 )
             )
-            await self.gameplay_stream.write(flash_cmd)
+            await serialized_write(self.gameplay_stream, flash_cmd)
 
             # The zombie colour follows the flash after CONVERSION_COLOUR_DELAY, in a
             # tracked task: the kill handler runs inline in the game loop, which must

@@ -45,6 +45,7 @@ from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import metrics
 from services.game_coordinator.runtime_config import get_config_manager
+from services.game_coordinator.stream_writes import serialized_write
 
 if TYPE_CHECKING:
     from services.game_coordinator.games.analytics import PlayerAnalytics
@@ -1066,6 +1067,8 @@ class BaseGameMode(ABC):
         self._hold_layer_sent: dict[str, float] = {}
         self._hold_commands_sent: set[str] = set()  # any hold command sent (ended at game end)
         self._hold_sound_at: dict[str, float] = {}
+        # Set at the game end (and error teardown): no hold command after SHIELD 0 (UC-040 BR-026).
+        self._hold_feedback_stopped = False
 
         # Settings - sensitivity is now passed via StartGameConfig.
         #
@@ -1610,7 +1613,7 @@ class BaseGameMode(ABC):
                         trace_state=trace_state,
                     )
                 )
-                await self.gameplay_stream.write(effect_cmd)
+                await serialized_write(self.gameplay_stream, effect_cmd)
 
         # Play countdown beeps in sync with the visual countdown.
         # Sounds are shared (not per-player), so they inherit the active
@@ -1674,7 +1677,7 @@ class BaseGameMode(ABC):
                 colors=player_colors,
             )
         )
-        await self.gameplay_stream.write(initial_config)
+        await serialized_write(self.gameplay_stream, initial_config)
 
         # Send current alive filter so reconnected stream only gets alive players
         current_alive = [s for s, p in self.players.items() if p.alive]
@@ -1682,7 +1685,7 @@ class BaseGameMode(ABC):
             filter_msg = controller_manager_pb2.GameplayStreamControl(
                 filter_update=controller_manager_pb2.FilterUpdate(serials=current_alive)
             )
-            await self.gameplay_stream.write(filter_msg)
+            await serialized_write(self.gameplay_stream, filter_msg)
 
         logger.info(f"Gameplay stream created with {len(player_colors)} players ({len(current_alive)} alive)")
 
@@ -1821,7 +1824,7 @@ class BaseGameMode(ABC):
             logger.warning(f"{what} skipped: the gameplay stream has already ended")
             return False
         try:
-            await stream.write(message)
+            await serialized_write(stream, message)
         except (asyncio.InvalidStateError, grpc.aio.AioRpcError) as e:
             logger.warning(f"{what} skipped: the gameplay stream ended during the write ({e!r})")
             return False
@@ -2025,7 +2028,7 @@ class BaseGameMode(ABC):
             filter_msg = controller_manager_pb2.GameplayStreamControl(
                 filter_update=controller_manager_pb2.FilterUpdate(serials=list(current_alive_serials))
             )
-            await self.gameplay_stream.write(filter_msg)
+            await serialized_write(self.gameplay_stream, filter_msg)
 
             logger.info(
                 f"Updated controller filter: {len(last_alive_serials)} → {len(current_alive_serials)} alive players"
@@ -2714,7 +2717,7 @@ class BaseGameMode(ABC):
                     trace_state=trace_state,
                 )
             )
-            await self.gameplay_stream.write(effect_cmd)
+            await serialized_write(self.gameplay_stream, effect_cmd)
 
     @staticmethod
     def effective_grace_until(player: "Player") -> float:
@@ -3075,7 +3078,8 @@ class BaseGameMode(ABC):
                 from proto import controller_manager_pb2
 
                 trace_parent, trace_state = inject_trace_context(player.span)
-                await self.gameplay_stream.write(
+                await serialized_write(
+                    self.gameplay_stream,
                     controller_manager_pb2.GameplayStreamControl(
                         game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=serial,
@@ -3088,7 +3092,7 @@ class BaseGameMode(ABC):
                             trace_parent=trace_parent,
                             trace_state=trace_state,
                         )
-                    )
+                    ),
                 )
             except Exception as e:
                 logger.warning(f"Shield LED feedback for {serial} failed (protection unaffected): {e}")
@@ -3149,14 +3153,15 @@ class BaseGameMode(ABC):
             from proto import controller_manager_pb2
 
             for serial in running:
-                await self.gameplay_stream.write(
+                await serialized_write(
+                    self.gameplay_stream,
                     controller_manager_pb2.GameplayStreamControl(
                         game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=serial,
                             effect=controller_manager_pb2.GAME_EFFECT_SHIELD,
                             duration_ms=0,
                         )
-                    )
+                    ),
                 )
         except Exception as e:
             logger.warning(f"Ending shield feedback failed: {e}")
@@ -3203,7 +3208,8 @@ class BaseGameMode(ABC):
             from proto import controller_manager_pb2
 
             trace_parent, trace_state = inject_trace_context(player.span)
-            await self.gameplay_stream.write(
+            await serialized_write(
+                self.gameplay_stream,
                 controller_manager_pb2.GameplayStreamControl(
                     game_effect=controller_manager_pb2.GameEffectCommand(
                         serial=player.serial,
@@ -3213,7 +3219,7 @@ class BaseGameMode(ABC):
                         trace_state=trace_state,
                         shield_hold=shield_hold,
                     )
-                )
+                ),
             )
         except Exception as e:
             logger.warning(f"{effect_name} for {player.serial} failed (charge state unaffected): {e}")
@@ -3678,7 +3684,7 @@ class BaseGameMode(ABC):
 
     def _queue_hold_feedback(self, player: "Player", cue: int = HOLD_CUE_NONE) -> None:
         """Mark the player for the outbound task, keeping the strongest pending cue; no I/O."""
-        if self._shield_hold is None:
+        if self._shield_hold is None or self._hold_feedback_stopped:
             return
         pending = self._hold_feedback_pending
         previous = pending.get(player.serial, HOLD_CUE_NONE)
@@ -3693,6 +3699,8 @@ class BaseGameMode(ABC):
 
     def _wake_hold_feedback(self) -> None:
         """Start the outbound task on the game's loop if needed and wake it."""
+        if self._hold_feedback_stopped:
+            return  # the game ended: a late mark never restarts the task
         if self._hold_feedback_wakeup is None:
             self._hold_feedback_wakeup = asyncio.Event()
         task = self._hold_feedback_task
@@ -3753,7 +3761,13 @@ class BaseGameMode(ABC):
         effect and the disconnect end the layers on the controller.
         """
         player = self.players.get(serial)
-        if player is None or not player.alive or self._shield_hold is None or not self.gameplay_stream:
+        if (
+            player is None
+            or not player.alive
+            or self._shield_hold is None
+            or self._hold_feedback_stopped
+            or not self.gameplay_stream
+        ):
             return
         now = time.time()
         if player.hold_started_at and now < player.hold_until:
@@ -3780,14 +3794,15 @@ class BaseGameMode(ABC):
         if serial in self._hold_layer_sent:
             del self._hold_layer_sent[serial]
             await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_HOLD", 0)
-            if not player.alive or self._shield_hold is None:
-                return  # died (or the game ended) during the write: the death effect owns the LED
+            if not player.alive or self._hold_feedback_stopped:
+                return  # died (or the game ended) during the write: the death effect or SHIELD 0 owns the LED
         self._hold_commands_sent.add(serial)
         state = self._hold_state_message(player, now, cue)
         await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_ENERGY", max(1, state.cap_ms), state)
 
     def _cancel_hold_feedback(self) -> None:
-        """Stop the outbound task and drop pending marks (no I/O)."""
+        """Stop the outbound task for good and drop pending marks (no I/O)."""
+        self._hold_feedback_stopped = True
         task, self._hold_feedback_task = self._hold_feedback_task, None
         if task is not None and not task.done():
             task.cancel()
@@ -4185,7 +4200,7 @@ class BaseGameMode(ABC):
                     color=controller_manager_pb2.RGB(r=player.color[0], g=player.color[1], b=player.color[2]),
                 )
             )
-            await self.gameplay_stream.write(base_color_cmd)
+            await serialized_write(self.gameplay_stream, base_color_cmd)
             respawn_cmd = controller_manager_pb2.GameplayStreamControl(
                 game_effect=controller_manager_pb2.GameEffectCommand(
                     serial=serial,
@@ -4194,7 +4209,7 @@ class BaseGameMode(ABC):
                     trace_state=trace_state,
                 )
             )
-            await self.gameplay_stream.write(respawn_cmd)
+            await serialized_write(self.gameplay_stream, respawn_cmd)
 
         await self.event_publisher("player_revived", {"serial": serial})
         logger.info(f"revive_player: {serial} revived (generic re-entry, grace {grace:.1f}s)")
@@ -4387,7 +4402,7 @@ class BaseGameMode(ABC):
                     trace_state=trace_state,
                 )
             )
-            await self.gameplay_stream.write(effect_cmd)
+            await serialized_write(self.gameplay_stream, effect_cmd)
         return True
 
     async def _wait_for_rainbow_effect(self) -> bool:

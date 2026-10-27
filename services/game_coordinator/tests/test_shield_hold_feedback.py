@@ -369,13 +369,15 @@ class TestUC040HoldFeedbackOrdering:
         game._queue_hold_feedback(game.players["p2"])  # a late mark (a grant racing the end)
         await drain()
 
-        assert sorted(
+        game._queue_hold_feedback_all()  # a reconnect re-send racing the end
+        game._wake_hold_feedback()
+        await drain()
+
+        written = [
             (m.game_effect.serial, m.game_effect.effect, m.game_effect.duration_ms) for m in game.gameplay_stream.writes
-        )[:2] == [
-            ("p1", pb.GAME_EFFECT_SHIELD, 0),
-            ("p2", pb.GAME_EFFECT_SHIELD, 0),
         ]
-        assert all(m.game_effect.effect == pb.GAME_EFFECT_SHIELD for m in game.gameplay_stream.writes[:2])
+        assert sorted(written) == [("p1", pb.GAME_EFFECT_SHIELD, 0), ("p2", pb.GAME_EFFECT_SHIELD, 0)]
+        assert game._hold_feedback_task is None
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", br=["BR-026", "BR-021"])
@@ -434,3 +436,101 @@ class TestUC040HoldCueLatch:
         assert g._hold_feedback_task is None
         assert g.gameplay_stream.writes == []
         assert not any(k in base_module.SHIELD_HOLD_CUE_FLAGS for k in flags.reads)
+
+
+class OverlapCheckingStream(RecordingStream):
+    """A gameplay call like grpc.aio: a write that starts while another is pending fails (#2096 review F1)."""
+
+    def __init__(self):
+        super().__init__()
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def write(self, message):
+        if self.in_flight:
+            raise RuntimeError("GRPC_CALL_ERROR_TOO_MANY_OPERATIONS: a write is already in flight")
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(0)  # the write is in flight across a loop turn
+            await asyncio.sleep(0)
+            self.writes.append(message)
+        finally:
+            self.in_flight -= 1
+
+
+class TestUC030OneWriteInFlight:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A7", br=["BR-006", "BR-008"])
+    @pytest.mark.uc("UC-040", br=["BR-026"])
+    async def test_the_hold_task_and_the_frame_path_never_overlap_writes(self, game):
+        """UC-030 BR-006: the hold task's writes and the frame path's warnings share one call, one write at a time."""
+        stream = OverlapCheckingStream()
+        game.gameplay_stream = stream
+        for _ in range(60):
+            game._queue_hold_feedback_all()
+            game.players["p2"].alive = True
+            await game._warn_player("p2", 30.0, 20.0)
+            await asyncio.sleep(0)
+        await drain()
+        assert stream.max_in_flight == 1
+        assert any(m.game_effect.effect == pb.GAME_EFFECT_SHIELD_ENERGY for m in stream.writes)
+        assert any(m.game_effect.effect == pb.GAME_EFFECT_PLAYER_WARNING for m in stream.writes)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", br=["BR-026"])
+    async def test_the_agent_cue_broadcast_writes_one_at_a_time(self):
+        """UC-040 step 13: the gathered magenta cue writes are serialised on the call too."""
+        from services.game_coordinator.stream_writes import serialized_write
+
+        stream = OverlapCheckingStream()
+        await asyncio.gather(*(serialized_write(stream, pb.GameplayStreamControl()) for _ in range(8)))
+        assert stream.max_in_flight == 1 and len(stream.writes) == 8
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A7", br=["BR-006", "BR-008"])
+    @pytest.mark.uc("UC-040", br=["BR-026"])
+    async def test_a_real_aio_call_survives_hold_marks_and_warnings(self, game):
+        """UC-030 BR-006 on a real grpc.aio loopback call: 300 marks plus warnings never end the call."""
+        import grpc
+        from grpc import aio
+
+        received = []
+
+        async def handler(request_iterator, _context):
+            async for raw in request_iterator:
+                received.append(raw)
+            yield b""
+
+        server = aio.server()
+        server.add_generic_rpc_handlers(
+            (
+                grpc.method_handlers_generic_handler(
+                    "controller_manager.ControllerManager",
+                    {"StreamGameplayData": grpc.stream_stream_rpc_method_handler(handler)},
+                ),
+            )
+        )
+        port = server.add_insecure_port("127.0.0.1:0")
+        await server.start()
+        channel = aio.insecure_channel(f"127.0.0.1:{port}")
+        try:
+            call = channel.stream_stream(
+                "/controller_manager.ControllerManager/StreamGameplayData",
+                request_serializer=lambda m: m.SerializeToString(),
+            )()
+            await call.write(pb.GameplayStreamControl())
+            game.gameplay_stream = call
+            for _ in range(300):
+                assert not call.done(), f"the call ended: {call.code()}"
+                game._queue_hold_feedback_all()
+                game.players["p2"].alive = True
+                await game._warn_player("p2", 30.0, 20.0)
+                await asyncio.sleep(0)
+            await asyncio.sleep(0.2)
+            assert not call.done(), f"the call ended: {call.code() if call.done() else None}"
+            game._cancel_hold_feedback()
+            await drain()
+        finally:
+            await channel.close()
+            await server.stop(0)

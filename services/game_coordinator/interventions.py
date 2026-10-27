@@ -70,6 +70,7 @@ from services.game_coordinator.game_loop_dispatch import (
     GameLoopUnavailableError,
 )
 from services.game_coordinator.intervention_errors import InterventionNotApplied
+from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
 
@@ -969,7 +970,7 @@ class InterventionManager:
                 logger.debug("controller_effect: the gameplay stream closed, stopping")
                 return
             try:
-                await stream.write(cmd)
+                await serialized_write(stream, cmd)
             except asyncio.InvalidStateError:
                 # grpc.aio: a write that starts after the call finished ("RPC already finished").
                 logger.debug("controller_effect: the gameplay stream had closed before the write, stopping")
@@ -1703,19 +1704,20 @@ class InterventionManager:
             from proto import controller_manager_pb2
 
             # Distinct magenta pulse = "agent acted" — not a game event color.
-            # Dispatch the per-target writes concurrently so a broadcast cue
-            # (e.g. an end_game HARD intervention with many players) doesn't add N
-            # sequential writes to the dispatch tail. Best-effort: any per-write
-            # failure is collected (return_exceptions) and never raised into the
-            # intervention path.
+            # The per-target writes are gathered, but grpc.aio allows one write in
+            # flight per call, so serialized_write runs them one after the other
+            # (#2096; two overlapping writes would end the call with INTERNAL).
+            # Best-effort: any per-write failure is collected (return_exceptions)
+            # and never raised into the intervention path.
             writes = [
-                stream.write(
+                serialized_write(
+                    stream,
                     controller_manager_pb2.GameplayStreamControl(
                         game_effect=controller_manager_pb2.GameEffectCommand(
                             serial=target_serial,
                             effect=controller_manager_pb2.GAME_EFFECT_PULSE,
                         )
-                    )
+                    ),
                 )
                 for target_serial in targets
             ]
