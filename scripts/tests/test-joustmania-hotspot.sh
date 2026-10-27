@@ -18,7 +18,7 @@
 #  - selftest only with the uplink connected and wlan0 free (BR-001), always
 #    takes the hotspot down again; remove deletes every installed file
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-hotspot.sh
-# UC: UC-061 main A1 A2 A3 A4 A5 A6 A7 BR-001 BR-004 BR-006 BR-008 BR-010
+# UC: UC-061 main A1 A2 A3 A4 A5 A6 A7 A9 Pre-1 Post-S-1 Post-S-2 Post-F-1 BR-001 BR-002 BR-004 BR-006 BR-008 BR-010
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -356,6 +356,25 @@ make_case a5-noprofile
 rm -f "${NM}/profile"
 at 10100; once; expect_state not-set-up "profile"
 [[ "$(ups)" == 0 ]] || fail "a5-noprofile: up without a profile"
+# a hotspot that is still running when the profile goes away is taken down
+make_case a5-noprofile-running
+at 10000; once; at 10020; once; expect_state on
+rm -f "${NM}/profile"
+at 10030; once; expect_state not-set-up "profile"
+[[ "$(downs)" == 1 ]] || fail "a5-noprofile-running: a running hotspot was not taken down"
+
+# --- A9: the cable is on a network the Host cannot join ------------------------------
+# eth0 counts as connected (hotspot off); unplugging it brings the hotspot up
+# within the up delay, not before
+make_case a9
+eth0_connected
+at 10000; once; at 10100; once; expect_state off
+[[ "$(ups)" == 0 ]] || fail "a9: hotspot came up next to a connected cable"
+eth0_down
+at 10110; once; expect_state waiting
+[[ "$(ups)" == 0 ]] || fail "a9: up before the up delay after the unplug"
+at 10130; once; expect_state on "eth0 down for 20s"
+[[ "$(ups)" == 1 ]] || fail "a9: want one 'connection up' after the unplug, got $(ups)"
 
 # --- BR-010: allow-list, never sourced ----------------------------------------------
 make_case conf

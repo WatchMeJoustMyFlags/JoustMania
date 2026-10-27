@@ -18,7 +18,7 @@
 #    detached, with the "you will be disconnected" line
 #  - --remove uses the installed remover; the upgrade's stale-files hint
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-install-hotspot.sh
-# UC: UC-061 Pre-2 Pre-3 A8 BR-001 BR-004
+# UC: UC-061 Pre-1 Pre-2 Pre-3 A8 BR-001 BR-004
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

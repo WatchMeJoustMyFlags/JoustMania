@@ -269,6 +269,7 @@ evaluate_pass() {
         return
     fi
     if ! profile_loaded; then
+        hotspot_down
         STATE=not-set-up REASON="the joustmania-hotspot profile is not loaded in NetworkManager"
         return
     fi
