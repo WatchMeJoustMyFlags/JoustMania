@@ -764,16 +764,6 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         self.sound_registry = sound_catalog.build_sound_registry(_PACKAGED_ASSETS, self.voice_profiles)
         logger.info(f"Sound registry built: {len(self.sound_registry)} sounds indexed")
 
-    def _scan_directory_for_sounds(self, directory: Path, sound_type: str, base_dir: str):
-        """Scan a directory for .ogg files and register them.
-
-        Args:
-            directory: Directory to scan for .ogg files
-            sound_type: Type of sound ("vox" or "sound")
-            base_dir: Base directory name (e.g., "Joust", "Menu")
-        """
-        sound_catalog.scan_directory(self.sound_registry, directory, sound_type, base_dir)
-
     def _register_sound(self, sound_name: str, sound_type: str, base_dir: str):
         """Register a sound name in the registry if not already present.
 

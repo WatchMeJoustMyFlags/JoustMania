@@ -396,7 +396,7 @@ class TestOnFlagsChanged:
 
 
 class TestSoundRegistry:
-    """Tests for _register_sound and _scan_directory_for_sounds."""
+    """Tests for _register_sound and scan_directory."""
 
     @pytest.fixture
     def servicer(self, mock_audio_servicer):
