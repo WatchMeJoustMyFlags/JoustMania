@@ -12,14 +12,23 @@ provider must serve the flag service's values, and five writes of
 ``flagservice.propagation_probe`` (the observability set's runtime-writable probe;
 ``grpc_rpc_spans`` itself is baseline-only) must each reach it within 1.5 s. Without
 the env vars the Rust test returns at once, so ``cargo test`` stays hermetic.
+
+The flagd port the Rust test connects to is the one rust-hid runs with in the
+full stack (``docker-compose.yml`` environment, else the image's ``ENV``, else
+the code default), not a hard-coded 8015: the image once set ``FLAGD_PORT=8013``
+(flagd's RPC port, which never sends a sync) and this test, pinned to 8015,
+passed while rust-hid on the Pi never synced (#2090). The flag plane publishes
+both flagd ports, so a wrong port fails the sync here.
 """
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.service.compositions import FLAG_PLANE
 
@@ -27,9 +36,28 @@ pytestmark = pytest.mark.tier("service")
 
 SERVICE_COMPOSITION = FLAG_PLANE
 
-RUST_HID_DIR = Path(__file__).resolve().parents[2] / "services" / "rust-hid"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RUST_HID_DIR = REPO_ROOT / "services" / "rust-hid"
 CARGO_TEST_TIMEOUT_SECONDS = 900  # includes the first build of rust-hid
 TEST_NAME = "feature_flags::live_tests::live_flips_reach_the_provider_after_a_late_flagd"
+
+
+def _deployed_flagd_port() -> int:
+    """FLAGD_PORT as rust-hid runs in the full stack: compose env, image ENV, code default."""
+    service = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())["services"]["rust-hid"]
+    env = service.get("environment") or []
+    if isinstance(env, dict):
+        env = [f"{key}={value}" for key, value in env.items()]
+    for item in env:
+        key, _, value = str(item).partition("=")
+        if key == "FLAGD_PORT":
+            return int(value)
+    for line in (RUST_HID_DIR / "Dockerfile").read_text().splitlines():
+        match = re.match(r"\s*ENV\s+FLAGD_PORT[=\s]\s*(\d+)", line)
+        if match:
+            return int(match.group(1))
+    source = (RUST_HID_DIR / "src" / "feature_flags.rs").read_text()
+    return int(re.search(r"const DEFAULT_SYNC_PORT: u16 = (\d+);", source).group(1))
 
 
 @pytest.mark.uc("UC-035", flow="main")
@@ -42,7 +70,7 @@ def test_rust_hid_provider_syncs_after_late_flagd_and_follows_writes(service_sta
     )
     env = {
         **os.environ,
-        "RUST_HID_LIVE_FLAGD_PORT": str(service_stack.get_service_port("flagd", 8015)),
+        "RUST_HID_LIVE_FLAGD_PORT": str(service_stack.get_service_port("flagd", _deployed_flagd_port())),
         "RUST_HID_LIVE_FLAG_SERVICE_URL": flag_service,
     }
     result = subprocess.run(

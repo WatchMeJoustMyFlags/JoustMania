@@ -65,7 +65,8 @@ ENV OTEL_SERVICE_NAME=rust-hid
 ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 ENV RUST_LOG=info
 ENV FLAGD_HOST=flagd
-ENV FLAGD_PORT=8013
+# flagd's sync port: the in-process resolver gets no sync from the RPC port 8013 (#2090)
+ENV FLAGD_PORT=8015
 
 EXPOSE 50058
 
