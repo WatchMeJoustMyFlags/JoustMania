@@ -8,6 +8,7 @@ without writing. `GetMenuStatus` carries the variant the pad's live preview star
 
 import pytest
 
+from lib import setting_ladders
 from lib.types import Sound
 from proto import controller_manager_pb2, menu_pb2
 from services.menu import settings_ops
@@ -154,3 +155,9 @@ async def test_menu_status_shield_mode_is_empty_when_unresolvable(servicer):
     status = await servicer.GetMenuStatus(menu_pb2.GetMenuStatusRequest(), None)
 
     assert status.shield_activation == ""
+
+
+@pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018", "BR-005"])
+def test_shield_step_order_is_pinned_to_the_shared_ladder():
+    # The commit steps along this order whatever order the flag service lists the variants in.
+    assert settings_ops.STEP_OPTIONS[SHIELD].order == setting_ladders.SHIELD_ACTIVATION_LADDER

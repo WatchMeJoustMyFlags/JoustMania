@@ -41,7 +41,8 @@ BASELINE = {
     ("game", "sensitivity"): ({"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4}, "medium"),
     ("game", "num_teams"): ({"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}, "two"),
     ("game", "force_all_start"): ({"on": True, "off": False}, "off"),
-    ("game", "shield.activation"): ({"instant": "instant", "trigger": "trigger", "hold": "hold"}, "trigger"),
+    # Listed in reverse: the commit ladder must come from the menu's `order`, not the listing (UC-015 BR-018).
+    ("game", "shield.activation"): ({"hold": "hold", "trigger": "trigger", "instant": "instant"}, "trigger"),
     ("user", "game_instructions"): ({"on": True, "off": False}, "off"),
     ("user", "current_game"): ({name: name for name in GAME_MODES}, "JoustFFA"),
     (

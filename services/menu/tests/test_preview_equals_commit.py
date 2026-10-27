@@ -44,6 +44,9 @@ def _flag_file_variants() -> dict[tuple[str, str], dict[str, object]]:
         flags = json.loads((FLAGD_DIR / f"{flag_set}.json").read_text())["flags"]
         for key in keys:
             variants[(flag_set, key)] = dict(flags[key]["variants"])
+    # Served in reverse listing order: the shield commit ladder must come from the menu's `order`
+    # (UC-015 BR-018), so a reordered flag file can never make the commit differ from the preview.
+    variants[("game", "shield.activation")] = dict(reversed(list(variants[("game", "shield.activation")].items())))
     return variants
 
 
