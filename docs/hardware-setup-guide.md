@@ -550,7 +550,10 @@ server, and ufw or firewalld (it prints the exact allow rules; re-run with
 20 s as a self-test while the cable stays in: join it from a phone during those
 20 s to check the password. Only when the self-test passes is the fallback armed
 (`enabled=yes` in `/etc/joustmania/hotspot.conf`); a refused or interrupted
-setup leaves `enabled=no`.
+setup leaves `enabled=no`. That includes a re-run with the cable on a Pi that
+was already armed: a refused re-run disarms it, so re-run until it passes.
+A re-run over the hotspot itself never disarms it and keeps the old profile
+when it is refused or your session drops.
 
 The password: 8 to 63 characters, printable ASCII, no space and no backslash.
 It is stored only in the root-owned NetworkManager profile. Re-run the setup to

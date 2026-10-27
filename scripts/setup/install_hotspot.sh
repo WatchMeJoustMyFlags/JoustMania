@@ -120,6 +120,10 @@ foreign_listeners() {
 hotspot_active() {
     [[ "$(nmcli -g GENERAL.STATE,GENERAL.CON-UUID device show "$WLAN" 2>/dev/null | sed -n 2p)" == "$UUID" ]]
 }
+# Decided once, before any change: a later probe could see the hotspot drop
+# mid-run and take the wrong branch (a cable-less Pi would lose its only access)
+A8=0
+hotspot_active && A8=1
 
 country=""
 precheck() {
@@ -168,7 +172,7 @@ precheck() {
     fi
     local who=""
     # with the hotspot up, NM's own dnsmasq holds :53 and :67 on wlan0 (A8)
-    hotspot_active || who="$(
+    ((A8)) || who="$(
         foreign_listeners udp 53
         foreign_listeners tcp 53
         foreign_listeners udp 67
@@ -195,7 +199,7 @@ precheck() {
 # A8: a channel change cannot be proven over the hotspot itself (no uplink for
 # the self-test), and a channel that fails to start would lock a cable-less Pi out
 OLD_CHANNEL="$(sed -n 's/^channel=\([0-9]\{2\}\)$/\1/p' "$CONF" 2>/dev/null | tail -n 1)"
-if hotspot_active && [[ -n "$OLD_CHANNEL" && "$OLD_CHANNEL" != "$CHANNEL" ]]; then
+if ((A8)) && [[ -n "$OLD_CHANNEL" && "$OLD_CHANNEL" != "$CHANNEL" ]]; then
     problem "changing the channel ($OLD_CHANNEL to $CHANNEL) over the hotspot cannot be tested: plug the cable in and re-run (UC-061 A8)"
 fi
 precheck
@@ -216,6 +220,7 @@ PSK=""
 TMP_KEYFILE=""
 CONF_WRITTEN=0
 ARMED=0
+KEYFILE_BACKUP=""
 # write_conf yes|no: the settings, atomically. `enabled=yes` only once the
 # self-test passed (or A8): until then neither the hook nor the timer may bring
 # the hotspot up (a refused setup must never leave a half-armed fallback)
@@ -232,6 +237,12 @@ write_conf() {
 cleanup() {
     PSK=""
     [[ -n "$TMP_KEYFILE" ]] && rm -f "$TMP_KEYFILE"
+    # A8: put the previous keyfile back when this run did not finish, so the next
+    # activation never uses a half-checked profile
+    if [[ -n "$KEYFILE_BACKUP" && -f "$KEYFILE_BACKUP" ]]; then
+        mv -fT "$KEYFILE_BACKUP" "$KEYFILE" && nmcli connection load "$KEYFILE" >/dev/null 2>&1
+        echo "install_hotspot: the previous hotspot profile is restored; nothing changed for its clients" >&2
+    fi
     if ((CONF_WRITTEN && !ARMED)); then
         write_conf no && echo "install_hotspot: the fallback is NOT armed (enabled=no in $CONF)" >&2
     fi
@@ -278,9 +289,20 @@ install "${own[@]}" -m 0755 "$SCRIPT_DIR/joustmania-hotspot.sh" "$HELPER" &&
     install "${own[@]}" -m 0755 "$SCRIPT_DIR/90-joustmania-hotspot" "$HOOK" || die "cannot install the hotspot files"
 
 CONF_WRITTEN=1
-write_conf no || die "cannot write $CONF"
+if ((A8)); then
+    # Over the hotspot the fallback stays armed throughout: a SIGHUP of this
+    # session, a timer pass or a refusal must never take the Pi's only access down
+    ARMED=1
+    write_conf yes || die "cannot write $CONF"
+else
+    write_conf no || die "cannot write $CONF"
+fi
 # A crash of an earlier run may have left a hidden temp keyfile with a password
 rm -f "$KEYFILE_DIR"/.joustmania-hotspot.*
+if ((A8)) && [[ -f "$KEYFILE" ]]; then
+    KEYFILE_BACKUP="$KEYFILE_DIR/.joustmania-hotspot.backup"
+    cp -p "$KEYFILE" "$KEYFILE_BACKUP" || die "cannot keep a copy of the current profile"
+fi
 
 # Docker needs forwarding; NM's shared mode must not leave it off when the
 # hotspot goes down again (UC-061 Notes)
@@ -303,6 +325,9 @@ nmcli connection load "$KEYFILE" >/dev/null 2>&1 || die "nmcli connection load $
 # The stored password must be the typed one: compared through pipes, never printed
 if ! nmcli -e no -s -g 802-11-wireless-security.psk connection show uuid "$UUID" 2>/dev/null |
     cmp -s - <(printf '%s\n' "$PSK"); then
+    if ((A8)); then
+        die "NetworkManager stored a different password than the one entered"
+    fi
     nmcli connection delete uuid "$UUID" >/dev/null 2>&1 || true
     rm -f "$KEYFILE"
     die "NetworkManager stored a different password than the one entered; profile removed"
@@ -316,7 +341,7 @@ say "profile joustmania-hotspot loaded (SSID '$SSID', 5 GHz channel $CHANNEL)"
 systemctl daemon-reload || die "systemctl daemon-reload failed"
 
 # --- prove it, then arm it ------------------------------------------------------------
-if hotspot_active; then
+if ((A8)); then
     # A8: changed over the hotspot itself; no uplink to run the self-test on, the
     # detached reactivation below applies and proves the new settings
     say "the hotspot is in use: self-test skipped; it restarts with the new settings"
@@ -333,9 +358,12 @@ fi
 write_conf yes || die "cannot write $CONF"
 ARMED=1
 systemctl enable --now joustmania-hotspot.timer >/dev/null || {
-    ARMED=0
+    ((A8)) || ARMED=0
     die "cannot enable joustmania-hotspot.timer"
 }
+# the new profile is in place and checked: drop the A8 backup
+[[ -z "$KEYFILE_BACKUP" ]] || rm -f "$KEYFILE_BACKUP"
+KEYFILE_BACKUP=""
 if ((HOTSPOT_ACTIVE)); then
     say "you will be disconnected in a few seconds; rejoin '$SSID' with the new password"
     systemd-run --no-block --collect --unit=joustmania-hotspot-reapply --on-active=5 \

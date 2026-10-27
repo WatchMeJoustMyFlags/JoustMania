@@ -128,9 +128,22 @@ printf '%s\n' "$*" >>"${CASE}/apt.argv"
 [[ -f "${CASE}/s/apt-ok" ]] || exit 100
 touch "${CASE}/dnsmasq" && chmod +x "${CASE}/dnsmasq"
 EOF
-for tool in systemd-run sysctl; do
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"${CASE}/%s.argv"\n' "$tool" >"${STUBS}/${tool}"
-done
+# sysctl runs after the conf and before the keyfile: the hook for the A8 cases
+# (a timer pass during the run, a session that hangs there and gets a signal)
+cat >"${STUBS}/sysctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${CASE}/sysctl.argv"
+if [[ -f "${CASE}/s/sysctl-evaluate" ]]; then
+  JOUSTMANIA_HOTSPOT_CONF="${CASE}/root/etc/joustmania/hotspot.conf" \
+    "${CASE}/root/usr/local/lib/joustmania/joustmania-hotspot" evaluate --once >>"${CASE}/evaluate.out" 2>&1
+fi
+if [[ -f "${CASE}/s/sysctl-hang" ]]; then touch "${CASE}/s/hanging"; sleep 30; fi
+exit 0
+STUB
+cat >"${STUBS}/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${CASE}/systemd-run.argv"
+EOF
 cat >"${STUBS}/id" <<'EOF'
 #!/usr/bin/env bash
 [[ "$1" == -u ]] && { cat "${CASE}/s/uid" 2>/dev/null || echo 0; exit 0; }
@@ -408,6 +421,55 @@ PY
   [[ "$(cat "${S}/wlan0-state")" == "30 (disconnected)" ]] || fail "signal-${sg}: wlan0 is $(cat "${S}/wlan0-state")"
   grep -qx 'enabled=no' "${R}/etc/joustmania/hotspot.conf" || fail "signal-${sg}: armed after an interrupted setup"
 done
+
+# --- A8 stays armed and keeps the working profile (review delta) ---------------------
+# a8_case <name>: installed with the cable, then the cable is gone and the
+# Operator re-runs the setup over the hotspot
+a8_case() {
+  make_case "$1"
+  run_install --hold 0 || fail "$1: first install exit $?"
+  cp "${R}/etc/NetworkManager/system-connections/joustmania-hotspot.nmconnection" "${CASE}/old-keyfile"
+  echo "20 (unavailable)" >"${S}/eth0-state"
+  echo "100 (connected)" >"${S}/wlan0-state"; echo "$UUID" >"${S}/wlan0-uuid"; printf '10.42.0.1/24' >"${S}/wlan0-ip4"
+  : >"${CASE}/nmcli.argv"
+}
+a8_still_up() { # <case>
+  grep -qx 'enabled=yes' "${R}/etc/joustmania/hotspot.conf" || fail "$1: A8 disarmed the fallback"
+  echo 30000 >"${CASE}/now"
+  JOUSTMANIA_HOTSPOT_CONF="${R}/etc/joustmania/hotspot.conf" "${R}/usr/local/lib/joustmania/joustmania-hotspot" evaluate --once >/dev/null
+  ! grep -q "connection down\\|connection delete" "${CASE}/nmcli.argv" || fail "$1: the hotspot was taken down: $(grep 'down\|delete' "${CASE}/nmcli.argv")"
+  [[ "$(cat "${S}/wlan0-uuid")" == "$UUID" ]] || fail "$1: wlan0 lost the hotspot"
+}
+a8_case a8-refused
+echo 'other-pass-1' >"${S}/psk-override"
+if INPUT='NewPass&2027' run_install; then fail "a8-refused: finished with a password mismatch"; fi
+cmp -s "${CASE}/old-keyfile" "${R}/etc/NetworkManager/system-connections/joustmania-hotspot.nmconnection" || fail "a8-refused: the previous profile was not restored"
+[[ -z "$(find "${R}/etc/NetworkManager/system-connections" -name '.joustmania-hotspot.*')" ]] || fail "a8-refused: a temp or backup keyfile left"
+a8_still_up a8-refused
+a8_case a8-timer
+touch "${S}/sysctl-evaluate"
+run_install || fail "a8-timer: exit $? ($(tail -n 3 "${CASE}/out"))"
+grep -q '^joustmania-hotspot: on' "${CASE}/evaluate.out" || fail "a8-timer: the check during the run did not see the hotspot on: $(cat "${CASE}/evaluate.out")"
+a8_still_up a8-timer
+a8_case a8-sighup
+touch "${S}/sysctl-hang"
+PSK_IN="$PSK" python3 -I - SIGHUP "${S}/hanging" "$INSTALL" --psk-stdin >"${CASE}/out" 2>&1 <<'PY' || fail "a8-sighup: harness"
+import os, signal, subprocess, sys, time
+sig, marker, cmd = getattr(signal, sys.argv[1]), sys.argv[2], sys.argv[3:]
+def dfl():
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, signal.SIG_DFL)
+p = subprocess.Popen(cmd, start_new_session=True, preexec_fn=dfl, stdin=subprocess.PIPE)
+p.stdin.write(os.environ["PSK_IN"].encode() + b"\n"); p.stdin.close()
+deadline = time.time() + 20
+while time.time() < deadline and not os.path.exists(marker):
+    time.sleep(0.1)
+os.killpg(p.pid, sig)
+p.wait(timeout=20)
+PY
+[[ -e "${S}/hanging" ]] || fail "a8-sighup: the run never reached the file work"
+rm -f "${S}/sysctl-hang"
+a8_still_up a8-sighup
 
 # --- A8: over the hotspot ------------------------------------------------------------
 make_case a8
