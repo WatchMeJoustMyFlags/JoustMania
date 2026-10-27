@@ -160,6 +160,10 @@ class TraitorGame(TeamsGameBase):
         """Return game mode identifier."""
         return "Traitor"
 
+    def get_instruction_clip(self) -> Sound | None:
+        """Spoken instructions before the countdown (UC-022 A3, UC-020 A5)."""
+        return Sound.MENU_VOX_TRAITOR_INSTRUCTIONS
+
     def _get_traitor_count(self, num_players: int) -> int:
         """
         Determine number of traitors based on player count.

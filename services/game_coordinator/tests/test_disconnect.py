@@ -115,7 +115,7 @@ class TestHandleDisconnect:
         assert death_effects[0].game_effect.serial == "serial_a"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-030", flow="A5")
+    @pytest.mark.uc("UC-030", flow="A5", cond=["Pre-1"])
     async def test_disconnect_noop_for_dead_player(self, game_with_players):
         """UC-030 A5 applies to an alive player only (precondition): a dead player's disconnect changes nothing."""
         game, _ = game_with_players

@@ -393,6 +393,28 @@ pub(crate) mod tests {
         assert_eq!(got[2], (9, 9, 9, 0), "rumble did not return to the latest value");
     }
 
+    // UC: UC-002 BR-005
+    #[test]
+    fn test_an_identical_value_in_a_later_interval_is_still_written() {
+        // The controller manager re-sends the unchanged LED colour every 2 s as a
+        // keep-alive (the Move turns its LED off without one): no dedupe here.
+        let router = OutputRouter::default();
+        let device = RecordingDevice::new(WriteMode::Ok);
+        open(&router, &device, 20);
+        for n in 1..=3usize {
+            assert!(router.submit("s1", 7, 7, 7, 0));
+            assert!(
+                wait_for(|| device.reports().len() == n, Duration::from_secs(1)),
+                "submit {n} of an identical value was not written ({} writes)",
+                device.reports().len()
+            );
+            // Past the 50 ms rate-cap interval before the next identical submit.
+            std::thread::sleep(Duration::from_millis(120));
+        }
+        let got: Vec<_> = device.reports().iter().map(|r| rgb_rumble(r)).collect();
+        assert_eq!(got, vec![(7, 7, 7, 0); 3]);
+    }
+
     /// Counts every write attempt, then delegates to the recording device.
     struct Counting(RecordingDevice, Arc<AtomicU32>);
 

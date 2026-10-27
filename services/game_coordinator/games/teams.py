@@ -10,6 +10,7 @@ Phase 36b: Refactored to extend TeamsGameBase, eliminating ~500 lines of duplica
 import logging
 import time
 
+from lib.types import Sound
 from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import Phase, Player
 from services.game_coordinator.games.teams_base import TeamsGameBase
@@ -40,6 +41,10 @@ class SimpleTeamsGame(TeamsGameBase):
     def get_game_name(self) -> str:
         """Return game mode identifier."""
         return "Teams"
+
+    def get_instruction_clip(self) -> Sound | None:
+        """Spoken instructions before the countdown (UC-021 A3, UC-020 A5)."""
+        return Sound.MENU_VOX_TEAMS_INSTRUCTIONS
 
     async def _initialize_players_impl(self, controllers: list):
         """

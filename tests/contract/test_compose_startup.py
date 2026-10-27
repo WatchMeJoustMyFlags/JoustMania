@@ -117,6 +117,8 @@ def test_collector_does_not_wait_for_its_backends():
 
 
 @pytest.mark.uc("UC-060", flow="main", br=["BR-004"])
+@pytest.mark.uc("UC-002", flow="A7")
+@pytest.mark.nfr("NFR-054")
 @pytest.mark.parametrize("compose", COMPOSE_FILES)
 def test_every_service_restarts_and_rotates_logs(compose):
     bad = {}

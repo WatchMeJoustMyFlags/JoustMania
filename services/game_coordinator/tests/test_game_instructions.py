@@ -2,7 +2,7 @@
 
 When the host switched ``game_instructions`` on (UC-012 A3, FR-014), the mode's
 instruction clip plays and the countdown waits until it has finished. Off, the
-main scenario runs unchanged. JoustFFA is the only mode with a clip so far.
+main scenario runs unchanged. The other modes' clips: test_game_instructions_modes.py (#2151).
 """
 
 import asyncio
@@ -16,7 +16,7 @@ from opentelemetry import trace
 from lib.types import GameEvent, Sound
 from proto import audio_pb2
 from services.game_coordinator.games.ffa import FFAGame
-from services.game_coordinator.games.teams import SimpleTeamsGame
+from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 from services.game_coordinator.tests.conftest import EventCollector, MockControllerManagerService
 from services.game_coordinator.tests.test_ffa_uc020 import (
     RecordingAudio,
@@ -448,13 +448,13 @@ class TestUC020InstructionsOff:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A5", steps=[3])
     async def test_mode_without_clip_records_no_clip(self):
-        """A5: a mode without a clip mapping (Teams) plays nothing and does not wait."""
+        """A5: a mode without a clip (Non-Stop Joust, no recording) plays nothing and does not wait."""
         audio = TimedAudio()
-        game = SimpleTeamsGame(
+        game = NonstopJoustGame(
             controller_manager_client=MockControllerManagerService(num_controllers=2),
             event_publisher=EventCollector().publish,
             audio_client=audio,
-            game_id="test_uc020_a5_teams",
+            game_id="test_uc020_a5_nonstop",
         )
         game.running = True
         span = create_autospec(trace.Span, instance=True)
