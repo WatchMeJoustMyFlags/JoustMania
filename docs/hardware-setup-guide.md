@@ -13,6 +13,7 @@ Complete guide for setting up JoustMania on Raspberry Pi 5, covering USB configu
 - [Mobile/Portable Setups](#mobileportable-setups)
 - [Scaling Guide](#scaling-guide)
 - [25 Controllers on One Pi](#25-controllers-on-one-pi) (NFR-025)
+- [Stage Hotspot (convention play)](#stage-hotspot-convention-play) (UC-061)
 - [Physical Placement](#physical-placement)
 - [Troubleshooting](#troubleshooting)
 
@@ -520,6 +521,61 @@ switching to `medium` reduces USB traffic and CPU; no measured numbers exist for
 Plan one adapter per 5 (Realtek) to 6 or 7 (CSR) controllers and a powered hub: 30 controllers need 5 to 6
 adapters, 50 need 8 to 10. Running several games at once multiplies the update load and requires the
 powered hub.
+
+---
+
+## Stage Hotspot (convention play)
+
+At a venue without a wired network the Pi opens its own password-protected
+5 GHz Wi-Fi hotspot, so the Host can open the dashboard, Jaeger and Grafana
+([UC-061](use_cases/UC-061.md)). It is a fallback only: it comes up when the
+uplink (eth0) has had no connection for about 20 s (60 s while eth0 is still
+connecting, and never in the first 45 s after boot) and goes down again 15 s
+after the cable is back. There is no internet over it: the game runs in
+convention play mode (the agent on the rules backend).
+
+### Set it up (at home, with the cable in)
+
+```bash
+sudo raspi-config nonint do_wifi_country DE   # your country; reboot afterwards
+sudo scripts/setup/install_hotspot.sh          # asks for the password twice
+# options: --ssid "JoustMania" --channel 36|40|44|48 --uplink eth0 --psk-file FILE
+```
+
+The setup checks the Pi first and changes nothing when a check fails: the
+Wi-Fi country (set and kept for the next boot), the 5 GHz channel allowed for
+an access point, `dnsmasq-base` (installed when missing), no other DNS or DHCP
+server, and ufw or firewalld (it prints the exact allow rules; re-run with
+`--firewall-rules-added` after adding them). Then it brings the hotspot up for
+20 s as a self-test while the cable stays in: join it from a phone during those
+20 s to check the password. Only when the self-test passes is the fallback armed.
+
+The password: 8 to 63 characters, printable ASCII, no space and no backslash.
+It is stored only in the root-owned NetworkManager profile. Re-run the setup to
+change it, the SSID or the channel; over the hotspot itself your session drops
+and you rejoin with the new password.
+
+Undo: `sudo scripts/setup/install_hotspot.sh --remove` (or
+`sudo /usr/local/lib/joustmania/joustmania-hotspot remove` from any checkout).
+After an upgrade that changes the hotspot files, `joustmania-upgrade` says
+"hotspot files changed: run sudo .../install_hotspot.sh".
+
+### At the venue (Host instructions)
+
+1. Unplug the cable if the Pi is cabled into a network you cannot join (a
+   stage or lighting switch); the hotspot comes up within about a minute.
+2. Phone: **turn mobile data off** (or confirm "stay connected" when the phone
+   says the network has no internet). Join the SSID with the password.
+3. Open `http://10.42.0.1/` (dashboard), `/jaeger/`, `/grafana/`; SSH works on
+   `10.42.0.1` too.
+4. A known Wi-Fi network in range (for example a phone tether the Pi joined
+   before) wins over the hotspot: switch that network off, or remove its
+   profile before the show.
+
+About 8 devices can join; the hotspot is for the Host and crew, not the
+audience. It uses 5 GHz only, so it does not share the controllers' 2.4 GHz
+air; check the controllers' report gaps with the hotspot on during the on-Pi
+check (#2088, NFR-008).
 
 ---
 

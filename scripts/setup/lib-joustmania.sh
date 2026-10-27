@@ -118,3 +118,18 @@ joustmania_missing_hint() {
     ref="$(joustmania_pin_ref "$1")"
     printf 'when online, run: %s/scripts/setup/joustmania-upgrade.sh %s\n' "$1" "${ref:-<joustmania-vX.Y.Z | sha>}"
 }
+
+# joustmania_hotspot_hint <checkout dir> <old commit> <new commit>: one line when
+# the stage hotspot is installed (UC-061) and its files differ between the two
+# commits. The installed root-owned copies never change with the checkout
+# (UC-061 BR-006), so the operator re-runs the setup to take the new ones.
+# JOUSTMANIA_HOTSPOT_INSTALLED overrides the installed helper's path (tests).
+joustmania_hotspot_hint() {
+    local installed="${JOUSTMANIA_HOTSPOT_INSTALLED:-/usr/local/lib/joustmania/joustmania-hotspot}"
+    [[ -e "$installed" ]] || return 0
+    git -C "$1" diff --quiet "$2" "$3" -- scripts/setup/joustmania-hotspot.sh \
+        scripts/setup/joustmania-hotspot.service scripts/setup/joustmania-hotspot.timer \
+        scripts/setup/90-joustmania-hotspot scripts/setup/joustmania-hotspot.nmconnection.template \
+        2>/dev/null && return 0
+    printf 'hotspot files changed: run sudo %s/scripts/setup/install_hotspot.sh (UC-061; the password is asked again)\n' "$1"
+}

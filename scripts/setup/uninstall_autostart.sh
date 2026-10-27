@@ -50,4 +50,8 @@ echo ""
 echo "✓ JoustMania autostart service uninstalled successfully!"
 echo ""
 echo "JoustMania will no longer start automatically on boot."
+if [[ -x /usr/local/lib/joustmania/joustmania-hotspot ]]; then
+    echo "The stage hotspot fallback (UC-061) is separate and stays installed; remove it with:"
+    echo "  sudo /usr/local/lib/joustmania/joustmania-hotspot remove"
+fi
 echo "You can manually start it with: ./scripts/setup/joustmania-start.sh (or ./scripts/setup/joustmania-compose.sh up -d)"
