@@ -390,7 +390,9 @@ alone, and the trace proves whether the inputs matched.
 | agent | `agent.decision` in a pattern game | `pattern.target_slot` (slot of the targeted player, when the target is a player), `decision.chaos_draw_index` (number of chaos draws of the game's rules engine so far) | each decision |
 
 **Signal hash:** FNV-1a/64 over the controller's delivered frames in order, each frame encoded as the signed
-32-bit little-endian integer ⌊intensity · 1000 + 0.5⌋ (milli-g, rounded half up); rendered as 16 lowercase hex digits.
+32-bit little-endian integer ⌊intensity · 1000 + 0.5⌋ (milli-g, rounded half up); for an archetype with a
+`trigger_policy` (UC-046 BR-018, #2096) each frame adds one byte after the value, 1 when the trigger is pressed on that
+frame and 0 otherwise, so the hash of an archetype without a policy is unchanged; rendered as 16 lowercase hex digits.
 intensity is computed in IEEE-754 double precision; the milli-g rounding keeps the hash stable across Python builds,
 and golden tests pin it. **Checkpoints:** the hash value after every r delivered frames (one per second of game time).
 The total number of delivered frames depends on wall-clock lag (a dead player leaves the stream filter a few frames

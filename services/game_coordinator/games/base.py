@@ -948,7 +948,9 @@ class BaseGameMode(ABC):
 
     # UC-040 BR-019: ``shield.activation = trigger`` is an allow-list. Only a mode
     # that sets this (Free-for-All) turns a grant_shield into a charge; every other
-    # mode, and every shadow game, always takes the instant path.
+    # mode, and every shadow game whose pattern controllers do not press the
+    # trigger (no ``pattern_trigger_policy``, UC-046 BR-018), always takes the
+    # instant path.
     SHIELD_TRIGGER_ALLOWED: bool = False
 
     def __init__(
@@ -1005,6 +1007,9 @@ class BaseGameMode(ABC):
         self.game_kind = "primary"
         self.experiment_id = ""
         self.arm = ""
+        # UC-046 BR-018 / UC-040 BR-019 (#2096): set by the session for a shadow game
+        # whose archetype presses the trigger; such a game honours trigger and hold.
+        self.pattern_trigger_policy = False
         # The flag transaction context _set_flag_eval_context set for this game's
         # run; intervention handlers resolve flags in it (flag_eval_context, #1970).
         self._flag_eval_context: EvaluationContext | None = None
@@ -3216,18 +3221,26 @@ class BaseGameMode(ABC):
     # Shield charge (#1837, FR-160; UC-040 A30-A32, BR-019-BR-021; UC-030 A6)
     # ------------------------------------------------------------------
 
+    def _shield_mode_flag_applies(self) -> bool:
+        """UC-040 BR-019: the allow-listed mode, in a real game or a shadow game whose pattern presses the trigger."""
+        if not self.SHIELD_TRIGGER_ALLOWED:
+            return False
+        return self.game_kind != GAME_KIND_SHADOW or self.pattern_trigger_policy is True
+
     def _shield_activation_mode(self) -> str:
         """``instant``, ``trigger`` or ``hold`` for the next grant_shield (UC-040 BR-019, BR-027).
 
-        Only an allow-listed mode (``SHIELD_TRIGGER_ALLOWED``, Free-for-All) and
-        only a real game reads the flag; every other game is instant. A game
+        Only an allow-listed mode (``SHIELD_TRIGGER_ALLOWED``, Free-for-All) in a
+        real game, or in a shadow game whose archetype presses the trigger
+        (``pattern_trigger_policy``, UC-046 BR-018), reads the flag; every other
+        game is instant. A game
         latched to hold stays hold; otherwise the flag is read per grant, never per
         frame, and a ``hold`` read in a game not latched to hold gives the mode the
         game latched at its start (``instant`` or ``trigger``).
         """
         if self._shield_hold is not None:
             return SHIELD_ACTIVATION_HOLD
-        if not self.SHIELD_TRIGGER_ALLOWED or self.game_kind == GAME_KIND_SHADOW:
+        if not self._shield_mode_flag_applies():
             return SHIELD_ACTIVATION_INSTANT
         # Literal flag key, so the contract scan resolves the read.
         value = read_string_flag("game", "shield.activation", DEFAULT_SHIELD_ACTIVATION, game_id=self.game_id)
@@ -3469,13 +3482,13 @@ class BaseGameMode(ABC):
         """Latch hold mode and its values once per game (UC-040 BR-027); None = not a hold game.
 
         Called at the start of the game loop and by the first grant, in the game's
-        flag context, so an experiment arm resolves. Only Free-for-All real games
-        (the BR-019 allow-list) can be hold games. Every player starts with the
-        starting energy, clamped to the cap and the budget.
+        flag context, so an experiment arm resolves. Only Free-for-All games (the
+        BR-019 allow-list), real or shadow with ``pattern_trigger_policy``, can be hold
+        games. Every player starts with the starting energy, clamped to the cap and the budget.
         """
         if self._shield_hold_latched:
             return self._shield_hold
-        if not self.SHIELD_TRIGGER_ALLOWED or self.game_kind == GAME_KIND_SHADOW:
+        if not self._shield_mode_flag_applies():
             self._shield_hold_latched = True
             self._publish_shield_mode_metrics(SHIELD_ACTIVATION_INSTANT)
             return None
@@ -3929,6 +3942,8 @@ class BaseGameMode(ABC):
             return
         self._hold_energy_published_at[serial] = asyncio.get_running_loop().time()
         self._set_hold_gauges(player, time.time())  # the agent's view, with every event and keyframe
+        if self._is_shadow_game():
+            return  # UC-035 BR-008: no player_shield_energy from a shadow game (no dashboard bar, bus queues)
         try:
             await self.event_publisher(
                 GameEvent.PLAYER_SHIELD_ENERGY, self._hold_energy_event(player, time.time(), granted)

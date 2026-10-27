@@ -524,8 +524,9 @@ A named parameter object that defines the motion function of every player of a p
 | d_drift | Per-slot increment of drift, in g/s | Decimal | 6,4 | Not Null, Min: -1, Max: 1 |
 | d_amp | Per-slot increment of amp, in g | Decimal | 6,3 | Not Null, Min: -1, Max: 1 |
 | d_phase | Per-slot phase offset in cycles | Decimal | 4,3 | Not Null, Min: 0, Max (exclusive): 1 |
+| trigger_policy | How the slots press the trigger by themselves (UC-046 BR-018, #2096): absent or `{"kind":"none"}` = never; `{"kind":"burst"}` = during the burst windows; `{"kind":"threshold","level","reaction_frames","hold_frames"}` = intensity at or above `level` within the last `hold_frames` frames after `reaction_frames` | Object | - | Optional; kind one of none, burst, threshold; burst needs burst_h > 0; level 0..10, reaction_frames whole 0..60, hold_frames whole 2..120; left out of the canonical JSON when none |
 
-**Constraints:** every field is a finite number and no other field is present; base_i and amp_i of every slot stay within 0..10 g; the delivered intensity is clamped to 0..10 g. No rule forces a game to end: its length emerges, bounded only by the safety cap (UC-046 BR-013). The variants are versioned by the flag file's git history (C-019).
+**Constraints:** every numeric field is a finite number and no other field than `trigger_policy` is present; base_i and amp_i of every slot stay within 0..10 g; the delivered intensity is clamped to 0..10 g. No rule forces a game to end: its length emerges, bounded only by the safety cap (UC-046 BR-013). The variants are versioned by the flag file's git history (C-019).
 
 ### PATTERN_PAIR_ASSIGNMENT
 
