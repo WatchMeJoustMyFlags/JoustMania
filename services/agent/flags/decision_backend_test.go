@@ -358,3 +358,73 @@ func TestDecisionGate_Step3Defaults(t *testing.T) {
 		t.Errorf("llm.eligible_game_kinds default = %v, want [real] (real_only)", snap.LLMGate.EligibleGameKinds)
 	}
 }
+
+// TestDecisionBackend_CadenceFlagDefaults pins the #2123 cadence flags: both flag
+// files ship decision.min_gap_after_answer_ms = 1000 and
+// decision.max_state_age_ms = 10000 as their defaults, matching the compiled
+// fallbacks, and the stage baseline (scripts/talk-baseline.json) runs claude with
+// the "patient" timeout (8000 ms), which the state-age bound stays above.
+// UC: UC-040 A4
+// UC: UC-070 main
+func TestDecisionBackend_CadenceFlagDefaults(t *testing.T) {
+	type flagDoc struct {
+		Flags map[string]struct {
+			Variants       map[string]any `json:"variants"`
+			DefaultVariant string         `json:"defaultVariant"`
+		} `json:"flags"`
+	}
+	for _, path := range []string{
+		filepath.Join("..", "..", "flagd", "agent.json"),
+		filepath.Join("..", "..", "flagd", "ci", "agent.json"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc flagDoc
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		for key, want := range map[string]int{
+			keyDecisionMinGapAfterAnswerMs: DefaultDecisionMinGapAfterAnswerMs,
+			keyDecisionMaxStateAgeMs:       DefaultDecisionMaxStateAgeMs,
+		} {
+			f, ok := doc.Flags[key]
+			if !ok {
+				t.Errorf("%s: %s missing", path, key)
+				continue
+			}
+			if got := f.Variants[f.DefaultVariant]; got != float64(want) {
+				t.Errorf("%s: %s default = %v, want %d", path, key, got, want)
+			}
+			if got := f.Variants["off"]; got != float64(0) {
+				t.Errorf("%s: %s off = %v, want 0", path, key, got)
+			}
+		}
+		patient := doc.Flags[keyDecisionClaudeTimeoutMs].Variants["patient"]
+		if patient != float64(8000) {
+			t.Errorf("%s: %s patient = %v, want 8000", path, keyDecisionClaudeTimeoutMs, patient)
+		}
+		if patient.(float64) >= float64(DefaultDecisionMaxStateAgeMs) {
+			t.Errorf("%s: patient timeout %v must stay below the default state-age bound %d", path, patient, DefaultDecisionMaxStateAgeMs)
+		}
+	}
+	snap := New(stubEvaluator{}, nil).Evaluate(context.Background())
+	if snap.Decision.MinGapAfterAnswer != time.Second || snap.Decision.MaxStateAge != 10*time.Second {
+		t.Errorf("compiled defaults gap=%v age=%v, want 1s and 10s", snap.Decision.MinGapAfterAnswer, snap.Decision.MaxStateAge)
+	}
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "scripts", "talk-baseline.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var baseline struct {
+		Checked map[string]string `json:"checked"`
+	}
+	if err := json.Unmarshal(raw, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	if got := baseline.Checked[keyDecisionClaudeTimeoutMs]; got != "patient" {
+		t.Errorf("talk baseline %s = %q, want patient (#2123)", keyDecisionClaudeTimeoutMs, got)
+	}
+}

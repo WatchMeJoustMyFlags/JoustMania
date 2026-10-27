@@ -11,6 +11,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
@@ -182,6 +183,9 @@ type decideRecord struct {
 	err             error
 	invalidReason   string
 	discardedReason string
+	// stateAt is the fire-time GameContext.UpdatedAt: when the state the request
+	// was built on last changed (#2123, decision.max_state_age_ms).
+	stateAt time.Time
 	// permissionKnown is true when the decision the answers describe went through
 	// the permission chain; blocked / blockReason are its result (#1295).
 	permissionKnown bool
@@ -279,7 +283,8 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, rules R
 // decideRemote is decide() for decision.backend != rules. It never blocks: it
 // either fires the remote call asynchronously and returns no decision (the async
 // path owns this context), returns nothing because a call is in flight or the
-// per-game cadence (decision.min_interval_ms) has not elapsed (the remote backend
+// per-game cadence (decision.min_interval_ms from the previous call's start,
+// decision.min_gap_after_answer_ms from its end) has not elapsed (the remote backend
 // owns the decision; rules do not also act) or the allow-list is empty (nothing
 // could act, #1298), or falls back to rules synchronously
 // when the backend cannot be called at all (unknown/unavailable backend, async not
@@ -324,7 +329,8 @@ func (l *Loop) decideRemote(ctx context.Context, snapshot flags.Snapshot, rules 
 		// quiet in between. No span per blocked cycle; the gated counter and a
 		// debug log say why.
 		l.Log.Debug("agent.decide.cadence_wait", "session_id", c.SessionID, "backend", requested,
-			"min_interval", snapshot.Decision.MinInterval)
+			"min_interval", snapshot.Decision.MinInterval,
+			"min_gap_after_answer", snapshot.Decision.MinGapAfterAnswer)
 		return nil, nil
 	case DecideGateNoInterventions:
 		// Nothing is allowed, so neither the backend nor rules could act: no call,
@@ -404,7 +410,9 @@ func (l *Loop) quietFallbackClock(reason string) *time.Time {
 }
 
 // DecideGateInterval is the agent_llm_gated_total reason (and debug log) for a
-// remote decide cycle held back by decision.min_interval_ms.
+// remote decide cycle held back by the per-game cadence: decision.min_interval_ms
+// (from the previous call's admission) or decision.min_gap_after_answer_ms (from
+// the previous call's end, #2123).
 const DecideGateInterval = "decide_interval"
 
 // DecideGateNoInterventions is the agent_llm_gated_total reason for a remote
@@ -440,7 +448,9 @@ func (l *Loop) noteNoInterventions(c gamecontext.GameContext, skipping bool) {
 // gateRemoteDecide is the call gate for remote decide calls: eligibility
 // (llm.eligible_game_kinds, so shadow games stay rules-only), a non-empty
 // allow-list (hasAllowedInterventions, #1298), the per-game cadence
-// decision.min_interval_ms, and the GLOBAL per-minute budget
+// (decision.min_interval_ms from the previous admission and, #2123,
+// decision.min_gap_after_answer_ms from the previous call's end), and the GLOBAL
+// per-minute budget
 // llm.max_requests_per_minute shared with the post-game retro (the spend bound).
 // Cadence and budget are charged only on admission, and only after the caller
 // won the inflight claim. It returns "" when admitted.
@@ -461,6 +471,14 @@ func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c 
 	l.noteNoInterventions(c, false)
 	t := l.nowOrDefault()()
 	if iv := snapshot.Decision.MinInterval; iv > 0 && !l.lastDecideAttempt.IsZero() && t.Sub(l.lastDecideAttempt) < iv {
+		l.recordGated(ctx, DecideGateInterval)
+		return DecideGateInterval
+	}
+	// The gap runs from the END of the previous call (#2123): a timeout or a
+	// failure ends a call like an answer does. lastDecideEnded is written before
+	// the in-flight slot is released, and this cycle already won that slot, so
+	// it always sees the end of the call before it.
+	if gap := snapshot.Decision.MinGapAfterAnswer; gap > 0 && !l.lastDecideEnded.IsZero() && t.Sub(l.lastDecideEnded) < gap {
 		l.recordGated(ctx, DecideGateInterval)
 		return DecideGateInterval
 	}
@@ -492,8 +510,21 @@ func (l *Loop) launchDecideAsync(ctx context.Context, snapshot flags.Snapshot, b
 	go func() {
 		defer l.inferWG.Done()
 		defer l.inflight.Store(false)
+		// Runs before the slot is released (defers are LIFO): the next cycle that
+		// wins the slot sees this call's end on the gap clock (#2123).
+		defer l.noteDecideEnded()
 		l.runDecideRemote(root, snapshot, backend, requested, c, fireSC)
 	}()
+}
+
+// noteDecideEnded starts the decision.min_gap_after_answer_ms clock (#2123): the
+// remote call of this game has ended, whatever its outcome (answer, timeout,
+// failure, discard, shutdown).
+func (l *Loop) noteDecideEnded() {
+	t := l.nowOrDefault()()
+	l.llmGate.Lock()
+	l.lastDecideEnded = t
+	l.llmGate.Unlock()
 }
 
 // Discard reasons specific to the remote decide path (decide.discarded_reason).
@@ -544,12 +575,18 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		model:     cfg.Model,
 		req:       l.buildDecideRequest(c, fired.InterventionsAllowed, false),
 		start:     start,
+		stateAt:   c.UpdatedAt,
 	}
 	// Fire-time threshold: only a placeholder for spans that end before landing
 	// (none are routed then); the landing re-read below overwrites it with the
 	// LIVE effective threshold, which is what routing uses.
 	rec.threshold, rec.thresholdSource = fired.Decision.ActThreshold(rec.used)
-	defer func() { l.endDecideSpan(span, rec, c) }()
+	defer func() {
+		l.endDecideSpan(span, rec, c)
+		if rec.discardedReason != "" {
+			l.decideDiscarded.Add(root, 1, otelmetric.WithAttributes(attribute.String("reason", rec.discardedReason)))
+		}
+	}()
 
 	callCtx, cancel := context.WithTimeout(spanCtx, timeout)
 	resp, err := backend.Decide(callCtx, rec.req)
@@ -711,6 +748,9 @@ func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, c
 	case d.TargetSerial != "" && !targetPresent(current, d.TargetSerial):
 		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DiscardTargetGone
 		return
+	case stateTooOld(rec.stateAt, rec.end, snapshot.Decision.MaxStateAge):
+		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DiscardStateTooOld
+		return
 	}
 	before := len(state.Outcomes)
 	l.runDecision(ctx, snapshot, current, d, l.nowOrDefault()(), state)
@@ -722,6 +762,15 @@ func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, c
 			r.RecordActed(d)
 		}
 	}
+}
+
+// stateTooOld reports whether the state a remote request was built on (stateAt,
+// the fire-time GameContext.UpdatedAt) is older than maxAge when the answer
+// landed (#2123, decision.max_state_age_ms, read live). A zero maxAge disables
+// the check; a zero stateAt (never observed) never discards, like targetPresent's
+// lenient treatment of an unknown signal.
+func stateTooOld(stateAt, landed time.Time, maxAge time.Duration) bool {
+	return maxAge > 0 && !stateAt.IsZero() && landed.Sub(stateAt) > maxAge
 }
 
 // playerTargetedInterventions are the interventions the action sink scopes to one

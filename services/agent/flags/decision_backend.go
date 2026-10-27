@@ -26,6 +26,8 @@ const (
 	keyDecisionActConfidenceThreshold    = "decision.act_confidence_threshold"
 	keyDecisionCaptureContent            = "decision.capture_content"
 	keyDecisionMinIntervalMs             = "decision.min_interval_ms"
+	keyDecisionMinGapAfterAnswerMs       = "decision.min_gap_after_answer_ms"
+	keyDecisionMaxStateAgeMs             = "decision.max_state_age_ms"
 	keyDecisionClaudeModel               = "decision.claude.model"
 	keyDecisionClaudeTimeoutMs           = "decision.claude.timeout_ms"
 	keyDecisionClaudeBaseURL             = "decision.claude.base_url"
@@ -85,6 +87,21 @@ const (
 	// AGENT_LLM_MAX_REQUESTS_PER_MINUTE, when set, is a ceiling on the budget flag
 	// (Loop.budgetCap = min(env, flag), #1788), so "stage" is capped by it.
 	DefaultDecisionMinIntervalMs = 3000
+	// DefaultDecisionMinGapAfterAnswerMs is decision.min_gap_after_answer_ms
+	// (#2123): the next remote decide call of a game starts no earlier than this
+	// long after the previous call ENDED (an answer, a timeout or a failure). It
+	// is a second, separate clock next to decision.min_interval_ms (which runs
+	// from when a call fires): a call is admitted only when both have elapsed.
+	// Zero disables the gap.
+	DefaultDecisionMinGapAfterAnswerMs = 1000
+	// DefaultDecisionMaxStateAgeMs is decision.max_state_age_ms (#2123): a remote
+	// answer that would act is discarded (decide.discarded_reason=state_too_old)
+	// when the game state it was built on (the fire-time GameContext.UpdatedAt) is
+	// older than this when the answer lands. 10 s sits above the longest call
+	// timeout (claude "patient", 8 s) plus the coordinator's metric export
+	// interval, so it only drops answers built on a state that was already stale
+	// when the call fired. Zero disables the check.
+	DefaultDecisionMaxStateAgeMs = 10000
 	// DefaultDecisionClaudeModel is the claude backend's model (variant "haiku").
 	DefaultDecisionClaudeModel = "claude-haiku-4-5-20251001"
 	// DefaultDecisionClaudeBaseURL is the claude backend's endpoint root (#1900).
@@ -162,6 +179,15 @@ type DecisionBackend struct {
 	// decide calls. Zero disables the cadence floor; a negative value falls back
 	// to the default.
 	MinInterval time.Duration
+	// MinGapAfterAnswer is decision.min_gap_after_answer_ms (#2123): the per-game
+	// gap between the end of one remote decide call (answer, timeout or failure)
+	// and the start of the next. Zero disables the gap; a negative value falls
+	// back to the default.
+	MinGapAfterAnswer time.Duration
+	// MaxStateAge is decision.max_state_age_ms (#2123): the oldest the state a
+	// remote answer was built on may be when the answer lands and would act.
+	// Zero disables the check; a negative value falls back to the default.
+	MaxStateAge time.Duration
 	Claude      RemoteBackendConfig
 	OpenAI      RemoteBackendConfig
 	Jev         RemoteBackendConfig
@@ -215,6 +241,8 @@ func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
 		ActConfidenceThreshold: f.actConfidenceThreshold(ctx),
 		CaptureContent:         f.boolFlag(ctx, keyDecisionCaptureContent, DefaultDecisionCaptureContent),
 		MinInterval:            f.minIntervalFlag(ctx),
+		MinGapAfterAnswer:      f.nonNegativeMsFlag(ctx, keyDecisionMinGapAfterAnswerMs, DefaultDecisionMinGapAfterAnswerMs),
+		MaxStateAge:            f.nonNegativeMsFlag(ctx, keyDecisionMaxStateAgeMs, DefaultDecisionMaxStateAgeMs),
 		Claude: RemoteBackendConfig{
 			BaseURL: f.stringFlag(ctx, keyDecisionClaudeBaseURL, DefaultDecisionClaudeBaseURL),
 			Model:   f.stringFlag(ctx, keyDecisionClaudeModel, DefaultDecisionClaudeModel),
@@ -284,10 +312,16 @@ func (f *Flags) backendActConfidenceThreshold(ctx context.Context, key string, d
 }
 
 func (f *Flags) minIntervalFlag(ctx context.Context) time.Duration {
-	ms := f.intFlag(ctx, keyDecisionMinIntervalMs, DefaultDecisionMinIntervalMs)
+	return f.nonNegativeMsFlag(ctx, keyDecisionMinIntervalMs, DefaultDecisionMinIntervalMs)
+}
+
+// nonNegativeMsFlag reads a millisecond flag where zero disables the bound and a
+// negative value (a bad edit) falls back to def.
+func (f *Flags) nonNegativeMsFlag(ctx context.Context, key string, def int) time.Duration {
+	ms := f.intFlag(ctx, key, def)
 	if ms < 0 {
-		f.log.Warn("flags interval negative, using default", "key", keyDecisionMinIntervalMs, "value", ms, "default", DefaultDecisionMinIntervalMs)
-		ms = DefaultDecisionMinIntervalMs
+		f.log.Warn("flags interval negative, using default", "key", key, "value", ms, "default", def)
+		ms = def
 	}
 	return time.Duration(ms) * time.Millisecond
 }
