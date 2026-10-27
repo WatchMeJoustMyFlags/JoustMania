@@ -343,6 +343,11 @@ func buildStartConfig(spec Spec, serials []string) *gcpb.StartGameConfig {
 	if spec.IsPattern() && spec.Seed != 0 {
 		cfg.RngSeed = spec.Seed
 	}
+	// UC-046 BR-018 (#2096): the game honours trigger and hold only when its
+	// controllers press the trigger by themselves. The flag comes from the same
+	// spec.Pattern whose parameters reserveControllers installs, so the start and
+	// the installed archetype always agree. Shadow-only coordinator-side.
+	cfg.PatternTriggerPolicy = spec.IsPattern() && spec.Pattern.HasTriggerPolicy()
 	switch spec.GameName {
 	case "JoustFFA":
 		cfg.GameConfig = &gcpb.StartGameConfig_FfaConfig{FfaConfig: &gcpb.FFAConfig{}}
