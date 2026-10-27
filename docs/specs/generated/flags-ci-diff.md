@@ -2,7 +2,7 @@
 
 # `ci/` flag differences (generated)
 
-Part of [flags.md §12](../flags.md#12-ci-differences).
+Part of [flags.md §12](../flags.md#12-ci-differences). A table with no rows means no difference of that kind; there is no placeholder row, so the first two PRs that each add a row do not both replace the same line (#2152).
 
 ## Defaults that differ
 
@@ -44,10 +44,8 @@ Part of [flags.md §12](../flags.md#12-ci-differences).
 
 | File | Key | Variant |
 |---|---|---|
-| (none) | | |
 
 ## Keys in only one of the two
 
 | File | Key | Where |
 |---|---|---|
-| (none) | | |

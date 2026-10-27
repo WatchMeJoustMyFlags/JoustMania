@@ -265,7 +265,7 @@ Defined in `lib/types.py` but never published: `player_revive`, `player_out`, `s
 Python metrics are created through `lib/otel_metrics.py` (`Counter`, observable `Gauge`, `Histogram`; no unit
 argument). A `Histogram`'s `buckets` are passed to the SDK as explicit bucket boundaries, so each histogram exports
 exactly the buckets it declares (UC-035 BR-004, #1434). The number of unique Python metric names and definitions is
-generated with the §6.2 catalog (the `process_*` trio is defined per service, and a few other names in more than one
+generated from the §6.2 scans and printed by `make specs-counts` (not committed, #2152) (the `process_*` trio is defined per service, and a few other names in more than one
 service; the catalog's Defined in column lists them); the Go agent adds 7 `agent_*` metrics plus the
 two `gen_ai.client.*` histograms, every Python service and the agent emit the four OpenFeature hook metrics `feature_flag.evaluation_*` (table below, #1427), the Go flag service adds its `flagservice_*` metrics (§10.2), and Go connect-proxy and rust-hid emit only the `process_*` trio. The main ones per
 service are below; §6.2 lists every Python metric.
@@ -309,8 +309,8 @@ loop ends.
 | Calibration scripts | VictoriaMetrics `game_player_accel_magnitude{game_id,serial}` and `game_player_elimination_order` (trajectory features per player) | `scripts/calibration/vm_trajectory_features.py` |
 
 Many Python metric names have no consumer in a dashboard, the agent, the dashboard SPA or a
-script (all `menu_*`, `psmove_*`, `audio_*` and others; the count is in the generated catalog); they
-are kept for ad-hoc analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers. The §6.2 catalog and its counts are **generated** from the same scans (#1280): one row per Python metric name, each Consumers cell equal to what the consumer scans find (Grafana and SPA PromQL, the agent's ingest constants, the name as a word in non-test `tools/` and `scripts/` source), and the **no** rows in Emitted equal to the metrics nothing records. A metrics PR runs `make specs`; `make specs-check` fails CI when the generated file is stale. The scans prove a name is referenced, not that the query using it is right.
+script (all `menu_*`, `psmove_*`, `audio_*` and others; `make specs-counts` prints the count); they
+are kept for ad-hoc analysis. `tests/contract/test_telemetry_contract.py` (#1357) checks the agent's and the dashboards' names against the producers. The §6.2 catalog and its counts are **generated** from the same scans (#1280; the counts are printed by `make specs-counts` and the Telemetry Contract job summary, not committed, #2152): one row per Python metric name, each Consumers cell equal to what the consumer scans find (Grafana and SPA PromQL, the agent's ingest constants, the name as a word in non-test `tools/` and `scripts/` source), and the **no** rows in Emitted equal to the metrics nothing records. A metrics PR runs `make specs`; `make specs-check` fails CI when the generated file is stale. The scans prove a name is referenced, not that the query using it is right.
 
 ### 6.2 Python metric catalog
 

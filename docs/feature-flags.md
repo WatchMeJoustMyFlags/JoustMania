@@ -2,8 +2,9 @@
 
 A short guide to how JoustMania uses flags. The flag catalog (every key, its variants, default, readers,
 writers and reload behaviour) is [docs/specs/flags.md](specs/flags.md): that file is the source of truth, and a
-PR that adds, removes or changes a flag updates it. The per-set counts are generated into
-[specs/generated/flag-counts.md](specs/generated/flag-counts.md) by `make specs`.
+PR that adds, removes or changes a flag updates it. The flag sets and their files are generated into
+[specs/generated/flag-counts.md](specs/generated/flag-counts.md) by `make specs`; the per-set counts are
+not committed (#2152): `make specs-counts` prints them.
 
 ## 1. How it works
 
