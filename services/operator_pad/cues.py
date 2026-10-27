@@ -129,6 +129,13 @@ class CuePlayer:
             self._announce_task.cancel()
         self._announce_task = self._start(self._announce_sequence(label, value))
 
+    async def stop_group(self, group: str) -> None:
+        """Stop the clips of one audio group (StopSoundRequest.group, #2107); a failure is logged."""
+        try:
+            await self._stub.StopSound(audio_pb2.StopSoundRequest(group=group), timeout=PLAY_TIMEOUT_SECONDS)
+        except Exception as e:
+            logger.warning(f"Stopping pad clip group {group} failed: {e}")
+
     def cancel_all(self) -> None:
         """Drop every background cue (pad detached, shutdown): nothing plays on afterwards."""
         for task in list(self._sequences):

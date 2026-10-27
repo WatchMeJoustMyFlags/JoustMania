@@ -402,10 +402,12 @@ Configuration of the optional `operator-pad` service ([UC-015](../use_cases/UC-0
 | `operator_pad.hold_lock_ms` | int | default=3000 | `default` = 3000 (lock hold) | `services/operator_pad/config.py` `PadConfig` | manual edit only | live (per gesture) |
 | `operator_pad.knob_events_per_step` | int | fine=2, default=4, coarse=6 (valid range 1 to 12; the pad checks the range itself, no registry row, §13.5) | `default` = 4 (a smooth no-detent knob sends about 25 raw events per turn: about 6 steps; UC-015 BR-005) | `services/operator_pad/config.py` `PadConfig.knob_events_per_step` (`DEFAULT_KNOB_EVENTS_PER_STEP`) | manual edit only | live (per knob event); a value outside 1 to 12 or malformed falls back to 4 with a warning |
 | `operator_pad.keymap` | string | default="K1=F13,K2=F14,K3=F18,K4=F19,K5=F20,K6=F21,K7=F22,K8=F23,KNOB_PRESS=F15,KNOB_TURN_A=F16,KNOB_TURN_B=F17" (Linux codes: F13=183 to F23=193; F15=185, F16=186, F17=187) | `default` | `services/operator_pad/config.py` `PadConfig` | manual edit only | live (next rescan) |
+| `operator_pad.preview_enabled` | bool | on=true, off=false | `on` = true (UC-015 BR-017: the live preview while a layer key is held and the knob turns) | `services/operator_pad/config.py` `PadConfig.preview_enabled` | manual edit only | live (per knob step); unreadable keeps it on |
+| `operator_pad.preview_debounce_ms` | int | instant=0, fast=100, default=150, slow=300 (valid range 0 to 1000; the pad checks the range itself, no registry row, §13.5) | `default` = 150 (the wait after the last knob step before the preview speaks the value, UC-015 BR-017) | `services/operator_pad/config.py` `PadConfig.preview_debounce_ms` (`DEFAULT_PREVIEW_DEBOUNCE_MS`) | manual edit only | live (per knob step); a value outside 0 to 1000 or malformed falls back to 150 with a warning |
 
 The two registry rows this feature needs (`user` / `audio_volume.master` and `user` / `play_audio`) are in §13.4 since PR2 of #2050; the `operator` set itself has no registry row (§13.5).
 
-**Traceability:** FR-195, C-035 / UC-015 / `services/flagd/operator.json`, `services/flag-service/baseline/baseline.go`, `services/operator_pad/config.py` / `services/flag-service/baseline/baseline_test.go`, `lib/tests/test_flagd_ci_drift.py`, `tests/contract/test_flagd_resolution.py`.
+**Traceability:** FR-195, FR-197, C-035 / UC-015 / `services/flagd/operator.json`, `services/flag-service/baseline/baseline.go`, `services/operator_pad/config.py` / `services/flag-service/baseline/baseline_test.go`, `lib/tests/test_flagd_ci_drift.py`, `tests/contract/test_flagd_resolution.py`.
 
 ## 11. Flags without an effective reader
 

@@ -5,3 +5,5 @@ game_flag_service_calls_total:
   result: ok|error|timeout
 games_completed_total:
   outcome: winner|tie|completed|force_ended|error
+operator_pad_previews_total:
+  result: spoken|replaced|suppressed|limit|refused|unknown

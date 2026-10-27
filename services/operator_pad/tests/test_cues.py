@@ -210,3 +210,18 @@ async def test_lock_drops_a_running_announcement_so_its_value_never_plays_over_i
     await asyncio.wait_for(cues.drain(), 0.2)
     assert played(stub) == [Sound.MENU_VOX_LABEL_TEAMS.value, Sound.MENU_VOX_PAD_LOCKED.value]
     assert stub.PlaySound.await_args_list[-1].args[0].group == ANNOUNCE_GROUP  # cuts the label clip too
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])
+async def test_stop_group_stops_only_that_group_and_a_failure_is_logged_not_raised():
+    from unittest.mock import create_autospec
+
+    from services.operator_pad.tests.fakes import AudioStubSpec
+
+    audio = create_autospec(AudioStubSpec, instance=True)
+    player = CuePlayer(audio)
+    await player.stop_group("pad_preview")
+    (call,) = audio.StopSound.await_args_list
+    assert call.args[0].group == "pad_preview"
+    audio.StopSound.side_effect = RuntimeError("audio down")
+    await player.stop_group("pad_preview")  # no raise

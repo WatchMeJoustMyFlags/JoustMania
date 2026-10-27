@@ -12,7 +12,7 @@ from services.operator_pad import metrics
 from services.operator_pad.actions import Actions
 from services.operator_pad.config import KEYS, KNOB_PRESS, PadConfig
 from services.operator_pad.cues import CuePlayer
-from services.operator_pad.gestures import PRESS, RELEASE, GestureMachine, KeyEvent
+from services.operator_pad.gestures import LAYER_STEP, PRESS, RELEASE, GestureMachine, KeyEvent
 from services.operator_pad.state import MenuStatusReader
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,7 @@ class PadController:
         logger.warning("Pad input events dropped (SYN_DROPPED): gestures in progress reset")
         self.machine.reset()
         self._press_status.clear()
+        self._actions.end_preview()
 
     async def on_code(self, code: int, value: int, t_ms: int) -> None:
         name = self._keymap.get(code)
@@ -77,7 +78,13 @@ class PadController:
         press_status = self._press_status.pop(name, None) if value == RELEASE else None
         gestures = self.machine.feed(KeyEvent(name, value, t_ms), self._config.timings())
         for gesture in gestures:
+            if gesture.kind == LAYER_STEP:
+                # BR-017: the preview starts from the status read at the press, peeked (the release pops it).
+                await self._actions.dispatch(gesture, None, self._press_status.get(gesture.key))
+                continue
             await self._actions.dispatch(gesture, status, press_status)
+        # A chord or a lost key ends the hold without a layer release: the preview stops too.
+        self._actions.end_preview(unless_key=self.machine.preview_key())
 
     async def _unknown(self, code: int, value: int) -> None:
         """A4 step 3: ignored and counted; a pad that sends only unknown codes gets one warning and one cue."""

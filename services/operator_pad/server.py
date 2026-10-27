@@ -30,6 +30,7 @@ from services.operator_pad.config import FLAG_DOMAIN, PadConfig
 from services.operator_pad.controller import PadController
 from services.operator_pad.cues import CuePlayer
 from services.operator_pad.device import DeviceManager
+from services.operator_pad.preview import Previewer
 from services.operator_pad.state import MenuStatusReader
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ async def serve() -> None:
     menu_stub = menu_pb2_grpc.MenuServiceStub(menu_channel)
 
     cue_player = CuePlayer(audio_pb2_grpc.AudioServiceStub(audio_channel))
+    previewer = Previewer(cue_player, config)
     devices: DeviceManager | None = None
 
     def set_lock_led(on: bool) -> None:
@@ -68,6 +70,7 @@ async def serve() -> None:
         game_coordinator_pb2_grpc.GameCoordinatorServiceStub(coordinator_channel),
         cue_player,
         set_lock_led=set_lock_led,
+        previewer=previewer,
     )
     controller = PadController(config, MenuStatusReader(menu_stub), actions, cue_player)
     devices = DeviceManager(config, controller)
@@ -84,6 +87,7 @@ async def serve() -> None:
         logger.info("Shutting down operator pad service")
         metrics_task.cancel()
         await actions.drain()
+        previewer.cancel()
         cue_player.cancel_all()
         await menu_channel.close()
         await coordinator_channel.close()

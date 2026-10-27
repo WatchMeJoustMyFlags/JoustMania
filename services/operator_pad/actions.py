@@ -25,10 +25,12 @@ from services.operator_pad.gestures import (
     KNOB_PRESS_GESTURE,
     KNOB_TURN,
     LAYER,
+    LAYER_STEP,
     LOCK,
     TAP,
     Gesture,
 )
+from services.operator_pad.preview import Previewer
 from services.operator_pad.state import ENABLED_STATES, is_known, is_stopped
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,8 @@ LAYER_OPTIONS = {K1: "current_game", K2: "sensitivity", K3: "agent_level", K5: "
 # Tap keys that announce a setting (BR-011) and the setting whose label they say first.
 ANNOUNCE_OPTIONS = {K2: "sensitivity", K3: "agent_level", K5: "num_teams", K7: "decision.backend"}
 LOBBY_ONLY_OPTIONS = frozenset({"current_game", "sensitivity", "num_teams", "game_instructions"})
+# The setting each layer key previews while the knob turns (BR-017): the layer options plus the backend.
+PREVIEW_OPTIONS = {**LAYER_OPTIONS, K7: "decision.backend"}
 # UC-044 decision backends in knob order (BR-004; clamped, no wrap) and the `user/audio_volume.master`
 # variants low to high (flags.md §9; `mute` is the pad's mute, BR-006): lib/setting_ladders.py, the
 # ladders the menu commits along (#2106).
@@ -89,12 +93,14 @@ class Actions:
         cue_player: cues.CuePlayer,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         set_lock_led: Callable[[bool], None] | None = None,
+        previewer: Previewer | None = None,
     ) -> None:
         self._menu = menu_stub
         self._coordinator = coordinator_stub
         self._cues = cue_player
         self._sleep = sleep
         self._set_lock_led = set_lock_led
+        self._previewer = previewer
         self._volume_steps = 0
         self._volume_task: asyncio.Task | None = None  # waiting out the pause; cancelled by a new turn
         self._volume_sends: set[asyncio.Task] = set()  # past the pause: never cancelled mid-command
@@ -112,6 +118,12 @@ class Actions:
         if gesture.kind == KNOB_TURN:
             self._queue_volume_step(gesture.steps)
             return "step_setting", "pending"
+        if gesture.kind == LAYER_STEP:
+            # BR-017: a preview only, from the status read at the press; nothing is sent (BR-005).
+            self._preview_step(gesture, press_status)
+            return "preview", "pending"
+        if gesture.kind == LAYER:
+            self.end_preview()  # the preview never plays on over the commit's voice line
         with tracer.start_as_current_span("operator_pad.gesture") as span:
             span.set_attribute("pad.key", gesture.key)
             span.set_attribute("pad.gesture", gesture.kind)
@@ -119,8 +131,20 @@ class Actions:
             self._record(span, action, result)
             return action, result
 
+    def end_preview(self, unless_key: str | None = None) -> None:
+        """End the live preview (BR-017) unless ``unless_key`` is the key whose hold it previews."""
+        if self._previewer is not None and (unless_key is None or unless_key != self._previewer.hold_key):
+            self._previewer.end_hold()
+
+    def _preview_step(self, gesture: Gesture, press_status) -> None:
+        option = PREVIEW_OPTIONS.get(gesture.key)
+        if self._previewer is None or option is None:
+            return
+        self._previewer.step(gesture.key, option, press_status, gesture.steps, option in LOBBY_ONLY_OPTIONS)
+
     def cancel_pending(self) -> None:
         """Device gone: a volume turn not yet committed is dropped, not sent later (BR-010)."""
+        self.end_preview()
         self._volume_steps = 0
         if self._volume_task is not None:
             self._volume_task.cancel()

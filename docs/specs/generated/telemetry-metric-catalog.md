@@ -143,6 +143,7 @@ The totals (the number of names, of names without a consumer and of names never 
 | `operator_pad_device_attached` | gauge | (none) | operator-pad | yes | (none) |  |
 | `operator_pad_gestures_total` | counter | `action`, `result` | operator-pad | yes | (none) |  |
 | `operator_pad_grab_failures_total` | counter | `reason` | operator-pad | yes | (none) |  |
+| `operator_pad_previews_total` | counter | `result` (spoken\|replaced\|suppressed\|limit\|refused\|unknown) | operator-pad | yes | (none) |  |
 | `operator_pad_unknown_keys_total` | counter | (none) | operator-pad | yes | (none) |  |
 | `pairing_bluetooth_adapter_hci_errors_total` | counter | `hci_adapter`, `direction` | pairing-daemon | yes | grafana |  |
 | `pairing_bluetooth_adapter_info` | gauge | `hci_adapter`, `address`, `manufacturer`, `manufacturer_id`, `hci_version`, `bus`, `usb_id`, `onboard` | pairing-daemon | yes | grafana |  |
