@@ -85,3 +85,30 @@ def test_metric_export_interval_defaults_to_1s_and_100ms_for_the_game_services()
     assert services == ["controller-manager-service", "game-coordinator-service"]
     assert flag["variants"][then] == 100
     assert otherwise is None
+
+
+def _mib(value: str) -> int:
+    """Compose / Go memory size ("1024m", "850MiB") in MiB."""
+    text = str(value).strip().lower().removesuffix("ib").removesuffix("b")
+    units = {"m": 1, "g": 1024}
+    return int(text[:-1]) * units[text[-1]]
+
+
+@pytest.mark.nfr("NFR-021")
+def test_jaeger_go_heap_is_soft_capped_below_its_container_limit():
+    """NFR-021 (#2223): GOMEMLIMIT keeps Jaeger's Go heap at most ~85% of the 1 GiB limit.
+
+    Badger in Jaeger 2.19 has no cache knobs (memtables 5 x 64 MiB + 256 MiB block cache by
+    default), so the Go soft limit is the only lever that makes the GC reclaim query garbage
+    before the cgroup OOM-kills the trace store.
+    """
+    jaeger = ic.compose_services()["jaeger"]
+    limit_mib = _mib(jaeger["deploy"]["resources"]["limits"]["memory"])
+    env = dict(item.split("=", 1) for item in jaeger.get("environment", []))
+    assert "GOMEMLIMIT" in env, "jaeger has no GOMEMLIMIT soft limit"
+    soft_mib = _mib(env["GOMEMLIMIT"])
+    assert limit_mib == 1024
+    assert soft_mib <= limit_mib * 0.85
+    assert soft_mib >= limit_mib * 0.75, (
+        "a soft limit far below the live badger set thrashes the GC"
+    )
