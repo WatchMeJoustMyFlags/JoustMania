@@ -50,27 +50,35 @@ class TestLerp:
 class TestClampRatio:
     """Tests for _clamp_ratio."""
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
     def test_normal_ratio_passes_through(self):
         assert _clamp_ratio(1.0) == 1.0
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
     def test_valid_low_boundary(self):
         assert _clamp_ratio(0.6) == 0.6
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
     def test_valid_high_boundary(self):
         assert _clamp_ratio(2.0) == 2.0
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
     def test_too_low_clamps_to_one(self):
         assert _clamp_ratio(0.5) == 1.0
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
     def test_below_zero_clamps_to_one(self):
         assert _clamp_ratio(0.0) == 1.0
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
     def test_negative_clamps_to_one(self):
         assert _clamp_ratio(-1.0) == 1.0
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
     def test_too_high_clamps_to_one(self):
         assert _clamp_ratio(2.1) == 1.0
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
     def test_just_above_low_boundary(self):
         assert _clamp_ratio(0.51) == 0.51
 
@@ -217,6 +225,7 @@ class TestResampleAudio:
         assert len(results) == 1
         assert isinstance(results[0], bytes)
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-004"])
     def test_clamps_bad_ratio(self):
         ratio_val = MagicMock()
         ratio_val.value = 0.1  # Out of range, should be clamped to 1.0
@@ -377,6 +386,7 @@ class TestLoadSongFromPattern:
             sample_rate=44100,
         )
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-003"])
     def test_shuffles_files_before_loading(self):
         files = ["/music/a.ogg", "/music/b.ogg", "/music/c.ogg"]
 
@@ -389,6 +399,7 @@ class TestLoadSongFromPattern:
 
         mock_shuffle.assert_called_once_with(files)
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-003"])
     def test_skips_broken_file_and_loads_next(self):
         """If first file fails to decode, tries the next one."""
         with (
@@ -402,6 +413,7 @@ class TestLoadSongFromPattern:
 
         assert result is not None
 
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-003"])
     def test_returns_none_when_all_files_fail(self):
         """Returns None if every file in the glob fails to decode."""
         with (
@@ -414,6 +426,29 @@ class TestLoadSongFromPattern:
             result = _load_song_from_pattern("/music/*.ogg")
 
         assert result is None
+
+    @pytest.mark.uc("UC-031", flow="main", br=["BR-003"])
+    def test_glob_is_resolved_at_each_load_so_a_dropped_track_plays_next_game(self):
+        """BR-003: the music glob is resolved on every load (each PlayMusic), not cached from the first one."""
+        decoded: list[str] = []
+
+        def fake_decode(path, **_kwargs):
+            decoded.append(path)
+            return _mock_decoded_sound()
+
+        with (
+            patch(
+                "services.audio.music_player.glob.glob",
+                side_effect=[["/music/a.ogg"], ["/music/a.ogg", "/music/new.ogg"]],
+            ) as mock_glob,
+            patch("services.audio.music_player.random.shuffle", side_effect=lambda files: files.reverse()),
+            patch("services.audio.music_player.miniaudio.decode_file", side_effect=fake_decode),
+        ):
+            _load_song_from_pattern("/music/*.ogg")
+            _load_song_from_pattern("/music/*.ogg")
+
+        assert mock_glob.call_count == 2
+        assert decoded == ["/music/a.ogg", "/music/new.ogg"]
 
 
 class TestMusicPlayerStartStop:
