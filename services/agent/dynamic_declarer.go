@@ -125,6 +125,8 @@ type dynamicDeclarer struct {
 	targetN int
 	// pressure is the optional fitness-pressure selection signal (may be nil).
 	pressure pressureFunc
+	// hold gates the hold-mode shield keys (UC-043 A17); nil offers none of them.
+	hold *holdGate
 
 	// cursor is the in-memory round-robin position across candidate flags (resets to
 	// 0 on restart — not journaled). It only advances when a declaration is actually
@@ -189,10 +191,13 @@ type activeFlags map[string]struct{}
 // for actually calling Registry.Declare/Start with the returned Intent; this
 // keeps the heuristic pure and unit-testable in isolation from the registry.
 func (d *dynamicDeclarer) Declare(active activeFlags) (experiment.Intent, bool) {
-	flags := d.readCandidateFlags()
+	catalog := readGameCatalog(d.gameFlags)
+	flags := candidatesOf(catalog)
 	if len(flags) == 0 {
 		return experiment.Intent{}, false
 	}
+	// UC-043 A17 step 1: a hold key only under its conditions (nil gate: none).
+	offerable := d.hold.filter(context.Background(), catalog)
 	order := d.candidateOrder(flags)
 	if len(order) == 0 {
 		return experiment.Intent{}, false
@@ -213,7 +218,14 @@ func (d *dynamicDeclarer) Declare(active activeFlags) (experiment.Intent, bool) 
 				continue
 			}
 		}
+		if !offerable(key) {
+			continue
+		}
 		value, ok := perturbValue(flags[key])
+		if key == experiment.HoldActivationKey {
+			// UC-043 A17 step 1: toward hold only, never the next variant in sort order.
+			value, ok = experiment.HoldValue, true
+		}
 		if !ok {
 			continue // no distinct alternate value to try (e.g. single-variant flag).
 		}
@@ -320,14 +332,24 @@ const experimentScope = "experiment+arm"
 // (fail-closed: nothing is declarable or proposable until the flag service
 // answers again).
 func readGameCatalog(r gameFlagReader) map[string]flagservice.FlagView {
-	if r == nil {
+	catalog, err := readGameCatalogCtx(context.Background(), r)
+	if err != nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), flagservice.RequestTimeout)
+	return catalog
+}
+
+// readGameCatalogCtx is readGameCatalog with the read error (a nil reader is an
+// empty catalog, not an error).
+func readGameCatalogCtx(ctx context.Context, r gameFlagReader) (map[string]flagservice.FlagView, error) {
+	if r == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, flagservice.RequestTimeout)
 	defer cancel()
 	set, err := r.GetSet(ctx, experiment.GameFlagSet)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make(map[string]flagservice.FlagView, len(set.Flags))
 	for _, f := range set.Flags {
@@ -335,14 +357,18 @@ func readGameCatalog(r gameFlagReader) map[string]flagservice.FlagView {
 			out[f.Flag] = f
 		}
 	}
-	return out
+	return out, nil
 }
 
 // readCandidateFlags returns every TUNABLE flag of the experiment catalog (one
 // with at least two variants — a single-variant flag has no alternate value to
 // experiment toward) as a candidateFlag (its baseline default value + variants).
 func (d *dynamicDeclarer) readCandidateFlags() map[string]candidateFlag {
-	catalog := readGameCatalog(d.gameFlags)
+	return candidatesOf(readGameCatalog(d.gameFlags))
+}
+
+// candidatesOf is readCandidateFlags over an already-read catalog.
+func candidatesOf(catalog map[string]flagservice.FlagView) map[string]candidateFlag {
 	out := make(map[string]candidateFlag, len(catalog))
 	for key, f := range catalog {
 		if len(f.VariantValues) < 2 {

@@ -351,6 +351,12 @@ type Registry struct {
 	// is a test-only seam for the allocation mechanics (the production spawner
 	// refuses any spawn without an archetype).
 	patterns PatternPinner
+	// holdGate checks an experiment on a hold flag against the current defaults
+	// (UC-043 A17); nil skips the check (test seam).
+	holdGate HoldGate
+	// holdCooldown is when each hold key may be declared again after a promotion of
+	// it did not act (UC-043 A17 step 3 interim; in memory, guarded by mu).
+	holdCooldown map[string]time.Time
 	// flagDigest computes UC-046 BR-011's digest for an arm before it spawns.
 	flagDigest func(ctx context.Context, experimentID, arm string) string
 	// patternTracker force-ends in-flight pattern games on the kill switch (A12).
@@ -422,6 +428,10 @@ type RegistryConfig struct {
 	// first allocation pass (UC-046). Production always wires it; nil is a test-only
 	// seam for the allocation mechanics.
 	Patterns PatternPinner
+	// HoldGate returns why an experiment on a hold flag cannot run on the current
+	// defaults ("" = it can), at its pin and at every tick (UC-043 A17 step 2). An
+	// error keeps the experiment. nil skips the check (test seam).
+	HoldGate HoldGate
 	// FlagDigest computes the arm's resolved-values flag digest (UC-046 BR-011)
 	// before the spawn; nil ⇒ no digest.
 	FlagDigest func(ctx context.Context, experimentID, arm string) string
@@ -503,6 +513,7 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 		entries:           make(map[string]*entry),
 		releaseTombstones: make(map[string]string),
 		patterns:          cfg.Patterns,
+		holdGate:          cfg.HoldGate,
 		flagDigest:        cfg.FlagDigest,
 		patternTracker:    cfg.PatternTracker,
 	}
@@ -530,6 +541,12 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	if !decision.IsExperimentable(in.Objective) {
 		return "", fmt.Errorf("registry: declare experiment: objective %q is not experimentable: no fitness function", in.Objective)
 	}
+	// UC-043 A17 step 1 (#2096): shield.activation is experimented on only toward
+	// hold, whoever declares it (the declarer forces it; a proposer cannot pick another
+	// value and experiment its way out of hold).
+	if err := checkHoldValue(in.FlagKey, in.ExperimentalValue); err != nil {
+		return "", fmt.Errorf("registry: declare experiment: %w", err)
+	}
 
 	arms := in.Arms
 	if len(arms) == 0 {
@@ -548,6 +565,9 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	// Keep this call inside the lock: TestDeclareCreatesJournalUnderRegistryLock_1731
 	// probes r.mu through r.clock().
 	now := r.clock()
+	if r.holdCoolingLocked(in.FlagKey) {
+		return "", fmt.Errorf("registry: declare experiment: %s is in its re-declare cooldown after a promotion that did not act (UC-043 A17)", in.FlagKey)
+	}
 
 	// Reconcile target_n vs the verdict min-N (#1001). A target_n below the verdict
 	// min-N can NEVER satisfy the verdict's conclusive gate, so the experiment would
@@ -730,6 +750,8 @@ func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
 	if r.spawner == nil {
 		return 0
 	}
+	// UC-043 A17 step 2: a running hold-flag experiment whose condition flipped ends.
+	r.discardHoldStale(ctx)
 	// UC-046 step 2: pin the archetype selection of experiments that have not spawned yet.
 	r.pinPending(ctx)
 	// UC-046 A6 / BR-015: conclude pattern experiments whose archetypes are all used
@@ -1610,9 +1632,40 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 			Note:      res.Reason,
 			Promotion: &promotion,
 		})
+		r.startHoldCooldownLocked(e.flagKey, res)
 	}
 	r.mu.Unlock()
 	return res
+}
+
+// startHoldCooldownLocked parks a hold key for HoldRedeclareCooldown after a
+// promotion of it that did not act (UC-043 A17 step 3 interim, #2096): until the
+// deferred real write lands (PR-7b-2b, which replaces this), an autonomous
+// promotion of a hold key is discarded, and re-declaring the key at once would
+// spend shadow games on the same answer. Assumes r.mu is held.
+func (r *Registry) startHoldCooldownLocked(flagKey string, res PromotionResult) {
+	if !IsHoldKey(flagKey) || promotionActed(res) {
+		return
+	}
+	if r.holdCooldown == nil {
+		r.holdCooldown = map[string]time.Time{}
+	}
+	r.holdCooldown[flagKey] = r.clock().Add(HoldRedeclareCooldown)
+}
+
+// HoldCooling reports whether flagKey is parked in its hold re-declare cooldown
+// (UC-043 A17 step 3 interim).
+func (r *Registry) HoldCooling(flagKey string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.holdCoolingLocked(flagKey)
+}
+
+// holdCoolingLocked reports whether flagKey is parked by startHoldCooldownLocked.
+// Assumes r.mu is held.
+func (r *Registry) holdCoolingLocked(flagKey string) bool {
+	until, ok := r.holdCooldown[flagKey]
+	return ok && r.clock().Before(until)
 }
 
 // RecordPromotion journals a later outcome of an experiment's promotion (UC-043
@@ -2055,10 +2108,11 @@ func (r *Registry) Live() []string {
 }
 
 // ActiveFlags returns the set of flag keys that have at least one LIVE
-// (non-terminal: PROPOSED or RUNNING) experiment. The dynamic declarer (#995)
-// uses it to avoid stacking a second concurrent experiment on a flag that is
-// already under test. A flag torn down (terminal) is not included — its targeting
-// branch is stripped, so it is free to experiment on again.
+// (non-terminal: PROPOSED or RUNNING) experiment, plus the hold keys parked in
+// their re-declare cooldown (HoldCooling, UC-043 A17 step 3 interim). The dynamic
+// declarer (#995) uses it to avoid stacking a second concurrent experiment on a
+// flag that is already under test. Any other flag torn down (terminal) is not
+// included — its targeting branch is stripped, so it is free to experiment on again.
 func (r *Registry) ActiveFlags() map[string]struct{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2066,6 +2120,12 @@ func (r *Registry) ActiveFlags() map[string]struct{} {
 	for _, e := range r.entries {
 		if !e.status.IsTerminal() {
 			out[e.flagKey] = struct{}{}
+		}
+	}
+	// UC-043 A17 step 3 interim: a hold key in its re-declare cooldown counts as busy.
+	for key := range r.holdCooldown {
+		if r.holdCoolingLocked(key) {
+			out[key] = struct{}{}
 		}
 	}
 	return out

@@ -106,6 +106,15 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 		res.Reason = "autonomous requested but agent disabled (kill-switch); real default not changed"
 		return
 	}
+	// UC-043 A17 step 3 (#2096): a hold key's real value may change only while no real
+	// game runs, and the agent's own reverts of it are deferred the same way. Until the
+	// deferred queue lands (PR-7b-2b), an autonomous promotion of a hold key writes
+	// nothing, so neither a write nor a watch revert can land mid-game.
+	if experiment.IsHoldKey(p.FlagKey) {
+		res.Outcome = OutcomeDiscarded
+		res.Reason = HoldPromotionDeferredReason
+		return
+	}
 	if pr.realDef == nil {
 		res.Outcome = OutcomeDiscarded
 		res.Reason = "autonomous requested but no real-default writer wired; real default not changed"

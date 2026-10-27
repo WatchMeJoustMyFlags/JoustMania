@@ -59,15 +59,34 @@ func (r *Registry) pinPending(ctx context.Context) {
 	}
 	r.mu.Lock()
 	var pending []string
+	pendingKey := map[string]string{}
 	for id, e := range r.entries {
 		if e.status == StatusRunning && e.pin == nil {
 			pending = append(pending, id)
+			pendingKey[id] = e.flagKey
 		}
 	}
 	r.mu.Unlock()
 
 	for _, id := range pending {
+		// UC-043 A17 step 2: a hold-flag experiment needs the current defaults first; a
+		// failed read leaves it unpinned until the next tick.
+		holdReason, err := r.checkHold(ctx, pendingKey[id])
+		if err != nil {
+			r.log.Debug("experiment.hold_gate_unreadable", "experiment_id", id, "error", err)
+			continue
+		}
 		pin := r.patterns.Pin(ctx)
+		if IsHoldKey(pendingKey[id]) && pin.DiscardReason == "" {
+			// UC-046 A17: every pinned archetype must press the trigger (BR-018).
+			if missing := ArchetypesWithoutTriggerPolicy(pin); len(missing) > 0 {
+				pin.DiscardReason = patterngame.DiscardTriggerPolicyMissing
+				pin.Errors = []string{"archetypes without trigger_policy: " + strings.Join(missing, ", ")}
+			} else if holdReason != "" {
+				pin.DiscardReason = holdReason
+				pin.Errors = []string{"shield.activation does not resolve as the experiment needs (UC-043 A17)"}
+			}
+		}
 		r.mu.Lock()
 		e := r.entries[id]
 		if e == nil || e.status != StatusRunning || e.pin != nil {
@@ -110,6 +129,41 @@ func (r *Registry) pinPending(ctx context.Context) {
 			r.log.Warn("experiment.pattern_discarded", "experiment_id", id, "reason", reason)
 			r.teardown(ctx, id, flagKey, StatusDiscarded, reason)
 		}
+	}
+}
+
+// checkHold runs the hold gate for a hold-flag experiment ("" for any other flag or
+// with no gate wired).
+func (r *Registry) checkHold(ctx context.Context, flagKey string) (string, error) {
+	if r.holdGate == nil || !IsHoldKey(flagKey) {
+		return "", nil
+	}
+	return r.holdGate(ctx, flagKey)
+}
+
+// discardHoldStale tears down a running, pinned hold-flag experiment whose condition
+// no longer holds (UC-043 A17 step 2): shield.activation left hold under a
+// sub-parameter experiment, or reached hold under a shield.activation experiment. A
+// read error keeps the experiment (a transient error is no evidence).
+func (r *Registry) discardHoldStale(ctx context.Context) {
+	if r.holdGate == nil {
+		return
+	}
+	r.mu.Lock()
+	running := map[string]string{}
+	for id, e := range r.entries {
+		if e.status == StatusRunning && e.pin != nil && IsHoldKey(e.flagKey) {
+			running[id] = e.flagKey
+		}
+	}
+	r.mu.Unlock()
+	for id, flagKey := range running {
+		reason, err := r.holdGate(ctx, flagKey)
+		if err != nil || reason == "" {
+			continue
+		}
+		r.log.Warn("experiment.hold_discarded", "experiment_id", id, "flag", flagKey, "reason", reason)
+		r.teardown(ctx, id, flagKey, StatusDiscarded, reason)
 	}
 }
 

@@ -105,6 +105,10 @@ const (
 	OutcomeReverted Outcome = "reverted"
 )
 
+// HoldPromotionDeferredReason is the Reason of an autonomous promotion of a hold
+// key, which writes nothing until the deferred real write lands (UC-043 A17 step 3).
+const HoldPromotionDeferredReason = "real write of a hold key waits for game end (UC-043 A17, #2096 PR-7b-2b)"
+
 // Config is the live, per-promotion flag configuration the Promoter acts under
 // (#936 flags), resolved fresh each promotion so flipping the mode flag takes
 // effect on the NEXT promotion with no restart — the same never-cached contract
