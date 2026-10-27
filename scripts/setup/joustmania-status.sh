@@ -35,7 +35,9 @@
 #
 # For the unit's ExecStartPost only (#2027 PR 4): the start has ended, so a
 # unit that is still `activating` counts as started and a service that is not
-# up yet is judged (WARN or FAIL), never `starting`; the state is written to
+# up yet is judged (WARN or FAIL), never `starting`: a running service whose
+# health check is still `starting` is WARN (degraded, #2135), a service not
+# running is FAIL for a game service, else WARN; the state is written to
 # led.request in the unit's runtime dir, where the root-owned joustmania-led
 # (the next ExecStartPost) applies it to the LED. This writes only that file.
 set -uo pipefail
@@ -172,6 +174,11 @@ else
             # Still coming up (the unit is starting): not a failure yet
             STARTING=1
             report INFO "$text"
+        elif [[ "$state" == running && "$health" == starting ]]; then
+            # --led: the start has ended but the health check has not passed
+            # yet (it often has not, right after ExecStart). Running is not
+            # failed: degraded, also for a game service (#2135)
+            report WARN "$text; health check not passed yet"
         elif joustmania_in_list "$svc" "${JOUSTMANIA_GAME_SERVICES[@]}"; then
             report FAIL "$text"
         else

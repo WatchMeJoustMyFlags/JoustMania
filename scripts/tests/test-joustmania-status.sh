@@ -24,7 +24,8 @@
 #  - a start refused on a branch checkout (A4): the reason from start.env is
 #    shown on the last-start line, exit 2
 #  - --led (ExecStartPost, #2027 PR 4): the unit still activating counts as
-#    started, the state (never `starting`) is written to led.request
+#    started, the state (never `starting`) is written to led.request; a game
+#    service running whose health check is still starting is degraded (#2135)
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-status.sh
 # UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7; UC-061 main A10 BR-007 BR-011
 set -euo pipefail
@@ -47,6 +48,7 @@ SECRET="dummy-secret-status-2027"
 # make_case <name>: ${WORK}/<name>/{repo,bin}; sets CASE
 #   $CASE/missing: images not on the Pi; $CASE/exited: services not running;
 #   $CASE/unhealthy: services running but unhealthy
+#   $CASE/health-starting: services running, health check not passed yet
 #   $CASE/active, $CASE/result: the unit's ActiveState / Result; $CASE/ntp
 make_case() {
   CASE="${WORK}/$1"
@@ -63,6 +65,7 @@ make_case() {
   : >"${CASE}/missing"
   : >"${CASE}/exited"
   : >"${CASE}/unhealthy"
+  : >"${CASE}/health-starting"
   echo active >"${CASE}/active"
   echo success >"${CASE}/result"
   echo yes >"${CASE}/ntp"
@@ -80,6 +83,7 @@ case " \$* " in
     for s in ${SERVICES}; do
       if grep -qxF "\$s" "\$C/exited"; then echo "\$s|exited||joustmania-\$s"
       elif grep -qxF "\$s" "\$C/unhealthy"; then echo "\$s|running|unhealthy|joustmania-\$s"
+      elif grep -qxF "\$s" "\$C/health-starting"; then echo "\$s|running|starting|joustmania-\$s"
       else echo "\$s|running|healthy|joustmania-\$s"; fi
     done; exit 0 ;;
   " image inspect "*) grep -qxF "\$3" "\$C/missing" && exit 1; exit 0 ;;
@@ -253,6 +257,21 @@ ln -s "${CASE}/elsewhere" "${CASE}/run/led.request"
 expect led-failed 2 failed --led
 [[ ! -L "${CASE}/run/led.request" && "$(cat "${CASE}/run/led.request")" == failed ]] || fail "led-failed: led.request not replaced with failed"
 [[ "$(cat "${CASE}/elsewhere")" == stale ]] || fail "led-failed: followed a symlink"
+
+# A game service running whose health check has not passed yet when
+# ExecStartPost runs: degraded, not failed (the LED must not blink 5 Hz on a
+# game that is fine, #2135)
+make_case led-health-starting
+echo activating >"${CASE}/active"
+echo menu >"${CASE}/health-starting"
+expect led-health-starting 1 degraded --led
+grep -qx 'WARN service menu: running (starting); health check not passed yet' "${CASE}/out.log" \
+  || fail "led-health-starting: menu not WARN: $(grep menu "${CASE}/out.log")"
+[[ "$(cat "${CASE}/run/led.request" 2>/dev/null)" == degraded ]] || fail "led-health-starting: led.request is not degraded"
+# without --led the same service is still coming up: starting
+make_case health-starting
+echo menu >"${CASE}/health-starting"
+expect health-starting 1 starting
 
 make_case led-usage
 run_status --bogus && fail "led-usage: an unknown argument exits 0"
