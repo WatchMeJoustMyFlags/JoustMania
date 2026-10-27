@@ -33,9 +33,12 @@ from services.operator_pad.state import ENABLED_STATES, is_known, is_stopped
 logger = logging.getLogger(__name__)
 tracer = get_tracer(__name__)
 
-# A stop is the menu's worst case: two flag reads (0.5 s each) and two writes whose timeout is settled by a
-# re-read (0.5 s + 0.5 s each, #2095), 3.0 s of flag-service deadlines, plus the menu's own work.
+# Every command but the agent switch: at most two flag reads and one write settled by a re-read (#2095).
 COMMAND_TIMEOUT_SECONDS = 4.0
+# The resume is the menu's slowest command (#2093): from level `none` two flag reads (0.5 s each) and three
+# writes whose timeout is settled by a re-read (0.5 s + 0.5 s each, #2095), 4.0 s of flag-service deadlines,
+# plus the menu's own work. A cut still leaves the agent stopped: `enabled` is written last (UC-015 BR-003).
+AGENT_SWITCH_TIMEOUT_SECONDS = 5.0
 VOLUME_PAUSE_SECONDS = 0.25  # BR-005: the volume is committed after this pause in turning
 FORCE_END_REASON = "operator_pad"
 
@@ -182,9 +185,13 @@ class Actions:
         if key == K2 and 0 <= status.sensitivity < len(cues.SENSITIVITY_VOICES):
             voice = cues.SENSITIVITY_VOICES[status.sensitivity]
         elif key == K3:
-            # BR-013: an unresolved kill switch is never announced as stopped (a false all-clear); the
-            # level is not checked here, since a resolved `off` with an empty level is really stopped.
-            if status.agent_enabled_state not in ENABLED_STATES:
+            # BR-013: an unresolved kill switch or write gate is never announced as stopped (a false
+            # all-clear) nor as running (#2093); the level is not checked here, since a resolved `off`
+            # with an empty level is really stopped.
+            if (
+                status.agent_enabled_state not in ENABLED_STATES
+                or status.agent_interventions_enabled_state not in ENABLED_STATES
+            ):
                 voice = None
             elif is_stopped(status):
                 voice = cues.AGENT_STOPPED_VOICE
@@ -201,21 +208,25 @@ class Actions:
         await self._cues.voice(voice)
 
     async def _agent_switch(self, status, press_status, locked: bool) -> tuple[str, str]:
-        """K3 hold (step 6, BR-002, BR-003, BR-013, A10); while locked only the stop direction (A6).
+        """K3 hold (step 6, BR-002, BR-003, BR-013, A10); while locked always the stop (A6).
 
         The direction is the intent at the press; the release read only confirms it. Any unknown
         read allows only the stop (fail closed): it is idempotent and attempts both writes.
         """
-        if is_known(press_status) and is_known(status):
+        if locked:
+            # A6: a locked pad is kill only, whatever the status; the menu's A9 makes the stop a
+            # no-op for a stopped agent, and with only the write gate closed it ends decide calls.
+            direction = "stop"
+        elif is_known(press_status) and is_known(status):
             if is_stopped(press_status) != is_stopped(status):
                 await self._cues.cancel()  # A10: changed during the hold, by someone else
                 return "agent_switch", CANCELLED
             direction = "resume" if is_stopped(press_status) else "stop"
         else:
             direction = "stop"
-        if locked and direction != "stop":
-            return "agent_switch", REFUSED  # A6: a locked pad sends nothing but the stop
-        return "agent_switch", await self._send({"command": "agent_switch", "direction": direction})
+        return "agent_switch", await self._send(
+            {"command": "agent_switch", "direction": direction}, deadline_seconds=AGENT_SWITCH_TIMEOUT_SECONDS
+        )
 
     async def _end_or_start(self, status, press_status) -> tuple[str, str]:
         """K4 hold (step 7, A5): cancel when the state changed between press and release."""
@@ -326,11 +337,11 @@ class Actions:
             {"command": "step_setting", "option": option, "direction": direction, "steps": str(steps)}
         )
 
-    async def _send(self, data: dict[str, str]) -> str:
+    async def _send(self, data: dict[str, str], deadline_seconds: float = COMMAND_TIMEOUT_SECONDS) -> str:
         """One `ProcessInput` web command; the result label. Never retried (BR-010)."""
         try:
             response = await self._menu.ProcessInput(
-                menu_pb2.ProcessInputRequest(input_type="web_command", data=data), timeout=COMMAND_TIMEOUT_SECONDS
+                menu_pb2.ProcessInputRequest(input_type="web_command", data=data), timeout=deadline_seconds
             )
         except Exception as e:
             logger.warning(f"Pad command {data.get('command')} not sent: {e}")

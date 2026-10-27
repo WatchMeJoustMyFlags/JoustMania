@@ -37,8 +37,24 @@ RuntimeDirectory=joustmania
 RuntimeDirectoryPreserve=yes
 # No ExecStartPre that removes containers and no `down`: a reboot with
 # unchanged images recreates nothing (UC-060 BR-001, NFR-026)
+# ACT LED cue (UC-060 BR-005, C-042, #2027 PR 4). The `+` hooks run the
+# root-owned copy install_autostart.sh puts in /usr/local/lib/joustmania (sysfs
+# needs root; no sudoers rule, and pi cannot edit what runs as root). `-`: the
+# LED never fails the unit, nor does a missing helper (unit copied by hand).
+#   ExecStartPre: heartbeat (starting)
+#   ExecStartPost: joustmania-status --led (as pi) judges the ended start and
+#     leaves the state in led.request; the helper applies it (ok solid,
+#     degraded 1 Hz). Bounded by `timeout`: TimeoutStartSec applies to each
+#     command, and a timed-out ExecStartPost would stop a ready game.
+#     ExecStartPost never runs on a failed start, so
+#   ExecStopPost: $SERVICE_RESULT success (a clean stop) restores the board's
+#     trigger; any other result (failed or timed-out start) blinks 5 Hz.
+ExecStartPre=-+/usr/local/lib/joustmania/joustmania-led starting
 ExecStart=/home/pi/JoustMania/scripts/setup/joustmania-start.sh
+ExecStartPost=-/usr/bin/timeout 120 /home/pi/JoustMania/scripts/setup/joustmania-status.sh --led
+ExecStartPost=-+/usr/local/lib/joustmania/joustmania-led from-request
 ExecStop=/home/pi/JoustMania/scripts/setup/joustmania-compose.sh stop --timeout 20
+ExecStopPost=-+/usr/local/lib/joustmania/joustmania-led stop-post
 TimeoutStartSec=900
 TimeoutStopSec=120
 User=pi

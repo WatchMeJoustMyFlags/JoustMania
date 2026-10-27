@@ -1795,21 +1795,23 @@ jobs:
           bash scripts/ci/check-retag-source.sh "${{ matrix.image }}" || rc=$?
           [[ "$rc" == 0 || "$rc" == 2 ]] || exit "$rc"
 
-      - name: Retag :main -> :sha
+      # #2120: the copy used to be continue-on-error and could leave a commit
+      # without its :<sha> image while the job stayed green. retag-image.sh
+      # copies by digest, then re-reads :<sha> and requires the same digest;
+      # any failure fails the job. Only a missing :main (exit 2: first run /
+      # fork) stays a warning, the next release would miss this image's :<sha>.
+      # Remedy: one full run via workflow_dispatch (or merge a change touching
+      # the image).
+      - name: Retag :main -> :sha and verify
         id: retag
-        continue-on-error: true
         run: |
-          docker buildx imagetools create \
-            --tag "${IMAGE_PREFIX}/${{ matrix.image }}:${{ github.sha }}" \
-            "${IMAGE_PREFIX}/${{ matrix.image }}:main"
-
-      # First run / fork: :main doesn't exist yet. Don't fail CI, but surface it —
-      # the next release would miss this image's :<sha>. Remedy: one full run via
-      # workflow_dispatch (or merge a change touching the image).
-      - name: Warn on missing :main tag
-        if: steps.retag.outcome != 'success'
-        run: |
-          echo "::warning::No :main tag for ${{ matrix.image }}; its :${{ github.sha }} tag is missing. Trigger a full build (workflow_dispatch) before the next release."
+          rc=0
+          TARGET_SHA="${{ github.sha }}" bash scripts/ci/retag-image.sh "${{ matrix.image }}" || rc=$?
+          if [[ "$rc" == 2 ]]; then
+            echo "::warning::No :main tag for ${{ matrix.image }}; its :${{ github.sha }} tag is missing. Trigger a full build (workflow_dispatch) before the next release."
+          elif [[ "$rc" != 0 ]]; then
+            exit "$rc"
+          fi
 
   # Final status check job for branch protection
   # This job depends on all other jobs and provides a single status check

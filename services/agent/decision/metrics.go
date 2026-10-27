@@ -39,6 +39,29 @@ func defaultLLMGatedCounter() otelmetric.Int64Counter {
 	return newLLMGatedCounter(otel.GetMeterProvider())
 }
 
+// newDecideDiscardedCounter builds the agent_decide_discarded_total counter
+// (#2123): one increment per remote agent.decide record that carries a
+// decide.discarded_reason, labeled reason=<that reason> (stale_context,
+// game_ended, target_gone, state_too_old, kill_switch, backend_changed,
+// shutdown: a closed set). A rules fallback whose context was gone or whose game
+// had ended counts too, since its span carries the reason. An
+// instrument-creation error yields a no-op counter, like newLLMGatedCounter.
+func newDecideDiscardedCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
+	c, err := mp.Meter(decisionMeterName).Int64Counter(
+		"agent_decide_discarded_total",
+		otelmetric.WithDescription("Total remote decide answers dropped when they landed, labeled by decide.discarded_reason (#2123)"),
+	)
+	if err != nil {
+		c, _ = metricnoop.NewMeterProvider().Meter(decisionMeterName).Int64Counter("agent_decide_discarded_total")
+	}
+	return c
+}
+
+// defaultDecideDiscardedCounter is the Loop's counter until one is injected.
+func defaultDecideDiscardedCounter() otelmetric.Int64Counter {
+	return newDecideDiscardedCounter(otel.GetMeterProvider())
+}
+
 // newEvaluationsCounter builds the agent_evaluations_total counter from the given
 // meter provider (#1053). Unlike the audit trace — which is emitted ONLY when the
 // rules engine returns ≥1 decision — this counter is incremented on EVERY eval

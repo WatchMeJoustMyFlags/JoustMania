@@ -2,7 +2,7 @@
  * Controller card numbers when proto3 JSON omits zero scalars (#1604).
  */
 import { describe, expect, it } from "vitest";
-import { accelDotOffset, batteryView, normalizeGameplay, statusView } from "../motion.js";
+import { accelDotOffset, batteryPercent, batteryView, normalizeGameplay, statusView } from "../motion.js";
 
 describe("UC-035: controller card reads omitted proto3-JSON zero scalars as 0", () => {
   it("UC-035 main step 2 a frame without battery and axes renders 0 values, not NaN", () => {
@@ -43,5 +43,26 @@ describe("UC-035: controller card reads omitted proto3-JSON zero scalars as 0", 
     expect(statusView(-1)).toEqual({ state: "admin", text: "Admin" });
     expect(statusView(2)).toEqual({ state: "alive", text: "Team 2" });
     expect(statusView(2, true)).toEqual({ state: "alive", text: "Alive" });
+  });
+});
+
+describe("UC-035 BR-007: the card battery reads both scales (#2111, #2132)", () => {
+  it("UC-035 BR-007 maps the Rust percentage and the 0-5 level to one scale", () => {
+    expect(batteryPercent(100)).toBe(100);
+    expect(batteryPercent(60)).toBe(60);
+    expect(batteryPercent(20)).toBe(20);
+    expect(batteryPercent(5)).toBe(100);
+    expect(batteryPercent(3)).toBe(60);
+    expect(batteryPercent(0)).toBe(0);
+    expect(batteryPercent(undefined)).toBe(0);
+    expect(batteryPercent(250)).toBe(100);
+    expect(batteryPercent(-3)).toBe(0);
+  });
+
+  it("UC-035 BR-007 a Rust 40 % battery is not shown as 100 %", () => {
+    expect(batteryView(40)).toEqual({ percent: 40, className: "medium" });
+    expect(batteryView(100).className).toBe("high");
+    expect(batteryView(20).className).toBe("low");
+    expect(batteryView(4)).toEqual({ percent: 80, className: "high" });
   });
 });

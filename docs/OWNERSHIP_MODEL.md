@@ -71,8 +71,10 @@ the agent has three narrow, gated writes beyond the `interventions` set.
    `rollout_enabled` and `remediation_allowed` (FR-071, FR-072). That flag is
    infrastructure state, not a human game setting.
 2. **The write surfaces are disjoint by scope.** The menu writes persisted admin
-   values of `game` / `user` flags (and the single `agent` key
-   `interventions_allowed`); the agent writes game-scoped `interventions` values,
+   values of `game` / `user` flags (and of the `agent` keys
+   `interventions_allowed` and `decision.backend`), plus, for the operator pad's
+   stop and resume, the in-memory `agent` overlays `enabled` and
+   `interventions_enabled` (UC-015 BR-001 to BR-003; human writes, so C-034 holds); the agent writes game-scoped `interventions` values,
    `rollout/current_controller_count`, and the experiment-arm and `real` overlays
    of `game` flags. The flag service holds each kind of value separately per flag
    (baseline, persisted admin value, stack overlays, `real` overlay, experiment

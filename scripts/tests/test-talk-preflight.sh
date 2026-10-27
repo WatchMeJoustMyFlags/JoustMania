@@ -115,7 +115,7 @@ flags = {
     "decision.capture_content": f(onoff, "on"),
     "decision.min_interval_ms": f({"default": 3000}, "default"),
     "decision.claude.model": f({"haiku": "h", "sonnet": "s"}, "haiku"),
-    "decision.claude.timeout_ms": f({"fast": 1500, "tight": 2500, "default": 5000, "patient": 8000}, "default"),
+    "decision.claude.timeout_ms": f({"fast": 1500, "tight": 2500, "default": 5000, "patient": 8000}, "patient"),
     "decision.jev.timeout_ms": f({"fast": 1500, "default": 2500, "patient": 5000}, "default"),
     "decision.jev.model": f({"latest": "jev-latest", "pinned": "jev-1.13.0"}, "latest"),
     "decision.jev.base_url": f({"default": "https://api.typesafe.ai/v1", "blackhole": "https://192.0.2.1/v1"}, "default"),
@@ -159,7 +159,7 @@ check "empty openai key is only info" "INFO  openai: DECISION_OPENAI_API_KEY abs
 check "inference backend flag claude passes" "PASS  inference.backend = claude"
 check "inference backend effective flag claude passes" "PASS  inference.backend flag = claude (the post-game summary backend)"
 check "stage flag under the env ceiling passes" "PASS  LLM budget: llm.max_requests_per_minute = stage (30/min) under the AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30 ceiling"
-check "claude timeout baseline" "PASS  decision.claude.timeout_ms = default (5000)"
+check "claude timeout baseline" "PASS  decision.claude.timeout_ms = patient (8000)"
 check "jev threshold baseline" "PASS  decision.jev.act_confidence_threshold = gate (0.6)"
 check "jev blackhole variant present" "PASS  decision.jev.base_url = default"
 if has "stub"; then not_ok "no stub wording"; else ok "no stub wording"; fi
@@ -193,11 +193,11 @@ check "unset env falls back to the stage flag" "PASS  LLM budget: llm.max_reques
 if grep -qE '^(PUT|POST|DELETE) ' "${FAKE_FLAG_LOG}"; then not_ok "the pre-flight writes nothing"; else ok "the pre-flight writes nothing"; fi
 
 # --- budget, timeout, keys and summary backend ----------------------------
-fixture llm.max_requests_per_minute=default decision.claude.timeout_ms=patient decision.jev.base_url=blackhole
+fixture llm.max_requests_per_minute=default decision.claude.timeout_ms=default decision.jev.base_url=blackhole
 STUB_JEV_KEY="" run_preflight
 if [[ "${RC}" -eq 1 ]]; then ok "drift + missing jev key exits 1"; else not_ok "drift + missing jev key exits 1 (rc=${RC})"; fi
 check "default flag budget warns" "WARN  LLM budget: llm.max_requests_per_minute = default (6/min)"
-check "claude timeout drift fails" "FAIL  decision.claude.timeout_ms = patient (8000), stage baseline is default"
+check "claude timeout drift fails" "FAIL  decision.claude.timeout_ms = default (5000), stage baseline is patient"
 check "jev blackhole left on fails" "FAIL  decision.jev.base_url = blackhole"
 check "missing jev key fails" "FAIL  jev: JEV_API_KEY missing"
 STUB_BUDGET=10 run_preflight
@@ -240,6 +240,24 @@ PY2
 restart_fake
 STUB_BUDGET=30 run_preflight
 check "missing blackhole variant fails" "FAIL  decision.jev.base_url has no blackhole variant"
+
+# --- beat variants missing ----------------------------------------------------
+fixture
+python3 - "${FAKE_AGENT_FLAGS}" <<'PY3'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+del data["flags"]["decision.jev.act_confidence_threshold"]["variants"]["strict"]
+del data["flags"]["decision.claude.timeout_ms"]["variants"]["patient"]
+json.dump(data, open(path, "w"), indent=2)
+PY3
+restart_fake
+STUB_BUDGET=30 run_preflight
+check "missing strict threshold variant fails" "FAIL  decision.jev.act_confidence_threshold has no strict variant"
+check "missing patient timeout variant warns" "WARN  decision.claude.timeout_ms has no patient variant"
+fixture
+STUB_BUDGET=30 run_preflight
+check "beat variants present pass" "PASS  decision.jev.act_confidence_threshold has the strict and gate variants"
 
 # --- expected backend override ---------------------------------------------
 fixture decision.backend=claude

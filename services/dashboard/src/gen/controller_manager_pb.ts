@@ -64,16 +64,3 @@ export interface IdentifyControllerResponse {
   error: string;
   durationMs: number; // duration actually used (default / clamped)
 }
-
-// GetConnectedControllers (#1153): the live roster, with the last-known battery.
-// Proto3 JSON omits empty / zero fields. `battery` is a percentage in steps of 20
-// (Rust HID) or a 0-5 level (UC-035 BR-007).
-export interface ConnectedController {
-  serial?: string;
-  name?: string;
-  battery?: number;
-}
-
-export interface GetConnectedControllersResponse {
-  controllers?: ConnectedController[];
-}
