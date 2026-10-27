@@ -135,6 +135,16 @@ HS_UP=0 A8=0
 hotspot_active && HS_UP=1
 ((HS_UP)) && ! uplink_connected && A8=1
 
+# Is this session itself carried by the hotspot? SSH_CONNECTION's local address
+# (when sudo kept it) or the login host `who -m` shows, in 10.42.0.0/24
+session_over_hotspot() {
+    local server_ip from
+    server_ip="$(awk '{ print $3 }' <<<"${SSH_CONNECTION:-}")"
+    [[ "$server_ip" == 10.42.0.* ]] && return 0
+    from="$(who -m 2>/dev/null | sed -n 's/.*(\([^)]*\)).*/\1/p' | head -n 1)"
+    [[ "$from" == 10.42.0.* ]]
+}
+
 country=""
 precheck() {
     local reg line
@@ -209,6 +219,11 @@ precheck() {
 # A8: a channel change cannot be proven over the hotspot itself (no uplink for
 # the self-test), and a channel that fails to start would lock a cable-less Pi out
 OLD_CHANNEL="$(sed -n 's/^channel=\([0-9]\{2\}\)$/\1/p' "$CONF" 2>/dev/null | tail -n 1)"
+# The A1 overlap seen from the hotspot: the cable path would take the hotspot
+# down under this session, and the SIGHUP would leave the setup disarmed
+if ((HS_UP && !A8)) && session_over_hotspot; then
+    problem "you are connected over the hotspot while a cable is in: re-run over the cable LAN, or unplug the cable to re-run over the hotspot (A8)"
+fi
 if ((A8)) && [[ -n "$OLD_CHANNEL" && "$OLD_CHANNEL" != "$CHANNEL" ]]; then
     problem "changing the channel ($OLD_CHANNEL to $CHANNEL) over the hotspot cannot be tested: plug the cable in and re-run (UC-061 A8)"
 fi

@@ -27,7 +27,7 @@ UUID=e0602321-f72b-408b-983e-56ee57d519ee
 export UUID
 # A test that reaches for the real docker fails instead of using it
 export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
-unset SUDO_USER || true
+unset SUDO_USER SSH_CONNECTION || true
 fails=0
 fail() {
   echo "FAIL $*"
@@ -504,6 +504,31 @@ grep -q "taking the hotspot down for the self-test" "${CASE}/out" || fail "overl
 [[ "$(grep -c '^PASS' "${CASE}/out")" == 4 ]] || fail "overlap: the self-test did not run and pass"
 [[ ! -s "${CASE}/systemd-run.argv" ]] || fail "overlap: scheduled the A8 reactivation"
 grep -qx 'enabled=yes' "${R}/etc/joustmania/hotspot.conf" || fail "overlap: not armed"
+
+# the overlap seen from the hotspot itself: refused before any change (round 4)
+for via in ssh who; do
+  make_case "overlap-session-${via}"
+  run_install --hold 0 || fail "overlap-session-${via}: first install exit $?"
+  echo "100 (connected)" >"${S}/wlan0-state"; echo "$UUID" >"${S}/wlan0-uuid"; printf '10.42.0.1/24' >"${S}/wlan0-ip4"
+  cp "${R}/etc/joustmania/hotspot.conf" "${CASE}/conf-before"
+  : >"${CASE}/nmcli.argv"
+  if [[ "$via" == ssh ]]; then
+    SSH_CONNECTION="10.42.0.57 51000 10.42.0.1 22" run_install --hold 0 && fail "overlap-session-ssh: not refused"
+  else
+    mkdir -p "${CASE}/who-bin"
+    printf '#!/usr/bin/env bash\necho "pi       pts/0        2026-10-27 10:00 (10.42.0.57)"\n' >"${CASE}/who-bin/who"
+    chmod +x "${CASE}/who-bin/who"
+    PATH="${CASE}/who-bin:${PATH}" run_install --hold 0 && fail "overlap-session-who: not refused"
+  fi
+  grep -q "you are connected over the hotspot while a cable is in" "${CASE}/out" || fail "overlap-session-${via}: no refusal line: $(tail -n 2 "${CASE}/out")"
+  ! grep -q "connection down" "${CASE}/nmcli.argv" || fail "overlap-session-${via}: took the hotspot down"
+  cmp -s "${CASE}/conf-before" "${R}/etc/joustmania/hotspot.conf" || fail "overlap-session-${via}: the conf changed"
+done
+# the same overlap from the cable LAN proceeds (the overlap case above)
+make_case overlap-lan
+run_install --hold 0 || fail "overlap-lan: first install exit $?"
+echo "100 (connected)" >"${S}/wlan0-state"; echo "$UUID" >"${S}/wlan0-uuid"; printf '10.42.0.1/24' >"${S}/wlan0-ip4"
+SSH_CONNECTION="192.168.1.20 51000 192.168.1.50 22" run_install --hold 0 || fail "overlap-lan: refused over the LAN: $(tail -n 2 "${CASE}/out")"
 
 # --- A8: over the hotspot ------------------------------------------------------------
 make_case a8
