@@ -187,7 +187,7 @@ class TestMenuAutoStart:
 
         await _boot(servicer)
 
-        servicer.read_shield_operator_at_start.assert_called_once_with()
+        servicer.read_operator_settings_at_start.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_shutdown_stops_monitors_and_server(self):

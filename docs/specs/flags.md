@@ -255,7 +255,7 @@ Planned rows of the hold mode (FR-161, FR-162; [UC-040](../use_cases/UC-040.md) 
 
 | Item | Change | Ships with |
 |---|---|---|
-| catalog widening (FR-162) | (a `real` promotion of `shield.activation` does not take effect while the operator pad's persisted value is set: stack > admin > real; the operator sets the pad back to `automatic` to clear it, UC-015 BR-018) scope `stack or experiment+arm or real` for `shield.activation`, the seven §4 hold rows (`shield.energy_*`, `shield.recharge_per_second`, `shield.min_burst_seconds`, `shield.hold_rumble_intensity`, `shield.empty_pulse_ms`) and the #2094 cue flags; `shield.charge_expiry_seconds` stays `stack` (human-only, C-034); the C-034 test changes with a ceiling test (budget ≤ 30, recharge ≤ 0.5, cap ≤ 10, initial ≤ 5); `experiment_rung: applies` in `handler_flag_reads.py`; the conditional declarer ([UC-043](../use_cases/UC-043.md) A17) | the last PR of #2096, all in one. Shadow games already honour `trigger` and `hold` with a `trigger_policy` ([UC-046](../use_cases/UC-046.md) BR-018, PR-7a), so no hold experiment is declarable before shadow games can press the trigger |
+| catalog widening (FR-162) | (a `real` promotion of `shield.activation` does not take effect while the operator pad's persisted value is set: stack > admin > real; the operator sets the pad back to `automatic` to clear it, UC-015 BR-018; the same rung clears the pad's persisted `sensitivity` and `num_teams` so their flag-file default or, for `sensitivity`, a `real` promotion applies again, #2222) scope `stack or experiment+arm or real` for `shield.activation`, the seven §4 hold rows (`shield.energy_*`, `shield.recharge_per_second`, `shield.min_burst_seconds`, `shield.hold_rumble_intensity`, `shield.empty_pulse_ms`) and the #2094 cue flags; `shield.charge_expiry_seconds` stays `stack` (human-only, C-034); the C-034 test changes with a ceiling test (budget ≤ 30, recharge ≤ 0.5, cap ≤ 10, initial ≤ 5); `experiment_rung: applies` in `handler_flag_reads.py`; the conditional declarer ([UC-043](../use_cases/UC-043.md) A17) | the last PR of #2096, all in one. Shadow games already honour `trigger` and `hold` with a `trigger_policy` ([UC-046](../use_cases/UC-046.md) BR-018, PR-7a), so no hold experiment is declarable before shadow games can press the trigger |
 
 ## 5. `interventions`
 
@@ -563,8 +563,8 @@ authorization this is a convention the agent's code keeps, not a check.
 
 | Key | Kind | Scope | Bounds | Persist | Today's writer |
 |---|---|---|---|---|---|
-| `sensitivity` | overlay | stack or experiment+arm or real | declared variants (5 levels) | **yes** | menu admin (FR-017); W3 experiment writer; W5 promotion |
-| `num_teams` | overlay | stack | declared variants | **yes** | menu admin |
+| `sensitivity` | overlay | stack or experiment+arm or real | declared variants (5 levels) | **yes** | menu admin (FR-017), also from the operator pad as a persisted admin value, which the pad's `automatic` clears (UC-015 BR-018, #2222); W3 experiment writer; W5 promotion |
+| `num_teams` | overlay | stack | declared variants | **yes** | menu admin; the operator pad as a persisted admin value, which the pad's `automatic` clears (UC-015 BR-018, #2222) |
 | `force_all_start` | overlay | stack | `on`, `off` | **yes** | menu admin |
 | `shadow_policy` | overlay | stack | `block` | no | `test_tc013_shadow_alongside_real.py` (step 8); an overlay only tightens admission, `allow` stays a baseline edit |
 | `nonstop.time_limit_seconds` | overlay | experiment+arm or real | int 0 to 600 | no | W3 experiment writer; W5 promotion |

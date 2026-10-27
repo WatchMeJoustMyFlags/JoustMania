@@ -35,6 +35,7 @@ from lib import setting_ladders
 from lib.types import Sound
 from lib.voice_prompts import (
     AGENT_LEVEL_VOICES,
+    AUTOMATIC_VOICE,
     BACKEND_VOICES,
     GAME_MODE_VOICE,
     LABEL_VOICES,
@@ -53,7 +54,7 @@ logger = logging.getLogger(__name__)
 PREVIEW_GROUP = "pad_preview"
 # The options whose preview also shows on the lobby LEDs (menu `preview_setting`, BR-017, BR-018).
 MODE_OPTION = "current_game"
-SHIELD_OPTION = "shield.activation"
+SHIELD_OPTION = setting_ladders.SHIELD_OPTION
 LED_OPTIONS = frozenset({MODE_OPTION, SHIELD_OPTION})
 # A `preview_setting` is cosmetic: a short deadline, never retried (BR-010), no cue on failure.
 MODE_PREVIEW_TIMEOUT_SECONDS = 1.0
@@ -71,6 +72,8 @@ def value_voice(option: str, value: str | None) -> Sound | None:
     """The voice line of a ladder value, the same tables the menu voices its commits with."""
     if value is None:
         return None
+    if value == setting_ladders.AUTOMATIC and option in setting_ladders.AUTOMATIC_OPTIONS:
+        return AUTOMATIC_VOICE  # one shared line for every setting's `automatic` rung (BR-018)
     if option == "sensitivity" and value in setting_ladders.SENSITIVITY_LADDER:
         return SENSITIVITY_VOICES[setting_ladders.SENSITIVITY_LADDER.index(value)]
     if option == "num_teams" and value in setting_ladders.TEAMS_LADDER:

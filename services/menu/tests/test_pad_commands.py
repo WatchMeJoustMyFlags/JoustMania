@@ -306,6 +306,7 @@ async def test_force_start_refuses_when_a_start_wins_during_the_roster_lookup(se
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="main", br=["BR-005"])
 async def test_step_setting_writes_once_for_n_steps_and_announces(servicer, flags):
+    flags.admin[("game", "sensitivity")] = flags.values[("game", "sensitivity")] = "medium"  # the knob starts here
     reply = await pad(servicer, "step_setting", option="sensitivity", direction="up", steps=2)
 
     assert (reply.success, reply.error) == (True, "")
@@ -318,9 +319,10 @@ async def test_step_setting_writes_once_for_n_steps_and_announces(servicer, flag
 @pytest.mark.parametrize(
     ("option", "direction", "start"),
     [
-        ("num_teams", "down", "two"),
+        ("num_teams", "down", "automatic"),
         ("num_teams", "up", "six"),
         ("sensitivity", "up", "ultra_fast"),
+        ("sensitivity", "down", "automatic"),
         ("force_all_start", "down", "off"),
         ("game_instructions", "up", "on"),
         ("audio_volume.master", "up", "max"),
@@ -328,7 +330,10 @@ async def test_step_setting_writes_once_for_n_steps_and_announces(servicer, flag
 )
 async def test_step_setting_stops_at_the_end_without_writing(servicer, flags, option, direction, start):
     flag_set = "user" if option in ("game_instructions", "audio_volume.master") else "game"
-    flags.values[(flag_set, option)] = start
+    if start != "automatic":  # automatic = no persisted operator value (the knob's lowest rung for these)
+        flags.values[(flag_set, option)] = start
+        if option in ("num_teams", "sensitivity"):
+            flags.admin[(flag_set, option)] = start
 
     reply = await pad(servicer, "step_setting", option=option, direction=direction, steps=3)
 
@@ -340,7 +345,7 @@ async def test_step_setting_stops_at_the_end_without_writing(servicer, flags, op
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="A7", br=["BR-005"])
 async def test_step_setting_clamps_a_partial_step_to_the_end(servicer, flags):
-    flags.values[("game", "num_teams")] = "five"
+    flags.values[("game", "num_teams")] = flags.admin[("game", "num_teams")] = "five"
     reply = await pad(servicer, "step_setting", option="num_teams", direction="up", steps=4)
     assert reply.success
     assert flags.written() == [("game", "num_teams", "six")]
@@ -1006,6 +1011,7 @@ async def test_step_setting_while_admin_mode_is_open_writes_and_leaves_the_sessi
     span = create_autospec(trace.Span, instance=True)
     admin.session_span = span
 
+    flags.values[("game", "sensitivity")] = flags.admin[("game", "sensitivity")] = "medium"
     reply = await pad(servicer, "step_setting", option="sensitivity", direction="up")
 
     assert (reply.success, reply.error) == (True, "")

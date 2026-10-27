@@ -73,14 +73,14 @@ def test_k6_tap_without_a_turn_is_still_the_instructions_tap():
 @pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-005"], steps=[9])
 @pytest.mark.parametrize(("steps", "direction", "count"), [(1, "up", "1"), (2, "up", "2"), (-1, "down", "1")])
 async def test_k6_release_commits_one_shield_step_setting(actions, menu, steps, direction, count):
-    await actions.dispatch(Gesture(LAYER, "K6", steps=steps), status(shield_activation_operator="trigger"))
+    await actions.dispatch(Gesture(LAYER, "K6", steps=steps), status(operator_settings={SHIELD: "trigger"}))
     assert sent(menu) == [{"command": "step_setting", "option": SHIELD, "direction": direction, "steps": count}]
 
 
 @pytest.mark.uc("UC-015", flow="A1", br=["BR-018", "BR-009"], steps=[9])
 async def test_k6_release_while_a_game_is_live_is_refused_and_sends_nothing(actions, menu, cues):
     _action, result = await actions.dispatch(
-        Gesture(LAYER, "K6", steps=1), status(lifecycle_live=True, shield_activation_operator="instant")
+        Gesture(LAYER, "K6", steps=1), status(lifecycle_live=True, operator_settings={SHIELD: "instant"})
     )
     assert result == "refused"
     menu.ProcessInput.assert_not_awaited()
@@ -90,7 +90,7 @@ async def test_k6_release_while_a_game_is_live_is_refused_and_sends_nothing(acti
 @pytest.mark.uc("UC-015", flow="A7", br=["BR-018", "BR-009"], steps=[9])
 async def test_k6_at_the_end_of_the_ladder_plays_the_limit_cue(actions, menu, cues):
     menu.ProcessInput.return_value = menu_pb2.ProcessInputResponse(success=False, error="at_limit")
-    await actions.dispatch(Gesture(LAYER, "K6", steps=1), status(shield_activation_operator="hold"))
+    await actions.dispatch(Gesture(LAYER, "K6", steps=1), status(operator_settings={SHIELD: "hold"}))
     cues.limit.assert_awaited_once_with(True)
 
 
@@ -100,7 +100,7 @@ async def test_k6_at_the_end_of_the_ladder_plays_the_limit_cue(actions, menu, cu
 def step_shield(rig: Rig, net: int, start: str = "instant", live: bool = False) -> None:
     rig.step(
         net,
-        status=menu_pb2.GetMenuStatusResponse(shield_activation_operator=start, lifecycle_live=live),
+        status=menu_pb2.GetMenuStatusResponse(operator_settings={SHIELD: start}, lifecycle_live=live),
         key="K6",
         option=SHIELD,
         lobby_only=True,
@@ -171,3 +171,28 @@ async def test_k6_preview_with_the_operator_value_unknown_is_silent():
 @pytest.mark.uc("UC-015", flow="main", br=["BR-018"], steps=[9])
 def test_shield_voice_table_covers_the_knob_ladder():
     assert set(VOICES) == set(SHIELD_KNOB_LADDER)
+
+
+# --- The `automatic` rung of sensitivity (K2) and num_teams (K5), #2222 -------------------------
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"], steps=[4, 5])
+@pytest.mark.parametrize(("key", "option", "value"), [("K2", "sensitivity", "slow"), ("K5", "num_teams", "three")])
+async def test_preview_down_to_automatic_speaks_the_shared_automatic_line(key, option, value):
+    rig = Rig()
+    rig.step(
+        -9,
+        status=menu_pb2.GetMenuStatusResponse(operator_settings={option: value}),
+        key=key,
+        option=option,
+        lobby_only=True,
+    )
+    await rig.time.advance(1.0)
+    assert rig.files()[-1] == Sound.MENU_VOX_SHIELD_AUTOMATIC.value
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-005"], steps=[4, 5])
+@pytest.mark.parametrize(("key", "option"), [("K2", "sensitivity"), ("K5", "num_teams")])
+async def test_release_to_automatic_sends_one_step_setting(actions, menu, key, option):
+    await actions.dispatch(Gesture(LAYER, key, steps=-9), status(operator_settings={option: "slow"}))
+    assert sent(menu) == [{"command": "step_setting", "option": option, "direction": "down", "steps": "9"}]

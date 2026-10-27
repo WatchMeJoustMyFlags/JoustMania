@@ -562,10 +562,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         finally:
             metrics.grpc_request_duration_seconds.labels(method="ProcessInput").observe(time.time() - start_time)
 
-    def read_shield_operator_at_start(self) -> None:
-        """Boot: read the operator's shield mode once in the background (UC-015 BR-018), so the first
+    def read_operator_settings_at_start(self) -> None:
+        """Boot: read the operator-set values once in the background (UC-015 BR-018), so the first
         K6 hold after a menu restart starts from a known value instead of a silent preview."""
-        self.settings_ops.schedule_shield_refresh()
+        self.settings_ops.schedule_operator_refresh()
 
     async def GetMenuStatus(self, _request, _context):
         """Read-only menu snapshot (services.md §3.1): menu memory and in-process flag clients only.
@@ -576,7 +576,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         start_time = time.time()
         try:
             # UC-015 BR-018: the operator's shield value is read in the background, never in this call.
-            self.settings_ops.schedule_shield_refresh()
+            self.settings_ops.schedule_operator_refresh()
             response = self._menu_status()
         except Exception:
             metrics.grpc_requests_total.labels(method="GetMenuStatus", status="error").inc()
@@ -612,7 +612,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             force_all_start=bool(game.get_boolean_value("force_all_start", False)),
             audio_volume_master=_variant(user.get_float_details("audio_volume.master", 1.0)),
             shield_activation=_variant(game.get_string_details(SHIELD_ACTIVATION_FLAG, "")),
-            shield_activation_operator=self.settings_ops.shield_operator or "",
+            operator_settings=dict(self.settings_ops.operator_settings),
         )
 
     async def ListGameModes(self, _request, _context):

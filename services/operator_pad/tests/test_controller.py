@@ -254,7 +254,7 @@ async def test_a_hanging_preview_never_holds_up_the_next_knob_event():
     menu = create_autospec(MenuStubSpec, instance=True)
     actions = Actions(menu, create_autospec(CoordinatorStubSpec, instance=True), cue_player, previewer=previewer)
     reader = create_autospec(MenuStatusReader, instance=True)
-    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(num_teams=2)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(num_teams=2, operator_settings={"num_teams": "two"})
     pad = PadController(config, reader, actions, cue_player)
     pad.attached(KEYMAP)
     code = {name: c for c, name in KEYMAP.items()}
