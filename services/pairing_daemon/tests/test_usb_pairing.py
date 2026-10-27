@@ -599,6 +599,7 @@ class TestPairingFlow(_PairingFlowEnv):
         known_on_free = [{"Address": self.SERIAL, "Paired": True}]
         set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, devices(3)), "hci1": (self.ADAPTER_FREE, known_on_free)}))
 
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)  # the probe reads idle
         with (
             patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value="when_idle"),
             caplog.at_level(logging.INFO, logger="psmove-pairing"),
@@ -623,7 +624,10 @@ class TestPairingFlow(_PairingFlowEnv):
 
     @pytest.mark.uc("UC-001", flow="A7", br=["BR-001"])
     async def test_poll_pairs_new_controller_to_least_loaded_adapter(self, usb_pairing, env, metrics, caplog):
-        """A USB controller is paired to the least-loaded adapter, trusted, success counted; no BlueZ restart."""
+        """A7: a controller BlueZ does not know is paired to the least-loaded adapter and trusted.
+
+        The device-record write is the A7 part; the restart waits for the quiet period.
+        """
         backend, runner, _set_tree, restart = env
 
         with caplog.at_level(logging.INFO, logger="psmove-pairing"):
