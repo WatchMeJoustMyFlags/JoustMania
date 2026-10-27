@@ -23,6 +23,8 @@ GATE_RUN="${SCRIPT_DIR}/../ci/gate-run.sh"
 WORK="$(realpath "$(mktemp -d)")"
 trap 'rm -rf "${WORK}" "${FAKE_DOCKER_DIR}"' EXIT
 
+# Own gate slots: this test may itself run inside a gate-run job holding a host slot.
+export JOUSTMANIA_GATE_SLOT_DIR="${WORK}/slots"
 MAIN="${WORK}/main"
 WT="${MAIN}/.worktrees/wt"
 LOGS="${WORK}/logs"

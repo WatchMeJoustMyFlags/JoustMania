@@ -51,6 +51,17 @@
 # this script with the Bash tool's run_in_background: loop on exit 3 in the
 # foreground instead.
 #
+# Host-wide slots (#2210): at most JOUSTMANIA_GATE_SLOTS (default 2, 1-16, a safety ceiling
+# for developer-host stability, C-035) workers run at once across ALL worktrees and callers.
+# The worker (not the polling caller) takes the first free flock on
+# ${XDG_CACHE_HOME:-~/.cache}/joustmania/gate-slots/slot.<i> (dir override for tests:
+# JOUSTMANIA_GATE_SLOT_DIR); otherwise it prints `waiting for a gate slot` once and polls.
+# The kernel releases the lock when the worker exits, also when it is killed.
+# Memory cap: every run is a systemd user scope with MemoryMax=${JOUSTMANIA_GATE_MEM:-3G}
+# and MemorySwapMax=0 (a runaway pytest grew to 14.5 GB and froze the host); without
+# `systemd-run --user` it falls back to `ulimit -v`. Exit 137 (or 143, systemd-oomd) is reported as
+# `killed: memory cap`. (A safety ceiling, C-035.)
+#
 # Exit: 0 verdict as expected (PASS, or MUTATION CAUGHT (assertion) with --expect-fail),
 #       1 any other verdict (also ERROR: killed), 2 REFUSED, 3 PENDING.
 #
@@ -324,6 +335,35 @@ fi
 # Worker (inside the detached job): nothing of the caller's detach state reaches the
 # run (a nested gate-run, e.g. test-gate-run.sh under `make lint`, detaches itself).
 unset GATE_RUN_WORKER GATE_RUN_WAIT GATE_RUN_DRY_RUN DETACH_WAIT
+# Host-wide gate slot (#2210): held by this worker's fd 7 until it exits.
+SLOTS="${JOUSTMANIA_GATE_SLOTS:-2}"
+[[ "$SLOTS" =~ ^[0-9]{1,2}$ ]] && ((SLOTS >= 1 && SLOTS <= 16)) || SLOTS=2
+SLOT_DIR="${JOUSTMANIA_GATE_SLOT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/joustmania/gate-slots}"
+mkdir -p -- "$SLOT_DIR" || { echo "VERDICT: ERROR: cannot create $SLOT_DIR"; exit 1; }
+announced=0 have_slot=0
+while ((!have_slot)); do
+  for ((s = 1; s <= SLOTS; s++)); do
+    exec 7>>"$SLOT_DIR/slot.$s"
+    if flock -n 7; then have_slot=1; break; fi
+    exec 7>&-
+  done
+  ((have_slot)) && break
+  ((announced)) || { echo "waiting for a gate slot ($SLOTS in use on this host)"; announced=1; }
+  sleep 1
+done
+# Memory cap (#2210): [0-9]+[MG], else the default.
+MEM="${JOUSTMANIA_GATE_MEM:-3G}"
+[[ "$MEM" =~ ^([0-9]{1,5})([MG])$ ]] || MEM=3G
+[[ "$MEM" =~ ^([0-9]+)([MG])$ ]]
+MEM_KB=$((BASH_REMATCH[1] * 1024 * $([[ "${BASH_REMATCH[2]}" == G ]] && echo 1024 || echo 1)))
+CAP=()
+if systemd-run --user --scope -q -p MemoryMax="$MEM" -p MemorySwapMax=0 -- true >/dev/null 2>&1; then
+  CAP=(systemd-run --user --scope -q -p MemoryMax="$MEM" -p MemorySwapMax=0 --)
+  CAP_KIND=systemd
+else
+  CAP_KIND=ulimit
+fi
+echo "memory cap $MEM ($CAP_KIND)"
 # Record the state this run sees, then run.
 { tree_fingerprint >"$JOB/tree"; } 2>/dev/null
 
@@ -333,15 +373,23 @@ TEST_FAIL_RE='FAILED|AssertionError|\bassert\b|--- FAIL|panicked'
 [[ "${CMD[0]}" == bash ]] && TEST_FAIL_RE+='|^[[:space:]]*FAIL(ED)?([: ]|$)'
 NON_TEST_RE='ERROR collecting|errors? during collection|SyntaxError|IndentationError|ModuleNotFoundError|ImportError while|command not found|No such file or directory|Cannot connect to the Docker daemon|could not compile|build failed|no Go files|cannot find package|setup failed|No rule to make target'
 
-failed=0 non_test=0
+failed=0 non_test=0 oom=0
 declare -a logs=() failed_logs=()
 for ((i = 1; i <= REPEAT; i++)); do
   log="$LOGS/$NAME-$i.log"
   logs+=("$log")
   start=$SECONDS
-  (cd "$RUN_DIR" && exec "${CMD[@]}") >"$log" 2>&1 </dev/null
+  (
+    cd "$RUN_DIR" || exit 1
+    [[ "$CAP_KIND" == ulimit ]] && ulimit -v "$MEM_KB"
+    exec "${CAP[@]}" "${CMD[@]}"
+  ) >"$log" 2>&1 </dev/null 7>&-
   rc=$?
   echo "run $i/$REPEAT: exit $rc $((SECONDS - start))s"
+  if ((rc == 137 || rc == 143)); then  # SIGKILL from the cgroup OOM killer, or systemd-oomd's SIGTERM
+    oom=$((oom + 1))
+    echo "run $i/$REPEAT: killed: memory cap $MEM"
+  fi
   if ((rc != 0)); then
     failed=$((failed + 1))
     failed_logs+=("$log")
@@ -372,6 +420,7 @@ if ((EXPECT_FAIL)); then
     verdict+="  CAUGHT? (non-test error in $non_test/$REPEAT: collection, syntax, tool or docker; read the log)"
   fi
 fi
+((oom)) && verdict+="  (killed: memory cap $MEM in $oom/$REPEAT)"
 echo "VERDICT: $verdict"
 ((REPEAT == 1 && EXPECT_FAIL)) &&
   echo "note: N=1 expect-fail = one run failed; it does not show the failure is deterministic (use --repeat 3+ for timing-sensitive tests)."
