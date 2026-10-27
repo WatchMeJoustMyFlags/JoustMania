@@ -9,7 +9,6 @@ Add a row only with the issue that tracks the flake.
 
 | Test | Symptom | When | Tracking |
 |---|---|---|---|
-| `services/game_coordinator/tests/performance/test_motion_throughput.py::test_throughput_scales_linearly` | throughput ratio assertion fails | CPU under load (parallel gate runs, other reviews running) | #2048 |
 
 Infrastructure failures in CI (collector `exited (1)`, stale prebuilt images, `blob not found`) are listed in
 `.claude/skills/review-pr/SKILL.md` step 5, not here.
