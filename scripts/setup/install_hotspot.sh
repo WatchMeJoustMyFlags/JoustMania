@@ -122,8 +122,18 @@ hotspot_active() {
 }
 # Decided once, before any change: a later probe could see the hotspot drop
 # mid-run and take the wrong branch (a cable-less Pi would lose its only access)
-A8=0
-hotspot_active && A8=1
+# The uplink connected: NM state 100 and an IPv4 address outside 169.254/16 (BR-008)
+uplink_connected() {
+    local out
+    out="$(nmcli -g GENERAL.STATE,IP4.ADDRESS device show "$UPLINK" 2>/dev/null)" || return 1
+    [[ "$(head -n 1 <<<"$out")" == 100* ]] || return 1
+    tail -n +2 <<<"$out" | tr '|' '\n' | sed 's/^ *//' | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+' | grep -qv '^169\.254\.'
+}
+# A8 only without a connected uplink: with the cable in (the 15 s overlap of A1)
+# the normal cable path applies, with the self-test
+HS_UP=0 A8=0
+hotspot_active && HS_UP=1
+((HS_UP)) && ! uplink_connected && A8=1
 
 country=""
 precheck() {
@@ -172,7 +182,7 @@ precheck() {
     fi
     local who=""
     # with the hotspot up, NM's own dnsmasq holds :53 and :67 on wlan0 (A8)
-    ((A8)) || who="$(
+    ((HS_UP)) || who="$(
         foreign_listeners udp 53
         foreign_listeners tcp 53
         foreign_listeners udp 67
@@ -300,8 +310,13 @@ fi
 # A crash of an earlier run may have left a hidden temp keyfile with a password
 rm -f "$KEYFILE_DIR"/.joustmania-hotspot.*
 if ((A8)) && [[ -f "$KEYFILE" ]]; then
+    # Named for the cleanup only once the copy is complete: a partial copy must
+    # never be restored over the working profile
+    if ! cp -p "$KEYFILE" "$KEYFILE_DIR/.joustmania-hotspot.backup"; then
+        rm -f "$KEYFILE_DIR/.joustmania-hotspot.backup"
+        die "cannot keep a copy of the current profile; nothing else changed for the hotspot"
+    fi
     KEYFILE_BACKUP="$KEYFILE_DIR/.joustmania-hotspot.backup"
-    cp -p "$KEYFILE" "$KEYFILE_BACKUP" || die "cannot keep a copy of the current profile"
 fi
 
 # Docker needs forwarding; NM's shared mode must not leave it off when the
@@ -348,6 +363,10 @@ if ((A8)); then
     HOTSPOT_ACTIVE=1
 else
     HOTSPOT_ACTIVE=0
+    if hotspot_active; then
+        say "the uplink is connected: taking the hotspot down for the self-test (UC-061 A1)"
+        nmcli connection down uuid "$UUID" >/dev/null 2>&1 || true
+    fi
     say "self-test: the hotspot comes up for ${HOLD}s while $UPLINK stays connected (UC-061 BR-001)"
     if ! JOUSTMANIA_HOTSPOT_CONF="$CONF" "$HELPER" selftest "$HOLD"; then
         systemctl disable --now joustmania-hotspot.timer >/dev/null 2>&1 || true

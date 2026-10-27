@@ -140,6 +140,16 @@ fi
 if [[ -f "${CASE}/s/sysctl-hang" ]]; then touch "${CASE}/s/hanging"; sleep 30; fi
 exit 0
 STUB
+# cp: a copy to the A8 backup fails halfway when the case asks for it
+REAL_CP="$(command -v cp)"
+cat >"${STUBS}/cp" <<EOF
+#!/usr/bin/env bash
+if [[ -f "\${CASE}/s/cp-fails" && "\${*: -1}" == *.joustmania-hotspot.backup ]]; then
+  printf 'psk=trunc' >"\${*: -1}"
+  exit 1
+fi
+exec "${REAL_CP}" "\$@"
+EOF
 cat >"${STUBS}/systemd-run" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${CASE}/systemd-run.argv"
@@ -470,6 +480,30 @@ PY
 [[ -e "${S}/hanging" ]] || fail "a8-sighup: the run never reached the file work"
 rm -f "${S}/sysctl-hang"
 a8_still_up a8-sighup
+
+# a failed backup copy never replaces the working profile (round 3)
+a8_case a8-cpfail
+touch "${S}/cp-fails"
+if INPUT='NewPass&2027' run_install; then fail "a8-cpfail: finished without a backup"; fi
+grep -q "cannot keep a copy of the current profile" "${CASE}/out" || fail "a8-cpfail: no refusal line: $(tail -n 2 "${CASE}/out")"
+cmp -s "${CASE}/old-keyfile" "${R}/etc/NetworkManager/system-connections/joustmania-hotspot.nmconnection" ||
+  fail "a8-cpfail: the working profile was replaced"
+[[ -z "$(find "${R}/etc/NetworkManager/system-connections" -name '.joustmania-hotspot.*')" ]] || fail "a8-cpfail: a partial backup was left"
+rm -f "${S}/cp-fails"
+a8_still_up a8-cpfail
+
+# cable in while the hotspot is still up (the overlap of A1): the cable path with
+# the self-test, not A8 (round 3)
+make_case overlap
+run_install --hold 0 || fail "overlap: first install exit $?"
+echo "100 (connected)" >"${S}/wlan0-state"; echo "$UUID" >"${S}/wlan0-uuid"; printf '10.42.0.1/24' >"${S}/wlan0-ip4"
+: >"${CASE}/nmcli.argv"; : >"${CASE}/systemctl.argv"; rm -f "${CASE}/systemd-run.argv"
+run_install --hold 0 || fail "overlap: exit $? ($(tail -n 3 "${CASE}/out"))"
+! grep -q "self-test skipped" "${CASE}/out" || fail "overlap: treated as A8 with the cable in"
+grep -q "taking the hotspot down for the self-test" "${CASE}/out" || fail "overlap: the hotspot was not taken down first"
+[[ "$(grep -c '^PASS' "${CASE}/out")" == 4 ]] || fail "overlap: the self-test did not run and pass"
+[[ ! -s "${CASE}/systemd-run.argv" ]] || fail "overlap: scheduled the A8 reactivation"
+grep -qx 'enabled=yes' "${R}/etc/joustmania/hotspot.conf" || fail "overlap: not armed"
 
 # --- A8: over the hotspot ------------------------------------------------------------
 make_case a8
