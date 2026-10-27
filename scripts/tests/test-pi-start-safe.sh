@@ -17,7 +17,8 @@
 #  - without JOUSTMANIA_UNIT_REV (outdated unit) every start logs "unit outdated" and a failed
 #    start exits 0; with it a failed start exits non-zero
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-pi-start-safe.sh
-# UC: UC-060 A5 Pre-1 Post-F-1
+# UC: UC-060 main step 2 A5 Pre-1 Post-F-1
+# NFR: NFR-026
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -177,6 +178,24 @@ make_case current
 touch "${CASE}/up-fails"
 if run_start JOUSTMANIA_UNIT_REV=2; then fail "current: a failed start exited 0 under a current unit"; fi
 if grep -q 'unit outdated' "${CASE}/out.log"; then fail "current: 'unit outdated' logged under rev 2"; fi
+
+# --- 6. NFR-026: a second start with unchanged images recreates nothing ------
+# Compose recreates only what `up` is told to or what changed; the script must
+# never force it, and never remove or stop what runs. Two starts, same images.
+make_case no-recreate
+printf 'joustmania-flagd|repo|%s\njoustmania-game-coordinator|repo|%s\n' "${CASE}/repo" "${CASE}/repo" >"${CASE}/containers"
+printf 'joustmania-flagd|repo\njoustmania-game-coordinator|repo\n' >"${CASE}/own"
+run_start JOUSTMANIA_UNIT_REV=2 || fail "no-recreate: first start exited non-zero"
+first_ups="$(grep ' up ' "${CASE}/docker.log")"
+: >"${CASE}/docker.log"
+run_start JOUSTMANIA_UNIT_REV=2 || fail "no-recreate: second start exited non-zero"
+[[ -n "${first_ups}" && "$(grep ' up ' "${CASE}/docker.log")" == "${first_ups}" ]] \
+  || fail "no-recreate: the second start ran other up commands than the first"
+grep ' up ' "${CASE}/docker.log" | grep -q -- '--pull never' || fail "no-recreate: an up without --pull never"
+grep ' up ' "${CASE}/docker.log" | grep -qE -- '--force-recreate|--renew-anon-volumes|--build' && fail "no-recreate: up forces a recreate"
+# (the name-based cleanup of an inactive opt-in profile's container is not a recreate)
+torn="$(grep -E '(^| )(rm|down|prune|stop|restart|kill)( |$)' "${CASE}/docker.log" | grep -vxE 'rm -f joustmania-(python-hid|operator-pad)' || true)"
+[[ -z "${torn}" ]] || fail "no-recreate: something was removed or stopped: ${torn}"
 
 if [[ "${fails}" -ne 0 ]]; then
   exit 1

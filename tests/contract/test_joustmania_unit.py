@@ -79,7 +79,7 @@ def test_stop_is_a_plain_compose_stop_not_down():
     assert " down" not in stop
 
 
-@pytest.mark.uc("UC-060")
+@pytest.mark.uc("UC-060", flow="A5")
 def test_unit_declares_revision_runtime_directory_and_timeouts():
     assert "JOUSTMANIA_UNIT_REV=2" in " ".join(_lines("Service", "Environment"))
     assert _lines("Service", "RuntimeDirectory") == ["joustmania"]
@@ -129,7 +129,7 @@ def test_led_starting_is_applied_as_root_before_the_start_and_never_fails_it():
     assert _lines("Service", "ExecStartPre") == [f"-+{LED_HELPER} starting"]
 
 
-@pytest.mark.uc("UC-060", flow="A1", br=["BR-005"])
+@pytest.mark.uc("UC-060", flow="A1", br=["BR-005"], cond=["Post-S-3"])
 def test_led_final_state_is_judged_as_the_user_then_applied_as_root():
     # Order matters: status (as pi, no `+`) writes led.request, the helper reads it
     assert _lines("Service", "ExecStartPost") == [

@@ -84,6 +84,7 @@ async def serve() -> None:
         logger.info("Shutting down operator pad service")
         metrics_task.cancel()
         await actions.drain()
+        cue_player.cancel_all()
         await menu_channel.close()
         await coordinator_channel.close()
         await audio_channel.close()

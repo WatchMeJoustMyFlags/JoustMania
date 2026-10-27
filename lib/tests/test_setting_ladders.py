@@ -99,3 +99,12 @@ def test_agent_level_preview_of_a_stopped_agent_moves_the_saved_level():
     stopped = menu_pb2.GetMenuStatusResponse(agent_level="none", agent_enabled_state="on", agent_saved_level="")
     assert preview_value("agent_level", stopped, 1) == Preview("standard")  # from the fallback `ambient`
     assert preview_value("agent_level", stopped, -1) == Preview("ambient", at_limit=True)
+
+
+@pytest.mark.uc("UC-015", br=["BR-009", "BR-011"])
+def test_pad_words_name_every_backend_and_every_preview_option():
+    """#2106: K7 says the backend by name; every setting the pad announces or previews has a label."""
+    assert list(voice_prompts.BACKEND_VOICES) == setting_ladders.BACKENDS
+    assert setting_ladders.PREVIEW_OPTIONS - {"force_all_start"} <= set(voice_prompts.LABEL_VOICES)
+    assert voice_prompts.LIMIT_VOICES[True] != voice_prompts.LIMIT_VOICES[False]
+    assert set(voice_prompts.LOCK_VOICES.values()).isdisjoint(voice_prompts.AGENT_SWITCH_VOICES.values())

@@ -186,11 +186,21 @@ def relative_path(
         return f"{base_dir}/sounds/{name}.ogg"
     if profiles is None:
         profiles = load_voice_profiles(assets_dir)
+    return voice_line_path(base_dir, f"{name}.ogg", voice, profiles, assets_dir)
+
+
+def voice_line_path(
+    base_dir: str, filename: str, voice: str, profiles: VoiceProfiles, assets_dir: Path = ASSETS_DIR
+) -> str:
+    """Path of a voice line: the first of ``voice`` and its partner that has the file under ``assets_dir``.
+
+    When neither has it, the path in ``voice`` is returned (``file_not_found`` at playback).
+    """
     for candidate in profiles.candidates(voice):
-        path = f"{base_dir}/vox/{candidate}/{name}.ogg"
+        path = f"{base_dir}/vox/{candidate}/{filename}"
         if (Path(assets_dir) / path).is_file():
             return path
-    return f"{base_dir}/vox/{voice}/{name}.ogg"
+    return f"{base_dir}/vox/{voice}/{filename}"
 
 
 def resolution_table(

@@ -40,9 +40,9 @@ DEFAULT_INVINCIBILITY_DURATION = 4.0  # Seconds of invincibility at round start
 DEFAULT_MIN_ROUNDS = 10  # Minimum rounds before game can end
 COUNTDOWN_BEEPS = 3  # Beeps in last 3 seconds of round
 FC_INTRO_DURATION_S = 2.0  # Intro length; the stream is drained meanwhile (UC-025 A2 step 1)
-# Fight Club's instructions are recorded in the ivy voice only: the full path plays
-# the ivy file whatever menu_voice is, so an aaron lobby never gets silence (UC-025 A5, #2151).
-FIGHT_CLUB_INSTRUCTIONS = "Menu/vox/ivy/Fightclub-instructions.ogg"
+# Fight Club's instructions are recorded in ivy only; the plain id follows menu_voice and the
+# audio service falls back to the partner profile (aaron -> gen_male), so no voice is silent (UC-025 A5, #2164).
+FIGHT_CLUB_INSTRUCTIONS = "Fightclub-instructions"
 ROUND_PAUSE_SECONDS = 1.0  # Pause between a round's kill and the next round
 
 # Colors
@@ -167,7 +167,7 @@ class FightClubGame(BaseGameMode):
         return "Fight Club"
 
     def get_instruction_clip(self) -> str:
-        """Spoken instructions before the countdown, ivy only (UC-025 A5, UC-020 A5)."""
+        """Spoken instructions before the countdown, in the menu_voice voice (UC-025 A5, UC-020 A5)."""
         return FIGHT_CLUB_INSTRUCTIONS
 
     async def _initialize_players_impl(self, controllers: list):
