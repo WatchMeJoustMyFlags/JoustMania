@@ -47,8 +47,31 @@ AGENT_SWITCH_VOICES: dict[str, Sound] = {
 # UC-012: the on / off voices of `force_all_start` and `game_instructions`.
 FORCE_ALL_START_VOICES: dict[bool, Sound] = {True: Sound.MENU_VOX_ADMINOP_TRUE, False: Sound.MENU_VOX_ADMINOP_FALSE}
 INSTRUCTIONS_VOICES: dict[bool, Sound] = {True: Sound.MENU_VOX_INSTRUCTIONS_ON, False: Sound.MENU_VOX_INSTRUCTIONS_OFF}
-# UC-015 A6: the pad's lock directions, distinct from the agent stop / resume lines.
-LOCK_VOICES: dict[bool, Sound] = {True: Sound.MENU_VOX_ADMINOP_TRUE, False: Sound.MENU_VOX_ADMINOP_FALSE}
+# UC-015 A6, BR-009: the pad's lock directions, distinct from the agent stop / resume lines (#2106).
+LOCK_VOICES: dict[bool, Sound] = {True: Sound.MENU_VOX_PAD_LOCKED, False: Sound.MENU_VOX_PAD_UNLOCKED}
+
+# UC-015 BR-011 (#2106): the label a pad announcement plays before the value, per setting.
+LABEL_VOICES: dict[str, Sound] = {
+    "current_game": Sound.MENU_VOX_LABEL_GAME_MODE,
+    "sensitivity": Sound.MENU_VOX_LABEL_SENSITIVITY,
+    "num_teams": Sound.MENU_VOX_LABEL_TEAMS,
+    "agent_level": Sound.MENU_VOX_LABEL_AGENT,
+    "decision.backend": Sound.MENU_VOX_LABEL_BACKEND,
+    "audio_volume.master": Sound.MENU_VOX_LABEL_VOLUME,
+    "game_instructions": Sound.MENU_VOX_LABEL_INSTRUCTIONS,
+}
+# UC-044 decision backends by name (UC-015 BR-011), not by knob position.
+BACKEND_VOICES: dict[str, Sound] = {
+    "rules": Sound.MENU_VOX_BACKEND_RULES,
+    "claude": Sound.MENU_VOX_BACKEND_CLAUDE,
+    "openai": Sound.MENU_VOX_BACKEND_OPENAI,
+    "jev": Sound.MENU_VOX_BACKEND_JEV,
+}
+# UC-015 BR-009 (#2106): the pad's status words.
+NOT_POSSIBLE_VOICE = Sound.MENU_VOX_STATUS_NOT_POSSIBLE  # a refusal
+LIMIT_VOICES: dict[bool, Sound] = {True: Sound.MENU_VOX_STATUS_MAXIMUM, False: Sound.MENU_VOX_STATUS_MINIMUM}  # by "up"
+CANCELLED_VOICE = Sound.MENU_VOX_STATUS_CANCELLED
+NO_CONNECTION_VOICE = Sound.MENU_VOX_STATUS_NO_CONNECTION  # the menu cannot be reached
 
 # UC-011 step 3: the voice line of each mode (keys are `Games` member names).
 GAME_MODE_VOICE: dict[str, Sound] = {
