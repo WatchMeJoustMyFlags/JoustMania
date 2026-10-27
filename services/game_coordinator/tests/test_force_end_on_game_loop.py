@@ -201,35 +201,108 @@ async def test_force_end_when_the_game_loop_has_stopped_applies_at_once(closed):
     assert session.game_state == game_coordinator_pb2.GameState.ENDED
 
 
-@pytest.mark.uc("UC-027", flow="main", steps=[3])
-@pytest.mark.asyncio
-async def test_force_end_on_a_loop_that_never_takes_it_applies_once_within_the_wait():
-    """Shutdown / stuck loop: the game loop does not run the queued force-end within
-    the UC-027 wait (it is blocked, or tears down with the callback still queued).
-    The session applies it directly, and the queued one, if the loop ever runs it,
-    does not apply it a second time."""
-    game = create_autospec(BaseGameMode, instance=True)
-    loop = asyncio.new_event_loop()
+def _blocked_loop():
+    """A running game loop stuck in a callback until ``release`` is set."""
+    loop = _SignallingLoop()
     game_thread = _GameThread(loop)
-    session = _running_session(game, loop)
     blocked = threading.Event()
     release = threading.Event()
+    stop_on_release = threading.Event()
 
     def block_loop():
         blocked.set()
         release.wait(5.0)
+        if stop_on_release.is_set():
+            # Stop with the force-end still queued: it is never run (the game thread ends).
+            loop.stop()
 
     loop.call_soon_threadsafe(block_loop)
     assert blocked.wait(5.0)
+    return loop, game_thread, release, stop_on_release
+
+
+@pytest.mark.uc("UC-027", flow="main", steps=[3])
+@pytest.mark.asyncio
+async def test_a_stuck_game_loop_takes_the_force_end_when_it_runs_again():
+    """Stuck loop: it does not take the queued force-end within the UC-027 wait. The
+    caller goes on and ends the session, but the force-end is not applied from the
+    servicer thread (that could land between a gate check and a count); the loop
+    applies it, once, when it runs again."""
+    game = create_autospec(BaseGameMode, instance=True)
+    applied = threading.Event()
+    ran_on = []
+
+    def record(_reason):
+        ran_on.append(threading.current_thread())
+        applied.set()
+
+    game.force_end.side_effect = record
+    loop, game_thread, release, _ = _blocked_loop()
+    session = _running_session(game, loop)
 
     try:
         with patch.object(game_session_mod, "FORCE_END_WAIT_S", 0.2):
             async with asyncio.timeout(2.0):
                 assert await session.force_end("operator") == (True, "")
-        game.force_end.assert_called_once_with("operator")
+        game.force_end.assert_not_called()
+        assert session.game_state == game_coordinator_pb2.GameState.ENDED
+        release.set()
+        assert await asyncio.to_thread(applied.wait, 5.0)
     finally:
         release.set()
         game_thread.stop()
 
     game.force_end.assert_called_once_with("operator")
+    assert ran_on == [game_thread.thread]
+
+
+@pytest.mark.uc("UC-027", flow="main", steps=[3])
+@pytest.mark.asyncio
+async def test_a_game_thread_ending_with_the_force_end_queued_gets_it_at_once():
+    """The game loop stops right after the is_running check, with the force-end still
+    queued, and its thread ends: no game code runs any more, so the session applies
+    it directly at once instead of burning the whole wait (and the join's share)."""
+    game = create_autospec(BaseGameMode, instance=True)
+    loop, game_thread, release, stop_on_release = _blocked_loop()
+    queued = threading.Event()
+    loop.on_threadsafe = queued.set
+    session = _running_session(game, loop)
+    session.game_thread = game_thread.thread
+    stop_on_release.set()
+
+    try:
+        force_end = asyncio.create_task(session.force_end("operator"))
+        assert await asyncio.to_thread(queued.wait, 5.0)
+        loop.on_threadsafe = None
+        release.set()
+        async with asyncio.timeout(1.0):
+            assert await force_end == (True, "")
+    finally:
+        release.set()
+        game_thread.thread.join(timeout=5.0)
+        loop.close()
+
+    game.force_end.assert_called_once_with("operator")
     assert session.game_state == game_coordinator_pb2.GameState.ENDED
+
+
+@pytest.mark.uc("UC-027", flow="main", steps=[3])
+@pytest.mark.asyncio
+async def test_a_mode_force_end_failing_after_the_caller_stopped_waiting_is_logged(caplog):
+    game = create_autospec(BaseGameMode, instance=True)
+    game.force_end.side_effect = RuntimeError("mode failed")
+    loop, game_thread, release, _ = _blocked_loop()
+    session = _running_session(game, loop)
+
+    try:
+        with patch.object(game_session_mod, "FORCE_END_WAIT_S", 0.2):
+            async with asyncio.timeout(2.0):
+                assert await session.force_end("operator") == (True, "")
+        with caplog.at_level("ERROR", logger=game_session_mod.logger.name):
+            release.set()
+            game_thread.stop()
+    finally:
+        release.set()
+
+    game.force_end.assert_called_once_with("operator")
+    assert any("failed after the caller stopped waiting" in r.getMessage() for r in caplog.records)
