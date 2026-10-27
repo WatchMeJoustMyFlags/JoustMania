@@ -40,6 +40,8 @@ def _rollout_client(stack):
     from openfeature.contrib.provider.flagd import FlagdProvider
     from openfeature.contrib.provider.flagd.config import CacheType, ResolverType
 
+    from tests.contract.flagd_rpc_retry import retry_decode_failures
+
     provider = FlagdProvider(
         host=stack.get_service_host("flagd", 8013),
         port=int(stack.get_service_port("flagd", 8013)),
@@ -48,6 +50,8 @@ def _rollout_client(stack):
         # Live re-resolution is the point: no RPC cache (CI run 27029212634).
         cache=CacheType.DISABLED,
     )
+    # Rare unparsable ResolveInt response on CI (#2184): flagd_rpc_retry.
+    retry_decode_failures(provider)
     api.set_provider(provider, domain="it_rollout")
     return api.get_client("it_rollout"), provider
 
@@ -62,6 +66,8 @@ async def test_rollout_write_shape_resolves_via_live_flagd(flag_service, stack):
     rollback to none.
     """
     from openfeature.evaluation_context import EvaluationContext
+
+    from tests.contract.flagd_rpc_retry import assert_retry_active
 
     # Operator intent at the start of an episode.
     flag_service.put(ROLLOUT, "strategy", variant="progressive")
@@ -101,5 +107,6 @@ async def test_rollout_write_shape_resolves_via_live_flagd(flag_service, stack):
         # An unknown stage is rejected by the registry, not written (UC-053 A5).
         status, body = flag_service.request("PUT", f"/{ROLLOUT}/current_controller_count", {"variant": "seven"})
         assert (status, body.get("error")) == (422, "out_of_bounds"), (status, body)
+        assert_retry_active(provider)  # still on the #2184 stub after use
     finally:
         provider.shutdown()

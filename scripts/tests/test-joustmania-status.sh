@@ -26,7 +26,7 @@
 #  - --led (ExecStartPost, #2027 PR 4): the unit still activating counts as
 #    started, the state (never `starting`) is written to led.request
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-status.sh
-# UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7; UC-061 main BR-007
+# UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7; UC-061 main A10 BR-007 BR-011
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -218,6 +218,19 @@ grep -q '^INFO led helper: .* differs from this checkout; update it with: sudo .
 cp "${CASE}/repo/scripts/setup/joustmania-led.sh" "${CASE}/helper"
 run_status || true
 grep -q '^INFO led helper' "${CASE}/out.log" && fail "led-line: an up-to-date helper is reported"
+
+# the UC-061 hotspot cue on the led: line, never the state or the exit code
+# (UC-061 A10, BR-007, BR-011; #2137)
+make_case led-hotspot-cue
+mkdir -p "${CASE}/sys/ACT"
+printf 'none [timer] heartbeat default-on mmc0\n' >"${CASE}/sys/ACT/trigger"
+echo ok >"${CASE}/ledstate/state"
+: >"${CASE}/ledstate/hotspot"
+expect led-hotspot-cue 0 ok
+grep -qx 'INFO led: ok + hotspot cue (ACT trigger timer)' "${CASE}/out.log" || fail "led-hotspot-cue: $(grep 'led' "${CASE}/out.log")"
+rm -f "${CASE}/ledstate/state"
+expect led-hotspot-cue-nostate 0 ok
+grep -qx 'INFO led: not set since boot + hotspot cue (ACT trigger timer)' "${CASE}/out.log" || fail "led-hotspot-cue-nostate: $(grep 'led' "${CASE}/out.log")"
 
 # --- --led: ExecStartPost, the start has ended (A1, A5) ---------------------
 make_case led-ok
