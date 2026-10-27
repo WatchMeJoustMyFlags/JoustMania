@@ -309,7 +309,9 @@ async def test_a_force_end_before_the_final_is_decided_crowns_nobody():
     game._play_sound = play
     await _run(game, client)
 
-    assert game.current_match is not None and game.current_match.is_complete, "the kill never reached the handler"
+    # The kill gate closes with the force-end: the kill awaiting its explosion is
+    # declined before the handler, so the final is never decided (UC-030 step 9, #2033).
+    assert game.current_match is not None and not game.current_match.is_complete
     assert game._champion is None
     assert _events(log, "tournament_champion") == []
     ended = _ended(log)
