@@ -521,6 +521,69 @@ func (s *Store) SetGameMode(mode string) {
 	s.touchSession()
 }
 
+// SetShieldActivation records the shield activation mode the game latched (#2096).
+func (s *Store) SetShieldActivation(mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx.Session.ShieldActivation = ptr(mode)
+	s.touchSession()
+}
+
+// SetShieldSetting records one latched hold value by flag key (#2096).
+func (s *Store) SetShieldSetting(key string, v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings := make(map[string]float64, len(s.ctx.Session.ShieldSettings)+1)
+	for k, old := range s.ctx.Session.ShieldSettings {
+		settings[k] = old
+	}
+	settings[key] = v
+	s.ctx.Session.ShieldSettings = settings
+	s.touchSession()
+}
+
+// SetPlayerShieldEnergy records a hold-mode player's shield energy (#2096).
+func (s *Store) SetPlayerShieldEnergy(serial string, v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.player(serial)
+	p.ShieldEnergy = ptr(v)
+	s.touch(p)
+}
+
+// SetPlayerShieldBudgetRemaining records a hold-mode player's budget left (#2096).
+func (s *Store) SetPlayerShieldBudgetRemaining(serial string, v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.player(serial)
+	p.ShieldBudgetRemaining = ptr(v)
+	s.touch(p)
+}
+
+// SetPlayerShieldActive records whether a hold-mode player's shield is active (#2096).
+func (s *Store) SetPlayerShieldActive(serial string, active bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.player(serial)
+	p.ShieldActive = &active
+	s.touch(p)
+}
+
+// SetPlayerShieldTotal records one of a hold-mode player's per-game totals (#2096).
+// The map is replaced, never mutated, so a handed-out snapshot never changes.
+func (s *Store) SetPlayerShieldTotal(serial, total string, v float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.player(serial)
+	totals := make(map[string]float64, len(p.ShieldTotals)+1)
+	for k, old := range p.ShieldTotals {
+		totals[k] = old
+	}
+	totals[total] = v
+	p.ShieldTotals = totals
+	s.touch(p)
+}
+
 // SetMusicTempo records the current applied game speed / music tempo (#1082) and
 // appends it to the session speed track (the reference frame proximity-to-death
 // reads against). Bucket-deduped to ~1Hz like the per-player samples.

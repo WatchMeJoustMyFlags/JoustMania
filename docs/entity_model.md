@@ -186,8 +186,11 @@ A player as the decision backends see it (`decide.PlayerState`, `services/agent/
 | intensity_rank | 1 = highest intensity among alive players with an observed intensity; 0 unranked | Integer | 3 | Not Null, Min: 0 |
 | threshold_margin | Session death threshold − intensity (g, 2 decimals); negative when over | Decimal | 4,2 | Optional |
 | danger | Intensity / session death threshold: `safe` < 0.60 ≤ `elevated` < 0.85 ≤ `near_threshold`; empty when unknown | String | 14 | Optional, Values: safe, elevated, near_threshold |
-| shielded | A grant_shield / toughness_boost was dispatched to the player in the last 10 s; a grant_shield to a shield_charged player does not count | Boolean | 1 | Not Null |
-| shield_charged | Alive player with a live entry in the agent's shield-charge ledger when the state is built (trigger mode, UC-040 A31): holds an agent charge or has just used it | Boolean | 1 | Not Null |
+| shielded | A grant_shield / toughness_boost was dispatched to the player in the last 10 s; a grant_shield to a shield_charged player does not count; in a hold game `shield_active` or a toughness_boost (a grant_shield there is energy, #2096) | Boolean | 1 | Not Null |
+| shield_charged | Alive player with a live entry in the agent's shield-charge ledger when the state is built (trigger mode, UC-040 A31): holds an agent charge or has just used it; never set in a hold game | Boolean | 1 | Not Null |
+| shield_energy_s | Hold game only (#2096, UC-040 A36): the alive player's shield energy in seconds from `game_player_shield_energy_seconds`, plus the agent's grants in flight, at most the cap | Decimal | 5,2 | Optional, Min: 0 |
+| shield_budget_remaining_s | Hold game only: shield seconds the player has left this game (`game_player_shield_budget_remaining_seconds`) | Decimal | 5,2 | Optional, Min: 0 |
+| shield_active | Hold game only: the player holds the trigger and is protected now (`game_player_shield_active`) | Boolean | 1 | Not Null |
 
 **Constraints:** danger reads the **session** death threshold, so per-player factors and shields are not reflected (`shielded` flags shields separately). `shield_charged` comes from the decision loop's in-memory ledger, not from telemetry, and is lost on an agent restart. Session-level fields on the state: `most_headroom` (alive player with the strictly lowest intensity) and `struggling` (strictly highest intensity when elevated or near_threshold); ties leave them empty.
 

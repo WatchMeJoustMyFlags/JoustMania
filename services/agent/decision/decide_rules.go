@@ -74,7 +74,7 @@ func (b *RulesBackend) Decide(_ context.Context, req decide.Request) (decide.Res
 		b.engine.mu.Lock()
 		// Same no-shield set as EvaluateDecide: the ledger's charged, capped and
 		// cooling-down players, plus the charges the request's state shows.
-		_, noShield := b.engine.shieldLocked()
+		_, noShield := b.engine.shieldLocked(*req.Context)
 		for serial := range chargedFromState(req.State) {
 			if noShield == nil {
 				noShield = map[string]bool{}

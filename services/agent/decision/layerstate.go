@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/flags"
 )
 
@@ -29,6 +30,11 @@ const (
 	// policy.shield_cooldown_seconds ago, or another grant to them is in flight
 	// (UC-040 A33, BR-022).
 	ReasonShieldCooldown BlockReason = "shield_cooldown"
+	// ReasonShieldBudgetExhausted / ReasonShieldPoolFull: in a hold game the target's
+	// shield budget left is below the minimum burst, or its energy plus the grants in
+	// flight is within 0.5 s of full (UC-040 A37 step 1, BR-024; #2096).
+	ReasonShieldBudgetExhausted BlockReason = decide.HoldRefusalBudgetExhausted
+	ReasonShieldPoolFull        BlockReason = decide.HoldRefusalPoolFull
 	// ReasonAlreadyApplied: a state or level decision repeats the value the agent
 	// last wrote for the same intervention and target in this game; nothing is
 	// written (UC-040 A35, BR-023). Not a refusal by a gate: the value is in place.
