@@ -1,0 +1,1045 @@
+{
+ "version": 1,
+ "generator": "1",
+ "catalog": "services/audio/voice/lines.yaml",
+ "recorded": [
+  "aaron",
+  "ivy"
+ ],
+ "profiles": {
+  "gen_female": {
+   "partner": "ivy",
+   "model": "vits-piper-en_US-kristin-medium",
+   "model_sha256": "c2206f572df2956c50b1ae3367eebce3853c663e890cba8048cd62b1e4dbe6c7"
+  },
+  "gen_male": {
+   "partner": "aaron",
+   "model": "vits-piper-en_US-john-medium",
+   "model_sha256": "d90362cfa48e429d3096f644785184446145b6e38216f2eaf4c0601b8aad5a36"
+  }
+ },
+ "files": {
+  "Menu/vox/gen_female/FFA-instructions.ogg": {
+   "line": "Menu/FFA-instructions",
+   "input_sha256": "823b8464bee80c9dacde0a2896311974c08dfe7f87c9452b5becb23ab3119439",
+   "sha256": "93ddd6c89a9ca89b9415c0c2ce101dfbac4322809790b924342447c63d6f8425",
+   "duration_s": 10.716,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_female/Fightclub-instructions.ogg": {
+   "line": "Menu/Fightclub-instructions",
+   "input_sha256": "d3186085ad3791b1a08e1093bba52694a7a73c733502b6ee44740fe03343ae99",
+   "sha256": "870b8e6674b0fe7d98f8c76e6f70d8f3a7e8f374848612f0cb7615e6958d2a64",
+   "duration_s": 5.278,
+   "lufs": -20.5
+  },
+  "Menu/vox/gen_female/Ninjabomb-instructions.ogg": {
+   "line": "Menu/Ninjabomb-instructions",
+   "input_sha256": "207d58042dc68d196717e0cf403531abbf93e6b6e610654e6546e1d01e70e873",
+   "sha256": "403f2916af2db5fed3fc70f90a56eba35fae533b9184beb0e4be92be011486f4",
+   "duration_s": 31.409,
+   "lufs": -20.49
+  },
+  "Menu/vox/gen_female/Swapper-instructions.ogg": {
+   "line": "Menu/Swapper-instructions",
+   "input_sha256": "cf32d8e32e9a6da4a5ff416c3401fd368aa37eb618b7f680fa6a605ffb092c67",
+   "sha256": "11668bdb8252ebcb72b52758679fbcd189829e531e52b915857007df8db89759",
+   "duration_s": 11.045,
+   "lufs": -20.46
+  },
+  "Menu/vox/gen_female/Teams-instructions.ogg": {
+   "line": "Menu/Teams-instructions",
+   "input_sha256": "896203e46de77815f74c84622c4c89979eba62fa0a2d7008c1c96db49cf0e71f",
+   "sha256": "8aad4b8881529bc7741896683fea65ffaf075de9a22fbba4f7a6970ca3e5b22d",
+   "duration_s": 13.839,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_female/Tournament-instructions.ogg": {
+   "line": "Menu/Tournament-instructions",
+   "input_sha256": "ee71136d14f48a1bfbce666f932bd86288e79592571caf5d9e05306a03bd0b81",
+   "sha256": "1cfe23d93fba43045c2692a15a7bd7dae35c65e9a39785bfca33b3f376e91bd7",
+   "duration_s": 16.602,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_female/Traitor-instructions.ogg": {
+   "line": "Menu/Traitor-instructions",
+   "input_sha256": "25496ae2b5da13230c6ba83eb9345baddb8b8fcb62fdc0a0a0b6e17508a7fedb",
+   "sha256": "b88fe1fd3102e5e9f757df65f406277102b0c7ac2ecd5145704e8820d944f9e6",
+   "duration_s": 13.41,
+   "lufs": -20.5
+  },
+  "Menu/vox/gen_female/added_random.ogg": {
+   "line": "Menu/added_random",
+   "input_sha256": "060052e92c3f22e6a080cc1f2b52942fb072bc128a70da5c916e4f317ca29e0a",
+   "sha256": "948117f1bc9666689c5adf0e9ef261e9d1c021307b99cd2d6a4d14bd63140df6",
+   "duration_s": 1.367,
+   "lufs": -20.42
+  },
+  "Menu/vox/gen_female/adminop_1.ogg": {
+   "line": "Menu/adminop_1",
+   "input_sha256": "22eefff9ea002b5abf3bcf114b8a9e27813044846ec606f4ae8dbc594cca823c",
+   "sha256": "1bb3ef7447b619d40f8b22ddbebc3a8bb2d714fdafb64c8ea2fc910aaf3f4712",
+   "duration_s": 0.556,
+   "lufs": -20.37
+  },
+  "Menu/vox/gen_female/adminop_2.ogg": {
+   "line": "Menu/adminop_2",
+   "input_sha256": "ca6d54f6ada177e7796603ffd79263ce5881ccee91d8e4bbda0475e761d338f8",
+   "sha256": "1c70db9d2d72adad06336f4f9ae344ccdcfbe9db20e3cd1a91c02e7e1e21eea3",
+   "duration_s": 0.599,
+   "lufs": -20.49
+  },
+  "Menu/vox/gen_female/adminop_3.ogg": {
+   "line": "Menu/adminop_3",
+   "input_sha256": "f1ca36d63a70f5a623ccdda942ef91678351e1b6ca206c15bb448c8977e11d31",
+   "sha256": "a63c8d40c8453b226dbd4b2ea67823629d2cc8c35298cabd4d8ee78773d4368e",
+   "duration_s": 0.546,
+   "lufs": -20.37
+  },
+  "Menu/vox/gen_female/adminop_4.ogg": {
+   "line": "Menu/adminop_4",
+   "input_sha256": "4e733cdcfa0a08feaa137cd744ba9d345b9b38347906a6650e7aea2d472776e2",
+   "sha256": "6c0e4c65dda70361c0ad4f1c4d5b4e062244fd34123b30ff03dac6ed6f5565c9",
+   "duration_s": 0.606,
+   "lufs": -20.84
+  },
+  "Menu/vox/gen_female/adminop_5.ogg": {
+   "line": "Menu/adminop_5",
+   "input_sha256": "caaf304c1b9227cf81711b927eda4419ac8e6f6081aef58c99ce5b7891f6513d",
+   "sha256": "c658a43ce39f110e740234de39ff3c6f92610a516d7c7cedaed4e58fa34d196a",
+   "duration_s": 0.656,
+   "lufs": -20.41
+  },
+  "Menu/vox/gen_female/adminop_6.ogg": {
+   "line": "Menu/adminop_6",
+   "input_sha256": "33a1d283d144c5a807c715ca532792dd64685bf424443dc60232e80f362282ea",
+   "sha256": "82d4d91060742690d1c3fce4d57d1e3fabf592ed23c426adc0a3591e562ecfbd",
+   "duration_s": 0.706,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_female/adminop_False.ogg": {
+   "line": "Menu/adminop_False",
+   "input_sha256": "228d059c4ded91661e5e041944e8681a01354da04044fd959c02fb70bac50b5b",
+   "sha256": "353b614a23b1b7c23436b9fe5af80e14327cc254a53bd424fec0e8221ee6ddd5",
+   "duration_s": 0.656,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_female/adminop_True.ogg": {
+   "line": "Menu/adminop_True",
+   "input_sha256": "be6fe1c555f5092b54e8b9af6d850575ca019aa919d812b928ba531bcb6a8f46",
+   "sha256": "0f48aaf7aedef6fcb55ee6039bdcfe73d5aa98216369497cb2e5015ab5a87760",
+   "duration_s": 0.516,
+   "lufs": -20.36
+  },
+  "Menu/vox/gen_female/adminop_force_all_start.ogg": {
+   "line": "Menu/adminop_force_all_start",
+   "input_sha256": "3aa8cb1b7ebdeb3c07d4258aef4548d1fb04ec171166661a22cd1db5ea935a14",
+   "sha256": "ba18d445107ae03bac41cdd7f344463d30531dfd1adbc15512a006264528be31",
+   "duration_s": 1.317,
+   "lufs": -20.63
+  },
+  "Menu/vox/gen_female/adminop_freeze_mode.ogg": {
+   "line": "Menu/adminop_freeze_mode",
+   "input_sha256": "4727a3f63c7eff172dbf16e3e3a7272df9ac5ef64f3548aebcbc5a3f4b7788db",
+   "sha256": "f92a629791762a2a452532fff4d96fe6d96dc1254b8287418c11a90ac357819b",
+   "duration_s": 1.028,
+   "lufs": -20.61
+  },
+  "Menu/vox/gen_female/adminop_lives.ogg": {
+   "line": "Menu/adminop_lives",
+   "input_sha256": "5d0af3ae2082193ba4904451af34ad7437ea59c5e9a402a3b48c3369285da870",
+   "sha256": "4a38b3a13ff3516ffda6be6e44e536c6fc8e9d7e8144ee876efa0657384a3677",
+   "duration_s": 0.815,
+   "lufs": -20.4
+  },
+  "Menu/vox/gen_female/adminop_off.ogg": {
+   "line": "Menu/adminop_off",
+   "input_sha256": "5ab1b7f5a88b1bf186d44550481456bb9b95fb6042d5e82616bee5350ac0d026",
+   "sha256": "0007611f71627236a48d885b723b4825644954e06afdf9a528e8f032fb1c7904",
+   "duration_s": 0.483,
+   "lufs": -20.29
+  },
+  "Menu/vox/gen_female/adminop_on.ogg": {
+   "line": "Menu/adminop_on",
+   "input_sha256": "16cb2d97373ab04f0c30e32066e179f57873d1d105ca50c84c35e50bcc750aa1",
+   "sha256": "ce8effea757e6fdabda1a7aa6ee5b1b041380cca34d4c02b0f82ddd7ceafcde2",
+   "duration_s": 0.486,
+   "lufs": -20.37
+  },
+  "Menu/vox/gen_female/adminop_random_team_size.ogg": {
+   "line": "Menu/adminop_random_team_size",
+   "input_sha256": "6d329c174f3a736b489d6db6214dba5cfdfce567c764af4eddc38b6c285fd0cc",
+   "sha256": "2fa22ff5eb1d66dbac518f03d68e466f4d9e7a91f03a698eeb2448e73f4f88eb",
+   "duration_s": 1.656,
+   "lufs": -20.6
+  },
+  "Menu/vox/gen_female/adminop_resurrection.ogg": {
+   "line": "Menu/adminop_resurrection",
+   "input_sha256": "3fca5fa4c370b9e7ca200297201b272e2e3dc001e6beb4d8ec2283d9517a504f",
+   "sha256": "e29305edc75730b046ffe22ce848b4418a265e3154f1ab6c24e22f9995a8b347",
+   "duration_s": 1.008,
+   "lufs": -20.5
+  },
+  "Menu/vox/gen_female/adminop_sheilds.ogg": {
+   "line": "Menu/adminop_sheilds",
+   "input_sha256": "d21f89acf0670cd204b8aebc97b92e8a859dd3e6d5d51bc57ff0966d10bae581",
+   "sha256": "4cc27b69c69679cce47326b8fda83e5ec8a0ee57a134a735df407a1a9a0d4b98",
+   "duration_s": 0.736,
+   "lufs": -20.53
+  },
+  "Menu/vox/gen_female/adminop_traitor_team_size.ogg": {
+   "line": "Menu/adminop_traitor_team_size",
+   "input_sha256": "22f7f2f8cc96f6c773adcd96ef396855e9b7cd5914ef24205c0cd75c50d07d03",
+   "sha256": "8951e55742b4e9b345ed9414d58c16573b29c6386396c60337105add13034463",
+   "duration_s": 1.509,
+   "lufs": -20.59
+  },
+  "Menu/vox/gen_female/backend_claude.ogg": {
+   "line": "Menu/backend_claude",
+   "input_sha256": "43f71268fd6f5f21f4ee0397df757f16aa12abd4adffcac976271cbdbd7eef35",
+   "sha256": "9b56a9c4283e891f0ff52d17052794a30f0a4fff08b64c69c2f9c5307873ae59",
+   "duration_s": 0.546,
+   "lufs": -20.38
+  },
+  "Menu/vox/gen_female/backend_jev.ogg": {
+   "line": "Menu/backend_jev",
+   "input_sha256": "df861e332f281390f9d1181715724d1e9a91b26b091501a178e75d81ce3a8ed4",
+   "sha256": "ac7764c8a84ed7b48ba1630e0a3c59e25f3b206573429d5029658256b23e84d3",
+   "duration_s": 0.576,
+   "lufs": -20.4
+  },
+  "Menu/vox/gen_female/backend_openai.ogg": {
+   "line": "Menu/backend_openai",
+   "input_sha256": "7ebf580a863aaf26cbac52d16fa2eec8090bd685e05465697156681630ee28df",
+   "sha256": "e53173dcd5815d412c9852d76534dca0a671816c6454d3fb2ddd18b9b7060949",
+   "duration_s": 0.995,
+   "lufs": -20.4
+  },
+  "Menu/vox/gen_female/backend_rules.ogg": {
+   "line": "Menu/backend_rules",
+   "input_sha256": "c0f21d6fbf0ad81756d30e3cee7e74b843d22bd3768da8a3be36ac5bd60e15e1",
+   "sha256": "97ce640bd3d25b8e2bb8c1d760051f120a38826583a17d1697cf8f985aeb9efa",
+   "duration_s": 0.686,
+   "lufs": -20.44
+  },
+  "Menu/vox/gen_female/commander-instructions.ogg": {
+   "line": "Menu/commander-instructions",
+   "input_sha256": "ecf3a41d1cd440472bf05cc61c6fad8fc7cc75de74b8a062c645a889a04b5135",
+   "sha256": "64d2f60a0667c1fc916739726c6368c7689dbda46fab3cc7219d403c673f5239",
+   "duration_s": 30.92,
+   "lufs": -20.49
+  },
+  "Menu/vox/gen_female/high.ogg": {
+   "line": "Menu/high",
+   "input_sha256": "18f4ad144366a352c29e82d7715f9bf7b00928eb76ae6daae703f191fcec395e",
+   "sha256": "f20daa3ebae412c93cf943ed6feb1afb3cd2f18b8590f5046ce875b1adf5dfc2",
+   "duration_s": 1.317,
+   "lufs": -20.59
+  },
+  "Menu/vox/gen_female/instructions_off.ogg": {
+   "line": "Menu/instructions_off",
+   "input_sha256": "e78983394c077325d6a92787f75fd11c67d27e6dd069a46172be3e24b14fad46",
+   "sha256": "e8867a61de08535e14a903bb70ca9eec39fff4f69237f32470f387fb0415d6ed",
+   "duration_s": 1.237,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_female/instructions_on.ogg": {
+   "line": "Menu/instructions_on",
+   "input_sha256": "6ed1522c9ae0bafd3545bf1a9a7166652c80e889c4436ae02f01bfd754f83121",
+   "sha256": "675f6aaf2c7f81ac58d997f8f54ce3f696576e2a1b5011b8b2d04f49157f3fca",
+   "duration_s": 1.207,
+   "lufs": -20.41
+  },
+  "Menu/vox/gen_female/joustmania_failed.ogg": {
+   "line": "Menu/joustmania_failed",
+   "input_sha256": "887058d585dfbaeb2bd5f6acc615ad0c737b126f8903a45113104e1733593ed8",
+   "sha256": "3b0f63539ff2a0ae80c1796b5ed055d5b200bbc9c1e56a5e92eb5bb91a48213c",
+   "duration_s": 12.861,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_female/joustmania_updated.ogg": {
+   "line": "Menu/joustmania_updated",
+   "input_sha256": "77142b32bef51ce52413b6724056a5ae8fc72ae950a4014c9825b9662f91c770",
+   "sha256": "b6705b2d81fdebf25b1aca0ad0d70f01a2c6342d5f742586ac3cc20cd8410c82",
+   "duration_s": 1.477,
+   "lufs": -20.46
+  },
+  "Menu/vox/gen_female/label_agent.ogg": {
+   "line": "Menu/label_agent",
+   "input_sha256": "a5a3e8ac88a7034137051ed5073d3d30a8d010fa24cc5241b04f505a365d2c27",
+   "sha256": "f1db1b08f630793a58ff731ab49914e16acc8506e5bffe34f18dd68840c255ec",
+   "duration_s": 0.646,
+   "lufs": -20.43
+  },
+  "Menu/vox/gen_female/label_backend.ogg": {
+   "line": "Menu/label_backend",
+   "input_sha256": "e1098127e033fc0855d6610d009cc6c47474513d012b0207713d2e333eeeb5fc",
+   "sha256": "ab0db90760f6b06ce98178cc501da973aab6ccfc01d2d574051e485aa4ff2b64",
+   "duration_s": 0.765,
+   "lufs": -20.44
+  },
+  "Menu/vox/gen_female/label_game_mode.ogg": {
+   "line": "Menu/label_game_mode",
+   "input_sha256": "e37ed3738e1cf2114dd86b2b473b96078b2764aba07b804375e6cd138cc2248d",
+   "sha256": "c498bc50508612c224ca4c3da1fed66b206a444c9644d31141acf3c27a76e3bf",
+   "duration_s": 0.736,
+   "lufs": -20.38
+  },
+  "Menu/vox/gen_female/label_instructions.ogg": {
+   "line": "Menu/label_instructions",
+   "input_sha256": "f1f8b1ebe49cc8d92d10882fa7739af429d7f6bfc58d0b76eadb48bd0949c762",
+   "sha256": "88189099125f4fc6b17bfe6de2ea3f274a38367a11f37838365c3582e0cbda16",
+   "duration_s": 1.008,
+   "lufs": -20.46
+  },
+  "Menu/vox/gen_female/label_sensitivity.ogg": {
+   "line": "Menu/label_sensitivity",
+   "input_sha256": "7c7a3380e4c93c5d5043ed6418e34bcd1ad1d8a2f6f6e513f0b044a916b80e08",
+   "sha256": "0e750d3df7a84ed1ff89cf0049ab3d9b691b478ca6aa84e96bc4f141a11065e0",
+   "duration_s": 1.257,
+   "lufs": -20.62
+  },
+  "Menu/vox/gen_female/label_teams.ogg": {
+   "line": "Menu/label_teams",
+   "input_sha256": "6312a9fc5b589e961634a8bc4c7a24a3a2a4f9729e91fcea60e629dcb3e16411",
+   "sha256": "8eb5f51cd12e272ddbecf8c1573fdccc4e62da554db971eb2fed69961c270c29",
+   "duration_s": 0.666,
+   "lufs": -20.5
+  },
+  "Menu/vox/gen_female/label_volume.ogg": {
+   "line": "Menu/label_volume",
+   "input_sha256": "9af11e04a4b14c518c87350fb5165edfcceb9644589a1f4562108ef8f98ed0ca",
+   "sha256": "d74c9ca2728cff749e35e16760189e5246a5d0b6bce37e741f9c84c1843723f2",
+   "duration_s": 0.646,
+   "lufs": -20.39
+  },
+  "Menu/vox/gen_female/large_update.ogg": {
+   "line": "Menu/large_update",
+   "input_sha256": "c9658704cc52ca5ea985db7324efc4c4e54795966342374784f341690168ad70",
+   "sha256": "9954d85a15909a701296d2e01c88efbbe88d916e00e918e54ed63e5ec0804391",
+   "duration_s": 4.47,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_female/low.ogg": {
+   "line": "Menu/low",
+   "input_sha256": "78a007664c82d29f7bed6c6a19c98aac561e8eb8b042c8b36dd2dd64f2cc2de0",
+   "sha256": "f29cded94d7af1ee6b6a30bd80703ec4181bbc8775c4e7292c49c0e792a1567d",
+   "duration_s": 1.327,
+   "lufs": -20.63
+  },
+  "Menu/vox/gen_female/medium.ogg": {
+   "line": "Menu/medium",
+   "input_sha256": "d2cbb90c5e3467e8837ca542399f32d5b215029c2fe3fdf28bf7fe83631113f3",
+   "sha256": "0771bed2b80e48e5d13f6e7ed4672dac4fdfe5f73988b07589b4d9d2ebfe23f4",
+   "duration_s": 1.656,
+   "lufs": -20.55
+  },
+  "Menu/vox/gen_female/menu Commander.ogg": {
+   "line": "Menu/menu Commander",
+   "input_sha256": "808f833656c51b7d8f085ae917c17f5e8ba991d1df66d8a095a24a61de4d5ec9",
+   "sha256": "b6f6f6a78aad2cedd93fa9724294d7c24d009e30c353dc710c29e14a210a91a7",
+   "duration_s": 0.746,
+   "lufs": -20.37
+  },
+  "Menu/vox/gen_female/menu FightClub.ogg": {
+   "line": "Menu/menu FightClub",
+   "input_sha256": "d87b4331e3258a003c1791a1a6cdecaa352f73c43d536d1400f71f2596a26d61",
+   "sha256": "ba428f820cbbe5c6df4031b9df5d495ebb8fb2bec08321dbfaf3d836a380e022",
+   "duration_s": 0.815,
+   "lufs": -20.45
+  },
+  "Menu/vox/gen_female/menu Joust FFA.ogg": {
+   "line": "Menu/menu Joust FFA",
+   "input_sha256": "85edfa47e22ba6463414a05487569827832531d10abb5554ce4c17ba8ed10b27",
+   "sha256": "ffd4b6a7334892b7ffaff3831f66bc04b4804313b79aaa50623d70402eba1d86",
+   "duration_s": 1.726,
+   "lufs": -20.49
+  },
+  "Menu/vox/gen_female/menu Joust Random Teams.ogg": {
+   "line": "Menu/menu Joust Random Teams",
+   "input_sha256": "fa169d6e1e579840e7688e4e570e1539957178aa6fa68835aab4778e105a1f14",
+   "sha256": "7ab018444a7eabed5db195a218018c1bb2582a74c104e98bfa6b13b669e3ff39",
+   "duration_s": 1.537,
+   "lufs": -20.46
+  },
+  "Menu/vox/gen_female/menu Joust Teams.ogg": {
+   "line": "Menu/menu Joust Teams",
+   "input_sha256": "aaf63726198e10ab14539681ad90319776f5e68c38cc1cee0cd5a0d60513f3e1",
+   "sha256": "b609aee8d0cdcc3a4674a4b239f226e5ebe83c9fb07980588a553f5fbdf9f365",
+   "duration_s": 1.088,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_female/menu NonStopJoust.ogg": {
+   "line": "Menu/menu NonStopJoust",
+   "input_sha256": "24eb3f46f3a9e0fdb7abd6adecaafdfad9bf0db6e3be10ba6cc475ebce14550c",
+   "sha256": "a728c9369f1063ba1f47aed0f93c4783133ddd96a872cd685a4ce478093a3f6e",
+   "duration_s": 1.267,
+   "lufs": -20.45
+  },
+  "Menu/vox/gen_female/menu Random.ogg": {
+   "line": "Menu/menu Random",
+   "input_sha256": "0f9346f1b0f17ee6366b8911b3f7a8c7849a81372f368e59d994883a2f1f265a",
+   "sha256": "f173dce178ea6d286ae625fba8f8fb9390e8214a405b084599d3908b0911a12d",
+   "duration_s": 0.955,
+   "lufs": -20.4
+  },
+  "Menu/vox/gen_female/menu Swapper.ogg": {
+   "line": "Menu/menu Swapper",
+   "input_sha256": "29a62a299e423286129234c3e7ccef6d09245ee69d1db0ce78e20b5041113ccc",
+   "sha256": "cc1cca6b732f9488eb95f081601d7569ac8b21b1910f61d225f2e75d48a0c17b",
+   "duration_s": 0.765,
+   "lufs": -20.44
+  },
+  "Menu/vox/gen_female/menu Tournament.ogg": {
+   "line": "Menu/menu Tournament",
+   "input_sha256": "66a96c99e6867aa0b190954b99f75439aab6aba1fa87b9369a0295d90ab9c53b",
+   "sha256": "8f8a7bf17ad6bbf1fba1806d37d0b803f127599819eba01ae3787eeccfa1fbf3",
+   "duration_s": 0.696,
+   "lufs": -20.39
+  },
+  "Menu/vox/gen_female/menu Traitor.ogg": {
+   "line": "Menu/menu Traitor",
+   "input_sha256": "fccfbb08f82b0d4b192c88ab8a371ed9cba6b83e474fe81dc0d4db8fbc663dd0",
+   "sha256": "20eaa8f5f45dc8a87296e7f3a8d90673a9da6ce54cffe8dc17bdff2584338739",
+   "duration_s": 0.716,
+   "lufs": -20.41
+  },
+  "Menu/vox/gen_female/menu Werewolves.ogg": {
+   "line": "Menu/menu Werewolves",
+   "input_sha256": "65813a7bb440f87f6fad590bbc88210f06c077565fe0979146758bc20ea2ad20",
+   "sha256": "f9e337c02ac82e737ed7b60d4ff68ae70fd2f7bf2c498e660dc19dd07ee5b51f",
+   "duration_s": 1.018,
+   "lufs": -20.4
+  },
+  "Menu/vox/gen_female/menu Zombies.ogg": {
+   "line": "Menu/menu Zombies",
+   "input_sha256": "1c7965a0c04b3b9c97bed36ee4e7f29fddb77808d53035868046715731c21201",
+   "sha256": "6dcdb584ce6a55ff2efd9c1ec77d80c23426b5dba47cc07517c91789785b77cf",
+   "duration_s": 0.855,
+   "lufs": -20.46
+  },
+  "Menu/vox/gen_female/menu ninjabomb.ogg": {
+   "line": "Menu/menu ninjabomb",
+   "input_sha256": "09bc62e9cc91f550c1336d67cfc382c51ac8e49346b11f09d400cd377c2b8c5c",
+   "sha256": "59d7bfb8f93c7343bf357cca6216911d4902743e3b6d3d5393fae74888e1203e",
+   "duration_s": 0.885,
+   "lufs": -20.42
+  },
+  "Menu/vox/gen_female/notenoughplayers.ogg": {
+   "line": "Menu/notenoughplayers",
+   "input_sha256": "6a5958ed9eb67ee35d75081f1ce2c5d175f2cfbecad6a66f11e588ba200715b6",
+   "sha256": "3e1c1fc9aad4e07f5442075a346ca319813eb61e07e96def291469151e24ae18",
+   "duration_s": 1.397,
+   "lufs": -20.54
+  },
+  "Menu/vox/gen_female/pad_locked.ogg": {
+   "line": "Menu/pad_locked",
+   "input_sha256": "197dd1017f5485e25cf4c255cd8c20744ed67f6d07b6c418796b7b7c72f6afce",
+   "sha256": "76614fba9c0f9f0dbb33b75553e654ecba3a65b252c4b5b4c0a0acf1e4619f33",
+   "duration_s": 0.835,
+   "lufs": -20.41
+  },
+  "Menu/vox/gen_female/pad_unlocked.ogg": {
+   "line": "Menu/pad_unlocked",
+   "input_sha256": "3a00f4ed81ccbb8fbd890dc67beeaee068ce19ea44758058eee29ddfa9e9a585",
+   "sha256": "af4cde48d3b1e33ff64f827bbb61367ab0664ea36bf655f2d1c2cb9bfdc30354",
+   "duration_s": 0.971,
+   "lufs": -20.19
+  },
+  "Menu/vox/gen_female/removed_random.ogg": {
+   "line": "Menu/removed_random",
+   "input_sha256": "5fb5da58469b8c322e8f8a77005e7079055033b0912c1101cbf540d2f210a035",
+   "sha256": "da86c551c7e20b8a30860fb5ded58cf0fbcc1c1d19f7e4007bd9a85a2522bab1",
+   "duration_s": 1.626,
+   "lufs": -20.4
+  },
+  "Menu/vox/gen_female/status_cancelled.ogg": {
+   "line": "Menu/status_cancelled",
+   "input_sha256": "74acc63537b02aed548507832ec6dc8f765a924cc6924e274e8568aeb7359b42",
+   "sha256": "9ff1f1b38331d16aadde30aa2356733065d93895d13d38d47c609730591d1cec",
+   "duration_s": 0.716,
+   "lufs": -20.41
+  },
+  "Menu/vox/gen_female/status_maximum.ogg": {
+   "line": "Menu/status_maximum",
+   "input_sha256": "9df493dc8151c9f773f1e2c29b8372530faa083e82af1221333bbbb423e8638f",
+   "sha256": "d1669c48422d86b7b888ca974a8209fef8294dc1c3afe36287b2b1b3ddc7b760",
+   "duration_s": 0.768,
+   "lufs": -20.6
+  },
+  "Menu/vox/gen_female/status_minimum.ogg": {
+   "line": "Menu/status_minimum",
+   "input_sha256": "ec5c8a898ccedf7d576e8338c211180204397f113db9798579bb13401f468c16",
+   "sha256": "f3c1679e814d0c25997bab6834bd1f6c3c591ac72fbebdf7cec797fea0f9689e",
+   "duration_s": 0.775,
+   "lufs": -20.36
+  },
+  "Menu/vox/gen_female/status_no_connection.ogg": {
+   "line": "Menu/status_no_connection",
+   "input_sha256": "3189aff8fb8015de1cb04cd59f4cc9b702022f92a1107ba1202a3533d2b9a9d6",
+   "sha256": "4d3e7bbc0ea1da524d7be23e8f569e0c4e6104aaa4693c79c7fd6a348f2e6321",
+   "duration_s": 0.985,
+   "lufs": -20.4
+  },
+  "Menu/vox/gen_female/status_not_possible.ogg": {
+   "line": "Menu/status_not_possible",
+   "input_sha256": "19b4e4bca4024586c67078df76b6434a1728b77fded8b9ad6c1d909c58cad0a5",
+   "sha256": "0ecd9aded8ab7e7356b8b08af82c9c601e0f57d0c3b53e25aa373009bdc1dbfb",
+   "duration_s": 1.038,
+   "lufs": -20.53
+  },
+  "Menu/vox/gen_female/tradeoff2.ogg": {
+   "line": "Menu/tradeoff2",
+   "input_sha256": "737e858e9a600c58d6900f9a203c0ea0f50f18375e2ae570a40aab34ea84ed3c",
+   "sha256": "a70d0bf9089f9ba28037e29d2ec9bc97fdc669436b2cacffdf4085c7cfd1739e",
+   "duration_s": 6.336,
+   "lufs": -20.5
+  },
+  "Menu/vox/gen_female/ultra_high.ogg": {
+   "line": "Menu/ultra_high",
+   "input_sha256": "70d14c66af6058ba1742e6451b7d064423d0dd7c112ed5adf339c2ccb7a452a2",
+   "sha256": "a28c47a3bbbcd36b859f2a1d134d94bdce7bbb017c69b679cc7be61d31be4dc7",
+   "duration_s": 1.816,
+   "lufs": -20.61
+  },
+  "Menu/vox/gen_female/ultra_low.ogg": {
+   "line": "Menu/ultra_low",
+   "input_sha256": "cc95e56eb69ad83f4149d666b70e22dbe019eb7866a0a7ef9720fbecc990068a",
+   "sha256": "a9adb45ff1a6179fbf9b5c79d1975fe1efdfc3ac5925b08ab09bf743f7c7cd08",
+   "duration_s": 1.786,
+   "lufs": -20.56
+  },
+  "Menu/vox/gen_female/update_started.ogg": {
+   "line": "Menu/update_started",
+   "input_sha256": "bd84cd603fa873c2816eeaeebc901d9a84392bc47fe63f60227ed75af4e3d1ae",
+   "sha256": "6fedba2df5b4a46048a93d7120c97ed879656da42e405409642a99d088e2a858",
+   "duration_s": 1.197,
+   "lufs": -20.62
+  },
+  "Menu/vox/gen_female/werewolf-instructions.ogg": {
+   "line": "Menu/werewolf-instructions",
+   "input_sha256": "391b9740faf8ef4dc1ce0e04821808e9b921723b88fd8b3992430183a2448c0f",
+   "sha256": "a4b9c88027535ea5081a42c76f0ffdc58c9ffac3f1e15f9ba9e6133858004a6a",
+   "duration_s": 13.47,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_female/zombie-instructions.ogg": {
+   "line": "Menu/zombie-instructions",
+   "input_sha256": "9f53ee72c11afa73a30ab9921a0b65c9cc2edb1db5d96c249ed4b8910e20eeaa",
+   "sha256": "58fe408176499190ed8c24b927f800fa0a5cb475e9d909f61e12170c15898ea6",
+   "duration_s": 37.026,
+   "lufs": -20.45
+  },
+  "Menu/vox/gen_male/FFA-instructions.ogg": {
+   "line": "Menu/FFA-instructions",
+   "input_sha256": "ac0f8898f530a27af5f339ea853deda4e54c843a8196103730ada588d176f32b",
+   "sha256": "b78fe990db9cb748c89f224152d1c0dddc246a0cbb8ee82e3510f4e013c89808",
+   "duration_s": 12.651,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/Fightclub-instructions.ogg": {
+   "line": "Menu/Fightclub-instructions",
+   "input_sha256": "688089fd5bc6f82ffa2dac6881863adbe61a50a621142bbc7c6795b0272e8663",
+   "sha256": "cecd5235f788de9589a1aaa8aa8e5991d1a52e5c264c9e117a39fe7f357a4c2f",
+   "duration_s": 5.977,
+   "lufs": -20.49
+  },
+  "Menu/vox/gen_male/Ninjabomb-instructions.ogg": {
+   "line": "Menu/Ninjabomb-instructions",
+   "input_sha256": "539f01aecb4061813a6fb6375d51c084ecba3f20306c5db52ed504c2c8a35138",
+   "sha256": "3272d5fb80632705d8d7da13e02cf1b1e2d7d08dbcd9788a3ff3b61b6ec46b2c",
+   "duration_s": 34.801,
+   "lufs": -20.49
+  },
+  "Menu/vox/gen_male/Swapper-instructions.ogg": {
+   "line": "Menu/Swapper-instructions",
+   "input_sha256": "3479f64462f0ccb47737540ca05259000dffd8474d37d7eed2eae6ccb56e7f2b",
+   "sha256": "6973be73f506b90b3fc3de5cef7dcecd218605204e2b7ff345be76ce3f553c42",
+   "duration_s": 12.921,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/Teams-instructions.ogg": {
+   "line": "Menu/Teams-instructions",
+   "input_sha256": "77f797ed2c50d1409bf3121c280faddaca5cd257524ae175f13d0b7b611c9591",
+   "sha256": "4bf4c4a7f2a276997d7028a4ffe1a0acd22f75aeccb57ca3930ffaf09d4e308d",
+   "duration_s": 15.894,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/Tournament-instructions.ogg": {
+   "line": "Menu/Tournament-instructions",
+   "input_sha256": "ac679b9cad1ffccff72e5f926670c441aaeede52f628bee43c4ae5b9c20662bc",
+   "sha256": "4d3688d682310b4eabe027551b507beb9b1c612f881b5fe2b199545121ce44db",
+   "duration_s": 19.885,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/Traitor-instructions.ogg": {
+   "line": "Menu/Traitor-instructions",
+   "input_sha256": "0fea4aa5474af44504c775481279a7f6bc933317a8fdfeda700be5fb9d66f883",
+   "sha256": "d5a2981b46238a386f1f490243cda30115555d9b0684f785e2f00bb66b9bc32b",
+   "duration_s": 14.737,
+   "lufs": -20.49
+  },
+  "Menu/vox/gen_male/added_random.ogg": {
+   "line": "Menu/added_random",
+   "input_sha256": "c874e0b5b764b803b80cf7fbbc7333f626505db4ae6016266de591fe9e28e38e",
+   "sha256": "ae6e27b20f197e28b330291df4e0ffbf60860155f06a6a825684522daf7bfbb1",
+   "duration_s": 1.736,
+   "lufs": -20.5
+  },
+  "Menu/vox/gen_male/adminop_1.ogg": {
+   "line": "Menu/adminop_1",
+   "input_sha256": "2fc3a2515e1f09043f86253f3ce231dfa9d4b765b91f0c479ce2805425fd46f4",
+   "sha256": "7145d5af78e9e830bd9109b94cb701815e753b9360f4ec1b93c468bc84988587",
+   "duration_s": 0.515,
+   "lufs": -20.39
+  },
+  "Menu/vox/gen_male/adminop_2.ogg": {
+   "line": "Menu/adminop_2",
+   "input_sha256": "c081a5efb2625822943fe606e5a5f3594632fe9ef42ab5f6cc14b422f821f63f",
+   "sha256": "5de48a20fb91235471c9d16a79214cfc2011b457811926c6b441b4aae879c140",
+   "duration_s": 0.431,
+   "lufs": -20.45
+  },
+  "Menu/vox/gen_male/adminop_3.ogg": {
+   "line": "Menu/adminop_3",
+   "input_sha256": "91544adbc2f678824f6b3b73037c6c13a9003fc5164548815bd018d454a4649d",
+   "sha256": "f4b4aec4eadfd96f8cf126f44fb4475c2a5455ac3f6750f8288fcfc3fc24f5aa",
+   "duration_s": 0.516,
+   "lufs": -20.5
+  },
+  "Menu/vox/gen_male/adminop_4.ogg": {
+   "line": "Menu/adminop_4",
+   "input_sha256": "130d19fbce1971db1b0a34f312a28702e0fdc35e0f0c1c48451cedc454c783f9",
+   "sha256": "c1475270b056f02e075cceb2d2b4ea9950e56017ba02e40947000331ce2a1692",
+   "duration_s": 0.519,
+   "lufs": -20.43
+  },
+  "Menu/vox/gen_male/adminop_5.ogg": {
+   "line": "Menu/adminop_5",
+   "input_sha256": "3fb771bff913b088beac201f59044a68c5c64fcd378888702c1012759019f55a",
+   "sha256": "380a118981ebbc92957c1d6963a4e372238fcfa152af484a1c9a7da41b64574a",
+   "duration_s": 0.596,
+   "lufs": -20.59
+  },
+  "Menu/vox/gen_male/adminop_6.ogg": {
+   "line": "Menu/adminop_6",
+   "input_sha256": "988d418297fe5a85507f1f453d3340fd3429f1dbb8383cb8120436e7311827e3",
+   "sha256": "88fb99b6bb083c9da643d64df1c1539aeed649b832c3a9673442ae0f03c5d732",
+   "duration_s": 0.682,
+   "lufs": -20.62
+  },
+  "Menu/vox/gen_male/adminop_False.ogg": {
+   "line": "Menu/adminop_False",
+   "input_sha256": "1f22c0aa67f20e4e69018ef566fc5258849dbf04a07d4138d089a11b86a6d738",
+   "sha256": "10bb2fcd817de2d142f341eabbfacefd7e820ab09b6d30a5748647d02ac46a4e",
+   "duration_s": 0.829,
+   "lufs": -20.75
+  },
+  "Menu/vox/gen_male/adminop_True.ogg": {
+   "line": "Menu/adminop_True",
+   "input_sha256": "4499ac5a181b8a821b2753e48ad2b9dbe68e319aafd4cb1a5aa3acbe22a7ccb0",
+   "sha256": "9998b7fc0b3d3b2a7b9d858f4ae7de795e5f142babce798c5fef7189e46cd4ad",
+   "duration_s": 0.646,
+   "lufs": -20.45
+  },
+  "Menu/vox/gen_male/adminop_force_all_start.ogg": {
+   "line": "Menu/adminop_force_all_start",
+   "input_sha256": "1af887802ab26fb09a7ceca0833503c77bcd79981622a7c0c9b4efeae013c3e2",
+   "sha256": "f0ed02f6dbd8644c32ceb4ec3c046d850d401dd73fe5b4e3b06e6706e13871a9",
+   "duration_s": 1.567,
+   "lufs": -20.46
+  },
+  "Menu/vox/gen_male/adminop_freeze_mode.ogg": {
+   "line": "Menu/adminop_freeze_mode",
+   "input_sha256": "9b5f29a244fb18a966dce21b933dec473fd3d45e8b98deeab1a035e90cda7a47",
+   "sha256": "75d6561e60d72231cd8ce1c9bb036dfa73654fc5e5caf9ae69560d6c727bdeca",
+   "duration_s": 0.835,
+   "lufs": -20.44
+  },
+  "Menu/vox/gen_male/adminop_lives.ogg": {
+   "line": "Menu/adminop_lives",
+   "input_sha256": "23e774526deb26f4453a3db8244d549204031bd0c8aad8db346e96665e4ffef9",
+   "sha256": "a6af7e296231d46a0d8e23c32ef48fed474b7f3386d57c224bceacb7ea91235c",
+   "duration_s": 0.955,
+   "lufs": -20.53
+  },
+  "Menu/vox/gen_male/adminop_off.ogg": {
+   "line": "Menu/adminop_off",
+   "input_sha256": "4ae7dc883a1600809b2541eee5fc1030075f679bb9d3b71572a40c6516b14836",
+   "sha256": "bacd1f2f28ce8c42cb7ec9c328d4ac83c67b778dfb32ce9aca722b6b89436842",
+   "duration_s": 0.576,
+   "lufs": -21.06
+  },
+  "Menu/vox/gen_male/adminop_on.ogg": {
+   "line": "Menu/adminop_on",
+   "input_sha256": "f12d17ff1104daf2ebe4494216c8714d877c855b32b2c74aacc76594fa47d024",
+   "sha256": "e67f4b1934afca0bc27a00d1e5daa4f26729d2dcfb8ed6a5390f8e3ede254272",
+   "duration_s": 0.546,
+   "lufs": -20.45
+  },
+  "Menu/vox/gen_male/adminop_random_team_size.ogg": {
+   "line": "Menu/adminop_random_team_size",
+   "input_sha256": "919fa771858e5ea3e85e90a4d8000721fe0c6c2f506a8fba8ef04635dd3c1113",
+   "sha256": "3d04547389389e38b8e1000dd8fa539f52cf4d924a13a1fda8018fead740aa40",
+   "duration_s": 1.603,
+   "lufs": -20.53
+  },
+  "Menu/vox/gen_male/adminop_resurrection.ogg": {
+   "line": "Menu/adminop_resurrection",
+   "input_sha256": "3ff6e2796f66efd8d93311249d26b1de0463d920ae176bc8723cb6976a45a8ea",
+   "sha256": "75f4f9d5e891da89b1d35a9dfc97bc12ac8428ad77fcd8c3916f6d81953dc8a3",
+   "duration_s": 0.766,
+   "lufs": -20.53
+  },
+  "Menu/vox/gen_male/adminop_sheilds.ogg": {
+   "line": "Menu/adminop_sheilds",
+   "input_sha256": "58166fb9469564ee03ac68060cdb1d40b6e4975e65b2df76ac01a9b71b006e10",
+   "sha256": "45effd648d87f8346ee2e0cda00b8a22f0e1527c382c91d8f091f278ad9990c1",
+   "duration_s": 0.825,
+   "lufs": -20.59
+  },
+  "Menu/vox/gen_male/adminop_traitor_team_size.ogg": {
+   "line": "Menu/adminop_traitor_team_size",
+   "input_sha256": "c343fb30301c122b79146ff2e07a6efb8c462b3635eea7fea4e0fa3dab2e40a2",
+   "sha256": "d517c7530fbc040faa5e6e941acf11ac039a9fed25295810075089bd25e0b2e0",
+   "duration_s": 1.144,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_male/backend_claude.ogg": {
+   "line": "Menu/backend_claude",
+   "input_sha256": "78f4a97ef7ce1b4665c8049581d1b829078502f9809e45c0fcf1e7cff5fb6ebc",
+   "sha256": "1b108ba4ebefc75a4d1b6536446781370d70459415a5167e6a0bc24edbb38a4c",
+   "duration_s": 0.57,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_male/backend_jev.ogg": {
+   "line": "Menu/backend_jev",
+   "input_sha256": "e01320818e2766d1f0ec7509abaf4dc14c3f9337a8cbfc1f25f31a15e46e205e",
+   "sha256": "33f48dc862a02c372e0ac31f075153cd05f578d4692df590f756e37168e07cd7",
+   "duration_s": 0.496,
+   "lufs": -20.62
+  },
+  "Menu/vox/gen_male/backend_openai.ogg": {
+   "line": "Menu/backend_openai",
+   "input_sha256": "fe93ec26793b6ea29fa0ccf20c5012678b8e7c197d9a961310e265449cfdc70a",
+   "sha256": "8889f961af6939cd1af08f10bd19cc6d76fe407ecebe4b6e50c1b903bcae76f9",
+   "duration_s": 0.808,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/backend_rules.ogg": {
+   "line": "Menu/backend_rules",
+   "input_sha256": "4e75495b5f6254c711da4e491ef92eedad7b463f153ff101e9188b628b444f89",
+   "sha256": "074d46a78d2171cd051f25db66a9aa628dd404864d6828c8d7eac5c578a4f298",
+   "duration_s": 0.915,
+   "lufs": -20.39
+  },
+  "Menu/vox/gen_male/commander-instructions.ogg": {
+   "line": "Menu/commander-instructions",
+   "input_sha256": "ab18a99a2fec42ee6f51f21e4343e3896b705e675a5e5f34be037e66babd354f",
+   "sha256": "5bd5ac469ecab8962acd1c3948c8f12fcf9cc934b6ad0890459a5ae040ad87b7",
+   "duration_s": 37.395,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/high.ogg": {
+   "line": "Menu/high",
+   "input_sha256": "93bdfdf2c94fbd99fdc46eceabaac9e6716a01d83fa6e993f2f71e345c90e507",
+   "sha256": "e3978f6274caf68904368a86731033df5b7d4b02bb2643761ea66a9628cf5259",
+   "duration_s": 1.397,
+   "lufs": -20.53
+  },
+  "Menu/vox/gen_male/instructions_off.ogg": {
+   "line": "Menu/instructions_off",
+   "input_sha256": "4b73ae7c390ed966e6d146a08f678518a8298365be91c90cdfea66687fe3f299",
+   "sha256": "5f153fa74bd96edeb932b742f07cdafca6967fa64e02b8c8da8cb6c5357d24f6",
+   "duration_s": 1.227,
+   "lufs": -20.63
+  },
+  "Menu/vox/gen_male/instructions_on.ogg": {
+   "line": "Menu/instructions_on",
+   "input_sha256": "d67feed9d1ea15d7dcd532c775e8cdaacec56368f8232fa282d9a6f2d9ec3d3e",
+   "sha256": "15dd3afb5ec4195ab353215250fe5d3a49c9666b1738594309d00a47617e6070",
+   "duration_s": 1.119,
+   "lufs": -20.53
+  },
+  "Menu/vox/gen_male/joustmania_failed.ogg": {
+   "line": "Menu/joustmania_failed",
+   "input_sha256": "98d3ab1ec8099e7ec6301b8c94b0a0b8ec118c795cb1f2a232d493c452c0a21f",
+   "sha256": "a63818f709c2d124ccf851b5753dfe94a3d45f4c38df5d9032bc2e0d023564e5",
+   "duration_s": 14.228,
+   "lufs": -20.5
+  },
+  "Menu/vox/gen_male/joustmania_updated.ogg": {
+   "line": "Menu/joustmania_updated",
+   "input_sha256": "0f55f470060e3ecb157d08420d1e16fec866a86cdb80e97f3e46d3c57d230389",
+   "sha256": "8f16e427b5e6e91c4eb275a8c66f409f555df8389648e67b3eccc7ecc461213c",
+   "duration_s": 1.497,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_male/label_agent.ogg": {
+   "line": "Menu/label_agent",
+   "input_sha256": "2345f116567fe0cfd396430ec47a730c68735b44d99068a94ccbb9f2d86a2bf3",
+   "sha256": "dcc0d334fe3f84d2e5514d7dde1e2eebc15d3d32e6fcade9f647185650c5cf37",
+   "duration_s": 0.706,
+   "lufs": -20.52
+  },
+  "Menu/vox/gen_male/label_backend.ogg": {
+   "line": "Menu/label_backend",
+   "input_sha256": "dc7c70787ca363fc81d0a78f6d67382db14b9f80d4853aa482113b17bafc80e7",
+   "sha256": "4b1b143cde424b08e6f99df5371e9ac6c2bf712c95c09093052d9767ba0a9025",
+   "duration_s": 0.985,
+   "lufs": -20.58
+  },
+  "Menu/vox/gen_male/label_game_mode.ogg": {
+   "line": "Menu/label_game_mode",
+   "input_sha256": "b46bb2ef5249440091bc3745145ab4004204765d8b8fd459a1bffdadd513e4c2",
+   "sha256": "1f8a3d2d116b87d0a04e080e6e2779caf90ff9a2f2984724676dbc183d1c744d",
+   "duration_s": 0.777,
+   "lufs": -20.46
+  },
+  "Menu/vox/gen_male/label_instructions.ogg": {
+   "line": "Menu/label_instructions",
+   "input_sha256": "2f3f0d72f7bb67ce4e152d56b253baf0413289c909ba2bf174e343c76ec234f2",
+   "sha256": "e2fe53989035738644e94ac708ac0a21b47bd6406be9ef123190cf6fda8f2b2a",
+   "duration_s": 0.97,
+   "lufs": -20.52
+  },
+  "Menu/vox/gen_male/label_sensitivity.ogg": {
+   "line": "Menu/label_sensitivity",
+   "input_sha256": "1c626c3721c8f757f043355b2a26bf670c7a8a0a4c53295a4353bcca9b9d8669",
+   "sha256": "9ccd7cd08f3066a2d7faafcb24fb65f726085ae76d9e0b31ced2dcca1bc8d517",
+   "duration_s": 1.028,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/label_teams.ogg": {
+   "line": "Menu/label_teams",
+   "input_sha256": "e036d78a9322b2a114c782740387718efdf2b481eb28cffcb69af2d89e0a7c03",
+   "sha256": "a2b4616a5265e7963f573ad3ee0550bfa149d4be85e694fe6c93d9a2e750a8e2",
+   "duration_s": 0.636,
+   "lufs": -20.5
+  },
+  "Menu/vox/gen_male/label_volume.ogg": {
+   "line": "Menu/label_volume",
+   "input_sha256": "c5f3b2cfe12356c242eafbda40d3f6b862cd55963609d1cf9fc885472cf80dfa",
+   "sha256": "333b94849828915da11c1eff4a1ca564588e8ddc914acea4143ca72282258b74",
+   "duration_s": 0.855,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/large_update.ogg": {
+   "line": "Menu/large_update",
+   "input_sha256": "3cc1f0977cc0d7ab7fe2fbabf0c0df153adaf3691c7d3947bf45cd8c21add122",
+   "sha256": "e4f4254bd8f8c811aed916cd6cee05736c33919510ae7abcd3abe4f24a8424d6",
+   "duration_s": 5.032,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/low.ogg": {
+   "line": "Menu/low",
+   "input_sha256": "93e3b6a490efdb57eeea605ebbf1f2639633607eabe3c1ce3305d311902c5c68",
+   "sha256": "6f9e11b6e5c333f4595826c071f324f60c4735dab58f54709cac2b8f88898956",
+   "duration_s": 1.237,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/medium.ogg": {
+   "line": "Menu/medium",
+   "input_sha256": "cc0e6335bd4f0138ff9fafccfbb9cf933c3c434ade3b9a02444087574dc0af22",
+   "sha256": "509565b3f15e8ebe8a0b76c8a2852ecafbc9fb86f3097c4c547217e0c4530315",
+   "duration_s": 1.496,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/menu Commander.ogg": {
+   "line": "Menu/menu Commander",
+   "input_sha256": "12e05b10c094b94e34b3257383189c12153e678b51c4310729284d5e544682ac",
+   "sha256": "9a109acc468317062746c7f63ac362318eef5515de7e234b212bcf4645c69b3c",
+   "duration_s": 0.634,
+   "lufs": -20.56
+  },
+  "Menu/vox/gen_male/menu FightClub.ogg": {
+   "line": "Menu/menu FightClub",
+   "input_sha256": "c09451115e7b44a33287b1910355c357a439ebc42b1b00dd0c08c9d53c496bd8",
+   "sha256": "f3fc23b631a582b785e787bf8bd64cd0ceb0e34e86f0de2fd3a2112e9612ef4a",
+   "duration_s": 0.881,
+   "lufs": -20.64
+  },
+  "Menu/vox/gen_male/menu Joust FFA.ogg": {
+   "line": "Menu/menu Joust FFA",
+   "input_sha256": "d52fd797b04377356938e17fff6bd18fcc652257eda63e0f5a5e59ad1d819c0e",
+   "sha256": "0d8a55ac8109c37289667aa337fba5b91452c91dd6b5bac7b0194c73b11fb439",
+   "duration_s": 1.507,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/menu Joust Random Teams.ogg": {
+   "line": "Menu/menu Joust Random Teams",
+   "input_sha256": "dd1ef91be54798a859394602929f4fd97eb8c13eb82c57a96201a1f16d10f078",
+   "sha256": "76579f32c805b894ae2bc8473d5451597d5066518bd2ae5335d984ac2462fc7f",
+   "duration_s": 1.826,
+   "lufs": -20.54
+  },
+  "Menu/vox/gen_male/menu Joust Teams.ogg": {
+   "line": "Menu/menu Joust Teams",
+   "input_sha256": "e974e452d0849405abc576788916f012a14824967c959ca77d06d0663079575a",
+   "sha256": "b92f498c0ef0f6407d207225c2d689b17559fccc6fa5a2ba49cf2866d42ee54c",
+   "duration_s": 1.108,
+   "lufs": -20.56
+  },
+  "Menu/vox/gen_male/menu NonStopJoust.ogg": {
+   "line": "Menu/menu NonStopJoust",
+   "input_sha256": "57dca13604cb1f017eddf2e2acc2329f6bba067e6b938342c8330cc45c1a9a0a",
+   "sha256": "092fd9b6aaa3efd740aa18eff5059446ebbd4e53c5c1b26a6ef07c56979056db",
+   "duration_s": 1.437,
+   "lufs": -20.53
+  },
+  "Menu/vox/gen_male/menu Random.ogg": {
+   "line": "Menu/menu Random",
+   "input_sha256": "97b60550030806e7d947f5524775963b5c055a0c998b6f4bb16e0523aaa6d912",
+   "sha256": "4effdea228fc2f4459bc29115452b10a6f92da5d6b9ad413cdef158485d56d83",
+   "duration_s": 1.078,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/menu Swapper.ogg": {
+   "line": "Menu/menu Swapper",
+   "input_sha256": "80b77e54e04f8abf88344c69d337d3ca619c272c83c776af089d5e9ef84825c2",
+   "sha256": "28847d8d604231636fb118aa46384cbea6b5eba2a70c1780789a4b2bb7d86eb9",
+   "duration_s": 0.652,
+   "lufs": -20.61
+  },
+  "Menu/vox/gen_male/menu Tournament.ogg": {
+   "line": "Menu/menu Tournament",
+   "input_sha256": "1adb478fd7a8fe1c49e0b5211283fc427decdf337b17a2be12e45286cedf3892",
+   "sha256": "5cc5f1a3d103311aa5e7d9355fccbfe1fbdb32a974d542c2a43f955bd0c3d1b5",
+   "duration_s": 0.656,
+   "lufs": -20.46
+  },
+  "Menu/vox/gen_male/menu Traitor.ogg": {
+   "line": "Menu/menu Traitor",
+   "input_sha256": "3b01d1b5a798877fb3628294369d909b3372e2982d379d18520a8e71aaf63614",
+   "sha256": "002df9046ae6143a1d0be5f39270099e1a2df0a6f78deb838e258f2f3d25f133",
+   "duration_s": 0.616,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/menu Werewolves.ogg": {
+   "line": "Menu/menu Werewolves",
+   "input_sha256": "28a43df2e3a9dc8f44eaaaed6b00ec3eea4f3d18e52151a00227182eca640bf5",
+   "sha256": "263461b97a8d9b52cc8741aff28543fca5ffbd521d75b8654ada997a4612d313",
+   "duration_s": 0.915,
+   "lufs": -20.49
+  },
+  "Menu/vox/gen_male/menu Zombies.ogg": {
+   "line": "Menu/menu Zombies",
+   "input_sha256": "43e9dea9e74b0379a9fc6ac4f64c6311fd7c0710334effcfa39c1cd5ec721318",
+   "sha256": "7af84f51e553db13af2355e3770193270334601b00b13b67615e90fd3ead0a22",
+   "duration_s": 0.731,
+   "lufs": -20.57
+  },
+  "Menu/vox/gen_male/menu ninjabomb.ogg": {
+   "line": "Menu/menu ninjabomb",
+   "input_sha256": "1f6fa49cd5f2970dbc40d0a7ad273b07c02718d71f4043c3e9050ce7658820de",
+   "sha256": "a1d4228052316e5363278a811adb24cdf673521a9d6ab49b3d20e66dc7fe7aa2",
+   "duration_s": 1.206,
+   "lufs": -20.52
+  },
+  "Menu/vox/gen_male/notenoughplayers.ogg": {
+   "line": "Menu/notenoughplayers",
+   "input_sha256": "bdd18185e900dd63c7b511051c80497f83e145d427672c908e0391b752cf980a",
+   "sha256": "96ed65a15ca34b710cc92b88c7bc154d7551c4ae4115c3541b6b3e24ad85f727",
+   "duration_s": 1.726,
+   "lufs": -20.54
+  },
+  "Menu/vox/gen_male/pad_locked.ogg": {
+   "line": "Menu/pad_locked",
+   "input_sha256": "d4d003a52871958577b07a9c3c5f14b92d819ea1f66e4fb1293014b90a4cf0a9",
+   "sha256": "bb27f70c75aa4294c0dbceeba294978e9414d145ca7a86c655509c1284ef5453",
+   "duration_s": 0.905,
+   "lufs": -20.61
+  },
+  "Menu/vox/gen_male/pad_unlocked.ogg": {
+   "line": "Menu/pad_unlocked",
+   "input_sha256": "917be02f8ffacdea223d9336848eb65115e2ecc2931db30410f9b2341c4ef0c3",
+   "sha256": "86a4c4b0dd750f0dd9bdb6e1489f92a995a19ac0527c9b7de7610ee783a1e4d5",
+   "duration_s": 1.167,
+   "lufs": -20.64
+  },
+  "Menu/vox/gen_male/removed_random.ogg": {
+   "line": "Menu/removed_random",
+   "input_sha256": "2e62e0b606595aca426cb531e8d8ac4141b69d193efbdb45b9581d52c7c9a5dd",
+   "sha256": "dce1f0498a3e75cb2252c27ea388aec29d62ba3696d9e8384d4fd54fb2ae50e7",
+   "duration_s": 2.265,
+   "lufs": -20.44
+  },
+  "Menu/vox/gen_male/status_cancelled.ogg": {
+   "line": "Menu/status_cancelled",
+   "input_sha256": "83f35075e332cc9cb022ba8b5bebf6581b8e48a172d63930a5f0225bfb088ebd",
+   "sha256": "4bd7f46b3a991ca9bf4ebdb58f7b4f4f48e4718331f81ffbe43d8686e293c595",
+   "duration_s": 3.221,
+   "lufs": -20.44
+  },
+  "Menu/vox/gen_male/status_maximum.ogg": {
+   "line": "Menu/status_maximum",
+   "input_sha256": "5415a8da5c9568486de4ef989385a6e9f84119d19f51bb7c6b704c2aa3cb238e",
+   "sha256": "e4be1d7536d0378164f551f57afc3b7b2680992e75f96a6fd7719323f3782847",
+   "duration_s": 0.91,
+   "lufs": -20.52
+  },
+  "Menu/vox/gen_male/status_minimum.ogg": {
+   "line": "Menu/status_minimum",
+   "input_sha256": "3ad250257cad88acabca57a68d85ec33e152663b00a824bc7673cd29589281c2",
+   "sha256": "b5baf41d308717caee9665eabf1062f16a8a72bdef4efe4d92bbb5e2b7be28bc",
+   "duration_s": 0.617,
+   "lufs": -20.44
+  },
+  "Menu/vox/gen_male/status_no_connection.ogg": {
+   "line": "Menu/status_no_connection",
+   "input_sha256": "69eac8fcfb5a4a86ce7db5c12c08cf7a8cb22d8075724591d39018fbe89ee8ab",
+   "sha256": "ffa3f1cfca7b4577957909d67e39a0c8d3cd6e16271914ee809230480e1977eb",
+   "duration_s": 1.299,
+   "lufs": -20.56
+  },
+  "Menu/vox/gen_male/status_not_possible.ogg": {
+   "line": "Menu/status_not_possible",
+   "input_sha256": "fe41effa01dc77f45c14d2b643aba8396424d485579f9acab0c8b443d4b050f0",
+   "sha256": "04b70c0abb1245f7f13383f7ab6be7cedde2fd26387fb574d746ab7061c38271",
+   "duration_s": 0.989,
+   "lufs": -20.74
+  },
+  "Menu/vox/gen_male/tradeoff2.ogg": {
+   "line": "Menu/tradeoff2",
+   "input_sha256": "0f0aa0952ef61347d51b71919182107b952b07e138e75ac7537518513c75c04c",
+   "sha256": "a43665af61e4a3fb63caaeba822a6395017166bb1be0457e867219db020971dd",
+   "duration_s": 7.064,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_male/ultra_high.ogg": {
+   "line": "Menu/ultra_high",
+   "input_sha256": "e428901424a7efd604060aa1b163577d48f9b8f5891683a32a4a4826925ab4c3",
+   "sha256": "6d0217bffa50efb1b1467ae212318c3631f046155c4bf4617c62016cdd9872a9",
+   "duration_s": 1.925,
+   "lufs": -20.56
+  },
+  "Menu/vox/gen_male/ultra_low.ogg": {
+   "line": "Menu/ultra_low",
+   "input_sha256": "dc110013bca1606938ceb1cd435c6346500d80ccf4a99249a88f5d2d90182b8f",
+   "sha256": "d4453307b3a1a7d7cc442f1a44ec5815b2db535a3a6df6c871ae47cba311d024",
+   "duration_s": 1.47,
+   "lufs": -20.43
+  },
+  "Menu/vox/gen_male/update_started.ogg": {
+   "line": "Menu/update_started",
+   "input_sha256": "fd572566554f0771ee6163c74b1877533dbf2589a697dfdb0e9a943b111cff86",
+   "sha256": "91bde55f1df7b4c91e6ff77c293b39fe040d8168a3a8d10fc8f1223778f9f657",
+   "duration_s": 0.985,
+   "lufs": -20.49
+  },
+  "Menu/vox/gen_male/werewolf-instructions.ogg": {
+   "line": "Menu/werewolf-instructions",
+   "input_sha256": "040415bdcd2bda3631139a55f08f4eeb27022a432a173de9456b08145f986d70",
+   "sha256": "a064a408bd22c13278d401a2c0032a46225089c8af0993c76c5c483d4218e9f4",
+   "duration_s": 16.193,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/zombie-instructions.ogg": {
+   "line": "Menu/zombie-instructions",
+   "input_sha256": "2a6a70dd2e1b824b065e947208f054e335d834fbe8b74321610f8608d7b5448a",
+   "sha256": "bf0b137e7b2b4a711fd00558d80325ed0b7d3994f31fd960f8feddd57bba4f70",
+   "duration_s": 43.751,
+   "lufs": -20.46
+  }
+ }
+}

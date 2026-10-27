@@ -48,3 +48,29 @@ visible under `/dev/snd` on the host.
 5. Check `play_audio` is on and the volume flags are not zero.
 6. Choppy music during tempo changes is CPU load from resampling; check `docker stats` on a loaded Pi.
 7. Custom music and sounds, formats and limits: see UC-031 BR-003 and services.md.
+
+## Voice lines: catalog and generation
+
+Every voice line is text in one catalog, `services/audio/voice/lines.yaml` (UC-031 BR-007, FR-039, #2107). The
+generator renders each line for the generated voice profiles `gen_male` and `gen_female` (one pinned Piper voice each,
+run through sherpa-onnx) and commits the files next to the recordings, so nothing synthesises speech on the stage Pi
+(C-050). The recordings stay as the profiles `aaron` and `ivy`; the generator never writes them.
+
+| Command | What it does |
+|---|---|
+| `make voice` | Renders every line whose input changed into `services/audio/assets/<Area>/vox/gen_*/<id>.ogg` and updates `services/audio/assets/voice_manifest.json`. The first run downloads the two voice models (about 65 MB each) to `~/.cache/joustmania/voice-models` and checks their pinned sha256. |
+| `make voice-check` | Fails when the catalog, the manifest and the files disagree: a line without a file, a file edited by hand, a catalog edit without `make voice`, a stray file in a `gen_*` directory. No TTS, no network; CI runs it. |
+| `make voice-sample` | Renders the catalog's `sample` lines again and compares duration (±10 %) and loudness (±1 LU) with the committed files. Piper output is not bit-reproducible, so this is the reproducibility check. |
+
+To add or change a line: edit `lines.yaml` (`id` = the file stem and the `Sound` value, `text`, optional `say` respelling
+when the synthesizer mispronounces a word), run `make voice`, listen to the new files, commit the catalog, the manifest
+and the files together. `scripts/tools/gen-voice.sh --only <id> --dry-run` shows what would be rendered.
+
+- Dev machine only: the wrapper needs `uv` and pins its own Python 3.12 and tool packages (sherpa-onnx, numpy, soxr,
+  pyloudnorm, imageio-ffmpeg for a pinned ffmpeg); `FFMPEG` overrides the ffmpeg binary.
+- Format: 44.1 kHz stereo Ogg Vorbis, silence trimmed, normalised to the median loudness of the `ivy` Menu recordings
+  (`loudness.target_lufs`), encoded with ffmpeg `+bitexact` so an unchanged input never changes the committed bytes.
+- Licences: the generated files are CC BY-SA 4.0 like the other audio assets (C-017); the voice models and their
+  sources are listed in `services/audio/assets/audio_credits.txt`.
+- Status: phase 1 covers the Menu area. The audio service does not play the generated profiles yet; selecting them
+  with `menu_voice` and the partner fallback (`gen_male` to `aaron`, `gen_female` to `ivy`) come with #2107 part 2.

@@ -1,2 +1,22 @@
 "ivy" voice by Ivy Dupler: soundcloud.com/ivy-dupler/
 Bach Brandenburg Concerto No. 6 in B flat major, BWV 1051, US Army Band, Public Domain, musopen.org
+
+Generated voices (#2107): services/audio/assets/*/vox/gen_male and gen_female,
+generated from the text catalog services/audio/voice/lines.yaml by
+scripts/tools/gen-voice.sh. Like every other audio asset here they are licensed
+CC BY-SA 4.0 (LICENSE, docs/requirements.md C-017).
+- gen_male: Piper voice en_US-john-medium by Bryce Beattie, fine-tuned from
+  en_US-kristin-medium on public-domain LibriVox recordings (model card dataset
+  licence: public domain). Model: https://huggingface.co/rhasspy/piper-voices
+  (MIT), en/en_US/john/medium; sherpa-onnx packaging
+  vits-piper-en_US-john-medium.tar.bz2, sha256
+  d90362cfa48e429d3096f644785184446145b6e38216f2eaf4c0601b8aad5a36.
+- gen_female: Piper voice en_US-kristin-medium by Bryce Beattie, trained from
+  scratch on public-domain LibriVox recordings (model card dataset licence:
+  public domain). Model: https://huggingface.co/rhasspy/piper-voices (MIT),
+  en/en_US/kristin/medium; sherpa-onnx packaging
+  vits-piper-en_US-kristin-medium.tar.bz2, sha256
+  c2206f572df2956c50b1ae3367eebce3853c663e890cba8048cd62b1e4dbe6c7.
+Synthesis: sherpa-onnx 1.13.8 (Apache-2.0; its built-in espeak-ng phonemizer is
+GPL-3.0 and runs at generation time only, nothing of it is committed or shipped).
+Training details: https://brycebeattie.com/files/tts/
