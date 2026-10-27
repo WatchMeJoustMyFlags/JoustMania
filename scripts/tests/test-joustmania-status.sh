@@ -14,6 +14,7 @@
 #  - no env value is printed
 #  - the ACT LED line (C-042): the recorded state and the live trigger; a stale
 #    installed helper is named
+#  - git cannot read the checkout: WARN naming that (not a branch), degraded (A4)
 #  - a start refused on a branch checkout (A4): the reason from start.env is
 #    shown on the last-start line, exit 2
 #  - --led (ExecStartPost, #2027 PR 4): the unit still activating counts as
@@ -227,6 +228,15 @@ expect branch-refused 2 failed
 grep -q '^WARN version: not pinned (branch main' "${CASE}/out.log" || fail "branch-refused: the branch is not named"
 grep -q '^INFO last start: result=failed reason=not pinned (branch main); pin with scripts/setup/joustmania-upgrade.sh ts=' "${CASE}/out.log" \
   || fail "branch-refused: the refusal reason is not shown: $(grep 'last start' "${CASE}/out.log")"
+
+# --- git cannot read the checkout: named as such, not as a branch (A4) -------
+make_case git-unreadable
+printf '#!/usr/bin/env bash\necho "fatal: not a git repository" >&2\nexit 128\n' >"${CASE}/bin/git"
+chmod +x "${CASE}/bin/git"
+expect git-unreadable 1 degraded
+grep -qx "WARN version: git cannot read the checkout (check: git -C ${CASE}/repo status)" "${CASE}/out.log" \
+  || fail "git-unreadable: not reported as unreadable: $(grep version "${CASE}/out.log")"
+grep -q 'not pinned (branch' "${CASE}/out.log" && fail "git-unreadable: reported as a branch checkout"
 
 if [[ "${fails}" -ne 0 ]]; then
   exit 1

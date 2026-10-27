@@ -130,7 +130,7 @@ stage_steps() {
 defer_pin() {
     if (($1)); then
         LATER+=("$SETUP_DIR/joustmania-upgrade.sh $2   # pin, pull the images, start")
-        if ! joustmania_pin_image_tag "$SCRIPT_DIR" >/dev/null; then
+        if git -C "$SCRIPT_DIR" symbolic-ref -q HEAD >/dev/null 2>&1; then
             echo "Not pinned yet: the autostart refuses to start a branch checkout (UC-060 A4); the next boot starts nothing until you run the pin listed below."
         fi
     elif joustmania_pin_image_tag "$SCRIPT_DIR" >/dev/null; then

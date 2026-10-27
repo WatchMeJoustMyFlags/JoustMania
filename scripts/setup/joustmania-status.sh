@@ -83,9 +83,11 @@ compose() { "$SCRIPT_DIR/joustmania-compose.sh" "$@"; }
 # --- version (BR-003, A4) ---------------------------------------------------
 if PIN_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
     report OK "version: $(joustmania_pin_ref "$JOUSTMANIA_DIR") (image tag $PIN_TAG)"
-else
-    BRANCH="$(git -C "$JOUSTMANIA_DIR" symbolic-ref -q --short HEAD 2>/dev/null || echo unknown)"
+elif BRANCH="$(git -C "$JOUSTMANIA_DIR" symbolic-ref -q --short HEAD 2>/dev/null)"; then
     report WARN "version: not pinned (branch $BRANCH at $(git -C "$JOUSTMANIA_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)); pin with scripts/setup/joustmania-upgrade.sh <joustmania-vX.Y.Z | sha> (UC-060 A4)"
+else
+    # Not a proven branch: git cannot read the checkout (A4 fails open)
+    report WARN "version: git cannot read the checkout (check: git -C $JOUSTMANIA_DIR status)"
 fi
 
 # --- unit (A5, BR-006) ------------------------------------------------------
