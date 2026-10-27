@@ -2,6 +2,7 @@ package state
 
 import (
 	"net/http"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -60,11 +61,30 @@ func TestRealWriteGuard(t *testing.T) {
 	t.Run("UC-043/A17 a shadow game does not block the real write", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
 		f.registerKind("g-shadow", "shadow")
-		f.registerKind("g-unspecified", "")
 		f.put(budgetReal("20"))
 		if _, val := f.resolve("shield.energy_budget_seconds", map[string]any{"game_kind": "real"}); val != float64(20) {
 			t.Fatalf("real default = %v, want 20", val)
 		}
+	})
+
+	for _, kind := range []string{"", "primary", "Shadow"} {
+		t.Run("UC-043/A17 the guard fails closed: a game of kind "+strconv.Quote(kind)+" blocks the real write", func(t *testing.T) {
+			f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+			f.registerKind("g-shadow", "shadow")
+			f.registerKind("g-other", kind)
+			_, err := f.state.Put(budgetReal("20"))
+			wantReason(t, err, http.StatusConflict, fserr.RealGameLive)
+		})
+	}
+
+	t.Run("UC-043/A17 ttl_seconds on a real write of a guarded key is 400 malformed, with no game registered", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+		req := budgetReal("20")
+		req.TTLSeconds = ttl(60)
+		_, err := f.state.Put(req)
+		wantReason(t, err, http.StatusBadRequest, fserr.Malformed)
+		// A key without the attribute keeps its expiring real overlay.
+		f.put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "fast", Scope: realScope, TTLSeconds: ttl(60)})
 	})
 
 	ends := []struct {
@@ -102,7 +122,7 @@ func TestRealWriteGuard(t *testing.T) {
 		wantReason(t, err, http.StatusConflict, fserr.RealGameLive)
 	})
 
-	t.Run("UC-043/A17 the kill-switch DELETE of the real overlay is never refused", func(t *testing.T) {
+	t.Run("UC-043/A17 a DELETE of the real overlay (kill switch or any revert) is never refused", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
 		f.put(budgetReal("20"))
 		f.registerKind("g-real", "real")
