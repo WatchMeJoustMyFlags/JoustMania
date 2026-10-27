@@ -38,7 +38,9 @@
 # restart is judged, so a rollback cut off in between is finished by the next
 # --rollback, never toggled back. A refused or failed switch says "nothing
 # changed"; --status WARNs when HEAD is neither recorded version, and re-running
-# the same upgrade repairs a record an upgrade cut off after its checkout left.
+# the same upgrade repairs a record an upgrade cut off after its checkout left
+# (also when a rollback marker is still there: HEAD is then no recorded version,
+# the marker is stale and the version the rollback was moving to becomes previous).
 # Re-running it for the version already checked out also pulls the images
 # missing on the Pi and restarts the unit: boot never pulls (BR-001), so this is
 # the recovery joustmania-start.sh names for a missing image.
@@ -357,7 +359,9 @@ do_status() {
         local head pending
         head="$(git rev-parse -q --verify HEAD 2>/dev/null || true)"
         pending="$(release_get rollback_to)"
-        if [[ -n "$pending" ]]; then
+        # The marker only means something while HEAD is a recorded version; else the
+        # neither-recorded WARN below covers it (a second cut-off run moved HEAD on)
+        if [[ -n "$pending" && ("$head" == "$(release_get current_ref)" || "$head" == "$(release_get previous_ref)") ]]; then
             say "WARN: a rollback to $pending was cut off or its start refused; run --rollback to finish it (it stays on $pending)"
         fi
         if [[ "$head" != "$(release_get current_ref)" && "$head" != "$(release_get previous_ref)" ]]; then
@@ -384,18 +388,30 @@ do_status() {
 # --rollback works again. Without a record (the migration) the previous branch
 # is unknown: WARN and point at the manual recovery.
 repair_stale_record() {
-    local commit="$1" cur_ref imgs tag
+    local commit="$1" cur_ref prev_ref pending side=current imgs tag
     if [[ ! -f "$JOUSTMANIA_DIR/$RELEASE_FILE" ]]; then
         say "WARN: no $RELEASE_FILE, so --rollback is unavailable; see the manual recovery in docs/DEVELOPMENT.md (UC-060 A3)"
         return 0
     fi
     cur_ref="$(release_get current_ref)"
-    [[ "$cur_ref" != "$commit" && -z "$(release_get rollback_to)" ]] || return 0
+    prev_ref="$(release_get previous_ref)"
+    pending="$(release_get rollback_to)"
+    if [[ -n "$pending" ]]; then
+        # A rollback cut off (marker left) and then an upgrade cut off after its
+        # checkout: HEAD is neither recorded version, so the marker is stale. While
+        # HEAD is a recorded version the marker is live (--rollback finishes it).
+        [[ "$commit" != "$cur_ref" && "$commit" != "$prev_ref" ]] || return 0
+        # The version the rollback was moving to is the one to keep as previous
+        [[ "$pending" == "$prev_ref" && "$pending" != "$cur_ref" ]] && side=previous
+        cur_ref="$(release_get "${side}_ref")"
+    else
+        [[ "$cur_ref" != "$commit" ]] || return 0
+    fi
     load_unit_profiles
     imgs="$(images_of "$JOUSTMANIA_DIR")" || die "compose config --images failed; the stale $RELEASE_FILE was kept. Nothing changed."
     tag="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"
     write_release "$commit" "" "$tag" "$(tr '\n' ' ' <<<"$imgs" | sed 's/ $//')" \
-        "$cur_ref" "$(release_get current_branch)" "$(release_get current_tag)" "$(release_get current_images)" ||
+        "$cur_ref" "$(release_get "${side}_branch")" "$(release_get "${side}_tag")" "$(release_get "${side}_images")" ||
         die "could not write $RELEASE_FILE"
     say "repaired the stale $RELEASE_FILE: current $commit, previous $cur_ref (an earlier upgrade was cut off after its checkout; the unit was not restarted by this run)"
 }
