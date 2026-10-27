@@ -12,8 +12,13 @@ steps so far. It computes the value the release would commit from the status rea
 - silence with no status or a value the status does not tell (never a guess, BR-013);
 - one "Not possible" for a lobby-only layer while a game is live (A1).
 
-It writes nothing and sends no command (BR-005): the release commits as before. Every clip
+It writes nothing and sends no `step_setting` (BR-005): the release commits as before. Every clip
 plays in a background task, so a knob step never waits on the audio service (BR-009).
+
+The mode (K1) also shows on the LEDs (LED first, BR-009): after the debounce, without waiting for
+the label, the menu's `preview_setting` pulses the previewed mode's colour on every lobby
+controller (services.md §3.1; no write, no selection). A hold that ends without committing another
+mode, after it showed one, pulses the selected mode once more.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from lib.voice_prompts import (
     NUM_TEAMS_VOICES,
     SENSITIVITY_VOICES,
 )
+from proto import menu_pb2
 from services.operator_pad import metrics
 from services.operator_pad.config import PadConfig
 from services.operator_pad.cues import ANNOUNCE_GROUP, CuePlayer
@@ -43,6 +49,10 @@ logger = logging.getLogger(__name__)
 
 # The audio clip group of the preview (PlaySoundRequest.group / StopSoundRequest.group, #2107).
 PREVIEW_GROUP = "pad_preview"
+# The option whose preview also shows on the lobby LEDs (menu `preview_setting`, BR-017).
+MODE_OPTION = "current_game"
+# A `preview_setting` is cosmetic: a short deadline, never retried (BR-010), no cue on failure.
+MODE_PREVIEW_TIMEOUT_SECONDS = 1.0
 
 # Metric results (telemetry.md §6, `operator_pad_previews_total{result}`).
 SPOKEN = "spoken"
@@ -86,13 +96,16 @@ class Previewer:
         config: PadConfig,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        menu_stub=None,
     ) -> None:
         self._cues = cue_player
         self._config = config
         self._sleep = sleep
         self._clock = clock
-        self._tasks: set[asyncio.Task] = set()  # this hold's label, timer and value
-        self._stops: set[asyncio.Task] = set()  # StopSound calls: they outlive the hold they end
+        self._menu = menu_stub  # None: no LED preview of the mode
+        self._tasks: set[asyncio.Task] = set()  # this hold's label, timer, value and mode pulses
+        # StopSound calls and the mode restore: they outlive the hold they end.
+        self._stops: set[asyncio.Task] = set()
         self._reset()
 
     def _reset(self) -> None:
@@ -106,6 +119,10 @@ class Previewer:
         self._last_spoken: str | None = None
         self._pending: _Pending | None = None
         self._timer: asyncio.Task | None = None  # waiting out the debounce; restarted by a step
+        self._option: str | None = None
+        self._status = None  # the status read at the press
+        self._start_mode: str | None = None  # K1: the mode selected at the press
+        self._shown_mode: str | None = None  # K1: the mode the lobby LEDs last pulsed in this hold
 
     # --- entry points ---------------------------------------------------------------------
 
@@ -142,12 +159,19 @@ class Previewer:
         """The hold of ``key`` already played the A1 refusal, so its release need not repeat it."""
         return self._refused and self.hold_key == key
 
-    def end_hold(self) -> None:
-        """Release, chord or lost input: drop what is still to come and stop the preview clip."""
+    def end_hold(self, commit_steps: int = 0) -> None:
+        """Release, chord or lost input: drop what is still to come and stop the preview clip.
+
+        ``commit_steps`` is the net the release commits (0: nothing is sent). A K1 hold that showed
+        another mode on the LEDs and commits no other mode pulses the selected mode again.
+        """
         if self.hold_key is None:
             return
+        restore = self._mode_to_restore(commit_steps)
         self._drop_hold()
         self._stop(PREVIEW_GROUP)
+        if restore is not None:
+            self._detach(self._show_mode(restore))
 
     def cancel(self) -> None:
         """Drop every preview task and pending stop (device gone, shutdown); nothing plays on afterwards."""
@@ -168,9 +192,20 @@ class Previewer:
         self._reset()
 
     def _stop(self, group: str) -> None:
-        task = asyncio.create_task(self._cues.stop_group(group))
+        self._detach(self._cues.stop_group(group))
+
+    def _detach(self, coro) -> None:
+        task = asyncio.create_task(coro)
         self._stops.add(task)
         task.add_done_callback(self._stop_finished)
+
+    def _mode_to_restore(self, commit_steps: int) -> str | None:
+        if self._option != MODE_OPTION or self._start_mode is None or self._shown_mode == self._start_mode:
+            return None
+        committed = setting_ladders.preview_value(MODE_OPTION, self._status, commit_steps).value
+        if commit_steps != 0 and committed != self._start_mode:
+            return None  # the menu's commit pulses the new mode itself (BR-015)
+        return self._start_mode
 
     def _stop_finished(self, task: asyncio.Task) -> None:
         self._stops.discard(task)
@@ -198,6 +233,9 @@ class Previewer:
             metrics.previews_total.labels(result=UNKNOWN).inc()
             return
         self._last_value = start.value
+        self._option, self._status = option, status
+        if option == MODE_OPTION and self._menu is not None:
+            self._start_mode = self._shown_mode = start.value
         label = LABEL_VOICES.get(option)
         if label is not None:
             self._label_task = self._spawn(self._play_label(label))
@@ -209,6 +247,7 @@ class Previewer:
 
     async def _speak_after_debounce(self) -> None:
         await self._sleep(self._config.preview_debounce_ms() / 1000)
+        self._show_pending_mode()  # LED first: never waits for the label (BR-009)
         if self._label_task is not None and not self._label_task.done():
             await asyncio.wait({self._label_task})  # never cancels the label
         remaining = self._label_done_at - self._clock()
@@ -230,6 +269,31 @@ class Previewer:
         self._last_spoken = pending.value
         metrics.previews_total.labels(result=SPOKEN).inc()
         await self._cues.voice(pending.sound, PREVIEW_GROUP)
+
+    def _show_pending_mode(self) -> None:
+        pending = self._pending
+        if self._start_mode is None or pending is None or pending.sound is None:
+            return  # not a K1 hold with the LED preview, or the limit word (the mode is unchanged)
+        if pending.value == self._shown_mode:
+            return
+        self._shown_mode = pending.value
+        self._spawn(self._show_mode(pending.value))
+
+    async def _show_mode(self, mode: str) -> None:
+        """One `preview_setting` (services.md §3.1): the menu pulses ``mode`` on the lobby; never retried."""
+        try:
+            response = await self._menu.ProcessInput(
+                menu_pb2.ProcessInputRequest(
+                    input_type="web_command",
+                    data={"command": "preview_setting", "option": MODE_OPTION, "mode": mode},
+                ),
+                timeout=MODE_PREVIEW_TIMEOUT_SECONDS,
+            )
+        except Exception as e:
+            logger.debug(f"Mode preview {mode} not sent: {e}")
+            return
+        if not response.success:
+            logger.debug(f"Mode preview {mode} refused: {response.error}")
 
     def _spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
