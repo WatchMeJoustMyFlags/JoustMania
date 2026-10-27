@@ -32,7 +32,6 @@ class StateManager:
         publish_event: Callable[[str, dict], Coroutine],
         *,
         agent_settings_writer: FlagServiceWriter | None = None,
-        game_settings_client=None,
         agent_settings_client=None,
         select_game_mode: Callable[..., Coroutine] | None = None,
     ):
@@ -46,9 +45,6 @@ class StateManager:
             user_prefs_writer: flag-service writer for the user set
             publish_event: Async function to publish events
             agent_settings_writer: flag-service writer for the agent set (kill-switch, #819)
-            game_settings_client: OpenFeature client for the "game" domain, used to
-                resolve effective (agent-override-aware) values for the truthful
-                admin display (#818).
             agent_settings_client: OpenFeature client for the "agent" domain, used
                 to read the effective ``interventions_allowed`` level (#819).
             select_game_mode: async ``(game_name, *, source, serial)`` callback that
@@ -62,7 +58,6 @@ class StateManager:
         self.game_settings_writer = game_settings_writer
         self.user_prefs_writer = user_prefs_writer
         self.agent_settings_writer = agent_settings_writer
-        self.game_settings_client = game_settings_client
         self.agent_settings_client = agent_settings_client
         self.publish_event = publish_event
         self._select_game_mode = select_game_mode
