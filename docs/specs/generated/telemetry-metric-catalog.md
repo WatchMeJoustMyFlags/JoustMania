@@ -113,7 +113,7 @@ The totals (the number of names, of names without a consumer and of names never 
 | `game_player_shield_active` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
 | `game_player_shield_budget_remaining_seconds` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
 | `game_player_shield_energy_seconds` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
-| `game_player_shield_total` | gauge | `serial`, `game_id`, `total` | game-coordinator | yes | agent |  |
+| `game_player_shield_stats` | gauge | `serial`, `game_id`, `stat` | game-coordinator | yes | agent |  |
 | `game_player_skill_level` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |  |
 | `game_player_warnings_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |  |
 | `game_players_alive` | gauge | (none) | game-coordinator | yes | grafana |  |

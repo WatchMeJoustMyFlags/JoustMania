@@ -57,14 +57,14 @@ const (
 
 	// Hold-mode shield (#2096, UC-040 A37, UC-042 BR-007): the latched mode (value 1,
 	// label mode), the latched hold values (label setting = flag key), and per player
-	// the energy, budget left, active flag and per-game totals (label total). The
+	// the energy, budget left, active flag and per-game totals (label stat). The
 	// coordinator removes them at game end.
 	metricShieldActivationMode   = "game_shield_activation_mode"
 	metricShieldHoldSetting      = "game_shield_hold_setting"
 	metricPlayerShieldEnergy     = "game_player_shield_energy_seconds"
 	metricPlayerShieldBudgetLeft = "game_player_shield_budget_remaining_seconds"
 	metricPlayerShieldActive     = "game_player_shield_active"
-	metricPlayerShieldTotal      = "game_player_shield_total"
+	metricPlayerShieldStats      = "game_player_shield_stats"
 )
 
 // Attribute keys.
@@ -72,7 +72,7 @@ const (
 	attrSerial   = "serial"
 	attrName     = "name"    // controller_info only (#1295)
 	attrSetting  = "setting" // game_shield_hold_setting only (#2096)
-	attrTotal    = "total"   // game_player_shield_total only (#2096)
+	attrStat    = "stat"    // game_player_shield_stats only (#2096)
 	attrMode     = "mode"
 	attrGameID   = "game_id"
 	attrGameKind = "game_kind"
@@ -391,9 +391,9 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 			s.SetPlayerShieldActive(serial, v == 1)
 			return true
 		}
-	case metricPlayerShieldTotal:
+	case metricPlayerShieldStats:
 		if serial, ok := serialOf(); ok {
-			if tv, ok := attrs.Get(attrTotal); ok && tv.AsString() != "" {
+			if tv, ok := attrs.Get(attrStat); ok && tv.AsString() != "" {
 				s.adoptGame(labels)
 				s.SetPlayerShieldTotal(serial, tv.AsString(), v)
 				return true

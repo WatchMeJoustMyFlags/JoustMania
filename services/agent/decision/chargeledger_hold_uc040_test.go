@@ -63,7 +63,8 @@ func TestHoldLedger_Refusals(t *testing.T) {
 		{"UC-040/A37 full is min(cap, budget left)", holdPlayer{energy: fptr(1.6), budget: fptr(2)}, "shield_pool_full"},
 		{"UC-040/A37 a budget left below the minimum burst is shield_budget_exhausted", holdPlayer{energy: fptr(0), budget: fptr(0.2)}, "shield_budget_exhausted"},
 		{"UC-040/A37 the budget is checked before the pool", holdPlayer{energy: fptr(5), budget: fptr(0.1)}, "shield_budget_exhausted"},
-		{"UC-040/A37 an active shield skips both checks", holdPlayer{energy: fptr(5), budget: fptr(0.1), active: true}, "dispatched"},
+		{"UC-040/A37 an active shield skips the pool check", holdPlayer{energy: fptr(5), budget: fptr(12), active: true}, "dispatched"},
+		{"UC-040/A37 an active shield keeps the budget check", holdPlayer{energy: fptr(5), budget: fptr(0.1), active: true}, "shield_budget_exhausted"},
 		{"UC-040/A37 missing gauges fail open", holdPlayer{}, "dispatched"},
 		{"UC-040/A36 room in the pool is a grant", roomy, "dispatched"},
 	} {

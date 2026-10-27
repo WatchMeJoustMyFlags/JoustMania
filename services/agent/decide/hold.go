@@ -27,17 +27,15 @@ const HoldPoolFullMarginSeconds = 0.5
 // HoldShieldRefusal is the hold-mode check of a targeted grant_shield, in order:
 // shield_budget_exhausted when the budget left is below the minimum burst, then
 // shield_pool_full when energy + inFlight is at least min(cap, budget left) minus
-// HoldPoolFullMarginSeconds. "" when neither applies. It is skipped ("") for an
-// active shield (the gauge over-reads a draining pool) and fails open ("") for every
-// value it needs that is missing or not finite.
+// HoldPoolFullMarginSeconds. "" when neither applies. For an active shield only the
+// pool check is skipped (the energy gauge over-reads a draining pool); the budget
+// check stays, since a draining budget only falls, so refusing early is the safe
+// direction. It fails open ("") for every value it needs that is missing or not finite.
 func HoldShieldRefusal(energy, budgetLeft *float64, active bool, cap, minBurst *float64, inFlight float64) string {
-	if active {
-		return ""
-	}
 	if isFiniteSet(budgetLeft) && isFiniteSet(minBurst) && *budgetLeft < *minBurst {
 		return HoldRefusalBudgetExhausted
 	}
-	if !isFiniteSet(energy) || !isFiniteSet(cap) {
+	if active || !isFiniteSet(energy) || !isFiniteSet(cap) {
 		return ""
 	}
 	full := *cap

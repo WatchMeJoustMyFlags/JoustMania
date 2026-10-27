@@ -206,12 +206,12 @@ player_shield_active = Gauge(
     "Whether a player's hold-mode shield is active (1) or not (0)",
     ["serial", "game_id"],
 )
-# total: granted_seconds, recharged_seconds, used_seconds, activations, empties (this game).
-PLAYER_SHIELD_TOTALS = ("granted_seconds", "recharged_seconds", "used_seconds", "activations", "empties")
-player_shield_total = Gauge(
-    "game_player_shield_total",
-    "Hold-mode shield totals of a player in this game",
-    ["serial", "game_id", "total"],
+# stat: granted_seconds, recharged_seconds, used_seconds, activations, empties (this game).
+PLAYER_SHIELD_STATS = ("granted_seconds", "recharged_seconds", "used_seconds", "activations", "empties")
+player_shield_stats = Gauge(
+    "game_player_shield_stats",
+    "Hold-mode shield statistics of a player in this game (seconds or counts by stat)",
+    ["serial", "game_id", "stat"],
 )
 # Per game: the shield activation mode the game latched (instant, trigger or hold), value 1,
 # and in a hold game every latched hold value (setting = the flag key).
@@ -232,9 +232,9 @@ def clear_player_shield_gauges(serial: str, game_id: str) -> None:
     for gauge in (player_shield_energy_seconds, player_shield_budget_remaining_seconds, player_shield_active):
         with suppress(KeyError, ValueError):
             gauge.remove(serial, game_id)
-    for total in PLAYER_SHIELD_TOTALS:
+    for total in PLAYER_SHIELD_STATS:
         with suppress(KeyError, ValueError):
-            player_shield_total.remove(serial, game_id, total)
+            player_shield_stats.remove(serial, game_id, total)
 
 
 # System metrics

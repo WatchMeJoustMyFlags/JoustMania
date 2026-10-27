@@ -3612,7 +3612,7 @@ class BaseGameMode(ABC):
             )
             metrics.player_shield_active.labels(serial=serial, game_id=game_id).set(1 if active else 0)
             for total, value in totals.items():
-                metrics.player_shield_total.labels(serial=serial, game_id=game_id, total=total).set(round(value, 3))
+                metrics.player_shield_stats.labels(serial=serial, game_id=game_id, stat=total).set(round(value, 3))
 
     def _read_shield_hold_cues(self) -> ShieldHoldCues:
         """Read the hold feedback cue values once, with the hold values (UC-040 BR-026, BR-027)."""

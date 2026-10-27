@@ -56,7 +56,7 @@ GAUGES = (
     "player_shield_energy_seconds",
     "player_shield_budget_remaining_seconds",
     "player_shield_active",
-    "player_shield_total",
+    "player_shield_stats",
 )
 
 
@@ -115,12 +115,12 @@ class TestUC040A37AgentView:
         await step(g, clock, "p1", True)
         g._set_hold_gauges(p1, clock.t)
         assert player_value(gauges, "player_shield_active") == 1
-        assert player_value(gauges, "player_shield_total", total="activations") == 1
+        assert player_value(gauges, "player_shield_stats", stat="activations") == 1
 
         assert await g.grant_shield("p1", 2.0)
         g._set_hold_gauges(p1, clock.t)
         assert player_value(gauges, "player_shield_energy_seconds") == pytest.approx(3.0, abs=0.05)
-        assert player_value(gauges, "player_shield_total", total="granted_seconds") == pytest.approx(2.0)
+        assert player_value(gauges, "player_shield_stats", stat="granted_seconds") == pytest.approx(2.0)
 
         for _ in range(60):
             await step(g, clock, "p1", True)
@@ -128,11 +128,11 @@ class TestUC040A37AgentView:
         g._set_hold_gauges(p1, clock.t)
         used = p1.hold_budget_used
         assert player_value(gauges, "player_shield_active") == 0
-        assert player_value(gauges, "player_shield_total", total="used_seconds") == pytest.approx(used, abs=1e-3)
+        assert player_value(gauges, "player_shield_stats", stat="used_seconds") == pytest.approx(used, abs=1e-3)
         assert player_value(gauges, "player_shield_budget_remaining_seconds") == pytest.approx(15.0 - used, abs=1e-3)
         assert player_value(gauges, "player_shield_energy_seconds") == pytest.approx(3.0 - used, abs=1e-3)
-        assert player_value(gauges, "player_shield_total", total="recharged_seconds") == pytest.approx(0.0, abs=1e-3)
-        assert player_value(gauges, "player_shield_total", total="empties") == 0
+        assert player_value(gauges, "player_shield_stats", stat="recharged_seconds") == pytest.approx(0.0, abs=1e-3)
+        assert player_value(gauges, "player_shield_stats", stat="empties") == 0
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A38")
@@ -144,7 +144,7 @@ class TestUC040A37AgentView:
         clock.t += 4.0
         g._set_hold_gauges(g.players["p1"], clock.t)
         assert player_value(gauges, "player_shield_energy_seconds") == pytest.approx(2.0)
-        assert player_value(gauges, "player_shield_total", total="recharged_seconds") == pytest.approx(2.0)
+        assert player_value(gauges, "player_shield_stats", stat="recharged_seconds") == pytest.approx(2.0)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A39")
@@ -161,7 +161,7 @@ class TestUC040A37AgentView:
         g._drop_shield_hold(p1, base_module.HOLD_OUTCOME_DEATH, clock.t)
         assert player_value(gauges, "player_shield_energy_seconds") == 0.0
         assert player_value(gauges, "player_shield_active") == 0
-        assert player_value(gauges, "player_shield_total", total="empties") == 1
+        assert player_value(gauges, "player_shield_stats", stat="empties") == 1
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A36")
@@ -188,12 +188,12 @@ def test_clear_player_analytics_removes_the_player_shield_gauges():
             "player_shield_energy_seconds",
             "player_shield_budget_remaining_seconds",
             "player_shield_active",
-            "player_shield_total",
+            "player_shield_stats",
         )
     }
     with patch.multiple(metrics_module, **spies):
         metrics_module.clear_player_analytics("p1", "g1")
     spies["player_shield_energy_seconds"].remove.assert_called_once_with("p1", "g1")
     spies["player_shield_active"].remove.assert_called_once_with("p1", "g1")
-    totals = {call.args for call in spies["player_shield_total"].remove.call_args_list}
-    assert totals == {("p1", "g1", t) for t in metrics_module.PLAYER_SHIELD_TOTALS}
+    totals = {call.args for call in spies["player_shield_stats"].remove.call_args_list}
+    assert totals == {("p1", "g1", t) for t in metrics_module.PLAYER_SHIELD_STATS}

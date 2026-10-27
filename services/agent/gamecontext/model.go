@@ -68,8 +68,8 @@ type PlayerSignals struct {
 	// Hold-mode shield (#2096, UC-040 A37, UC-042 BR-007; nil / empty outside a hold
 	// game). Sources: game_player_shield_energy_seconds,
 	// game_player_shield_budget_remaining_seconds, game_player_shield_active and
-	// game_player_shield_total{total} (live; set at every hold transition and at least
-	// every 2 s, so up to one export interval old). ShieldTotals is keyed by the total
+	// game_player_shield_stats{stat} (live; set at every hold transition and at least
+	// every 2 s, so up to one export interval old). ShieldTotals is keyed by the stat
 	// label: granted_seconds, recharged_seconds, used_seconds, activations, empties.
 	ShieldEnergy          *float64
 	ShieldBudgetRemaining *float64

@@ -51,7 +51,7 @@ func TestApplyMetrics_ShieldHoldGauges(t *testing.T) {
 		if s.ApplyMetrics(metricsWith(metricShieldHoldSetting, 5, game)) {
 			t.Fatal("a setting without its label applied")
 		}
-		if s.ApplyMetrics(metricsWith(metricPlayerShieldTotal, 2, with(map[string]string{"serial": "A"}))) {
+		if s.ApplyMetrics(metricsWith(metricPlayerShieldStats, 2, with(map[string]string{"serial": "A"}))) {
 			t.Fatal("a total without its label applied")
 		}
 		if s.Snapshot().Session.IsShieldHold() {
@@ -64,9 +64,9 @@ func TestApplyMetrics_ShieldHoldGauges(t *testing.T) {
 		s.ApplyMetrics(metricsWith(metricPlayerShieldEnergy, 2.4, a))
 		s.ApplyMetrics(metricsWith(metricPlayerShieldBudgetLeft, 9.1, a))
 		s.ApplyMetrics(metricsWith(metricPlayerShieldActive, 1, a))
-		s.ApplyMetrics(metricsWith(metricPlayerShieldTotal, 3, with(map[string]string{"serial": "A", "total": "activations"})))
+		s.ApplyMetrics(metricsWith(metricPlayerShieldStats, 3, with(map[string]string{"serial": "A", "stat": "activations"})))
 		before := s.Snapshot()
-		s.ApplyMetrics(metricsWith(metricPlayerShieldTotal, 4, with(map[string]string{"serial": "A", "total": "activations"})))
+		s.ApplyMetrics(metricsWith(metricPlayerShieldStats, 4, with(map[string]string{"serial": "A", "stat": "activations"})))
 		s.ApplyMetrics(metricsWith(metricPlayerShieldActive, 0, a))
 		p := before.Players["A"]
 		if p == nil || p.ShieldEnergy == nil || *p.ShieldEnergy != 2.4 {
