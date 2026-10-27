@@ -12,6 +12,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::hid::{self, HidDeviceIo};
+use crate::watchdog::Heartbeat;
 
 /// Interval between two polls of the open devices. PS Move hardware reports
 /// at ~1 kHz, so 1 ms keeps up with it without busy-waiting (UC-030 step 2).
@@ -106,7 +107,8 @@ struct DeviceEntry<D> {
 ///
 /// This function does not return until a `Shutdown` command is received.
 /// It owns all HidDevice handles and processes commands + polls devices.
-pub fn run_device_manager(cmd_rx: mpsc::Receiver<DeviceCmd>) {
+/// Every loop pass beats `heartbeat`, which the watchdog reads (UC-002 A7).
+pub fn run_device_manager(cmd_rx: mpsc::Receiver<DeviceCmd>, heartbeat: Heartbeat) {
     let api = match HidApi::new() {
         Ok(api) => api,
         Err(e) => {
@@ -114,17 +116,23 @@ pub fn run_device_manager(cmd_rx: mpsc::Receiver<DeviceCmd>) {
             return;
         }
     };
-    run_device_loop(api, cmd_rx);
+    run_device_loop(api, cmd_rx, &heartbeat);
 }
 
 /// The device manager loop over any `HidBackend` (see `run_device_manager`).
-fn run_device_loop<B: HidBackend>(mut api: B, cmd_rx: mpsc::Receiver<DeviceCmd>) {
+fn run_device_loop<B: HidBackend>(
+    mut api: B,
+    cmd_rx: mpsc::Receiver<DeviceCmd>,
+    heartbeat: &Heartbeat,
+) {
     let mut devices: HashMap<String, DeviceEntry<B::Device>> = HashMap::new();
     let mut stream_sender: Option<tokio::sync::mpsc::Sender<StreamSensorData>> = None;
 
     info!("Device manager thread started");
 
     loop {
+        heartbeat.beat();
+
         // Process all pending commands (non-blocking)
         loop {
             match cmd_rx.try_recv() {
@@ -394,9 +402,16 @@ mod tests {
     }
 
     fn spawn_loop(device: &FakeDevice) -> (mpsc::Sender<DeviceCmd>, JoinHandle<()>) {
+        spawn_loop_with_heartbeat(device, Heartbeat::new())
+    }
+
+    fn spawn_loop_with_heartbeat(
+        device: &FakeDevice,
+        heartbeat: Heartbeat,
+    ) -> (mpsc::Sender<DeviceCmd>, JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let backend = FakeBackend { device: device.clone() };
-        let handle = std::thread::spawn(move || run_device_loop(backend, cmd_rx));
+        let handle = std::thread::spawn(move || run_device_loop(backend, cmd_rx, &heartbeat));
         (cmd_tx, handle)
     }
 
@@ -505,5 +520,23 @@ mod tests {
         assert!(min >= POLL_INTERVAL, "min poll interval {min:?} < 1 ms: busy-waiting");
         assert!(median <= Duration::from_millis(2), "median poll interval {median:?} > 2 ms");
         assert!(p90 <= Duration::from_millis(5), "p90 poll interval {p90:?} > 5 ms");
+    }
+
+    // UC: UC-002 A7
+    // NFR: NFR-054
+    #[test]
+    fn test_device_loop_beats_the_watchdog_heartbeat() {
+        let device = FakeDevice::default();
+        let heartbeat = Heartbeat::new();
+        let (cmd_tx, handle) = spawn_loop_with_heartbeat(&device, heartbeat.clone());
+
+        std::thread::sleep(Duration::from_millis(200));
+        let age_running = heartbeat.age();
+        shutdown(&cmd_tx, handle);
+
+        assert!(
+            age_running < Duration::from_millis(100),
+            "heartbeat {age_running:?} old while the device loop runs"
+        );
     }
 }

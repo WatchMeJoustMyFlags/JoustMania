@@ -13,7 +13,8 @@
 #   - last start: what joustmania-start.sh recorded (start.env)
 #   - images: images missing on the Pi, with the joustmania-upgrade.sh command
 #     that pulls them (boot never pulls, BR-001)
-#   - service <name>: running / healthy, per active service
+#   - service <name>: running / healthy, per active service; a running but
+#     unhealthy one names its recovery, `docker restart <container>` (#2125)
 #   - clock: NTP synchronised, or INFO when not (no RTC, accepted: until NTP
 #     sync TLS to the registry fails, so an upgrade cannot pull; the start does
 #     not need it, so it never changes the state)
@@ -120,12 +121,17 @@ else
     else
         report OK "images: all present"
     fi
-    PS="$(compose ps -a --format '{{.Service}}|{{.State}}|{{.Health}}' 2>/dev/null || true)"
+    PS="$(compose ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.Name}}' 2>/dev/null || true)"
     while IFS='|' read -r svc _; do
         [[ -n "$svc" ]] || continue
         line="$(grep -m 1 "^$svc|" <<<"$PS" || true)"
-        IFS='|' read -r _ state health <<<"$line"
+        IFS='|' read -r _ state health name <<<"$line"
         text="service $svc: ${state:-no container}${health:+ ($health)}"
+        if [[ "$state" == running && "$health" == unhealthy ]]; then
+            # Running but wedged: compose restart policies do not act on health
+            # (#2125), so name the restart that recovers it.
+            text="$text; recover with: docker restart ${name:-joustmania-$svc}"
+        fi
         if [[ "$state" == running && (-z "$health" || "$health" == healthy) ]]; then
             report OK "$text"
         elif [[ ("$state" == running && "$health" == starting) || "${ACTIVE:-}" == activating ]]; then
