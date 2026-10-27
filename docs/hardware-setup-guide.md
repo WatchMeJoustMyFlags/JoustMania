@@ -212,7 +212,9 @@ You can pair multiple controllers in sequence:
 4. Repeat for all controllers
 5. Press PS button on each to connect via Bluetooth
 
-Re-pairing a controller the Pi already knows does not restart the Bluetooth service. A controller that is new to the selected adapter gets a BlueZ device record, and the daemon restarts the Bluetooth service so BlueZ loads it: at once when no real game is starting, running or ending, otherwise right after the game. That restart drops the controllers connected in the lobby (press PS to reconnect), but never a running game's players (`pairing.bluez_restart_mode=when_idle`, UC-001 A7, BR-005). A new controller paired during a game connects after that game.
+Re-pairing a controller the Pi already knows does not restart the Bluetooth service. A controller that is new to the selected adapter gets a BlueZ device record, and the daemon restarts the Bluetooth service so BlueZ loads it: once 20 s (`pairing.restart_quiet_period`) passed without a controller being paired or waiting on USB to be paired and no real game is starting, running or ending, otherwise right after the game. Pair a whole stack one after the other (plug in, wait for the green flash, unplug, next one) and they cost a single restart. That restart drops the controllers connected in the lobby (press PS to reconnect), but never a running game's players (`pairing.bluez_restart_mode=when_idle`, UC-001 A7, BR-005). A new controller paired during a game connects after that game. A paired controller left plugged in to charge does not hold the restart back.
+
+While it is on USB the controller shows the pairing state on its LED (UC-001 BR-010): a slow white pulse while it waits for or goes through pairing, three green flashes when it is paired (unplug it now), steady red when pairing failed (it is tried again at the next poll, about every 10 s).
 
 ### Troubleshooting Pairing
 

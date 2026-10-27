@@ -18,6 +18,9 @@ _DEFAULT_BLUETOOTH_BACKEND = "rust"
 # unreachable flagd mean "never", the mode that cannot disconnect controllers
 BLUEZ_RESTART_MODES = ("never", "always", "when_idle")
 _DEFAULT_BLUEZ_RESTART_MODE = "never"
+# pairing.restart_quiet_period (UC-001 BR-005, #2091): seconds without a PS Move on USB
+# before a when_idle restart; 0 = restart at the end of the pairing poll
+_DEFAULT_RESTART_QUIET_PERIOD = 20
 
 # Feature flag clients (initialized lazily via init_flag_domain)
 # system: pairing.* intervals; controller: bluetooth_backend routing
@@ -142,6 +145,28 @@ def get_bluez_restart_mode() -> str:
         logger.warning(f"Unknown pairing.bluez_restart_mode {mode!r}, using {_DEFAULT_BLUEZ_RESTART_MODE}")
         return _DEFAULT_BLUEZ_RESTART_MODE
     return mode
+
+
+def get_restart_quiet_period() -> float:
+    """Seconds no PS Move must have been on USB before a when_idle bluetoothd restart (UC-001 BR-005, #2091).
+
+    Read at use time. 0 restarts at the end of the pairing poll (no batching).
+    A negative value or an unreachable flagd mean the default (20 s).
+    """
+    if _system_client is None:
+        return _DEFAULT_RESTART_QUIET_PERIOD
+    try:
+        from openfeature.evaluation_context import EvaluationContext
+
+        seconds = _system_client.get_integer_value(
+            "pairing.restart_quiet_period", _DEFAULT_RESTART_QUIET_PERIOD, EvaluationContext()
+        )
+    except Exception:
+        return _DEFAULT_RESTART_QUIET_PERIOD
+    if seconds < 0:
+        logger.warning(f"Negative pairing.restart_quiet_period {seconds}, using {_DEFAULT_RESTART_QUIET_PERIOD}")
+        return _DEFAULT_RESTART_QUIET_PERIOD
+    return seconds
 
 
 # PS Move Bluetooth MAC prefix (Sony)

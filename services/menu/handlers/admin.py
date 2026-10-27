@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 # is routed through a separate writer/client and handled specially in the
 # value-change paths rather than the generic game.json flag cycle.
 AGENT_CONTROL_OPTION = "agent_control"
-# Error cue when the agent-level write fails (UC-013 A3): short fast red pulse.
+# Error cue when a write fails or the flag service cannot be read (UC-013 A3, UC-012 A5/A7): short fast red pulse.
 AGENT_ERROR_PULSE_MS = 400
 AGENT_ERROR_PULSE_SPEED = 10
 # The agent key (UC-013 BR-001), the level ladder (clamped, never wrapping) and the voice
@@ -915,10 +915,11 @@ class AdminModeHandler:
                 # actually write baseline medium->fast — incoherent. Selecting an
                 # option and the agent-overlay follow-up after a step announce
                 # the effective value from the flag-service view (_overlay_variant, #818, UC-012 BR-006).
-                old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, "sensitivity", True)
+                old_variant, new_variant = await self._cycle_baseline_guarded(writer, "sensitivity", True)
 
                 if new_variant is None:
                     logger.warning("Failed to cycle sensitivity variant")
+                    await self._signal_write_failed(serial)
                     return
 
                 # Map variant name to numeric value for visual feedback
@@ -1011,12 +1012,11 @@ class AdminModeHandler:
 
             try:
                 writer = self._state_manager.user_prefs_writer
-                old_variant, new_variant = await asyncio.to_thread(
-                    self._cycle_baseline, writer, "game_instructions", True
-                )
+                old_variant, new_variant = await self._cycle_baseline_guarded(writer, "game_instructions", True)
 
                 if new_variant is None:
                     logger.warning("Failed to cycle game_instructions variant")
+                    await self._signal_write_failed(serial)
                     return
 
                 enabled = new_variant == "on"
@@ -1118,10 +1118,11 @@ class AdminModeHandler:
                 # being changed), captured before the mutation — NOT the effective
                 # value, which may be an agent override (#818). The agent-overlay
                 # follow-up (_announce_agent_overlay) announces the effective value.
-                old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, option_name, True)
+                old_variant, new_variant = await self._cycle_baseline_guarded(writer, option_name, True)
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant for {option_name}")
+                    await self._signal_write_failed(serial)
                     return
 
                 # Get the actual value for visual/voice feedback
@@ -1171,10 +1172,11 @@ class AdminModeHandler:
                 # being changed), captured before the mutation — NOT the effective
                 # value, which may be an agent override (#818). The agent-overlay
                 # follow-up (_announce_agent_overlay) announces the effective value.
-                old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, option_name, False)
+                old_variant, new_variant = await self._cycle_baseline_guarded(writer, option_name, False)
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant backward for {option_name}")
+                    await self._signal_write_failed(serial)
                     return
 
                 # Get the actual value for visual/voice feedback
@@ -1209,6 +1211,8 @@ class AdminModeHandler:
         try:
             variant = await asyncio.to_thread(self._effective_variant, option_name)
             if variant is None:
+                # Flag service unreadable (UC-012 A7): no value to show, so say so on the LED.
+                await self._signal_write_failed(serial)
                 return
             value = self._variant_to_value(option_name, variant)
             await self._show_value_feedback(serial, option_name, value)
@@ -1325,7 +1329,13 @@ class AdminModeHandler:
                     return
                 new_level = self._next_agent_level(old_level, forward=forward)
 
-                if not await asyncio.to_thread(writer.update_default_variant, AGENT_POLICY_FLAG, new_level):
+                try:
+                    written = await asyncio.to_thread(writer.update_default_variant, AGENT_POLICY_FLAG, new_level)
+                except Exception as e:
+                    # Only the write itself: errors in the feedback below must not cue a failure.
+                    logger.error(f"Error writing agent policy '{new_level}': {e}", exc_info=True)
+                    written = False
+                if not written:
                     logger.warning(f"Failed to write agent policy '{new_level}'")
                     await self._signal_agent_write_failed(serial, controller_manager_pb2)
                     return
@@ -1370,6 +1380,27 @@ class AdminModeHandler:
 
             except Exception as e:
                 logger.error(f"Error changing agent policy: {e}", exc_info=True)
+
+    async def _cycle_baseline_guarded(self, writer, option_name: str, forward: bool) -> tuple[str | None, str | None]:
+        """_cycle_baseline in a thread; an exception from the write is logged and reported as (None, None).
+
+        Callers treat new_variant None as a failed write and give the error cue (UC-012 A5). Only the
+        write is guarded, so a voice or LED error after a successful write never cues a failure.
+        """
+        try:
+            return await asyncio.to_thread(self._cycle_baseline, writer, option_name, forward)
+        except Exception as e:
+            logger.error(f"Error writing {option_name} variant: {e}", exc_info=True)
+            return None, None
+
+    async def _signal_write_failed(self, serial: str) -> None:
+        """Error cue for a failed admin step write or an unreadable flag service (UC-012 A5, A7).
+
+        The same short red pulse as the agent-level cue (UC-013 A3), no voice line. Best effort.
+        """
+        from proto import controller_manager_pb2
+
+        await self._signal_agent_write_failed(serial, controller_manager_pb2)
 
     async def _signal_agent_write_failed(self, serial: str, controller_manager_pb2) -> None:
         """Error cue for a refused or unreachable agent-level write (UC-013 A3, #1705).

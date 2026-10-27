@@ -411,3 +411,42 @@ class TestRestartBluetoothd:
             await bluez_reload.restart_bluetoothd()
 
         agent.assert_awaited_once()
+
+
+class TestUsbQuietPeriod2091:
+    """#2091: with when_idle a pending restart waits until no PS Move was on USB for the quiet period."""
+
+    @staticmethod
+    def _quiet(seconds: float):
+        return patch("psmove_pairing.bluez_reload.get_restart_quiet_period", return_value=seconds)
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_waits_for_quiet_usb_without_asking_the_game(self):
+        reloader, game_busy, restart = _reloader()
+        now = {"t": 100.0}
+        reloader._clock = lambda: now["t"]
+        with _mode("when_idle"), self._quiet(20):
+            reloader.note_usb_controllers(1)
+            assert await _after_pairing(reloader, True) == "waiting_usb"
+            now["t"] = 119.0
+            reloader.note_usb_controllers(0)  # an empty listing does not restart the quiet period
+            assert await reloader.run_pending() == "waiting_usb"
+            game_busy.assert_not_awaited()
+            now["t"] = 120.0
+            assert await reloader.run_pending() == "restarted"
+        restart.assert_awaited_once()
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_nothing_seen_on_usb_restarts_at_once(self):
+        reloader, _game_busy, restart = _reloader()
+        with _mode("when_idle"), self._quiet(20):
+            assert await _after_pairing(reloader, True) == "restarted"
+        restart.assert_awaited_once()
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"])
+    async def test_always_is_not_batched(self):
+        reloader, _game_busy, restart = _reloader()
+        with _mode("always"), self._quiet(20):
+            reloader.note_usb_controllers(3)
+            assert await _after_pairing(reloader, True) == "restarted"
+        restart.assert_awaited_once()

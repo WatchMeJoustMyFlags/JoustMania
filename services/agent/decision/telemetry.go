@@ -63,6 +63,10 @@ const (
 	// alive/connected at apply time (eliminated or disconnected during inference).
 	// A session-scoped decision (empty target) never hits this.
 	DiscardTargetGone = "target_gone"
+	// DiscardStateTooOld: the game state the remote request was built on (the
+	// fire-time GameContext.UpdatedAt) was older than decision.max_state_age_ms
+	// when the answer landed (#2123): the answer describes a game that has moved on.
+	DiscardStateTooOld = "state_too_old"
 )
 
 // AttrLLMInferError records why a backend-called agent.llm.retro produced no
