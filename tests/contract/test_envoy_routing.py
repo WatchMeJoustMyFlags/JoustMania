@@ -21,7 +21,6 @@ DOCUMENTED_ROUTES = {
     "/index.html": ("dashboard", "/index.html"),
     "/grafana/d/abc": ("grafana", "/grafana/d/abc"),  # Grafana serve_from_sub_path
     "/jaeger/search": ("jaeger", "/jaeger/search"),  # Jaeger base_path /jaeger
-    "/loki/loki/api/v1/query_range": ("loki", "/loki/api/v1/query_range"),
     "/victoria-metrics/api/v1/query": ("victoria_metrics", "/api/v1/query"),
     "/experiments": ("agent_dossier", "/experiments"),  # UC-035 A1
     "/experiments/exp-1": ("agent_dossier", "/experiments/exp-1"),
@@ -86,7 +85,7 @@ def test_no_ui_service_publishes_a_host_port():
 @pytest.mark.uc("UC-035", flow="main", steps=[1, 3, 5, 6, 7])
 @pytest.mark.parametrize(("path", "expected"), sorted(DOCUMENTED_ROUTES.items()))
 def test_documented_path_routes_to_its_backend(path, expected):
-    """UC-035 steps 1-7: dashboard, Jaeger, Grafana, Loki and VictoriaMetrics paths."""
+    """UC-035 steps 1-7: dashboard, Jaeger, Grafana and VictoriaMetrics paths."""
     cluster, upstream_path = expected
     assert ic.resolve_route(path) == {
         "cluster": cluster,
@@ -103,6 +102,13 @@ def test_prometheus_container_and_route_are_gone():
     assert "prometheus-data" not in (compose.get("volumes") or {})
     assert "prometheus" not in ic.envoy_clusters()
     assert ic.resolve_route("/prometheus/graph")["cluster"] == "dashboard"
+
+
+@pytest.mark.uc("UC-035", flow="main", steps=[1])
+def test_loki_route_is_gone_and_falls_through_to_the_dashboard():
+    """#2059: no Loki cluster; /loki/ falls through to the dashboard SPA like /prometheus/."""
+    assert "loki" not in ic.envoy_clusters()
+    assert ic.resolve_route("/loki/loki/api/v1/query_range")["cluster"] == "dashboard"
 
 
 @pytest.mark.uc("UC-035", flow="A1")

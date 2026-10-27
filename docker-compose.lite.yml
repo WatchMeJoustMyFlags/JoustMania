@@ -1,6 +1,6 @@
 # JoustMania Lite Configuration - Raspberry Pi Optimized
 #
-# Excludes observability stack (Jaeger, VictoriaMetrics, Loki, Grafana, OTEL Collector)
+# Excludes observability stack (Jaeger, VictoriaMetrics, Grafana, OTEL Collector)
 # for minimal resource usage on constrained devices.
 #
 # Usage: docker compose -f docker-compose.lite.yml up -d

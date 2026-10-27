@@ -59,44 +59,6 @@ receivers:
           static_configs:
             - targets: ['envoy:9901']
 
-  # Filelog receiver — tail Docker container JSON logs for non-OTLP services
-  # (connect-proxy, rust-hid, envoy, flagd, etc.) AND the agent container (its
-  # experiment.* slog lines feed the dashboard's experiments view via Loki —
-  # LOKI LABEL CONTRACT, see transform/docker_logs + experiments.ts). The agent
-  # is deliberately NOT in filter/exclude_otlp_services, so this pipeline is
-  # load-bearing — it must keep exporting, it cannot be dropped or have the
-  # agent excluded.
-  #
-  # #1173: verification #8 traced the collector OOM (exit-137 under the shadow
-  # experiment loop) to THIS filelog/logs pipeline scraping all container stdout,
-  # not traces. #1176 (heartbeat log demotion) + #1177 (2s traces batch) cut the
-  # volume so hard the collector now steady-states at ~85 MiB / ~6% of 1.5 GiB
-  # (verification #9). To keep memory BOUNDED even if log volume regrows, cap the
-  # number of files tailed concurrently. The collector default is 1024 — absurd
-  # for this stack (~15-25 containers). 32 covers every container with headroom
-  # while bounding the receiver's per-file read-buffer footprint; the receiver
-  # round-robins across files, so NO container's logs are dropped.
-  filelog/docker:
-    include:
-      - /var/lib/docker/containers/*/*-json.log
-    start_at: end
-    max_concurrent_files: 32
-    include_file_path: true
-    include_file_name: false
-    operators:
-      - type: json_parser
-        timestamp:
-          parse_from: attributes.time
-          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
-      - type: move
-        from: attributes.log
-        to: body
-      - type: move
-        from: attributes.stream
-        to: attributes["log.iostream"]
-      - type: remove
-        field: attributes.time
-
   # Host: OS-level metrics from the Raspberry Pi (replaces node-exporter)
   # Requires hostfs volume mounts: /proc, /sys, / → /hostfs/
   hostmetrics/1m:
@@ -181,7 +143,7 @@ processors:
   # latency the rollout loop reacts to. Smaller, sooner trace batches also lower
   # the collector's peak heap held by the traces pipeline (synergy with the
   # #1167/#1173 memory work — the memory_limiter envelope is untouched). The
-  # logs/filelog pipelines keep the shared `batch` (5s) unchanged.
+  # logs pipeline keeps the shared `batch` (5s) unchanged.
   batch/traces:
     timeout: 2s
     send_batch_size: 512
@@ -261,53 +223,6 @@ processors:
         value: containers
         action: insert
 
-  # Transform processor — promote Docker labels to OTEL resource attributes
-  #
-  # LOKI LABEL CONTRACT: setting service.name here is what gives the agent's
-  # container logs the Loki stream label `service_name="agent"` (Loki's native
-  # OTLP ingestion maps the service.name resource attribute -> service_name
-  # label). The dashboard's experiments view queries `{service_name="agent"}`
-  # and goes silently blank if this mapping changes — keep it in sync with the
-  # LOKI LABEL CONTRACT note in services/dashboard/src/experiments.ts.
-  transform/docker_logs:
-    error_mode: ignore
-    log_statements:
-      - context: log
-        statements:
-          # service.name from compose service label
-          - set(resource.attributes["service.name"], attributes["attrs"]["com.docker.compose.service"])
-            where attributes["attrs"]["com.docker.compose.service"] != nil
-          # container.name (same as service name in compose)
-          - set(resource.attributes["container.name"], attributes["attrs"]["com.docker.compose.service"])
-            where attributes["attrs"]["com.docker.compose.service"] != nil
-          # container.image.name from full image reference (strip tag after)
-          - set(resource.attributes["container.image.name"], attributes["attrs"]["com.docker.compose.image"])
-            where attributes["attrs"]["com.docker.compose.image"] != nil
-          # container.image.tag — extract portion after last ':'
-          - set(resource.attributes["container.image.tag"], attributes["attrs"]["com.docker.compose.image"])
-            where attributes["attrs"]["com.docker.compose.image"] != nil
-          - replace_pattern(resource.attributes["container.image.name"], ":[^:]*$", "")
-            where resource.attributes["container.image.name"] != nil
-          - replace_pattern(resource.attributes["container.image.tag"], "^.*:", "")
-            where resource.attributes["container.image.tag"] != nil
-          # container.id from file path
-          - set(resource.attributes["container.id"], attributes["log.file.path"])
-            where attributes["log.file.path"] != nil
-          - replace_pattern(resource.attributes["container.id"], "^.*/([a-f0-9]+)/.*$", "$1")
-            where resource.attributes["container.id"] != nil
-          # Clean up intermediate attributes
-          - delete_key(attributes, "attrs")
-            where attributes["attrs"] != nil
-
-  # Filter processor — exclude services that already push OTLP logs + the collector itself
-  filter/exclude_otlp_services:
-    logs:
-      exclude:
-        match_type: regexp
-        resource_attributes:
-          - key: service.name
-            value: "^(controller-manager|game-coordinator|menu|audio|pairing-daemon|otel-collector|connect-proxy|rust-hid|python-hid|operator-pad)$"
-
   # Keep only the agent's agent.decide spans for the span_metrics connector
   # (#1427). The traces/span_metrics pipeline runs beside the main traces
   # pipeline, so dropping here never removes a span from Jaeger or the agent.
@@ -373,12 +288,6 @@ exporters:
   # Prometheus remote write to VictoriaMetrics for high-frequency metrics storage
   prometheusremotewrite:
     endpoint: "http://victoria-metrics:8428/api/v1/write"
-    tls:
-      insecure: true
-
-  # Loki exporter for logs (OTLP native ingestion, Loki 3.x)
-  otlphttp/loki:
-    endpoint: http://loki:3100/otlp
     tls:
       insecure: true
 
@@ -453,17 +362,14 @@ service:
       processors: [memory_limiter, resource/containers, batch/fast]
       exporters: [prometheusremotewrite]
 
-    # Logs pipeline
+    # Logs pipeline: no log backend since Loki was removed (#2059, FR-082
+    # Obsolete). The pipeline stays so the Python OTLPLogExporter gets an
+    # answer instead of UNIMPLEMENTED retries; the debug exporter is the sink.
+    # Container logs: `docker compose logs`.
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [otlphttp/loki, debug]
-
-    # Container logs pipeline — Docker JSON logs from non-OTLP services
-    logs/containers:
-      receivers: [filelog/docker]
-      processors: [memory_limiter, transform/docker_logs, filter/exclude_otlp_services, batch, resource]
-      exporters: [otlphttp/loki, debug]
+      exporters: [debug]
 
   extensions: [health_check]
 

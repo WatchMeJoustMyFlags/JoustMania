@@ -49,7 +49,7 @@ point = await stack.otlp_sink.wait_metric_async("game_trace_correlation", {"game
 - `OtlpSink(forward_to="host:port")` tees every trace and metrics export to another OTLP/gRPC receiver
   (the agent's, like the collector's `otlp/agent` exporter); failures count in `forward_errors`.
 - Still full stack (T3): the collector's processing (filters, `span_metrics`, transforms), VictoriaMetrics
-  names and PromQL, Jaeger queries, Loki.
+  names and PromQL, Jaeger queries.
 
 Proof: `test_otlp_sink.py` (a game's root span and `player_disconnected` reach the sink).
 

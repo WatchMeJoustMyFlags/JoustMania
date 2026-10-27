@@ -380,7 +380,7 @@ Telemetry export knobs for the Python services and rust-hid. Targeting keys on t
 | `log_level` | string | debug="debug", info="info", warning="warning", error="error" | `info` = "info" | N (the `service` context variable is passed, so a stack overlay or a future rule can target one service) | all Python services: lib/log_level.py `flag_level` (<- lib/otel_logging.py `init_logging`); agent: services/agent/flags/loglevel.go `LogLevelFollower` | the flag service (stack overlay, registry §13.5) | live: re-applied on provider ready, on every configuration change and by a 5 s safety-net poll (#1788); `LOG_LEVEL` is bootstrap-only: the startup level until the flag resolves, and the agent's level on sync loss; the flag service itself keeps `LOG_LEVEL` (§15.2) |
 | `debug` | bool | on=true, off=false | `off` = false | N | pairing daemon: services/pairing_daemon/psmove_pairing/config.py `is_debug`: flag, else off; the `DEBUG` env var was removed (#1907) (tracebacks on logged errors; while on, the daemon's log level is DEBUG) | the flag service (stack overlay, registry §13.5) | live (per use) |
 
-**Traceability:** FR-080 to FR-082, NFR-022, FR-150, C-035 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `lib/log_level.py`, `services/agent/flags/loglevel.go`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`, `services/agent/flags/loglevel_test.go`.
+**Traceability:** FR-080, FR-081, NFR-022, FR-150, C-035 / UC-035 / `lib/otel_metrics.py`, `lib/telemetry.py`, `lib/grpc_tracing.py`, `lib/log_level.py`, `services/agent/flags/loglevel.go`, `services/rust-hid/src/feature_flags.rs` / `lib/tests/`, `services/agent/flags/loglevel_test.go`.
 
 ## 10a. `operator`
 
