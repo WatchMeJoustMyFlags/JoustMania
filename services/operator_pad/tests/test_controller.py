@@ -1,9 +1,11 @@
 """Codes -> gestures -> actions (UC-015 A4, A5): fresh status at every press and release."""
 
+import asyncio
 from unittest.mock import create_autospec, patch
 
 import pytest
 
+from lib.types import Sound
 from proto import menu_pb2
 from services.operator_pad import controller as controller_module
 from services.operator_pad.actions import Actions
@@ -12,6 +14,7 @@ from services.operator_pad.controller import PadController
 from services.operator_pad.cues import CuePlayer
 from services.operator_pad.gestures import HOLD, PRESS, RELEASE, REPEAT, Gesture
 from services.operator_pad.state import MenuStatusReader
+from services.operator_pad.tests.fakes import AudioStubSpec, CoordinatorStubSpec, MenuStubSpec
 
 KEYMAP = parse_keymap(DEFAULT_KEYMAP)
 F13, F19, F16 = 183, 189, 186  # K1, K4, knob turn A
@@ -165,3 +168,41 @@ async def test_25_raw_events_at_n4_write_a_layer_setting_with_steps_6(real_pad):
         "direction": "up",
         "steps": "6",
     }
+
+
+@pytest.mark.uc("UC-015", br=["BR-009", "BR-011"])
+async def test_a_hanging_announcement_never_holds_up_the_next_key():
+    """#2106: an announcement (label, then value) runs in the background; the input reader goes on at once."""
+    release_audio = asyncio.Event()
+    requested: list[str] = []
+
+    async def hanging_play(request, **_kwargs):
+        requested.append(request.file_path)
+        await release_audio.wait()  # an audio service that never answers (longer than any cue timeout)
+
+    audio = create_autospec(AudioStubSpec, instance=True)
+    audio.PlaySound.side_effect = hanging_play
+    cue_player = CuePlayer(audio)
+    actions = Actions(
+        create_autospec(MenuStubSpec, instance=True), create_autospec(CoordinatorStubSpec, instance=True), cue_player
+    )
+    config = create_autospec(PadConfig, instance=True)
+    config.enabled.return_value = True
+    config.timings.return_value = Timings(knob_events_per_step=1)
+    reader = create_autospec(MenuStatusReader, instance=True)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(
+        sensitivity=2, num_teams=3, agent_enabled_state="on", agent_interventions_enabled_state="on"
+    )
+    pad = PadController(config, reader, actions, cue_player)
+    pad.attached(KEYMAP)
+    code = {name: c for c, name in KEYMAP.items()}
+
+    for t, key in ((0, "K2"), (100, "K5")):
+        await asyncio.wait_for(pad.on_code(code[key], PRESS, t), 0.2)
+        await asyncio.wait_for(pad.on_code(code[key], RELEASE, t + 50), 0.2)  # the tap: would block if awaited
+    await asyncio.sleep(0)
+    # Both labels were asked for while the first one still hangs.
+    assert requested == [Sound.MENU_VOX_LABEL_SENSITIVITY.value, Sound.MENU_VOX_LABEL_TEAMS.value]
+    release_audio.set()
+    await cue_player.drain()
+    assert sorted(requested[2:]) == sorted([Sound.MENU_VOX_SENSITIVITY_MEDIUM.value, Sound.MENU_VOX_ADMINOP_3.value])

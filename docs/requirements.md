@@ -213,6 +213,7 @@
 | FR-193 | Master volume and mute from the pad | As a host, I want a knob for the master volume and a press to mute, without stopping the music, so that I can quiet the room at once. | Medium | Open | #2050; UC-015 step 8, BR-006 |
 | FR-194 | Pad failures are audible and fail closed | As a host, I want a pad command that cannot be applied (flag service down, game running, stale, limit) to tell me by sound and to change nothing, never queue and replay later, so that a late command never surprises the room. | High | Open | #2050; UC-015 A1, A3, A5, A7, BR-009, BR-010 |
 | FR-195 | Optional pad service | As an operator, I want the pad to be an optional service (compose profile, not privileged) that survives a missing, unplugged or reset pad without affecting the game services, so that the stack runs the same without it. | Medium | Open | #2050; UC-015 A4, Pre-1 |
+| FR-196 | Spoken labels on the pad | As a host, I want every pad announcement to say what it is before the value ("Sensitivity … high", "Backend … Claude") and every status in words ("Not possible", "Maximum", "Minimum", "Cancelled", "No connection", "Pad locked"), so that I can tell what I hear without a display. | Medium | Open | #2106; UC-015 A6, BR-009, BR-011, BR-016 |
 
 ## Non-Functional Requirements
 
