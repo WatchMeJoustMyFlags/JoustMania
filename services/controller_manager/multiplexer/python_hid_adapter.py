@@ -22,8 +22,11 @@ import threading
 import grpc
 
 from lib.controller_constants import ButtonKey, StateKey, normalize_serial
-from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
-from services.controller_manager.multiplexer.rust_adapter import _sensor_data_to_dict
+from services.controller_manager.multiplexer.adapter import ControllerIOAdapter, DiscoveryFailedError
+
+# Same deadline as the rust adapter on every unary call (#2140): a failed or
+# timed-out Discover raises DiscoveryFailedError, a failed Open returns False.
+from services.controller_manager.multiplexer.rust_adapter import RPC_TIMEOUT_S, _sensor_data_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +146,8 @@ class PythonHidAdapter(ControllerIOAdapter):
                     force=force,
                     verify_only=verify_only,
                     exclude_serials=exclude_serials or [],
-                )
+                ),
+                timeout=RPC_TIMEOUT_S,
             )
             serials = []
             for c in response.controllers:
@@ -156,7 +160,7 @@ class PythonHidAdapter(ControllerIOAdapter):
             return serials
         except grpc.RpcError as e:
             logger.warning(f"Discover RPC failed: {e}")
-            return []
+            raise DiscoveryFailedError(str(e)) from e
 
     def get_adapter_for_serial(self, serial: str) -> str | None:
         return self._adapter_names.get(serial) or None
@@ -169,7 +173,7 @@ class PythonHidAdapter(ControllerIOAdapter):
         self._ensure_stream()
 
         try:
-            response = self._stub.Open(psmove_hid_pb2.OpenRequest(serial=serial))
+            response = self._stub.Open(psmove_hid_pb2.OpenRequest(serial=serial), timeout=RPC_TIMEOUT_S)
             return response.success
         except grpc.RpcError as e:
             logger.warning(f"Open RPC failed for {serial}: {e}")
@@ -228,7 +232,7 @@ class PythonHidAdapter(ControllerIOAdapter):
         self._adapter_names.pop(serial, None)
 
         try:
-            self._stub.Close(psmove_hid_pb2.CloseRequest(serial=serial))
+            self._stub.Close(psmove_hid_pb2.CloseRequest(serial=serial), timeout=RPC_TIMEOUT_S)
         except grpc.RpcError as e:
             logger.warning(f"Close RPC failed for {serial}: {e}")
 
@@ -248,6 +252,6 @@ class PythonHidAdapter(ControllerIOAdapter):
         self._adapter_names.clear()
 
         try:
-            self._stub.CloseAll(psmove_hid_pb2.CloseAllRequest())
+            self._stub.CloseAll(psmove_hid_pb2.CloseAllRequest(), timeout=RPC_TIMEOUT_S)
         except grpc.RpcError as e:
             logger.warning(f"CloseAll RPC failed: {e}")

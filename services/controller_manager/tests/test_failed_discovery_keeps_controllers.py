@@ -1,7 +1,7 @@
-"""A failed or timed-out rust-hid Discover is not "no controllers" (UC-002 A1, #2125).
+"""A failed or timed-out HID Discover is not "no controllers" (UC-002 A1, #2125, #2140).
 
-Real DiscoveryLoop + MultiplexerBackend + RustServiceAdapter; only the rust-hid
-stub and the loop's other collaborators are mocked.
+Real DiscoveryLoop + MultiplexerBackend + RustServiceAdapter / PythonHidAdapter;
+only the HID service stub and the loop's other collaborators are mocked.
 """
 
 import queue
@@ -22,15 +22,16 @@ from services.controller_manager.multiplexer.multiplexer_backend import (
     MAX_FAILED_DISCOVERY_PASSES,
     MultiplexerBackend,
 )
+from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
 
 SERIALS = ["AABBCCDDEE01", "AABBCCDDEE02"]
 
 
-def _rust_adapter() -> RustServiceAdapter:
-    adapter = RustServiceAdapter.__new__(RustServiceAdapter)
+def _hid_adapter(adapter_cls: type[RustServiceAdapter | PythonHidAdapter]) -> RustServiceAdapter | PythonHidAdapter:
+    adapter = adapter_cls.__new__(adapter_cls)
     adapter._channel = MagicMock()
-    adapter._stub = MagicMock()
+    adapter._stub = MagicMock(spec_set=["Discover", "Open", "Close", "CloseAll", "StreamIO"])
     adapter._command_queue = queue.Queue(maxsize=256)
     adapter._latest_data = {}
     adapter._trigger_latch = set()
@@ -63,9 +64,9 @@ def _timeout():
 
 
 class _Harness:
-    def __init__(self):
-        self.rust = _rust_adapter()
-        self.backend = MultiplexerBackend(adapters=[self.rust])
+    def __init__(self, adapter_cls):
+        self.hid = _hid_adapter(adapter_cls)
+        self.backend = MultiplexerBackend(adapters=[self.hid])
         self.button_detector = create_autospec(ButtonDetector, instance=True)
         rescan_timer = create_autospec(PeriodicRescanTimer, instance=True)
         rescan_timer.should_force_rescan.return_value = False
@@ -86,10 +87,10 @@ class _Harness:
 
     async def pass_with(self, outcome):
         if isinstance(outcome, Exception):
-            self.rust._stub.Discover.side_effect = outcome
+            self.hid._stub.Discover.side_effect = outcome
         else:
-            self.rust._stub.Discover.side_effect = None
-            self.rust._stub.Discover.return_value = _answer(outcome)
+            self.hid._stub.Discover.side_effect = None
+            self.hid._stub.Discover.return_value = _answer(outcome)
         await self.loop._check_for_new_controllers()
 
     def disconnects_published(self) -> list[str]:
@@ -100,11 +101,16 @@ class _Harness:
         ]
 
 
+@pytest.fixture(params=[RustServiceAdapter, PythonHidAdapter], ids=["rust", "python_hid"])
+def adapter_cls(request):
+    return request.param
+
+
 @pytest.mark.uc("UC-002", flow="A1")
 class TestFailedDiscoveryPass:
     @pytest.mark.asyncio
-    async def test_one_timeout_mid_game_drops_nobody(self):
-        h = _Harness()
+    async def test_one_timeout_mid_game_drops_nobody(self, adapter_cls):
+        h = _Harness(adapter_cls)
         await h.pass_with(SERIALS)
         assert sorted(h.tracked) == SERIALS
 
@@ -116,8 +122,8 @@ class TestFailedDiscoveryPass:
         assert h.disconnects_published() == []
 
     @pytest.mark.asyncio
-    async def test_consecutive_failures_drop_the_controllers(self):
-        h = _Harness()
+    async def test_consecutive_failures_drop_the_controllers(self, adapter_cls):
+        h = _Harness(adapter_cls)
         await h.pass_with(SERIALS)
 
         for _ in range(MAX_FAILED_DISCOVERY_PASSES - 1):
@@ -132,8 +138,8 @@ class TestFailedDiscoveryPass:
         assert sorted(h.disconnects_published()) == SERIALS
 
     @pytest.mark.asyncio
-    async def test_a_successful_pass_resets_the_count(self):
-        h = _Harness()
+    async def test_a_successful_pass_resets_the_count(self, adapter_cls):
+        h = _Harness(adapter_cls)
         await h.pass_with(SERIALS)
 
         for _ in range(MAX_FAILED_DISCOVERY_PASSES - 1):
@@ -146,9 +152,9 @@ class TestFailedDiscoveryPass:
         assert h.loop._gameplay_disconnects == []
 
     @pytest.mark.asyncio
-    async def test_an_empty_answer_still_drops_at_once(self):
+    async def test_an_empty_answer_still_drops_at_once(self, adapter_cls):
         """An answer with no controllers is a real disappearance, not a failure."""
-        h = _Harness()
+        h = _Harness(adapter_cls)
         await h.pass_with(SERIALS)
 
         await h.pass_with([])

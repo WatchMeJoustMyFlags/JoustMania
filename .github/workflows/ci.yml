@@ -610,6 +610,13 @@ jobs:
           fi
           echo "OK: no module-global random.* calls under games/"
 
+      # #2107 (UC-031 BR-007, C-050): the voice catalog, voice_manifest.json and
+      # the committed generated voice files agree. No TTS, no network; a
+      # generator-only change is covered by tests/contract/test_gen_voice.py.
+      - name: Voice catalog check
+        if: matrix.service == 'audio'
+        run: make voice-check
+
       - name: Typecheck
         continue-on-error: true  # ty is immature, don't block CI
         run: |

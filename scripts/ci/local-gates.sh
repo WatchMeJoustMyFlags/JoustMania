@@ -36,7 +36,8 @@
 # Services / gate keys accepted by SERVICE:
 #   lib game_coordinator menu controller_manager audio pairing_daemon python_hid operator_pad
 #   agent flag-service connect-proxy agent-protos dashboard rust-hid
-#   contract contract-flagd service service-touched grafana compose
+#   contract contract-flagd service service-touched grafana compose voice
+#   (audio also selects voice-check)
 #   (hyphens and underscores are interchangeable)
 #
 # Env:
@@ -73,7 +74,7 @@ PY_SERVICES=(game_coordinator menu controller_manager audio pairing_daemon pytho
 ALL_GATES=(lint spec-lint spec-touched
   py:lib py:game_coordinator py:menu py:controller_manager py:audio py:pairing_daemon py:python_hid py:operator_pad
   go:agent go:flag-service connect-proxy agent-protos dashboard rust-hid
-  contract contract-flagd service service-touched grafana-json compose yaml-dupkeys)
+  voice-check contract contract-flagd service service-touched grafana-json compose yaml-dupkeys)
 
 plan_only=false
 print_cmd=""
@@ -100,7 +101,9 @@ select_key() {  # map a SERVICE key to gates
   local key="${1//-/_}"
   case "$key" in
     lib) selected[py:lib]=1 ;;
-    game_coordinator|menu|controller_manager|audio|pairing_daemon|python_hid|operator_pad) selected[py:$key]=1 ;;
+    game_coordinator|menu|controller_manager|pairing_daemon|python_hid|operator_pad) selected[py:$key]=1 ;;
+    audio) selected[py:audio]=1; selected[voice-check]=1 ;;
+    voice|voice_check) selected[voice-check]=1 ;;
     agent) selected[go:agent]=1 ;;
     flag_service) selected[go:flag-service]=1 ;;
     connect_proxy) selected[connect-proxy]=1 ;;
@@ -133,6 +136,13 @@ classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
   case "$f" in
     lib/*|proto/*|services/flagd/*|services/agent/experiment/targeting.go|tests/service/test_experiment_shadow_isolation.py|tools/demo/*)
       selected[py:lib]=1 ;;
+  esac
+  # voice catalog (#2107): the Voice catalog check step of the audio service
+  # checks (audio filter); the generator itself is covered in CI by the
+  # Telemetry Contract job (tests/contract/test_gen_voice.py)
+  case "$f" in
+    services/audio/voice/*|services/audio/assets/*|scripts/tools/gen_voice.py|scripts/tools/gen-voice.sh)
+      selected[voice-check]=1 ;;
   esac
   # rust (rust-checks)
   case "$f" in
@@ -282,6 +292,7 @@ gate_cmd() {  # print the shell command for a gate
         echo "echo 'dashboard needs Node 24: install it with nvm (nvm install 24) or set NODE24_DIR' >&2; exit 1"; return
       fi
       echo "export PATH='$node/bin':\"\$PATH\" && cd services/dashboard && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && npx tsc --noEmit && npx vitest run" ;;
+    voice-check) echo "make voice-check" ;;
     rust-hid) echo "cd services/rust-hid && cargo clippy --all-targets -- -D warnings && cargo test" ;;
     # Same steps as the Telemetry Contract job: generated specs, then the tests.
     contract) echo "make specs-check && make spec-refs-check && uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py" ;;
