@@ -915,7 +915,7 @@ class AdminModeHandler:
                 # actually write baseline medium->fast — incoherent. Selecting an
                 # option and the agent-overlay follow-up after a step announce
                 # the effective value from the flag-service view (_overlay_variant, #818, UC-012 BR-006).
-                old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, "sensitivity", True)
+                old_variant, new_variant = await self._cycle_baseline_guarded(writer, "sensitivity", True)
 
                 if new_variant is None:
                     logger.warning("Failed to cycle sensitivity variant")
@@ -1012,9 +1012,7 @@ class AdminModeHandler:
 
             try:
                 writer = self._state_manager.user_prefs_writer
-                old_variant, new_variant = await asyncio.to_thread(
-                    self._cycle_baseline, writer, "game_instructions", True
-                )
+                old_variant, new_variant = await self._cycle_baseline_guarded(writer, "game_instructions", True)
 
                 if new_variant is None:
                     logger.warning("Failed to cycle game_instructions variant")
@@ -1120,7 +1118,7 @@ class AdminModeHandler:
                 # being changed), captured before the mutation — NOT the effective
                 # value, which may be an agent override (#818). The agent-overlay
                 # follow-up (_announce_agent_overlay) announces the effective value.
-                old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, option_name, True)
+                old_variant, new_variant = await self._cycle_baseline_guarded(writer, option_name, True)
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant for {option_name}")
@@ -1174,7 +1172,7 @@ class AdminModeHandler:
                 # being changed), captured before the mutation — NOT the effective
                 # value, which may be an agent override (#818). The agent-overlay
                 # follow-up (_announce_agent_overlay) announces the effective value.
-                old_variant, new_variant = await asyncio.to_thread(self._cycle_baseline, writer, option_name, False)
+                old_variant, new_variant = await self._cycle_baseline_guarded(writer, option_name, False)
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant backward for {option_name}")
@@ -1331,7 +1329,13 @@ class AdminModeHandler:
                     return
                 new_level = self._next_agent_level(old_level, forward=forward)
 
-                if not await asyncio.to_thread(writer.update_default_variant, AGENT_POLICY_FLAG, new_level):
+                try:
+                    written = await asyncio.to_thread(writer.update_default_variant, AGENT_POLICY_FLAG, new_level)
+                except Exception as e:
+                    # Only the write itself: errors in the feedback below must not cue a failure.
+                    logger.error(f"Error writing agent policy '{new_level}': {e}", exc_info=True)
+                    written = False
+                if not written:
                     logger.warning(f"Failed to write agent policy '{new_level}'")
                     await self._signal_agent_write_failed(serial, controller_manager_pb2)
                     return
@@ -1376,6 +1380,18 @@ class AdminModeHandler:
 
             except Exception as e:
                 logger.error(f"Error changing agent policy: {e}", exc_info=True)
+
+    async def _cycle_baseline_guarded(self, writer, option_name: str, forward: bool) -> tuple[str | None, str | None]:
+        """_cycle_baseline in a thread; an exception from the write is logged and reported as (None, None).
+
+        Callers treat new_variant None as a failed write and give the error cue (UC-012 A5). Only the
+        write is guarded, so a voice or LED error after a successful write never cues a failure.
+        """
+        try:
+            return await asyncio.to_thread(self._cycle_baseline, writer, option_name, forward)
+        except Exception as e:
+            logger.error(f"Error writing {option_name} variant: {e}", exc_info=True)
+            return None, None
 
     async def _signal_write_failed(self, serial: str) -> None:
         """Error cue for a failed admin step write or an unreadable flag service (UC-012 A5, A7).
