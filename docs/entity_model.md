@@ -279,7 +279,7 @@ file is the source). A flag without a policy is read-only baseline. There are no
 
 Delivered by #1417 (FR-135). The flag service's record of one live game (`services/flag-service/state/games.go`), registered by the game coordinator
 at admission and dropped at the game's end, by a reconcile call of its coordinator instance, or after the
-maximum game age (1 h). In-memory, lost on restart.
+maximum game age (1 h) since it was last seen (registered or reconciled, #2217). In-memory, lost on restart.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -289,10 +289,11 @@ maximum game age (1 h). In-memory, lost on restart.
 | experiment_id | Experiment of a shadow experiment game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
 | coordinator_instance | Coordinator instance that registered it; reconcile calls drop only that instance's scopes | String | 80 | Not Null |
-| registered_at | Registration time | DateTime | | Not Null |
+| registered_at | First registration time (display only) | DateTime | | Not Null |
+| last_seen_at | Time of the latest registration or reconcile entry; the maximum game age counts from it (#2217) | DateTime | | Not Null |
 
 **Constraints:** at most 64 KiB of values per scope (NFR-051); a write naming a game without a scope is rejected
-(`game_not_live`). A second registration of the same game id updates the record and keeps `registered_at`; per-player values of serials it no longer lists are dropped (UC-053 A13).
+(`game_not_live`). A second registration of the same game id updates the record, keeps `registered_at` and refreshes `last_seen_at`; per-player values of serials it no longer lists are dropped (UC-053 A13).
 
 ### FLAG_OVERLAY
 

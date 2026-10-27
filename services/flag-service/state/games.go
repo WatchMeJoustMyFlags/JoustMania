@@ -63,11 +63,12 @@ func (s *State) RegisterGame(g Game) (already bool, err *fserr.Error) {
 }
 
 func (s *State) registerLocked(g Game) {
+	g.LastSeenAt = s.opts.Now()
 	if old := s.games[g.ID]; old != nil {
 		g.RegisteredAt = old.RegisteredAt
 		s.dropRemovedSerialsLocked(g.ID, old.Serials, g.Serials)
 	} else {
-		g.RegisteredAt = s.opts.Now()
+		g.RegisteredAt = g.LastSeenAt
 	}
 	serials := append([]string(nil), g.Serials...)
 	sort.Strings(serials)
@@ -158,14 +159,16 @@ func (s *State) Reconcile(instance string, games []Game) ([]GameEnd, *fserr.Erro
 	return ends, nil
 }
 
-// ExpireGames drops game scopes older than the maximum game age (UC-053 A11).
+// ExpireGames drops game scopes not seen for the maximum game age (UC-053 A11):
+// every registration and reconcile entry refreshes LastSeenAt, so a running game
+// the coordinator keeps reconciling never expires (#2217).
 func (s *State) ExpireGames() []GameEnd {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cutoff := s.opts.Now().Add(-s.opts.MaxGameAge)
 	var ends []GameEnd
 	for _, id := range sortedKeys(s.games) {
-		if s.games[id].RegisteredAt.Before(cutoff) {
+		if s.games[id].LastSeenAt.Before(cutoff) {
 			end, _ := s.endLocked(id, EndReasonExpired)
 			ends = append(ends, end)
 		}
