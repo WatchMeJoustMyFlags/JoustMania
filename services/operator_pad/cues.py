@@ -13,6 +13,13 @@ import logging
 import time
 
 from lib.types import Sound
+from lib.voice_prompts import (  # noqa: F401 (re-exported for the action layer)
+    AGENT_LEVEL_VOICES,
+    AGENT_STOPPED_VOICE,
+    LOCK_VOICES,
+    NUMBER_VOICES,
+    SENSITIVITY_VOICES,
+)
 from proto import audio_pb2
 
 logger = logging.getLogger(__name__)
@@ -34,32 +41,8 @@ FAILURE_CUE_GAP_SECONDS = 0.3
 # an operator tunes per venue.
 LIMIT_CUE_MIN_GAP_SECONDS = 1.0
 
-# Lock directions: own voice lines, distinct from the agent stop / resume lines (ADMINOP_OFF / _ON).
-LOCK_VOICES = {True: Sound.MENU_VOX_ADMINOP_TRUE, False: Sound.MENU_VOX_ADMINOP_FALSE}
-
-# Tap announcements (UC-015 BR-011), the same voice tables as the menu (services/menu/settings_ops.py).
-SENSITIVITY_VOICES = [
-    Sound.MENU_VOX_SENSITIVITY_ULTRA_HIGH,
-    Sound.MENU_VOX_SENSITIVITY_HIGH,
-    Sound.MENU_VOX_SENSITIVITY_MEDIUM,
-    Sound.MENU_VOX_SENSITIVITY_LOW,
-    Sound.MENU_VOX_SENSITIVITY_ULTRA_LOW,
-]
-NUMBER_VOICES = {
-    1: Sound.MENU_VOX_ADMINOP_1,
-    2: Sound.MENU_VOX_ADMINOP_2,
-    3: Sound.MENU_VOX_ADMINOP_3,
-    4: Sound.MENU_VOX_ADMINOP_4,
-    5: Sound.MENU_VOX_ADMINOP_5,
-    6: Sound.MENU_VOX_ADMINOP_6,
-}
-AGENT_LEVEL_VOICES = {
-    "none": Sound.MENU_VOX_ADMINOP_OFF,
-    "ambient": Sound.MENU_VOX_ADMINOP_1,
-    "standard": Sound.MENU_VOX_ADMINOP_2,
-    "full": Sound.MENU_VOX_ADMINOP_3,
-}
-AGENT_STOPPED_VOICE = Sound.MENU_VOX_ADMINOP_OFF
+# Lock directions (A6) and the tap announcements (UC-015 BR-011): the voice tables shared with the
+# menu, lib/voice_prompts.py (#2106).
 
 
 class CuePlayer:

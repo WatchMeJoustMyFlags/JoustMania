@@ -2,15 +2,15 @@
 
 import logging
 
+from lib.setting_ladders import MODE_LADDER
 from lib.types import Games
 
 logger = logging.getLogger(__name__)
 
 
-# Game modes available in the menu
+# Game modes available in the menu: the mode ladder shared with the operator pad (#2106).
 # Excludes unimplemented modes (Commander, Ninja) and meta mode (Random)
-_UNIMPLEMENTED_MODES = {Games.Commander, Games.Ninja, Games.Random}
-GAME_MODES: list[str] = [g.name for g in Games if g not in _UNIMPLEMENTED_MODES]
+GAME_MODES: list[str] = MODE_LADDER
 
 
 def validate_mode_keys(mapping: dict[str, object], map_name: str) -> None:

@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 
 from opentelemetry import trace
 
+from lib import setting_ladders
 from lib.telemetry import get_tracer
 from proto import game_coordinator_pb2, menu_pb2
 from services.operator_pad import cues, metrics
@@ -60,10 +61,11 @@ NOOP = "noop"
 # Layer keys and the setting each one steps (UC-015 BR-011).
 LAYER_OPTIONS = {K1: "current_game", K2: "sensitivity", K3: "agent_level", K5: "num_teams"}
 LOBBY_ONLY_OPTIONS = frozenset({"current_game", "sensitivity", "num_teams", "game_instructions"})
-# UC-044 decision backends, in knob order (BR-004; clamped, no wrap).
-BACKENDS = ["rules", "claude", "openai", "jev"]
-# `user/audio_volume.master` variants, low to high (flags.md §9); `mute` is the pad's mute (BR-006).
-VOLUME_VARIANTS = ["mute", "quiet", "normal", "loud", "max"]
+# UC-044 decision backends in knob order (BR-004; clamped, no wrap) and the `user/audio_volume.master`
+# variants low to high (flags.md §9; `mute` is the pad's mute, BR-006): lib/setting_ladders.py, the
+# ladders the menu commits along (#2106).
+BACKENDS = setting_ladders.BACKENDS
+VOLUME_VARIANTS = setting_ladders.VOLUME_LADDER
 MUTE = "mute"
 UNMUTE_DEFAULT = "max"
 
@@ -273,12 +275,11 @@ class Actions:
             logger.warning(f"Unknown decision backend {status.agent_backend!r}: nothing to step from")
             await self._cues.refusal()
             return "set_backend", REFUSED
-        index = BACKENDS.index(status.agent_backend)
-        target = max(0, min(len(BACKENDS) - 1, index + steps))
-        if target == index:
+        target, at_limit = setting_ladders.clamp_step(BACKENDS, status.agent_backend, steps)
+        if at_limit:
             await self._cues.limit()  # A7: already at the end
             return "set_backend", AT_LIMIT
-        return "set_backend", await self._send({"command": "set_backend", "backend": BACKENDS[target]})
+        return "set_backend", await self._send({"command": "set_backend", "backend": target})
 
     # --- volume and mute (step 8, BR-005, BR-006) ----------------------------------------
 
