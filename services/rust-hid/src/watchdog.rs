@@ -172,7 +172,10 @@ pub fn run(
     let mut state = WatchdogState::new(cfg, Instant::now());
     loop {
         std::thread::sleep(cfg.probe_interval);
-        on_tick();
+        // A panicking report must not end the watchdog thread (NFR-054).
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut on_tick)).is_err() {
+            error!("watchdog: the report tick panicked; the watchdog keeps running");
+        }
         let ok = rt.block_on(probe_health(addr, cfg.probe_timeout));
         if !ok {
             warn!(addr, "watchdog: health probe failed");
@@ -429,6 +432,44 @@ mod tests {
             n >= 3,
             "report tick ran {n} times in 500 ms at 50 ms passes"
         );
+    }
+
+    // UC: UC-002 A7
+    // NFR: NFR-054
+    #[test]
+    fn test_a_panicking_report_tick_does_not_stop_the_watchdog() {
+        let (addr, stall) = spawn_stallable_health_server();
+        let device = Heartbeat::new();
+        let _beating = keep_beating(&device);
+        let ticks = Arc::new(AtomicU64::new(0));
+        let (trip_tx, trip_rx) = mpsc::channel();
+        let counter = ticks.clone();
+        std::thread::spawn(move || {
+            run(
+                cfg(),
+                &addr,
+                &device,
+                move || {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    panic!("report tick failure");
+                },
+                |trip| trip_tx.send(trip).unwrap(),
+            )
+        });
+        assert_eq!(
+            trip_rx.recv_timeout(Duration::from_millis(500)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        assert!(
+            ticks.load(Ordering::Relaxed) >= 3,
+            "the tick stopped after a panic"
+        );
+        // The watchdog still trips on a real hang.
+        stall.send(()).unwrap();
+        let trip = trip_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the watchdog died with the panicking tick");
+        assert_eq!(trip, Trip::GrpcUnresponsive { failed_probes: 3 });
     }
 
     // UC: UC-002 A7

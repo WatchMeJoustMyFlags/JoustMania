@@ -358,7 +358,7 @@ impl Writer {
 pub enum StuckWriterEvent {
     /// A write has been in flight longer than the threshold.
     Stuck { serial: String, age: Duration },
-    /// The stuck write returned (or its controller was closed).
+    /// No longer stuck: the write returned or its controller was closed.
     Recovered { serial: String },
 }
 
@@ -382,8 +382,13 @@ impl StuckWriterMonitor {
     /// Compare the router's writes in flight with the last report; log and
     /// return what changed. A new write that sticks again is a new episode.
     pub fn check(&mut self, router: &OutputRouter) -> Vec<StuckWriterEvent> {
+        self.observe(router.writes_in_flight())
+    }
+
+    /// `check` on a given snapshot of the writes in flight.
+    fn observe(&mut self, writes: Vec<WriteInFlight>) -> Vec<StuckWriterEvent> {
         let mut stuck: HashMap<String, (u64, Duration)> = HashMap::new();
-        for w in router.writes_in_flight() {
+        for w in writes {
             if let Some(started) = w.started
                 && w.age > self.threshold
             {
@@ -399,7 +404,10 @@ impl StuckWriterMonitor {
             .collect();
         gone.sort();
         for serial in gone {
-            info!(serial = %serial, "Output write returned after being reported stuck");
+            info!(
+                serial = %serial,
+                "Output write no longer stuck (the write returned or the controller was closed)"
+            );
             events.push(StuckWriterEvent::Recovered {
                 serial: serial.clone(),
             });
@@ -798,9 +806,6 @@ pub(crate) mod tests {
             || healthy.reports().len() == 1,
             Duration::from_secs(1)
         ));
-        // In flight, but not yet past the threshold: nothing to report.
-        assert_eq!(monitor.check(&router), vec![]);
-
         std::thread::sleep(threshold + Duration::from_millis(40));
         let events = monitor.check(&router);
         assert!(
@@ -873,6 +878,49 @@ pub(crate) mod tests {
         router.close("stuck");
         assert!(router.writes_in_flight().iter().all(|w| w.serial == "ok"));
         stuck.release.store(true, Ordering::Relaxed);
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    #[test]
+    fn test_a_new_write_that_sticks_again_is_a_new_episode() {
+        let threshold = Duration::from_secs(1);
+        let mut monitor = StuckWriterMonitor::new(threshold);
+        let write = |started: Option<u64>, age_ms: u64| WriteInFlight {
+            serial: "s1".into(),
+            started,
+            age: Duration::from_millis(age_ms),
+        };
+        assert_eq!(
+            monitor.observe(vec![write(Some(10), 1500)]),
+            vec![StuckWriterEvent::Stuck {
+                serial: "s1".into(),
+                age: Duration::from_millis(1500)
+            }]
+        );
+        // The same write, still stuck: no new report.
+        assert_eq!(monitor.observe(vec![write(Some(10), 4500)]), vec![]);
+        // Between two ticks the write returned and the next one stuck too.
+        assert_eq!(
+            monitor.observe(vec![write(Some(9000), 1200)]),
+            vec![
+                StuckWriterEvent::Recovered {
+                    serial: "s1".into()
+                },
+                StuckWriterEvent::Stuck {
+                    serial: "s1".into(),
+                    age: Duration::from_millis(1200)
+                },
+            ]
+        );
+        // Under the threshold or idle: not stuck.
+        assert_eq!(
+            monitor.observe(vec![write(Some(20000), 900)]),
+            vec![StuckWriterEvent::Recovered {
+                serial: "s1".into()
+            }]
+        );
+        assert_eq!(monitor.observe(vec![write(None, 0)]), vec![]);
     }
 
     // NFR: NFR-055
