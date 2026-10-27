@@ -24,10 +24,10 @@ A cloud-native refactor of the [original JoustMania](https://github.com/adangert
 ```bash
 git clone https://github.com/WatchMeJoustMyFlags/JoustMania.git
 cd JoustMania
-./setup.sh    # Install dependencies, Bluetooth config, pairing daemon
+./setup.sh    # Docker, Bluetooth config; then .env.local, autostart and the pinned version
 ```
 
-The setup script will guide you through installation and optionally enable autostart on boot.
+The setup script guides you through the installation, then offers a private `.env.local`, autostart on boot and pins the checkout to a release (or an exact commit) with its images pulled, so the Pi also starts without a network ([UC-060](docs/use_cases/UC-060.md) A6). The autostart runs the full stack; the lite stack is for manual tests only.
 
 ### Demo Mode (No Hardware)
 

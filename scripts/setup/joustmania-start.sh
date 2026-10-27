@@ -28,11 +28,12 @@ cd "$JOUSTMANIA_DIR"
 # old unit's Restart=on-failure cannot loop.
 STATE_MISSING=""
 STATE_DOWN=""
+STATE_REASON=""
 write_state() { # $1 = phase, $2 = result
     {
         mkdir -p "$STATE_DIR" &&
-            printf 'phase=%s\nresult=%s\nhead=%s\nimage_tag=%s\nmissing=%s\ndown=%s\nts=%s\n' \
-                "$1" "$2" "${HEAD_SHORT:-unknown}" "${EFFECTIVE_IMAGE_TAG:-unknown}" \
+            printf 'phase=%s\nresult=%s\nreason=%s\nhead=%s\nimage_tag=%s\nmissing=%s\ndown=%s\nts=%s\n' \
+                "$1" "$2" "$STATE_REASON" "${HEAD_SHORT:-unknown}" "${EFFECTIVE_IMAGE_TAG:-unknown}" \
                 "${STATE_MISSING# }" "${STATE_DOWN# }" "$(date -Iseconds)" \
                 >"$STATE_FILE"
     } 2>/dev/null || true
@@ -111,7 +112,16 @@ if PIN_IMAGE_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
         echo "WARN: .env.local sets IMAGE_TAG; it is ignored (the pinned checkout decides, UC-060 BR-003). Remove it."
     fi
 else
-    echo "WARN: checkout is not pinned (HEAD on a branch): IMAGE_TAG comes from .env/.env.local (UC-060 A4). Pin with scripts/setup/joustmania-upgrade.sh"
+    # A4: a branch runs whatever was pulled or checked out by hand, with the
+    # image tag of .env/.env.local, so config and images need not match (C-040).
+    # Start nothing; the unit fails (ACT LED 5 Hz) and status shows the reason.
+    # A version older than MIN_PINNABLE has no such check: the upgrade command
+    # refuses to switch to one (A2 step 1).
+    BRANCH="$(git symbolic-ref -q --short HEAD 2>/dev/null || echo "none, git cannot read the checkout")"
+    STATE_REASON="not pinned (branch $BRANCH); pin with scripts/setup/joustmania-upgrade.sh"
+    echo "FAIL: the checkout is not pinned (branch $BRANCH at commit $HEAD_SHORT); nothing started (UC-060 A4)."
+    echo "Pin it to a release tag or an exact commit sha, $(joustmania_missing_hint "$JOUSTMANIA_DIR")"
+    exit 1
 fi
 
 # Targeted cleanup only: a joustmania-* container that is not ours blocks the

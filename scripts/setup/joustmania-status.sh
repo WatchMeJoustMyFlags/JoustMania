@@ -114,7 +114,7 @@ fi
 
 # --- last start (start.env) -------------------------------------------------
 if [[ -r "$STATE_FILE" ]]; then
-    LAST="$(grep -E '^(result|missing|down|ts)=' "$STATE_FILE" | grep -vE '^[a-z]+=$' | tr '\n' ' ')"
+    LAST="$(grep -E '^(result|reason|missing|down|ts)=' "$STATE_FILE" | grep -vE '^[a-z]+=$' | tr '\n' ' ')"
     report INFO "last start: ${LAST% }"
 else
     report INFO "last start: no start.env (not started since boot)"
