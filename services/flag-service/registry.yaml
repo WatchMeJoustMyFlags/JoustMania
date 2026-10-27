@@ -139,8 +139,8 @@ flags:
   # experiment+arm or real, so no agent writer can reach them (C-034).
   # real_write: no_live_real_game (#2096, UC-043 A17): a write in scope real is refused
   # with 409 real_game_live while a real game is registered (flags.md §13). Inert while
-  # the scope is [stack]; FR-162 widens it.
-  - {set: game, key: shield.activation, kind: overlay, scope: [stack], bounds: {variants: [instant, trigger, hold]}, real_write: no_live_real_game}
+  # the scope is [stack]; FR-162 widens it. persist: the operator pad's value (UC-015 BR-018).
+  - {set: game, key: shield.activation, kind: overlay, scope: [stack], persist: true, bounds: {variants: [instant, trigger, hold]}, real_write: no_live_real_game}
   - {set: game, key: shield.charge_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 120]}}
   # Shield charge rumble pattern (#2094, UC-040 BR-021): read by the controller manager per charge.
   - {set: game, key: shield.charge_rumble_intensity, kind: overlay, scope: [stack], bounds: {range: [0, 255]}}

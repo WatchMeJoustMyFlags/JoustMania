@@ -61,10 +61,11 @@ MENU_UNAVAILABLE = "menu_unavailable"
 NOOP = "noop"
 
 # Layer keys and the setting each one steps (UC-015 BR-011).
-LAYER_OPTIONS = {K1: "current_game", K2: "sensitivity", K3: "agent_level", K5: "num_teams"}
+# K6: the shield mode (BR-018, #2215); its tap still toggles the instructions.
+LAYER_OPTIONS = {K1: "current_game", K2: "sensitivity", K3: "agent_level", K5: "num_teams", K6: "shield.activation"}
 # Tap keys that announce a setting (BR-011) and the setting whose label they say first.
 ANNOUNCE_OPTIONS = {K2: "sensitivity", K3: "agent_level", K5: "num_teams", K7: "decision.backend"}
-LOBBY_ONLY_OPTIONS = frozenset({"current_game", "sensitivity", "num_teams", "game_instructions"})
+LOBBY_ONLY_OPTIONS = frozenset({"current_game", "sensitivity", "num_teams", "game_instructions", "shield.activation"})
 # The setting each layer key previews while the knob turns (BR-017): the layer options plus the backend.
 PREVIEW_OPTIONS = {**LAYER_OPTIONS, K7: "decision.backend"}
 # UC-044 decision backends in knob order (BR-004; clamped, no wrap) and the `user/audio_volume.master`

@@ -108,3 +108,43 @@ def test_pad_words_name_every_backend_and_every_preview_option():
     assert setting_ladders.PREVIEW_OPTIONS - {"force_all_start"} <= set(voice_prompts.LABEL_VOICES)
     assert voice_prompts.LIMIT_VOICES[True] != voice_prompts.LIMIT_VOICES[False]
     assert set(voice_prompts.LOCK_VOICES.values()).isdisjoint(voice_prompts.AGENT_SWITCH_VOICES.values())
+
+
+# --- Shield mode (UC-015 BR-018, #2215) -------------------------------------------------------
+
+
+@pytest.mark.uc("UC-015", br=["BR-018", "BR-005"], steps=[9])
+def test_shield_knob_ladder_is_automatic_then_the_flag_files_variants():
+    assert setting_ladders.SHIELD_ACTIVATION_LADDER == ["instant", "trigger", "hold"]
+    assert setting_ladders.SHIELD_KNOB_LADDER == ["automatic", "instant", "trigger", "hold"]
+    assert "shield.activation" not in setting_ladders.FLAG_LADDERS  # the knob ladder is not the flag's
+    for flag_file in ("game.json", "ci/game.json"):
+        variants = json.loads((FLAGD_DIR / flag_file).read_text())["flags"]["shield.activation"]["variants"]
+        assert set(variants) == set(setting_ladders.SHIELD_ACTIVATION_LADDER), flag_file
+        assert "automatic" not in variants  # `automatic` is the absence of an operator value
+
+
+@pytest.mark.uc("UC-015", br=["BR-018", "BR-017"], flow="A7", steps=[9])
+@pytest.mark.parametrize(
+    ("operator", "effective", "steps", "expected"),
+    [
+        ("automatic", "trigger", 1, Preview("instant")),  # the knob starts at the operator value ...
+        ("automatic", "hold", 3, Preview("hold")),
+        ("automatic", "trigger", -1, Preview("automatic", at_limit=True)),
+        ("instant", "instant", 1, Preview("trigger")),
+        ("instant", "hold", -1, Preview("automatic")),  # ... not at the effective one (a stage overlay)
+        ("hold", "hold", -3, Preview("automatic")),
+        ("hold", "hold", 1, Preview("hold", at_limit=True)),
+        ("trigger", "trigger", 5, Preview("hold")),
+        ("", "trigger", 1, setting_ladders.UNKNOWN),  # operator value unknown: silent, never a guess
+    ],
+)
+def test_shield_preview_per_step(operator, effective, steps, expected):
+    status = menu_pb2.GetMenuStatusResponse(shield_activation=effective, shield_activation_operator=operator)
+    assert preview_value("shield.activation", status, steps) == expected
+
+
+@pytest.mark.uc("UC-015", br=["BR-018", "BR-011"], steps=[9])
+def test_shield_voices_cover_the_knob_ladder_and_have_a_label():
+    assert set(voice_prompts.SHIELD_ACTIVATION_VOICES) == set(setting_ladders.SHIELD_KNOB_LADDER)
+    assert "shield.activation" in voice_prompts.LABEL_VOICES

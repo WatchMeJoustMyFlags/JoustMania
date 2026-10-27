@@ -338,6 +338,12 @@ class Sound(StrEnum):
     MENU_VOX_BACKEND_CLAUDE = "backend_claude"
     MENU_VOX_BACKEND_OPENAI = "backend_openai"
     MENU_VOX_BACKEND_JEV = "backend_jev"
+    # Shield mode layer (#2215, UC-015 BR-018).
+    MENU_VOX_LABEL_SHIELD_MODE = "label_shield_mode"
+    MENU_VOX_SHIELD_INSTANT = "shield_instant"
+    MENU_VOX_SHIELD_TRIGGER = "shield_trigger"
+    MENU_VOX_SHIELD_HOLD = "shield_hold"
+    MENU_VOX_SHIELD_AUTOMATIC = "shield_automatic"
     MENU_VOX_STATUS_NOT_POSSIBLE = "status_not_possible"
     MENU_VOX_STATUS_MAXIMUM = "status_maximum"
     MENU_VOX_STATUS_MINIMUM = "status_minimum"

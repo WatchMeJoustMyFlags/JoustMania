@@ -34,6 +34,14 @@ ON_OFF_LADDER: list[str] = ["off", "on"]
 # `user/audio_volume.master` variants low to high (flags.md §9); `mute` is the pad's mute (BR-006).
 VOLUME_LADDER: list[str] = ["mute", "quiet", "normal", "loud", "max"]
 
+# `game/shield.activation` variants (UC-015 BR-018, #2215): the shield activation modes (flags.md §4).
+SHIELD_ACTIVATION_LADDER: list[str] = ["instant", "trigger", "hold"]
+# The pad's K6 knob ladder (BR-018): `automatic` (no operator value: the flag file's default or an
+# agent promotion applies) first, then the modes; clamped, never wraps. Committing `automatic` clears
+# the persisted operator value, any other rung writes it.
+SHIELD_AUTOMATIC = "automatic"
+SHIELD_KNOB_LADDER: list[str] = [SHIELD_AUTOMATIC, *SHIELD_ACTIVATION_LADDER]
+
 # UC-013 / UC-015 BR-004: the intervention levels, most restrictive first; clamped, never wraps.
 AGENT_POLICY_LEVELS: list[str] = ["none", "ambient", "standard", "full"]
 # Levels a resume can restore (BR-002 saves a level only when it is not "none").
@@ -100,6 +108,8 @@ class _Status(Protocol):
     agent_saved_level: str
     agent_enabled_state: str
     agent_backend: str
+    shield_activation: str
+    shield_activation_operator: str
 
 
 @dataclass(frozen=True)
@@ -117,7 +127,7 @@ class Preview:
 UNKNOWN = Preview(None)
 
 # Options `preview_value` knows: the `step_setting` options plus the backend (`set_backend`).
-PREVIEW_OPTIONS = frozenset({*FLAG_LADDERS, "current_game", "agent_level", "decision.backend"})
+PREVIEW_OPTIONS = frozenset({*FLAG_LADDERS, "current_game", "agent_level", "decision.backend", "shield.activation"})
 
 
 def _flag_variant(option: str, status: _Status) -> str | None:
@@ -156,6 +166,12 @@ def preview_value(option: str, status: _Status | None, net_steps: int) -> Previe
         if not status.selection:
             return UNKNOWN
         new, at_limit = clamp_step(MODE_LADDER, status.selection, net_steps)
+        return Preview(new, at_limit)
+    if option == "shield.activation":
+        # BR-018: the knob starts at the operator's value (`automatic` when none), never at the effective one.
+        if status.shield_activation_operator not in SHIELD_KNOB_LADDER:
+            return UNKNOWN  # the menu could not read whether the operator set it
+        new, at_limit = clamp_step(SHIELD_KNOB_LADDER, status.shield_activation_operator, net_steps)
         return Preview(new, at_limit)
     if option == "decision.backend":
         if status.agent_backend not in BACKENDS:
