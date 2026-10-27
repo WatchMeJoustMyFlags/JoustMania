@@ -74,6 +74,11 @@ expect "docs/specs/notes/grpc-rpcs.yaml" "$ALWAYS contract yaml-dupkeys"
 expect "docs/README.md" "$ALWAYS"
 expect "docker-compose.yml" "$ALWAYS contract contract-flagd service compose yaml-dupkeys"
 expect "docker-compose.lite.yml" "$ALWAYS compose yaml-dupkeys"
+# voice catalog (#2107): the catalog, the generated assets and the generator
+expect "services/audio/voice/lines.yaml" "$ALWAYS py:audio voice-check contract yaml-dupkeys"
+expect "services/audio/assets/Menu/vox/gen_male/high.ogg" "$ALWAYS py:audio voice-check contract"
+expect "scripts/tools/gen_voice.py" "$ALWAYS voice-check contract"
+expect "services/audio/servicer.py" "$ALWAYS py:audio contract"
 
 # Service tier (#1839): full tier only for harness / stack changes, targeted
 # files for edited test_*.py, nothing locally for product paths (PR CI runs it).
@@ -100,7 +105,9 @@ got="$(SERVICE=service-touched PR_GATES_FILES="${WORK}/files" "${GATES}" --plan 
 [[ "$got" == "lint spec-lint service-touched " ]] || { echo "FAIL: SERVICE=service-touched: $got" >&2; exit 1; }
 got="$(SERVICE=menu PR_GATES_FILES="${WORK}/files" "${GATES}" --plan 2>/dev/null | tr '\n' ' ')"
 [[ "$got" == "lint spec-lint py:menu " ]] || { echo "FAIL: SERVICE=menu must not add service-touched: $got" >&2; exit 1; }
-pass=$((pass + 5))
+got="$(SERVICE=audio PR_GATES_FILES=/dev/null "${GATES}" --plan 2>/dev/null | tr '\n' ' ')"
+[[ "$got" == "lint spec-lint py:audio voice-check " ]] || { echo "FAIL: SERVICE=audio: $got" >&2; exit 1; }
+pass=$((pass + 6))
 
 # Note: printed whenever the CI service filter matched and the full tier did not run.
 note='note: service tier not run locally; PR CI runs the full tier'
