@@ -451,8 +451,8 @@ class SettingsOps:
             level_ok = await asyncio.to_thread(
                 self._write, self.state_manager.agent_settings_writer, AGENT_POLICY_FLAG, target
             )
-        # BR-003 order: the level, then the write gate, then enabled last, so the agent never runs
-        # with the gate still closed. Every write is attempted whatever an earlier one did (A3).
+        # BR-003 order: the level, then the write gate, then enabled last, so enabled is never switched
+        # on before the gate. Every write is attempted whatever an earlier one did (A3).
         gate_ok = await asyncio.to_thread(self._write, self.agent_enabled_writer, AGENT_WRITE_GATE_FLAG, "on")
         enabled_ok = await asyncio.to_thread(self._write, self.agent_enabled_writer, AGENT_ENABLED_FLAG, "on")
         result = _writes_result(

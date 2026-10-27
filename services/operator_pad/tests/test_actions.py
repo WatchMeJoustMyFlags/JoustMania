@@ -315,13 +315,36 @@ async def test_k3_hold_stops_a_running_agent_and_resumes_a_stopped_one(actions, 
     assert sent(menu) == [{"command": "agent_switch", "direction": direction}]
 
 
-@pytest.mark.uc("UC-015", flow="A6", br=["BR-002"])
-async def test_locked_pad_still_stops_the_agent_but_never_resumes_it(actions, menu):
-    stopped = status(agent_enabled=False)
-    await actions.dispatch(Gesture(HOLD, "K3", locked=True), stopped, stopped)
-    menu.ProcessInput.assert_not_awaited()
-    await actions.dispatch(Gesture(HOLD, "K3", locked=True), status(), status())
+@pytest.mark.uc("UC-015", flow="A6", br=["BR-002", "BR-013"])
+@pytest.mark.parametrize(
+    ("at_press", "at_release"),
+    [
+        (status(), status()),
+        # Fully stopped: the stop goes out anyway and the menu's A9 makes it a no-op.
+        (status(agent_enabled=False), status(agent_enabled=False)),
+        (status(agent_level="none"), status(agent_level="none")),
+        # Only the write gate closed (#2093): the stop still ends remote decide calls.
+        (status(agent_interventions_enabled_state="off"), status(agent_interventions_enabled_state="off")),
+        # A change during the hold does not cancel a locked hold: it is kill only.
+        (status(agent_enabled=False), status()),
+    ],
+    ids=["running", "enabled-off", "level-none", "gate-closed", "changed-during-the-hold"],
+)
+async def test_locked_k3_hold_always_sends_the_stop(actions, menu, cues, at_press, at_release):
+    """A6: a locked pad is kill only; a locked K3 hold sends the stop whatever the status, never the resume."""
+    result = await actions.dispatch(Gesture(HOLD, "K3", held_ms=1200, locked=True), at_release, at_press)
+    assert result == ("agent_switch", "ok")
     assert sent(menu) == [{"command": "agent_switch", "direction": "stop"}]
+    cues.cancel.assert_not_awaited()
+
+
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-002", "BR-003"])
+async def test_agent_switch_waits_for_the_slowest_resume(actions, menu):
+    """The resume from none is 2 reads + 3 settled writes (4.0 s of flag-service deadlines, #2093)."""
+    stopped = status(agent_level="none")
+    await actions.dispatch(Gesture(HOLD, "K3", held_ms=1200), stopped, stopped)
+    assert sent(menu) == [{"command": "agent_switch", "direction": "resume"}]
+    assert menu.ProcessInput.await_args.kwargs["timeout"] >= 5.0
 
 
 @pytest.mark.uc("UC-015", flow="A10", br=["BR-009", "BR-013"])
