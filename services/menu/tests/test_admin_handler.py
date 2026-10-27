@@ -315,22 +315,79 @@ class TestIncreaseValueBoolean:
 
 
 class TestWriteFailure:
-    """UC-012 A5: a flag write that fails persists nothing and gives no success feedback."""
+    """UC-012 A5: a flag write that fails persists nothing, gives no success feedback and the error cue."""
+
+    @staticmethod
+    def _assert_error_cue_only(manager):
+        from proto import controller_manager_pb2
+
+        manager.led.send_game_effect.assert_called_once()
+        call = manager.led.send_game_effect.call_args
+        assert call[0][1] == controller_manager_pb2.GAME_EFFECT_PULSE
+        assert call.kwargs["color"] == Colors.Red.value
+        assert call.kwargs["duration_ms"] == 400
+        assert call.kwargs["speed"] == 10
+        manager.audio.play_voice.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="A5")
-    @pytest.mark.parametrize("handler_method", ["handle_increase_value", "handle_decrease_value"])
-    async def test_failed_cycle_gives_no_feedback_and_stays_in_admin(self, handler, mock_state_manager, handler_method):
-        """cycle_variant returns None (write failed): no pulse, no voice, the host stays in admin (step 3)."""
+    @pytest.mark.parametrize("handler_method", ["handle_increase_value", "handle_decrease_value", "handle_sensitivity"])
+    async def test_failed_cycle_gives_only_the_error_cue_and_stays_in_admin(
+        self, handler, mock_state_manager, handler_method
+    ):
+        """cycle_variant returns None (write failed): a short red pulse, no voice, the host stays in admin."""
         handler.current_option = 0  # sensitivity
         mock_state_manager.game_settings_writer.cycle_variant.return_value = None
 
         await getattr(handler, handler_method)("test_serial")
 
-        mock_state_manager.led.send_game_effect.assert_not_called()
-        mock_state_manager.audio.play_voice.assert_not_called()
+        self._assert_error_cue_only(mock_state_manager)
         assert handler.active is True
         assert handler.controller_serial == "test_serial"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A5")
+    async def test_failed_instructions_toggle_gives_the_error_cue(self, handler, mock_state_manager):
+        mock_state_manager.user_prefs_writer.cycle_variant.return_value = None
+
+        await handler.handle_instructions("test_serial")
+
+        self._assert_error_cue_only(mock_state_manager)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A5")
+    async def test_successful_step_gives_no_error_cue(self, handler, mock_state_manager):
+        """A write that applied plays the success feedback, never the red 400 ms error pulse."""
+        handler.current_option = 0
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
+
+        await handler.handle_increase_value("test_serial")
+
+        for effect_call in mock_state_manager.led.send_game_effect.call_args_list:
+            assert effect_call.kwargs.get("duration_ms") != 400
+        mock_state_manager.audio.play_voice.assert_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A7")
+    async def test_unreadable_flag_service_on_move_gives_the_error_cue(self, handler, mock_state_manager):
+        """Move with the flag service unreadable: the option colour and a short red pulse, no value voice."""
+        handler.current_option = len(handler.option_names) - 1  # next Move press wraps to sensitivity
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = None
+
+        await handler.handle_cycle_option("test_serial")
+
+        self._assert_error_cue_only(mock_state_manager)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A7")
+    async def test_readable_flag_service_on_move_gives_no_error_cue(self, handler, mock_state_manager):
+        handler.current_option = len(handler.option_names) - 1
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "fast")
+
+        await handler.handle_cycle_option("test_serial")
+
+        for effect_call in mock_state_manager.led.send_game_effect.call_args_list:
+            assert effect_call.kwargs.get("duration_ms") != 400
 
 
 class TestDecreaseValueSensitivity:
@@ -1904,7 +1961,7 @@ class TestAgentControlOption:
 
 
 class TestEffectiveValueDisplay:
-    """Tests for the truthful admin value display resolved through flagd (#818)."""
+    """Tests for the truthful admin value display, resolved through the flag service (#818, #2092)."""
 
     def test_effective_variant_reads_flag_service_not_lagging_client(self, handler, mock_state_manager):
         """The flag service's effective value wins over an in-process client one write behind (#2092)."""

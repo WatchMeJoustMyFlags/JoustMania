@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 # is routed through a separate writer/client and handled specially in the
 # value-change paths rather than the generic game.json flag cycle.
 AGENT_CONTROL_OPTION = "agent_control"
-# Error cue when the agent-level write fails (UC-013 A3): short fast red pulse.
+# Error cue when a write fails or the flag service cannot be read (UC-013 A3, UC-012 A5/A7): short fast red pulse.
 AGENT_ERROR_PULSE_MS = 400
 AGENT_ERROR_PULSE_SPEED = 10
 # The agent key (UC-013 BR-001), the level ladder (clamped, never wrapping) and the voice
@@ -919,6 +919,7 @@ class AdminModeHandler:
 
                 if new_variant is None:
                     logger.warning("Failed to cycle sensitivity variant")
+                    await self._signal_write_failed(serial)
                     return
 
                 # Map variant name to numeric value for visual feedback
@@ -1017,6 +1018,7 @@ class AdminModeHandler:
 
                 if new_variant is None:
                     logger.warning("Failed to cycle game_instructions variant")
+                    await self._signal_write_failed(serial)
                     return
 
                 enabled = new_variant == "on"
@@ -1122,6 +1124,7 @@ class AdminModeHandler:
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant for {option_name}")
+                    await self._signal_write_failed(serial)
                     return
 
                 # Get the actual value for visual/voice feedback
@@ -1175,6 +1178,7 @@ class AdminModeHandler:
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant backward for {option_name}")
+                    await self._signal_write_failed(serial)
                     return
 
                 # Get the actual value for visual/voice feedback
@@ -1209,6 +1213,8 @@ class AdminModeHandler:
         try:
             variant = await asyncio.to_thread(self._effective_variant, option_name)
             if variant is None:
+                # Flag service unreadable (UC-012 A7): no value to show, so say so on the LED.
+                await self._signal_write_failed(serial)
                 return
             value = self._variant_to_value(option_name, variant)
             await self._show_value_feedback(serial, option_name, value)
@@ -1370,6 +1376,15 @@ class AdminModeHandler:
 
             except Exception as e:
                 logger.error(f"Error changing agent policy: {e}", exc_info=True)
+
+    async def _signal_write_failed(self, serial: str) -> None:
+        """Error cue for a failed admin step write or an unreadable flag service (UC-012 A5, A7).
+
+        The same short red pulse as the agent-level cue (UC-013 A3), no voice line. Best effort.
+        """
+        from proto import controller_manager_pb2
+
+        await self._signal_agent_write_failed(serial, controller_manager_pb2)
 
     async def _signal_agent_write_failed(self, serial: str, controller_manager_pb2) -> None:
         """Error cue for a refused or unreachable agent-level write (UC-013 A3, #1705).

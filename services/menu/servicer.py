@@ -158,7 +158,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             game_settings_writer=self.game_settings_writer,
             user_prefs_writer=self.user_prefs_writer,
             agent_settings_writer=self.agent_settings_writer,
-            game_settings_client=self.game_settings_client,
             agent_settings_client=self.agent_settings_client,
             publish_event=self.event_publisher.publish,
             select_game_mode=self.select_game_mode,
