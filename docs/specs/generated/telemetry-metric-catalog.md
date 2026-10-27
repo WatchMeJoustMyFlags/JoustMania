@@ -4,8 +4,8 @@
 
 Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the columns.
 
-- **150 unique Python metric names** (174 definitions; 5 names are defined in more than one module).
-- 82 of the 150 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
+- **151 unique Python metric names** (175 definitions; 5 names are defined in more than one module).
+- 83 of the 151 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
 - 0 names are defined but never recorded by any service.
 
 | Metric | Type | Labels | Defined in | Emitted | Consumers | Notes |
@@ -118,6 +118,7 @@ Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which de
 | `game_sensitivity` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |  |
 | `game_shadow_games_blocked_total` | counter | (none) | game-coordinator | yes | grafana |  |
 | `game_shadow_games_preempted_total` | counter | (none) | game-coordinator | yes | grafana |  |
+| `game_shield_hold_activations_total` | counter | `mode`, `game_kind`, `outcome` | game-coordinator | yes | (none) |  |
 | `game_trace_correlation` | gauge | `game_kind`, `game_id`, `game_trace_id`, `game_trace_span_id`, `gameplay_phase_span_id`, `game_cycle_span_id` | game-coordinator | yes | agent |  |
 | `games_completed_total` | counter | `mode`, `game_kind`, `outcome` (winner\|tie\|completed\|force_ended\|error) | game-coordinator | yes | grafana | `outcome` = `winner`, `tie`, `completed`, `force_ended`, or `error` when the session published `game_error`; #1427 |
 | `games_started_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana |  |
