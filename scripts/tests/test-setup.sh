@@ -17,6 +17,9 @@
 #  - a failed upgrade exits non-zero; declining the pin says the autostart
 #    refuses a branch (A4)
 #  - without the autostart a pinned checkout gets `joustmania-compose.sh pull`
+#  - A6 step 6: setup.sh refuses to run as root; a checkout the user does not own
+#    names scripts/hardware/update_permissions.sh; both exit 1 before any step
+#  - a pinned checkout with the autostart keeps its own version (A6 step 4)
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-setup.sh
 # UC: UC-060 A6 A4
 set -euo pipefail
@@ -170,6 +173,37 @@ run_setup 1yny || fail "pull-only: setup.sh failed: $(tail -5 "${CASE}/out.log")
 called install_autostart && fail "pull-only: autostart installed although declined"
 called 'joustmania-compose pull$' || fail "pull-only: the images were not pulled: $(cat "${CASE}/calls.log")"
 called joustmania-upgrade && fail "pull-only: the upgrade ran without the unit"
+
+# --- 10. as root: refused (A6 step 6) ---------------------------------------
+# The test cannot be root, so the guard's condition is made true in a copy
+# (EUID cannot be set from outside); the message and the exit are the real ones.
+make_case root-refused
+sed -i 's/"\$EUID" -eq 0/0 -eq 0/' "${CASE}/repo/setup.sh"
+cmp -s "${ROOT}/setup.sh" "${CASE}/repo/setup.sh" && fail "root-refused: the root guard was not found in setup.sh"
+rc=0
+run_setup 1yyy || rc=$?
+[[ "${rc}" -eq 1 ]] || fail "root-refused: exit ${rc}, not 1"
+grep -q 'without sudo' "${CASE}/out.log" || fail "root-refused: no refusal message: $(cat "${CASE}/out.log")"
+[[ -s "${CASE}/calls.log" ]] && fail "root-refused: a step ran: $(cat "${CASE}/calls.log")"
+
+# --- 11. a checkout the user does not own: update_permissions.sh is named ----
+# `/` is owned by root, so `! -O /` is true for the test user; the rest is real.
+make_case not-owner
+sed -i 's|! -O "\$SCRIPT_DIR"|! -O /|' "${CASE}/repo/setup.sh"
+cmp -s "${ROOT}/setup.sh" "${CASE}/repo/setup.sh" && fail "not-owner: the owner guard was not found in setup.sh"
+rc=0
+run_setup 1yyy || rc=$?
+[[ "${rc}" -eq 1 ]] || fail "not-owner: exit ${rc}, not 1"
+grep -q 'scripts/hardware/update_permissions.sh' "${CASE}/out.log" || fail "not-owner: update_permissions.sh not named: $(cat "${CASE}/out.log")"
+[[ -s "${CASE}/calls.log" ]] && fail "not-owner: a step ran: $(cat "${CASE}/calls.log")"
+
+# --- 12. a pinned checkout with the autostart keeps its own version ---------
+# v0.7.0 is below the floor and v0.8.0 is the newest release: the pin must stay v0.7.0
+make_case pinned-kept
+g -C "${CASE}/repo" checkout -q --detach joustmania-v0.7.0
+run_setup 1yyy || fail "pinned-kept: setup.sh failed: $(tail -5 "${CASE}/out.log")"
+called 'joustmania-upgrade joustmania-v0.7.0$' || fail "pinned-kept: not kept at joustmania-v0.7.0: $(cat "${CASE}/calls.log")"
+called 'joustmania-upgrade joustmania-v0.8.0' && fail "pinned-kept: moved to the newest release"
 
 if [[ "${fails}" -ne 0 ]]; then
   exit 1

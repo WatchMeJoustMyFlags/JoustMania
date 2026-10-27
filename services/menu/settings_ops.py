@@ -24,7 +24,23 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from lib.flag_service_writer import STEP_AT_LIMIT
+from lib.setting_ladders import (
+    AGENT_POLICY_LEVELS,
+    AGENT_RESUME_FALLBACK_LEVEL,
+    AGENT_SAVED_LEVELS,
+    BACKENDS,
+    SENSITIVITY_LADDER,
+    clamp_step,
+)
 from lib.types import Sound
+from lib.voice_prompts import (  # re-exported: admin mode imports the voice tables from here
+    AGENT_LEVEL_VOICES,
+    AGENT_SWITCH_VOICES,
+    FORCE_ALL_START_VOICES,
+    INSTRUCTIONS_VOICES,
+    NUM_TEAMS_VOICES,
+    SENSITIVITY_VOICES,
+)
 from proto import controller_manager_pb2
 from services.menu.utils.led import DEFAULT_COLOR, GAME_MODE_COLORS
 
@@ -44,14 +60,8 @@ AGENT_ENABLED_FLAG = "enabled"
 AGENT_WRITE_GATE_FLAG = "interventions_enabled"
 DECISION_BACKEND_FLAG = "decision.backend"
 
-# Ordered policy levels, most restrictive first. The ladder clamps and never wraps (UC-013, UC-015 BR-004).
-AGENT_POLICY_LEVELS = ["none", "ambient", "standard", "full"]
-# Levels a resume can restore (BR-002 saves a level only when it is not "none").
-AGENT_SAVED_LEVELS = AGENT_POLICY_LEVELS[1:]
-# UC-015 BR-003: the resume level when no level is saved (never "full").
-AGENT_RESUME_FALLBACK_LEVEL = "ambient"
-# UC-044 / UC-015 BR-004.
-DECISION_BACKENDS = ("rules", "claude", "openai", "jev")
+# Ladders (UC-013, UC-015 BR-004): one source with the pad's preview, lib/setting_ladders.py (#2106).
+DECISION_BACKENDS = tuple(BACKENDS)
 
 # --- Error codes (UC-015 BR-012, services.md §3.1) ------------------------------------------
 
@@ -73,33 +83,7 @@ def is_failure(error: str | None) -> bool:
 
 # --- Voice tables ---------------------------------------------------------------------------
 
-# Voice line per sensitivity level index (0 = ultra_slow ... 4 = ultra_fast), as original JoustMania.
-SENSITIVITY_VOICES = [
-    Sound.MENU_VOX_SENSITIVITY_ULTRA_HIGH,  # ULTRA_SLOW (0)
-    Sound.MENU_VOX_SENSITIVITY_HIGH,  # SLOW (1)
-    Sound.MENU_VOX_SENSITIVITY_MEDIUM,  # MEDIUM (2)
-    Sound.MENU_VOX_SENSITIVITY_LOW,  # FAST (3)
-    Sound.MENU_VOX_SENSITIVITY_ULTRA_LOW,  # ULTRA_FAST (4)
-]
-NUM_TEAMS_VOICES = {
-    2: Sound.MENU_VOX_ADMINOP_2,
-    3: Sound.MENU_VOX_ADMINOP_3,
-    4: Sound.MENU_VOX_ADMINOP_4,
-    5: Sound.MENU_VOX_ADMINOP_5,
-    6: Sound.MENU_VOX_ADMINOP_6,
-}
-# "off" for the panic-off level, a numbered level (1..3) for the permissive ones.
-AGENT_LEVEL_VOICES = {
-    "none": Sound.MENU_VOX_ADMINOP_OFF,
-    "ambient": Sound.MENU_VOX_ADMINOP_1,
-    "standard": Sound.MENU_VOX_ADMINOP_2,
-    "full": Sound.MENU_VOX_ADMINOP_3,
-}
-# UC-015 step 6, BR-009: one distinct voice line per direction of the agent switch.
-AGENT_SWITCH_VOICES = {
-    "stop": Sound.MENU_VOX_ADMINOP_OFF,
-    "resume": Sound.MENU_VOX_ADMINOP_ON,
-}
+# The voice tables live in lib/voice_prompts.py, shared with the operator pad (#2106).
 # UC-015 BR-009: the failure cue is two loud beeps, this far apart so they do not merge.
 FAILURE_CUE_SOUND = Sound.SFX_BEEP_LOUD
 FAILURE_CUE_GAP_SECONDS = 0.3
@@ -108,7 +92,7 @@ VOLUME_STEP_SOUND = Sound.SFX_JOIN
 
 # --- Variant values -------------------------------------------------------------------------
 
-SENSITIVITY_VALUES = {"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4}
+SENSITIVITY_VALUES = {name: index for index, name in enumerate(SENSITIVITY_LADDER)}
 _VARIANT_VALUES: dict[str, dict[str, Any]] = {
     "sensitivity": SENSITIVITY_VALUES,
     "num_teams": {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6},
@@ -131,27 +115,12 @@ def agent_level_next(current: str | None, forward: bool = True) -> str:
     ``none``, the benign fail-safe. ``None`` (an unreadable level) also maps to ``none``, but
     only the restrict uses it: the callers refuse an escalation from an unreadable level (UC-013 A5).
     """
-    levels = AGENT_POLICY_LEVELS
-    if current not in levels:
-        return levels[0] if forward else "none"
-    idx = levels.index(current)
-    new_idx = min(idx + 1, len(levels) - 1) if forward else max(idx - 1, 0)
-    return levels[new_idx]
+    return clamp_step(AGENT_POLICY_LEVELS, current, 1 if forward else -1)[0]
 
 
 def _ladder_step(ladder: list[str], current: str | None, forward: bool, steps: int) -> str:
     """``steps`` clamped moves along ``ladder``; a value outside it starts at the first move's result."""
-    # ``steps`` comes unbounded from ProcessInput: more moves than rungs only repeat the clamp.
-    steps = min(steps, len(ladder))
-    new = current
-    for _ in range(steps):
-        if ladder is AGENT_POLICY_LEVELS:
-            new = agent_level_next(new, forward)
-        elif new not in ladder:
-            new = ladder[0]
-        else:
-            idx = ladder.index(new)
-            new = ladder[min(idx + 1, len(ladder) - 1) if forward else max(idx - 1, 0)]
+    new, _at_limit = clamp_step(ladder, current, steps if forward else -steps)
     return new
 
 
@@ -497,11 +466,9 @@ class SettingsOps:
                 if voice is not None:
                     await audio.play_voice(voice)
             elif option == "force_all_start":
-                await audio.play_voice(Sound.MENU_VOX_ADMINOP_TRUE if variant == "on" else Sound.MENU_VOX_ADMINOP_FALSE)
+                await audio.play_voice(FORCE_ALL_START_VOICES[variant == "on"])
             elif option == "game_instructions":
-                await audio.play_voice(
-                    Sound.MENU_VOX_INSTRUCTIONS_ON if variant == "on" else Sound.MENU_VOX_INSTRUCTIONS_OFF
-                )
+                await audio.play_voice(INSTRUCTIONS_VOICES[variant == "on"])
             elif option == "agent_level":
                 voice = AGENT_LEVEL_VOICES.get(variant)
                 if voice is not None:

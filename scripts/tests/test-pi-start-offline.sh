@@ -24,7 +24,7 @@
 #  - git cannot read the checkout (git exits 128, no .git, no git binary): no
 #    branch is proven, so the game starts, state degraded with the reason (A4)
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-pi-start-offline.sh
-# UC: UC-060 BR-001 BR-002 BR-004 A1 A4 A5
+# UC: UC-060 main step 1 step 2 step 3 step 4 step 5 BR-001 BR-002 BR-004 A1 A4 A5 Pre-2 Post-S-1 Post-F-1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

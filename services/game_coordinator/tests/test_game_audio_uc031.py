@@ -65,7 +65,7 @@ class RecordingAudio:
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-031", flow="main", steps=[2])
+@pytest.mark.uc("UC-031", flow="main", steps=[2], cond=["Post-S-1"])
 async def test_music_plays_at_countdown_volume_then_game_volume():
     """UC-031 step 2: game music starts at audio_volume.countdown_music, then rises to audio_volume.game."""
     log: list = []
@@ -150,7 +150,7 @@ async def test_agent_audio_cue_plays_the_sound_id_through_play_sound():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-031", flow="main", steps=[4])
+@pytest.mark.uc("UC-031", flow="main", steps=[4], cond=["Post-S-1"])
 async def test_explosion_on_each_death_then_congratulations_for_the_winner():
     """UC-031 step 4: a full FFA game plays an explosion on each death, then "congratulations" for the winner."""
     log: list = []
@@ -222,7 +222,7 @@ async def test_ffa_run_drives_the_tempo_loop():
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-031", flow="main")  # Post-F-1: audio failures never stop a game
+@pytest.mark.uc("UC-031", flow="main", cond=["Post-F-1"])
 async def test_audio_service_down_never_stops_the_game():
     """UC-031 Post-F-1: with every audio RPC failing, a full FFA game still runs to a winner and ends."""
     audio = FailingAudio()

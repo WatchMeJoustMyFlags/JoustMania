@@ -73,7 +73,7 @@ class TestPlayAudioReenableAfterMutedStart:
         assert isinstance(muted_start_servicer.audio_manager.music_player, DummyMusicPlayer)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-031", flow="A1")
+    @pytest.mark.uc("UC-031", flow="A1", cond=["Pre-1"])
     async def test_flag_change_event_opens_hardware_and_play_sound_reaches_a_channel(
         self, muted_start_servicer, flag_client, mock_grpc_context
     ):

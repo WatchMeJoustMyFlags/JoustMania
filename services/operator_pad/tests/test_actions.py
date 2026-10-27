@@ -6,6 +6,7 @@ from unittest.mock import create_autospec, patch
 import grpc
 import pytest
 
+from lib.setting_ladders import BACKENDS, preview_value
 from proto import game_coordinator_pb2, menu_pb2
 from services.operator_pad import actions as actions_module
 from services.operator_pad.actions import Actions
@@ -296,6 +297,22 @@ async def test_backend_already_at_the_end_is_at_limit_and_sends_nothing(actions,
     assert result == ("set_backend", "at_limit")
     menu.ProcessInput.assert_not_awaited()
     cues.limit.assert_awaited_once()
+
+
+@pytest.mark.uc("UC-015", flow="A7", br=["BR-004", "BR-005"])
+@pytest.mark.parametrize("current", BACKENDS)
+async def test_backend_preview_equals_commit(menu, coordinator, cues, sleep, current):
+    """#2106: the backend a K7 release commits is the shared ladder's preview, for every start and step."""
+    for steps in [n for n in range(-6, 7) if n != 0]:
+        actions = Actions(menu, coordinator, cues, sleep=sleep)
+        menu.ProcessInput.reset_mock()
+        preview = preview_value("decision.backend", status(agent_backend=current), steps)
+        result = await actions.dispatch(Gesture(LAYER, "K7", steps=steps), status(agent_backend=current))
+        if preview.at_limit:
+            assert result == ("set_backend", "at_limit"), (current, steps)
+            assert sent(menu) == []
+        else:
+            assert sent(menu) == [{"command": "set_backend", "backend": preview.value}], (current, steps)
 
 
 # --- agent switch (step 6, A6, BR-002, BR-003) ----------------------------------------------

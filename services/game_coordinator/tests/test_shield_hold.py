@@ -427,6 +427,55 @@ class TestUC030BR009ReleaseTail:
         assert not game.players["p1"].alive
 
 
+class TestUC030BR009OtherProtectionKeepsThePlainPrime:
+    """BR-009 bullet 3: only hold caps the prime; other protection keeps the plain #757 prime."""
+
+    @pytest.fixture
+    def plain_game(self, clock, flags, events):
+        flags.values["shield.activation"] = "trigger"
+        g = _make_ffa(events)
+        latch(g, clock)
+        assert g._shield_hold is None
+        with patch.object(g, "_play_sound", new_callable=AsyncMock):
+            yield g
+
+    async def _one_jolt_after(self, game, clock, protected_until):
+        # Protected frames up to the last one before the window ends.
+        while clock.t + DT < protected_until:
+            await step(game, clock, "p1", False)
+        player = game.players["p1"]
+        assert player.alive
+        assert not player.hold_prime_cap
+        assert player.smoothed_accel == 0.0, "the last frame before the jolt was not protected"
+        _, death = thresholds(game)
+        # The first unprotected frame carries the jolt.
+        await step(game, clock, "p1", False, accel=g_vector(death * 1.5))
+        assert clock.t >= protected_until
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
+    async def test_a_jolt_after_a_grace_window_kills(self, plain_game, clock):
+        """A grace_until window ends: the raw sample primes the EMA and kills on the first frame."""
+        plain_game.players["p1"].grace_until = clock.t + 0.5
+        await self._one_jolt_after(plain_game, clock, plain_game.players["p1"].grace_until)
+        assert not plain_game.players["p1"].alive
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
+    async def test_a_jolt_after_a_shield_charge_activation_kills(self, plain_game, clock):
+        """A shield-charge activation (A6) ends: the plain prime kills on the first unprotected frame."""
+        player = plain_game.players["p1"]
+        player.shield_charge_seconds = 0.5
+        player.shield_charge_granted_at = clock.t
+        player.shield_charge_layer_until = clock.t + 100.0
+        await arm(plain_game, clock)
+        await step(plain_game, clock, "p1", True)
+        assert player.shield_charge_seconds == 0.0, "the charge was not activated"
+        assert player.grace_until > clock.t
+        await self._one_jolt_after(plain_game, clock, player.grace_until)
+        assert not player.alive
+
+
 # --------------------------------------------------------------------------- #
 # UC-040 A36, A37: grants add energy; grants that add nothing are refused
 # --------------------------------------------------------------------------- #

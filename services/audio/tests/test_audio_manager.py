@@ -62,7 +62,7 @@ class TestAudioManagerPlaySound:
         result = manager.play_sound("definitely_not_a_real_file.ogg", volume=1.0, priority=2)
         assert result is False
 
-    @pytest.mark.uc("UC-031", flow="main")  # Post-F-1: a missing file is counted as file_not_found
+    @pytest.mark.uc("UC-031", flow="main", cond=["Post-F-1"])
     @patch("services.audio.metrics.audio_sounds_played_total")
     def test_play_sound_missing_file_increments_metric(self, mock_metric):
         """UC-031 Failure Postconditions (Post-F-1): a missing file is counted as file_not_found."""
@@ -299,7 +299,7 @@ class TestMasterVolumeAndMixing:
 class TestPlaybackFailureIsCounted:
     """UC-031 Post-F-1: a playback error is counted and frees the channel; it never raises to the caller."""
 
-    @pytest.mark.uc("UC-031", flow="main")  # Post-F-1: playback errors counted in audio_playback_errors_total
+    @pytest.mark.uc("UC-031", flow="main", cond=["Post-F-1"])
     @patch("services.audio.metrics.audio_playback_errors_total")
     def test_playback_error_increments_audio_playback_errors_total(self, mock_errors, tmp_path):
         import threading

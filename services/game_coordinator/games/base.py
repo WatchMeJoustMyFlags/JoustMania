@@ -477,6 +477,7 @@ def _read_volume_flag(flag_name: str, default: float) -> float:
         return default
 
 
+# UC-030 BR-001: threshold tables (defaults of the `thresholds` flag, read at game start).
 # Threshold arrays from original JoustMania (in g-force units, 1.0 = 1g)
 # PSMove accelerometer returns g-force values (standing still = ~1.0 on Z axis)
 #
@@ -1860,6 +1861,8 @@ class BaseGameMode(ABC):
 
     async def _warmup_ema(self):
         """
+        UC-030 BR-003: the startup guard's EMA warm-up (about 100 ms of buffered frames).
+
         Drain buffered stream data and prime EMA filters before game loop.
 
         The gameplay stream opens ~2.25s before the game loop starts (before
@@ -2140,7 +2143,7 @@ class BaseGameMode(ABC):
 
             # Stream was already created in _start_gameplay_stream() before countdown.
             # EMA filters were primed and buffered data drained by _warmup_ema().
-            # Apply startup grace period so any residual spikes can't cause instant death.
+            # UC-030 BR-003: startup grace period so any residual spikes can't cause instant death.
             # It never shortens a longer grace (an agent shield) granted before the loop.
             grace_until = time.time() + 0.3
             for player in self.players.values():
