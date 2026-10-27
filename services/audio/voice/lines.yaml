@@ -14,7 +14,7 @@
 #   say       optional respelling for the synthesizer (defaults to text)
 #   recorded  true when a recording exists in the recorded profiles
 #
-# The recorded texts were transcribed from Menu/vox/{aaron,ivy} with a local
+# The recorded texts were transcribed from <Area>/vox/{aaron,ivy} with a local
 # speech-to-text pass (faster-whisper small.en) and the file names, then
 # corrected by hand; ivy's wording wins where the two recordings differ.
 version: 1
@@ -75,18 +75,15 @@ areas:
     - {id: menu Werewolves, sound: MENU_VOX_WEREWOLVES, text: "Werewolves.", recorded: true}
     - {id: menu Traitor, sound: MENU_VOX_TRAITOR, text: "Traitors.", recorded: true}
     - {id: menu Zombies, sound: MENU_VOX_ZOMBIES, text: "Zombies.", recorded: true}
-    - {id: menu Commander, sound: MENU_VOX_COMMANDER, text: "Commander.", recorded: true}
     - {id: menu FightClub, sound: MENU_VOX_FIGHT_CLUB, text: "Fight Club.", recorded: true}
     - {id: menu Tournament, sound: MENU_VOX_TOURNAMENT, text: "Tournament.", say: "Turnament.", recorded: true}
     - {id: menu NonStopJoust, sound: MENU_VOX_NONSTOP_JOUST, text: "Non-stop joust.", recorded: true}
-    - {id: menu ninjabomb, sound: MENU_VOX_NINJABOMB, text: "Ninja bomb.", say: "Ninja bomb!", recorded: true}
-    - {id: menu Random, sound: MENU_VOX_RANDOM, text: "Random mode.", recorded: true}
 
     # Instructions toggle
     - {id: instructions_on, sound: MENU_VOX_INSTRUCTIONS_ON, text: "Instructions on.", recorded: true}
     - {id: instructions_off, sound: MENU_VOX_INSTRUCTIONS_OFF, text: "Instructions off.", recorded: true}
 
-    # Mode instructions
+    # Mode instructions (only Free-for-All plays its clip, with game_instructions on)
     - id: FFA-instructions
       sound: MENU_VOX_FFA_INSTRUCTIONS
       recorded: true
@@ -94,96 +91,9 @@ areas:
         Joust free-for-all selected. Protect your own controller while trying to jostle others.
         When the music speeds up, your controller sensitivity decreases and you are harder to kill.
         Get ready to joust!
-    - id: Teams-instructions
-      sound: MENU_VOX_TEAMS_INSTRUCTIONS
-      recorded: true
-      text: >-
-        Joust random teams selected. Protect your own controller while trying to jostle others.
-        When the music speeds up, your controller sensitivity decreases and you are harder to kill.
-        Your selected team will be the color of your controller. Get ready to joust.
-    - id: Swapper-instructions
-      sound: MENU_VOX_SWAPPER_INSTRUCTIONS
-      recorded: true
-      text: >-
-        Swapper selected. Protect your own controller while trying to jostle others. There are two teams.
-        If you die, you will respawn on the other team. The last player is on their own. Get ready to joust!
-    - id: Tournament-instructions
-      sound: MENU_VOX_TOURNAMENT_INSTRUCTIONS
-      recorded: true
-      text: >-
-        Tournament selected. Everyone will be paired up against another player.
-        Your opponent will have the same color as your controller.
-        If you defeat your opponent, you will go on to the next round.
-        If your controller is white, wait to be assigned to a new player.
-        The last player standing wins. Get ready to joust.
-    - id: Traitor-instructions
-      sound: MENU_VOX_TRAITOR_INSTRUCTIONS
-      recorded: true
-      text: >-
-        Traitor selected. Three teams face off against one another. However, there is one traitor on every team.
-        Traitors are on a secret fourth team. If your controller vibrates during the start countdown,
-        you are a traitor. Get ready to joust!
-    - id: werewolf-instructions
-      sound: MENU_VOX_WEREWOLF_INSTRUCTIONS
-      recorded: true
-      text: >-
-        Werewolf joust selected. If your controller vibrates at the start of the match, you are a werewolf.
-        Werewolves will have a short period of time to kill as many humans as possible before they are revealed.
-        Listen for further instructions, and get ready to joust.
-    - id: zombie-instructions
-      sound: MENU_VOX_ZOMBIE_INSTRUCTIONS
-      recorded: true
-      text: >-
-        Zombies selected. Two zombies will be randomly selected at the beginning of play.
-        Zombies have a few minutes to turn all humans into more zombies. Otherwise, humans win.
-        If you die as a human or a zombie, your controller will vibrate and turn red.
-        You must stand still during this period until you respawn as a zombie.
-        Humans can kill zombies via regular melee or with bullets.
-        Use the trigger button to fire one bullet to kill one random zombie.
-        If you collect five bullets, your controller will turn magenta, and you can throw a Molotov to kill all zombies.
-        Humans can get more bullets by killing zombies in any way. Good luck, and get ready for the invasion!
-    - id: commander-instructions
-      sound: MENU_VOX_COMMANDER_INSTRUCTIONS
-      recorded: true
-      text: >-
-        Commander selected. One commander will be chosen by each side. If that commander dies, the other team wins.
-        If you are a non-commander and you die, you must go back to your team's side and touch the wall until you respawn.
-        The more you die, the longer it will take for you to respawn. Commanders, you have a special ability.
-        Every 20 seconds or so, a notification will sound, alerting you that your overdrive power is ready.
-        Press the trigger button to activate overdrive. Suddenly, all of your units will be much harder to kill
-        for a couple of seconds. Get ready for battle!
-      say: >-
-        Commander selected. One commander will be chosen by each side. If that commander dies, the other team wins.
-        If you are a non-commander and you die, you must go back to your team's side and touch the wall until you respawn.
-        The more you die, the longer it will take for you to respawn. Commanders, you have a special ability.
-        Every twenty seconds or so, a notification will sound, alerting you that your overdrive power is ready.
-        Press the trigger button to activate overdrive. Suddenly, all of your units will be much harder to kill
-        for a couple of seconds. Get ready for battle!
-    - id: Ninjabomb-instructions
-      sound: MENU_VOX_NINJABOMB_INSTRUCTIONS
-      recorded: true
-      text: >-
-        Ninja bomb selected. Players stand in a circle passing around a bomb.
-        Press the A button to pass the bomb to a random player. If held too long, the bomb will explode.
-        Players can try to pass traps in order to fake out opponents.
-        If a player presses A or trigger while holding a trap, they will explode.
-        Traps can be passed by pressing the trigger button halfway. Too much or too little, and you will give yourself away.
-        Traps can also be countered by pressing any of the four front buttons.
-        Each player has two lives. The last remaining player wins. Press A to begin.
-    - id: Fightclub-instructions
-      recorded: true
-      text: >-
-        Two players fight. The winner must defend their title. The player with the highest score wins.
 
     # Lobby announcements
     - {id: notenoughplayers, sound: MENU_VOX_NOT_ENOUGH_PLAYERS, text: "Not enough players.", recorded: true}
-    - {id: added_random, sound: MENU_VOX_ADDED_RANDOM, text: "Added to random mode.", recorded: true}
-    - {id: removed_random, sound: MENU_VOX_REMOVED_RANDOM, text: "Removed from random mode.", recorded: true}
-    - id: tradeoff2
-      recorded: true
-      text: >-
-        Everyone, please hand off your controllers to other new players now.
-        New players, press A when you are ready to start.
 
     # Sensitivity
     - {id: ultra_high, sound: MENU_VOX_SENSITIVITY_ULTRA_HIGH, text: "Ultra high sensitivity.", recorded: true}
@@ -192,7 +102,7 @@ areas:
     - {id: low, sound: MENU_VOX_SENSITIVITY_LOW, text: "Low sensitivity.", recorded: true}
     - {id: ultra_low, sound: MENU_VOX_SENSITIVITY_ULTRA_LOW, text: "Ultra low sensitivity.", recorded: true}
 
-    # Admin options (numbers, on/off, true/false and option names)
+    # Admin options (numbers, on/off, true/false)
     - {id: adminop_1, sound: MENU_VOX_ADMINOP_1, text: "One.", recorded: true}
     - {id: adminop_2, sound: MENU_VOX_ADMINOP_2, text: "Two.", recorded: true}
     - {id: adminop_3, sound: MENU_VOX_ADMINOP_3, text: "Three.", recorded: true}
@@ -203,33 +113,8 @@ areas:
     - {id: adminop_off, sound: MENU_VOX_ADMINOP_OFF, text: "Off.", recorded: true}
     - {id: adminop_True, sound: MENU_VOX_ADMINOP_TRUE, text: "True.", recorded: true}
     - {id: adminop_False, sound: MENU_VOX_ADMINOP_FALSE, text: "False.", recorded: true}
-    - {id: adminop_force_all_start, sound: MENU_VOX_ADMINOP_FORCE_ALL_START, text: "Force all start.", recorded: true}
-    - {id: adminop_random_team_size, sound: MENU_VOX_ADMINOP_RANDOM_TEAM_SIZE, text: "Random team size.", recorded: true}
-    - {id: adminop_freeze_mode, text: "Freeze mode.", recorded: true}
-    - {id: adminop_lives, text: "Lives.", recorded: true}
-    - {id: adminop_resurrection, text: "Resurrection.", recorded: true}
-    - {id: adminop_sheilds, text: "Shields.", recorded: true}
-    - {id: adminop_traitor_team_size, text: "Traitor team size.", recorded: true}
 
-    # Upstream update messages (no caller in this repo)
-    - {id: update_started, text: "Update started.", recorded: true}
-    - {id: joustmania_updated, text: "JoustMania updated.", say: "Joust Mania updated.", recorded: true}
-    - id: large_update
-      recorded: true
-      text: "Large JoustMania update available. Hold Start and Select to begin."
-      say: "Large Joust Mania update available. Hold Start and Select to begin."
-    - id: joustmania_failed
-      recorded: true
-      text: >-
-        JoustMania update failed. Make sure you are connected to the internet, and please try again.
-        If failure continues, check the setup.log file in the JoustMania folder.
-        Also, check JoustMania.com for updates.
-      say: >-
-        Joust Mania update failed. Make sure you are connected to the internet, and please try again.
-        If failure continues, check the setup dot log file in the Joust Mania folder.
-        Also, check Joust Mania dot com for updates.
 
-    # Operator pad labels (#2106; Sound members follow with #2107 part 2). A single
     # word ends with a full stop: without it Piper blurs it.
     - {id: label_sensitivity, text: "Sensitivity."}
     - {id: label_teams, text: "Teams."}
@@ -253,3 +138,41 @@ areas:
     - {id: status_minimum, text: "Minimum."}
     - {id: status_cancelled, text: "Cancelled.", say: "Canceled."}
     - {id: status_no_connection, text: "No connection."}
+
+  # Game announcers: only the lines a game mode plays (audit for #2147). Commander
+  # and Fight Club play no voice line, so they have no area here.
+  Joust:
+    - {id: 1 minute, sound: VOX_1_MINUTE, text: "One minute remaining.", recorded: true}
+    - {id: congratulations, sound: VOX_CONGRATULATIONS, text: "Congratulations!", recorded: true}
+    - {id: human win, sound: VOX_HUMAN_WIN, text: "Humans win!", recorded: true}
+    - {id: werewolf win, sound: VOX_WEREWOLF_WIN, text: "Werewolves win!", recorded: true}
+    - id: werewolf intro
+      sound: VOX_WEREWOLF_INTRO
+      recorded: true
+      text: >-
+        Everyone, close your eyes. If your controller is vibrating right now, you are a werewolf.
+        Werewolves, open your eyes now and look for your team members. Werewolves, close your eyes.
+        In 30 seconds, werewolves will be revealed. Everyone, open your eyes.
+      say: >-
+        Everyone, close your eyes. If your controller is vibrating right now, you are a werewolf.
+        Werewolves, open your eyes now and look for your team members. Werewolves, close your eyes.
+        In thirty seconds, werewolves will be revealed. Everyone, open your eyes.
+    - {id: werewolf reveal, sound: VOX_WEREWOLF_REVEAL, text: "Werewolves are revealed.", recorded: true}
+    - {id: traitor win, sound: VOX_TRAITOR_WIN, text: "Traitors win!", recorded: true}
+    - id: traitor_intro
+      sound: SFX_TRAITOR_INTRO
+      recorded: true
+      text: "If your controller vibrates during the start countdown, you are a traitor."
+    - {id: blue team win, sound: VOX_BLUE_TEAM_WIN, text: "And the winner is... Blue team!", recorded: true}
+    - {id: magenta team win, sound: VOX_MAGENTA_TEAM_WIN, text: "And the winner is... Magenta team!", recorded: true}
+    - {id: yellow team win, sound: VOX_YELLOW_TEAM_WIN, text: "And the winner is... Yellow team!", recorded: true}
+    - {id: green team win, sound: VOX_GREEN_TEAM_WIN, text: "And the winner is... Green team!", recorded: true}
+    - {id: cyan team win, sound: VOX_CYAN_TEAM_WIN, text: "And the winner is... Cyan team!", recorded: true}
+
+  Zombie:
+    # "1 minute" plays from Joust (area order), so it is catalogued there.
+    # zombie_death is a growl, not speech: it stays recorded only (no line).
+    - {id: 30 seconds, sound: VOX_ZOMBIE_THIRTY_SECONDS, text: "Thirty seconds remaining.", recorded: true}
+    - {id: 10 seconds left, sound: VOX_ZOMBIE_TEN_SECONDS, text: "Ten seconds left.", recorded: true}
+    - {id: human_victory, sound: VOX_HUMAN_VICTORY, text: "Human victory!", recorded: true}
+    - {id: zombie_victory, sound: VOX_ZOMBIE_VICTORY, text: "Zombies win!", recorded: true}

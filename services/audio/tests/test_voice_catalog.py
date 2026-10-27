@@ -1,8 +1,9 @@
-"""The voice catalog against the Sound enum and the asset tree (#2107, UC-031 BR-007, BR-003).
+"""The voice catalog against the Sound enum, the registry and the asset tree (#2107, UC-031 BR-007, BR-003).
 
-Phase 1 covers the Menu area: every Menu voice id has a catalog line and every
-catalog line has a file in every generated profile. The game announcer areas
-join the catalog in phase 2 (#2107).
+The catalog holds every voice line the code plays, in every area. Recordings no
+caller can reach are listed in NOT_CATALOGED (audited for #2147): they keep
+their files, the maintainer decides whether to drop them, and they are not
+generated.
 """
 
 import json
@@ -13,17 +14,59 @@ import pytest
 import yaml
 
 from lib.types import Sound
+from services.audio.sound_catalog import build_sound_registry
 
 ROOT = Path(__file__).resolve().parents[3]
 ASSETS = ROOT / "services" / "audio" / "assets"
 CATALOG_PATH = ROOT / "services" / "audio" / "voice" / "lines.yaml"
 MANIFEST_PATH = ASSETS / "voice_manifest.json"
-
-# Recorded asymmetry today: only ivy recorded the Fight Club instructions.
-RECORDED_ONLY_IN = {"Menu/Fightclub-instructions": {"ivy"}}
-# Stems that already exist in more than one area (resolved by area priority).
-KNOWN_STEM_COLLISIONS = {"1 minute", "game_over"}
 AREAS = ("Joust", "Menu", "Zombie", "Fight_Club", "Commander")
+
+# Recordings no code path plays (audit for #2147). Each entry is <area>/<stem>.
+_JOUST_UNUSED = {
+    "10 werewolf", "30 werewolf", "3 minutes", "5 minutes", "Fakedout", "FakedoutCounter", "countered",
+    "explosiondeath", "game_over", "werewolf intro_1", "werewolf reveal 2", "red team win",
+    "orange team win", "pink team win", "purple team win",
+}  # fmt: skip
+_JOUST_32 = {
+    "1 minute", "10 werewolf", "3 minutes", "30 werewolf", "5 minutes", "Fakedout", "FakedoutCounter",
+    "blue team win", "countered", "cyan team win", "explosiondeath", "green team win", "human win",
+    "magenta team win", "orange team win", "pink team win", "purple team win", "red team win", "traitor win",
+    "werewolf intro", "werewolf reveal 2", "werewolf reveal", "werewolf win", "yellow team win",
+}  # fmt: skip
+_COMMANDER = {
+    "10 seconds begins", "blue overdrive", "blue revive", "blue shift", "blue winner", "blue_power_ready",
+    "commander intro", "commanders chosen", "power_ready", "red overdrive", "red revive", "red shift",
+    "red winner", "red_power_ready", "blue_overdrive", "red_overdrive",
+}  # fmt: skip
+_ZOMBIE_UNUSED = {"1 minute", "3 minutes", "5 minutes", "molotov found"}
+_FIGHT_CLUB = {
+    "5_rounds",
+    "Defender_high_score",
+    "defender_lead",
+    "defender_winning",
+    "game_over",
+    "last_round",
+    "tie_game",
+}
+_MENU_UNUSED = {
+    "menu Commander", "menu ninjabomb", "menu Random", "Teams-instructions", "Swapper-instructions",
+    "Tournament-instructions", "Traitor-instructions", "werewolf-instructions", "zombie-instructions",
+    "commander-instructions", "Ninjabomb-instructions", "Fightclub-instructions", "added_random", "removed_random",
+    "tradeoff2", "adminop_force_all_start", "adminop_random_team_size", "adminop_freeze_mode", "adminop_lives",
+    "adminop_resurrection", "adminop_sheilds", "adminop_traitor_team_size", "update_started",
+    "joustmania_updated", "large_update", "joustmania_failed",
+}  # fmt: skip
+# Played, but not speech: no line, the recording plays for every profile (partner fallback, part 2).
+NOT_SPEECH = {"Zombie/zombie_death"}
+NOT_CATALOGED = NOT_SPEECH | (
+    {f"Joust/{s}" for s in _JOUST_UNUSED}
+    | {f"Joust/{s}-32" for s in _JOUST_32}
+    | {f"Commander/{s}" for s in _COMMANDER}
+    | {f"Zombie/{s}" for s in _ZOMBIE_UNUSED}
+    | {f"Fight_Club/{s}" for s in _FIGHT_CLUB}
+    | {f"Menu/{s}" for s in _MENU_UNUSED}
+)
 
 pytestmark = pytest.mark.uc("UC-031", br=["BR-007"])
 
@@ -38,63 +81,87 @@ def manifest():
     return json.loads(MANIFEST_PATH.read_text())
 
 
-def _menu_lines(catalog):
-    return catalog["areas"]["Menu"]
+def _lines(catalog):
+    for area, lines in catalog["areas"].items():
+        for line in lines:
+            yield area, line
 
 
-def test_every_menu_voice_sound_has_a_catalog_line(catalog):
-    """Both ways for the Menu area; __members__ so enum aliases count too."""
-    ids = {line["id"] for line in _menu_lines(catalog)}
-    menu_vox = {name: member.value for name, member in Sound.__members__.items() if name.startswith("MENU_VOX_")}
-    missing = {name: value for name, value in menu_vox.items() if value not in ids}
-    assert not missing, f"Sound members without a catalog line: {missing}"
+def _keys(catalog):
+    return {f"{area}/{line['id']}" for area, line in _lines(catalog)}
+
+
+def _recorded_stems(catalog):
+    """<area>/<stem> -> the recorded profiles that have it."""
+    stems = {}
+    for area in AREAS:
+        for voice in catalog["recorded"]:
+            for f in (ASSETS / area / "vox" / voice).glob("*.ogg"):
+                stems.setdefault(f"{area}/{f.stem}", set()).add(voice)
+    return stems
+
+
+def test_every_registered_voice_id_is_catalogued_or_known_unused(catalog):
+    """Every Sound member (aliases included) that resolves to a voice file has a line in the area it plays from."""
+    registry = build_sound_registry(ASSETS)
+    keys = _keys(catalog)
+    missing = {}
+    for name, member in Sound.__members__.items():
+        entry = registry.get(member.value)
+        if entry is None or entry[0] != "vox":
+            continue
+        key = f"{entry[1]}/{member.value}"
+        if key not in keys and key not in NOT_CATALOGED:
+            missing[name] = key
+    assert not missing, f"voice Sound members without a catalog line: {missing}"
 
 
 def test_every_named_sound_is_a_real_member_with_the_line_id(catalog):
-    for line in _menu_lines(catalog):
+    for area, line in _lines(catalog):
         if "sound" not in line:
             continue
         member = Sound.__members__.get(line["sound"])
-        assert member is not None, f"{line['id']}: unknown Sound member {line['sound']}"
+        assert member is not None, f"{area}/{line['id']}: unknown Sound member {line['sound']}"
         assert member.value == line["id"], f"{line['sound']} is {member.value!r}, not {line['id']!r}"
 
 
-def test_recorded_lines_match_the_recordings(catalog):
-    """A line is `recorded` exactly when the recordings exist (BR-003)."""
-    stems = {}
-    for voice in catalog["recorded"]:
-        for f in (ASSETS / "Menu" / "vox" / voice).glob("*.ogg"):
-            stems.setdefault(f.stem, set()).add(voice)
-    recorded = {line["id"] for line in _menu_lines(catalog) if line.get("recorded")}
-    assert recorded == set(stems), f"catalog-only: {recorded - set(stems)}, recording-only: {set(stems) - recorded}"
-    for stem, voices in stems.items():
-        expected = RECORDED_ONLY_IN.get(f"Menu/{stem}", set(catalog["recorded"]))
-        assert voices == expected, f"{stem}: recorded in {sorted(voices)}"
+def test_every_recording_is_catalogued_or_known_unused(catalog):
+    """Both ways (BR-003): a recorded line exists in every recorded profile, and no recording is unaccounted for."""
+    stems = _recorded_stems(catalog)
+    recorded = {f"{area}/{line['id']}" for area, line in _lines(catalog) if line.get("recorded")}
+    assert not recorded & NOT_CATALOGED
+    assert recorded - set(stems) == set(), "catalog says recorded, no file"
+    unaccounted = set(stems) - recorded - NOT_CATALOGED
+    assert not unaccounted, f"recordings neither catalogued nor listed as unused: {sorted(unaccounted)}"
+    stale = NOT_CATALOGED - set(stems)
+    assert not stale, f"NOT_CATALOGED names files that do not exist: {sorted(stale)}"
+    for key in recorded:
+        assert stems[key] == set(catalog["recorded"]), f"{key}: recorded only in {sorted(stems[key])}"
 
 
-def test_new_ids_do_not_collide_with_other_areas(catalog):
-    """A generated-only id that shadows another area's stem would play the wrong file."""
-    other = {}
+def test_new_ids_do_not_collide_with_any_area(catalog):
+    """A generated-only id that matches an existing stem anywhere would resolve to the wrong file."""
+    existing = {}
     for area in AREAS:
-        if area == "Menu":
-            continue
         for f in (ASSETS / area).rglob("*.ogg"):
-            other.setdefault(f.stem, area)
+            if "/gen_" not in f.as_posix():
+                existing.setdefault(f.stem, area)
     clashes = {
-        line["id"]: other[line["id"]]
-        for line in _menu_lines(catalog)
-        if line["id"] in other and line["id"] not in KNOWN_STEM_COLLISIONS
+        line["id"]: existing[line["id"]]
+        for _, line in _lines(catalog)
+        if not line.get("recorded") and line["id"] in existing
     }
-    assert not clashes, f"catalog ids already used in other areas: {clashes}"
+    assert not clashes, f"new catalog ids already used as asset stems: {clashes}"
 
 
 def test_every_line_has_a_file_in_every_generated_profile(catalog, manifest):
     assert set(manifest["profiles"]) == set(catalog["profiles"])
     for profile in catalog["profiles"]:
-        directory = ASSETS / "Menu" / "vox" / profile
-        on_disk = {f.name for f in directory.iterdir()}
-        expected = {f"{line['id']}.ogg" for line in _menu_lines(catalog)}
-        assert on_disk == expected, f"{profile}: missing {expected - on_disk}, stray {on_disk - expected}"
+        for area in AREAS:
+            directory = ASSETS / area / "vox" / profile
+            on_disk = {f.name for f in directory.iterdir()} if directory.is_dir() else set()
+            expected = {f"{line['id']}.ogg" for line in catalog["areas"].get(area, [])}
+            assert on_disk == expected, f"{area}/{profile}: missing {expected - on_disk}, stray {on_disk - expected}"
 
 
 def test_generated_files_decode_and_match_the_manifest(catalog, manifest):
