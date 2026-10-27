@@ -115,8 +115,9 @@ class CuePlayer:
         self._failure_task = self._start(self._failure_sequence())
 
     async def lock(self, locked: bool) -> None:
-        """ "Pad locked" / "Pad unlocked" (A6)."""
-        await self.voice(LOCK_VOICES[locked])
+        """ "Pad locked" / "Pad unlocked" (A6); a cue still to come never plays over it."""
+        self.cancel_all()
+        await self.voice(LOCK_VOICES[locked], ANNOUNCE_GROUP)
 
     async def announce(self, label: Sound, value: Sound) -> None:
         """BR-011: the label, then the value once the label has ended, in the background.

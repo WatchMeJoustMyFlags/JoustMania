@@ -196,3 +196,17 @@ async def test_a_failed_cue_sequence_is_logged(stub, caplog):
     await cues.announce(Sound.MENU_VOX_LABEL_TEAMS, Sound.MENU_VOX_ADMINOP_3)
     await asyncio.wait_for(cues.drain(), 0.2)
     assert "Pad cue sequence failed" in caplog.text
+
+
+@pytest.mark.uc("UC-015", flow="A6", br=["BR-009"])
+async def test_lock_drops_a_running_announcement_so_its_value_never_plays_over_it(stub):
+    stub.PlaySound.return_value = audio_pb2.PlaySoundResponse(success=True, duration_seconds=0.7)
+    sleep = GatedSleep()
+    cues = CuePlayer(stub, sleep=sleep)
+    await asyncio.wait_for(cues.announce(Sound.MENU_VOX_LABEL_TEAMS, Sound.MENU_VOX_ADMINOP_3), 0.2)
+    await asyncio.sleep(0)
+    await asyncio.wait_for(cues.lock(True), 0.2)
+    sleep.gate.set()
+    await asyncio.wait_for(cues.drain(), 0.2)
+    assert played(stub) == [Sound.MENU_VOX_LABEL_TEAMS.value, Sound.MENU_VOX_PAD_LOCKED.value]
+    assert stub.PlaySound.await_args_list[-1].args[0].group == ANNOUNCE_GROUP  # cuts the label clip too
