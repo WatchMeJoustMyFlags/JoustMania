@@ -26,6 +26,15 @@ if systemctl is-enabled --quiet "$SERVICE_NAME"; then
     systemctl disable "$SERVICE_NAME"
 fi
 
+# Put the board's own ACT LED trigger back (a failed unit leaves it blinking)
+# and remove the root-owned LED helper (UC-060 BR-005)
+LED_HELPER_DIR="/usr/local/lib/joustmania"
+if [[ -x "$LED_HELPER_DIR/joustmania-led" ]]; then
+    "$LED_HELPER_DIR/joustmania-led" restore || true
+    rm -f "$LED_HELPER_DIR/joustmania-led"
+    rmdir "$LED_HELPER_DIR" 2>/dev/null || true
+fi
+
 # Remove service file
 if [[ -f "$SYSTEMD_DIR/$SERVICE_NAME" ]]; then
     echo "Removing service file from $SYSTEMD_DIR/$SERVICE_NAME"
