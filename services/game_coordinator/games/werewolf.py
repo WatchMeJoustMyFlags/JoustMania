@@ -149,6 +149,10 @@ class WerewolfGame(BaseGameMode):
         """Return game mode identifier."""
         return "Werewolf"
 
+    def get_instruction_clip(self) -> Sound | None:
+        """Spoken instructions before the countdown (UC-022 A3, UC-020 A5)."""
+        return Sound.MENU_VOX_WEREWOLF_INSTRUCTIONS
+
     async def _initialize_players_impl(self, controllers: list):
         """
         Initialize players and assign werewolf roles.
@@ -587,7 +591,7 @@ class WerewolfGame(BaseGameMode):
                 await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
                 # Initialization phase
-                with tracer.start_as_current_span("initialization_phase"):
+                with tracer.start_as_current_span("initialization_phase") as init_span:
                     # reveal_time is now set in __init__ from StartGameConfig
                     logger.info(f"Werewolf reveal time: {self._reveal_time}s")
                     await self._initialize_players()
@@ -596,21 +600,10 @@ class WerewolfGame(BaseGameMode):
                     # Before any task is created: tasks copy the context (#1273).
                     self._set_flag_eval_context()
                     self._create_player_spans(None)
-
-                # The intro rumble goes over the stream, so it opens first; a drain
-                # discards the intro's frames and keeps disconnects (UC-022 A1).
-                await self._start_gameplay_stream()
-                self._start_early_stream_drain()
-                phases_completed = False
-                try:
-                    for phase in self._get_additional_phases():
-                        if not self.running:
-                            break
-                        with tracer.start_as_current_span(phase.name):
-                            await phase.execute()
-                    phases_completed = True
-                finally:
-                    await self._stop_early_stream_drain(reopen=phases_completed)
+                    # The intro rumble goes over the stream, so it opens first; a drain
+                    # discards the intro's frames and keeps disconnects (UC-022 A1).
+                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
+                    await self._run_streamed_intro_and_instructions(init_span)
 
                 if not self.running:
                     return

@@ -87,6 +87,10 @@ class RandomTeamsGame(TeamsGameBase):
         """Return game mode identifier."""
         return "Random Teams"
 
+    def get_instruction_clip(self) -> Sound | None:
+        """Spoken instructions before the countdown (UC-021 A3, UC-020 A5)."""
+        return Sound.MENU_VOX_TEAMS_INSTRUCTIONS
+
     def _generate_random_team_colors(self):
         """Generate random team colors (shuffled from available colors)."""
         available_colors = TEAM_COLORS.copy()

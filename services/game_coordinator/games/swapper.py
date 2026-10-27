@@ -93,6 +93,10 @@ class SwapperGame(TeamsGameBase):
         """Return game mode identifier."""
         return "Swapper"
 
+    def get_instruction_clip(self) -> Sound | None:
+        """Spoken instructions before the countdown (UC-024 A2, UC-020 A5)."""
+        return Sound.MENU_VOX_SWAPPER_INSTRUCTIONS
+
     async def _initialize_players_impl(self, controllers: list):
         """
         Initialize players with round-robin team assignment.

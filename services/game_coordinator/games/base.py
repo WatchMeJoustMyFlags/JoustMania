@@ -1352,10 +1352,12 @@ class BaseGameMode(ABC):
         """
         pass
 
-    def get_instruction_clip(self) -> Sound | None:
+    def get_instruction_clip(self) -> Sound | str | None:
         """Spoken instruction clip played before the countdown (UC-020 A5).
 
-        None means the mode has no clip mapping yet: nothing plays, no wait.
+        A ``Sound`` plays in the ``menu_voice`` voice; a ``str`` is an asset path
+        the audio service plays as-is (a line recorded in one voice only, #2151).
+        None means the mode has no recording: nothing plays, no wait.
         """
         return None
 
@@ -1392,10 +1394,11 @@ class BaseGameMode(ABC):
         if not self._instructions_enabled():
             span.set_attribute("game.instructions", "off")
             return
-        clip = self.get_instruction_clip()
-        if clip is None:
+        instruction_clip = self.get_instruction_clip()
+        if instruction_clip is None:
             span.set_attribute("game.instructions", "no_clip")
             return
+        clip = instruction_clip.value if isinstance(instruction_clip, Sound) else instruction_clip
         if not self.audio_client:
             span.set_attribute("game.instructions", "no_audio")
             return
@@ -1404,20 +1407,20 @@ class BaseGameMode(ABC):
             from proto import audio_pb2
 
             response = await self.audio_client.PlaySound(
-                audio_pb2.PlaySoundRequest(file_path=clip.value, volume=1.0, priority=audio_pb2.HIGH)
+                audio_pb2.PlaySoundRequest(file_path=clip, volume=1.0, priority=audio_pb2.HIGH)
             )
             duration = max(0.0, min(float(response.duration_seconds), MAX_INSTRUCTIONS_WAIT_SECONDS))
         except Exception as e:
-            logger.warning(f"Failed to play instructions {clip.value}: {e}")
+            logger.warning(f"Failed to play instructions {clip}: {e}")
             span.set_attribute("game.instructions", "failed")
             return
 
         span.set_attribute("game.instructions", "played")
         span.add_event(
             "game.instructions_played",
-            {"instructions.clip": clip.value, "instructions.duration_seconds": duration},
+            {"instructions.clip": clip, "instructions.duration_seconds": duration},
         )
-        logger.info(f"Playing instructions {clip.value}, waiting {duration:.1f}s before the countdown")
+        logger.info(f"Playing instructions {clip}, waiting {duration:.1f}s before the countdown")
 
         # Wait for the clip to finish; a force-end stops the wait at once.
         loop = asyncio.get_running_loop()
@@ -1446,6 +1449,31 @@ class BaseGameMode(ABC):
             logger.warning(f"StopSound timed out after {STOP_SOUND_TIMEOUT_SECONDS}s; the clip may play on")
         except Exception as e:
             logger.warning(f"Failed to stop the instruction clip after force-end: {e}")
+
+    async def _run_streamed_intro_and_instructions(self, init_span: trace.Span) -> None:
+        """Open the stream, run the intro phases on it, then the instruction clip.
+
+        For the modes with their own ``run()`` (Werewolf, Zombies, Fight Club,
+        Tournament): the intro goes over the stream, so it opens first and a drain
+        discards the intro's frames and keeps disconnects (UC-022 A1, UC-023 step 1,
+        UC-025 step 1 and A2 step 1). The clip plays after the intro while the
+        drain still runs, as in the base ``run()`` (UC-020 A5, #2151); a force-end
+        during the intro skips the clip.
+        """
+        await self._start_gameplay_stream()
+        self._start_early_stream_drain()
+        phases_completed = False
+        try:
+            for phase in self._get_additional_phases():
+                if not self.running:
+                    break
+                with tracer.start_as_current_span(phase.name):
+                    await phase.execute()
+            if self.running:
+                await self._play_instructions(init_span)
+            phases_completed = True
+        finally:
+            await self._stop_early_stream_drain(reopen=phases_completed)
 
     @abstractmethod
     def _get_additional_phases(self) -> list:
