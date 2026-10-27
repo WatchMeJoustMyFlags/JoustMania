@@ -791,7 +791,7 @@ mod tests {
         DeviceCmd::Discover { force: true, verify_only: false, exclude_serials: vec![], reply }
     }
 
-    // UC: UC-002 main step 2
+    // UC: UC-002 BR-005
     // NFR: NFR-055
     #[test]
     fn test_abandoned_discover_is_skipped() {
@@ -805,7 +805,7 @@ mod tests {
         assert!(devices.is_empty(), "an abandoned Discover still opened a device");
     }
 
-    // UC: UC-002 main step 2
+    // UC: UC-002 BR-005
     // NFR: NFR-055
     #[test]
     fn test_abandoned_open_is_skipped() {
@@ -819,7 +819,7 @@ mod tests {
         assert!(devices.is_empty());
     }
 
-    // UC: UC-002 main step 2
+    // UC: UC-002 BR-005
     // NFR: NFR-055
     #[test]
     fn test_abandoned_check_keeps_live_discover_and_open() {
