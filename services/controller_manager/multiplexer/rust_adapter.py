@@ -19,13 +19,14 @@ import threading
 import grpc
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_serial
-from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
+from services.controller_manager.multiplexer.adapter import ControllerIOAdapter, DiscoveryFailedError
 
 logger = logging.getLogger(__name__)
 
 # Deadline of every unary rust-hid call (Discover, Open, Close, CloseAll; #2125).
-# Without it a wedged rust-hid froze discovery for as long as it was wedged; a
-# timed-out call fails like any other RpcError (no serials, open failed).
+# Without it a wedged rust-hid froze discovery for as long as it was wedged. A
+# failed or timed-out Discover raises DiscoveryFailedError (not "no controllers");
+# a failed Open returns False.
 RPC_TIMEOUT_S = 5.0
 
 
@@ -159,7 +160,7 @@ class RustServiceAdapter(ControllerIOAdapter):
             return serials
         except grpc.RpcError as e:
             logger.warning(f"Discover RPC failed: {e}")
-            return []
+            raise DiscoveryFailedError(str(e)) from e
 
     def get_adapter_for_serial(self, serial: str) -> str | None:
         return self._adapter_names.get(serial) or None

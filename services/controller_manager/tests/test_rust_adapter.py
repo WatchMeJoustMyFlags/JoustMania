@@ -7,6 +7,7 @@ import grpc
 import pytest
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
+from services.controller_manager.multiplexer.adapter import DiscoveryFailedError
 from services.controller_manager.multiplexer.rust_adapter import (
     RPC_TIMEOUT_S,
     RustServiceAdapter,
@@ -81,16 +82,16 @@ class TestDiscover:
         call_args = adapter._stub.Discover.call_args[0][0]
         assert call_args.verify_only is True
 
-    def test_discover_rpc_error_returns_empty(self):
+    def test_discover_rpc_error_raises_discovery_failed(self):
+        """A failed Discover is not "no controllers" (UC-002 A1, #2125)."""
         import grpc
 
         adapter = _make_adapter()
         adapter._stub.Discover.side_effect = grpc.RpcError()
         adapter._stream_running = True
 
-        serials = adapter.discover()
-
-        assert serials == []
+        with pytest.raises(DiscoveryFailedError):
+            adapter.discover()
 
 
 class TestGetAdapterForSerial:
@@ -426,11 +427,24 @@ class TestUnaryCallsCarryADeadline:
         for rpc in (adapter._stub.Discover, adapter._stub.Open, adapter._stub.Close, adapter._stub.CloseAll):
             assert rpc.call_args.kwargs.get("timeout") == RPC_TIMEOUT_S, rpc
 
-    def test_a_timed_out_discover_returns_no_serials(self):
+    @pytest.mark.uc("UC-002", flow="A1")
+    def test_a_timed_out_discover_is_a_failed_pass_not_an_empty_one(self):
         adapter = _make_adapter()
         adapter._stream_running = True
         err = grpc.RpcError()
         err.code = lambda: grpc.StatusCode.DEADLINE_EXCEEDED
         adapter._stub.Discover.side_effect = err
 
-        assert adapter.discover() == []
+        with pytest.raises(DiscoveryFailedError):
+            adapter.discover()
+
+    def test_stream_io_has_no_deadline(self):
+        """The long-lived StreamIO stream must not inherit the unary deadline."""
+        adapter = _make_adapter()
+        adapter._stub.StreamIO.return_value = iter([])
+        adapter._stream_running = True
+
+        adapter._stream_loop()
+
+        adapter._stub.StreamIO.assert_called_once()
+        assert "timeout" not in adapter._stub.StreamIO.call_args.kwargs
