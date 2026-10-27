@@ -11,6 +11,10 @@ controller, so it is governed by the ``pairing.bluez_restart_mode`` flag:
 - ``never`` (fallback when flagd is unreachable): never restart.
 - ``always``: restart after every successful pairing (pre-#1446 behaviour).
 
+With ``when_idle`` the restart also waits until no PS Move has been on USB for
+``pairing.restart_quiet_period`` seconds (#2091): a host pairing a stack of
+controllers one after the other gets one restart, after the last one.
+
 A restart drops BlueZ's agent registration (#632), so the pairing agent is
 registered again after every restart.
 
@@ -37,7 +41,7 @@ from lib import bluez_dbus
 
 from .bluez_agent import register_pairing_agent
 from .bluez_records import RecordOutcome, write_device_record
-from .config import get_bluez_restart_mode
+from .config import get_bluez_restart_mode, get_restart_quiet_period
 
 logger = logging.getLogger("psmove-pairing")
 
@@ -124,6 +128,18 @@ class BluezReloader:
         # Consecutive failed restarts, and the clock time before which none is tried again
         self.failures = 0
         self._retry_at = 0.0
+        # Clock time of the last USB poll that listed a PS Move; None = none seen yet (#2091)
+        self.usb_seen_at: float | None = None
+
+    def note_usb_controllers(self, count: int) -> None:
+        """Called after each successful USB listing; a listed PS Move restarts the quiet period."""
+        if count:
+            self.usb_seen_at = self._clock()
+
+    def _usb_busy(self) -> bool:
+        """A PS Move was on USB within pairing.restart_quiet_period (UC-001 BR-005, #2091)."""
+        quiet = get_restart_quiet_period()
+        return quiet > 0 and self.usb_seen_at is not None and self._clock() - self.usb_seen_at < quiet
 
     def request(self, record: PendingRecord | None = None) -> str:
         """Called after a successful pairing; ``record`` = a record bluetoothd must load.
@@ -144,9 +160,11 @@ class BluezReloader:
         """Run a pending restart if the mode allows it now; returns the outcome.
 
         Outcomes: ``skipped`` (nothing to do), ``restarted``, ``deferred``
-        (when_idle and a real game is busy), ``failed``, ``backoff`` (an earlier
-        attempt failed and its retry wait has not passed). After ``deferred``,
-        ``failed`` and ``backoff`` the restart and its records stay pending.
+        (when_idle and a real game is busy), ``waiting_usb`` (when_idle and a
+        PS Move was on USB within the quiet period, #2091), ``failed``,
+        ``backoff`` (an earlier attempt failed and its retry wait has not
+        passed). After ``deferred``, ``waiting_usb``, ``failed`` and ``backoff``
+        the restart and its records stay pending.
         Failed restarts are retried at most once per poll, after 10 s, 30 s,
         60 s, then every 5 min until one succeeds (#1490).
         """
@@ -159,6 +177,8 @@ class BluezReloader:
             return "skipped"
         if self.failures and self._clock() < self._retry_at:
             return "backoff"
+        if mode == "when_idle" and self._usb_busy():
+            return "waiting_usb"
         if mode == "when_idle" and await self._game_busy():
             logger.info("Deferring the bluetoothd restart until the real game has ended")
             return "deferred"

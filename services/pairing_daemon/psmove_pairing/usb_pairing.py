@@ -32,6 +32,7 @@ from .metrics import (
 )
 from .pairing_backend import HidapiBackend, PairingBackend, RustServiceBackend
 from .registrations import DEFAULT_BLUETOOTH_DIR, RemovalResult, normalize_address, remove_controller_registrations
+from .usb_led import UsbLedCue
 
 logger = logging.getLogger("psmove-pairing")
 
@@ -179,6 +180,8 @@ class USBPairing:
         # Serials whose record could not be written (UC-001 A8): re-paired once unplugged and replugged,
         # e.g. after the operator deleted an unusable info file (#1490)
         self._record_failures: set[str] = set()
+        # LED cue on the controllers on USB while they are paired (UC-001 BR-010, #2091)
+        self.led_cue = UsbLedCue()
 
     def _get_backend(self) -> tuple[PairingBackend, str]:
         """Return the cached backend, or resolve a new one.
@@ -301,17 +304,13 @@ class USBPairing:
             # Refresh adapter state and check if already paired
             await self.adapter_manager.refresh_adapters()
 
-            # Skip controllers we've already verified this session
-            if serial in self._verified_serials:
+            skip_reason = self._skip_reason(serial)
+            if skip_reason is not None:
+                self.led_cue.stop_pulse(device_path)
                 span.set_attribute("skipped", True)
-                span.set_attribute("skip_reason", "verified_this_session")
+                span.set_attribute("skip_reason", skip_reason)
                 return False
-
-            # Unpaired by the operator while plugged in: wait for unplug and replug (UC-005 A8)
-            if normalize_address(serial) in self._awaiting_replug:
-                span.set_attribute("skipped", True)
-                span.set_attribute("skip_reason", "unpaired_awaiting_replug")
-                return False
+            self.led_cue.pairing(device_path)
 
             already_in_bluez = not self.adapter_manager.check_if_not_paired(serial)
             if already_in_bluez:
@@ -325,10 +324,21 @@ class USBPairing:
             async with self._pairing_lock:
                 return await self._pair_to_least_loaded(device_path, serial, product_id, span)
 
+    def _skip_reason(self, serial: str) -> str | None:
+        """Why a listed controller is not paired now, or None when it is (UC-001 A1, UC-005 A8)."""
+        # Skip controllers we've already verified this session
+        if serial in self._verified_serials:
+            return "verified_this_session"
+        # Unpaired by the operator while plugged in: wait for unplug and replug (UC-005 A8)
+        if normalize_address(serial) in self._awaiting_replug:
+            return "unpaired_awaiting_replug"
+        return None
+
     async def _pair_to_least_loaded(self, device_path: bytes, serial: str, product_id: int, span) -> bool:
         """Adapter selection through trust; runs under the pairing lock (UC-005 A6)."""
         # An unpair may have run while this call waited for the lock (UC-005 A8)
         if normalize_address(serial) in self._awaiting_replug:
+            self.led_cue.stop_pulse(device_path)
             span.set_attribute("skipped", True)
             span.set_attribute("skip_reason", "unpaired_awaiting_replug")
             return False
@@ -338,6 +348,7 @@ class USBPairing:
 
         if not adapter:
             logger.error("No Bluetooth adapters available for pairing")
+            self.led_cue.failed(device_path)
             pairing_failed_total.inc()
             span.record_exception(PairingError("No Bluetooth adapters available"))
             span.set_status(Status(StatusCode.ERROR, "No adapters available"))
@@ -356,6 +367,7 @@ class USBPairing:
         # Pair controller to selected adapter via backend
         if not await self.pair_controller(device_path, serial, adapter.address):
             logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
+            self.led_cue.failed(device_path)
             pairing_failed_total.inc()
             span.record_exception(PairingError(f"Controller {serial} pairing failed"))
             span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
@@ -384,6 +396,12 @@ class USBPairing:
         # Trust it on the adapter it was paired to (BR-007; for ZCM2 the agent handles the PIN).
         # A new record is trusted already; BlueZ has no device object for it until the restart.
         span.set_attribute("pairing.trusted", await self.bluez_trust_controller(serial, adapter.hci))
+
+        # Green flashes: unplug it now; red when its record could not be written (A8, BR-010)
+        if record is not None and not record.needs_reload:
+            self.led_cue.failed(device_path)
+        else:
+            self.led_cue.paired(device_path)
 
         # Mark as verified so we don't re-process every poll cycle
         self._verified_serials.add(serial)
@@ -511,6 +529,13 @@ class USBPairing:
         }
         span.set_attribute("controllers.count", len(controllers))
         self._forget_unplugged_deferred()
+        # A Move on USB holds a when_idle restart back (UC-001 BR-005, #2091)
+        self.bluez_reloader.note_usb_controllers(len(controllers))
+        # Cues end when their controller left USB; every controller about to be paired pulses (BR-010)
+        self.led_cue.keep_only(c.device_path for c in controllers)
+        for controller in controllers:
+            if self._skip_reason(controller.serial) is None:
+                self.led_cue.pairing(controller.device_path)
 
         if not controllers:
             logger.debug("No USB controllers found")
@@ -527,7 +552,7 @@ class USBPairing:
             waiting = [record.controller for record in self.bluez_reloader.records.values()]
             outcome = await self.bluez_reloader.run_pending()
         span.set_attribute("pairing.bluez_restart", outcome)
-        if outcome in ("deferred", "failed", "backoff"):
+        if outcome in ("deferred", "waiting_usb", "failed", "backoff"):
             # Still not loaded: unplugging and plugging it in again pairs it again and rewrites a lost record
             self._replug_retries.update(waiting)
         else:
