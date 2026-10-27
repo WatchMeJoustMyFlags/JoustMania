@@ -317,7 +317,20 @@ if [[ ${#OBS_PHASE[@]} -gt 0 ]]; then
     OBS_TIMEOUT="${JOUSTMANIA_OBS_TIMEOUT_S:-300}"
     echo "Phase 2/2: starting observability (timeout ${OBS_TIMEOUT} s): ${OBS_PHASE[*]}"
     OBS_RC=0
+    OBS_DEADLINE=$((SECONDS + OBS_TIMEOUT))
     timeout "$((OBS_TIMEOUT + 30))" "$COMPOSE_WRAPPER" up -d --pull never --wait --wait-timeout "$OBS_TIMEOUT" "${OBS_PHASE[@]}" || OBS_RC=$?
+    # One retry inside the same budget: a slow Jaeger can be unhealthy for the
+    # first attempt and fine a minute later, which left Grafana down (#2202).
+    # `up` only starts what is not running, so nothing is recreated (R1).
+    if [[ $OBS_RC -ne 0 ]]; then
+        OBS_LEFT=$((OBS_DEADLINE - SECONDS - ${JOUSTMANIA_OBS_RETRY_PAUSE_S:-5}))
+        if [[ $OBS_LEFT -ge 30 ]]; then
+            echo "WARN: observability did not come up (exit $OBS_RC); retrying once (${OBS_LEFT} s left)"
+            sleep "${JOUSTMANIA_OBS_RETRY_PAUSE_S:-5}"
+            OBS_RC=0
+            timeout "$((OBS_LEFT + 30))" "$COMPOSE_WRAPPER" up -d --pull never --wait --wait-timeout "$OBS_LEFT" "${OBS_PHASE[@]}" || OBS_RC=$?
+        fi
+    fi
     if [[ $OBS_RC -ne 0 ]]; then
         STATE_DOWN+=" observability(exit $OBS_RC)"
         START_RESULT="degraded"
