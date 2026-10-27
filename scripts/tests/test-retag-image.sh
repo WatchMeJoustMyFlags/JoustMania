@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# UC: UC-060
 # Tests for scripts/ci/retag-image.sh (#2120): the retag-skipped job must fail
 # when IMAGE:<sha> does not resolve to :main's digest after the copy. Uses a
 # fake `docker` (DOCKER=...) backed by a directory of "tags", no registry.
