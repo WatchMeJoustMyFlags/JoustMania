@@ -37,7 +37,7 @@ from lib.voice_prompts import (
 )
 from services.operator_pad import metrics
 from services.operator_pad.config import PadConfig
-from services.operator_pad.cues import CuePlayer
+from services.operator_pad.cues import ANNOUNCE_GROUP, CuePlayer
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +91,14 @@ class Previewer:
         self._config = config
         self._sleep = sleep
         self._clock = clock
-        self._tasks: set[asyncio.Task] = set()
+        self._tasks: set[asyncio.Task] = set()  # this hold's label, timer and value
+        self._stops: set[asyncio.Task] = set()  # StopSound calls: they outlive the hold they end
         self._reset()
 
     def _reset(self) -> None:
         self.hold_key: str | None = None
         self._silent = False  # this hold says nothing more (refused, unknown, disabled)
+        self._refused = False  # this hold played the A1 refusal (the release does not repeat it)
         self._label_task: asyncio.Task | None = None
         self._label_done_at = 0.0
         self._last_value: str | None = None  # the value of the previous step (or the start)
@@ -112,7 +114,7 @@ class Previewer:
         if not self._config.preview_enabled():
             return  # `operator_pad.preview_enabled` off: nothing, read per step (C-035)
         if key != self.hold_key:
-            self.cancel()
+            self._drop_hold()
             self.hold_key = key
             self._start_hold(option, status, lobby_only)
             if self._silent:
@@ -136,34 +138,57 @@ class Previewer:
         self._pending = pending
         self._timer = self._spawn(self._speak_after_debounce())
 
+    def refused(self, key: str) -> bool:
+        """The hold of ``key`` already played the A1 refusal, so its release need not repeat it."""
+        return self._refused and self.hold_key == key
+
     def end_hold(self) -> None:
         """Release, chord or lost input: drop what is still to come and stop the preview clip."""
         if self.hold_key is None:
             return
-        self.cancel()
-        self._spawn(self._cues.stop_group(PREVIEW_GROUP), track=False)
+        self._drop_hold()
+        self._stop(PREVIEW_GROUP)
 
     def cancel(self) -> None:
-        """Drop every preview task (device gone, shutdown); nothing plays on afterwards."""
+        """Drop every preview task and pending stop (device gone, shutdown); nothing plays on afterwards."""
+        self._drop_hold()
+        for task in list(self._stops):
+            task.cancel()
+        self._stops.clear()
+
+    async def drain(self) -> None:
+        """Wait for the preview tasks (tests)."""
+        while self._tasks or self._stops:
+            await asyncio.gather(*self._tasks, *self._stops, return_exceptions=True)
+
+    def _drop_hold(self) -> None:
         for task in list(self._tasks):
             task.cancel()
         self._tasks.clear()
         self._reset()
 
-    async def drain(self) -> None:
-        """Wait for the preview tasks (tests)."""
-        while self._tasks:
-            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+    def _stop(self, group: str) -> None:
+        task = asyncio.create_task(self._cues.stop_group(group))
+        self._stops.add(task)
+        task.add_done_callback(self._stop_finished)
+
+    def _stop_finished(self, task: asyncio.Task) -> None:
+        self._stops.discard(task)
+        _log_failure(task)
 
     # --- internals ------------------------------------------------------------------------
 
     def _start_hold(self, option: str, status, lobby_only: bool) -> None:
+        # A tap announcement still playing stops: the preview never talks over it (BR-017, BR-011).
+        self._cues.cancel_announcement()
+        self._stop(ANNOUNCE_GROUP)
         if status is None:
             self._silent = True  # no status at the press: silent, never a guess
             metrics.previews_total.labels(result=UNKNOWN).inc()
             return
         if lobby_only and status.lifecycle_live:
             self._silent = True  # A1: one refusal for the hold, no values
+            self._refused = True
             metrics.previews_total.labels(result=REFUSED).inc()
             self._spawn(self._cues.refusal())
             return
@@ -206,13 +231,10 @@ class Previewer:
         metrics.previews_total.labels(result=SPOKEN).inc()
         await self._cues.voice(pending.sound, PREVIEW_GROUP)
 
-    def _spawn(self, coro, track: bool = True) -> asyncio.Task:
+    def _spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
-        if track:
-            self._tasks.add(task)
-            task.add_done_callback(self._finished)
-        else:
-            task.add_done_callback(_log_failure)
+        self._tasks.add(task)
+        task.add_done_callback(self._finished)
         return task
 
     def _finished(self, task: asyncio.Task) -> None:

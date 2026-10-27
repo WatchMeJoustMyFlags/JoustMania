@@ -225,3 +225,14 @@ async def test_stop_group_stops_only_that_group_and_a_failure_is_logged_not_rais
     assert call.args[0].group == "pad_preview"
     audio.StopSound.side_effect = RuntimeError("audio down")
     await player.stop_group("pad_preview")  # no raise
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])
+async def test_stop_group_refuses_an_empty_group_which_would_stop_every_sound():
+    from unittest.mock import create_autospec
+
+    from services.operator_pad.tests.fakes import AudioStubSpec
+
+    audio = create_autospec(AudioStubSpec, instance=True)
+    await CuePlayer(audio).stop_group("")
+    audio.StopSound.assert_not_awaited()

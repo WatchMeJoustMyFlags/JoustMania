@@ -14,8 +14,8 @@ from services.operator_pad import preview as preview_module
 from services.operator_pad.actions import Actions
 from services.operator_pad.config import DEFAULT_KEYMAP, PadConfig, Timings, parse_keymap
 from services.operator_pad.controller import PadController
-from services.operator_pad.cues import CuePlayer
-from services.operator_pad.gestures import PRESS, RELEASE
+from services.operator_pad.cues import ANNOUNCE_GROUP, CuePlayer
+from services.operator_pad.gestures import LAYER, PRESS, RELEASE, Gesture
 from services.operator_pad.preview import PREVIEW_GROUP, Previewer
 from services.operator_pad.state import MenuStatusReader
 from services.operator_pad.tests.fakes import AudioStubSpec, CoordinatorStubSpec, MenuStubSpec
@@ -63,7 +63,8 @@ class FakeTime:
 
 
 class Rig:
-    def __init__(self, enabled: bool = True, debounce_ms: int = 150) -> None:
+    def __init__(self, enabled: bool = True, debounce_ms: int = 150, label_seconds: float = LABEL_SECONDS) -> None:
+        self.label_seconds = label_seconds
         self.time = FakeTime()
         self.clips: list[tuple[str, str]] = []  # (file_path, group)
         self.stops: list[str] = []
@@ -78,7 +79,7 @@ class Rig:
 
     async def _play(self, request, **_kwargs):
         self.clips.append((request.file_path, request.group))
-        seconds = LABEL_SECONDS if "label" in request.file_path.lower() else VALUE_SECONDS
+        seconds = self.label_seconds if "label" in request.file_path.lower() else VALUE_SECONDS
         return audio_pb2.PlaySoundResponse(success=True, duration_seconds=seconds)
 
     async def _stop(self, request, **_kwargs):
@@ -226,7 +227,7 @@ async def test_end_hold_drops_the_waiting_value_and_stops_the_preview_group():
     rig.previewer.end_hold()
     await rig.time.advance(1.0)
     assert rig.files() == [TEAMS]
-    assert rig.stops == [PREVIEW_GROUP]
+    assert rig.stops == [ANNOUNCE_GROUP, PREVIEW_GROUP]
     assert rig.previewer.hold_key is None
 
 
@@ -252,7 +253,14 @@ CODE = {name: c for c, name in KEYMAP.items()}
 async def test_no_command_is_sent_before_the_release_and_the_release_stops_the_preview():
     rig = Rig()
     menu = create_autospec(MenuStubSpec, instance=True)
-    menu.ProcessInput.return_value = menu_pb2.ProcessInputResponse(success=True)
+    stops_at_commit: list[list[str]] = []
+
+    async def commit(_request, **_kwargs):
+        await settle()  # the StopSound is a task: give it the chance to run first
+        stops_at_commit.append(list(rig.stops))
+        return menu_pb2.ProcessInputResponse(success=True)
+
+    menu.ProcessInput.side_effect = commit
     actions = Actions(menu, create_autospec(CoordinatorStubSpec, instance=True), rig.cues, previewer=rig.previewer)
     rig.config.enabled.return_value = True
     rig.config.timings.return_value = Timings(knob_events_per_step=1)
@@ -277,7 +285,8 @@ async def test_no_command_is_sent_before_the_release_and_the_release_stops_the_p
         "direction": "up",
         "steps": "3",
     }
-    assert rig.stops == [PREVIEW_GROUP]
+    # BR-017: the preview group is stopped before the commit, so no preview clip plays over the menu's voice.
+    assert stops_at_commit == [[ANNOUNCE_GROUP, PREVIEW_GROUP]]
 
 
 @pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-007"], steps=[5])
@@ -302,4 +311,78 @@ async def test_a_chord_ends_the_preview():
     await pad.on_code(CODE["K2"], PRESS, 100)  # a chord: the hold commits nothing, the preview stops
     await rig.time.advance(1.0)
     assert rig.files() == [TEAMS]
-    assert rig.stops == [PREVIEW_GROUP]
+    assert rig.stops == [ANNOUNCE_GROUP, PREVIEW_GROUP]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])
+async def test_with_the_label_over_a_fast_spin_still_speaks_only_the_final_value():
+    rig = Rig(label_seconds=0.0)
+    for net in range(1, 5):
+        rig.step(net)
+        await rig.time.advance(0.05)
+    await rig.time.advance(1.0)
+    assert rig.files() == [TEAMS, NUMBER[6]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])
+async def test_the_value_waits_the_debounce_after_the_last_step():
+    rig = Rig(label_seconds=0.0)
+    rig.step(1)
+    await rig.time.advance(0.1)
+    rig.step(2)  # restarts the wait
+    await rig.time.advance(0.14)
+    assert rig.files() == [TEAMS]
+    await rig.time.advance(0.02)
+    assert rig.files() == [TEAMS, NUMBER[4]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-011"], steps=[5])
+async def test_a_new_hold_cuts_a_tap_announcement_still_playing():
+    rig = Rig()
+    await rig.cues.announce(Sound.MENU_VOX_LABEL_SENSITIVITY, Sound.MENU_VOX_SENSITIVITY_HIGH)
+    await settle()  # the announcement label plays, its value waits 0.4 s
+    rig.step(1)
+    await rig.time.advance(1.0)
+    assert Sound.MENU_VOX_SENSITIVITY_HIGH.value not in rig.files()
+    assert rig.stops[0] == ANNOUNCE_GROUP
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-017"])
+async def test_shutdown_cancels_a_pending_stop():
+    rig = Rig()
+    hang = asyncio.Event()
+
+    async def hanging_stop(_request, **_kwargs):
+        await hang.wait()
+
+    rig.audio.StopSound.side_effect = hanging_stop
+    rig.step(1)
+    rig.previewer.end_hold()
+    await settle()
+    assert rig.previewer._stops
+    rig.previewer.cancel()
+    await settle()
+    assert rig.previewer._stops == set()
+
+
+@pytest.mark.uc("UC-015", flow="A1", br=["BR-017"], steps=[5])
+async def test_a_refused_hold_says_not_possible_once_including_the_release():
+    rig = Rig()
+    menu = create_autospec(MenuStubSpec, instance=True)
+    actions = Actions(menu, create_autospec(CoordinatorStubSpec, instance=True), rig.cues, previewer=rig.previewer)
+    rig.config.enabled.return_value = True
+    rig.config.timings.return_value = Timings(knob_events_per_step=1)
+    reader = create_autospec(MenuStatusReader, instance=True)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(num_teams=2, lifecycle_live=True)
+    pad = PadController(rig.config, reader, actions, rig.cues)
+    pad.attached(KEYMAP)
+
+    await pad.on_code(CODE["K5"], PRESS, 0)
+    for i in range(2):
+        await pad.on_code(CODE["KNOB_TURN_B"], PRESS, 10 + i * 10)
+        await rig.time.advance(0.6)
+    _, result = await actions.dispatch(Gesture(LAYER, "K5", steps=2, held_ms=900), reader.fetch.return_value)
+    await settle()
+    assert result == "refused"
+    assert rig.files() == [Sound.MENU_VOX_STATUS_NOT_POSSIBLE.value]
+    menu.ProcessInput.assert_not_awaited()
