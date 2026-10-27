@@ -10,7 +10,7 @@
 # requires the same digest. Anything else exits 1.
 #
 # Usage: IMAGE_PREFIX=ghcr.io/owner/repo TARGET_SHA=<sha> scripts/ci/retag-image.sh <image>
-# Env:   SOURCE_TAG (default main), VERIFY_ATTEMPTS (default 6), VERIFY_SLEEP (default 5)
+# Env:   COPY_SLEEP (default 5), SOURCE_TAG (default main), VERIFY_ATTEMPTS (default 6), VERIFY_SLEEP (default 5)
 #        DOCKER (default "docker"; tests substitute a fake)
 # Exit:  0 = tag present and digest-identical; 1 = copy or verification failed;
 #        2 = :main does not exist (first run / fork; caller decides).
@@ -24,17 +24,41 @@ DOCKER="${DOCKER:-docker}"
 source_ref="${IMAGE_PREFIX}/${image}:${SOURCE_TAG:-main}"
 target_ref="${IMAGE_PREFIX}/${image}:${sha}"
 
-digest_of() { "$DOCKER" buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}' 2>/dev/null; }
+attempts="${VERIFY_ATTEMPTS:-6}"
+errf="$(mktemp)"
+trap 'rm -f "$errf"' EXIT
 
-if ! src_digest="$(digest_of "$source_ref")" || [[ -z "$src_digest" ]]; then
-  echo "::warning::retag-image: ${source_ref} not found"
-  exit 2
+# digest_of <ref>: print the manifest digest; stderr is kept in $errf so a
+# real not-found can be told from an auth/network/registry error.
+digest_of() { "$DOCKER" buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}' 2>"$errf"; }
+is_not_found() { grep -qiE 'not found|404|manifest unknown|name unknown' "$errf"; }
+
+# Source lookup: retried like the verify loop; exit 2 only for a persistent
+# not-found, any other persistent error is a failure (exit 1).
+src_digest=""
+for ((i = 1; i <= attempts; i++)); do
+  if src_digest="$(digest_of "$source_ref")" && [[ -n "$src_digest" ]]; then break; fi
+  src_digest=""
+  ((i == attempts)) || sleep "${VERIFY_SLEEP:-5}"
+done
+if [[ -z "$src_digest" ]]; then
+  if is_not_found; then
+    echo "::warning::retag-image: ${source_ref} not found"
+    exit 2
+  fi
+  echo "::error::retag-image: cannot read ${source_ref} after ${attempts} attempts: $(head -c 300 "$errf")"
+  exit 1
 fi
 
-"$DOCKER" buildx imagetools create --tag "$target_ref" "${IMAGE_PREFIX}/${image}@${src_digest}" ||
-  { echo "::error::retag-image: copy ${source_ref} (${src_digest}) -> ${target_ref} failed"; exit 1; }
+# Copy: 3 attempts, backoff 5 s / 10 s (COPY_SLEEP scales it for tests).
+copied=0
+for n in 1 2 3; do
+  if "$DOCKER" buildx imagetools create --tag "$target_ref" "${IMAGE_PREFIX}/${image}@${src_digest}"; then copied=1; break; fi
+  ((n == 3)) || sleep $((n * ${COPY_SLEEP:-5}))
+done
+[[ "$copied" == 1 ]] ||
+  { echo "::error::retag-image: copy ${source_ref} (${src_digest}) -> ${target_ref} failed after 3 attempts"; exit 1; }
 
-attempts="${VERIFY_ATTEMPTS:-6}"
 for ((i = 1; i <= attempts; i++)); do
   if got="$(digest_of "$target_ref")" && [[ "$got" == "$src_digest" ]]; then
     echo "retag-image: ${target_ref} resolves to ${got}"

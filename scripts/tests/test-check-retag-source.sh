@@ -100,6 +100,7 @@ cat >"${WORK}/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >>"${DOCKER_LOG}"
 [[ "$1 $2 $3" == "buildx imagetools inspect" ]] || exit 99
+if [[ -n "${STUB_ERR:-}" ]]; then echo "$STUB_ERR" >&2; exit 1; fi
 printf '%s' "${STUB_CONFIG}"
 STUB
 chmod +x "${WORK}/bin/docker"
@@ -112,5 +113,11 @@ grep -q "in-flight main run" "${WORK}/out" || fail "in-flight hint missing"
 export STUB_CONFIG="{\"created\":\"2023-11-17T00:00:00Z\",\"config\":{}}"
 expect_rc 0 "registry no label: creation time fallback" bash -c "cd '$repo' && IMAGE_PREFIX=x/y CI_WORKFLOW=.github/workflows/ci.yml '$CHECK' otel-collector"
 if grep -q '^pull' "$DOCKER_LOG"; then fail "retag check pulled the image"; fi
+
+# #2120: a registry error is not a missing tag (exit 1), a real not-found is exit 2.
+run_reg() { bash -c "cd '$repo' && IMAGE_PREFIX=x/y CI_WORKFLOW=.github/workflows/ci.yml '$CHECK' otel-collector"; }
+expect_rc 2 "registry not found -> exit 2" env STUB_ERR="ghcr.io/x/y:main: not found" bash -c "$(declare -f run_reg); repo='$repo' CHECK='$CHECK' run_reg"
+expect_rc 1 "registry auth error -> exit 1" env STUB_ERR="denied: requested access to the resource is denied" bash -c "$(declare -f run_reg); repo='$repo' CHECK='$CHECK' run_reg"
+grep -q "registry error" "${WORK}/out" || fail "registry error message missing"
 
 echo "test-check-retag-source: ${pass} checks passed"
