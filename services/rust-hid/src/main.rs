@@ -9,6 +9,7 @@ mod feature_flags;
 mod grpc_tracing;
 mod hid;
 mod service;
+mod watchdog;
 
 use controller_io_service::ControllerIoServiceImpl;
 use service::proto::controller_io_service_server::ControllerIoServiceServer;
@@ -18,6 +19,9 @@ use tonic::transport::Server;
 use tonic_health::server::health_reporter;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+/// The gRPC port (health, pairing, controller I/O); the watchdog probes it on loopback.
+const GRPC_PORT: u16 = 50058;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize OpenFeature flagd provider for feature flags
     feature_flags::init_flagd().await;
 
-    let addr = "[::]:50058".parse()?;
+    let addr = format!("[::]:{GRPC_PORT}").parse()?;
     info!(%addr, "Starting rust-hid gRPC server");
 
     // Health checking
@@ -53,10 +57,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ControllerIOService — start device manager on a dedicated thread
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    let device_heartbeat = watchdog::Heartbeat::new();
+    let loop_heartbeat = device_heartbeat.clone();
     std::thread::Builder::new()
         .name("device-manager".into())
-        .spawn(move || device_manager::run_device_manager(cmd_rx))
+        .spawn(move || device_manager::run_device_manager(cmd_rx, loop_heartbeat))
         .expect("Failed to spawn device manager thread");
+
+    // Self-healing (UC-002 A7, NFR-054, #2125): exits when this server or the
+    // device loop hangs, so the compose restart policy brings rust-hid back.
+    watchdog::spawn(format!("127.0.0.1:{GRPC_PORT}"), device_heartbeat);
 
     let controller_io_service = ControllerIoServiceImpl::new(cmd_tx);
 

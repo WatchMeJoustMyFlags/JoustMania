@@ -7,13 +7,15 @@
 #  - a game image missing: FAIL naming it, the exact joustmania-upgrade.sh
 #    command, exit 2
 #  - an observability service exited: WARN, `state: degraded`, exit 1
+#  - a game service running but unhealthy (rust-hid wedged, #2125): FAIL with
+#    `docker restart <container>`, exit 2; an unhealthy observability service: WARN
 #  - the clock not NTP synchronised: INFO only (no RTC, accepted), `state: ok`
 #  - docker not reachable: FAIL "not reachable", no image reported missing
 #  - the unit still activating, a game service not running yet: `state: starting`, exit 1
 #  - a branch checkout: WARN not pinned (A4)
 #  - no env value is printed
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-status.sh
-# UC: UC-060 BR-005 A4 A5 BR-006
+# UC: UC-060 BR-005 A4 A5 BR-006; UC-002 A7
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,11 +30,12 @@ fail() {
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
-SERVICES="flagd game-coordinator menu jaeger"
+SERVICES="flagd rust-hid game-coordinator menu jaeger"
 SECRET="dummy-secret-status-2027"
 
 # make_case <name>: ${WORK}/<name>/{repo,bin}; sets CASE
-#   $CASE/missing: images not on the Pi; $CASE/exited: services not running
+#   $CASE/missing: images not on the Pi; $CASE/exited: services not running;
+#   $CASE/unhealthy: services running but unhealthy
 #   $CASE/active, $CASE/result: the unit's ActiveState / Result; $CASE/ntp
 make_case() {
   CASE="${WORK}/$1"
@@ -47,6 +50,7 @@ make_case() {
   git -C "${CASE}/repo" checkout -q --detach
   : >"${CASE}/missing"
   : >"${CASE}/exited"
+  : >"${CASE}/unhealthy"
   echo active >"${CASE}/active"
   echo success >"${CASE}/result"
   echo yes >"${CASE}/ntp"
@@ -62,7 +66,9 @@ case " \$* " in
     exit 0 ;;
   *" compose "*" ps "*)
     for s in ${SERVICES}; do
-      if grep -qxF "\$s" "\$C/exited"; then echo "\$s|exited|"; else echo "\$s|running|healthy"; fi
+      if grep -qxF "\$s" "\$C/exited"; then echo "\$s|exited||joustmania-\$s"
+      elif grep -qxF "\$s" "\$C/unhealthy"; then echo "\$s|running|unhealthy|joustmania-\$s"
+      else echo "\$s|running|healthy|joustmania-\$s"; fi
     done; exit 0 ;;
   " image inspect "*) grep -qxF "\$3" "\$C/missing" && exit 1; exit 0 ;;
 esac
@@ -127,6 +133,20 @@ make_case obs-down
 echo jaeger >"${CASE}/exited"
 expect obs-down 1 degraded
 grep -qx 'WARN service jaeger: exited' "${CASE}/out.log" || fail "obs-down: jaeger not reported"
+
+# --- a game service running but unhealthy: FAIL with the restart (#2125) ----
+make_case unhealthy
+echo rust-hid >"${CASE}/unhealthy"
+expect unhealthy 2 failed
+grep -qx 'FAIL service rust-hid: running (unhealthy); recover with: docker restart joustmania-rust-hid' "${CASE}/out.log" \
+  || fail "unhealthy: rust-hid not FAIL with its restart command: $(grep rust-hid "${CASE}/out.log")"
+
+# --- an observability service unhealthy: degraded, with the restart ---------
+make_case obs-unhealthy
+echo jaeger >"${CASE}/unhealthy"
+expect obs-unhealthy 1 degraded
+grep -qx 'WARN service jaeger: running (unhealthy); recover with: docker restart joustmania-jaeger' "${CASE}/out.log" \
+  || fail "obs-unhealthy: jaeger not WARN with its restart command: $(grep jaeger "${CASE}/out.log")"
 
 # --- clock not synchronised -------------------------------------------------
 make_case clock
