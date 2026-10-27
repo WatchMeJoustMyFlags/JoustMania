@@ -12,7 +12,7 @@ use http::{Request, Response};
 use opentelemetry::propagation::Extractor;
 use tonic::body::Body;
 use tower::{Layer, Service};
-use tracing::{info_span, Instrument};
+use tracing::{Instrument, info_span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::feature_flags;
@@ -124,10 +124,7 @@ where
                 // Record gRPC status code from response headers
                 if let Ok(ref resp) = response {
                     if let Some(status) = resp.headers().get("grpc-status") {
-                        span.record(
-                            "rpc.grpc.status_code",
-                            status.to_str().unwrap_or(""),
-                        );
+                        span.record("rpc.grpc.status_code", status.to_str().unwrap_or(""));
                     } else {
                         span.record("rpc.grpc.status_code", "0"); // OK
                     }
@@ -153,7 +150,8 @@ mod tests {
 
     #[test]
     fn test_parse_grpc_method_full_path() {
-        let (svc, method) = parse_grpc_method("/joustmania.psmove_hid.PairingService/PairController");
+        let (svc, method) =
+            parse_grpc_method("/joustmania.psmove_hid.PairingService/PairController");
         assert_eq!(svc, "PairingService");
         assert_eq!(method, "PairController");
     }

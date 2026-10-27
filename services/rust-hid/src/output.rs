@@ -95,8 +95,12 @@ impl OutputSlot {
             return;
         }
         let peak = st.pending.map_or(rumble, |p| p.rumble_peak.max(rumble));
-        st.pending =
-            Some(Pending { rgb: (r, g, b), rumble_peak: peak, rumble_latest: rumble, attempts: 0 });
+        st.pending = Some(Pending {
+            rgb: (r, g, b),
+            rumble_peak: peak,
+            rumble_latest: rumble,
+            attempts: 0,
+        });
         drop(st);
         self.wake.notify_one();
     }
@@ -104,7 +108,12 @@ impl OutputSlot {
     /// Ask the writer to send LED off / rumble off once, then stop.
     fn close(&self) {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        st.pending = Some(Pending { rgb: (0, 0, 0), rumble_peak: 0, rumble_latest: 0, attempts: 0 });
+        st.pending = Some(Pending {
+            rgb: (0, 0, 0),
+            rumble_peak: 0,
+            rumble_latest: 0,
+            attempts: 0,
+        });
         st.closing = true;
         drop(st);
         self.wake.notify_one();
@@ -168,7 +177,12 @@ impl OutputRouter {
     /// Send off once and stop the controller's writer. Never waits for it: a
     /// writer stuck in a write ends when the write returns.
     pub fn close(&self, serial: &str) {
-        if let Some(slot) = self.slots.lock().unwrap_or_else(|e| e.into_inner()).remove(serial) {
+        if let Some(slot) = self
+            .slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(serial)
+        {
             slot.close();
         }
     }
@@ -213,13 +227,21 @@ impl Writer {
                         if st.closing || now >= due {
                             break;
                         }
-                        st = slot.wake.wait_timeout(st, due - now).unwrap_or_else(|e| e.into_inner()).0;
+                        st = slot
+                            .wake
+                            .wait_timeout(st, due - now)
+                            .unwrap_or_else(|e| e.into_inner())
+                            .0;
                     }
                 }
                 let Some(p) = st.pending.take() else { continue };
                 if p.rumble_latest != p.rumble_peak {
                     // The peak goes out now; the latest rumble follows in the next write.
-                    st.pending = Some(Pending { rumble_peak: p.rumble_latest, attempts: 0, ..p });
+                    st.pending = Some(Pending {
+                        rumble_peak: p.rumble_latest,
+                        attempts: 0,
+                        ..p
+                    });
                 }
                 (p, st.closing)
             };
@@ -229,7 +251,10 @@ impl Writer {
 
             let (r, g, b) = out.rgb;
             let report = hid::build_output_report(r, g, b, out.rumble_peak);
-            let result = device.lock().unwrap_or_else(|e| e.into_inner()).write(&report);
+            let result = device
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .write(&report);
             last_write = Some(Instant::now());
             let mut gave_up = false;
             match result {
@@ -298,7 +323,12 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn reports(&self) -> Vec<Vec<u8>> {
-            self.writes.lock().unwrap().iter().map(|(_, r)| r.clone()).collect()
+            self.writes
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, r)| r.clone())
+                .collect()
         }
     }
 
@@ -322,7 +352,10 @@ pub(crate) mod tests {
                     }
                 }
             }
-            self.writes.lock().unwrap().push((Instant::now(), data.to_vec()));
+            self.writes
+                .lock()
+                .unwrap()
+                .push((Instant::now(), data.to_vec()));
             Ok(data.len())
         }
     }
@@ -332,7 +365,11 @@ pub(crate) mod tests {
     }
 
     fn open(router: &OutputRouter, device: &RecordingDevice, hz: u32) {
-        router.open("s1", Arc::new(Mutex::new(device.clone())), OutputRate::new(hz));
+        router.open(
+            "s1",
+            Arc::new(Mutex::new(device.clone())),
+            OutputRate::new(hz),
+        );
     }
 
     fn wait_for(cond: impl Fn() -> bool, timeout: Duration) -> bool {
@@ -361,16 +398,30 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let elapsed = start.elapsed();
-        assert!(wait_for(|| device.reports().last().map(|r| r[2]) == Some(49), Duration::from_secs(1)));
+        assert!(wait_for(
+            || device.reports().last().map(|r| r[2]) == Some(49),
+            Duration::from_secs(1)
+        ));
         let writes = device.writes.lock().unwrap().clone();
 
         // 20 Hz over the window, plus the first write and the final catch-up.
         let max = (elapsed.as_secs_f64() * 20.0).ceil() as usize + 2;
-        assert!(writes.len() <= max, "{} writes in {elapsed:?} at a 20 Hz cap", writes.len());
-        assert!(writes.len() >= 5, "only {} writes: output starved", writes.len());
+        assert!(
+            writes.len() <= max,
+            "{} writes in {elapsed:?} at a 20 Hz cap",
+            writes.len()
+        );
+        assert!(
+            writes.len() >= 5,
+            "only {} writes: output starved",
+            writes.len()
+        );
         for pair in writes.windows(2) {
             let gap = pair[1].0 - pair[0].0;
-            assert!(gap >= Duration::from_millis(45), "two writes {gap:?} apart at a 20 Hz cap");
+            assert!(
+                gap >= Duration::from_millis(45),
+                "two writes {gap:?} apart at a 20 Hz cap"
+            );
         }
     }
 
@@ -382,15 +433,25 @@ pub(crate) mod tests {
         let device = RecordingDevice::new(WriteMode::Ok);
         open(&router, &device, 20);
         router.submit("s1", 1, 1, 1, 0);
-        assert!(wait_for(|| device.reports().len() == 1, Duration::from_secs(1)));
+        assert!(wait_for(
+            || device.reports().len() == 1,
+            Duration::from_secs(1)
+        ));
 
         // Pulse on and off inside one rate-cap interval.
         router.submit("s1", 1, 1, 1, 200);
         router.submit("s1", 9, 9, 9, 0);
-        assert!(wait_for(|| device.reports().len() >= 3, Duration::from_secs(1)));
+        assert!(wait_for(
+            || device.reports().len() >= 3,
+            Duration::from_secs(1)
+        ));
         let got: Vec<_> = device.reports().iter().map(|r| rgb_rumble(r)).collect();
         assert_eq!(got[1], (9, 9, 9, 200), "the pulse was coalesced away");
-        assert_eq!(got[2], (9, 9, 9, 0), "rumble did not return to the latest value");
+        assert_eq!(
+            got[2],
+            (9, 9, 9, 0),
+            "rumble did not return to the latest value"
+        );
     }
 
     // UC: UC-002 BR-005
@@ -448,7 +509,11 @@ pub(crate) mod tests {
 
         router.submit("s1", 5, 5, 5, 100);
         std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(attempts.load(Ordering::Relaxed), 1 + MAX_RETRIES, "retries not bounded");
+        assert_eq!(
+            attempts.load(Ordering::Relaxed),
+            1 + MAX_RETRIES,
+            "retries not bounded"
+        );
 
         // A new value after a failure streak gets its own retries (counted per value).
         router.submit("s1", 6, 6, 6, 100);
@@ -458,7 +523,10 @@ pub(crate) mod tests {
         // The queue recovers: the next value is written once the device accepts it.
         *device.mode.lock().unwrap() = WriteMode::Ok;
         router.submit("s1", 7, 7, 7, 0);
-        assert!(wait_for(|| device.reports().len() == 1, Duration::from_secs(1)));
+        assert!(wait_for(
+            || device.reports().len() == 1,
+            Duration::from_secs(1)
+        ));
     }
 
     // UC: UC-002 BR-005
@@ -489,21 +557,36 @@ pub(crate) mod tests {
     fn test_a_reopened_controller_does_not_get_the_old_writers_off() {
         let router = OutputRouter::default();
         let old = RecordingDevice::new(WriteMode::Block);
-        router.open("s1", Arc::new(Mutex::new(old.clone())), OutputRate::new(100));
+        router.open(
+            "s1",
+            Arc::new(Mutex::new(old.clone())),
+            OutputRate::new(100),
+        );
         router.submit("s1", 1, 1, 1, 0); // in flight on the old handle
         std::thread::sleep(Duration::from_millis(20));
 
         // Close, then open the same serial again before the old write returns.
         router.close("s1");
         let new = RecordingDevice::new(WriteMode::Ok);
-        router.open("s1", Arc::new(Mutex::new(new.clone())), OutputRate::new(100));
+        router.open(
+            "s1",
+            Arc::new(Mutex::new(new.clone())),
+            OutputRate::new(100),
+        );
         router.submit("s1", 9, 9, 9, 0);
-        assert!(wait_for(|| new.reports().len() == 1, Duration::from_secs(1)));
+        assert!(wait_for(
+            || new.reports().len() == 1,
+            Duration::from_secs(1)
+        ));
 
         old.release.store(true, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(100));
         let old_writes: Vec<_> = old.reports().iter().map(|r| rgb_rumble(r)).collect();
-        assert_eq!(old_writes, vec![(1, 1, 1, 0)], "the superseded writer still sent off");
+        assert_eq!(
+            old_writes,
+            vec![(1, 1, 1, 0)],
+            "the superseded writer still sent off"
+        );
     }
 
     // UC: UC-002 BR-005
@@ -513,16 +596,30 @@ pub(crate) mod tests {
         let router = OutputRouter::default();
         let stuck = RecordingDevice::new(WriteMode::Block);
         let healthy = RecordingDevice::new(WriteMode::Ok);
-        router.open("stuck", Arc::new(Mutex::new(stuck.clone())), OutputRate::new(100));
-        router.open("ok", Arc::new(Mutex::new(healthy.clone())), OutputRate::new(100));
+        router.open(
+            "stuck",
+            Arc::new(Mutex::new(stuck.clone())),
+            OutputRate::new(100),
+        );
+        router.open(
+            "ok",
+            Arc::new(Mutex::new(healthy.clone())),
+            OutputRate::new(100),
+        );
 
         let start = Instant::now();
         for i in 0..1000u32 {
             router.submit("stuck", (i % 256) as u8, 0, 0, 0);
             router.submit("ok", 1, 2, 3, 0);
         }
-        assert!(start.elapsed() < Duration::from_millis(200), "submit waited on a blocked write");
-        assert!(wait_for(|| !healthy.reports().is_empty(), Duration::from_secs(1)));
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "submit waited on a blocked write"
+        );
+        assert!(wait_for(
+            || !healthy.reports().is_empty(),
+            Duration::from_secs(1)
+        ));
 
         // Closing the stuck controller does not wait for its writer either.
         let t = Instant::now();
@@ -534,7 +631,11 @@ pub(crate) mod tests {
             || stuck.reports().last().map(|r| rgb_rumble(r)) == Some((0, 0, 0, 0)),
             Duration::from_secs(1)
         ));
-        assert!(stuck.reports().len() <= 2, "the backlog was written: {}", stuck.reports().len());
+        assert!(
+            stuck.reports().len() <= 2,
+            "the backlog was written: {}",
+            stuck.reports().len()
+        );
     }
 
     #[test]

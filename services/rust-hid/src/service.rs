@@ -79,7 +79,9 @@ impl PairingServiceImpl<HidApi> {
 
 impl<H: PairingHid> PairingServiceImpl<H> {
     pub fn with_hid(hid: H) -> Self {
-        Self { hid: Arc::new(Mutex::new(hid)) }
+        Self {
+            hid: Arc::new(Mutex::new(hid)),
+        }
     }
 
     /// Run `op` on the blocking pool with the HID handle, within `PAIRING_HID_TIMEOUT`.
@@ -149,7 +151,10 @@ impl<H: PairingHid> PairingService for PairingServiceImpl<H> {
         );
 
         let (path, address) = (req.device_path.clone(), req.adapter_address.clone());
-        match self.run_blocking(move |hid| hid.pair(&path, &address)).await? {
+        match self
+            .run_blocking(move |hid| hid.pair(&path, &address))
+            .await?
+        {
             Ok((already_paired, previous_host)) => {
                 if already_paired {
                     info!(serial = %req.serial, "Controller already paired");
@@ -224,11 +229,14 @@ mod tests {
     // hold it, and a second call must not queue behind the first (#2125).
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_a_blocking_hid_call_leaves_the_runtime_free() {
-        let svc = Arc::new(PairingServiceImpl::with_hid(SlowHid { hold: Duration::from_millis(800) }));
+        let svc = Arc::new(PairingServiceImpl::with_hid(SlowHid {
+            hold: Duration::from_millis(800),
+        }));
         let slow = {
             let svc = svc.clone();
             tokio::spawn(async move {
-                svc.get_usb_controllers(Request::new(GetUsbControllersRequest {})).await
+                svc.get_usb_controllers(Request::new(GetUsbControllersRequest {}))
+                    .await
             })
         };
         tokio::time::sleep(Duration::from_millis(50)).await;

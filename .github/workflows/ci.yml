@@ -647,7 +647,7 @@ jobs:
           path: services/${{ matrix.service }}/coverage.xml
           retention-days: 1
 
-  # Rust service checks (cargo test, clippy)
+  # Rust service checks (cargo fmt --check, test, clippy)
   rust-checks:
     name: Rust Checks
     runs-on: ubuntu-latest
@@ -690,6 +690,10 @@ jobs:
       - name: Cargo test
         working-directory: services/rust-hid
         run: cargo test --verbose
+
+      - name: Cargo fmt
+        working-directory: services/rust-hid
+        run: cargo fmt --check
 
       - name: Cargo clippy
         working-directory: services/rust-hid

@@ -21,7 +21,7 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tracing::{info, warn};
 
-use crate::output::{OutputRate, DEFAULT_RATE_HZ};
+use crate::output::{DEFAULT_RATE_HZ, OutputRate};
 
 /// The flag set rust-hid reads (`metadata.flagSetId` of services/flagd/observability.json).
 const FLAG_SET: &str = "observability";
@@ -130,12 +130,17 @@ async fn connect_controller_set(host: String, port: u16, rate: OutputRate) {
     loop {
         attempt += 1;
         if reachable(&host, port).await {
-            match FlagdProvider::new(set_provider_options(host.clone(), port, CONTROLLER_SET)).await {
+            match FlagdProvider::new(set_provider_options(host.clone(), port, CONTROLLER_SET)).await
+            {
                 Ok(provider) => {
                     let mut of = OpenFeature::singleton_mut().await;
                     of.set_named_provider(CONTROLLER_SET, provider).await;
                     drop(of);
-                    info!(attempt, flag_set = CONTROLLER_SET, "OpenFeature flagd provider synced (in-process)");
+                    info!(
+                        attempt,
+                        flag_set = CONTROLLER_SET,
+                        "OpenFeature flagd provider synced (in-process)"
+                    );
                     return;
                 }
                 Err(e) => {
@@ -307,7 +312,9 @@ mod output_rate_tests {
     }
 
     fn not_found<T>() -> EvaluationResult<T> {
-        Err(EvaluationError::builder().code(EvaluationErrorCode::FlagNotFound).build())
+        Err(EvaluationError::builder()
+            .code(EvaluationErrorCode::FlagNotFound)
+            .build())
     }
 
     #[tonic::async_trait]
@@ -315,19 +322,43 @@ mod output_rate_tests {
         fn metadata(&self) -> &ProviderMetadata {
             &self.metadata
         }
-        async fn resolve_bool_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<bool>> {
+        async fn resolve_bool_value(
+            &self,
+            _: &str,
+            _: &EvaluationContext,
+        ) -> EvaluationResult<ResolutionDetails<bool>> {
             not_found()
         }
-        async fn resolve_int_value(&self, key: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<i64>> {
-            if key == self.key { Ok(ResolutionDetails::new(self.value)) } else { not_found() }
+        async fn resolve_int_value(
+            &self,
+            key: &str,
+            _: &EvaluationContext,
+        ) -> EvaluationResult<ResolutionDetails<i64>> {
+            if key == self.key {
+                Ok(ResolutionDetails::new(self.value))
+            } else {
+                not_found()
+            }
         }
-        async fn resolve_float_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<f64>> {
+        async fn resolve_float_value(
+            &self,
+            _: &str,
+            _: &EvaluationContext,
+        ) -> EvaluationResult<ResolutionDetails<f64>> {
             not_found()
         }
-        async fn resolve_string_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<String>> {
+        async fn resolve_string_value(
+            &self,
+            _: &str,
+            _: &EvaluationContext,
+        ) -> EvaluationResult<ResolutionDetails<String>> {
             not_found()
         }
-        async fn resolve_struct_value(&self, _: &str, _: &EvaluationContext) -> EvaluationResult<ResolutionDetails<StructValue>> {
+        async fn resolve_struct_value(
+            &self,
+            _: &str,
+            _: &EvaluationContext,
+        ) -> EvaluationResult<ResolutionDetails<StructValue>> {
             not_found()
         }
     }
@@ -351,7 +382,11 @@ mod output_rate_tests {
             .await;
         }
         refresh_output_rate(&rate).await;
-        assert_eq!(rate.hz(), 30, "the follower did not read rust_hid.output_rate_hz from domain controller");
+        assert_eq!(
+            rate.hz(),
+            30,
+            "the follower did not read rust_hid.output_rate_hz from domain controller"
+        );
     }
 
     // UC: UC-002 BR-005
@@ -364,10 +399,15 @@ mod output_rate_tests {
             .find(&format!("\"{OUTPUT_RATE_FLAG}\""))
             .expect("rust_hid.output_rate_hz missing from controller.json");
         let block = &text[start..text[start..].find('}').map_or(text.len(), |e| start + e)];
-        assert!(block.contains(&format!(r#""normal": {DEFAULT_RATE_HZ}"#)), "{block}");
+        assert!(
+            block.contains(&format!(r#""normal": {DEFAULT_RATE_HZ}"#)),
+            "{block}"
+        );
         let rest = &text[start..];
-        assert!(rest.contains(r#""defaultVariant": "normal""#), "default variant is not normal");
+        assert!(
+            rest.contains(r#""defaultVariant": "normal""#),
+            "default variant is not normal"
+        );
         assert_eq!(CONTROLLER_SET, "controller");
     }
 }
-

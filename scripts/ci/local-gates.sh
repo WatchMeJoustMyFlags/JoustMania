@@ -293,7 +293,7 @@ gate_cmd() {  # print the shell command for a gate
       fi
       echo "export PATH='$node/bin':\"\$PATH\" && cd services/dashboard && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && npx tsc --noEmit && npx vitest run" ;;
     voice-check) echo "make voice-check" ;;
-    rust-hid) echo "cd services/rust-hid && cargo clippy --all-targets -- -D warnings && cargo test" ;;
+    rust-hid) echo "cd services/rust-hid && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test" ;;
     # Same steps as the Telemetry Contract job: generated specs, then the tests.
     contract) echo "make specs-check && make spec-refs-check && uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py" ;;
     contract-flagd) echo "make test-contract-flagd" ;;

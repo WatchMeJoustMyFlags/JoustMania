@@ -18,9 +18,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_client::HealthClient;
-use tonic_health::pb::HealthCheckRequest;
 use tracing::{error, warn};
 
 /// Exit code of a tripped watchdog (EX_SOFTWARE): non-zero, so any restart policy restarts it.
@@ -105,7 +105,12 @@ pub struct WatchdogState {
 
 impl WatchdogState {
     pub fn new(cfg: Config, started: Instant) -> Self {
-        Self { cfg, started, armed: false, failed: 0 }
+        Self {
+            cfg,
+            started,
+            armed: false,
+            failed: 0,
+        }
     }
 
     /// Feed one probe result and the device-loop heartbeat age.
@@ -123,8 +128,9 @@ impl WatchdogState {
         }
         self.armed = true;
         self.failed += 1;
-        (self.failed >= self.cfg.max_failed_probes)
-            .then_some(Trip::GrpcUnresponsive { failed_probes: self.failed })
+        (self.failed >= self.cfg.max_failed_probes).then_some(Trip::GrpcUnresponsive {
+            failed_probes: self.failed,
+        })
     }
 }
 
@@ -137,7 +143,9 @@ pub(crate) async fn probe_health(addr: &str, budget: Duration) -> bool {
             .timeout(budget);
         let channel = endpoint.connect().await.ok()?;
         let response = HealthClient::new(channel)
-            .check(HealthCheckRequest { service: String::new() })
+            .check(HealthCheckRequest {
+                service: String::new(),
+            })
             .await
             .ok()?;
         Some(response.into_inner().status == ServingStatus::Serving as i32)
@@ -171,7 +179,11 @@ pub fn spawn(addr: String, device: Heartbeat) {
         .name("watchdog".into())
         .spawn(move || {
             run(Config::default(), &addr, &device, |trip| {
-                error!(?trip, exit_code = EXIT_CODE, "watchdog: rust-hid is wedged, exiting so the restart policy restarts it");
+                error!(
+                    ?trip,
+                    exit_code = EXIT_CODE,
+                    "watchdog: rust-hid is wedged, exiting so the restart policy restarts it"
+                );
                 std::process::exit(EXIT_CODE);
             })
         })
@@ -201,10 +213,26 @@ mod tests {
     fn test_default_config_and_exit_code_match_nfr_054() {
         let d = Config::default();
         assert_eq!(d.max_failed_probes, 5, "NFR-054: 5 failed probes in a row");
-        assert_eq!(d.probe_interval, Duration::from_secs(3), "NFR-054: one probe every 3 s");
-        assert_eq!(d.probe_timeout, Duration::from_secs(3), "NFR-054: 3 s budget per probe");
-        assert_eq!(d.device_stall_limit, Duration::from_secs(15), "NFR-054: 15 s device stall limit");
-        assert_eq!(d.start_grace, Duration::from_secs(30), "NFR-054: 30 s start grace");
+        assert_eq!(
+            d.probe_interval,
+            Duration::from_secs(3),
+            "NFR-054: one probe every 3 s"
+        );
+        assert_eq!(
+            d.probe_timeout,
+            Duration::from_secs(3),
+            "NFR-054: 3 s budget per probe"
+        );
+        assert_eq!(
+            d.device_stall_limit,
+            Duration::from_secs(15),
+            "NFR-054: 15 s device stall limit"
+        );
+        assert_eq!(
+            d.start_grace,
+            Duration::from_secs(30),
+            "NFR-054: 30 s start grace"
+        );
         // Non-zero (EX_SOFTWARE), so `restart: unless-stopped` restarts the container.
         assert_eq!(EXIT_CODE, 70);
     }
@@ -256,7 +284,9 @@ mod tests {
         assert_eq!(s.observe(true, Duration::from_millis(400), t0), None);
         assert_eq!(
             s.observe(true, Duration::from_millis(401), t0),
-            Some(Trip::DeviceLoopStalled { age: Duration::from_millis(401) })
+            Some(Trip::DeviceLoopStalled {
+                age: Duration::from_millis(401)
+            })
         );
     }
 
@@ -282,7 +312,9 @@ mod tests {
                 .unwrap();
             rt.block_on(async move {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                addr_tx.send(listener.local_addr().unwrap().to_string()).unwrap();
+                addr_tx
+                    .send(listener.local_addr().unwrap().to_string())
+                    .unwrap();
                 let (_reporter, health) = tonic_health::server::health_reporter();
                 tokio::spawn(async move {
                     // Poll the stall order without blocking the runtime, then block it.
