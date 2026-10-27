@@ -5,7 +5,6 @@
 #   /joustmania*    -> connect-proxy:8080 (PRESERVE prefix, gRPC-Web)
 #   /grafana/*      -> grafana:3000       (PRESERVE prefix, serve_from_sub_path=true)
 #   /jaeger/*       -> jaeger:16686       (PRESERVE prefix, base_path=/jaeger in config.yaml)
-#   /loki/*         -> loki:3100          (STRIP prefix, API expects root)
 #   /victoria-metrics/* -> victoria-metrics:8428 (STRIP prefix, API expects root)
 #   /flags/*        -> flag-service:8070  (STRIP prefix, flag service API, #1407)
 #   /pairing/*      -> connect-proxy:8080 (PRESERVE prefix, operator unpair, UC-005)
@@ -61,14 +60,6 @@ static_resources:
                             path: "/jaeger"
                           redirect:
                             path_redirect: "/jaeger/"
-
-                        # Loki API
-                        # STRIP prefix - API expects root paths
-                        - match:
-                            prefix: "/loki/"
-                          route:
-                            cluster: loki
-                            prefix_rewrite: "/"
 
                         # VictoriaMetrics API
                         # STRIP prefix - API expects root paths
@@ -188,20 +179,6 @@ static_resources:
                     socket_address:
                       address: jaeger
                       port_value: 16686
-
-    # Loki log aggregation
-    - name: loki
-      type: STRICT_DNS
-      lb_policy: ROUND_ROBIN
-      load_assignment:
-        cluster_name: loki
-        endpoints:
-          - lb_endpoints:
-              - endpoint:
-                  address:
-                    socket_address:
-                      address: loki
-                      port_value: 3100
 
     # VictoriaMetrics long-term metrics storage
     - name: victoria_metrics

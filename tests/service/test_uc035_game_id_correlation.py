@@ -7,7 +7,7 @@ their own, so they correlate through the trace id the log handler stamps on ever
 line logged inside the game's spans. The sink must receive coordinator log lines
 under the game-session span's trace.
 
-Scope: the collector, Loki and Grafana are not in the T2 tier. This checks what
+Scope: the collector and Grafana are not in the T2 tier. This checks what
 the services emit; that the backends keep the ids is the contract tests' and
 the full stack's part.
 """

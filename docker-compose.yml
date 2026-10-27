@@ -210,7 +210,6 @@ services:
       - OTEL_RESOURCE_ATTRIBUTES=host.name=${JOUSTMANIA_HOST:-joustmania}
     volumes:
       - ./services/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Host filesystem mounts for hostmetrics receiver (replaces node-exporter)
       - /proc:/hostfs/proc:ro
@@ -226,7 +225,7 @@ services:
       - "127.0.0.1:4317:4317"
     # No depends_on on the backends (UC-060 BR-004, FR-181): the collector starts
     # at once and its exporters use the collector's default bounded retry (about
-    # 5 min, in-memory queue) until Jaeger, Loki and VictoriaMetrics are up; a
+    # 5 min, in-memory queue) until Jaeger and VictoriaMetrics are up; a
     # backend that comes up later than that loses the early data (UC-035 A3, NFR-021).
     restart: unless-stopped
     networks:
@@ -645,8 +644,6 @@ services:
     depends_on:
       victoria-metrics:
         condition: service_healthy
-      loki:
-        condition: service_healthy
       jaeger:
         condition: service_healthy
     networks:
@@ -662,35 +659,6 @@ services:
       resources:
         limits:
           memory: 256m
-          cpus: '0.5'
-    logging: *default-logging
-
-  # Loki for log aggregation with 24h retention
-  loki:
-    image: grafana/loki:3.7.2
-    container_name: joustmania-loki
-    user: "0"  # Run as root to avoid permission issues with volume
-    # Port exposed only within Docker network (envoy proxies to it)
-    expose:
-      - "3100"
-    volumes:
-      - ./services/loki/config.yaml:/etc/loki/config.yaml:ro
-      - loki-data:/tmp/loki
-    command: -config.file=/etc/loki/config.yaml
-    networks:
-      - joustmania
-    restart: unless-stopped
-    healthcheck:
-      # Loki 3.6+ images are distroless (no wget/shell); use the built-in health subcommand
-      test: ["CMD", "/usr/bin/loki", "-health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    deploy:
-      resources:
-        limits:
-          memory: 192m
           cpus: '0.5'
     logging: *default-logging
 
@@ -912,7 +880,6 @@ volumes:
   flag-service-state:
   victoria-metrics-data:
   grafana-data:
-  loki-data:
   jaeger-data:
   controller-names:
   # Durable experiment journal for the agent (#1023). See the agent service's

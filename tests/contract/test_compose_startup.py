@@ -11,7 +11,7 @@ import infra_config as ic
 import pytest
 import yaml
 
-OBS = {"jaeger", "loki", "victoria-metrics", "grafana", "otel-collector"}
+OBS = {"jaeger", "victoria-metrics", "grafana", "otel-collector"}
 COMPOSE_FILES = ["docker-compose.yml", "docker-compose.lite.yml"]
 # Overlays merged on top of docker-compose.yml (make dev, make ci, make dry-run).
 OVERLAYS = [

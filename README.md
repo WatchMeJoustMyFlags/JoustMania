@@ -80,7 +80,7 @@ make up-mock
       ┌───────────────┐ ┌───────────┐ ┌───────────────┐
       │     Audio     │ │   flagd   │ │ Observability │
       │    :50056     │ │  :8015    │ │ Jaeger/Prom   │
-      └───────────────┘ └───────────┘ │ Grafana/Loki  │
+      └───────────────┘ └───────────┘ │ Grafana       │
                                       └───────────────┘
 ```
 
@@ -132,7 +132,7 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 
 - **Language:** Python 3.14
 - **Communication:** gRPC with Protocol Buffers
-- **Observability:** OpenTelemetry, Jaeger, VictoriaMetrics, Loki, Grafana
+- **Observability:** OpenTelemetry, Jaeger, VictoriaMetrics, Grafana
 - **Infrastructure:** Docker, Docker Compose
 
 ## Credits

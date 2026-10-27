@@ -12,18 +12,20 @@ collector delivered is read back from the backends' own query APIs:
 - VictoriaMetrics holds ``game_trace_correlation{game_id=...}`` for the live game;
 - Jaeger holds the game's root span, found by ``game.id``;
 - the collector container is still running;
-- Loki holds the game's log lines under the root span's trace id (Post-S-1);
-- Loki gets no new agent lines, so the dashboard's Agent and Experiments tabs
+- the root span is findable by its trace id with its spans, the place an operator
+  starts to find a game's errors (Post-S-1; Loki is gone, FR-082 Obsolete);
+- Jaeger gets no new agent spans, so the dashboard's Agent and Experiments tabs
   show no new rows (A3; envoy's own error for ``/experiments`` is the contract
   test ``test_agent_down_envoy_answers_experiments_with_its_own_error``).
 
-Jaeger, VictoriaMetrics and Loki are queried on the loopback-only ports that
+Jaeger and VictoriaMetrics are queried on the loopback-only ports that
 ``docker-compose.override.yml`` publishes for tests (C-015).
 """
 
 import json
 import subprocess
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -31,6 +33,7 @@ import pytest
 
 from proto import game_coordinator_pb2
 from tests.integration.helpers import (
+    JAEGER_API,
     async_poll_until,
     build_start_config,
     get_game_client,
@@ -40,7 +43,6 @@ from tests.integration.helpers import (
 )
 
 VICTORIA_METRICS_API = "http://127.0.0.1:8428/api/v1"
-LOKI_API = "http://127.0.0.1:3100/loki/api/v1"
 GAME_MODE = "JoustFFA"
 TAG = "uc035-a3"
 BACKEND_TIMEOUT_SECONDS = 60.0
@@ -103,21 +105,28 @@ def _loop_rate_ratio(game_id: str) -> float:
     return actual / configured if configured else 0.0
 
 
-def _loki_lines(query: str, start_s: float) -> list[str]:
+def _trace_spans(trace_id: str) -> list:
+    """Spans of one trace fetched by its id; an unknown trace counts as empty."""
+    try:
+        data = _get_json(f"{JAEGER_API}/traces/{trace_id}")["data"]
+    except urllib.error.HTTPError as err:
+        if err.code == 404:
+            return []
+        raise
+    return [span for trace in data for span in trace["spans"]]
+
+
+def _agent_spans_since(start_s: float) -> list:
+    """Agent spans Jaeger holds from ``start_s`` on; an unknown service counts as empty."""
     params = urllib.parse.urlencode(
-        {
-            "query": query,
-            "start": str(int(start_s * 1e9)),
-            "end": str(int(time.time() * 1e9)),
-            "limit": "100",
-        }
+        {"service": "agent", "start": str(int(start_s * 1e6)), "limit": "20"}
     )
-    result = _get_json(f"{LOKI_API}/query_range?{params}")["data"]["result"]
-    return [line for stream in result for _, line in stream["values"]]
-
-
-def _trace_log_lines(trace_id: str, start_s: float) -> list[str]:
-    return _loki_lines(f'{{service_name=~".+"}} | trace_id="{trace_id}"', start_s)
+    try:
+        return _get_json(f"{JAEGER_API}/traces?{params}")["data"]
+    except urllib.error.HTTPError as err:
+        if err.code in (400, 404):
+            return []
+        raise
 
 
 @pytest.fixture
@@ -144,8 +153,6 @@ async def test_agent_down_collector_still_delivers_to_jaeger_and_victoria_metric
     assert not _container_running(docker_compose, "agent"), (
         "precondition: the agent must be down"
     )
-    started = time.time()
-
     serials = await setup_mock_controllers(
         docker_compose, count=3, tag=headless_cleanup.add_tag(TAG)
     )
@@ -198,23 +205,24 @@ async def test_agent_down_collector_still_delivers_to_jaeger_and_victoria_metric
         "the collector must survive the agent outage"
     )
 
-    # Post-S-1: the game's log lines are found in Loki by the root span's trace id.
-    trace_id = jaeger_root_spans(game_id)[0]["traceID"]
+    # Post-S-1: the game's spans are found by the root span's trace id.
+    root = jaeger_root_spans(game_id)[0]
     assert await async_poll_until(
-        lambda: _nonempty(lambda t: _trace_log_lines(t, started), trace_id),
+        lambda: _nonempty(_trace_spans, root["traceID"]),
         timeout=BACKEND_TIMEOUT_SECONDS,
         interval=1.0,
-    ), f"Loki has no log line for trace {trace_id} of game {game_id}"
+    ), f"Jaeger has no spans for trace {root['traceID']} of game {game_id}"
+    assert root["spanID"] in {span["spanID"] for span in _trace_spans(root["traceID"])}
 
 
 @pytest.mark.uc("UC-035", flow="A3")
-def test_agent_down_no_new_agent_lines_reach_loki(docker_compose, agent_down):
-    """UC-035 A3: with the agent down, the Agent and Experiments tabs' Loki source gets no new agent lines."""
+def test_agent_down_no_new_agent_spans_reach_jaeger(docker_compose, agent_down):
+    """UC-035 A3: with the agent down, the Agent and Experiments tabs' Jaeger source gets no new agent spans."""
     assert not _container_running(docker_compose, "agent"), (
         "precondition: the agent must be down"
     )
     down_since = time.time()
-    # Loki answers (so an empty result means no lines, not an unreachable store).
-    assert _get_json(f"{LOKI_API}/labels")["status"] == "success"
+    # Jaeger answers (so an empty result means no spans, not an unreachable store).
+    assert _get_json(f"{JAEGER_API}/services")["data"] is not None
     time.sleep(5)
-    assert _loki_lines('{service_name="agent"}', down_since) == []
+    assert _agent_spans_since(down_since) == []

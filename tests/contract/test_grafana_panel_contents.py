@@ -1,8 +1,8 @@
-"""UC-035 step 6 and step 7: the named Grafana panels and the Loki datasource (#1725).
+"""UC-035 step 6 and step 7: the named Grafana panels and the provisioned datasources (#1725, #2059).
 
 Step 6 names what each folder shows; this pins every named item to a panel and
-the series it reads, so removing or emptying one fails here. Step 7 searches the
-logs in Grafana Explore on Loki, which needs a provisioned Loki datasource.
+the series it reads, so removing or emptying one fails here. Step 7 finds a game's errors in
+Jaeger, so the provisioned datasources are exactly Prometheus (VictoriaMetrics) and Jaeger.
 """
 
 from __future__ import annotations
@@ -186,20 +186,15 @@ def test_step6_talk_dashboard_is_titled_for_the_talk():
 
 
 @pytest.mark.uc("UC-035", flow="main", steps=[7])
-def test_step7_grafana_provisions_a_loki_datasource_for_explore():
+def test_step7_grafana_provisions_only_prometheus_and_jaeger_datasources():
     sources = [
         ds
         for path in sorted(DATASOURCES.glob("*.yml"))
         for ds in (ic.load_yaml(path).get("datasources") or [])
     ]
-    loki = [ds for ds in sources if ds.get("type") == "loki"]
-    assert len(loki) == 1, sources
-    assert loki[0]["url"] == "http://loki:3100"
-    assert loki[0]["access"] == "proxy"
-    # The dashboard no longer links to Loki (#2059): its Experiments link opens the
-    # experiment.progress spans in Jaeger; step 7 starts in Grafana Explore itself.
+    assert sorted(ds["type"] for ds in sources) == ["jaeger", "prometheus"], sources
+    # The dashboard's Experiments link opens the experiment.progress spans in Jaeger.
     spa = (ic.REPO_ROOT / "services" / "dashboard" / "src" / "index.html").read_text()
-    assert f"%22datasource%22:%22{loki[0]['uid']}%22" not in spa
     assert "/jaeger/search?service=agent&operation=experiment.progress" in spa
 
 
