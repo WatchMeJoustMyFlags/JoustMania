@@ -2,8 +2,8 @@
 
 The catalog holds every voice line the code plays, in every area. Recordings no
 caller can reach are listed in NOT_CATALOGED (audited for #2147): they keep
-their files, the maintainer decides whether to drop them, and they are not
-generated.
+their files, they are not generated. Those the maintainer chose to drop (#2166) are in
+DELETED_RECORDINGS: no file may come back and no source may name them.
 """
 
 import json
@@ -30,7 +30,7 @@ _JOUST_UNUSED = {
 }  # fmt: skip
 _COMMANDER = {
     "10 seconds begins", "blue overdrive", "blue revive", "blue shift", "blue winner", "blue_power_ready",
-    "commander intro", "commanders chosen", "power_ready", "red overdrive", "red revive", "red shift",
+    "commander intro", "commanders chosen", "power_ready", "red overdrive", "red revive",
     "red winner", "red_power_ready", "blue_overdrive", "red_overdrive",
 }  # fmt: skip
 _ZOMBIE_UNUSED = {"1 minute", "3 minutes", "5 minutes", "molotov found"}
@@ -38,18 +38,12 @@ _FIGHT_CLUB = {
     "5_rounds",
     "Defender_high_score",
     "defender_lead",
-    "defender_winning",
     "game_over",
     "last_round",
     "tie_game",
 }
-_MENU_UNUSED = {
-    "menu Commander", "menu ninjabomb", "menu Random",
-    "commander-instructions", "Ninjabomb-instructions", "added_random", "removed_random",
-    "tradeoff2", "adminop_force_all_start", "adminop_random_team_size", "adminop_freeze_mode", "adminop_lives",
-    "adminop_resurrection", "adminop_sheilds", "adminop_traitor_team_size", "update_started",
-    "joustmania_updated", "large_update", "joustmania_failed",
-}  # fmt: skip
+# Mapped by menu.utils.audio.GAME_MODE_VOICE (Commander is not selectable yet): the file stays.
+_MENU_UNUSED = {"menu Commander"}
 # Played, but not speech: no line, the recording plays for every profile (partner fallback, part 2).
 NOT_SPEECH = {"Zombie/zombie_death"}
 NOT_CATALOGED = NOT_SPEECH | (
@@ -59,6 +53,18 @@ NOT_CATALOGED = NOT_SPEECH | (
     | {f"Fight_Club/{s}" for s in _FIGHT_CLUB}
     | {f"Menu/{s}" for s in _MENU_UNUSED}
 )
+
+# Recordings deleted for #2166 (no code path played them): stems, in every recorded profile.
+DELETED_RECORDINGS = {
+    "Menu": {
+        "menu ninjabomb", "menu Random", "commander-instructions", "Ninjabomb-instructions", "added_random",
+        "removed_random", "tradeoff2", "adminop_force_all_start", "adminop_random_team_size",
+        "adminop_freeze_mode", "adminop_lives", "adminop_resurrection", "adminop_sheilds",
+        "adminop_traitor_team_size", "update_started", "joustmania_updated", "large_update", "joustmania_failed",
+    },
+    "Commander": {"red shift"},
+    "Fight_Club": {"defender_winning"},
+}  # fmt: skip
 
 # Recorded in one profile only; the other plays it through the partner fallback (part 2).
 RECORDED_ONLY_IN = {"Menu/Fightclub-instructions": {"ivy"}}
@@ -172,3 +178,27 @@ def test_generated_files_decode_and_match_the_manifest(catalog, manifest):
         assert abs(duration - entry["duration_s"]) < 0.05, rel
         assert 0.2 <= duration <= 60.0, f"{rel}: {duration:.2f} s"
         assert abs(entry["lufs"] - target) <= tolerance, f"{rel}: {entry['lufs']} LUFS"
+
+
+def test_deleted_recordings_stay_deleted_and_unreferenced():
+    """A file that comes back, or a source that names a deleted stem, fails here (#2166)."""
+    for area, stems in DELETED_RECORDINGS.items():
+        for stem in stems:
+            assert not list((ASSETS / area / "vox").glob(f"*/{stem}.ogg")), f"{area}/{stem} was deleted"
+    needles = {stem for stems in DELETED_RECORDINGS.values() for stem in stems}
+    suffixes = {".py", ".go", ".yaml", ".yml", ".json", ".sh", ".ts", ".tsx"}
+    offenders = []
+    for top in ("lib", "services", "scripts", "flags"):
+        for path in (ROOT / top).rglob("*"):
+            parts = path.relative_to(ROOT).parts
+            if (
+                path.suffix not in suffixes
+                or not path.is_file()
+                or path == Path(__file__).resolve()
+                or "assets" in parts
+                or any(p in {"node_modules", ".venv", "gen", "target"} for p in parts)
+            ):
+                continue
+            text = path.read_text(errors="ignore")
+            offenders += [f"{path.relative_to(ROOT)}: {n}" for n in sorted(needles) if n in text]
+    assert not offenders, f"deleted recordings are still named: {offenders}"

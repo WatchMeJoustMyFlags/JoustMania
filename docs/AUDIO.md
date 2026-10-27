@@ -75,6 +75,8 @@ and the files together. `scripts/tools/gen-voice.sh --only <id> --dry-run` shows
 - Scope: every voice line the code plays (Menu, Joust, Zombie), the #2106 pad lines and the mode instructions of the
   FR-014 backlog (#2151). Recordings no caller plays are
   not catalogued (`NOT_CATALOGED` in `services/audio/tests/test_voice_catalog.py`); a new caller of one adds its line.
+  The recordings no code path played at all (20 lines in `aaron` and `ivy`: unused Menu lines, Commander `red shift`,
+  Fight Club `defender_winning`) were deleted (#2166); `DELETED_RECORDINGS` in the same test keeps them gone.
 - Playback: `menu_voice` selects any profile of the manifest (`aaron`, `ivy`, `gen_male`, `gen_female`; default `ivy`).
   A line the selected profile lacks plays from its partner (`gen_male` <-> `aaron`, `gen_female` <-> `ivy`), so with
   `ivy` the pad labels play in the `gen_female` voice before Ivy's recorded value (UC-031 BR-007, #2107 part 2).
