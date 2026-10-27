@@ -26,9 +26,15 @@ import (
 type lockedClock struct {
 	mu sync.Mutex
 	t  time.Time
+	// readDelay, when set, makes every read take that long in real time: it
+	// widens a window between two steps that each read the clock.
+	readDelay atomic.Int64
 }
 
 func (c *lockedClock) now() time.Time {
+	if d := c.readDelay.Load(); d > 0 {
+		time.Sleep(time.Duration(d))
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.t
@@ -362,11 +368,14 @@ func TestRemote_GapClockSetBeforeSlotRelease(t *testing.T) {
 	t.Run("UC-040/A4 evaluators spinning while a call ends never start a second call inside the gap", func(t *testing.T) {
 		// Frozen clock and a 1 s gap: once the first call has ended, no further
 		// call may start. A cycle that wins the in-flight slot the moment it is
-		// released must already see the gap clock. Repeated to widen the window.
-		for round := 0; round < 40; round++ {
+		// released must already see the gap clock. A slow clock read widens any
+		// window between releasing the slot and setting the clock; repeated rounds
+		// widen it further.
+		for round := 0; round < 10; round++ {
 			be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
 			be.block = true
-			h, _, _ := cadenceHarness(t, time.Second, be)
+			h, clk, _ := cadenceHarness(t, time.Second, be)
+			clk.readDelay.Store(int64(time.Millisecond))
 			h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
 			<-be.started
 			var stop atomic.Bool
@@ -381,7 +390,7 @@ func TestRemote_GapClockSetBeforeSlotRelease(t *testing.T) {
 				}()
 			}
 			close(be.release)
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 			stop.Store(true)
 			spinners.Wait()
 			h.loop.AwaitInflight()
