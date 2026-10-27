@@ -13,6 +13,9 @@
 //!   probe has succeeded or the start grace has passed;
 //! - the device-manager loop's heartbeat (bumped on every loop pass); the
 //!   watchdog trips when it is older than `device_stall_limit`.
+//!
+//! Each pass also runs a report-only tick (the stuck output-writer check of
+//! #2142); it never trips the watchdog.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -154,7 +157,14 @@ pub(crate) async fn probe_health(addr: &str, budget: Duration) -> bool {
 }
 
 /// Probe `addr` and watch `device` until the watchdog trips, then call `on_trip`.
-pub fn run(cfg: Config, addr: &str, device: &Heartbeat, on_trip: impl FnOnce(Trip)) {
+/// `on_tick` runs once per pass, before the probe; it only reports.
+pub fn run(
+    cfg: Config,
+    addr: &str,
+    device: &Heartbeat,
+    mut on_tick: impl FnMut(),
+    on_trip: impl FnOnce(Trip),
+) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -162,6 +172,7 @@ pub fn run(cfg: Config, addr: &str, device: &Heartbeat, on_trip: impl FnOnce(Tri
     let mut state = WatchdogState::new(cfg, Instant::now());
     loop {
         std::thread::sleep(cfg.probe_interval);
+        on_tick();
         let ok = rt.block_on(probe_health(addr, cfg.probe_timeout));
         if !ok {
             warn!(addr, "watchdog: health probe failed");
@@ -174,11 +185,12 @@ pub fn run(cfg: Config, addr: &str, device: &Heartbeat, on_trip: impl FnOnce(Tri
 }
 
 /// Start the watchdog thread; a trip exits the process with `EXIT_CODE`.
-pub fn spawn(addr: String, device: Heartbeat) {
+/// `on_tick` runs every probe interval on the watchdog thread (report only).
+pub fn spawn(addr: String, device: Heartbeat, on_tick: impl FnMut() + Send + 'static) {
     std::thread::Builder::new()
         .name("watchdog".into())
         .spawn(move || {
-            run(Config::default(), &addr, &device, |trip| {
+            run(Config::default(), &addr, &device, on_tick, |trip| {
                 error!(
                     ?trip,
                     exit_code = EXIT_CODE,
@@ -337,7 +349,15 @@ mod tests {
 
     fn spawn_watchdog(addr: String, device: Heartbeat) -> mpsc::Receiver<Trip> {
         let (trip_tx, trip_rx) = mpsc::channel();
-        std::thread::spawn(move || run(cfg(), &addr, &device, |trip| trip_tx.send(trip).unwrap()));
+        std::thread::spawn(move || {
+            run(
+                cfg(),
+                &addr,
+                &device,
+                || {},
+                |trip| trip_tx.send(trip).unwrap(),
+            )
+        });
         trip_rx
     }
 
@@ -376,6 +396,39 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("the watchdog did not trip on a blocked runtime");
         assert_eq!(trip, Trip::GrpcUnresponsive { failed_probes: 3 });
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    #[test]
+    fn test_watchdog_runs_the_report_tick_every_pass_without_tripping() {
+        let (addr, _stall) = spawn_stallable_health_server();
+        let device = Heartbeat::new();
+        let _beating = keep_beating(&device);
+        let ticks = Arc::new(AtomicU64::new(0));
+        let (trip_tx, trip_rx) = mpsc::channel();
+        let counter = ticks.clone();
+        std::thread::spawn(move || {
+            run(
+                cfg(),
+                &addr,
+                &device,
+                move || {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                },
+                |trip| trip_tx.send(trip).unwrap(),
+            )
+        });
+        assert_eq!(
+            trip_rx.recv_timeout(Duration::from_millis(500)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "the watchdog tripped on a healthy server"
+        );
+        let n = ticks.load(Ordering::Relaxed);
+        assert!(
+            n >= 3,
+            "report tick ran {n} times in 500 ms at 50 ms passes"
+        );
     }
 
     // UC: UC-002 A7
