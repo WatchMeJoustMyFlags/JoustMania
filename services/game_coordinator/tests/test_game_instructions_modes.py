@@ -26,7 +26,7 @@ sys.path.insert(0, str(test_dir))
 from run_fakes import event_order as _event_order
 from run_fakes import name as _name
 from test_ffa_uc020 import RecordingAudio
-from test_random_teams_formation import QueueControllerManager, RecordingLog, _players, _stop, _wait_for
+from test_random_teams_formation import SERIALS, QueueControllerManager, RecordingLog, _players, _stop, _wait_for
 
 from lib.types import GameEvent, Sound
 from proto import audio_pb2
@@ -112,6 +112,7 @@ class ClipAudio(RecordingAudio):
         self.clip = clip
         self.clip_seconds = clip_seconds
         self.log = log
+        self.on_clip = None  # optional callable run when the clip's PlaySound arrives
 
     async def PlaySound(self, request):  # noqa: N802 - gRPC stub name
         await super().PlaySound(request)
@@ -119,6 +120,8 @@ class ClipAudio(RecordingAudio):
             return audio_pb2.PlaySoundResponse(success=True)
         if self.log is not None:
             self.log.entries.append(("event", CLIP_MARK))
+        if self.on_clip is not None:
+            self.on_clip()
         return audio_pb2.PlaySoundResponse(success=True, duration_seconds=self.clip_seconds)
 
 
@@ -235,24 +238,32 @@ def fast_start():
 class _MarkedPhase:
     """Wraps a phase so the run log shows when it finished."""
 
-    def __init__(self, phase, log: RecordingLog):
+    def __init__(self, phase, log: RecordingLog, after=None):
         self.name = phase.name
         self._phase = phase
         self._log = log
+        self._after = after
 
     async def execute(self):
         await self._phase.execute()
         self._log.entries.append(("event", INTRO_DONE))
+        if self._after is not None:
+            self._after()
 
 
-def _run_game(mode_cls, clip, clip_seconds):
+def _run_game(mode_cls, clip, clip_seconds, *, after_intro=None):
     log = RecordingLog()
     client = QueueControllerManager(log)
     audio = ClipAudio(clip, clip_seconds, log)
     game = _game(mode_cls, audio, client=client, publisher=log.publish)
     real_phases = game._get_additional_phases
-    game._get_additional_phases = lambda: [_MarkedPhase(p, log) for p in real_phases()]
+    game._get_additional_phases = lambda: [_MarkedPhase(p, log, after_intro) for p in real_phases()]
     return log, client, audio, game
+
+
+def _drain_running(game) -> bool:
+    task = game._early_drain_task
+    return task is not None and not task.done()
 
 
 @pytest.mark.asyncio
@@ -260,6 +271,8 @@ def _run_game(mode_cls, clip, clip_seconds):
 async def test_custom_run_plays_clip_after_intro_and_before_countdown(mode_cls, clip):
     """The clip plays after the intro on the open stream; the countdown waits for it."""
     log, client, audio, game = _run_game(mode_cls, clip, clip_seconds=0.3)
+    drain_at_clip: list[bool] = []
+    audio.on_clip = lambda: drain_at_clip.append(_drain_running(game))
 
     with patch.object(BaseGameMode, "_instructions_enabled", autospec=True, return_value=True):
         task = asyncio.create_task(game.run())
@@ -267,6 +280,9 @@ async def test_custom_run_plays_clip_after_intro_and_before_countdown(mode_cls, 
         await _stop(game, task, client)
 
     assert audio.sounds().count(clip) == 1
+    # The drain still reads (and discards) the stream while the clip plays, so
+    # motion from the clip never queues up for the warm-up (UC-021 A1).
+    assert drain_at_clip == [True]
     order = _event_order(log)
     stream_open = log.writes("config")[0][0]
     clip_at = log.entries.index(("event", CLIP_MARK))
@@ -294,3 +310,63 @@ async def test_custom_run_force_end_during_clip_skips_the_start(mode_cls, clip):
     assert GameEvent.GAME_STARTED.value not in order
     assert any(name == "StopSound" for name, _ in audio.calls)
     assert not any(name == "PlayMusic" for name, _ in audio.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode_cls", "clip"), CUSTOM_RUN_MODES)
+async def test_custom_run_drain_discards_frames_and_keeps_disconnect_during_clip(mode_cls, clip):
+    """Frames sent during the clip are read by the drain; a disconnect during it is kept (UC-002)."""
+    log, client, audio, game = _run_game(mode_cls, clip, clip_seconds=0.4)
+    dropped = SERIALS[0]
+    seq_at_clip: list[int] = []
+
+    def drop_controller():
+        stream = client.streams[-1]
+        seq_at_clip.append(stream.seq)
+        # From now on the controller sends no frames, and its disconnect is in the next one.
+        stream.gaps[dropped] = (stream.seq, None)
+        stream.disconnect_at[stream.seq] = dropped
+
+    audio.on_clip = drop_controller
+    kept: list[list[str]] = []
+    queued_at_drain_stop: list[int] = []
+    real_stop = game._stop_early_stream_drain
+
+    async def stop_drain(reopen=True):
+        queued_at_drain_stop.append(client.streams[-1].queue.qsize())
+        await real_stop(reopen=reopen)
+        kept.append(list(game._warmup_disconnects))
+
+    game._stop_early_stream_drain = stop_drain
+
+    with patch.object(BaseGameMode, "_instructions_enabled", autospec=True, return_value=True):
+        task = asyncio.create_task(game.run())
+        await _wait_for(lambda: bool(kept))
+        await _stop(game, task, client)
+
+    assert seq_at_clip, "the clip played"
+    assert kept[0] == [dropped], "the disconnect seen during the clip waits for the game loop"
+    # The 0.4 s clip produces ~40 frames; the drain read them, so they did not queue up.
+    assert queued_at_drain_stop[0] <= 3, queued_at_drain_stop
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode_cls", "clip"), CUSTOM_RUN_MODES)
+async def test_custom_run_force_end_during_intro_plays_no_clip(mode_cls, clip):
+    """A force-end during the intro skips the clip: no PlaySound for it, no StopSound needed."""
+    holder: list = []
+    log, client, audio, game = _run_game(
+        mode_cls, clip, clip_seconds=5.0, after_intro=lambda: holder[0].force_end("test_intro")
+    )
+    holder.append(game)
+
+    with patch.object(BaseGameMode, "_instructions_enabled", autospec=True, return_value=True):
+        task = asyncio.create_task(game.run())
+        await asyncio.wait_for(task, timeout=10)
+    for stream in client.streams:
+        if stream.producer:
+            stream.producer.cancel()
+
+    assert INTRO_DONE in _event_order(log)
+    assert clip not in audio.sounds()
+    assert GameEvent.COUNTDOWN_START.value not in _event_order(log)
