@@ -7,9 +7,14 @@ controllers; it is lobby only. `preview_setting` shows a rung without writing. `
 carries the effective variant and the operator's value the pad's live preview starts from.
 """
 
+import asyncio
+import threading
+from unittest.mock import patch
+
 import pytest
 
 from lib import setting_ladders
+from lib.flag_service_writer import FlagServiceWriter
 from lib.types import Sound
 from proto import controller_manager_pb2, menu_pb2
 from services.menu import settings_ops
@@ -252,3 +257,51 @@ def test_shield_knob_ladder_order_is_pinned():
     # automatic first, then the modes; the commit steps along it whatever order the flag service lists.
     assert setting_ladders.SHIELD_KNOB_LADDER == ["automatic", "instant", "trigger", "hold"]
     assert settings_ops.STEP_OPTIONS[SHIELD].order == setting_ladders.SHIELD_KNOB_LADDER
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018", "BR-017"])
+async def test_the_operator_value_is_read_once_at_menu_start(servicer, flags):
+    operator_set(flags, "hold")
+    servicer.read_shield_operator_at_start()
+    await servicer.settings_ops.shield_refresh_task
+
+    assert servicer.settings_ops.shield_operator == "hold"  # the first K6 hold has a start value
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018", "BR-017"])
+async def test_a_background_read_in_flight_during_a_commit_never_puts_the_old_value_back(servicer, flags):
+    ops = servicer.settings_ops
+    operator_set(flags, "instant")
+    real_read = ops._read_shield_operator
+    started, release = threading.Event(), threading.Event()
+
+    def stale_read():
+        started.set()
+        release.wait(5)
+        return "instant"  # what the flag service served before the commit
+
+    ops._read_shield_operator = stale_read
+    refresh = asyncio.create_task(ops.refresh_shield_operator())
+    await asyncio.to_thread(started.wait, 5)
+    ops._read_shield_operator = real_read
+    reply = await pad(servicer, "step_setting", option=SHIELD, direction="up", steps=1)
+    assert (reply.success, reply.error) == (True, "")
+    release.set()
+    await refresh
+
+    assert ops.shield_operator == "trigger"
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A3", steps=[9], br=["BR-018", "BR-010"])
+async def test_an_exception_while_clearing_fails_closed(servicer, flags):
+    lobby(servicer)
+    operator_set(flags, "instant")
+    with patch.object(FlagServiceWriter, "clear_persisted", autospec=True, side_effect=RuntimeError("boom")):
+        reply = await pad(servicer, "step_setting", option=SHIELD, direction="down", steps=1)
+
+    assert (reply.success, reply.error) == (False, "flag_service_unavailable")
+    assert test_pad_commands.failure_cues(servicer) == 2
+    assert _pulses(servicer) == []

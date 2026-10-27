@@ -212,6 +212,8 @@ class SettingsOps:
         # (`automatic` when none, None when unknown), for GetMenuStatus, which never calls HTTP itself.
         self.shield_operator: str | None = None
         self._shield_read_at = -SHIELD_OPERATOR_REFRESH_SECONDS
+        # Goes up on every commit: a background read that started before it is dropped (stale).
+        self._shield_generation = 0
         self.shield_refresh_task: asyncio.Task | None = None
 
     @property
@@ -418,8 +420,20 @@ class SettingsOps:
 
     async def refresh_shield_operator(self) -> None:
         """Re-read the operator's shield mode for GetMenuStatus (BR-018); unknown when the read fails."""
+        generation = self._shield_generation
         self._shield_read_at = time.monotonic()
-        self.shield_operator = await asyncio.to_thread(self._read_shield_operator)
+        value = await asyncio.to_thread(self._read_shield_operator)
+        if generation == self._shield_generation:
+            self.shield_operator = value  # else a commit landed during the read: its value stands
+
+    @staticmethod
+    def _clear(writer, key: str) -> bool:
+        """One clear of a persisted admin value; any error counts as failed (fail closed, never retried)."""
+        try:
+            return bool(writer.clear_persisted(key))
+        except Exception as e:
+            logger.error(f"Clear {key} failed: {e}")
+            return False
 
     def schedule_shield_refresh(self) -> None:
         """GetMenuStatus: refresh the cached operator value in the background when it is unknown or old."""
@@ -438,10 +452,12 @@ class SettingsOps:
         new, at_limit = clamp_step(SHIELD_KNOB_LADDER, old, steps if forward else -steps)
         if at_limit:
             return Result(old, old, AT_LIMIT)
+        self._shield_generation += 1  # a background read already in flight must not put the old value back
         if new == SHIELD_AUTOMATIC:
-            ok = await asyncio.to_thread(writer.clear_persisted, SHIELD_ACTIVATION_FLAG)
+            ok = await asyncio.to_thread(self._clear, writer, SHIELD_ACTIVATION_FLAG)
         else:
             ok = await asyncio.to_thread(self._write, writer, SHIELD_ACTIVATION_FLAG, new)
+        self._shield_generation += 1  # and a read that started during the write may predate it
         if not ok:
             self.shield_operator = None  # the outcome is unknown until the next read
             return Result(old, None, FLAG_SERVICE_UNAVAILABLE)

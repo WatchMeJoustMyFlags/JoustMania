@@ -205,7 +205,7 @@ Error codes (a refusal is `success=false` and the code in `error`; no state chan
 | `sensitivity`, `num_teams`, `instructions`, `force_all_start` | the current lobby settings as values (sensitivity 0 to 4, team count, `game_instructions`, `force_all_start`; read-only; the taps of UC-015 BR-011 announce them) |
 | `audio_volume_master` | the variant name of `user/audio_volume.master` (UC-015 BR-006: the pad restores it on unmute) |
 | `shield_activation` | the effective variant name of `game/shield.activation` (`instant`, `trigger`, `hold`; empty when unresolvable; UC-015 BR-018, #2215) |
-| `shield_activation_operator` | the operator's persisted shield mode, the start of the K6 live preview (UC-015 BR-017, BR-018): `automatic` (none), `instant`, `trigger` or `hold`; empty when unknown. Served from the menu's last background read of the flag service (at most 2 s old, refreshed after each commit), never read in the call |
+| `shield_activation_operator` | the operator's persisted shield mode, the start of the K6 live preview (UC-015 BR-017, BR-018): `automatic` (none), `instant`, `trigger` or `hold`; empty when unknown. Served from the menu's last background read of the flag service (one at menu start, then at most 2 s old, set by each commit; a read in flight during a commit is dropped), never read in the call |
 
 The display's pages come in phase 2; the proto fields are additive.
 

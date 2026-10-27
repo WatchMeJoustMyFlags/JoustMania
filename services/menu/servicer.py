@@ -562,6 +562,11 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         finally:
             metrics.grpc_request_duration_seconds.labels(method="ProcessInput").observe(time.time() - start_time)
 
+    def read_shield_operator_at_start(self) -> None:
+        """Boot: read the operator's shield mode once in the background (UC-015 BR-018), so the first
+        K6 hold after a menu restart starts from a known value instead of a silent preview."""
+        self.settings_ops.schedule_shield_refresh()
+
     async def GetMenuStatus(self, _request, _context):
         """Read-only menu snapshot (services.md §3.1): menu memory and in-process flag clients only.
 

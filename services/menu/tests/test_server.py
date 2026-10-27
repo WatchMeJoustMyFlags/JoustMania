@@ -180,6 +180,16 @@ class TestMenuAutoStart:
         assert calls == ["start_button_monitor", "enter_lobby"]
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018"])
+    async def test_boot_reads_the_operator_shield_mode_once(self):
+        """UC-015 BR-018: the first K6 hold after a restart starts from a value read at boot."""
+        servicer = _servicer_with_flags()
+
+        await _boot(servicer)
+
+        servicer.read_shield_operator_at_start.assert_called_once_with()
+
+    @pytest.mark.asyncio
     async def test_shutdown_stops_monitors_and_server(self):
         """SIGTERM stops the button monitor and lifecycle, shuts the servicer down and stops the server."""
         servicer = _servicer_with_flags()
