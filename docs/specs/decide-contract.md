@@ -476,10 +476,12 @@ where the LLM was a length-gated async upgrade
 (`expected_seconds = players × llm.seconds_per_player × llm.style_factor`). PR #1252 (the change for issue
 #1234, which removed the LiteLLM gateway and the legacy in-game LLM path) removed it from the code; none of
 those flags exist on `main`. **Budget fit at the stage baseline (#2123).** One game asks at most once per
-`max(min_interval, call latency + gap)`: Jev (≈ 0.3 s) every 3 s, about 20 calls a minute; warm Claude
-(≈ 3 s) every 4 s, about 15; a Claude call that runs into the 8 s `patient` timeout every 9 s, about 7. The
-`stage` budget of 30 a minute therefore holds one remote game plus its retro; a second concurrent remote game
-on Jev can reach it (`llm_budget_exhausted` → rules, never a stall). The longer timeout only lowers demand:
+`max(min_interval, call latency + gap)`. The stage baseline runs `decision.min_interval_ms=fast` (1500 ms) so the
+1 s gap after the answer dominates on Claude: warm Claude (≈ 3 s) every 4 s, about 15 calls a minute; a Claude call
+that runs into the 8 s `patient` timeout every 9.5 s, about 6. Both fit the `stage` budget of 30 a minute with
+room for the retro. Jev (≈ 0.3 s) is held by the 1.5 s interval instead, up to about 40 a minute for one game,
+above the `stage` budget: the excess cycles fall back to rules with `llm_budget_exhausted` (never a stall). With
+the shipped defaults (3000 ms interval) Jev asks about 20 a minute. The longer timeout only lowers demand:
 a call in flight holds the game's slot, so a slow answer is fewer calls, not more.
 
 There is no game-length admission gate **by design** (#1231): the cadence,
