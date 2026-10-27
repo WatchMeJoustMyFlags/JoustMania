@@ -59,6 +59,7 @@ deps_of() {
 #   $CASE/missing: images `docker image inspect` does not find (one per line)
 #   $CASE/down: game services `compose ps` shows as exited
 #   $CASE/obs-up-fails: the observability `up --wait` exits 1
+#   $CASE/obs-up-fails-once: the first observability `up --wait` exits 1, the next succeeds (#2202)
 #   $CASE/up-hangs: the game `up` never returns
 make_case() {
   CASE="${WORK}/$1"
@@ -113,7 +114,10 @@ case " \$* " in
       if grep -qxF "\$s" "\$C/down"; then echo "\$s|exited|"; else echo "\$s|running|"; fi
     done; exit 0 ;;
   *" compose "*" ps "*) exit 0 ;;
-  *" compose "*" up "*"--wait"*) [[ -e "\$C/obs-up-fails" ]] && exit 1; exit 0 ;;
+  *" compose "*" up "*"--wait"*)
+    [[ -e "\$C/obs-up-fails" ]] && exit 1
+    if [[ -e "\$C/obs-up-fails-once" ]]; then rm -f "\$C/obs-up-fails-once"; exit 1; fi
+    exit 0 ;;
   " image inspect "*) grep -qxF "\$3" "\$C/missing" && exit 1; exit 0 ;;
 esac
 exit 0
@@ -132,7 +136,7 @@ STUB
 run_start() {
   env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_UNIT_REV=2 JOUSTMANIA_DOCKER_WAIT_S=1 \
     JOUSTMANIA_ASOUND_DIR="${CASE}/none" JOUSTMANIA_GAME_READY_S=1 JOUSTMANIA_POLL_S=0.2 \
-    JOUSTMANIA_STATUS_DIR="${CASE}/status" \
+    JOUSTMANIA_STATUS_DIR="${CASE}/status" JOUSTMANIA_OBS_RETRY_PAUSE_S=0 \
     bash "${CASE}/repo/scripts/setup/joustmania-start.sh" >"${CASE}/out.log" 2>&1
 }
 
@@ -198,6 +202,16 @@ touch "${CASE}/obs-up-fails"
 run_start || fail "obs-fails: a failed observability phase failed the unit"
 [[ "$(state result)" == degraded ]] || fail "obs-fails: state is not degraded: $(state result)"
 grep -qE '(^| )(stop|down|rm)( |$)' <(grep '^compose' "${CASE}/docker.log") && fail "obs-fails: something was torn down"
+
+# --- 4b. observability fails once (slow Jaeger): retried, ok, no recreate (#2202)
+make_case obs-flaky
+touch "${CASE}/obs-up-fails-once"
+run_start || fail "obs-flaky: start failed: $(tail -3 "${CASE}/out.log")"
+[[ "$(grep -cE " up .*--wait .* agent grafana jaeger" "${CASE}/docker.log")" == 2 ]] || fail "obs-flaky: observability up was not run twice: $(grep ' up ' "${CASE}/docker.log")"
+[[ "$(state result)" == ok ]] || fail "obs-flaky: state is not ok after the retry: $(state result)"
+grep -q 'down=.*observability' "${CASE}/status/start.env" && fail "obs-flaky: observability still listed as down"
+grep -q -- '--force-recreate' "${CASE}/docker.log" && fail "obs-flaky: the retry forced a recreate"
+grep -qE '(^| )(stop|down|rm)( |$)' <(grep '^compose' "${CASE}/docker.log") && fail "obs-flaky: something was torn down"
 
 # --- 5. a game service never runs: failed, observability not started ---------
 make_case game-down

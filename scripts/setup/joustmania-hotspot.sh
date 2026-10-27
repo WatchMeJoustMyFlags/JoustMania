@@ -618,7 +618,13 @@ selftest() { # $1 = hold seconds (default 20, at most 30)
 
 remove() {
     local f
+    # Disarm first (#2196): without the hook and the configuration nothing can
+    # start a check that brings the hotspot or the ACT LED cue back; a check
+    # already started finds no configuration and only takes the hotspot down
+    rm -f "$ROOT/etc/NetworkManager/dispatcher.d/90-joustmania-hotspot" "$CONF"
     systemctl disable --now joustmania-hotspot.timer joustmania-hotspot.service >/dev/null 2>&1 || true
+    # a check that still runs ends on its next pass (no configuration); wait for it
+    lock_state 60 || log "a check still holds $STATE_DIR/lock; going on"
     hotspot_down
     # the cue lives in the LED helper's record, which outlives STATE_DIR
     led_cue removed
@@ -627,8 +633,7 @@ remove() {
         "$ROOT/etc/NetworkManager/dispatcher.d/90-joustmania-hotspot" \
         "$ROOT/etc/NetworkManager/system-connections/joustmania-hotspot.nmconnection" \
         "$ROOT/etc/systemd/system/joustmania-hotspot.service" \
-        "$ROOT/etc/systemd/system/joustmania-hotspot.timer" \
-        "$CONF"; do
+        "$ROOT/etc/systemd/system/joustmania-hotspot.timer"; do
         rm -f "$f"
     done
     # hidden temp keyfiles a crashed setup left behind (they hold the password)
