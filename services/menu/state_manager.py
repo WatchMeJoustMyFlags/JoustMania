@@ -274,6 +274,16 @@ class StateManager:
         metrics.player_ready.clear()
         logger.info(f"Stream reconnected: cleared {count} controller(s) for re-population")
 
+    def return_all_to_connected(self) -> None:
+        """Put every known controller back to CONNECTED, keeping the roster (StopMenu, UC-010 A11, #2175).
+
+        No handler runs and no LED changes: the next lobby entry repaints them (``reset``).
+        """
+        for serial in self.controller_states:
+            self.controller_states[serial] = ControllerState.CONNECTED
+        self.button_states.clear()
+        metrics.player_ready.clear()
+
     def update_battery(self, serial: str, battery: int) -> None:
         """
         Update battery level for a controller.
