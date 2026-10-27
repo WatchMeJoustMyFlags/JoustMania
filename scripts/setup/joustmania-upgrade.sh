@@ -474,8 +474,8 @@ do_upgrade() {
     switch_to "$commit" || die "git checkout of $commit failed; nothing changed: $prev_ref still runs and the record is unchanged. Check the tree before retrying."
     write_release "$commit" "" "$tag" "$(tr '\n' ' ' <<<"$new_imgs" | sed 's/ $//')" \
         "$prev_ref" "$prev_branch" "$prev_tag" "$(tr '\n' ' ' <<<"$prev_imgs" | sed 's/ $//')"
-    if ! git diff --quiet "$prev_ref" "$commit" -- scripts/setup/joustmania.service; then
-        say "unit file changed: run sudo $JOUSTMANIA_DIR/scripts/setup/install_autostart.sh"
+    if ! git diff --quiet "$prev_ref" "$commit" -- scripts/setup/joustmania.service scripts/setup/joustmania-led.sh; then
+        say "unit file or LED helper changed: run sudo $JOUSTMANIA_DIR/scripts/setup/install_autostart.sh"
     fi
     local apply_rc=0
     apply || apply_rc=$?

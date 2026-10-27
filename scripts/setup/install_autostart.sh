@@ -38,6 +38,14 @@ rm "$TMP_SERVICE"
 # Set proper permissions
 chmod 644 "$SYSTEMD_DIR/$SERVICE_NAME"
 
+# ACT LED helper (UC-060 BR-005, C-042): the unit runs it as root with `+`, so
+# install a root-owned copy the unit's user cannot edit (no sudoers rule).
+# Re-run this script when scripts/setup/joustmania-led.sh changes.
+LED_HELPER_DIR="/usr/local/lib/joustmania"
+echo "Installing the ACT LED helper to $LED_HELPER_DIR/joustmania-led"
+install -d -o root -g root -m 0755 "$LED_HELPER_DIR"
+install -o root -g root -m 0755 "$SCRIPT_DIR/joustmania-led.sh" "$LED_HELPER_DIR/joustmania-led"
+
 # Reload systemd daemon
 echo "Reloading systemd daemon..."
 systemctl daemon-reload
