@@ -303,7 +303,6 @@ class Sound(StrEnum):
     MENU_VOX_WEREWOLVES = "menu Werewolves"
     MENU_VOX_TRAITOR = "menu Traitor"
     MENU_VOX_ZOMBIES = "menu Zombies"
-    MENU_VOX_COMMANDER = "menu Commander"
     MENU_VOX_FIGHT_CLUB = "menu FightClub"
     MENU_VOX_TOURNAMENT = "menu Tournament"
     MENU_VOX_NONSTOP_JOUST = "menu NonStopJoust"
