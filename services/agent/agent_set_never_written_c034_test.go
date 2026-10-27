@@ -500,8 +500,14 @@ func TestC034_InterventionKeysReadFromSpec(t *testing.T) {
 // overlay): the shield-charge switches of #1837 (UC-040 BR-019). The agent
 // writes the game set only as experiment+arm or game_kind=real overlays, so
 // these keys are out of its reach exactly when their registry rows allow
-// neither scope; the dynamic declarer then never offers them either.
-var c034HumanOnlyGameKeys = []string{"shield.activation", "shield.charge_expiry_seconds"}
+// neither scope; the dynamic declarer then never offers them either. The hold
+// flags of #2096 (UC-040 BR-024) stay human-only until FR-162 widens their
+// scope in one PR together with this test (flags.md §4a).
+var c034HumanOnlyGameKeys = []string{
+	"shield.activation", "shield.charge_expiry_seconds",
+	"shield.energy_max_seconds", "shield.energy_budget_seconds", "shield.energy_initial_seconds",
+	"shield.recharge_per_second", "shield.min_burst_seconds",
+}
 
 // UC: UC-040 BR-019
 func TestC034_ShieldChargeFlagsAreNeverWrittenByTheAgent(t *testing.T) {
@@ -533,8 +539,13 @@ func TestC034_ShieldChargeFlagsAreNeverWrittenByTheAgent(t *testing.T) {
 				if _, ok := candidates[key]; ok {
 					t.Errorf("C-034 VIOLATION: %s is in the agent's experiment catalog", key)
 				}
-				experimentWrite := flagservice.Write{Variant: "trigger", Scope: flagservice.Scope{ExperimentID: "exp_c034", Arm: experiment.ArmExperimental}}
-				realWrite := flagservice.Write{Variant: "trigger", Scope: flagservice.Scope{GameKind: "real"}}
+				// A declared variant of the key, so only the scope can refuse the write.
+				if len(view.Variants) == 0 {
+					t.Fatalf("%s has no declared variants", key)
+				}
+				variant := view.Variants[len(view.Variants)-1]
+				experimentWrite := flagservice.Write{Variant: variant, Scope: flagservice.Scope{ExperimentID: "exp_c034", Arm: experiment.ArmExperimental}}
+				realWrite := flagservice.Write{Variant: variant, Scope: flagservice.Scope{GameKind: "real"}}
 				for _, w := range []flagservice.Write{experimentWrite, realWrite} {
 					if _, err := svc.Put(context.Background(), experiment.GameFlagSet, key, w); err == nil {
 						t.Errorf("C-034 VIOLATION: the flag service accepted an agent-shaped write to %s: %+v", key, w.Scope)
