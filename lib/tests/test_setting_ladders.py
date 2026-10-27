@@ -128,11 +128,19 @@ def test_shield_knob_ladder_is_automatic_then_the_flag_files_variants():
 @pytest.mark.parametrize(
     ("operator", "effective", "steps", "expected"),
     [
-        ("automatic", "trigger", 1, Preview("instant")),  # the knob starts at the operator value ...
-        ("automatic", "hold", 3, Preview("hold")),
-        ("automatic", "trigger", -1, Preview("automatic", at_limit=True)),
+        ("automatic", "trigger", 1, Preview("hold")),  # no operator value: the knob starts at the effective rung ...
+        ("automatic", "hold", 3, Preview("hold", at_limit=True)),
+        ("automatic", "trigger", -1, Preview("instant")),
+        ("automatic", "trigger", -2, Preview("automatic")),  # ... and automatic is below the lowest value
+        ("automatic", "trigger", 0, Preview("trigger")),  # a net of zero commits nothing
+        ("automatic", "", 1, Preview("instant")),  # effective unresolvable: starts at automatic
         ("instant", "instant", 1, Preview("trigger")),
-        ("instant", "hold", -1, Preview("automatic")),  # ... not at the effective one (a stage overlay)
+        (
+            "instant",
+            "hold",
+            -1,
+            Preview("automatic"),
+        ),  # an operator value wins over the effective one (a stage overlay)
         ("hold", "hold", -3, Preview("automatic")),
         ("hold", "hold", 1, Preview("hold", at_limit=True)),
         ("trigger", "trigger", 5, Preview("hold")),
@@ -156,12 +164,18 @@ def test_shield_voices_cover_the_knob_ladder_and_have_a_label():
 @pytest.mark.parametrize(
     ("option", "operator", "steps", "expected"),
     [
-        ("sensitivity", "automatic", 1, Preview("ultra_slow")),  # the knob starts at the operator value ...
-        ("sensitivity", "automatic", -1, Preview("automatic", at_limit=True)),
+        (
+            "sensitivity",
+            "automatic",
+            1,
+            Preview("fast"),
+        ),  # no operator value: starts at the effective rung (medium) ...
+        ("sensitivity", "automatic", -3, Preview("automatic")),  # ... and automatic is reached below ultra_slow
+        ("sensitivity", "automatic", -2, Preview("ultra_slow")),
         ("sensitivity", "slow", -2, Preview("automatic")),  # ... and automatic is the rung below the lowest value
         ("sensitivity", "ultra_fast", 1, Preview("ultra_fast", at_limit=True)),
         ("sensitivity", "", 1, setting_ladders.UNKNOWN),  # unreadable: silent, never a guess
-        ("num_teams", "automatic", 5, Preview("six")),
+        ("num_teams", "automatic", 5, Preview("six")),  # effective two (the status default)
         ("num_teams", "three", -9, Preview("automatic")),
         ("num_teams", "six", 1, Preview("six", at_limit=True)),
         ("num_teams", "", -1, setting_ladders.UNKNOWN),

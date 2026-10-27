@@ -66,8 +66,8 @@ FLAG_LADDERS: dict[str, list[str]] = {
 # The persisted pad settings with an `automatic` rung (UC-015 BR-018, generalised by #2222): their knob
 # ladder is `automatic` followed by the value ladder, clamped, never wrapping. Committing `automatic`
 # clears the persisted operator value (the flag file's default or an agent promotion applies again), any
-# other rung writes it, and the knob starts at the operator's value (`automatic` when there is none),
-# never at the effective one. Left out on purpose (the two-state toggles and the volume have no
+# other rung writes it, and the knob starts at the operator's value, or at the effective value's rung
+# when there is none (`knob_start`). Left out on purpose (the two-state toggles and the volume have no
 # meaningful "no operator value"): force_all_start, game_instructions, audio_volume.master.
 SHIELD_OPTION = "shield.activation"
 KNOB_LADDERS: dict[str, list[str]] = {
@@ -76,6 +76,22 @@ KNOB_LADDERS: dict[str, list[str]] = {
     SHIELD_OPTION: SHIELD_KNOB_LADDER,
 }
 AUTOMATIC_OPTIONS = frozenset(KNOB_LADDERS)
+
+
+def knob_start(option: str, operator: str | None, effective: str | None) -> str | None:
+    """The rung the knob starts at (BR-018): the operator's value, else the effective value's rung.
+
+    With no operator value (`automatic`) the knob starts where the setting stands now, so "up" means
+    more; `automatic` is then the bottom rung, reached by turning down past the lowest value. An
+    effective value outside the value ladder starts at `automatic`. None = the operator value is
+    unknown (never guessed). Shared by the menu's commit and the pad's preview.
+    """
+    ladder = KNOB_LADDERS[option]
+    if operator not in ladder:
+        return None
+    if operator == AUTOMATIC and effective in ladder:
+        return effective
+    return operator
 
 
 # --- Stepping -------------------------------------------------------------------------------
@@ -173,10 +189,11 @@ def preview_value(option: str, status: _Status | None, net_steps: int) -> Previe
     if status is None or option not in PREVIEW_OPTIONS:
         return UNKNOWN
     if option in KNOB_LADDERS:
-        # BR-018: the knob starts at the operator's value (`automatic` when none), never at the effective one.
+        # BR-018: the knob starts at the operator's value, else at the effective value's rung.
         ladder = KNOB_LADDERS[option]
-        start = status.operator_settings.get(option, "")
-        if start not in ladder:
+        effective = status.shield_activation if option == SHIELD_OPTION else _flag_variant(option, status)
+        start = knob_start(option, status.operator_settings.get(option, ""), effective)
+        if start is None:
             return UNKNOWN  # the menu could not read whether the operator set it
         new, at_limit = clamp_step(ladder, start, net_steps)
         return Preview(new, at_limit)

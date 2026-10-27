@@ -319,10 +319,8 @@ async def test_step_setting_writes_once_for_n_steps_and_announces(servicer, flag
 @pytest.mark.parametrize(
     ("option", "direction", "start"),
     [
-        ("num_teams", "down", "automatic"),
         ("num_teams", "up", "six"),
         ("sensitivity", "up", "ultra_fast"),
-        ("sensitivity", "down", "automatic"),
         ("force_all_start", "down", "off"),
         ("game_instructions", "up", "on"),
         ("audio_volume.master", "up", "max"),
@@ -330,10 +328,9 @@ async def test_step_setting_writes_once_for_n_steps_and_announces(servicer, flag
 )
 async def test_step_setting_stops_at_the_end_without_writing(servicer, flags, option, direction, start):
     flag_set = "user" if option in ("game_instructions", "audio_volume.master") else "game"
-    if start != "automatic":  # automatic = no persisted operator value (the knob's lowest rung for these)
-        flags.values[(flag_set, option)] = start
-        if option in ("num_teams", "sensitivity"):
-            flags.admin[(flag_set, option)] = start
+    flags.values[(flag_set, option)] = start
+    if option in ("num_teams", "sensitivity"):
+        flags.admin[(flag_set, option)] = start
 
     reply = await pad(servicer, "step_setting", option=option, direction=direction, steps=3)
 

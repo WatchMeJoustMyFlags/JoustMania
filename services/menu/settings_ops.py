@@ -37,6 +37,7 @@ from lib.setting_ladders import (
     SENSITIVITY_LADDER,
     SHIELD_KNOB_LADDER,
     clamp_step,
+    knob_start,
 )
 from lib.types import Sound
 from lib.voice_prompts import (  # re-exported: admin mode imports the voice tables from here
@@ -411,17 +412,24 @@ class SettingsOps:
 
     # --- settings with an `automatic` rung (UC-015 step 9, BR-018, #2222) -----------------------
 
-    def _read_operator(self, option: str) -> str | None:
-        """The persisted operator value of ``option``: a variant, `automatic` (none) or None (unreadable)."""
+    def _read_knob(self, option: str) -> tuple[str | None, str | None]:
+        """One read of ``option``: (operator value, effective variant).
+
+        The operator value is a variant, `automatic` (none) or None (unreadable).
+        """
         writer = getattr(self.state_manager, STEP_OPTIONS[option].writer_attr, None)
         view = writer.get_flag_view(option) if writer is not None else None
         if view is None:
-            return None
+            return None, None
+        effective = view.get("effective_default")
         admin = view.get("admin_value")
         if not admin:
-            return AUTOMATIC
+            return AUTOMATIC, effective
         variant = admin.get("variant")
-        return variant if variant in KNOB_LADDERS[option] else None
+        return (variant if variant in KNOB_LADDERS[option] else None), effective
+
+    def _read_operator(self, option: str) -> str | None:
+        return self._read_knob(option)[0]
 
     def _read_all_operators(self) -> dict[str, str]:
         values = {option: self._read_operator(option) for option in KNOB_LADDERS}
@@ -455,7 +463,8 @@ class SettingsOps:
     async def _step_knob_setting(self, option: str, writer_attr: str, forward: bool, steps: int) -> Result:
         """BR-018: step the operator value along automatic and the value ladder; one write or one clear."""
         writer = getattr(self.state_manager, writer_attr, None)
-        old = await asyncio.to_thread(self._read_operator, option)
+        operator, effective = await asyncio.to_thread(self._read_knob, option)
+        old = knob_start(option, operator, effective)  # the operator value, else where the setting stands
         if writer is None or old is None:
             return Result(None, None, FLAG_SERVICE_UNAVAILABLE)  # fail closed: the knob's start is unknown
         new, at_limit = clamp_step(KNOB_LADDERS[option], old, steps if forward else -steps)

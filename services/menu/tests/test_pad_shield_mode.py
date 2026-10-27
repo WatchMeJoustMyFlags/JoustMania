@@ -71,7 +71,7 @@ def lobby(menu) -> None:
 @pytest.mark.parametrize(
     ("start", "direction", "steps", "new", "voice"),
     [
-        ("automatic", "up", 1, "instant", Sound.MENU_VOX_SHIELD_INSTANT),
+        ("automatic", "up", 1, "hold", Sound.MENU_VOX_SHIELD_HOLD),  # no operator value: from the effective trigger
         ("instant", "up", 1, "trigger", Sound.MENU_VOX_SHIELD_TRIGGER),
         ("trigger", "up", 1, "hold", Sound.MENU_VOX_SHIELD_HOLD),
         ("automatic", "up", 3, "hold", Sound.MENU_VOX_SHIELD_HOLD),
@@ -158,7 +158,7 @@ async def test_shield_step_is_refused_while_a_game_is_live(servicer, flags):
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="A7", steps=[9], br=["BR-018", "BR-005"])
-@pytest.mark.parametrize(("start", "direction"), [("hold", "up"), ("automatic", "down")])
+@pytest.mark.parametrize(("start", "direction"), [("hold", "up")])
 async def test_shield_step_at_the_end_writes_nothing_and_shows_nothing(servicer, flags, start, direction):
     lobby(servicer)
     operator_set(flags, start)

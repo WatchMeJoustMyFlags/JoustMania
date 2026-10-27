@@ -137,6 +137,8 @@ var menuStatus = &menupb.GetMenuStatusResponse{
 	AudioVolumeMaster:              "quiet",
 	AgentEnabledState:              "on",
 	AgentInterventionsEnabledState: "off",
+	ShieldActivation:               "hold",
+	OperatorSettings:               map[string]string{"sensitivity": "fast", "num_teams": "automatic", "shield.activation": "hold"},
 }
 
 func (f *fakeMenu) GetMenuStatus(_ context.Context, r *menupb.GetMenuStatusRequest) (*menupb.GetMenuStatusResponse, error) {
