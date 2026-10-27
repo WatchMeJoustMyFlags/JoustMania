@@ -218,6 +218,9 @@ def _open_pcm(channels: int, rate: int, period: int) -> alsaaudio.PCM:
             logger.warning("Failed to open ALSA device '%s': %s", device_name, e)
             last_error = e
 
+    from services.audio.alsa_config import note_playback_failure
+
+    note_playback_failure()
     raise last_error  # type: ignore[misc]
 
 

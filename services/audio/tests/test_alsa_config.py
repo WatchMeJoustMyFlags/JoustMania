@@ -165,3 +165,113 @@ class TestGetDetectedCard:
     def test_updated_by_configure(self, _mock_resolve, _mock_write):
         configure_alsa_device("5")
         assert get_detected_card() == 5
+
+
+import asyncio
+
+import pytest
+
+from services.audio import alsa_config
+from services.audio.alsa_config import (
+    CARD_CHANGE_EXIT_CODE,
+    preferred_card,
+    read_proc_cards,
+    should_restart_for_card_change,
+    watch_card_changes,
+)
+
+HDMI = (0, "[vc4hdmi0       ]: vc4-hdmi - vc4-hdmi-0")
+USB = (2, "[Audio          ]: USB-Audio - USB Audio")
+
+
+@pytest.mark.uc("UC-031", flow="A6", br=["BR-008"])
+class TestCardChangeDecision:
+    def test_usb_appeared_restarts(self):
+        assert should_restart_for_card_change(0, [HDMI, USB], failed=False)
+
+    def test_same_preferred_card_no_restart(self):
+        assert not should_restart_for_card_change(2, [HDMI, USB], failed=False)
+
+    def test_usb_removed_without_failure_no_restart(self):
+        assert not should_restart_for_card_change(2, [HDMI], failed=False)
+
+    def test_usb_removed_and_playback_failed_restarts(self):
+        assert should_restart_for_card_change(2, [HDMI], failed=True)
+
+    def test_no_cards_no_restart(self):
+        assert not should_restart_for_card_change(0, [], failed=True)
+
+    def test_preferred_card_rule(self):
+        assert preferred_card([HDMI, USB]) == 2
+        assert preferred_card([HDMI]) == 0
+
+    def test_read_proc_cards(self, tmp_path):
+        f = tmp_path / "cards"
+        f.write_text(
+            " 0 [vc4hdmi0       ]: vc4-hdmi - vc4-hdmi-0\n                      vc4-hdmi-0\n"
+            " 2 [Audio          ]: USB-Audio - USB Audio\n                      C-Media USB Audio at usb-1\n"
+        )
+        assert [i for i, _ in read_proc_cards(str(f))] == [0, 2]
+        assert read_proc_cards(str(tmp_path / "missing")) == []
+
+
+def _run_watcher(cards, *, is_busy=lambda: False, failed=False, max_polls=6):
+    """Run the watcher with a plain-function /proc reader (a Mock would record every call) and a hard bound."""
+    calls = []
+
+    def fake_cards():
+        return cards
+
+    async def go():
+        await asyncio.wait_for(
+            watch_card_changes(0, lambda: calls.append(1), interval_s=0, is_busy=is_busy, max_polls=max_polls),
+            timeout=5,
+        )
+
+    with (
+        patch.object(alsa_config, "read_proc_cards", new=fake_cards),
+        patch.object(alsa_config, "_playback_failed", failed),
+    ):
+        asyncio.run(go())
+    return calls
+
+
+@pytest.mark.uc("UC-031", flow="A6", br=["BR-008"])
+class TestWatcher:
+    def test_logs_warn_once_and_calls_back(self, caplog):
+        with caplog.at_level("WARNING"):
+            calls = _run_watcher([HDMI, USB])
+        assert calls == [1]
+        assert sum("ALSA card change" in r.message for r in caplog.records) == 1
+        assert CARD_CHANGE_EXIT_CODE == 75
+
+    def test_no_change_ends_at_max_polls_without_callback(self):
+        # The mutation "decision always True" is caught by test_logs_warn_once; the mirror (never True) ends bounded.
+        assert _run_watcher([HDMI]) == []
+
+    def test_deferred_while_busy(self):
+        assert _run_watcher([HDMI, USB], is_busy=lambda: True) == []
+
+    def test_busy_but_playback_failed_restarts(self):
+        assert _run_watcher([HDMI, USB], is_busy=lambda: True, failed=True) == [1]
+
+    def test_restarts_in_lobby_waits_in_game(self):
+        in_lobby = {"v": False}
+        assert _run_watcher([HDMI, USB], is_busy=lambda: not in_lobby["v"]) == []
+        in_lobby["v"] = True
+        assert _run_watcher([HDMI, USB], is_busy=lambda: not in_lobby["v"]) == [1]
+
+    def test_restarts_once_idle(self):
+        busy = iter([True, True, False])
+        assert _run_watcher([HDMI, USB], is_busy=lambda: next(busy, False)) == [1]
+
+    def test_flapping_card_resets_stability(self):
+        seq = iter([[HDMI, USB], [HDMI]] * 3)
+        calls = []
+
+        async def go():
+            await asyncio.wait_for(watch_card_changes(0, lambda: calls.append(1), interval_s=0, max_polls=6), timeout=5)
+
+        with patch.object(alsa_config, "read_proc_cards", new=lambda: next(seq)):
+            asyncio.run(go())
+        assert calls == []
