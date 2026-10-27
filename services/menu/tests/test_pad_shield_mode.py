@@ -1,9 +1,10 @@
 """The pad's shield mode in the menu (UC-015 step 9, BR-018, BR-017, A1, A7; #2215, services.md §3.1).
 
-`step_setting` option `shield.activation` writes `game/shield.activation` as a persisted admin value
-(like the other pad settings, so it survives a flag-service restart), says the mode and pulses
-its colour on the lobby controllers; it is lobby only. `preview_setting` pulses a shield mode
-without writing. `GetMenuStatus` carries the variant the pad's live preview starts from.
+`step_setting` option `shield.activation` steps the operator's value along automatic, instant,
+trigger, hold: a mode is written as a persisted admin value (it survives a flag-service restart),
+`automatic` clears it (DELETE ?persist=true). The menu says the result and shows it on the lobby
+controllers; it is lobby only. `preview_setting` shows a rung without writing. `GetMenuStatus`
+carries the effective variant and the operator's value the pad's live preview starts from.
 """
 
 import pytest
@@ -19,6 +20,14 @@ from services.menu.tests.test_pad_commands import _pulses, live_lifecycle, pad
 
 SHIELD = "shield.activation"
 PULSE = controller_manager_pb2.GAME_EFFECT_PULSE
+FLASH = controller_manager_pb2.GAME_EFFECT_FLASH
+WHITE = (255, 255, 255)
+AUTOMATIC_FLASHES = [
+    ("dim", FLASH, WHITE, settings_ops.SHIELD_AUTOMATIC_FLASH_MS),
+    ("dim", FLASH, WHITE, settings_ops.SHIELD_AUTOMATIC_FLASH_MS),
+    ("ready", FLASH, WHITE, settings_ops.SHIELD_AUTOMATIC_FLASH_MS),
+    ("ready", FLASH, WHITE, settings_ops.SHIELD_AUTOMATIC_FLASH_MS),
+]
 # The real-servicer fixtures of the pad command tests (a fake flag service behind real writers).
 flags = test_pad_commands.flags
 servicer = test_pad_commands.servicer
@@ -30,6 +39,17 @@ def use_clients(menu, game: dict) -> None:
     menu.game_settings_client = in_process_client(game)
     menu.user_prefs_client = in_process_client(FLAGS["user"])
     menu.agent_settings_client = in_process_client(FLAGS["agent"])
+
+
+def operator_set(flags, value: str) -> None:
+    """The pad's persisted value in the fake flag service (`automatic` = none)."""
+    if value != "automatic":
+        flags.admin[("game", SHIELD)] = flags.values[("game", SHIELD)] = value
+
+
+@pytest.fixture(autouse=True)
+def no_flash_gap(monkeypatch):
+    monkeypatch.setattr(settings_ops, "SHIELD_AUTOMATIC_FLASH_GAP_SECONDS", 0)
 
 
 def lobby(menu) -> None:
@@ -46,9 +66,10 @@ def lobby(menu) -> None:
 @pytest.mark.parametrize(
     ("start", "direction", "steps", "new", "voice"),
     [
+        ("automatic", "up", 1, "instant", Sound.MENU_VOX_SHIELD_INSTANT),
         ("instant", "up", 1, "trigger", Sound.MENU_VOX_SHIELD_TRIGGER),
         ("trigger", "up", 1, "hold", Sound.MENU_VOX_SHIELD_HOLD),
-        ("instant", "up", 2, "hold", Sound.MENU_VOX_SHIELD_HOLD),
+        ("automatic", "up", 3, "hold", Sound.MENU_VOX_SHIELD_HOLD),
         ("hold", "down", 2, "instant", Sound.MENU_VOX_SHIELD_INSTANT),
     ],
 )
@@ -56,10 +77,11 @@ async def test_shield_step_writes_once_persisted_says_and_pulses_the_mode(
     servicer, flags, start, direction, steps, new, voice
 ):
     lobby(servicer)
-    flags.values[("game", SHIELD)] = start
+    operator_set(flags, start)
     reply = await pad(servicer, "step_setting", option=SHIELD, direction=direction, steps=steps)
 
     assert (reply.success, reply.error) == (True, "")
+    assert flags.deletes == []
     assert flags.written() == [("game", SHIELD, new)]
     assert flags.puts[0][2].get("persist") is True  # persisted: survives a flag-service restart (BR-001)
     servicer.state_manager.audio.play_voice.assert_awaited_once_with(voice)
@@ -72,6 +94,48 @@ async def test_shield_step_writes_once_persisted_says_and_pulses_the_mode(
 
 def test_each_shield_mode_has_its_own_colour():
     assert len(set(settings_ops.SHIELD_MODE_COLORS.values())) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018", "BR-005"])
+@pytest.mark.parametrize(("start", "steps"), [("instant", 1), ("trigger", 2), ("hold", 3), ("hold", 9)])
+async def test_shield_step_to_automatic_clears_the_persisted_value(servicer, flags, start, steps):
+    lobby(servicer)
+    operator_set(flags, start)
+    reply = await pad(servicer, "step_setting", option=SHIELD, direction="down", steps=steps)
+
+    assert (reply.success, reply.error) == (True, "")
+    assert flags.deletes == [("game", SHIELD, "persist=true")]  # the persisted operator value is cleared
+    assert flags.puts == []  # nothing written
+    assert ("game", SHIELD) not in flags.admin
+    assert flags.values[("game", SHIELD)] == "trigger"  # the flag file's default applies again
+    assert servicer.settings_ops.shield_operator == "automatic"
+    servicer.state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_SHIELD_AUTOMATIC)
+    assert sorted(_pulses(servicer)) == AUTOMATIC_FLASHES  # a double white flash, no mode pulse
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A3", steps=[9], br=["BR-018", "BR-010"])
+async def test_a_failed_clear_fails_closed_with_the_failure_cue(servicer, flags):
+    lobby(servicer)
+    operator_set(flags, "instant")
+    flags.failing.add(("game", SHIELD))
+    reply = await pad(servicer, "step_setting", option=SHIELD, direction="down", steps=1)
+
+    assert (reply.success, reply.error) == (False, "flag_service_unavailable")
+    assert flags.admin[("game", SHIELD)] == "instant"
+    assert test_pad_commands.failure_cues(servicer) == 2
+    assert _pulses(servicer) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A3", steps=[9], br=["BR-018", "BR-010"])
+async def test_an_unreadable_operator_value_writes_nothing(servicer, flags):
+    flags.failing_get.add(("game", SHIELD))
+    reply = await pad(servicer, "step_setting", option=SHIELD, direction="up", steps=1)
+
+    assert (reply.success, reply.error) == (False, "flag_service_unavailable")
+    assert flags.puts == [] and flags.deletes == []
 
 
 @pytest.mark.asyncio
@@ -89,14 +153,14 @@ async def test_shield_step_is_refused_while_a_game_is_live(servicer, flags):
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="A7", steps=[9], br=["BR-018", "BR-005"])
-@pytest.mark.parametrize(("start", "direction"), [("hold", "up"), ("instant", "down")])
+@pytest.mark.parametrize(("start", "direction"), [("hold", "up"), ("automatic", "down")])
 async def test_shield_step_at_the_end_writes_nothing_and_shows_nothing(servicer, flags, start, direction):
     lobby(servicer)
-    flags.values[("game", SHIELD)] = start
+    operator_set(flags, start)
     reply = await pad(servicer, "step_setting", option=SHIELD, direction=direction, steps=1)
 
     assert (reply.success, reply.error) == (False, "at_limit")
-    assert flags.puts == []
+    assert flags.puts == [] and flags.deletes == []
     assert _pulses(servicer) == []
 
 
@@ -113,6 +177,19 @@ async def test_shield_preview_pulses_the_mode_and_writes_nothing(servicer, flags
     ]
     assert flags.puts == []
     servicer.state_manager.audio.play_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018", "BR-017"])
+async def test_shield_preview_of_automatic_double_flashes_and_clears_nothing(servicer, flags):
+    lobby(servicer)
+    operator_set(flags, "hold")
+    reply = await pad(servicer, "preview_setting", option=SHIELD, mode="automatic")
+
+    assert (reply.success, reply.error) == (True, "")
+    assert sorted(_pulses(servicer)) == AUTOMATIC_FLASHES
+    assert flags.puts == [] and flags.deletes == []
+    assert flags.admin[("game", SHIELD)] == "hold"
 
 
 @pytest.mark.asyncio
@@ -157,7 +234,21 @@ async def test_menu_status_shield_mode_is_empty_when_unresolvable(servicer):
     assert status.shield_activation == ""
 
 
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018", "BR-017"])
+@pytest.mark.parametrize("operator", ["automatic", "instant", "trigger", "hold"])
+async def test_menu_status_carries_the_operator_value_read_in_the_background(servicer, flags, operator):
+    use_clients(servicer, dict(GAME_FLAGS))
+    operator_set(flags, operator)
+    first = await servicer.GetMenuStatus(menu_pb2.GetMenuStatusRequest(), None)
+    assert first.shield_activation_operator == ""  # not read yet: unknown, never a guess
+    await servicer.settings_ops.shield_refresh_task  # the background read GetMenuStatus started
+    second = await servicer.GetMenuStatus(menu_pb2.GetMenuStatusRequest(), None)
+    assert second.shield_activation_operator == operator
+
+
 @pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018", "BR-005"])
-def test_shield_step_order_is_pinned_to_the_shared_ladder():
-    # The commit steps along this order whatever order the flag service lists the variants in.
-    assert settings_ops.STEP_OPTIONS[SHIELD].order == setting_ladders.SHIELD_ACTIVATION_LADDER
+def test_shield_knob_ladder_order_is_pinned():
+    # automatic first, then the modes; the commit steps along it whatever order the flag service lists.
+    assert setting_ladders.SHIELD_KNOB_LADDER == ["automatic", "instant", "trigger", "hold"]
+    assert settings_ops.STEP_OPTIONS[SHIELD].order == setting_ladders.SHIELD_KNOB_LADDER

@@ -58,17 +58,29 @@ class FlagFileService:
 
     def __init__(self):
         self.values: dict[tuple[str, str], str] = {}
+        self.admin: dict[tuple[str, str], str] = {}  # persisted admin values (the shield knob reads them)
 
     def __call__(self, method, url, body):
-        flag_set, key = url.split("/")[-2:]
+        path, _, query = url.partition("?")
+        flag_set, key = path.split("/")[-2:]
         variants = VARIANTS[(flag_set, key)]
         if method == "GET":
-            return 200, {
+            view = {
                 "variants": list(variants),
                 "variant_values": variants,
                 "effective_default": self.values[(flag_set, key)],
             }
+            if (flag_set, key) in self.admin:
+                view["admin_value"] = {"variant": self.admin[(flag_set, key)]}
+            return 200, view
+        if method == "DELETE":
+            assert query == "persist=true"
+            self.admin.pop((flag_set, key), None)
+            self.values[(flag_set, key)] = DEFAULTS[(flag_set, key)]
+            return 204, {}
         self.values[(flag_set, key)] = body["variant"]
+        if body.get("persist"):
+            self.admin[(flag_set, key)] = body["variant"]
         return 200, {"variant": body["variant"], "persisted": bool(body.get("persist"))}
 
 
@@ -119,6 +131,7 @@ DEFAULTS = {
 def reset(flags: FlagFileService, menu) -> None:
     """Every flag at its flag-file default, no saved agent level."""
     flags.values = dict(DEFAULTS)
+    flags.admin = {}
     menu.settings_ops.saved_agent_level = None
 
 
@@ -138,7 +151,6 @@ FLAG_OPTIONS = {
     "force_all_start": ("game", "force_all_start"),
     "game_instructions": ("user", "game_instructions"),
     "audio_volume.master": ("user", "audio_volume.master"),
-    "shield.activation": ("game", "shield.activation"),  # UC-015 BR-018 (#2215)
 }
 
 
@@ -191,6 +203,25 @@ async def test_agent_level_preview_equals_commit(menu, flags, enabled, level, sa
         flags.values[("agent", "interventions_allowed")] = level
         menu.settings_ops.saved_agent_level = saved
         await assert_preview_equals_commit(menu, "agent_level", steps, committed)
+
+
+@pytest.mark.uc("UC-015", br=["BR-018", "BR-005"], flow="A7", steps=[9])
+@pytest.mark.asyncio
+async def test_shield_knob_preview_equals_commit(menu, flags):
+    """BR-018: from every operator value (`automatic` = none) and every net step, preview == commit."""
+    key = ("game", "shield.activation")
+    assert set(VARIANTS[key]) == set(setting_ladders.SHIELD_ACTIVATION_LADDER), "ladder differs from the flag file"
+
+    def committed():
+        return flags.admin.get(key, setting_ladders.SHIELD_AUTOMATIC)
+
+    for start in setting_ladders.SHIELD_KNOB_LADDER:
+        for steps in STEPS:
+            reset(flags, menu)
+            if start != setting_ladders.SHIELD_AUTOMATIC:
+                flags.values[key] = flags.admin[key] = start
+            await menu.settings_ops.refresh_shield_operator()  # what GetMenuStatus serves (background read)
+            await assert_preview_equals_commit(menu, "shield.activation", steps, committed)
 
 
 @pytest.mark.uc("UC-015", br=["BR-004"])

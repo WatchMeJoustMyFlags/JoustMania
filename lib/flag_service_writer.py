@@ -188,6 +188,33 @@ class FlagServiceWriter:
         logger.info(f"Updated flag '{self.flag_set}/{flag_key}' -> '{variant_name}' via the flag service")
         return True
 
+    def clear_persisted(self, flag_key: str) -> bool:
+        """Clear the flag's persisted admin value (``DELETE ?persist=true``), so the lower layers apply again.
+
+        True when the flag service answered success, or (no clear answer) a re-read shows no admin
+        value; clearing a flag without one is a success too (UC-015 BR-018, #2215). Never retried.
+        """
+        url = self._flag_url(flag_key) + "?persist=true"
+        try:
+            status, resp = self._transport("DELETE", url, None)
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError, http.client.HTTPException) as e:
+            if _is_timeout(e) or isinstance(e, ValueError | http.client.HTTPException):
+                view = self._view(flag_key)
+                cleared = view is not None and not view.get("admin_value")
+                log = logger.warning if cleared else logger.critical
+                log(f"Flag service gave no clear answer clearing {self.flag_set}/{flag_key}: cleared={cleared}: {e}")
+                return cleared
+            logger.critical(f"Flag service unreachable: {self.flag_set}/{flag_key} admin value NOT cleared: {e}")
+            return False
+        if status not in (200, 204):
+            logger.error(
+                f"Flag service refused clearing {self.flag_set}/{flag_key}: "
+                f"HTTP {status} {resp.get('error', '')}: {resp.get('detail', '')}"
+            )
+            return False
+        logger.info(f"Cleared the admin value of '{self.flag_set}/{flag_key}' via the flag service")
+        return True
+
     def _confirm_after_timeout(self, flag_key: str, variant_name: str, err: BaseException) -> bool:
         """Settle a PUT without a clear answer (timeout, malformed or broken response) with one re-read.
 

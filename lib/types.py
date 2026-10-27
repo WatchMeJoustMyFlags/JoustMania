@@ -343,6 +343,7 @@ class Sound(StrEnum):
     MENU_VOX_SHIELD_INSTANT = "shield_instant"
     MENU_VOX_SHIELD_TRIGGER = "shield_trigger"
     MENU_VOX_SHIELD_HOLD = "shield_hold"
+    MENU_VOX_SHIELD_AUTOMATIC = "shield_automatic"
     MENU_VOX_STATUS_NOT_POSSIBLE = "status_not_possible"
     MENU_VOX_STATUS_MAXIMUM = "status_maximum"
     MENU_VOX_STATUS_MINIMUM = "status_minimum"

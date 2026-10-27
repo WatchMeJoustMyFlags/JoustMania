@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -31,7 +32,8 @@ from lib.setting_ladders import (
     AGENT_SAVED_LEVELS,
     BACKENDS,
     SENSITIVITY_LADDER,
-    SHIELD_ACTIVATION_LADDER,
+    SHIELD_AUTOMATIC,
+    SHIELD_KNOB_LADDER,
     clamp_step,
 )
 from lib.types import Sound
@@ -133,6 +135,12 @@ def _ladder_step(ladder: list[str], current: str | None, forward: bool, steps: i
 # controller (UC-011 step 3, ``AdminModeHandler.handle_game_mode``).
 MODE_PULSE_MS = 600
 MODE_PULSE_SPEED = 6
+# UC-015 BR-018 (#2215): `automatic` (the operator value cleared) shows as a double white flash, a pattern
+# no mode or shield mode uses (they pulse once).
+SHIELD_AUTOMATIC_FLASH_MS = 150
+SHIELD_AUTOMATIC_FLASH_GAP_SECONDS = 0.3
+# The menu re-reads whether the operator set the shield mode at most this often (GetMenuStatus, BR-018).
+SHIELD_OPERATOR_REFRESH_SECONDS = 2.0
 # UC-015 BR-018 (#2215): the colour of each shield mode's pulse on the lobby controllers (the BR-015 pulse).
 SHIELD_MODE_COLORS: dict[str, tuple[int, int, int]] = {
     "instant": Colors.White.value,
@@ -159,8 +167,8 @@ STEP_OPTIONS: dict[str, _Option] = {
     "game_instructions": _Option("user_prefs_writer", order=["off", "on"], lobby_only=True),
     "audio_volume.master": _Option("user_prefs_writer"),
     "agent_level": _Option(None),
-    # UC-015 BR-018: persisted like the other lobby settings (registry `persist: true`).
-    SHIELD_ACTIVATION_FLAG: _Option("game_settings_writer", order=SHIELD_ACTIVATION_LADDER, lobby_only=True),
+    # UC-015 BR-018: the knob ladder automatic, instant, trigger, hold (`_step_shield_mode`); persisted.
+    SHIELD_ACTIVATION_FLAG: _Option(None, order=SHIELD_KNOB_LADDER, lobby_only=True),
 }
 # UC-015 A1: refused with game_active while the game lifecycle is live.
 LOBBY_ONLY_OPTIONS = frozenset(name for name, opt in STEP_OPTIONS.items() if opt.lobby_only)
@@ -200,6 +208,11 @@ class SettingsOps:
         self.saved_agent_level: str | None = None
         # Serializes the kill, the resume and the ladder, so a saved level is never read half-written.
         self._agent_lock = asyncio.Lock()
+        # UC-015 BR-018: the operator's persisted shield mode as last read from the flag service
+        # (`automatic` when none, None when unknown), for GetMenuStatus, which never calls HTTP itself.
+        self.shield_operator: str | None = None
+        self._shield_read_at = -SHIELD_OPERATOR_REFRESH_SECONDS
+        self.shield_refresh_task: asyncio.Task | None = None
 
     @property
     def state_manager(self) -> StateManager | None:
@@ -333,6 +346,8 @@ class SettingsOps:
             return await self._step_game_mode(forward, steps)
         if option == "agent_level":
             return await self._step_agent_level(forward, steps)
+        if option == SHIELD_ACTIVATION_FLAG:
+            return await self._step_shield_mode(forward, steps)
 
         writer = getattr(self.state_manager, spec.writer_attr, None)
         if writer is None:
@@ -386,6 +401,52 @@ class SettingsOps:
                 # resume restores the level it left.
                 self.saved_agent_level = level
             return Result(level, new)
+
+    # --- shield mode (UC-015 step 9, BR-018) -----------------------------------------------
+
+    def _read_shield_operator(self) -> str | None:
+        """The persisted operator value of `game/shield.activation`: a variant, `automatic` (none) or None."""
+        writer = getattr(self.state_manager, "game_settings_writer", None)
+        view = writer.get_flag_view(SHIELD_ACTIVATION_FLAG) if writer is not None else None
+        if view is None:
+            return None
+        admin = view.get("admin_value")
+        if not admin:
+            return SHIELD_AUTOMATIC
+        variant = admin.get("variant")
+        return variant if variant in SHIELD_KNOB_LADDER else None
+
+    async def refresh_shield_operator(self) -> None:
+        """Re-read the operator's shield mode for GetMenuStatus (BR-018); unknown when the read fails."""
+        self._shield_read_at = time.monotonic()
+        self.shield_operator = await asyncio.to_thread(self._read_shield_operator)
+
+    def schedule_shield_refresh(self) -> None:
+        """GetMenuStatus: refresh the cached operator value in the background when it is unknown or old."""
+        running = self.shield_refresh_task is not None and not self.shield_refresh_task.done()
+        fresh = time.monotonic() - self._shield_read_at < SHIELD_OPERATOR_REFRESH_SECONDS
+        if running or (fresh and self.shield_operator is not None):
+            return
+        self.shield_refresh_task = asyncio.create_task(self.refresh_shield_operator())
+
+    async def _step_shield_mode(self, forward: bool, steps: int) -> Result:
+        """BR-018: step the operator value along automatic, instant, trigger, hold; one write or one clear."""
+        writer = getattr(self.state_manager, "game_settings_writer", None)
+        old = await asyncio.to_thread(self._read_shield_operator)
+        if writer is None or old is None:
+            return Result(None, None, FLAG_SERVICE_UNAVAILABLE)  # fail closed: the knob's start is unknown
+        new, at_limit = clamp_step(SHIELD_KNOB_LADDER, old, steps if forward else -steps)
+        if at_limit:
+            return Result(old, old, AT_LIMIT)
+        if new == SHIELD_AUTOMATIC:
+            ok = await asyncio.to_thread(writer.clear_persisted, SHIELD_ACTIVATION_FLAG)
+        else:
+            ok = await asyncio.to_thread(self._write, writer, SHIELD_ACTIVATION_FLAG, new)
+        if not ok:
+            self.shield_operator = None  # the outcome is unknown until the next read
+            return Result(old, None, FLAG_SERVICE_UNAVAILABLE)
+        self.shield_operator, self._shield_read_at = new, time.monotonic()
+        return Result(old, new)
 
     # --- agent_switch (UC-015 step 6, A3, A9, BR-002, BR-003) --------------------------------
 
@@ -510,13 +571,26 @@ class SettingsOps:
         await self._pulse_lobby(GAME_MODE_COLORS.get(game_mode, DEFAULT_COLOR))
 
     async def show_shield_mode_on_lobby(self, shield_mode: str) -> None:
-        """UC-015 BR-018: the BR-015 pulse in the shield mode's colour; nothing for an unknown mode."""
+        """UC-015 BR-018: the BR-015 pulse in the shield mode's colour; `automatic` a double white flash."""
+        if shield_mode == SHIELD_AUTOMATIC:
+            await self._effect_lobby(
+                controller_manager_pb2.GAME_EFFECT_FLASH, Colors.White.value, SHIELD_AUTOMATIC_FLASH_MS
+            )
+            await asyncio.sleep(SHIELD_AUTOMATIC_FLASH_GAP_SECONDS)
+            await self._effect_lobby(
+                controller_manager_pb2.GAME_EFFECT_FLASH, Colors.White.value, SHIELD_AUTOMATIC_FLASH_MS
+            )
+            return
         color = SHIELD_MODE_COLORS.get(shield_mode)
         if color is not None:
             await self._pulse_lobby(color)
 
     async def _pulse_lobby(self, color: tuple[int, int, int]) -> None:
         """One 600 ms pulse of ``color`` on every CONNECTED or READY controller (BR-015, BR-018)."""
+        await self._effect_lobby(controller_manager_pb2.GAME_EFFECT_PULSE, color, MODE_PULSE_MS, MODE_PULSE_SPEED)
+
+    async def _effect_lobby(self, effect: int, color: tuple[int, int, int], duration_ms: int, speed: int = 0) -> None:
+        """One game effect on every CONNECTED or READY controller (not admin, not IDLE)."""
         # Imported here: services.menu.handlers imports this module (admin mode).
         from services.menu.handlers.base import ControllerState
 
@@ -527,13 +601,7 @@ class SettingsOps:
             if state not in (ControllerState.CONNECTED, ControllerState.READY):
                 continue
             try:
-                await manager.led.send_game_effect(
-                    serial,
-                    controller_manager_pb2.GAME_EFFECT_PULSE,
-                    color=color,
-                    duration_ms=MODE_PULSE_MS,
-                    speed=MODE_PULSE_SPEED,
-                )
+                await manager.led.send_game_effect(serial, effect, color=color, duration_ms=duration_ms, speed=speed)
             except Exception as e:
                 logger.warning(f"Lobby pulse for {serial} failed: {e}")
 

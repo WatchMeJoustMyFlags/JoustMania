@@ -61,8 +61,10 @@ LABEL_VOICES: dict[str, Sound] = {
     "game_instructions": Sound.MENU_VOX_LABEL_INSTRUCTIONS,
     "shield.activation": Sound.MENU_VOX_LABEL_SHIELD_MODE,
 }
-# UC-015 BR-018 (#2215): the shield activation modes (`game/shield.activation` variants) by name.
+# UC-015 BR-018 (#2215): the shield knob's rungs by name: `automatic` (no operator value) and the
+# `game/shield.activation` variants.
 SHIELD_ACTIVATION_VOICES: dict[str, Sound] = {
+    "automatic": Sound.MENU_VOX_SHIELD_AUTOMATIC,
     "instant": Sound.MENU_VOX_SHIELD_INSTANT,
     "trigger": Sound.MENU_VOX_SHIELD_TRIGGER,
     "hold": Sound.MENU_VOX_SHIELD_HOLD,

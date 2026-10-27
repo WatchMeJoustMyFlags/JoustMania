@@ -21,7 +21,7 @@ from lib.feature_flags import (
     set_game_transaction_context,
 )
 from lib.flag_service_writer import FlagServiceWriter
-from lib.setting_ladders import SHIELD_ACTIVATION_LADDER
+from lib.setting_ladders import SHIELD_KNOB_LADDER
 from lib.telemetry import get_tracer
 from lib.types import Games, Sound
 from proto import menu_pb2, menu_pb2_grpc
@@ -570,6 +570,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         """
         start_time = time.time()
         try:
+            # UC-015 BR-018: the operator's shield value is read in the background, never in this call.
+            self.settings_ops.schedule_shield_refresh()
             response = self._menu_status()
         except Exception:
             metrics.grpc_requests_total.labels(method="GetMenuStatus", status="error").inc()
@@ -605,6 +607,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             force_all_start=bool(game.get_boolean_value("force_all_start", False)),
             audio_volume_master=_variant(user.get_float_details("audio_volume.master", 1.0)),
             shield_activation=_variant(game.get_string_details(SHIELD_ACTIVATION_FLAG, "")),
+            shield_activation_operator=self.settings_ops.shield_operator or "",
         )
 
     async def ListGameModes(self, _request, _context):
@@ -746,7 +749,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         option = data.get("option", "")
         if option == SHIELD_ACTIVATION_FLAG:
             shield_mode = data.get("mode", "")
-            if shield_mode not in SHIELD_ACTIVATION_LADDER:
+            if shield_mode not in SHIELD_KNOB_LADDER:
                 return Result(None, None, BAD_OPTION)
             if self._lifecycle_live():
                 return Result(None, None, GAME_ACTIVE)
