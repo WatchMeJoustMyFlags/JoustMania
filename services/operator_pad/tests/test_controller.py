@@ -81,11 +81,12 @@ async def test_no_unknown_key_cue_once_a_known_key_was_seen(parts):
 
 @pytest.mark.uc("UC-015", flow="A4", br=["BR-010"])
 async def test_detach_mid_hold_drops_the_gesture_and_the_pending_volume(parts):
-    pad, _, reader, actions, _ = parts
+    pad, _, reader, actions, cues = parts
     reader.fetch.return_value = menu_pb2.GetMenuStatusResponse()
     await pad.on_code(F19, PRESS, 0)
     pad.detached()
     actions.cancel_pending.assert_called_once()
+    cues.cancel_all.assert_called_once()  # no announcement plays on after an unplug
     await pad.on_code(F19, RELEASE, 2000)
     actions.dispatch.assert_not_awaited()
 
@@ -200,9 +201,10 @@ async def test_a_hanging_announcement_never_holds_up_the_next_key():
     for t, key in ((0, "K2"), (100, "K5")):
         await asyncio.wait_for(pad.on_code(code[key], PRESS, t), 0.2)
         await asyncio.wait_for(pad.on_code(code[key], RELEASE, t + 50), 0.2)  # the tap: would block if awaited
-    await asyncio.sleep(0)
+        await asyncio.sleep(0)
     # Both labels were asked for while the first one still hangs.
     assert requested == [Sound.MENU_VOX_LABEL_SENSITIVITY.value, Sound.MENU_VOX_LABEL_TEAMS.value]
     release_audio.set()
     await cue_player.drain()
-    assert sorted(requested[2:]) == sorted([Sound.MENU_VOX_SENSITIVITY_MEDIUM.value, Sound.MENU_VOX_ADMINOP_3.value])
+    # The latest announcement wins: the first one was cancelled, only the second value plays.
+    assert requested[2:] == [Sound.MENU_VOX_ADMINOP_3.value]

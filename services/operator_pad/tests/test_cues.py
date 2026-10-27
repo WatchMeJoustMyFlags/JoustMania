@@ -7,7 +7,7 @@ import pytest
 
 from lib.types import Sound
 from proto import audio_pb2
-from services.operator_pad.cues import LIMIT_CUE_MIN_GAP_SECONDS, LIMIT_CUES, REFUSAL_CUE, CuePlayer
+from services.operator_pad.cues import ANNOUNCE_GROUP, LIMIT_CUE_MIN_GAP_SECONDS, LIMIT_CUES, REFUSAL_CUE, CuePlayer
 from services.operator_pad.tests.fakes import GatedSleep
 
 LIMIT_CUE = LIMIT_CUES[True]
@@ -101,7 +101,7 @@ async def test_lock_directions_say_pad_locked_and_unlocked(stub):
 async def test_failure_is_two_beeps_then_no_connection_in_the_background(stub):
     sleep = GatedSleep()
     cues = CuePlayer(stub, sleep=sleep)
-    await cues.failure()  # returns at once: the sequence runs as a task
+    await asyncio.wait_for(cues.failure(), 0.2)  # returns at once: the sequence runs as a task
     await asyncio.sleep(0)
     assert played(stub) == [Sound.SFX_BEEP_LOUD.value]
     sleep.gate.set()
@@ -118,7 +118,7 @@ async def test_announce_plays_the_label_then_the_value_after_the_label_ends(stub
     stub.PlaySound.return_value = audio_pb2.PlaySoundResponse(success=True, duration_seconds=0.7)
     sleep = GatedSleep()
     cues = CuePlayer(stub, sleep=sleep)
-    await cues.announce(Sound.MENU_VOX_LABEL_BACKEND, Sound.MENU_VOX_BACKEND_CLAUDE)
+    await asyncio.wait_for(cues.announce(Sound.MENU_VOX_LABEL_BACKEND, Sound.MENU_VOX_BACKEND_CLAUDE), 0.2)
     await asyncio.sleep(0)
     assert played(stub) == [Sound.MENU_VOX_LABEL_BACKEND.value]  # the value waits for the label
     assert sleep.calls == [pytest.approx(0.7)]
@@ -132,7 +132,67 @@ async def test_announce_with_no_label_length_plays_the_value_at_once(stub):
     stub.PlaySound.side_effect = [TimeoutError("audio down"), audio_pb2.PlaySoundResponse(success=True)]
     sleep = GatedSleep()
     cues = CuePlayer(stub, sleep=sleep)
-    await cues.announce(Sound.MENU_VOX_LABEL_TEAMS, Sound.MENU_VOX_ADMINOP_3)
+    await asyncio.wait_for(cues.announce(Sound.MENU_VOX_LABEL_TEAMS, Sound.MENU_VOX_ADMINOP_3), 0.2)
     await cues.drain()
     assert played(stub) == [Sound.MENU_VOX_LABEL_TEAMS.value, Sound.MENU_VOX_ADMINOP_3.value]
     assert sleep.calls == []
+
+
+@pytest.mark.uc("UC-015", br=["BR-011"])
+async def test_the_latest_announcement_wins_and_the_previous_value_never_plays(stub):
+    """Review of #2170: two quick taps; the second label cuts the first clip (group), only its value plays."""
+    stub.PlaySound.return_value = audio_pb2.PlaySoundResponse(success=True, duration_seconds=0.7)
+    sleep = GatedSleep()
+    cues = CuePlayer(stub, sleep=sleep)
+    await asyncio.wait_for(cues.announce(Sound.MENU_VOX_LABEL_SENSITIVITY, Sound.MENU_VOX_SENSITIVITY_MEDIUM), 0.2)
+    await asyncio.sleep(0)
+    await asyncio.wait_for(cues.announce(Sound.MENU_VOX_LABEL_TEAMS, Sound.MENU_VOX_ADMINOP_3), 0.2)
+    await asyncio.sleep(0)
+    sleep.gate.set()
+    await asyncio.wait_for(cues.drain(), 0.2)
+    assert played(stub) == [
+        Sound.MENU_VOX_LABEL_SENSITIVITY.value,
+        Sound.MENU_VOX_LABEL_TEAMS.value,
+        Sound.MENU_VOX_ADMINOP_3.value,
+    ]
+    assert {c.args[0].group for c in stub.PlaySound.await_args_list} == {ANNOUNCE_GROUP}
+
+
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-009"])
+async def test_a_failure_cue_still_playing_is_not_stacked(stub):
+    sleep = GatedSleep()
+    cues = CuePlayer(stub, sleep=sleep)
+    for _ in range(3):  # three presses against a dead menu
+        await asyncio.wait_for(cues.failure(), 0.2)
+        await asyncio.sleep(0)
+    sleep.gate.set()
+    await asyncio.wait_for(cues.drain(), 0.2)
+    assert played(stub) == [
+        Sound.SFX_BEEP_LOUD.value,
+        Sound.SFX_BEEP_LOUD.value,
+        Sound.MENU_VOX_STATUS_NO_CONNECTION.value,
+    ]
+
+
+@pytest.mark.uc("UC-015", flow="A4", br=["BR-010"])
+async def test_cancel_all_stops_every_background_cue(stub):
+    stub.PlaySound.return_value = audio_pb2.PlaySoundResponse(success=True, duration_seconds=0.7)
+    sleep = GatedSleep()
+    cues = CuePlayer(stub, sleep=sleep)
+    await asyncio.wait_for(cues.announce(Sound.MENU_VOX_LABEL_TEAMS, Sound.MENU_VOX_ADMINOP_3), 0.2)
+    await asyncio.wait_for(cues.failure(), 0.2)
+    await asyncio.sleep(0)
+    cues.cancel_all()
+    sleep.gate.set()
+    await asyncio.wait_for(cues.drain(), 0.2)
+    assert Sound.MENU_VOX_ADMINOP_3.value not in played(stub)
+    assert Sound.MENU_VOX_STATUS_NO_CONNECTION.value not in played(stub)
+
+
+@pytest.mark.uc("UC-015", br=["BR-009"])
+async def test_a_failed_cue_sequence_is_logged(stub, caplog):
+    cues = CuePlayer(stub, sleep=AsyncMock(side_effect=RuntimeError("boom")))
+    stub.PlaySound.return_value = audio_pb2.PlaySoundResponse(success=True, duration_seconds=0.5)
+    await cues.announce(Sound.MENU_VOX_LABEL_TEAMS, Sound.MENU_VOX_ADMINOP_3)
+    await asyncio.wait_for(cues.drain(), 0.2)
+    assert "Pad cue sequence failed" in caplog.text
