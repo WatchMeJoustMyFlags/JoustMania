@@ -1022,6 +1022,9 @@ class BaseGameMode(ABC):
         # The mode the latch read, reused by the grant that triggered the latch, so
         # that grant reads shield.activation once (flags.md §4: one read per grant).
         self._shield_mode_at_latch: str | None = None
+        # The mode a non-hold game latched (instant or trigger): a mid-game `hold`
+        # read maps back to it, so a running game keeps its mode (UC-040 BR-027).
+        self._shield_mode_at_start: str = SHIELD_ACTIVATION_INSTANT
 
         # Settings - sensitivity is now passed via StartGameConfig.
         #
@@ -3123,7 +3126,8 @@ class BaseGameMode(ABC):
         Only an allow-listed mode (``SHIELD_TRIGGER_ALLOWED``, Free-for-All) and
         only a real game reads the flag; every other game is instant. A game
         latched to hold stays hold; otherwise the flag is read per grant, never per
-        frame, and a ``hold`` read in a game not latched to hold is ``instant``.
+        frame, and a ``hold`` read in a game not latched to hold gives the mode the
+        game latched at its start (``instant`` or ``trigger``).
         """
         if self._shield_hold is not None:
             return SHIELD_ACTIVATION_HOLD
@@ -3133,7 +3137,8 @@ class BaseGameMode(ABC):
         value = read_string_flag("game", "shield.activation", DEFAULT_SHIELD_ACTIVATION, game_id=self.game_id)
         mode = resolve_shield_activation(value)
         if mode == SHIELD_ACTIVATION_HOLD and self._shield_hold_latched:
-            return SHIELD_ACTIVATION_INSTANT  # BR-027: the game was not latched to hold
+            # BR-027: a game not latched to hold keeps the mode it latched at its start.
+            return self._shield_mode_at_start
         return mode
 
     def _read_charge_expiry(self) -> float:
@@ -3376,6 +3381,7 @@ class BaseGameMode(ABC):
         self._shield_hold_latched = True
         if mode != SHIELD_ACTIVATION_HOLD:
             self._shield_mode_at_latch = mode
+            self._shield_mode_at_start = mode
             return None
         raw = {
             "shield.energy_max_seconds": read_float_flag(

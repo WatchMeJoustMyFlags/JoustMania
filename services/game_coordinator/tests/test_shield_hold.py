@@ -15,7 +15,7 @@ import contextlib
 import random
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
 from opentelemetry.trace import Span
@@ -754,8 +754,8 @@ class TestUC040BR027Latch:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", br=["BR-027", "BR-019"])
-    async def test_hold_read_in_a_game_not_latched_to_hold_is_instant(self, clock, flags, events):
-        flags.values["shield.activation"] = "trigger"
+    async def test_hold_read_in_a_game_latched_to_instant_stays_instant(self, clock, flags, events):
+        flags.values["shield.activation"] = "instant"
         g = _make_ffa(events)
         latch(g, clock)
         assert g._shield_hold is None
@@ -764,6 +764,19 @@ class TestUC040BR027Latch:
             assert await g.grant_shield("p1", 4.0) is True
         assert g.players["p1"].grace_until == pytest.approx(clock.t + 4.0)
         assert g.players["p1"].shield_charge_seconds == 0.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", br=["BR-027", "BR-019"])
+    async def test_hold_read_in_a_game_latched_to_trigger_keeps_trigger(self, clock, flags, events):
+        """BR-027: a running trigger game keeps trigger when the flag flips to hold mid-game."""
+        flags.values["shield.activation"] = "trigger"
+        g = _make_ffa(events)
+        latch(g, clock)
+        flags.values["shield.activation"] = "hold"
+        with patch.object(g, "_play_sound", new_callable=AsyncMock):
+            assert await g.grant_shield("p1", 4.0) is True
+        assert g.players["p1"].shield_charge_seconds == 4.0
+        assert g.players["p1"].grace_until == 0.0
 
     @pytest.mark.uc("UC-040", br=["BR-019"])
     def test_hold_is_a_free_for_all_allow_list(self):
@@ -808,8 +821,7 @@ class TestUC040BR027Latch:
     async def test_hold_frames_await_nothing(self, game, clock):
         """BR-008: the frame path sends nothing for a hold transition (no stream write, no sound)."""
         fill(game, "p1", 3.0)
-        stream = MagicMock()
-        stream.write = AsyncMock()
+        stream = create_autospec(RecordingStream, instance=True, spec_set=True)
         game.gameplay_stream = stream
         await arm(game, clock)
         for pressed in (True, True, False, True, False):
