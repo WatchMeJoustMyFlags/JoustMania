@@ -24,6 +24,7 @@ sensitivity, thresholds, loop Hz, mode) and removes only its own series (FR-041)
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import threading
 import time
@@ -83,6 +84,12 @@ def completed_game_outcome(game) -> str:
 
 # How often game_duration_seconds is refreshed while a game is RUNNING (#1305).
 DURATION_GAUGE_INTERVAL_S = 1.0
+
+# UC-027 step 3: a force-end waits up to this long for the game loop, in total:
+# for the loop to take the mode's force_end (#2149) and then for its thread to finish.
+FORCE_END_WAIT_S = 2.0
+# How often that wait checks whether the game loop closed or its thread ended.
+FORCE_END_POLL_S = 0.05
 
 # Retire keeps a game's zeroed series for this many metric export intervals
 # before it removes them (#1311): the agent detects a game's end only from a
@@ -798,9 +805,10 @@ class GameSession:
             current_game = self.current_game
             game_thread = self.game_thread
 
+        deadline = time.monotonic() + FORCE_END_WAIT_S
         if current_game and hasattr(current_game, "force_end"):
             try:
-                current_game.force_end(reason)
+                await self._force_end_on_game_loop(current_game, reason, FORCE_END_WAIT_S)
             except Exception:
                 with self._state_lock:
                     self._force_ending = False
@@ -809,7 +817,8 @@ class GameSession:
         # Join in executor to avoid blocking the gRPC server.
         if game_thread and game_thread.is_alive():
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: game_thread.join(timeout=2.0))
+            join_timeout = max(0.0, deadline - time.monotonic())
+            await loop.run_in_executor(None, lambda: game_thread.join(timeout=join_timeout))
 
         with self._state_lock:
             self.game_state = game_coordinator_pb2.GameState.ENDED
@@ -821,6 +830,103 @@ class GameSession:
 
         logger.info(f"Force ended game {self.game_id}: {reason}")
         return True, ""
+
+    async def _force_end_on_game_loop(self, game, reason: str, timeout_s: float) -> None:
+        """Apply the mode's ``force_end`` on the game's own loop (UC-027 step 3, #2149).
+
+        The game loop is the only thread that reads ``running`` and
+        ``force_end_reason`` (the kill gate, the win check), so applying the
+        force-end there makes it atomic with the kill path: it lands before a
+        kill's gate check (the kill is declined) or after its bookkeeping, never
+        in between. Only the force-end pays for this; the frame path is unchanged.
+
+        Applied directly only when provably no game code runs any more: the loop
+        is absent, closed or not running, or (while waiting) the loop closed or
+        the game thread ended with the callback still queued. A loop that is alive
+        but does not take it within ``timeout_s`` keeps it queued and applies it
+        when it runs again; the caller goes on with the join and the end. A claim
+        makes sure it is applied once. The mode's exception reaches a caller that
+        still waits, and is logged otherwise.
+        """
+        game_loop = self.game_loop
+        game_thread = self.game_thread
+        claim_lock = threading.Lock()
+        claimed = False
+
+        def claim() -> bool:
+            nonlocal claimed
+            with claim_lock:
+                if claimed:
+                    return False
+                claimed = True
+                return True
+
+        def apply_directly() -> None:
+            if claim():
+                game.force_end(reason)
+
+        try:
+            servicer_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            servicer_loop = None
+        if game_loop is None or game_loop is servicer_loop or game_loop.is_closed() or not game_loop.is_running():
+            apply_directly()
+            return
+
+        done: concurrent.futures.Future[None] = concurrent.futures.Future()
+
+        def apply_on_game_loop() -> None:
+            if not claim():
+                return
+            try:
+                game.force_end(reason)
+            except BaseException as exc:
+                try:
+                    done.set_exception(exc)  # handed to the caller, not lost on the loop
+                except concurrent.futures.InvalidStateError:
+                    logger.error(
+                        f"Mode force_end of {self.game_id} failed after the caller stopped waiting", exc_info=exc
+                    )
+            else:
+                with suppress(concurrent.futures.InvalidStateError):
+                    done.set_result(None)
+
+        def game_loop_gone() -> bool:
+            return game_loop.is_closed() or (game_thread is not None and not game_thread.is_alive())
+
+        try:
+            game_loop.call_soon_threadsafe(apply_on_game_loop)
+        except RuntimeError:  # closed after the check above
+            apply_directly()
+            return
+
+        waiter = asyncio.wrap_future(done)
+        deadline = time.monotonic() + timeout_s
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    if done.done():  # taken in the last moment: surface its result
+                        done.result()
+                        return
+                    logger.warning(
+                        f"Game loop of {self.game_id} did not take the force-end within {timeout_s}s; "
+                        "it stays queued and applies when the loop runs again"
+                    )
+                    return
+                finished, _ = await asyncio.wait({waiter}, timeout=min(FORCE_END_POLL_S, remaining))
+                if finished:
+                    waiter.result()  # the mode's exception, if any
+                    return
+                if game_loop_gone():
+                    # The queued callback will never run: no game code runs any more.
+                    apply_directly()
+                    return
+        finally:
+            # Stop waiting now, not on a later loop turn: a late failure of the
+            # queued force_end is then logged above, never routed to a dead waiter.
+            done.cancel()
+            waiter.cancel()
 
     async def join_thread(self, join_timeout_s: float = 2.0) -> None:
         """Join this session's game thread (used on servicer shutdown)."""

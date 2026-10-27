@@ -774,7 +774,7 @@ class TournamentGame(BaseGameMode):
         kill, the time limit, a walkover), so a force-end that lands afterwards
         keeps the champion, and one that landed before it (``running`` already
         False) latches none (BR-003). The outcome is latched first and checked
-        again: a force-end from the servicer thread can land between the running
+        again (defensive): a force-end could land between the running
         check and the latch, and then no champion may be set or announced.
         Returns whether it latched.
         """

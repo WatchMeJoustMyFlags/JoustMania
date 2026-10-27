@@ -4026,10 +4026,11 @@ class BaseGameMode(ABC):
     def _kill_gate_open(self, serial: str) -> bool:
         """The kill path's gate: closed for every mode once the game is force-ended, else the mode's gate.
 
-        A force-end (UC-027) runs on the servicer thread and can land while the game
-        thread is still in a frame: the frame's later kills, and a kill awaiting its
-        explosion, then count nothing, in every mode (UC-030 step 9, UC-020 BR-003;
-        #2033). Checked only when a kill is attempted, so it costs nothing per frame.
+        A force-end (UC-027) can land while the game is still in a frame: the frame's
+        later kills, and a kill awaiting its explosion, then count nothing, in every
+        mode (UC-030 step 9, UC-020 BR-003; #2033). The session applies it on this
+        game's loop (#2149), so it never lands between this check and the bookkeeping
+        after it. Checked only when a kill is attempted, so it costs nothing per frame.
         """
         return self.force_end_reason is None and self._accepts_kill(serial)
 
@@ -4199,7 +4200,8 @@ class BaseGameMode(ABC):
         """Force the game to end (called externally).
 
         Records the reason so the game's outcome is ``force_ended`` (UC-020 BR-003,
-        #1328), never a winner or a set of victories.
+        #1328), never a winner or a set of victories. ``GameSession.force_end`` calls
+        it on the game's own loop while that loop runs (#2149).
         """
         logger.info(f"Force ending game... (reason: {reason or 'unspecified'})")
         self.force_end_reason = reason or "unspecified"
