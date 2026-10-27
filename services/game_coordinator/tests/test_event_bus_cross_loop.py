@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from opentelemetry.trace import INVALID_SPAN_CONTEXT
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -283,3 +284,63 @@ async def test_servicer_starts_new_primary_game_after_force_end_on_real_threads(
 
         resp = await servicer.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest(reason="cleanup"), None)
         assert resp.success, resp.error
+
+
+async def _publish_from_game_thread(bus: EventBus, events: list[str]) -> None:
+    """Publish ``events`` in order from a game thread's own loop, then let the main loop deliver them."""
+
+    async def _game_publish():
+        for event_type in events:
+            await bus.publish(event_type, {"serial": "p1"})
+
+    thread, outcome = _run_on_own_loop(_game_publish)
+    await asyncio.get_running_loop().run_in_executor(None, lambda: thread.join(timeout=5.0))
+    assert outcome["error"] is None
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.uc("UC-035", br=["BR-008"])
+@pytest.mark.asyncio
+async def test_a_half_full_queue_drops_the_energy_event_on_its_own_loop_but_never_a_death():
+    """UC-035 BR-008: `player_shield_energy` is dropped in `_deliver` once the queue is half full; deaths are not."""
+    bus = EventBus()
+    queue = await bus.subscribe("dashboard", max_queue_size=10)
+    with patch("services.game_coordinator.event_bus.metrics.event_bus_publish_drops_total") as drops:
+        await _publish_from_game_thread(bus, [GameEvent.PLAYER_SHIELD_ENERGY] * 3)
+        assert queue.qsize() == 3  # below half: delivered
+
+        await _publish_from_game_thread(
+            bus,
+            [GameEvent.PLAYER_DEATH, GameEvent.PLAYER_DEATH, GameEvent.PLAYER_SHIELD_ENERGY, GameEvent.PLAYER_DEATH],
+        )
+
+    delivered = [queue.get_nowait().event_type for _ in range(queue.qsize())]
+    assert delivered == ["player_shield_energy"] * 3 + ["player_death"] * 3
+    drops.labels.assert_called_once_with(event_type="player_shield_energy")
+
+
+@pytest.mark.uc("UC-035", br=["BR-008"])
+@pytest.mark.asyncio
+async def test_the_energy_event_records_no_span_event():
+    """UC-035 BR-008: an energy event adds no span event (the span event limit stays for real events)."""
+    bus = EventBus()
+    span = _RecordingSpan()
+    with patch("services.game_coordinator.event_bus.trace.get_current_span", return_value=span):
+        await bus.publish(GameEvent.PLAYER_SHIELD_ENERGY, {"serial": "p1"})
+        await bus.publish(GameEvent.PLAYER_DEATH, {"serial": "p1"})
+    assert span.events == ["player_death"]
+
+
+class _RecordingSpan:
+    def __init__(self):
+        self.events: list[str] = []
+
+    def is_recording(self) -> bool:
+        return True
+
+    def add_event(self, name, attributes=None):  # noqa: ARG002 - span API
+        self.events.append(str(name))
+
+    def get_span_context(self):
+        return INVALID_SPAN_CONTEXT

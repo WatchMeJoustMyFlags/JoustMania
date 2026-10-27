@@ -1068,6 +1068,8 @@ class BaseGameMode(ABC):
         self._hold_layer_sent: dict[str, float] = {}
         self._hold_commands_sent: set[str] = set()  # any hold command sent (ended at game end)
         self._hold_sound_at: dict[str, float] = {}
+        # Serials granted energy since their last player_shield_energy event (source=agent, UC-035 BR-008).
+        self._hold_granted_pending: set[str] = set()
         # Set at the game end (and error teardown): no hold command after SHIELD 0 (UC-040 BR-026).
         self._hold_feedback_stopped = False
 
@@ -3750,13 +3752,73 @@ class BaseGameMode(ABC):
             await wakeup.wait()
             wakeup.clear()
             pending, self._hold_feedback_pending = self._hold_feedback_pending, {}
+            granted, self._hold_granted_pending = self._hold_granted_pending, set()
             for serial, cue in pending.items():
+                await self._publish_hold_energy(serial, serial in granted)
                 try:
                     await self._send_hold_feedback(serial, cue)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     logger.warning(f"Hold feedback for {serial} failed (hold state unaffected): {e}")
+
+    def _hold_energy_event(self, player: "Player", now: float, granted: bool) -> dict[str, str]:
+        """The ``player_shield_energy`` payload of a player now (UC-035 BR-008, telemetry.md §5).
+
+        Relative values only (no timestamp): the dashboard interpolates from its own
+        receipt time with the signed rate, up to ``remaining_ms`` or ``full_ms``.
+        """
+        hold = self._shield_hold
+        energy = self._shield_hold_energy(player, now)
+        budget_left = self._shield_hold_budget_left(player, now)
+        full = min(hold.cap, budget_left)
+        remaining = 0.0
+        rate = 0.0
+        if player.hold_started_at and now < player.hold_until:
+            state, rate, remaining = "active", -1.0, player.hold_until - now
+        elif budget_left < hold.min_burst:
+            state = "exhausted"
+        elif hold.recharge > 0 and player.hold_energy_at and energy < full - 1e-9:
+            state, rate = "recharging", hold.recharge
+        elif energy < hold.min_burst:
+            state = "empty"
+        else:
+            state = "charged"
+        source = "agent" if granted else "recharge" if state == "recharging" else "none"
+
+        def ms(seconds: float) -> str:
+            return str(int(round(seconds * 1000)))
+
+        return {
+            "serial": player.serial,
+            "state": state,
+            "source": source,
+            "energy_ms": ms(energy),
+            "full_ms": ms(full),
+            "cap_ms": ms(hold.cap),
+            "min_burst_ms": ms(hold.min_burst),
+            "budget_ms": ms(hold.budget),
+            "budget_remaining_ms": ms(budget_left),
+            "rate_ms_per_s": ms(rate),
+            "remaining_ms": ms(remaining),
+        }
+
+    async def _publish_hold_energy(self, serial: str, granted: bool) -> None:
+        """Publish a player's ``player_shield_energy`` for the dashboard bar (UC-035 BR-008); best effort.
+
+        Runs in the outbound hold task, never in the frame path. A dead or gone
+        player and an ended game publish nothing: the dashboard clears its bar on
+        ``player_death`` and the game end.
+        """
+        player = self.players.get(serial)
+        if player is None or not player.alive or self._shield_hold is None or self._hold_feedback_stopped:
+            return
+        try:
+            await self.event_publisher(
+                GameEvent.PLAYER_SHIELD_ENERGY, self._hold_energy_event(player, time.time(), granted)
+            )
+        except Exception as e:
+            logger.warning(f"player_shield_energy event for {serial} failed (hold state unaffected): {e}")
 
     def _hold_state_message(self, player: "Player", now: float, cue: int):
         """The ``ShieldHoldState`` of a player now: energy, cap, full level, rate, cue and the latched cue values."""
@@ -3838,6 +3900,7 @@ class BaseGameMode(ABC):
         if task is not None and not task.done():
             task.cancel()
         self._hold_feedback_pending.clear()
+        self._hold_granted_pending.clear()
 
     async def _stop_hold_feedback(self) -> list[str]:
         """Stop the outbound task at game end; returns the serials whose controller got a hold command."""
@@ -3891,6 +3954,7 @@ class BaseGameMode(ABC):
             if player.hold_energy_at:
                 player.hold_energy_at = now
         self._record_agent_shield(player.serial, now, seconds)
+        self._hold_granted_pending.add(player.serial)  # UC-035 BR-008: the next energy event says source=agent
         energy_after = energy + added
         # UC-040 A36 step 4: the grant pattern when the pool is full, one pulse for a top-up.
         self._queue_hold_feedback(player, HOLD_CUE_FULL if energy_after >= full - 1e-9 else HOLD_CUE_TOP_UP)

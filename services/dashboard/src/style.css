@@ -451,6 +451,73 @@ body {
   }
 }
 
+/* Hold-mode shield energy (#2096, UC-035 BR-008): the pool against the cap, a thin
+   budget bar under it, the levels of the controller LED (UC-040 BR-026). */
+.hold-energy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+}
+
+.hold-energy-bar,
+.hold-budget-bar {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.hold-energy-bar {
+  height: 10px;
+}
+
+.hold-budget-bar {
+  height: 3px;
+}
+
+.hold-energy-fill,
+.hold-budget-fill {
+  height: 100%;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.hold-budget-fill {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.hold-energy-text {
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.hold-low .hold-energy-fill {
+  background: var(--accent-warning);
+}
+
+.hold-charged .hold-energy-fill {
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.hold-full .hold-energy-fill {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.hold-active .hold-energy-fill {
+  background: white;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
+}
+
+.hold-active .hold-energy-text {
+  color: white;
+  font-weight: 600;
+}
+
+.hold-exhausted .hold-energy-text {
+  color: var(--accent-primary);
+}
+
 /* Identify a controller (UC-004): button + the controller manager's answer */
 .identify-btn {
   font-size: 0.75rem;

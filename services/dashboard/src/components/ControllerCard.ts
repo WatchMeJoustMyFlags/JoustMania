@@ -7,7 +7,7 @@ import type { ConnectionQuality, GameplayData, RGB } from "../gen/controller_man
 import { accelDotOffset, batteryView, normalizeGameplay, statusView } from "../motion.js";
 import type { StatusView } from "../motion.js";
 import { qualityBadge } from "../quality.js";
-import { shieldBadge } from "../shield.js";
+import { holdEnergyBar, shieldBadge } from "../shield.js";
 import type { ShieldView } from "../shield.js";
 import { controllerClient } from "../client.js";
 import { identifyController } from "../identify.js";
@@ -37,6 +37,10 @@ export class ControllerCard {
   private readonly accelDot: HTMLElement;
   private readonly statusBadge: HTMLElement;
   private readonly shieldElement: HTMLElement;
+  private readonly holdElement: HTMLElement;
+  private readonly holdFill: HTMLElement;
+  private readonly holdBudget: HTMLElement;
+  private readonly holdText: HTMLElement;
   private readonly qualityElement: HTMLElement;
   private readonly identifyButton: HTMLButtonElement;
   private readonly identifyElement: HTMLElement;
@@ -53,6 +57,10 @@ export class ControllerCard {
     this.accelDot = this.element.querySelector(".accel-dot")!;
     this.statusBadge = this.element.querySelector(".status-badge")!;
     this.shieldElement = this.element.querySelector(".shield-badge")!;
+    this.holdElement = this.element.querySelector(".hold-energy")!;
+    this.holdFill = this.element.querySelector(".hold-energy-fill")!;
+    this.holdBudget = this.element.querySelector(".hold-budget-fill")!;
+    this.holdText = this.element.querySelector(".hold-energy-text")!;
     this.qualityElement = this.element.querySelector(".quality-badge")!;
     this.identifyButton = this.element.querySelector(".identify-btn")!;
     this.identifyElement = this.element.querySelector(".identify-status")!;
@@ -111,6 +119,11 @@ export class ControllerCard {
       </div>
       <div class="status-badge connected">Connected</div>
       <div class="shield-badge" hidden></div>
+      <div class="hold-energy" hidden>
+        <div class="hold-energy-bar"><div class="hold-energy-fill"></div></div>
+        <div class="hold-budget-bar"><div class="hold-budget-fill"></div></div>
+        <div class="hold-energy-text"></div>
+      </div>
       <div class="quality-badge" hidden></div>
       <button type="button" class="identify-btn" title="Flash and rumble this controller">Identify</button>
       <div class="identify-status" hidden></div>
@@ -138,6 +151,9 @@ export class ControllerCard {
 
     // Agent shield badge (UC-040 A16)
     this.updateShield(shield, nowMs);
+
+    // Hold-mode energy bar (UC-035 BR-008)
+    this.updateHoldEnergy(shield);
 
     // Connection-quality badge (UC-035 BR-005)
     this.updateQuality(data.connectionQuality);
@@ -171,6 +187,19 @@ export class ControllerCard {
     this.shieldElement.hidden = false;
     this.shieldElement.className = badge.className;
     this.shieldElement.textContent = badge.text;
+  }
+
+  private updateHoldEnergy(shield: ShieldView | null) {
+    const bar = holdEnergyBar(shield);
+    if (!bar) {
+      this.holdElement.hidden = true;
+      return;
+    }
+    this.holdElement.hidden = false;
+    this.holdElement.className = bar.className;
+    this.holdFill.style.width = `${bar.fillPercent}%`;
+    this.holdBudget.style.width = `${bar.budgetPercent}%`;
+    this.holdText.textContent = `${bar.text} · ${bar.label}${bar.source ? ` · ${bar.source}` : ""}`;
   }
 
   private updateQuality(quality: ConnectionQuality | undefined) {

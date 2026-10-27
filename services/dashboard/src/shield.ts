@@ -6,7 +6,8 @@
  * to the LED). This module adds what the colour alone cannot say: that the white
  * is an agent shield, which kind, and how long it has left. It folds the game
  * events `player_shielded`, `player_shield_charged`, `player_shield_charge_ended`,
- * `player_death`, `game_start`, `game_ended` and `game_force_ended` (charge: #1837, UC-040 A30).
+ * `player_death`, `game_start`, `game_ended` and `game_force_ended` (charge: #1837, UC-040 A30),
+ * and in a hold game `player_shield_energy` for the energy bar (#2096, UC-035 BR-008).
  */
 
 export type ShieldKind = "full" | "toughness_boost";
@@ -34,27 +35,152 @@ export interface ChargeState {
   expiresMs: number | null;
 }
 
-/** What a controller holds: a running shield, a waiting charge, or both. */
+/** `state` of a `player_shield_energy` event (telemetry.md §5). */
+export type HoldState = "active" | "charged" | "recharging" | "empty" | "exhausted";
+/** Where the energy came from last: an agent grant or the recharge. */
+export type HoldSource = "agent" | "recharge";
+
+const HOLD_STATES: readonly HoldState[] = ["active", "charged", "recharging", "empty", "exhausted"];
+
+/** The last `player_shield_energy` event of a player, with its monotonic receipt time. */
+export interface HoldEnergyState {
+  state: HoldState;
+  energyMs: number;
+  fullMs: number;
+  capMs: number;
+  minBurstMs: number;
+  budgetMs: number;
+  budgetLeftMs: number;
+  /** Signed: negative while active (draining), positive while recharging. */
+  rateMsPerS: number;
+  /** Time until the running activation ends (0 when idle). */
+  remainingMs: number;
+  source: HoldSource | null;
+  /** `performance.now()` at receipt: never compared with a coordinator time. */
+  atMonoMs: number;
+}
+
+/** The bar's level, as the controller LED shows it (UC-040 BR-026), or `active`. */
+export type HoldLevel = "empty" | "low" | "charged" | "full" | "active";
+
+/** A hold pool at a moment, interpolated from the last event (UC-035 BR-008). */
+export interface HoldEnergyView {
+  level: HoldLevel;
+  /** `state` now: an activation whose time ran out shows the idle state it ended in. */
+  state: HoldState;
+  energyMs: number;
+  capMs: number;
+  budgetMs: number;
+  budgetLeftMs: number;
+  source: HoldSource | null;
+}
+
+/** What a controller holds: a running shield, a waiting charge, a hold pool, or several. */
 export interface ShieldView {
   active: ShieldState | null;
   charge: ChargeState | null;
+  /** The hold pool (hold games only, UC-035 BR-008); absent outside a hold game. */
+  energy?: HoldEnergyView | null;
+}
+
+/** The browser's monotonic clock (UC-035 BR-008: the bar never trusts the wall clock). */
+export function monotonicNowMs(): number {
+  return performance.now();
+}
+
+function parseHoldEnergy(data: { [key: string]: string }, atMonoMs: number, previous: HoldEnergyState | undefined): HoldEnergyState | null {
+  const state = data["state"] as HoldState;
+  if (!HOLD_STATES.includes(state)) return null;
+  const num = (key: string): number => Number(data[key]);
+  const fields = {
+    energyMs: num("energy_ms"),
+    fullMs: num("full_ms"),
+    capMs: num("cap_ms"),
+    minBurstMs: num("min_burst_ms"),
+    budgetMs: num("budget_ms"),
+    budgetLeftMs: num("budget_remaining_ms"),
+    rateMsPerS: num("rate_ms_per_s"),
+    remainingMs: num("remaining_ms"),
+  };
+  if (!Object.values(fields).every(Number.isFinite) || fields.capMs <= 0) return null;
+  const rawSource = data["source"];
+  // "none": keep the marker of the last source (BR-008: "the last source").
+  const source: HoldSource | null =
+    rawSource === "agent" || rawSource === "recharge" ? rawSource : (previous?.source ?? null);
+  return { state, ...fields, source, atMonoMs };
+}
+
+function idleState(energyMs: number, budgetLeftMs: number, minBurstMs: number): HoldState {
+  if (budgetLeftMs < minBurstMs) return "exhausted";
+  return energyMs < minBurstMs ? "empty" : "charged";
+}
+
+/** Interpolate a hold pool to `monoMs` (UC-035 BR-008): linear in the event's rate, clamped. */
+export function holdEnergyView(hold: HoldEnergyState, monoMs: number): HoldEnergyView {
+  const elapsedMs = Math.max(0, monoMs - hold.atMonoMs);
+  let energyMs = hold.energyMs;
+  let budgetLeftMs = hold.budgetLeftMs;
+  let state = hold.state;
+  if (state === "active") {
+    const drainedMs = Math.min(elapsedMs, Math.max(0, hold.remainingMs)) * (Math.abs(hold.rateMsPerS) / 1000);
+    energyMs -= drainedMs;
+    budgetLeftMs -= drainedMs;
+    // The activation ended and no event said so (a dropped one): show the idle state it ended in.
+    if (elapsedMs >= hold.remainingMs) state = idleState(energyMs, budgetLeftMs, hold.minBurstMs);
+  } else if (state === "recharging" && hold.rateMsPerS > 0) {
+    energyMs = Math.min(hold.fullMs, energyMs + (hold.rateMsPerS * elapsedMs) / 1000);
+    if (energyMs >= hold.fullMs) state = idleState(energyMs, budgetLeftMs, hold.minBurstMs);
+  }
+  energyMs = Math.min(hold.capMs, Math.max(0, energyMs));
+  budgetLeftMs = Math.min(hold.budgetMs, Math.max(0, budgetLeftMs));
+  const fullMs = Math.min(hold.capMs, budgetLeftMs);
+  let level: HoldLevel;
+  if (state === "active") level = "active";
+  else if (state === "exhausted" || energyMs < hold.minBurstMs) level = "empty";
+  else if (energyMs >= fullMs - 1) level = "full";
+  else if (energyMs < hold.capMs / 3) level = "low";
+  else level = "charged";
+  return {
+    level,
+    state,
+    energyMs,
+    capMs: hold.capMs,
+    budgetMs: hold.budgetMs,
+    budgetLeftMs,
+    source: hold.source,
+  };
 }
 
 export class ShieldStore {
   private readonly shields = new Map<string, ShieldState>();
   private readonly charges = new Map<string, ChargeState>();
+  private readonly energies = new Map<string, HoldEnergyState>();
 
-  /** Drop every shield and charge (a new game, a reopened event stream). */
+  /** Drop every shield, charge and hold pool (a new game, a reopened event stream). */
   clear(): boolean {
-    const had = this.shields.size > 0 || this.charges.size > 0;
+    const had = this.shields.size > 0 || this.charges.size > 0 || this.energies.size > 0;
     this.shields.clear();
     this.charges.clear();
+    this.energies.clear();
     return had;
   }
 
-  /** Fold one game event; returns true when the shield state changed. */
-  apply(event: GameEventLike, nowMs: number = Date.now()): boolean {
+  /**
+   * Fold one game event; returns true when the shield state changed. `monoMs` is the
+   * receipt time on the monotonic clock, used only for the hold energy (UC-035 BR-008).
+   */
+  apply(event: GameEventLike, nowMs: number = Date.now(), monoMs: number = monotonicNowMs()): boolean {
     switch (event.eventType) {
+      case "player_shield_energy": {
+        const serial = event.data["serial"];
+        if (!serial) return false;
+        const hold = parseHoldEnergy(event.data, monoMs, this.energies.get(serial));
+        if (!hold) return false;
+        this.energies.set(serial, hold);
+        // A hold game shows the bar, never a timed shield badge (UC-040 BR-026).
+        this.shields.delete(serial);
+        return true;
+      }
       case "player_shielded": {
         const serial = event.data["serial"];
         const untilMs = Number(event.data["until_ms"]);
@@ -91,7 +217,8 @@ export class ShieldStore {
         if (!serial) return false;
         const hadShield = this.shields.delete(serial);
         const hadCharge = this.charges.delete(serial);
-        return hadShield || hadCharge;
+        const hadEnergy = this.energies.delete(serial);
+        return hadShield || hadCharge || hadEnergy;
       }
       case "game_start":
       case "game_starting":
@@ -104,8 +231,8 @@ export class ShieldStore {
     }
   }
 
-  /** What a controller holds at `nowMs`, or null (expired entries are dropped). */
-  get(serial: string, nowMs: number): ShieldView | null {
+  /** What a controller holds at `nowMs` (hold energy at `monoMs`), or null (expired entries are dropped). */
+  get(serial: string, nowMs: number, monoMs: number = monotonicNowMs()): ShieldView | null {
     let active: ShieldState | null = this.shields.get(serial) ?? null;
     if (active && active.untilMs <= nowMs) {
       this.shields.delete(serial);
@@ -116,7 +243,9 @@ export class ShieldStore {
       this.charges.delete(serial);
       charge = null;
     }
-    return active || charge ? { active, charge } : null;
+    const hold = this.energies.get(serial);
+    const energy = hold ? holdEnergyView(hold, monoMs) : null;
+    return active || charge || energy ? { active, charge, energy } : null;
   }
 }
 
@@ -152,4 +281,55 @@ export function shieldBadge(view: ShieldView | null, nowMs: number): ShieldBadge
   if (active) return active;
   if (charge) return { text: chargeText(charge, nowMs), className: "shield-badge shield-charged" };
   return null;
+}
+
+export interface HoldEnergyBar {
+  /** CSS classes: `hold-energy hold-<level>`, plus `hold-recharging` / `hold-exhausted`. */
+  className: string;
+  /** Energy against the cap, 0-100. */
+  fillPercent: number;
+  /** Budget remaining against the budget, 0-100. */
+  budgetPercent: number;
+  /** E.g. "Hold 2.4s/5s · budget 9.1s". */
+  text: string;
+  /** The state word, e.g. "active", "recharging", "budget used up". */
+  label: string;
+  /** The last source marker: "agent", "recharge" or "". */
+  source: string;
+}
+
+const HOLD_LABELS: Record<HoldLevel, string> = {
+  empty: "empty",
+  low: "low",
+  charged: "charged",
+  full: "full",
+  active: "active",
+};
+
+function seconds(ms: number): string {
+  const s = ms / 1000;
+  return Number.isInteger(s) ? `${s}` : s.toFixed(1);
+}
+
+/** What a tile shows for a hold pool (UC-035 BR-008); null when the controller has none. */
+export function holdEnergyBar(view: ShieldView | null): HoldEnergyBar | null {
+  const energy = view?.energy;
+  if (!energy) return null;
+  const classes = ["hold-energy", `hold-${energy.level}`];
+  let label = HOLD_LABELS[energy.level];
+  if (energy.state === "recharging") {
+    classes.push("hold-recharging");
+    label = "recharging";
+  } else if (energy.state === "exhausted") {
+    classes.push("hold-exhausted");
+    label = "budget used up";
+  }
+  return {
+    className: classes.join(" "),
+    fillPercent: Math.round((energy.energyMs / energy.capMs) * 100),
+    budgetPercent: energy.budgetMs > 0 ? Math.round((energy.budgetLeftMs / energy.budgetMs) * 100) : 0,
+    text: `Hold ${(energy.energyMs / 1000).toFixed(1)}s/${seconds(energy.capMs)}s · budget ${(energy.budgetLeftMs / 1000).toFixed(1)}s`,
+    label,
+    source: energy.source ?? "",
+  };
 }

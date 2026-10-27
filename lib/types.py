@@ -396,6 +396,7 @@ class GameEvent(StrEnum):
     PLAYER_SHIELDED = "player_shielded"  # Agent shield feedback started (#1301, UC-040 A16)
     PLAYER_SHIELD_CHARGED = "player_shield_charged"  # Shield charge granted (#1837, UC-040 A30)
     PLAYER_SHIELD_CHARGE_ENDED = "player_shield_charge_ended"  # Charge used or dropped (#1837, UC-040 A32, UC-030 A6)
+    PLAYER_SHIELD_ENERGY = "player_shield_energy"  # Hold pool state for the dashboard bar (#2096, UC-035 BR-008)
 
     # Game phase events
     COUNTDOWN_START = "countdown_start"
