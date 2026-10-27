@@ -298,6 +298,22 @@ echo '# older' >>"${CASE}/hotspot-helper"
 expect hotspot-stale 0 ok
 grep -q "^INFO hotspot helper: .* differs from this checkout; update it with: sudo .*install_hotspot.sh" "${CASE}/out.log" ||
   fail "hotspot-stale: stale helper not named"
+# unreadable files get their own message, never "format unknown" or "differs"
+if [[ "$(id -u)" != 0 ]]; then
+  hotspot_case hotspot-unreadable $'format=1\nstate=on\n'
+  chmod 000 "${CASE}/hotspot-status"
+  expect hotspot-unreadable 0 ok
+  grep -q "^INFO hotspot: ${CASE}/hotspot-status is not readable by" "${CASE}/out.log" || fail "hotspot-unreadable: line: $(grep hotspot "${CASE}/out.log")"
+  grep -q "format .* unknown" "${CASE}/out.log" && fail "hotspot-unreadable: reported as an unknown format"
+  hotspot_case hotspot-helper-unreadable $'format=1\nstate=off\nreason=eth0 connected\n'
+  chmod 000 "${CASE}/hotspot-helper"
+  expect hotspot-helper-unreadable 0 ok
+  grep -q "^INFO hotspot helper: ${CASE}/hotspot-helper is not readable; cannot compare it" "${CASE}/out.log" ||
+    fail "hotspot-helper-unreadable: line: $(grep hotspot "${CASE}/out.log")"
+  grep -q "differs from this checkout" "${CASE}/out.log" && fail "hotspot-helper-unreadable: reported as differing"
+  chmod 600 "${CASE}/hotspot-status" "${CASE}/hotspot-helper"
+fi
+
 if [[ "${fails}" -ne 0 ]]; then
   exit 1
 fi

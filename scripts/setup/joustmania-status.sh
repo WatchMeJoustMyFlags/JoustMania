@@ -189,6 +189,8 @@ hotspot_line() {
     fi
     if [[ ! -f "$HOTSPOT_STATUS" || -L "$HOTSPOT_STATUS" ]]; then
         report INFO "hotspot: no check ran since boot (the timer runs 30 s after boot; journalctl -u joustmania-hotspot -b)"
+    elif [[ ! -r "$HOTSPOT_STATUS" ]]; then
+        report INFO "hotspot: $HOTSPOT_STATUS is not readable by $(id -un 2>/dev/null || echo this user) (the helper writes it 0644; check its mode)"
     else
         # key=value written by the root helper; only known keys, printable, bounded
         while IFS= read -r line; do
@@ -214,7 +216,9 @@ hotspot_line() {
             esac
         fi
     fi
-    if ! cmp -s "$HOTSPOT_HELPER" "$SCRIPT_DIR/joustmania-hotspot.sh"; then
+    if [[ ! -r "$HOTSPOT_HELPER" ]]; then
+        report INFO "hotspot helper: $HOTSPOT_HELPER is not readable; cannot compare it with this checkout (it is installed 0755)"
+    elif ! cmp -s "$HOTSPOT_HELPER" "$SCRIPT_DIR/joustmania-hotspot.sh"; then
         report INFO "hotspot helper: $HOTSPOT_HELPER differs from this checkout; update it with: $setup"
     fi
 }
