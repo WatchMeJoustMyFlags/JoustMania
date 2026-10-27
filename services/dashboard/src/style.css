@@ -1463,3 +1463,25 @@ body {
 .unpair-result.failed {
   color: #e66;
 }
+
+/* HCI adapter per controller and the per-adapter counts (UC-035 BR-009) */
+.adapter-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  margin-top: 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  cursor: help;
+}
+
+.adapter-badge.stale,
+.adapter-counts.stale {
+  opacity: 0.55;
+}
+
+.adapter-counts {
+  font-size: 0.8rem;
+  margin-bottom: 8px;
+  opacity: 0.85;
+}
