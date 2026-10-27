@@ -540,8 +540,8 @@ The infra loop is not gated by the `enabled` kill switch, only by
 Stage values: `decision.backend=rules` (the session start; beat 2 flips to
 `jev`), `decision.jev.act_confidence_threshold=gate` (0.6, Jev's calibrated
 bar), `decision.act_confidence_threshold=default` (0.8, claude/openai),
-`decision.min_interval_ms=default` (3000 ms), `decision.claude.timeout_ms=default`
-(5000 ms; `patient` = 8000 only if rehearsal says so), `decision.jev.timeout_ms=default`
+`decision.min_interval_ms=default` (3000 ms), `decision.claude.timeout_ms=patient`
+(8000 ms, #2123: covers cold Claude calls), `decision.jev.timeout_ms=default`
 (2500 ms), `llm.max_requests_per_minute=stage` (30/min; the flag sets the budget, a set
 `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` can only lower it), `decision.capture_content=on`, `enabled=on`, `experiments_enabled=off`,
 `interventions_allowed=standard` (all of it: `./scripts/talk-stage.sh reset`).
@@ -596,7 +596,7 @@ minute) stays far away. The shipped default stays 2.
 an interrupted permissions beat for `none` / `probe`,
 `rollout_enabled=off`, `experiments_enabled=off`, `decision.backend=rules`,
 both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`
-`default`, claude model `haiku`, `decision.claude.timeout_ms` and
+`default`, claude model `haiku`, `decision.claude.timeout_ms` `patient`,
 `decision.jev.timeout_ms` `default`, `llm.eligible_game_kinds=real_only`,
 `decision.jev.base_url` not left on `blackhole` and the `blackhole` variant
 present). It
@@ -644,7 +644,7 @@ first step above prevents that; the pre-flight WARN names the persisted backend.
 | `~~jev~~ -> rules` with `timeout` or `error` on every row | Jev unreachable or slow from the venue (network, TypeSafe outage, 401 / 429 / 5xx; `error.type` says which) | `error.type` and `decide.latency_ms` on the span | **`backend.sh claude`** (the manual backup; there is no automatic jev -> claude chain). Rules already covered every cycle, so the game never stalled: say so. Try `backend.sh jev` again later |
 | `~~claude~~ -> rules`, `backend_unavailable` | `ANTHROPIC_API_KEY` missing | `talk-preflight.sh` key section | Add it to `.env.local`, recreate the agent; on stage go back to `backend.sh jev` |
 | `fallback_reason=llm_budget_exhausted` after a minute of remote decisions | Global budget spent (decisions + summaries share it); baseline not applied | `talk-preflight.sh` budget line | `setflag agent llm.max_requests_per_minute stage` (live; the flag sets the budget). If `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` is set below 30 it caps the flag: raising it needs an agent recreate, the only live lever is `setflag agent decision.min_interval_ms slow` (10 s cadence) |
-| `fallback_reason=timeout` on Claude | Slow venue network or slow model (`decision.claude.timeout_ms` default 5000 ms; Haiku warm about 2.7-3.0 s, Sonnet about 2.85 s) | `decide.latency_ms` on earlier rows | `setflag agent decision.claude.timeout_ms patient` (8000 ms); stay on haiku; or back to `backend.sh jev` |
+| `fallback_reason=timeout` on Claude | Slow venue network or slow model (`decision.claude.timeout_ms` stage baseline `patient` 8000 ms since #2123, shipped default 5000 ms; Haiku warm about 2.7-3.0 s, Sonnet about 2.85 s) | `decide.latency_ms` on earlier rows; `decision.claude.timeout_ms` still at `patient` | `setflag agent decision.claude.timeout_ms patient` if it drifted; stay on haiku; or back to `backend.sh jev` |
 | Jev never acts in beat 2 | The game is calm (gate p_yes below 0.6) | `jev.gate.p_yes` on the stage-1 chat span | Push the players to the edge / let eliminations pile up (mock: `demo_driver.py --scenario death_cascade`); if `jev-latest` changed, `backend.sh jev pinned`. Do not lower the bar on stage unless you say why |
 | `held` never appears in 3a | No open gate during the beat (calm play gives `noop`, not `held`) | `decide.outcome` on recent rows | Keep players near the threshold; narrate the evaluation event of a captured held trace |
 | Beat 8: no `agent.llm.retro` span at all | The budget was full at game end: the retro is gated before any span is created | `docker compose logs agent \| grep agent.llm.retro_gated` (`fallback_reason=llm_budget_exhausted`) | `setflag agent llm.max_requests_per_minute stage` (an env ceiling below 30 must be raised or unset first); show the summary of an earlier game or a captured trace |
