@@ -3,7 +3,7 @@ Unit tests for extracted helper methods from cognitive complexity refactoring.
 
 Tests cover:
 - SoundChannel._wait_for_playback
-- AudioServiceServicer._scan_directory_for_sounds
+- sound_catalog.scan_directory
 - AudioServiceServicer._register_sound
 - AudioServiceServicer._resolve_simple_name
 - AudioServiceServicer._resolve_vox_path
@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from services.audio import sound_catalog
 from services.audio.servicer import SoundChannel
 
 
@@ -62,7 +63,7 @@ class TestWaitForPlayback:
 
 
 class TestScanDirectoryForSounds:
-    """Tests for AudioServiceServicer._scan_directory_for_sounds."""
+    """Tests for sound_catalog.scan_directory."""
 
     @pytest.fixture
     def servicer(self, mock_audio_servicer):
@@ -71,7 +72,7 @@ class TestScanDirectoryForSounds:
     def test_nonexistent_directory_is_skipped(self, servicer):
         """Non-existent directory adds nothing to registry."""
         initial_count = len(servicer.sound_registry)
-        servicer._scan_directory_for_sounds(Path("/nonexistent/path"), "vox", "Test")
+        sound_catalog.scan_directory(servicer.sound_registry, Path("/nonexistent/path"), "vox", "Test")
         assert len(servicer.sound_registry) == initial_count
 
     def test_scans_ogg_files(self, servicer, tmp_path):
@@ -81,7 +82,7 @@ class TestScanDirectoryForSounds:
         (tmp_path / "test_sound_b.ogg").touch()
         (tmp_path / "not_audio.txt").touch()  # Should be ignored
 
-        servicer._scan_directory_for_sounds(tmp_path, "sound", "TestDir")
+        sound_catalog.scan_directory(servicer.sound_registry, tmp_path, "sound", "TestDir")
 
         assert "test_sound_a" in servicer.sound_registry
         assert "test_sound_b" in servicer.sound_registry
@@ -91,7 +92,7 @@ class TestScanDirectoryForSounds:
         """Registered entries have correct type and base_dir."""
         (tmp_path / "mysound.ogg").touch()
 
-        servicer._scan_directory_for_sounds(tmp_path, "vox", "Zombie")
+        sound_catalog.scan_directory(servicer.sound_registry, tmp_path, "vox", "Zombie")
 
         sound_type, base_dir = servicer.sound_registry["mysound"]
         assert sound_type == "vox"

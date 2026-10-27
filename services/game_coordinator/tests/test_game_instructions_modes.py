@@ -3,8 +3,9 @@
 With ``game_instructions`` on, each mode plays its own recording before the
 countdown: Teams and Random Teams (UC-021 A3), Traitor and Werewolf (UC-022 A3),
 Zombies (UC-023 A2), Swapper (UC-024 A2), Tournament and Fight Club (UC-025 A5).
-Non-Stop Joust has no recording (UC-026 A3). Fight Club's line exists in the ivy
-voice only, so it plays the ivy file whatever ``menu_voice`` is.
+Non-Stop Joust has no recording (UC-026 A3). Fight Club's line is
+recorded in ivy only; its plain id follows ``menu_voice`` and the audio service
+falls back to the partner profile (#2164).
 
 The modes with their own ``run()`` (Werewolf, Zombies, Fight Club, Tournament)
 play the clip after their intro, while the stream is drained, and before the
@@ -97,7 +98,7 @@ MODE_CLIPS = [
     ),
     pytest.param(
         FightClubGame,
-        "Menu/vox/ivy/Fightclub-instructions.ogg",
+        "Fightclub-instructions",
         id="fight_club",
         marks=pytest.mark.uc("UC-025", flow="A5", steps=[1]),
     ),
@@ -153,22 +154,23 @@ async def test_mode_plays_its_own_clip(mode_cls, clip):
 
 @pytest.mark.parametrize(("mode_cls", "clip"), MODE_CLIPS)
 def test_clip_file_exists_in_every_voice_it_plays_in(mode_cls, clip):
-    """Each clip resolves to a recording in aaron and ivy; Fight Club's pins the ivy file."""
+    """Each clip resolves to a recording under every voice (Fight Club via the partner fallback)."""
     resolved = _game(mode_cls, None).get_instruction_clip()
     assert getattr(resolved, "value", resolved) == clip
-    if "/" in clip:
-        # A full path with a voice folder: the audio service plays it as-is (no menu_voice).
-        assert clip.startswith("Menu/vox/ivy/"), clip
-        assert (ASSETS_DIR / clip).is_file(), clip
-    else:
-        for voice in ("aaron", "ivy"):
-            assert (ASSETS_DIR / "Menu" / "vox" / voice / f"{clip}.ogg").is_file(), (voice, clip)
+    assert "/" not in clip, clip
+    from services.audio import sound_catalog
+
+    registry = sound_catalog.build_sound_registry(ASSETS_DIR)
+    profiles = sound_catalog.load_voice_profiles(ASSETS_DIR)
+    for voice in profiles.names:
+        path = sound_catalog.relative_path(registry, clip, voice=voice, profiles=profiles, assets_dir=ASSETS_DIR)
+        assert path is not None and (ASSETS_DIR / path).is_file(), (voice, clip)
 
 
 @pytest.mark.uc("UC-025", flow="A5", steps=[1])
-def test_fight_club_clip_is_the_ivy_recording_because_aaron_has_none():
-    """Fight Club's line is ivy only: a menu_voice path would play silence for aaron."""
-    assert FIGHT_CLUB_INSTRUCTIONS == "Menu/vox/ivy/Fightclub-instructions.ogg"
+def test_fight_club_clip_is_the_plain_id_so_it_follows_menu_voice():
+    """The plain id follows menu_voice; aaron has no recording and plays its partner's (#2164)."""
+    assert FIGHT_CLUB_INSTRUCTIONS == "Fightclub-instructions"
     assert not (ASSETS_DIR / "Menu/vox/aaron/Fightclub-instructions.ogg").exists()
 
 
@@ -214,7 +216,7 @@ CUSTOM_RUN_MODES = [
     ),
     pytest.param(
         FightClubGame,
-        "Menu/vox/ivy/Fightclub-instructions.ogg",
+        "Fightclub-instructions",
         id="fight_club",
         marks=pytest.mark.uc("UC-025", flow="A5", steps=[1, 2]),
     ),

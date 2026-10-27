@@ -11,9 +11,13 @@ disable_telemetry_for_tests()
 disable_metrics_for_tests()
 disable_logging_for_tests()
 
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+PACKAGED_ASSETS = Path(__file__).parent.parent / "assets"
 
 
 class MockGrpcContext:
@@ -45,7 +49,10 @@ def mock_audio_servicer():
     from services.audio.servicer import AudioServiceServicer
 
     # Bypass flagd lookup at init: return False so AudioManager uses silent=True (no hardware).
-    with patch.object(AudioServiceServicer, "_load_play_audio_flag", return_value=False):
+    with (
+        patch.object(AudioServiceServicer, "_load_play_audio_flag", return_value=False),
+        patch.dict(os.environ, {"AUDIO_ASSETS_DIR": str(PACKAGED_ASSETS)}),
+    ):
         servicer = AudioServiceServicer()
     # Enable audio at the servicer level so RPCs execute their full logic.
     servicer.audio_enabled = True
