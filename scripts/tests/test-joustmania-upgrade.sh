@@ -477,6 +477,30 @@ upgrade --status || fail "double-cutoff: --status failed after the repair"
 grep -qE 'neither recorded version|was cut off' "${CASE}/out.log" && fail "double-cutoff: --status still warns after the repair"
 upgrade --rollback || fail "double-cutoff: --rollback after the repair failed: $(tail -2 "${CASE}/out.log")"
 [[ "$(head_of)" == "${C_V1}" ]] || fail "double-cutoff: --rollback did not return to 1.0.0"
+# Same, but the rollback was cut off during the RESTART (2nd record write: current
+# is the rollback target 1.0.0, previous the failed 1.1.0): the repair keeps 1.0.0
+make_case double-cutoff-restart "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "double-cutoff-restart: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/kill-on-restart"
+upgrade_killed --rollback
+[[ "$(rel rollback_to)" == "${C_V1}" && "$(rel current_ref)" == "${C_V1}" && "$(head_of)" == "${C_V1}" ]] || fail "double-cutoff-restart: setup"
+g -C "${REPO}" checkout -q --detach "${C_MAIN}"
+printf '%s:%s\n%s:%s\n' "${GC}" "${C_MAIN}" "${AG}" "${C_MAIN}" >>"${CASE}/images.local"
+upgrade "${C_MAIN}" || fail "double-cutoff-restart: rerun failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(rel previous_ref)" == "${C_V1}" && "$(rel previous_tag)" == 1.0.0 ]] || fail "double-cutoff-restart: previous is not 1.0.0"
+upgrade --rollback || fail "double-cutoff-restart: --rollback failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "double-cutoff-restart: --rollback went to the failed 1.1.0"
+
+# A live marker (HEAD is a recorded version): re-running the upgrade for HEAD must
+# not touch the record, or the other version and the marker are lost
+make_case live-marker "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "live-marker: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/kill-on-images"
+upgrade_killed --rollback
+[[ "$(rel rollback_to)" == "${C_V1}" && "$(head_of)" == "${C_V1}" ]] || fail "live-marker: setup"
+upgrade "${C_V1}" || fail "live-marker: rerun failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(rel current_ref)" == "${C_V11}" && "$(rel previous_ref)" == "${C_V1}" && "$(rel rollback_to)" == "${C_V1}" ]] \
+  || fail "live-marker: the rerun changed the record"
 # The migration cut off the same way: no record, the previous branch is lost; WARN
 make_case migrate-cutoff
 g -C "${REPO}" checkout -q --detach "${C_MAIN}"
