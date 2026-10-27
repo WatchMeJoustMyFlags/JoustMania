@@ -68,7 +68,7 @@ from flagservice import FlagService, FlagServiceError, FlagServiceUnreachable
 
 writer, args = sys.argv[1], sys.argv[2:]
 action = args[0] if args else "status"
-fs = FlagService.from_env(use_curl=True)
+fs = FlagService.from_env()
 SET = "agent"
 
 

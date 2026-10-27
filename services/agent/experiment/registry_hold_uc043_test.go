@@ -245,6 +245,11 @@ func TestRegistryHoldRedeclareCooldown(t *testing.T) {
 		if _, err := r.Declare(in); err == nil {
 			t.Fatal("re-declared during the cooldown")
 		}
+		sink := &RegistrySink{Registry: r}
+		var rej *RejectError
+		if err := sink.Review(ctx, Proposal{FlagKey: in.FlagKey, ExperimentalValue: 20.0}); !errors.As(err, &rej) || rej.Reason != ReasonHoldCooldown {
+			t.Fatalf("proposer sink err = %v, want reason %s", err, ReasonHoldCooldown)
+		}
 		*now = now.Add(HoldRedeclareCooldown + time.Second)
 		if _, busy := r.ActiveFlags()["shield.energy_budget_seconds"]; busy {
 			t.Fatal("still busy after the cooldown")

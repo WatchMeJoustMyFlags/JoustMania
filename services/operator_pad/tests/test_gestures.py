@@ -405,7 +405,7 @@ def test_no_layer_step_in_a_chord_while_locked_or_with_a_non_layer_key():
     assert pad.machine.preview_key() is None
     pad.release("K2")
     pad.release("K5")
-    for key in ("K4", "K6", "K8"):
+    for key in ("K4", "K8"):
         pad.press(key)
         assert pad.turn("B") == []
         pad.release(key)

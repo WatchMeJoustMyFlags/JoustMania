@@ -41,6 +41,8 @@ BASELINE = {
     ("game", "sensitivity"): ({"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4}, "medium"),
     ("game", "num_teams"): ({"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}, "two"),
     ("game", "force_all_start"): ({"on": True, "off": False}, "off"),
+    # Listed in reverse: the commit ladder must come from the menu's `order`, not the listing (UC-015 BR-018).
+    ("game", "shield.activation"): ({"hold": "hold", "trigger": "trigger", "instant": "instant"}, "trigger"),
     ("user", "game_instructions"): ({"on": True, "off": False}, "off"),
     ("user", "current_game"): ({name: name for name in GAME_MODES}, "JoustFFA"),
     (
@@ -68,9 +70,13 @@ class FakeFlagService:
         # Keys whose PUT lands but answers after the client deadline (#2095).
         self.slow_put: set[tuple[str, str]] = set()
         self.down = False
+        # Persisted admin values (GET `admin_value`; DELETE ?persist=true clears one, UC-015 BR-018).
+        self.admin: dict[tuple[str, str], str] = {}
+        self.deletes: list[tuple[str, str, str]] = []
 
     def __call__(self, method, url, body):
-        flag_set, key = url.split("/")[-2:]
+        path, _, query = url.partition("?")
+        flag_set, key = path.split("/")[-2:]
         key = urllib.parse.unquote(key)
         if self.down:
             raise urllib.error.URLError("connection refused")
@@ -78,17 +84,30 @@ class FakeFlagService:
         if method == "GET":
             if (flag_set, key) in self.failing_get:
                 return 503, {"error": "no_sync_stream"}
-            return 200, {
+            view = {
                 "variants": list(variants),
                 "variant_values": dict(variants),
                 "effective_default": self.values[(flag_set, key)],
             }
+            if (flag_set, key) in self.admin:
+                view["admin_value"] = {"variant": self.admin[(flag_set, key)]}
+            return 200, view
+        if method == "DELETE":
+            self.deletes.append((flag_set, key, query))
+            if (flag_set, key) in self.failing:
+                return 503, {"error": "no_sync_stream"}
+            if query == "persist=true":
+                self.admin.pop((flag_set, key), None)
+                self.values[(flag_set, key)] = _default
+            return 204, {}
         self.puts.append((flag_set, key, dict(body)))
         if (flag_set, key) in self.failing:
             return 503, {"error": "no_sync_stream"}
         if body.get("persist") and (flag_set, key) in NO_PERSIST:
             return 400, {"error": "bad_request", "detail": f"{key} cannot persist in scope stack"}
         self.values[(flag_set, key)] = body["variant"]
+        if body.get("persist"):
+            self.admin[(flag_set, key)] = body["variant"]
         if (flag_set, key) in self.slow_put:
             raise TimeoutError("timed out")
         return 200, {"variant": body["variant"], "persisted": bool(body.get("persist"))}

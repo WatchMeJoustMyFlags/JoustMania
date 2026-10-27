@@ -40,6 +40,9 @@ func (s *RegistrySink) Review(ctx context.Context, p Proposal) error {
 		s.Lock.Lock()
 		defer s.Lock.Unlock()
 	}
+	if s.Registry.HoldCooling(p.FlagKey) {
+		return &RejectError{Reason: ReasonHoldCooldown, Detail: p.FlagKey}
+	}
 	if _, busy := s.Registry.ActiveFlags()[p.FlagKey]; busy {
 		return &RejectError{Reason: ReasonFlagUnderTest, Detail: p.FlagKey}
 	}

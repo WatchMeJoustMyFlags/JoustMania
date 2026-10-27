@@ -170,6 +170,13 @@ services:
       - ./services/jaeger/config.yaml:/etc/jaeger/config.yaml:ro
       - jaeger-data:/badger
     command: ["--config", "/etc/jaeger/config.yaml"]
+    environment:
+      # #2223: Go soft memory limit (~83% of the 1 GiB container limit). Badger in
+      # Jaeger 2.19 has no cache knobs (default memtables 5 x 64 MiB + 256 MiB block
+      # cache, a bounded plateau of ~600 MiB), and each dashboard poll decodes MB-sized
+      # experiment traces; the soft limit makes the GC reclaim that query garbage
+      # before the cgroup OOM-kills the trace store.
+      - GOMEMLIMIT=850MiB
     networks:
       - joustmania
     # #1191: self-heal from an OOM (exit 137) instead of staying DEAD with the

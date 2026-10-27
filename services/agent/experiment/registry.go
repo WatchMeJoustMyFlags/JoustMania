@@ -1653,6 +1653,14 @@ func (r *Registry) startHoldCooldownLocked(flagKey string, res PromotionResult) 
 	r.holdCooldown[flagKey] = r.clock().Add(HoldRedeclareCooldown)
 }
 
+// HoldCooling reports whether flagKey is parked in its hold re-declare cooldown
+// (UC-043 A17 step 3 interim).
+func (r *Registry) HoldCooling(flagKey string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.holdCoolingLocked(flagKey)
+}
+
 // holdCoolingLocked reports whether flagKey is parked by startHoldCooldownLocked.
 // Assumes r.mu is held.
 func (r *Registry) holdCoolingLocked(flagKey string) bool {
@@ -2100,10 +2108,11 @@ func (r *Registry) Live() []string {
 }
 
 // ActiveFlags returns the set of flag keys that have at least one LIVE
-// (non-terminal: PROPOSED or RUNNING) experiment. The dynamic declarer (#995)
-// uses it to avoid stacking a second concurrent experiment on a flag that is
-// already under test. A flag torn down (terminal) is not included — its targeting
-// branch is stripped, so it is free to experiment on again.
+// (non-terminal: PROPOSED or RUNNING) experiment, plus the hold keys parked in
+// their re-declare cooldown (HoldCooling, UC-043 A17 step 3 interim). The dynamic
+// declarer (#995) uses it to avoid stacking a second concurrent experiment on a
+// flag that is already under test. Any other flag torn down (terminal) is not
+// included — its targeting branch is stripped, so it is free to experiment on again.
 func (r *Registry) ActiveFlags() map[string]struct{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()

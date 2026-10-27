@@ -141,7 +141,8 @@ flags:
   # experiment+arm and real values (FR-162, UC-043 A17); their bounds are the ceilings.
   # real_write: no_live_real_game (#2096, UC-043 A17): a write in scope real is refused
   # with 409 real_game_live while a real game is registered (flags.md §13).
-  - {set: game, key: shield.activation, kind: overlay, scope: [stack, experiment+arm, real], bounds: {variants: [instant, trigger, hold]}, real_write: no_live_real_game}
+  # persist: the operator pad's value (UC-015 BR-018).
+  - {set: game, key: shield.activation, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {variants: [instant, trigger, hold]}, real_write: no_live_real_game}
   - {set: game, key: shield.charge_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 120]}}
   # Shield charge rumble pattern (#2094, UC-040 BR-021): read by the controller manager per charge.
   - {set: game, key: shield.charge_rumble_intensity, kind: overlay, scope: [stack], bounds: {range: [0, 255]}}

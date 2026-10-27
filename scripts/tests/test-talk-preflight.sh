@@ -53,11 +53,17 @@ if [[ "$1" == "inspect" ]]; then
 fi
 exit 0
 SH
-# curl stub: Jaeger traces JSON, a Date header, 200 for everything else.
-cat >"${WORK}/bin/curl" <<'SH'
+# curl stub: Jaeger traces JSON, a Date header, 200 for everything else; the
+# flag service client (scripts/flagservice.py, curl by default #2057) reaches
+# the fake flag service through the real curl.
+REAL_CURL="$(command -v curl)"
+cat >"${WORK}/bin/curl" <<SH
 #!/usr/bin/env bash
+SH
+cat >>"${WORK}/bin/curl" <<'SH'
 for a in "$@"; do
   case "${a}" in
+    "${FLAG_SERVICE_URL}"*) exec "${STUB_REAL_CURL}" "$@" ;;
     *jaeger/api/traces*)
       echo '{"data":[{"spans":[{"operationName":"agent.decide","startTime":2,"tags":[{"key":"decide.backend","value":"claude"},{"key":"decide.outcome","value":"held"}]}]}]}'
       exit 0 ;;
@@ -78,6 +84,7 @@ if [[ "\$*" == "+%s" ]]; then echo 1760000000; exit 0; fi
 exec "${REAL_DATE}" "\$@"
 SH
 chmod +x "${WORK}/bin/"*
+export STUB_REAL_CURL="${REAL_CURL}"
 export STUB_SECRET="${SECRET}"
 export STUB_MOUNT="${WORK}/flags"
 
