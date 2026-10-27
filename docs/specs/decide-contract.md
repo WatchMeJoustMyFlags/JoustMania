@@ -461,7 +461,7 @@ the kill switch `enabled` and the shared LLM budget (NFR-011).
 | `decision.claude.timeout_ms` | 5000 ms (variants fast 1500 / tight 2500 / default 5000 / patient 8000, PR #1257); the talk stage baseline runs `patient` (#2123, `scripts/talk-baseline.json`) | per call | `services/agent/flags/decision_backend.go:30,109-116,214` |
 | `decision.openai.timeout_ms` / `decision.jev.timeout_ms` | 2500 ms (variants 1500 / 2500 / 5000) | per call | `services/agent/flags/decision_backend.go:33,37,219,226` |
 | `decision.min_interval_ms` | 3000 ms (1500 / 10000; 0 disables) | per game, from admission (the previous call's start) | `services/agent/flags/decision_backend.go:DefaultDecisionMinIntervalMs`, `services/agent/decision/decide_hook.go:gateRemoteDecide` |
-| `decision.min_gap_after_answer_ms` (#2123) | 1000 ms (off 0 / slow 3000) | per game, from the end of the previous call: an answer, a timeout, a failure or a discard; set just before the in-flight slot is released. A call is admitted only when both this gap and `decision.min_interval_ms` have passed | `services/agent/flags/decision_backend.go:DefaultDecisionMinGapAfterAnswerMs`, `services/agent/decision/decide_hook.go:noteDecideEnded` |
+| `decision.min_gap_after_answer_ms` (#2123) | 1000 ms (off 0 / slow 3000) | per game, from when the previous call returned (an answer, a timeout or a failure), before the live flag re-read and any action write; set while the call still holds the in-flight slot, and a later discard does not move it. A call is admitted only when both this gap and `decision.min_interval_ms` have passed | `services/agent/flags/decision_backend.go:DefaultDecisionMinGapAfterAnswerMs`, `services/agent/decision/decide_hook.go:noteDecideEnded` |
 | `decision.max_state_age_ms` (#2123) | 10000 ms (off 0 / tight 6000) | per answer that would act, read live at landing: older fire-time state → `discarded/state_too_old` (§4.4). The default sits above the longest timeout (`patient` 8000 ms) so it only drops answers built on a state that was already stale at fire time | `services/agent/flags/decision_backend.go:DefaultDecisionMaxStateAgeMs`, `services/agent/decision/decide_hook.go:stateTooOld` |
 | `llm.max_requests_per_minute` | 6 (conservative 3 / aggressive 12 / `stage` 30, PR #1257) | **global**, shared by in-game decisions, the retro and the proposer (PR #1284) | `services/agent/flags/flags.go:43`; `services/agent/decision/llmbudget.go:22-67` |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (env) | unset | read once at startup; a positive value is a ceiling: the cap is `min(env, flag)`, so a flag can only tighten it (#1788, C-034) | `services/agent/tuning.go:llmBudgetCeiling`, `services/agent/decision/llmbudget.go:ceilBudget` |
@@ -475,14 +475,17 @@ the kill switch `enabled` and the shared LLM budget (NFR-011).
 where the LLM was a length-gated async upgrade
 (`expected_seconds = players × llm.seconds_per_player × llm.style_factor`). PR #1252 (the change for issue
 #1234, which removed the LiteLLM gateway and the legacy in-game LLM path) removed it from the code; none of
-those flags exist on `main`. **Budget fit at the stage baseline (#2123).** One game asks at most once per
-`max(min_interval, call latency + gap)`. The stage baseline runs `decision.min_interval_ms=fast` (1500 ms) so the
-1 s gap after the answer dominates on Claude: warm Claude (≈ 3 s) every 4 s, about 15 calls a minute; a Claude call
-that runs into the 8 s `patient` timeout every 9.5 s, about 6. Both fit the `stage` budget of 30 a minute with
-room for the retro. Jev (≈ 0.3 s) is held by the 1.5 s interval instead, up to about 40 a minute for one game,
-above the `stage` budget: the excess cycles fall back to rules with `llm_budget_exhausted` (never a stall). With
-the shipped defaults (3000 ms interval) Jev asks about 20 a minute. The longer timeout only lowers demand:
-a call in flight holds the game's slot, so a slow answer is fewer calls, not more.
+those flags exist on `main`.
+
+**Budget fit at the stage baseline (#2123).** The stage keeps `decision.min_interval_ms` at its 3000 ms default
+and runs Claude with the `patient` timeout. One game asks at most once per `max(min_interval, call latency + gap)`,
+with the gap counted from when the answer lands: Jev (≈ 0.3 s answers, the main stage backend) every 3 s, about
+20 calls a minute; warm Claude (≈ 3 s) every 4 s, about 15; a Claude call that runs into the 8 s `patient`
+timeout every 9 s, about 6 to 7. Each fits the `stage` budget of 30 a minute with room for the post-game retro;
+a second concurrent remote game on Jev can reach it (`llm_budget_exhausted` → rules, never a stall). A shorter
+interval (the `fast` 1500 ms variant) would let Jev ask about 40 a minute, fill the budget during play and gate
+the retro, so the stage does not use it. The longer timeout only lowers demand: a call in flight holds the
+game's slot, so a slow answer is fewer calls, not more.
 
 There is no game-length admission gate **by design** (#1231): the cadence,
 the global budget and the per-game in-flight guard are the gates (`services/agent/decision/decide_hook.go:gateRemoteDecide`). The

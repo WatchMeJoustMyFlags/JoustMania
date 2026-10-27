@@ -113,7 +113,7 @@ flags = {
     "decision.act_confidence_threshold": f({"default": 0.8, "strict": 0.95}, "default"),
     "decision.jev.act_confidence_threshold": f({"inherit": -1.0, "gate": 0.6, "strict": 0.95}, "gate"),
     "decision.capture_content": f(onoff, "on"),
-    "decision.min_interval_ms": f({"fast": 1500, "default": 3000}, "fast"),
+    "decision.min_interval_ms": f({"default": 3000}, "default"),
     "decision.claude.model": f({"haiku": "h", "sonnet": "s"}, "haiku"),
     "decision.claude.timeout_ms": f({"fast": 1500, "tight": 2500, "default": 5000, "patient": 8000}, "patient"),
     "decision.jev.timeout_ms": f({"fast": 1500, "default": 2500, "patient": 5000}, "default"),

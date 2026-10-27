@@ -434,8 +434,9 @@ func TestDecisionBackend_CadenceFlagDefaults(t *testing.T) {
 	if got := baseline.Checked[keyDecisionClaudeTimeoutMs]; got != "patient" {
 		t.Errorf("talk baseline %s = %q, want patient (#2123)", keyDecisionClaudeTimeoutMs, got)
 	}
-	// On stage the 1 s after-answer gap dominates: the fire-to-fire floor is fast (1500 ms).
-	if got := baseline.Checked[keyDecisionMinIntervalMs]; got != "fast" {
-		t.Errorf("talk baseline %s = %q, want fast (#2123)", keyDecisionMinIntervalMs, got)
+	// Jev (~0.3 s answers) at a 1.5 s interval would ask ~40/min and fill the stage
+	// budget of 30 the retro shares: the stage keeps the 3000 ms default.
+	if got := baseline.Checked[keyDecisionMinIntervalMs]; got != "default" {
+		t.Errorf("talk baseline %s = %q, want default (#2123)", keyDecisionMinIntervalMs, got)
 	}
 }

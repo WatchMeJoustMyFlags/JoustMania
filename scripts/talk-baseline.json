@@ -11,7 +11,7 @@
     "decision.act_confidence_threshold": "default",
     "decision.jev.act_confidence_threshold": "gate",
     "decision.capture_content": "on",
-    "decision.min_interval_ms": "fast",
+    "decision.min_interval_ms": "default",
     "decision.claude.model": "haiku",
     "decision.claude.timeout_ms": "patient",
     "decision.jev.timeout_ms": "default",

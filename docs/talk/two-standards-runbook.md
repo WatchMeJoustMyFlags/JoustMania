@@ -138,10 +138,10 @@ the `llm.max_requests_per_minute` flag (`conservative` 3, `default` 6,
 `aggressive` 12, `stage` 30), capped by `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`
 when that is set: the cap is `min(env, flag)`, so the env can only lower the
 flag, never raise it (#1788, `ceilBudget`, `services/agent/decision/llmbudget.go`). One game on a remote
-backend at the stage baseline (`decision.min_interval_ms=fast`, 1500 ms, plus
-`decision.min_gap_after_answer_ms`, 1000 ms after each answer, #2123) wants about
-15 calls a minute on Claude (about 3 s answers) and up to about 40 on Jev
-(about 0.3 s answers, so the 1.5 s interval decides), so the default budget runs out after six calls: the rest fall back to rules
+backend at `decision.min_interval_ms=3000` (plus `decision.min_gap_after_answer_ms`,
+1000 ms after each answer, #2123) wants about 20 calls a minute on Jev, about 15 on
+warm Claude and 6 to 7 when Claude runs into the 8 s `patient` timeout, so the
+`stage` budget (30) leaves room for the summary, while the default budget runs out after six calls: the rest fall back to rules
 with `decide.fallback_reason=llm_budget_exhausted`, and the summary at game end
 finds the budget full. For the talk use the **`stage` variant** (30/min, a live
 flag flip, part of the baseline in section 6); leave the env unset or at 30 or
@@ -542,7 +542,7 @@ The infra loop is not gated by the `enabled` kill switch, only by
 Stage values: `decision.backend=rules` (the session start; beat 2 flips to
 `jev`), `decision.jev.act_confidence_threshold=gate` (0.6, Jev's calibrated
 bar), `decision.act_confidence_threshold=default` (0.8, claude/openai),
-`decision.min_interval_ms=fast` (1500 ms, #2123), `decision.claude.timeout_ms=patient`
+`decision.min_interval_ms=default` (3000 ms), `decision.claude.timeout_ms=patient`
 (8000 ms, #2123: covers cold Claude calls), `decision.jev.timeout_ms=default`
 (2500 ms), `llm.max_requests_per_minute=stage` (30/min; the flag sets the budget, a set
 `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` can only lower it), `decision.capture_content=on`, `enabled=on`, `experiments_enabled=off`,
@@ -560,8 +560,8 @@ bar), `decision.act_confidence_threshold=default` (0.8, claude/openai),
 `talk-stage.sh reset` clears every stage overlay (`DELETE /agent?writer=stage`)
 and applies `scripts/talk-baseline.json` again through the flag service:
 `decision.backend=rules`, both thresholds (`default`,
-Jev's `gate`), capture `on`, `min_interval_ms` `fast`, claude model `haiku`,
-claude timeout `patient`, jev timeout `default`, `llm.eligible_game_kinds=real_only`, `enabled=on`,
+Jev's `gate`), capture `on`, `min_interval_ms`, claude model `haiku`, both
+timeouts `default`, `llm.eligible_game_kinds=real_only`, `enabled=on`,
 `interventions_enabled=on`, **`interventions_allowed=standard`**,
 **`policy.max_interventions_per_minute=aggressive`** (4), `experiments_enabled=off`, `rollout_enabled=off`, plus `decision.jev.base_url`,
 `decision.openai.base_url` / `.model` / `.reasoning_effort` back to their
@@ -598,7 +598,7 @@ minute) stays far away. The shipped default stays 2.
 an interrupted permissions beat for `none` / `probe`,
 `rollout_enabled=off`, `experiments_enabled=off`, `decision.backend=rules`,
 both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`
-`fast`, claude model `haiku`, `decision.claude.timeout_ms` `patient`,
+`default`, claude model `haiku`, `decision.claude.timeout_ms` `patient`,
 `decision.jev.timeout_ms` `default`, `llm.eligible_game_kinds=real_only`,
 `decision.jev.base_url` not left on `blackhole` and the `blackhole` variant
 present). It
