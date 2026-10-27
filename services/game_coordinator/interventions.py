@@ -597,6 +597,9 @@ BLOCK_ALREADY_CHARGED = "already_charged"
 # BR-022): raised by games/base.py grant_shield as InterventionNotApplied.
 BLOCK_SHIELD_CAP_REACHED = "shield_cap_reached"
 BLOCK_SHIELD_COOLDOWN = "shield_cooldown"
+# A grant_shield in a hold game that could add nothing (#2096, UC-040 A37).
+BLOCK_SHIELD_POOL_FULL = "shield_pool_full"
+BLOCK_SHIELD_BUDGET_EXHAUSTED = "shield_budget_exhausted"
 # A revive_player the mode refused (decided game, unknown or already-alive player; #1948).
 BLOCK_REVIVE_REFUSED = "revive_refused"
 # An eliminate_player that killed nobody: unknown or already-dead player, a kill of

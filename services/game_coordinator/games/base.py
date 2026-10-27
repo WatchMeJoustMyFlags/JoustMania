@@ -186,6 +186,9 @@ def resolve_ramp_seconds(value: object, default: float) -> float:
 # with the trigger). Both flags are read per grant, never per frame.
 SHIELD_ACTIVATION_INSTANT = "instant"
 SHIELD_ACTIVATION_TRIGGER = "trigger"
+# Hold mode (#2096, FR-161; UC-030 A7, UC-040 A36-A39, BR-024-BR-027): a pool of
+# shield energy that protects while the trigger is held. Latched per game.
+SHIELD_ACTIVATION_HOLD = "hold"
 DEFAULT_SHIELD_ACTIVATION = SHIELD_ACTIVATION_INSTANT
 DEFAULT_CHARGE_EXPIRY_SECONDS = 20.0
 CHARGE_EXPIRY_MAX_SECONDS = 120.0
@@ -201,9 +204,11 @@ CHARGE_OUTCOME_GAME_END = "game_end"
 
 
 def resolve_shield_activation(value: object) -> str:
-    """Validate a ``shield.activation`` flag value: ``trigger`` or else ``instant`` (UC-040 BR-019)."""
-    if isinstance(value, str) and value.strip().lower() == SHIELD_ACTIVATION_TRIGGER:
-        return SHIELD_ACTIVATION_TRIGGER
+    """Validate a ``shield.activation`` flag value: ``trigger``, ``hold`` or else ``instant`` (UC-040 BR-019)."""
+    if isinstance(value, str):
+        mode = value.strip().lower()
+        if mode in (SHIELD_ACTIVATION_TRIGGER, SHIELD_ACTIVATION_HOLD):
+            return mode
     return SHIELD_ACTIVATION_INSTANT
 
 
@@ -219,6 +224,49 @@ def resolve_charge_expiry(value: object) -> float:
     if math.isnan(seconds) or seconds < 0.0:
         return DEFAULT_CHARGE_EXPIRY_SECONDS
     return min(CHARGE_EXPIRY_MAX_SECONDS, seconds)
+
+
+# Hold-mode flags (flags.md §4, UC-040 BR-024): key -> (default, min, max). The
+# ranges equal the registry bounds (flags.md §13.3), so a stage overlay the
+# registry accepts is never clamped here.
+SHIELD_HOLD_FLAGS: dict[str, tuple[float, float, float]] = {
+    "shield.energy_max_seconds": (5.0, 1.0, 10.0),
+    "shield.energy_budget_seconds": (15.0, 3.0, 30.0),
+    "shield.energy_initial_seconds": (0.0, 0.0, 5.0),
+    "shield.recharge_per_second": (0.0, 0.0, 0.5),
+    "shield.min_burst_seconds": (0.3, 0.1, 1.0),
+}
+# A grant that could add less than this is refused as shield_pool_full (A37).
+SHIELD_HOLD_POOL_FULL_ROOM_SECONDS = 0.05
+# shield.hold_outcome values (telemetry.md §3.2) and game_shield_hold_activations_total{outcome}.
+HOLD_OUTCOME_RELEASED = "released"
+HOLD_OUTCOME_EMPTY = "empty"
+HOLD_OUTCOME_BUDGET_EXHAUSTED = "budget_exhausted"
+HOLD_OUTCOME_DEATH = "death"
+HOLD_OUTCOME_GAME_END = "game_end"
+SHIELD_REFUSED_POOL_FULL = "shield_pool_full"
+SHIELD_REFUSED_BUDGET_EXHAUSTED = "shield_budget_exhausted"
+
+
+def resolve_hold_value(value: object, default: float, low: float, high: float) -> float:
+    """Validate a hold-mode flag value (flags.md §4): malformed gives ``default``, else clamped to [low, high]."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return default
+    number = float(value)
+    if not math.isfinite(number):
+        return default
+    return max(low, min(high, number))
+
+
+@dataclass(frozen=True)
+class ShieldHoldParams:
+    """The hold-mode values a game latched at the start of its loop (UC-040 BR-024, BR-027)."""
+
+    cap: float
+    budget: float
+    initial: float
+    recharge: float
+    min_burst: float
 
 
 # Agent shield limits per player per game (#2044, UC-040 A34, BR-022): the
@@ -775,6 +823,28 @@ class Player:
     # or latched from the lobby is never a press).
     trigger_prev: bool = False
     trigger_armed: bool = False
+    # Shield hold (#2096, UC-030 A7, UC-040 BR-024): only used in a game latched to
+    # hold. The energy is a function of time, so nothing ticks: ``hold_energy`` is
+    # the stored value at ``hold_energy_at`` (0 = the recharge clock has not
+    # started). While an activation runs (``hold_started_at`` > 0) the energy and
+    # the usable energy at its start are kept, and ``hold_until`` is the protection
+    # deadline: the energy's end while held, start + cost after the release.
+    hold_energy: float = 0.0
+    hold_energy_at: float = 0.0
+    hold_budget_used: float = 0.0
+    hold_started_at: float = 0.0
+    hold_until: float = 0.0
+    hold_pressed: bool = False
+    hold_energy_start: float = 0.0
+    hold_budget_start: float = 0.0
+    hold_usable_start: float = 0.0
+    hold_last_pressed_at: float = 0.0
+    hold_min_burst_applied: bool = False
+    # UC-030 BR-009: the first unprotected frame after an activation primes the EMA
+    # with min(raw, warning threshold) instead of the raw sample.
+    hold_prime_cap: bool = False
+    hold_budget_exhausted_noted: bool = False
+    _shield_hold_span: trace.Span | None = None
     # Per-player countdown span (created before countdown, ended after)
     _countdown_span: trace.Span | None = None
     # Health tracking (#571: controller health on player_lifecycle spans)
@@ -945,6 +1015,10 @@ class BaseGameMode(ABC):
         # game starts fresh; keyed by serial, so a revive does not reset them.
         self._agent_shield_grants: dict[str, int] = {}
         self._agent_shield_last_end: dict[str, float] = {}
+        # Shield hold (#2096, UC-040 BR-027): latched once, at the start of the game
+        # loop or at the first grant, whichever comes first. None = not a hold game.
+        self._shield_hold: ShieldHoldParams | None = None
+        self._shield_hold_latched = False
 
         # Settings - sensitivity is now passed via StartGameConfig.
         #
@@ -1731,6 +1805,8 @@ class BaseGameMode(ABC):
         """
         logger.warning(f"Reopening the gameplay stream: {reason}")
         metrics.gameplay_stream_reconnects_total.labels(game_mode=self.get_game_name()).inc()
+        # UC-030 BR-008: no drain crosses a reconnect.
+        self._force_release_shield_holds()
         old_stream = self.gameplay_stream
         try:
             await self._create_gameplay_stream()
@@ -2036,6 +2112,9 @@ class BaseGameMode(ABC):
             for player in self.players.values():
                 if player.alive:
                     player.grace_until = max(player.grace_until, grace_until)
+            # UC-040 BR-027: hold is latched here at the latest; the recharge starts now.
+            self._latch_shield_hold()
+            self._start_shield_hold_clock(time.time())
 
             # Track current alive set for detecting changes
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
@@ -2461,7 +2540,16 @@ class BaseGameMode(ABC):
         # UC-030 BR-005: the trigger is evaluated BEFORE the grace and death checks,
         # so an activation in this frame makes this frame a grace frame (A6 step 3).
         # Hot path: a bool read and a few compares; no flag read, no allocation.
-        if self.SHIELD_TRIGGER_ALLOWED:
+        hold = self._shield_hold
+        if hold is not None:
+            # UC-030 A7 / BR-008: compares only; nothing is awaited, and the work
+            # runs only while the trigger is held or an activation is running.
+            pressed = controller_state.trigger_pressed
+            if not pressed:
+                player.trigger_armed = True
+            if pressed or player.hold_started_at:
+                self._process_shield_hold(player, pressed, current_time, hold)
+        elif self.SHIELD_TRIGGER_ALLOWED:
             pressed = controller_state.trigger_pressed
             edge = pressed and player.trigger_armed and not player.trigger_prev
             player.trigger_prev = pressed
@@ -2505,7 +2593,8 @@ class BaseGameMode(ABC):
             )
             return  # In grace period, skip death/warning checks
 
-        self._update_ema(player, accel_mag, self._ema_weight)
+        if not (player.hold_prime_cap and self._prime_ema_after_hold(player, accel_mag)):
+            self._update_ema(player, accel_mag, self._ema_weight)
 
         effective_warn, effective_death = self._compute_effective_thresholds(player)
         smoothed = player.smoothed_accel
@@ -2611,6 +2700,19 @@ class BaseGameMode(ABC):
         ``_kill_player_impl`` / ``_process_controller_state`` checks in Tournament
         and Fight Club) routes through this helper so the rule lives in exactly
         one place.
+
+        Amended by #2096 (UC-030 BR-008): a running shield hold adds its own
+        deadline, ``hold_until``. Hold never writes ``grace_until``, so a release
+        can never shorten another window; ``hold_until`` is 0 outside hold games.
+        """
+        return max(BaseGameMode._other_grace_until(player), player.hold_until)
+
+    @staticmethod
+    def _other_grace_until(player: "Player") -> float:
+        """The effective grace without the shield hold: ``max(grace_until, invincible_until)`` (#817).
+
+        A hold activation waits for this window to close (UC-030 BR-008: holding
+        during another grace does not drain).
         """
         # base Player has no invincible_until; only Tournament/Fight Club add it.
         return max(player.grace_until, getattr(player, "invincible_until", 0.0))
@@ -2669,6 +2771,11 @@ class BaseGameMode(ABC):
         player = self.players.get(serial)
         if not player or not player.alive:
             return False
+
+        # UC-040 BR-027: a hold game adds the grant to the player's energy (A36).
+        hold = self._latch_shield_hold()
+        if hold is not None:
+            return self._grant_shield_energy(player, seconds, hold)
 
         # UC-040 BR-019: in trigger mode the grant is a charge the player activates
         # (A30). Read per grant, so a flip applies to the next grant only.
@@ -2974,6 +3081,10 @@ class BaseGameMode(ABC):
             if player.shield_charge_seconds > 0:
                 await self._discard_shield_charge(player, CHARGE_OUTCOME_GAME_END)
         now = time.time()
+        # UC-040 A39: a hold game drops every pool; an open activation ends game_end.
+        if self._shield_hold is not None:
+            for player in self.players.values():
+                self._drop_shield_hold(player, HOLD_OUTCOME_GAME_END, now)
         running = [serial for serial, until in self._shield_feedback_until.items() if until > now]
         self._shield_feedback_until.clear()
         if not running or not self.gameplay_stream:
@@ -2999,17 +3110,21 @@ class BaseGameMode(ABC):
     # ------------------------------------------------------------------
 
     def _shield_activation_mode(self) -> str:
-        """``instant`` or ``trigger`` for the next grant_shield (UC-040 BR-019).
+        """``instant``, ``trigger`` or ``hold`` for the next grant_shield (UC-040 BR-019, BR-027).
 
         Only an allow-listed mode (``SHIELD_TRIGGER_ALLOWED``, Free-for-All) and
-        only a real game reads the flag; every other game is instant. Read per
-        grant, never per frame.
+        only a real game reads the flag; every other game is instant. A game
+        latched to hold stays hold; otherwise the flag is read per grant, never per
+        frame, and a ``hold`` read in a game not latched to hold is ``instant``.
         """
+        if self._shield_hold is not None:
+            return SHIELD_ACTIVATION_HOLD
         if not self.SHIELD_TRIGGER_ALLOWED or self.game_kind == GAME_KIND_SHADOW:
             return SHIELD_ACTIVATION_INSTANT
         # Literal flag key, so the contract scan resolves the read.
         value = read_string_flag("game", "shield.activation", DEFAULT_SHIELD_ACTIVATION, game_id=self.game_id)
-        return resolve_shield_activation(value)
+        mode = resolve_shield_activation(value)
+        return SHIELD_ACTIVATION_INSTANT if mode == SHIELD_ACTIVATION_HOLD else mode
 
     def _read_charge_expiry(self) -> float:
         """Seconds a new charge is held before it expires, 0 = never (flags.md §4, read per grant)."""
@@ -3219,11 +3334,305 @@ class BaseGameMode(ABC):
                 )
 
     def _close_shield_charge_spans(self) -> None:
-        """End every open ``game.shield_charge`` span (error teardown path); no I/O."""
+        """End every open ``game.shield_charge`` and ``game.shield_hold`` span (error teardown path); no I/O."""
+        now = time.time()
         for player in self.players.values():
             if player._shield_charge_span is not None:
                 self._clear_shield_charge(player)
                 self._end_shield_charge_span(player, CHARGE_OUTCOME_GAME_END)
+            if player.hold_started_at:
+                self._drop_shield_hold(player, HOLD_OUTCOME_GAME_END, now)
+
+    # ------------------------------------------------------------------
+    # Shield hold (#2096, FR-161; UC-030 A7, BR-008, BR-009; UC-040 A36-A39,
+    # BR-024-BR-027). Everything here is synchronous: no I/O, nothing awaited.
+    # ------------------------------------------------------------------
+
+    def _latch_shield_hold(self) -> ShieldHoldParams | None:
+        """Latch hold mode and its values once per game (UC-040 BR-027); None = not a hold game.
+
+        Called at the start of the game loop and by the first grant, in the game's
+        flag context, so an experiment arm resolves. Only Free-for-All real games
+        (the BR-019 allow-list) can be hold games. Every player starts with the
+        starting energy, clamped to the cap and the budget.
+        """
+        if self._shield_hold_latched:
+            return self._shield_hold
+        self._shield_hold_latched = True
+        if not self.SHIELD_TRIGGER_ALLOWED or self.game_kind == GAME_KIND_SHADOW:
+            return None
+        # Literal flag keys, so the contract scan resolves the reads.
+        mode = resolve_shield_activation(
+            read_string_flag("game", "shield.activation", DEFAULT_SHIELD_ACTIVATION, game_id=self.game_id)
+        )
+        if mode != SHIELD_ACTIVATION_HOLD:
+            return None
+        raw = {
+            "shield.energy_max_seconds": read_float_flag(
+                "game",
+                "shield.energy_max_seconds",
+                SHIELD_HOLD_FLAGS["shield.energy_max_seconds"][0],
+                game_id=self.game_id,
+            ),
+            "shield.energy_budget_seconds": read_float_flag(
+                "game",
+                "shield.energy_budget_seconds",
+                SHIELD_HOLD_FLAGS["shield.energy_budget_seconds"][0],
+                game_id=self.game_id,
+            ),
+            "shield.energy_initial_seconds": read_float_flag(
+                "game",
+                "shield.energy_initial_seconds",
+                SHIELD_HOLD_FLAGS["shield.energy_initial_seconds"][0],
+                game_id=self.game_id,
+            ),
+            "shield.recharge_per_second": read_float_flag(
+                "game",
+                "shield.recharge_per_second",
+                SHIELD_HOLD_FLAGS["shield.recharge_per_second"][0],
+                game_id=self.game_id,
+            ),
+            "shield.min_burst_seconds": read_float_flag(
+                "game",
+                "shield.min_burst_seconds",
+                SHIELD_HOLD_FLAGS["shield.min_burst_seconds"][0],
+                game_id=self.game_id,
+            ),
+        }
+        values = {key: resolve_hold_value(raw[key], *bounds) for key, bounds in SHIELD_HOLD_FLAGS.items()}
+        params = ShieldHoldParams(
+            cap=values["shield.energy_max_seconds"],
+            budget=values["shield.energy_budget_seconds"],
+            initial=values["shield.energy_initial_seconds"],
+            recharge=values["shield.recharge_per_second"],
+            min_burst=values["shield.min_burst_seconds"],
+        )
+        initial = min(params.initial, params.cap, params.budget)
+        for player in self.players.values():
+            player.hold_energy = initial
+            player.hold_energy_at = 0.0
+        self._shield_hold = params
+        logger.info(f"Shield hold latched for {self.game_id}: {params}")
+        return params
+
+    def _start_shield_hold_clock(self, now: float) -> None:
+        """Start the recharge clock of every pool at the start of the game loop (UC-040 A38)."""
+        if self._shield_hold is None:
+            return
+        for player in self.players.values():
+            if not player.hold_energy_at and not player.hold_started_at:
+                player.hold_energy_at = now
+
+    def _shield_hold_budget_left(self, player: "Player", now: float) -> float:
+        """Budget remaining at ``now``, counting the running activation (UC-040 BR-024)."""
+        used = player.hold_budget_used
+        if player.hold_started_at:
+            used += max(0.0, min(now, player.hold_until) - player.hold_started_at)
+        return max(0.0, self._shield_hold.budget - used)
+
+    def _shield_hold_energy(self, player: "Player", now: float) -> float:
+        """The player's energy at ``now``: drained while active, recharged while idle (UC-040 BR-024, A38)."""
+        hold = self._shield_hold
+        if player.hold_started_at:
+            spent = max(0.0, min(now, player.hold_until) - player.hold_started_at)
+            return max(0.0, player.hold_energy_start - spent)
+        energy = player.hold_energy
+        if hold.recharge > 0 and player.hold_energy_at and now > player.hold_energy_at:
+            energy += hold.recharge * (now - player.hold_energy_at)
+        return max(0.0, min(energy, hold.cap, self._shield_hold_budget_left(player, now)))
+
+    def _process_shield_hold(self, player: "Player", pressed: bool, now: float, hold: ShieldHoldParams) -> None:
+        """Frame-path state machine of the shield hold (UC-030 A7, BR-008); compares and field writes only."""
+        if player.hold_started_at:
+            if player.hold_pressed:
+                if now >= player.hold_until:
+                    # Held until the usable energy ran out: the budget or the pool.
+                    budget_limited = player.hold_budget_start <= player.hold_energy_start
+                    self._end_shield_hold(
+                        player, HOLD_OUTCOME_BUDGET_EXHAUSTED if budget_limited else HOLD_OUTCOME_EMPTY, now
+                    )
+                    # BR-008: a new activation needs a release first.
+                    player.trigger_armed = False
+                    return
+                if pressed:
+                    player.hold_last_pressed_at = now
+                    return
+                self._release_shield_hold(player, now, hold)
+            elif pressed and now < player.hold_until:
+                # BR-008: a press inside the minimum-burst tail continues the activation.
+                player.hold_pressed = True
+                player.hold_until = player.hold_started_at + player.hold_usable_start
+                player.hold_last_pressed_at = now
+                return
+            if now < player.hold_until:
+                return
+            self._end_shield_hold(player, HOLD_OUTCOME_RELEASED, now)
+        if pressed and player.trigger_armed:
+            self._start_shield_hold(player, now, hold)
+
+    def _start_shield_hold(self, player: "Player", now: float, hold: ShieldHoldParams) -> None:
+        """Start an activation when it is valid (UC-030 A7 trigger); otherwise do nothing."""
+        if player.serial in self._kills_in_progress:
+            return
+        if now < self._other_grace_until(player):
+            return  # BR-008: holding during another grace does not drain
+        energy = self._shield_hold_energy(player, now)
+        budget_left = self._shield_hold_budget_left(player, now)
+        usable = min(energy, budget_left)
+        if usable < hold.min_burst:
+            return
+        player.hold_started_at = now
+        player.hold_pressed = True
+        player.hold_energy_start = energy
+        player.hold_budget_start = budget_left
+        player.hold_usable_start = usable
+        player.hold_until = now + usable
+        player.hold_last_pressed_at = now
+        player.hold_min_burst_applied = False
+        if player.span:
+            with contextlib.suppress(Exception):
+                player._shield_hold_span = tracer.start_span(
+                    "game.shield_hold",
+                    context=trace.set_span_in_context(player.span),
+                    attributes={
+                        **player_identity_attributes(player.serial, player.name),
+                        "game.id": self.game_id,
+                        "shield.energy_start_s": round(energy, 3),
+                        "shield.budget_remaining_start_s": round(budget_left, 3),
+                        "shield.min_burst_s": hold.min_burst,
+                    },
+                )
+
+    def _release_shield_hold(self, player: "Player", released_at: float, hold: ShieldHoldParams) -> None:
+        """The trigger reads released: the cost is ``max(held, min burst)``, at most the usable energy (BR-024)."""
+        held = max(0.0, released_at - player.hold_started_at)
+        cost = min(max(held, hold.min_burst), player.hold_usable_start)
+        player.hold_min_burst_applied = held < hold.min_burst
+        player.hold_until = player.hold_started_at + cost
+        player.hold_pressed = False
+
+    def _end_shield_hold(self, player: "Player", outcome: str, now: float) -> None:
+        """End the running activation: book its cost, close its span, count it (UC-030 A7 step 4, UC-040 A39)."""
+        hold = self._shield_hold
+        ended_at = min(now, player.hold_until)
+        cost = max(0.0, ended_at - player.hold_started_at)
+        energy_end = max(0.0, player.hold_energy_start - cost)
+        player.hold_budget_used += cost
+        player.hold_energy = energy_end
+        player.hold_energy_at = ended_at
+        player.hold_started_at = 0.0
+        player.hold_until = 0.0
+        player.hold_pressed = False
+        player.hold_energy_start = 0.0
+        player.hold_budget_start = 0.0
+        player.hold_usable_start = 0.0
+        if outcome in (HOLD_OUTCOME_RELEASED, HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED):
+            player.hold_prime_cap = True  # UC-030 BR-009
+        span, player._shield_hold_span = player._shield_hold_span, None
+        if span is not None:
+            with contextlib.suppress(Exception):
+                span.set_attribute("shield.hold_outcome", outcome)
+                span.set_attribute("shield.hold_cost_s", round(cost, 3))
+                span.set_attribute("shield.min_burst_applied", player.hold_min_burst_applied)
+                span.set_attribute("shield.energy_end_s", round(energy_end, 3))
+                span.end()
+        player.hold_min_burst_applied = False
+        with contextlib.suppress(Exception):
+            metrics.shield_hold_activations_total.labels(
+                mode=self.get_game_name(), game_kind=self.game_kind, outcome=outcome
+            ).inc()
+        if (
+            hold is not None
+            and not player.hold_budget_exhausted_noted
+            and hold.budget - player.hold_budget_used < hold.min_burst
+        ):
+            player.hold_budget_exhausted_noted = True
+            if player.span:
+                with contextlib.suppress(Exception):
+                    player.span.add_event(
+                        "shield_budget_exhausted",
+                        attributes={
+                            "shield.budget_s": hold.budget,
+                            **player_identity_attributes(player.serial, player.name),
+                        },
+                    )
+
+    def _drop_shield_hold(self, player: "Player", outcome: str, now: float) -> None:
+        """Drop the pool on death, disconnect or game end (UC-040 A39); a running activation ends with ``outcome``."""
+        if player.hold_started_at:
+            self._end_shield_hold(player, outcome, now)
+        player.hold_energy = 0.0
+        player.hold_energy_at = 0.0
+        player.hold_prime_cap = False
+
+    def _force_release_shield_holds(self) -> None:
+        """Release every held activation at its last held frame (UC-030 BR-008, stream reopen)."""
+        hold = self._shield_hold
+        if hold is None:
+            return
+        for player in self.players.values():
+            if player.hold_started_at and player.hold_pressed:
+                self._release_shield_hold(player, player.hold_last_pressed_at, hold)
+
+    def _prime_ema_after_hold(self, player: "Player", accel_mag: float) -> bool:
+        """UC-030 BR-009: prime the EMA with min(raw, warning threshold); True when it primed."""
+        player.hold_prime_cap = False
+        if player.smoothed_accel >= 1e-9:
+            return False
+        effective_warn, _ = self._compute_effective_thresholds(player)
+        player.smoothed_accel = min(accel_mag, effective_warn)
+        player.last_accel_mag = player.smoothed_accel
+        return True
+
+    def _grant_shield_energy(self, player: "Player", seconds: float, hold: ShieldHoldParams) -> bool:
+        """Add a grant to the player's energy (UC-040 A36); refuse one that could add nothing (A37).
+
+        Order: budget used up, pool full, then the BR-022 cap and cooldown. A
+        refusal raises ``InterventionNotApplied``, so the backstop is refunded and
+        nothing counts. During a held activation the deadline moves out.
+        """
+        now = time.time()
+        used = self._agent_shield_grants.get(player.serial, 0)
+        budget_left = self._shield_hold_budget_left(player, now)
+        if budget_left < hold.min_burst:
+            self._refuse_shield(player, SHIELD_REFUSED_BUDGET_EXHAUSTED, used, 0.0)
+        energy = self._shield_hold_energy(player, now)
+        full = min(hold.cap, budget_left)
+        room = full - energy
+        if room < SHIELD_HOLD_POOL_FULL_ROOM_SECONDS:
+            self._refuse_shield(player, SHIELD_REFUSED_POOL_FULL, used, 0.0)
+        self._check_shield_limits(player, now)
+
+        added = min(seconds, room)
+        if player.hold_started_at:
+            player.hold_energy_start += added
+            player.hold_usable_start = min(player.hold_energy_start, player.hold_budget_start)
+            if player.hold_pressed:
+                player.hold_until = player.hold_started_at + player.hold_usable_start
+        else:
+            player.hold_energy = energy + added
+            if player.hold_energy_at:
+                player.hold_energy_at = now
+        self._record_agent_shield(player.serial, now, seconds)
+        energy_after = energy + added
+        logger.info(f"Shield energy granted to {player.serial}: +{added:.2f}s of {seconds:.1f}s ({energy_after:.2f}s)")
+        if player.span:
+            identity = player_identity_attributes(player.serial, player.name)
+            with contextlib.suppress(Exception):
+                player.span.add_event(
+                    "shield_energy_granted",
+                    attributes={
+                        "shield.seconds_requested": seconds,
+                        "shield.seconds_added": round(added, 3),
+                        "shield.energy_s": round(energy_after, 3),
+                        **identity,
+                    },
+                )
+                if energy_after >= full - 1e-9:
+                    player.span.add_event(
+                        "shield_energy_full", attributes={"shield.energy_source": "agent", **identity}
+                    )
+        return True
 
     # Soft-penalty defaults (#1134, #1103 Phase 3). The tighten factor is the
     # MIRROR of the toughness boost: a factor BELOW 1.0 weakens the player's
@@ -3658,6 +4067,9 @@ class BaseGameMode(ABC):
         # (UC-040 A32; a disconnect and eliminate_player come through here too).
         if player.shield_charge_seconds > 0:
             await self._discard_shield_charge(player, CHARGE_OUTCOME_DEATH)
+        # UC-040 A39: the death drops a hold pool; eliminate_player ignores the hold.
+        if self._shield_hold is not None:
+            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, time.time())
 
         # Play death explosion sound under the player's span
         player_ctx = trace.set_span_in_context(player.span) if player.span else None
@@ -3668,6 +4080,9 @@ class BaseGameMode(ABC):
         # win, the game was force-ended), and a declined kill counts no death (#1988).
         if not self._accepts_kill(serial):
             return False
+        # Again after the awaits: energy granted while the kill awaited is dropped too.
+        if self._shield_hold is not None:
+            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, time.time())
 
         alive_count_before = len([p for p in self.players.values() if p.alive])
         logger.info(f"Player died: {serial}, {alive_count_before - 1} players remaining")
