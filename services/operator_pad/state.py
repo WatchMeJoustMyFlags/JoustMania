@@ -20,22 +20,30 @@ STATUS_TIMEOUT_SECONDS = 0.5
 # `probe` and `shadow_experimental` are off the ladder, so they read as unknown (BR-013, fail closed).
 AGENT_LEVELS = frozenset({"none", "ambient", "standard", "full"})
 
-# `agent_enabled_state` of a resolved kill switch; `unknown`, and the empty value of a menu older
-# than #2101, are not (services.md §3.1).
+# `agent_enabled_state` of a resolved kill switch and `agent_interventions_enabled_state` of a resolved
+# write gate; `unknown`, and the empty value of a menu older than #2101 / #2093, are not (services.md §3.1).
 ENABLED_STATES = frozenset({"on", "off"})
 
 
 def is_known(status: menu_pb2.GetMenuStatusResponse | None) -> bool:
     """UC-015 BR-013: a status that was read and whose agent flags resolved.
 
-    Both `enabled` (its state `on` or `off`) and the level (on the ladder) must have resolved.
+    `enabled` and the write gate `interventions_enabled` (each state `on` or `off`) and the level
+    (on the ladder) must all have resolved.
     """
-    return status is not None and status.agent_enabled_state in ENABLED_STATES and status.agent_level in AGENT_LEVELS
+    return (
+        status is not None
+        and status.agent_enabled_state in ENABLED_STATES
+        and status.agent_interventions_enabled_state in ENABLED_STATES
+        and status.agent_level in AGENT_LEVELS
+    )
 
 
 def is_stopped(status: menu_pb2.GetMenuStatusResponse) -> bool:
-    """UC-015 BR-002: the agent is stopped when `enabled` is off or the level is `none`."""
-    return (not status.agent_enabled) or status.agent_level == "none"
+    """UC-015 BR-002: stopped when `enabled` is off, the level is `none` or the write gate is off (#2093)."""
+    return (
+        (not status.agent_enabled) or status.agent_level == "none" or status.agent_interventions_enabled_state == "off"
+    )
 
 
 class MenuStatusReader:

@@ -794,6 +794,24 @@
       },
       "defaultVariant": "default"
     },
+    "decision.min_gap_after_answer_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "default": 1000,
+        "slow": 3000
+      },
+      "defaultVariant": "default"
+    },
+    "decision.max_state_age_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "tight": 6000,
+        "default": 10000
+      },
+      "defaultVariant": "default"
+    },
     "inference.backend": {
       "state": "ENABLED",
       "variants": {

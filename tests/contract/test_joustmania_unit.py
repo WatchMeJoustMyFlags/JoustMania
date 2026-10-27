@@ -95,7 +95,15 @@ def test_unit_parses_and_verifies_when_systemd_analyze_is_available(tmp_path):
         pytest.skip("systemd-analyze not installed")
     copy = tmp_path / "joustmania.service"
     # verify checks that ExecStart exists: point it at the repo's own scripts
-    copy.write_text(UNIT.read_text().replace("/home/pi/JoustMania", str(ic.REPO_ROOT)))
+    # (and the LED helper at the repo copy install_autostart.sh installs)
+    copy.write_text(
+        UNIT.read_text()
+        .replace("/home/pi/JoustMania", str(ic.REPO_ROOT))
+        .replace(
+            "/usr/local/lib/joustmania/joustmania-led",
+            str(ic.REPO_ROOT / "scripts" / "setup" / "joustmania-led.sh"),
+        )
+    )
     result = subprocess.run(
         ["systemd-analyze", "verify", str(copy)],
         capture_output=True,
@@ -111,3 +119,53 @@ def test_unit_parses_and_verifies_when_systemd_analyze_is_available(tmp_path):
         and "docker.service" not in line
     ]
     assert not problems, "\n".join(problems)
+
+
+LED_HELPER = "/usr/local/lib/joustmania/joustmania-led"
+
+
+@pytest.mark.uc("UC-060", br=["BR-005"])
+def test_led_starting_is_applied_as_root_before_the_start_and_never_fails_it():
+    assert _lines("Service", "ExecStartPre") == [f"-+{LED_HELPER} starting"]
+
+
+@pytest.mark.uc("UC-060", flow="A1", br=["BR-005"])
+def test_led_final_state_is_judged_as_the_user_then_applied_as_root():
+    # Order matters: status (as pi, no `+`) writes led.request, the helper reads it
+    assert _lines("Service", "ExecStartPost") == [
+        "-/usr/bin/timeout 120 /home/pi/JoustMania/scripts/setup/joustmania-status.sh --led",
+        f"-+{LED_HELPER} from-request",
+    ]
+
+
+@pytest.mark.uc("UC-060", flow="A5", br=["BR-005"])
+def test_led_failed_start_and_clean_stop_go_through_exec_stop_post():
+    # ExecStartPost never runs on a failed start; ExecStopPost does (SERVICE_RESULT)
+    assert _lines("Service", "ExecStopPost") == [f"-+{LED_HELPER} stop-post"]
+    assert _lines("Unit", "OnFailure") == []
+
+
+@pytest.mark.uc("UC-060", br=["BR-005"])
+def test_led_helper_path_is_the_root_owned_copy_install_autostart_installs():
+    setup = ic.REPO_ROOT / "scripts" / "setup"
+    install = (setup / "install_autostart.sh").read_text()
+    assert 'LED_HELPER_DIR="/usr/local/lib/joustmania"' in install
+    assert (
+        'install -o root -g root -m 0755 "$SCRIPT_DIR/joustmania-led.sh" '
+        '"$LED_HELPER_DIR/joustmania-led"'
+    ) in install
+    # Only the installed copy runs as root, never a script in the checkout
+    for key in (
+        "ExecStartPre",
+        "ExecStartPost",
+        "ExecStopPost",
+        "ExecStart",
+        "ExecStop",
+    ):
+        for line in _lines("Service", key):
+            if line.lstrip("-@:").startswith("+"):
+                assert line.lstrip("-@:+").split()[0] == LED_HELPER, line
+    assert (setup / "joustmania-led.sh").stat().st_mode & 0o111
+    # The upgrade's reinstall hint covers the helper too
+    upgrade = (setup / "joustmania-upgrade.sh").read_text()
+    assert "scripts/setup/joustmania.service scripts/setup/joustmania-led.sh" in upgrade
