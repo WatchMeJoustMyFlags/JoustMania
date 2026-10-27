@@ -3562,7 +3562,7 @@ class BaseGameMode(ABC):
         return max(0.0, self._shield_hold.budget - used)
 
     def _shield_hold_energy(self, player: "Player", now: float) -> float:
-        """The player's energy at ``now``: drained while active, recharged while idle (UC-040 BR-024, A38)."""
+        """The player's energy at ``now``: drained while active, recharged while idle (UC-040 BR-024, BR-025, A38)."""
         hold = self._shield_hold
         if player.hold_started_at:
             spent = max(0.0, min(now, player.hold_until) - player.hold_started_at)

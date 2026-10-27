@@ -197,12 +197,6 @@ OTel collector; query them in Grafana (`/grafana/`) or see
 The daemon polls USB every `pairing.poll_interval` seconds (flag in the `system` domain; default 10, variants
 `fast` 5 / `normal` 10 / `slow` 30), so there may be a short delay before pairing starts.
 
-### No LED Feedback While Pairing
-
-The pairing daemon does not touch the controller's LED (UC-001 BR-002): the controller shows no
-yellow, white or red pairing state. Read the daemon log line above, or watch
-`psmove_pairing_failed_total` in Grafana.
-
 ### Pairing Multiple Controllers
 
 You can pair multiple controllers in sequence:

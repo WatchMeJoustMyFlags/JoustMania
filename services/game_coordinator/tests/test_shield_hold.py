@@ -427,6 +427,24 @@ class TestUC030BR009ReleaseTail:
         assert not game.players["p1"].alive
 
 
+class TestUC030Pre1:
+    """UC-030 Pre-1: a RUNNING game, an alive player outside every grace window: the checks run."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", cond=["Pre-1"])
+    async def test_alive_player_outside_grace_in_a_running_game_is_checked(self, game, clock):
+        game.state = base_module.GameState.RUNNING
+        player = game.players["p1"]
+        assert player.alive
+        assert player.grace_until <= clock.t
+        assert player.hold_until <= clock.t
+        _, death = thresholds(game)
+
+        await step(game, clock, "p1", False, accel=g_vector(death * 3))
+
+        assert not player.alive, "the death check did not run for an unprotected frame"
+
+
 class TestUC030BR009OtherProtectionKeepsThePlainPrime:
     """BR-009 bullet 3: only hold caps the prime; other protection keeps the plain #757 prime."""
 
@@ -453,7 +471,7 @@ class TestUC030BR009OtherProtectionKeepsThePlainPrime:
         assert clock.t >= protected_until
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
+    @pytest.mark.uc("UC-030", flow="A1", br=["BR-009"])
     async def test_a_jolt_after_a_grace_window_kills(self, plain_game, clock):
         """A grace_until window ends: the raw sample primes the EMA and kills on the first frame."""
         plain_game.players["p1"].grace_until = clock.t + 0.5
@@ -461,7 +479,7 @@ class TestUC030BR009OtherProtectionKeepsThePlainPrime:
         assert not plain_game.players["p1"].alive
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
+    @pytest.mark.uc("UC-030", flow="A6", br=["BR-009"])
     async def test_a_jolt_after_a_shield_charge_activation_kills(self, plain_game, clock):
         """A shield-charge activation (A6) ends: the plain prime kills on the first unprotected frame."""
         player = plain_game.players["p1"]

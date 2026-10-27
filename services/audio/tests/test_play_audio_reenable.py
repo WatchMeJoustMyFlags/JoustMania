@@ -205,3 +205,43 @@ class TestPlayAudioReenableAfterMutedStart:
         assert muted_start_servicer.audio_enabled is False
         assert muted_start_servicer.audio_manager.silent is True
         muted_start_servicer.channel_play.assert_not_called()
+
+
+@pytest.fixture
+def audio_on_servicer(monkeypatch):
+    """A servicer that started with play_audio=true (hardware edges replaced as above)."""
+    monkeypatch.setenv("AUDIO_ASSETS_DIR", str(ASSETS_DIR))
+
+    def _fake_music_player(_name="music"):
+        player = create_autospec(MusicPlayer, instance=True)
+        player.start.return_value = "track-1"
+        player.is_playing = False
+        return player
+
+    with (
+        patch.object(AudioServiceServicer, "_load_play_audio_flag", return_value=True),
+        patch.object(servicer_module, "MusicPlayer", side_effect=_fake_music_player),
+        patch.object(SoundChannel, "play", autospec=True, return_value=True) as channel_play,
+    ):
+        svc = AudioServiceServicer()
+        svc.channel_play = channel_play
+        yield svc
+
+
+class TestPlayAudioOnAtStart:
+    """UC-031 Pre-1: the audio service runs with play_audio on."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-031", cond=["Pre-1"])
+    async def test_started_with_play_audio_on_plays_a_sound_on_a_channel(self, audio_on_servicer, mock_grpc_context):
+        manager = audio_on_servicer.audio_manager
+        assert audio_on_servicer.audio_enabled is True
+        assert manager.silent is False
+        assert len(manager.channels) == AudioManager.MAX_CHANNELS == 8
+
+        request = audio_pb2.PlaySoundRequest(file_path="beep_loud", volume=1.0, priority=2)
+        response = await audio_on_servicer.PlaySound(request, mock_grpc_context)
+
+        assert response.success is True
+        audio_on_servicer.channel_play.assert_called_once()
+        assert audio_on_servicer.channel_play.call_args.args[1].endswith("beep_loud.ogg")

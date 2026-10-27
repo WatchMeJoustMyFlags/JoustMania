@@ -590,7 +590,38 @@ class _PairingFlowEnv:
 class TestPairingFlow(_PairingFlowEnv):
     """UC-001 main flow and alternatives A1, A2, A4, A5."""
 
-    @pytest.mark.uc("UC-001", flow="main", steps=[2, 3, 4, 5, 6], br=["BR-001"], cond=["Post-S-1", "Post-S-2"])
+    @pytest.mark.uc(
+        "UC-001", flow="main", steps=[2, 3, 4, 5, 6], br=["BR-001", "BR-005"], cond=["Post-S-1", "Post-S-2"]
+    )
+    async def test_poll_pairs_controller_known_on_the_adapter_without_restart(self, usb_pairing, env, metrics, caplog):
+        """Main flow: a controller already Paired on the selected adapter is paired and trusted; no restart."""
+        backend, runner, set_tree, restart = env
+        known_on_free = [{"Address": self.SERIAL, "Paired": True}]
+        set_tree(bluez_tree({"hci0": (self.ADAPTER_BUSY, devices(3)), "hci1": (self.ADAPTER_FREE, known_on_free)}))
+
+        with (
+            patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value="when_idle"),
+            caplog.at_level(logging.INFO, logger="psmove-pairing"),
+        ):
+            await usb_pairing.poll()
+
+        assert any(
+            self.SERIAL in r.getMessage() and "unplug USB and press PS button" in r.getMessage() for r in caplog.records
+        )
+        backend.pair_controller.assert_awaited_once_with(FAKE_PATH_1, self.SERIAL, self.ADAPTER_FREE)
+        restart.assert_none()
+        assert self._restart_units() == []
+        assert usb_pairing.bluez_reloader.pending is False
+        assert self.trusted_paths() == [self.TRUST_PATH]
+        assert runner.calls == []
+        assert self.SERIAL in usb_pairing._verified_serials
+        metrics["pairing_success_total"].inc.assert_called_once()
+        metrics["pairing_failed_total"].inc.assert_not_called()
+
+    def _restart_units(self) -> list:
+        return [c.args[0].body for c in self.bus.call.await_args_list if c.args[0].member == "RestartUnit"]
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-001"])
     async def test_poll_pairs_new_controller_to_least_loaded_adapter(self, usb_pairing, env, metrics, caplog):
         """A USB controller is paired to the least-loaded adapter, trusted, success counted; no BlueZ restart."""
         backend, runner, _set_tree, restart = env
@@ -1448,7 +1479,7 @@ class TestPairingLedCue2091(_PairingFlowEnv):
         await usb_pairing.poll()
         assert usb_pairing.led_cue.states == {}
 
-    @pytest.mark.uc("UC-001", flow="main", br=["BR-010"], cond=["Post-F-1"])
+    @pytest.mark.uc("UC-001", br=["BR-010"], cond=["Post-F-1"])
     async def test_failed_pairing_shows_red_and_the_retry_pulses(self, usb_pairing, env, metrics, device):
         backend, _runner, _set_tree, _restart = env
         backend.pair_controller.return_value = PairingResult(success=False)
