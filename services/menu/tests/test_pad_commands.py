@@ -147,7 +147,7 @@ def failure_cues(menu) -> int:
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-015", br=["BR-001"])
+@pytest.mark.uc("UC-015", br=["BR-001"], cond=["Post-S-1"])
 async def test_pad_key_set_and_persist_bodies(servicer, flags):
     """Every pad command writes only its keys; agent/enabled has no persist field, the rest do."""
     servicer.state_manager.controller_states = {}
@@ -295,7 +295,7 @@ async def test_step_setting_writes_once_for_n_steps_and_announces(servicer, flag
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-015", flow="A7", br=["BR-005"])
+@pytest.mark.uc("UC-015", flow="A7", br=["BR-005"], cond=["Post-F-1"])
 @pytest.mark.parametrize(
     ("option", "direction", "start"),
     [
@@ -515,7 +515,7 @@ async def test_stop_when_already_stopped_is_a_no_op(servicer, flags, level, enab
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-015", flow="main", br=["BR-003"])
+@pytest.mark.uc("UC-015", flow="main", br=["BR-003"], cond=["Post-S-1"])
 async def test_resume_restores_the_saved_level_then_enables(servicer, flags):
     await pad(servicer, "agent_switch", direction="stop")
     flags.puts.clear()
@@ -889,3 +889,54 @@ def test_the_kill_switch_writer_never_persists():
     assert (("agent",), {"persist": False}) in calls
     assert menu.settings_ops.agent_enabled_writer is menu.agent_enabled_writer
     assert menu.admin_handler.settings_ops is menu.settings_ops
+
+
+# --- Coverage of the audit of 2026-10-27 (#2050): step 8, A2, A3 ------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="main", br=["BR-006"], steps=[8])
+async def test_volume_step_plays_the_volume_step_sound(servicer, flags):
+    """Step 8: a volume step plays the short VOLUME_STEP_SOUND at the new level, not a voice line."""
+    flags.values[("user", "audio_volume.master")] = "normal"
+
+    reply = await pad(servicer, "step_setting", option="audio_volume.master", direction="up")
+
+    assert (reply.success, reply.error) == (True, "")
+    assert flags.written() == [("user", "audio_volume.master", "loud")]
+    servicer.state_manager.audio.play_sound.assert_awaited_with(settings_ops.VOLUME_STEP_SOUND)
+    servicer.state_manager.audio.play_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A2")
+async def test_step_setting_while_admin_mode_is_open_writes_and_leaves_the_session_open(servicer, flags):
+    """A2: the last write wins and no lock is taken; only a force_start closes the admin session."""
+    admin = servicer.admin_handler
+    admin.active = True
+    admin.controller_serial = "adm"
+    span = create_autospec(trace.Span, instance=True)
+    admin.session_span = span
+
+    reply = await pad(servicer, "step_setting", option="sensitivity", direction="up")
+
+    assert (reply.success, reply.error) == (True, "")
+    assert flags.written() == [("game", "sensitivity", "fast")]
+    assert admin.is_active
+    assert admin.controller_serial == "adm"
+    span.end.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-010"])
+async def test_mode_step_succeeds_when_only_the_persisted_write_fails(servicer, flags):
+    """A3 exception: the selection takes effect in menu memory; only its survival of a restart is lost."""
+    flags.failing.add(("user", "current_game"))
+
+    reply = await pad(servicer, "step_setting", option="current_game", direction="up")
+
+    assert (reply.success, reply.error) == (True, "")
+    assert servicer.current_selection.name == GAME_MODES[1]
+    assert servicer.state_manager.current_game_mode.name == GAME_MODES[1]
+    assert len(flags.puts) == 1  # not retried
+    assert failure_cues(servicer) == 0  # not a failure for the host
