@@ -5,13 +5,15 @@
 # Sets up only what's needed to RUN JoustMania with Docker.
 # For development (running tests, building outside Docker), use setup_host.sh instead.
 #
-# What this installs:
-#   - Docker and docker-compose
+# What this installs (UC-060 A6, first-time install):
+#   - Docker and the docker compose plugin
+#   - Docker's default log limit (json-file 10m x 3, scripts/setup/docker-log-defaults.sh)
 #   - Bluetooth configuration
-#   - PS Move pairing daemon
 #
 # What this does NOT install:
 #   - Python/uv (not needed - runs in Docker)
+#   - the pairing daemon: it is a container of the stack
+# setup.sh then offers .env.local, the autostart unit and the pinned version.
 #
 # Prerequisites:
 #   - Raspberry Pi OS (64-bit recommended)
@@ -81,6 +83,11 @@ sudo apt-get install -y \
     jq \
     || exit 1
 echo -e "  → ${GREEN}Dependencies installed${NC}"
+
+# Docker's default log limit for any container without its own (the stack's
+# services set theirs in the compose files); merged, never overwritten (#2027)
+echo "  → Docker log defaults..."
+sudo bash "$SCRIPT_DIR/docker-log-defaults.sh"
 
 # Step 3: Configure Bluetooth
 echo "[3/4] Configuring Bluetooth..."
@@ -155,9 +162,10 @@ if [[ "$DOCKER_GROUP_CHANGED" = true ]]; then
     echo ""
 fi
 
-echo "To start JoustMania:"
+echo "To start JoustMania (the full stack, as the autostart runs it; UC-060, C-041):"
 echo "  cd $JOUSTMANIA_DIR"
-echo "  docker compose -f docker-compose.lite.yml up -d"
+echo "  ./scripts/setup/joustmania-compose.sh up -d"
+echo "  (docker-compose.lite.yml is for manual tests only)"
 echo ""
 
 echo "To pair controllers:"

@@ -65,7 +65,7 @@ if [[ "\$1" == compose && " \$* " == *" config "* ]]; then exec cat "${CASE}/con
 if [[ "\$1" == compose && " \$* " == *" up "* && -e "${CASE}/up-fails" ]]; then exit 1; fi
 exit 0
 STUB
-  printf '#!/usr/bin/env bash\nexit 1\n' >"${CASE}/bin/git" # no readable checkout: not pinned
+  printf '#!/usr/bin/env bash\ncase " $* " in *" symbolic-ref "*) exit 1 ;; *" rev-parse "*) echo 0123456789abcdef0123456789abcdef01234567 ;; *) exit 1 ;; esac\n' >"${CASE}/bin/git" # detached HEAD at a sha: pinned (UC-060 A4)
   printf '#!/usr/bin/env bash\nexit 0\n' >"${CASE}/bin/amixer"
   chmod +x "${CASE}/bin/"*
   printf 'rust-hid\nflagd\n' >"${CASE}/services"
