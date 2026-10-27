@@ -76,8 +76,12 @@ pub trait HidBackend {
     fn refresh_devices(&mut self) -> hidapi::HidResult<()>;
     /// Open every attached PS Move: (serial, device, product_id, adapter_name).
     fn discover_controllers(&self) -> Vec<(String, Self::Device, u16, Option<String>)>;
-    /// Open the attached PS Move with this serial: (device, product_id).
-    fn open_controller_by_serial(&self, serial: &str) -> Option<(Self::Device, u16)>;
+    /// Open the attached PS Move with this serial: (device, product_id, adapter_name).
+    /// The adapter is resolved once here, the same way discovery does (#2200).
+    fn open_controller_by_serial(
+        &self,
+        serial: &str,
+    ) -> Option<(Self::Device, u16, Option<String>)>;
 }
 
 impl HidBackend for HidApi {
@@ -91,7 +95,10 @@ impl HidBackend for HidApi {
         hid::discover_controllers(self)
     }
 
-    fn open_controller_by_serial(&self, serial: &str) -> Option<(Self::Device, u16)> {
+    fn open_controller_by_serial(
+        &self,
+        serial: &str,
+    ) -> Option<(Self::Device, u16, Option<String>)> {
         hid::open_controller_by_serial(self, serial)
     }
 }
@@ -320,8 +327,8 @@ fn handle_open<B: HidBackend>(
     }
 
     match api.open_controller_by_serial(serial) {
-        Some((device, product_id)) => {
-            info!(serial = %serial, "Opened controller");
+        Some((device, product_id, adapter_name)) => {
+            info!(serial = %serial, adapter = ?adapter_name, "Opened controller");
             let device = Arc::new(Mutex::new(device));
             outputs.open(serial, &device);
             devices.insert(
@@ -329,7 +336,7 @@ fn handle_open<B: HidBackend>(
                 DeviceEntry {
                     device,
                     product_id,
-                    adapter_name: None,
+                    adapter_name,
                 },
             );
             true
@@ -455,8 +462,17 @@ mod tests {
             )]
         }
 
-        fn open_controller_by_serial(&self, serial: &str) -> Option<(FakeDevice, u16)> {
-            (serial == SERIAL).then(|| (self.device.clone(), PRODUCT_ID_ZCM2))
+        fn open_controller_by_serial(
+            &self,
+            serial: &str,
+        ) -> Option<(FakeDevice, u16, Option<String>)> {
+            (serial == SERIAL).then(|| {
+                (
+                    self.device.clone(),
+                    PRODUCT_ID_ZCM2,
+                    Some("hci0".to_string()),
+                )
+            })
         }
     }
 
@@ -543,6 +559,42 @@ mod tests {
         assert_eq!(data.report.trigger, 200);
         // ZCM2 product id: gyro decoded as signed 16-bit
         assert_eq!(data.report.gyro_x, -1234.0);
+    }
+
+    // UC: UC-002 main step 3
+    #[test]
+    fn test_on_demand_open_keeps_the_adapter_name() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+
+        let (open_tx, open_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Open {
+                serial: SERIAL.to_string(),
+                reply: open_tx,
+            })
+            .unwrap();
+        assert!(open_rx.blocking_recv().unwrap());
+
+        // A verify-only pass lists the open devices without enumerating again.
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Discover {
+                force: false,
+                verify_only: true,
+                exclude_serials: vec![],
+                reply: reply_tx,
+            })
+            .unwrap();
+        let listed = reply_rx.blocking_recv().unwrap();
+        shutdown(&cmd_tx, handle);
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].serial, SERIAL);
+        assert_eq!(
+            listed[0].adapter_name, "hci0",
+            "a controller opened on demand lost its adapter name (#2200)"
+        );
     }
 
     // UC: UC-030 main step 2
@@ -642,7 +694,10 @@ mod tests {
             self.inner.discover_controllers()
         }
 
-        fn open_controller_by_serial(&self, serial: &str) -> Option<(FakeDevice, u16)> {
+        fn open_controller_by_serial(
+            &self,
+            serial: &str,
+        ) -> Option<(FakeDevice, u16, Option<String>)> {
             if serial != SERIAL {
                 self.opens
                     .lock()
@@ -790,7 +845,10 @@ mod tests {
                 .collect()
         }
 
-        fn open_controller_by_serial(&self, _serial: &str) -> Option<(LoadDevice, u16)> {
+        fn open_controller_by_serial(
+            &self,
+            _serial: &str,
+        ) -> Option<(LoadDevice, u16, Option<String>)> {
             None
         }
     }
@@ -959,9 +1017,12 @@ mod tests {
             )]
         }
 
-        fn open_controller_by_serial(&self, serial: &str) -> Option<(FakeDevice, u16)> {
+        fn open_controller_by_serial(
+            &self,
+            serial: &str,
+        ) -> Option<(FakeDevice, u16, Option<String>)> {
             self.opens.set(self.opens.get() + 1);
-            (serial == SERIAL).then(|| (self.device.clone(), PRODUCT_ID_ZCM2))
+            (serial == SERIAL).then(|| (self.device.clone(), PRODUCT_ID_ZCM2, None))
         }
     }
 
