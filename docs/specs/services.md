@@ -272,7 +272,7 @@ Two layers (`backend.py`, `multiplexer/`): `ControllerManagerServicer` calls the
 
 | Adapter (`adapter_type`) | Class | Role |
 |---|---|---|
-| `rust` | `RustServiceAdapter` (`rust_adapter.py`) | gRPC client of `rust-hid` (`RUST_HID_HOST` / `RUST_HID_PORT`, default `localhost:50058`); background bidirectional `StreamIO` stream, `poll()` reads the cached last sample per serial, `set_output()` queues an `IOCommand` (queue capacity 256). Default. |
+| `rust` | `RustServiceAdapter` (`rust_adapter.py`) | gRPC client of `rust-hid` (`RUST_HID_HOST` / `RUST_HID_PORT`, default `localhost:50058`); unary calls (Discover, Open, Close, CloseAll) carry a 5 s deadline (`RPC_TIMEOUT_S`, #2125), so a wedged rust-hid costs a discovery pass at most 5 s and reads as no serials / open failed; background bidirectional `StreamIO` stream, `poll()` reads the cached last sample per serial, `set_output()` queues an `IOCommand` (queue capacity 256). Default. |
 | `python` | `PythonHidAdapter` (`python_hid_adapter.py`) | Same shape, gRPC client of `python-hid` (`PYTHON_HID_HOST` / `PYTHON_HID_PORT`, default `localhost:50059`). Opt-in. |
 | `mock` | `MockAdapter` (`mock_adapter.py`) | Simulated I/O, always loaded with zero controllers (added through `AddControllers`, `MockControllerService`). |
 | `unstable` | `UnstableAdapter` (`unstable_adapter.py`) | Routing-only decorator around the *same* python instance: fresh polls at most every 0.12 s (about 8.3 Hz), every 10th dropped. Registered automatically when a `python` adapter is loaded (`backend_factory._build_routing_only_adapters`); never a default or fallback winner, never discovers on its own. |

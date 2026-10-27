@@ -3,10 +3,12 @@
 import queue
 from unittest.mock import MagicMock
 
+import grpc
 import pytest
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from services.controller_manager.multiplexer.rust_adapter import (
+    RPC_TIMEOUT_S,
     RustServiceAdapter,
     _sensor_data_to_dict,
 )
@@ -404,3 +406,31 @@ class TestSensorDataConversion:
         assert result[StateKey.GYRO][AxisKey.X] == pytest.approx(10.0)
         assert result[StateKey.GYRO][AxisKey.Y] == pytest.approx(-5.0)
         assert result[StateKey.GYRO][AxisKey.Z] == pytest.approx(0.0)
+
+
+@pytest.mark.uc("UC-002", flow="main", steps=[3])
+class TestUnaryCallsCarryADeadline:
+    """A wedged rust-hid must not freeze the controller manager (#2125)."""
+
+    def test_every_unary_call_has_the_deadline(self):
+        adapter = _make_adapter()
+        adapter._stream_running = True  # Skip stream start
+        adapter._stub.Discover.return_value.controllers = []
+        adapter._stub.Open.return_value.success = True
+
+        adapter.discover()
+        adapter.open("AABBCCDDEEFF")
+        adapter.close("AABBCCDDEEFF")
+        adapter.close_all()
+
+        for rpc in (adapter._stub.Discover, adapter._stub.Open, adapter._stub.Close, adapter._stub.CloseAll):
+            assert rpc.call_args.kwargs.get("timeout") == RPC_TIMEOUT_S, rpc
+
+    def test_a_timed_out_discover_returns_no_serials(self):
+        adapter = _make_adapter()
+        adapter._stream_running = True
+        err = grpc.RpcError()
+        err.code = lambda: grpc.StatusCode.DEADLINE_EXCEEDED
+        adapter._stub.Discover.side_effect = err
+
+        assert adapter.discover() == []
