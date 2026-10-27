@@ -62,6 +62,8 @@ LINE_KEYS = {"id", "sound", "text", "say", "recorded"}
 TOP_KEYS = {"version", "recorded", "loudness", "audio", "profiles", "sample", "areas"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]*$")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
+# The recordings: never written, whatever the catalog's `recorded` list says (C-050).
+PROTECTED_PROFILES = frozenset({"aaron", "ivy"})
 
 # --sample tolerances (Piper output varies run to run).
 SAMPLE_DURATION_TOLERANCE = 0.10
@@ -84,6 +86,7 @@ class Result:
     rendered: int = 0
     skipped: int = 0
     pruned: int = 0
+    refreshed: int = 0
     paths: list[str] = field(default_factory=list)
 
 
@@ -129,7 +132,7 @@ def validate_catalog(cat: dict) -> list[str]:
     for name, prof in profiles.items():
         if not SAFE_NAME.match(str(name)):
             errors.append(f"profile {name!r}: invalid name")
-        if name in recorded:
+        if name in recorded or name in PROTECTED_PROFILES:
             errors.append(
                 f"profile {name!r}: is a recorded profile; the generator never writes it"
             )
@@ -220,8 +223,14 @@ def assert_generated_path(cat: dict, rel: str) -> None:
         or ".." in parts
         or parts[2] not in cat["profiles"]
         or parts[2] in cat["recorded"]
+        or parts[2] in PROTECTED_PROFILES
     ):
         raise CatalogError(f"refusing to write {rel!r}: not under a generated profile")
+
+
+def text_hash(line: dict) -> str:
+    """The displayed text: a text edit must reach the manifest even when `say` is unchanged."""
+    return hashlib.sha256(" ".join(str(line["text"]).split()).encode()).hexdigest()
 
 
 def input_hash(cat: dict, profile: str, line: dict) -> str:
@@ -288,9 +297,16 @@ def _expected(cat: dict) -> dict[str, tuple[str, str, dict]]:
 
 
 def _generated_dirs(cat: dict, assets: Path):
-    for area in cat["areas"]:
-        for profile in cat["profiles"]:
-            yield Path(assets) / area / "vox" / profile
+    """Every <area>/vox/<generated profile>/ directory: catalog areas and any other area on disk."""
+    assets = Path(assets)
+    dirs = {
+        assets / area / "vox" / profile
+        for area in cat["areas"]
+        for profile in cat["profiles"]
+    }
+    for profile in cat["profiles"]:
+        dirs.update(d for d in assets.glob(f"*/vox/{profile}") if d.is_dir())
+    yield from sorted(dirs)
 
 
 # --- check (make voice-check) ------------------------------------------------
@@ -323,6 +339,10 @@ def check(cat: dict, assets: Path) -> list[str]:
         if entry.get("input_sha256") != input_hash(cat, profile, line):
             problems.append(
                 f"{rel}: stale (the catalog line or profile changed); run `make voice`"
+            )
+        elif entry.get("text_sha256") != text_hash(line):
+            problems.append(
+                f"{rel}: stale (the catalog text changed); run `make voice`"
             )
         path = assets / rel
         if not path.is_file():
@@ -381,7 +401,17 @@ def generate(
             and sha256_file(path) == entry.get("sha256")
         )
         if fresh:
-            result.skipped += 1
+            if entry.get("text_sha256") != text_hash(line):
+                # Only the displayed text changed: the audio stays, the manifest follows.
+                result.refreshed += 1
+                if not dry_run:
+                    files[rel] = {
+                        **entry,
+                        "line": line_key,
+                        "text_sha256": text_hash(line),
+                    }
+            else:
+                result.skipped += 1
             continue
         result.rendered += 1
         result.paths.append(rel)
@@ -394,6 +424,7 @@ def generate(
         files[rel] = {
             "line": line_key,
             "input_sha256": digest,
+            "text_sha256": text_hash(line),
             "sha256": hashlib.sha256(out.data).hexdigest(),
             "duration_s": round(out.duration_s, 3),
             "lufs": round(out.lufs, 2),
@@ -717,7 +748,7 @@ def main(argv: list[str] | None = None) -> int:
     except CatalogError as exc:
         print(f"gen_voice: {exc}", file=sys.stderr)
         return 2
-    print(f"gen_voice: rendered {result.rendered}, unchanged {result.skipped}, pruned {result.pruned}"
+    print(f"gen_voice: rendered {result.rendered}, unchanged {result.skipped}, text only {result.refreshed}, pruned {result.pruned}"
           + (" (dry run)" if args.dry_run else ""))  # fmt: skip
     return 0
 

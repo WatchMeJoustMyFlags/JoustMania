@@ -218,6 +218,47 @@ def test_check_without_manifest_fails(assets):
     assert any("manifest" in p for p in gv.check(_catalog(), assets))
 
 
+def test_text_edit_without_say_change_is_drift(assets):
+    """backend_jev has `say`: editing only its text must still fail the check (review F1)."""
+    _generate(_catalog(), assets)
+    catalog = _catalog()
+    catalog["areas"]["Menu"][2]["text"] = "Jev backend"
+    problems = gv.check(catalog, assets)
+    assert any("backend_jev" in p and "text" in p for p in problems), problems
+    result = _generate(catalog, assets)
+    assert result.rendered == 0  # the spoken audio is unchanged
+    assert result.refreshed == 2
+    assert gv.check(catalog, assets) == []
+
+
+def test_aaron_and_ivy_are_protected_even_when_not_listed_as_recorded(assets):
+    """The floor does not depend on the catalog's own `recorded` list (review F2)."""
+    catalog = _catalog()
+    catalog["recorded"] = ["ivy"]
+    catalog["profiles"]["gen_male"]["partner"] = "ivy"
+    catalog["profiles"]["aaron"] = catalog["profiles"].pop("gen_male")
+    assert any("aaron" in e for e in gv.validate_catalog(catalog))
+    with pytest.raises(gv.CatalogError):
+        _generate(catalog, assets)
+    with pytest.raises(gv.CatalogError):
+        gv.assert_generated_path(catalog, "Menu/vox/aaron/high.ogg")
+    assert (assets / "Menu/vox/aaron/high.ogg").read_bytes() == b"recorded aaron"
+
+
+def test_stray_file_in_an_area_outside_the_catalog_is_reported(assets):
+    """A gen_* directory of an area the catalog does not list yet still counts (review F3)."""
+    _generate(_catalog(), assets)
+    stray = assets / "Joust/vox/gen_male/congratulations.ogg"
+    stray.parent.mkdir(parents=True)
+    stray.write_bytes(b"x")
+    assert any(
+        "Joust/vox/gen_male/congratulations.ogg" in p
+        for p in gv.check(_catalog(), assets)
+    )
+    _generate(_catalog(), assets)
+    assert not stray.exists()
+
+
 def test_removed_line_is_pruned(assets):
     _generate(_catalog(), assets)
     catalog = _catalog()

@@ -21,8 +21,8 @@ command -v uv >/dev/null || { echo "gen-voice: uv not found (https://docs.astral
 
 for arg in "$@"; do
   if [[ "$arg" == --check ]]; then
-    # No TTS and no network: PyYAML is the only dependency.
-    exec uv run --no-project --with pyyaml python "$ROOT/scripts/tools/gen_voice.py" "$@"
+    # No TTS and no model download: PyYAML (pinned) is the only dependency.
+    exec uv run --no-project --with pyyaml==6.0.3 python "$ROOT/scripts/tools/gen_voice.py" "$@"
   fi
 done
 
