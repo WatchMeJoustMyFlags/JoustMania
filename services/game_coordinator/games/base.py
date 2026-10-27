@@ -1019,6 +1019,9 @@ class BaseGameMode(ABC):
         # loop or at the first grant, whichever comes first. None = not a hold game.
         self._shield_hold: ShieldHoldParams | None = None
         self._shield_hold_latched = False
+        # The mode the latch read, reused by the grant that triggered the latch, so
+        # that grant reads shield.activation once (flags.md §4: one read per grant).
+        self._shield_mode_at_latch: str | None = None
 
         # Settings - sensitivity is now passed via StartGameConfig.
         #
@@ -2773,13 +2776,18 @@ class BaseGameMode(ABC):
             return False
 
         # UC-040 BR-027: a hold game adds the grant to the player's energy (A36).
+        latched_here = not self._shield_hold_latched
         hold = self._latch_shield_hold()
         if hold is not None:
             return self._grant_shield_energy(player, seconds, hold)
 
         # UC-040 BR-019: in trigger mode the grant is a charge the player activates
-        # (A30). Read per grant, so a flip applies to the next grant only.
-        trigger = self._shield_activation_mode() == SHIELD_ACTIVATION_TRIGGER
+        # (A30). Read per grant, so a flip applies to the next grant only; the grant
+        # that latched the game reuses the latch's read.
+        mode, self._shield_mode_at_latch = self._shield_mode_at_latch, None
+        if mode is None or not latched_here:
+            mode = self._shield_activation_mode()
+        trigger = mode == SHIELD_ACTIVATION_TRIGGER
         if trigger and player.shield_charge_seconds > 0:
             # UC-040 A31: a held charge is refused before the shield limits.
             from services.game_coordinator.intervention_errors import InterventionNotApplied
@@ -3124,7 +3132,9 @@ class BaseGameMode(ABC):
         # Literal flag key, so the contract scan resolves the read.
         value = read_string_flag("game", "shield.activation", DEFAULT_SHIELD_ACTIVATION, game_id=self.game_id)
         mode = resolve_shield_activation(value)
-        return SHIELD_ACTIVATION_INSTANT if mode == SHIELD_ACTIVATION_HOLD else mode
+        if mode == SHIELD_ACTIVATION_HOLD and self._shield_hold_latched:
+            return SHIELD_ACTIVATION_INSTANT  # BR-027: the game was not latched to hold
+        return mode
 
     def _read_charge_expiry(self) -> float:
         """Seconds a new charge is held before it expires, 0 = never (flags.md §4, read per grant)."""
@@ -3358,14 +3368,14 @@ class BaseGameMode(ABC):
         """
         if self._shield_hold_latched:
             return self._shield_hold
-        self._shield_hold_latched = True
         if not self.SHIELD_TRIGGER_ALLOWED or self.game_kind == GAME_KIND_SHADOW:
+            self._shield_hold_latched = True
             return None
-        # Literal flag keys, so the contract scan resolves the reads.
-        mode = resolve_shield_activation(
-            read_string_flag("game", "shield.activation", DEFAULT_SHIELD_ACTIVATION, game_id=self.game_id)
-        )
+        # Before the latch is set this read keeps `hold` (it is not mapped to instant).
+        mode = self._shield_activation_mode()
+        self._shield_hold_latched = True
         if mode != SHIELD_ACTIVATION_HOLD:
+            self._shield_mode_at_latch = mode
             return None
         raw = {
             "shield.energy_max_seconds": read_float_flag(
