@@ -481,7 +481,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # mode's dim lobby colour; bounded like the post-game restore (BR-010).
         await _bounded_restore_step("controller re-registration", self.state_manager.reset)
 
-        await self.audio.start_lobby_music()
+        await _bounded_restore_step("lobby music", self.audio.start_lobby_music)
         self.idle_monitor.start()
         await self.event_publisher.publish("menu_started", {})
 

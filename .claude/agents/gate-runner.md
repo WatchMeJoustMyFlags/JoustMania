@@ -81,7 +81,11 @@ those targets in that case (`REFUSED: .venv-test is not writable`), so sudo is n
    - Still PENDING after 15 calls: stop and report `GATES PENDING: <the --logs dir you passed> - re-brief
      gate-runner with the same job` (the base logs dir, not the `<worktree>-<head8>` subdir).
    Never hand back while a run is in flight: an interim "still running" is not a result. Jobs run one after
-   another, never in parallel.
+   another, never in parallel. The script also limits the whole host to 2 concurrent
+   jobs (`JOUSTMANIA_GATE_SLOTS`, #2210) and caps each at 3 GB (`JOUSTMANIA_GATE_MEM`; exit 137 or 143 with the
+   systemd cap active prints `killed: memory cap`, report it as such; Docker containers are not under the
+   cap; `memory cap: none` means no `systemd-run --user`, the run is uncapped): a queued job's output starts with `waiting for a gate slot`, which
+   is normal; keep rerunning the same command.
 2. Read the script's stdout. It already holds everything you report: the head, one `run i/N: exit <rc>`
    line per repeat, the pr-gates table, `VERDICT: ...`, at most 20 failing lines and `Logs: ...`. Use Read
    on a log only if the caller's brief asks for a specific slice.

@@ -130,6 +130,7 @@ class GameSession:
         experiment_id: str = "",
         arm: str = "",
         rng_seed: int = 0,
+        pattern_trigger_policy: bool = False,
     ):
         self.game_id = game_id
         self.game_name = game_name
@@ -162,6 +163,10 @@ class GameSession:
         # primary game is structurally unable to be seeded — same real-protection
         # guard as experiment_id/arm.
         self.rng_seed = rng_seed
+        # UC-046 BR-018 / UC-040 BR-019 (#2096): the shadow game's pattern controllers
+        # press the trigger by themselves, so it honours trigger and hold. The
+        # servicer forces False for a real (primary) session, like rng_seed.
+        self.pattern_trigger_policy = pattern_trigger_policy
 
         self.game_start_time = time.time()
         self.game_state = game_coordinator_pb2.GameState.STARTING
@@ -675,6 +680,7 @@ class GameSession:
                 # set_game_transaction_context carries it for flag evaluation (#975).
                 game.experiment_id = self.experiment_id
                 game.arm = self.arm
+                game.pattern_trigger_policy = self.pattern_trigger_policy
                 # Let the game publish its gameplay_phase span_id back to the
                 # correlation gauge (#1195) when that span opens, so the agent can
                 # re-parent its in-game decision chain under gameplay_phase. The

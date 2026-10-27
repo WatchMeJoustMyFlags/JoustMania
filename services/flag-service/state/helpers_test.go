@@ -44,6 +44,9 @@ type fixtureOpts struct {
 	noStream  bool
 	k         int
 	maxGames  int
+	// registryYAML replaces registry.yaml when set (a registry row the real
+	// file does not have yet, e.g. a widened scope).
+	registryYAML string
 }
 
 // newFixture builds a State over the real CI flag files and registry.yaml,
@@ -54,7 +57,12 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 	if err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
-	reg, err := registry.LoadFile(repoPath(t, "registry.yaml"), base)
+	var reg *registry.Registry
+	if o.registryYAML != "" {
+		reg, err = registry.Parse([]byte(o.registryYAML), base)
+	} else {
+		reg, err = registry.LoadFile(repoPath(t, "registry.yaml"), base)
+	}
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}

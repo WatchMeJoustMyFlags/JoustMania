@@ -17,7 +17,7 @@ import numpy as np
 from opentelemetry import trace
 
 from proto import audio_pb2, audio_pb2_grpc
-from services.audio import metrics, sound_catalog
+from services.audio import alsa_config, metrics, sound_catalog
 from services.audio.music_player import DummyMusicPlayer, MusicPlayer
 
 logger = logging.getLogger(__name__)
@@ -89,6 +89,7 @@ class SoundChannel:
                     except Exception as e:
                         logger.warning(f"Playback error on channel {self.channel_id}: {e}")
                         metrics.audio_playback_errors_total.inc()
+                        alsa_config.note_playback_failure()
                     finally:
                         playing.clear()
 
@@ -546,6 +547,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         # If flagd is unavailable, default to audio enabled (hardware initialized).
         self.audio_enabled = self._load_play_audio_flag()
         self.audio_manager = AudioManager(silent=not self.audio_enabled)
+        # Lobby/game phase for the ALSA card watcher (UC-031 BR-008): True until a non-Menu track starts.
+        self.in_lobby = True
         # Voice profiles and partners from the voice manifest (UC-031 BR-007, #2107).
         self.voice_profiles = sound_catalog.load_voice_profiles(_PACKAGED_ASSETS)
         self._rejected_voices: set[str] = set()  # warned about already, once per value
@@ -914,6 +917,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         span.set_attribute("audio.pattern", request.file_pattern)
 
         # Check if audio is disabled via settings (read at use time, #1352)
+        # The phase follows the request even when muted: the watcher must not restart mid-game.
+        self.in_lobby = music_dir == "Menu"
         await self._refresh_play_audio()
         self._refresh_operator_gain()
         if not self.audio_enabled:
@@ -946,6 +951,9 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
     async def StopMusic(self, request, _context):
         """Stop music track."""
         success = self.audio_manager.stop_music(request.track_id)
+        # Any StopMusic leaves the lobby phase: the menu stops its music at game start, and the window until
+        # the game's PlayMusic (or the winner line at game end) counts as a game (UC-031 BR-008).
+        self.in_lobby = False
         return audio_pb2.StopMusicResponse(success=success, error="" if success else "Failed to stop music")
 
     def ChangeTempo(self, request, _context):

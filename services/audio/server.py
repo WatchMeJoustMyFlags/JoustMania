@@ -42,7 +42,8 @@ async def serve():
     # Auto-detect ALSA card and write /etc/asound.conf before opening any audio device
     from services.audio.alsa_config import configure_alsa_device
 
-    configure_alsa_device(os.getenv("ALSA_CARD", "auto"))
+    alsa_card_setting = os.getenv("ALSA_CARD", "auto")
+    configure_alsa_device(alsa_card_setting)
 
     # Initialize OTEL (get_tracer triggers TracerProvider setup for trace export)
     init_metrics()
@@ -100,10 +101,37 @@ async def serve():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown_event.set)
 
+    # UC-031 A6: with ALSA_CARD=auto, exit with a dedicated code when a better card appeared so the
+    # compose restart policy restarts the container and re-detects it.
+    card_change = False
+
+    def _on_card_change() -> None:
+        nonlocal card_change
+        card_change = True
+        shutdown_event.set()
+
+    watcher = None
+    if alsa_card_setting == "auto":
+        from services.audio.alsa_config import card_watch_busy, get_detected_card, watch_card_changes
+
+        watcher = asyncio.create_task(
+            watch_card_changes(
+                get_detected_card(),
+                _on_card_change,
+                is_busy=card_watch_busy(audio_servicer),
+            )
+        )
+
     await shutdown_event.wait()
 
     logger.info("Shutting down Audio service...")
+    if watcher is not None:
+        watcher.cancel()
     await server.stop(grace=5)
+    if card_change:
+        from services.audio.alsa_config import CARD_CHANGE_EXIT_CODE
+
+        raise SystemExit(CARD_CHANGE_EXIT_CODE)
 
 
 if __name__ == "__main__":

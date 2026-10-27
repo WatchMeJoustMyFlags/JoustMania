@@ -1634,6 +1634,29 @@ class TestExperimentSpawnBinding:
         assert servicer.sessions[real_gid].game_kind == "primary"
         assert servicer.sessions[real_gid].rng_seed == 0
 
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-019"])
+    @pytest.mark.uc("UC-046", flow="main", br=["BR-018"])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "origin", [game_coordinator_pb2.GAME_ORIGIN_AGENT, game_coordinator_pb2.GAME_ORIGIN_UNSPECIFIED]
+    )
+    async def test_pattern_trigger_policy_applies_to_shadow_and_is_dropped_for_real(self, servicer, origin):
+        """UC-040 BR-019 (#2096): ``pattern_trigger_policy`` binds only to a shadow session;
+        a menu-origin (real) start that carries it gets False, so it never changes a real game."""
+        shadow_config = _experiment_config(serials=("a1", "a2"), origin=origin)
+        shadow_config.pattern_trigger_policy = True
+        real_config = _experiment_config(serials=("b1", "b2"), origin=game_coordinator_pb2.GAME_ORIGIN_MENU)
+        real_config.pattern_trigger_policy = True
+        with _NO_THREAD:
+            ok_shadow, shadow_gid = await servicer._start_game_from_config(shadow_config, _MockSpan())
+            assert ok_shadow is True
+            assert servicer.sessions[shadow_gid].game_kind == "shadow"
+            assert servicer.sessions[shadow_gid].pattern_trigger_policy is True
+            ok_real, real_gid = await servicer._start_game_from_config(real_config, _MockSpan())
+        assert ok_real is True
+        assert servicer.sessions[real_gid].game_kind == "primary"
+        assert servicer.sessions[real_gid].pattern_trigger_policy is False
+
     @pytest.mark.asyncio
     async def test_shadow_experiment_threads_parent_span_context(self, servicer):
         """#1182: the inbound (experiment-traceparent) SpanContext is threaded onto

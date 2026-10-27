@@ -151,7 +151,30 @@ func (s *State) liveChecksLocked(f *flagState, sc Scope, scopeName string, res *
 			return fserr.Unprocessable(fserr.SerialNotInGame, "serial %q is not a player of game %q", sc.Serial, sc.GameID)
 		}
 	}
+	// #2096, UC-043 A17: a real write of a flag marked real_write:
+	// no_live_real_game waits until every registered game is a shadow game. Checked under s.mu,
+	// the lock RegisterGame and Reconcile hold, so no registration can slip in
+	// between this check and the write. Clear (the kill-switch revert) never
+	// comes here.
+	if scopeName == registry.ScopeReal && f.policy.RealWriteNeedsNoRealGame() {
+		if id := s.liveRealGameLocked(); id != "" {
+			return fserr.Conflict(fserr.RealGameLive, "real game %q is registered; a real write of %s waits until no real game runs", id, f.key)
+		}
+	}
 	return nil
+}
+
+// liveRealGameLocked returns the id of a registered game that may be real (the
+// smallest, for a stable message), or "" when none is registered. It fails
+// closed: every kind except exactly "shadow" counts, an empty or unknown kind
+// included (unlike targeting, FR-041, where only "real" matches the real rung).
+func (s *State) liveRealGameLocked() string {
+	for _, id := range sortedKeys(s.games) {
+		if s.games[id].Kind != gameKindShadow {
+			return id
+		}
+	}
+	return ""
 }
 
 func (s *State) streamCheckLocked(set string) *fserr.Error {
@@ -191,6 +214,11 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 	}
 	stackLike := scopeName == registry.ScopeStack || scopeName == registry.ScopeReal || scopeName == registry.ScopeFraction
 	var ttl time.Duration
+	if req.TTLSeconds != nil && scopeName == registry.ScopeReal && p.RealWriteNeedsNoRealGame() {
+		// An expiring real overlay would revert on a timer, mid-game, without
+		// passing the real-game guard (#2096, UC-043 A17).
+		return res, fserr.BadRequest("ttl_seconds is not allowed on a real write of %s (real_write: %s)", req.Flag, p.RealWrite)
+	}
 	if req.TTLSeconds != nil {
 		if !stackLike || *req.TTLSeconds <= 0 || math.IsInf(*req.TTLSeconds, 0) || math.IsNaN(*req.TTLSeconds) {
 			return res, fserr.BadRequest("ttl_seconds must be positive and applies to stack overlays only")

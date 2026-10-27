@@ -151,7 +151,7 @@ class TestGameplayFrameObservesLag:
 
         class PatternBackend:
             def pattern_frame(self, _serial, _subscriber_id, _explicit):
-                return {"x": 0.0, "y": 0.0, "z": 1.0}
+                return {"x": 0.0, "y": 0.0, "z": 1.0}, False
 
             def pattern_serials(self):
                 return {SERIAL}
