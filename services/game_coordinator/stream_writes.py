@@ -44,9 +44,16 @@ async def serialized_write(stream, message) -> None:
     lock = _lock_for(stream)
     await lock.acquire()
     try:
-        write = asyncio.ensure_future(stream.write(message))
+        # Eager start: the write runs at once up to its first real suspension, so a write
+        # that completes without suspending costs no extra loop turn (the frame path's order
+        # of events stays as with a plain await).
+        write = asyncio.Task(stream.write(message), loop=asyncio.get_running_loop(), eager_start=True)
     except BaseException:
         lock.release()
         raise
+    if write.done():
+        lock.release()
+        write.result()
+        return
     write.add_done_callback(_release_when_done(lock))
     await asyncio.shield(write)
