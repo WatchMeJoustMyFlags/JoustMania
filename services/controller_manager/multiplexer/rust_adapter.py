@@ -155,6 +155,10 @@ class RustServiceAdapter(ControllerIOAdapter):
                 serials.append(serial)
                 if c.adapter_name:
                     self._adapter_names[serial] = c.adapter_name
+                else:
+                    # An empty name (sysfs lookup failed, USB) must not keep the
+                    # previous hciN: the dashboard card would show a stale adapter.
+                    self._adapter_names.pop(serial, None)
             with self._data_lock:
                 self._closed.difference_update(serials)
             return serials

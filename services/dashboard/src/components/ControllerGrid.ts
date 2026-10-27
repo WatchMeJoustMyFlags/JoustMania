@@ -6,18 +6,51 @@
 import { ControllerCard } from "./ControllerCard.js";
 import type { GameplayData } from "../gen/controller_manager_pb.js";
 import type { ShieldStore } from "../shield.js";
+import { adapterCounts, adapterCountsText, showAdapterBadge } from "../adapters.js";
+import type { AdapterMap } from "../adapters.js";
 
 export class ControllerGrid {
   private readonly container: HTMLElement;
   private readonly cards: Map<string, ControllerCard> = new Map();
   private isLoading = true;
+  private adapters: AdapterMap = new Map();
+  private adaptersStale = false;
+  private readonly countsElement: HTMLElement | null;
 
-  constructor(containerId: string) {
+  constructor(containerId: string, countsId?: string) {
     const container = document.getElementById(containerId);
     if (!container) {
       throw new Error(`Container element not found: ${containerId}`);
     }
     this.container = container;
+    this.countsElement = countsId ? document.getElementById(countsId) : null;
+  }
+
+  /**
+   * The adapters from VictoriaMetrics (UC-035 BR-009). `null` = VictoriaMetrics
+   * unreachable: keep the last map and mark it stale (A3).
+   */
+  setAdapters(adapters: AdapterMap | null) {
+    if (adapters) {
+      this.adapters = adapters;
+      this.adaptersStale = false;
+    } else {
+      this.adaptersStale = true;
+    }
+    this.renderAdapters();
+  }
+
+  private renderAdapters() {
+    const counts = adapterCounts(this.adapters, this.cards.keys());
+    const badges = showAdapterBadge(counts);
+    for (const [serial, card] of this.cards) {
+      card.updateAdapter(badges ? this.adapters.get(serial) : undefined, this.adaptersStale);
+    }
+    if (!this.countsElement) return;
+    const text = adapterCountsText(counts);
+    this.countsElement.hidden = text === "";
+    this.countsElement.textContent = text && this.adaptersStale ? `${text} · stale` : text;
+    this.countsElement.classList.toggle("stale", this.adaptersStale);
   }
 
   setLoading(loading: boolean) {
@@ -71,6 +104,8 @@ export class ControllerGrid {
       // Update card with new data
       card.update(controller, shields?.get(controller.serial, nowMs) ?? null, nowMs, alive?.get(controller.serial));
     }
+
+    this.renderAdapters();
 
     // Show empty state if no controllers
     if (controllers.length === 0 && !this.isLoading) {

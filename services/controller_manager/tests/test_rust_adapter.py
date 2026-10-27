@@ -112,6 +112,38 @@ class TestGetAdapterForSerial:
 
         assert adapter.get_adapter_for_serial("AABBCCDDEEFF") == "hci0"
 
+    @pytest.mark.uc("UC-035", br=["BR-009"])
+    def test_label_is_exactly_the_adapter_name_from_rust_hid(self):
+        adapter = _make_adapter()
+        mock_ctrl = MagicMock()
+        mock_ctrl.serial = "AABBCCDDEEFF"
+        mock_ctrl.adapter_name = "hci7"
+        mock_ctrl.product_id = 0x03D5
+        adapter._stub.Discover.return_value = MagicMock(controllers=[mock_ctrl])
+        adapter._stream_running = True
+
+        adapter.discover()
+
+        assert adapter.get_adapter_for_serial("AABBCCDDEEFF") == "hci7"
+
+    @pytest.mark.uc("UC-002", flow="A4")
+    @pytest.mark.uc("UC-035", br=["BR-009"])
+    def test_rediscovery_with_empty_adapter_name_clears_the_old_adapter(self):
+        adapter = _make_adapter()
+        adapter._stream_running = True
+        ctrl = MagicMock()
+        ctrl.serial = "AABBCCDDEEFF"
+        ctrl.product_id = 0x03D5
+        ctrl.adapter_name = "hci1"
+        adapter._stub.Discover.return_value = MagicMock(controllers=[ctrl])
+        adapter.discover()
+        assert adapter.get_adapter_for_serial("AABBCCDDEEFF") == "hci1"
+
+        ctrl.adapter_name = ""  # reconnect whose sysfs lookup failed
+        adapter.discover()
+
+        assert adapter.get_adapter_for_serial("AABBCCDDEEFF") is None
+
     def test_returns_none_for_unknown(self):
         adapter = _make_adapter()
         assert adapter.get_adapter_for_serial("UNKNOWN") is None
