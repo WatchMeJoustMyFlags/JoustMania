@@ -1,7 +1,8 @@
 //! PairingService gRPC implementation.
 
 use hidapi::HidApi;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, TryLockError};
+use std::time::Duration;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
@@ -31,39 +32,89 @@ fn usb_controller_to_proto(c: hid::UsbController) -> UsbController {
     }
 }
 
-/// gRPC service implementation for PS Move pairing operations.
-pub struct PairingServiceImpl {
-    hid_api: Mutex<HidApi>,
+/// Budget of one pairing HID call (enumerate or pair). The pairing daemon's own
+/// deadline is 15 s; past this the RPC answers DEADLINE_EXCEEDED while the
+/// blocking thread finishes on its own.
+const PAIRING_HID_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// The blocking hidapi work behind PairingService; production is `HidApi`.
+pub trait PairingHid: Send + 'static {
+    /// Refresh the device list and read every USB-attached controller.
+    fn usb_controllers(&mut self) -> Vec<hid::UsbController>;
+    /// Write the host address: (already_paired, previous_host).
+    fn pair(&mut self, device_path: &str, adapter_address: &str) -> Result<(bool, String), String>;
 }
 
-impl PairingServiceImpl {
+impl PairingHid for HidApi {
+    fn usb_controllers(&mut self) -> Vec<hid::UsbController> {
+        // Refresh device list to pick up hot-plugged controllers
+        if let Err(e) = self.refresh_devices() {
+            warn!(error = %e, "Failed to refresh HID device list");
+        }
+        hid::enumerate_usb_controllers(self)
+    }
+
+    fn pair(&mut self, device_path: &str, adapter_address: &str) -> Result<(bool, String), String> {
+        hid::pair_controller(self, device_path, adapter_address)
+    }
+}
+
+/// gRPC service implementation for PS Move pairing operations.
+///
+/// hidapi calls block (open, feature-report ioctls), so they run on tokio's
+/// blocking pool, never on a runtime worker (#2125: blocked workers starved
+/// the runtime, health checks timed out). The HID handle is taken with
+/// `try_lock`: a second call while one is still running answers UNAVAILABLE
+/// at once instead of parking a thread on the mutex.
+pub struct PairingServiceImpl<H: PairingHid = HidApi> {
+    hid: Arc<Mutex<H>>,
+}
+
+impl PairingServiceImpl<HidApi> {
     pub fn new() -> Result<Self, String> {
         let api = HidApi::new().map_err(|e| format!("Failed to initialize HID API: {e}"))?;
-        Ok(Self {
-            hid_api: Mutex::new(api),
-        })
+        Ok(Self::with_hid(api))
+    }
+}
+
+impl<H: PairingHid> PairingServiceImpl<H> {
+    pub fn with_hid(hid: H) -> Self {
+        Self { hid: Arc::new(Mutex::new(hid)) }
+    }
+
+    /// Run `op` on the blocking pool with the HID handle, within `PAIRING_HID_TIMEOUT`.
+    #[allow(clippy::result_large_err)]
+    async fn run_blocking<T, F>(&self, op: F) -> Result<T, Status>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut H) -> T + Send + 'static,
+    {
+        let hid = self.hid.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let mut guard = match hid.try_lock() {
+                Ok(guard) => guard,
+                Err(TryLockError::WouldBlock) => {
+                    return Err(Status::unavailable("HID busy with another pairing call"));
+                }
+                Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            };
+            Ok(op(&mut guard))
+        });
+        match tokio::time::timeout(PAIRING_HID_TIMEOUT, task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => Err(Status::internal(format!("HID task failed: {e}"))),
+            Err(_) => Err(Status::deadline_exceeded("HID call took longer than 12 s")),
+        }
     }
 }
 
 #[tonic::async_trait]
-impl PairingService for PairingServiceImpl {
+impl<H: PairingHid> PairingService for PairingServiceImpl<H> {
     async fn get_usb_controllers(
         &self,
         _request: Request<GetUsbControllersRequest>,
     ) -> Result<Response<GetUsbControllersResponse>, Status> {
-        let controllers = {
-            let mut api = self
-                .hid_api
-                .lock()
-                .map_err(|e| Status::internal(format!("HID API lock poisoned: {e}")))?;
-
-            // Refresh device list to pick up hot-plugged controllers
-            if let Err(e) = api.refresh_devices() {
-                warn!(error = %e, "Failed to refresh HID device list");
-            }
-
-            hid::enumerate_usb_controllers(&api)
-        };
+        let controllers = self.run_blocking(|hid| hid.usb_controllers()).await?;
 
         info!(count = controllers.len(), "Enumerated USB controllers");
 
@@ -97,12 +148,8 @@ impl PairingService for PairingServiceImpl {
             "Pairing controller"
         );
 
-        let api = self
-            .hid_api
-            .lock()
-            .map_err(|e| Status::internal(format!("HID API lock poisoned: {e}")))?;
-
-        match hid::pair_controller(&api, &req.device_path, &req.adapter_address) {
+        let (path, address) = (req.device_path.clone(), req.adapter_address.clone());
+        match self.run_blocking(move |hid| hid.pair(&path, &address)).await? {
             Ok((already_paired, previous_host)) => {
                 if already_paired {
                     info!(serial = %req.serial, "Controller already paired");
@@ -152,5 +199,62 @@ mod tests {
         assert_eq!(proto.device_path, "/dev/hidraw3");
         assert_eq!(proto.serial, "00:06:F7:AA:BB:CC");
         assert_eq!(proto.product_id, 0x0C5E);
+    }
+
+    /// Enumeration blocks for `hold` (a stuck feature-report ioctl).
+    struct SlowHid {
+        hold: Duration,
+    }
+
+    impl PairingHid for SlowHid {
+        fn usb_controllers(&mut self) -> Vec<hid::UsbController> {
+            std::thread::sleep(self.hold);
+            vec![]
+        }
+
+        fn pair(&mut self, _: &str, _: &str) -> Result<(bool, String), String> {
+            std::thread::sleep(self.hold);
+            Ok((true, String::new()))
+        }
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    // One runtime worker, as a starved Pi runtime: a slow enumeration must not
+    // hold it, and a second call must not queue behind the first (#2125).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_a_blocking_hid_call_leaves_the_runtime_free() {
+        let svc = Arc::new(PairingServiceImpl::with_hid(SlowHid { hold: Duration::from_millis(800) }));
+        let slow = {
+            let svc = svc.clone();
+            tokio::spawn(async move {
+                svc.get_usb_controllers(Request::new(GetUsbControllersRequest {})).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Another task on the only worker runs at once.
+        let started = std::time::Instant::now();
+        let other = tokio::spawn(async move { std::time::Instant::now() });
+        let ran_at = other.await.unwrap();
+        assert!(
+            ran_at - started < Duration::from_millis(200),
+            "a concurrent task waited {:?} behind the HID call",
+            ran_at - started
+        );
+
+        // A second HID call while the first runs: UNAVAILABLE at once.
+        let t = std::time::Instant::now();
+        let busy = svc
+            .pair_controller(Request::new(PairControllerRequest {
+                device_path: "/dev/hidraw0".into(),
+                serial: "s".into(),
+                adapter_address: "00:11:22:33:44:55".into(),
+            }))
+            .await;
+        assert_eq!(busy.unwrap_err().code(), tonic::Code::Unavailable);
+        assert!(t.elapsed() < Duration::from_millis(200));
+
+        assert!(slow.await.unwrap().is_ok());
     }
 }

@@ -4240,6 +4240,16 @@ class BaseGameMode(ABC):
         """
         return self._latched_outcome is None
 
+    def _kill_gate_open(self, serial: str) -> bool:
+        """The kill path's gate: closed for every mode once the game is force-ended, else the mode's gate.
+
+        A force-end (UC-027) runs on the servicer thread and can land while the game
+        thread is still in a frame: the frame's later kills, and a kill awaiting its
+        explosion, then count nothing, in every mode (UC-030 step 9, UC-020 BR-003;
+        #2033). Checked only when a kill is attempted, so it costs nothing per frame.
+        """
+        return self.force_end_reason is None and self._accepts_kill(serial)
+
     async def _kill_player(self, serial: str, accel_mag: float, reason: str = "motion") -> bool:
         """
         Kill a player (template method calling subclass implementation).
@@ -4256,12 +4266,13 @@ class BaseGameMode(ABC):
 
         Returns:
             False when the kill was ignored (unknown or dead player, a kill of the
-            same player in flight) or declined by ``_accepts_kill``; True otherwise.
+            same player in flight), the game was force-ended (#2033) or the kill was
+            declined by ``_accepts_kill``; True otherwise.
         """
         player = self.players.get(serial)
         if not player or not player.alive or serial in self._kills_in_progress:
             return False
-        if not self._accepts_kill(serial):
+        if not self._kill_gate_open(serial):
             return False
 
         self._kills_in_progress.add(serial)
@@ -4311,7 +4322,7 @@ class BaseGameMode(ABC):
         # The gate again, synchronous with the bookkeeping and the mode's handler: a
         # mode's state may have changed during the awaits above (Swapper latched its
         # win, the game was force-ended), and a declined kill counts no death (#1988).
-        if not self._accepts_kill(serial):
+        if not self._kill_gate_open(serial):
             return False
         # Again after the awaits: energy granted while the kill awaited is dropped too.
         if self._shield_hold is not None:

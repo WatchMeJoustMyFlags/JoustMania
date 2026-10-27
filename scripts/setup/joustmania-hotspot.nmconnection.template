@@ -1,0 +1,34 @@
+# NetworkManager keyfile template for the stage hotspot (UC-061, C-043, C-044; #2099).
+# Rendered only by `joustmania-hotspot render` (password from stdin, never argv)
+# into a root-owned 0600 file under /etc/NetworkManager/system-connections/.
+# The tracked file never holds a password: @PSK@ is the only psk value allowed in git.
+# autoconnect=false: the helper alone decides when it is up (fallback only, BR-001).
+[connection]
+id=joustmania-hotspot
+uuid=e0602321-f72b-408b-983e-56ee57d519ee
+type=wifi
+interface-name=wlan0
+autoconnect=false
+
+[wifi]
+mode=ap
+band=a
+channel=@CHANNEL@
+ssid=@SSID@
+powersave=2
+
+[wifi-security]
+key-mgmt=wpa-psk
+proto=rsn
+pairwise=ccmp
+group=ccmp
+pmf=1
+psk=@PSK@
+
+[ipv4]
+method=shared
+address1=10.42.0.1/24
+never-default=true
+
+[ipv6]
+method=disabled

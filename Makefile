@@ -46,6 +46,11 @@ help:
 	@echo "  make spec-refs-check - Fail on a broken path:line / path:Symbol ref in docs/specs (CI)"
 	@echo "  make spec-refs       - Rewrite the undocumented-attribute baseline (growth needs a label)"
 	@echo ""
+	@echo "Voice catalog (#2107):"
+	@echo "  make voice           - Render changed lines of services/audio/voice/lines.yaml (Piper, downloads models once)"
+	@echo "  make voice-check     - Fail if the catalog, voice_manifest.json and the generated files disagree (CI, no TTS)"
+	@echo "  make voice-sample    - Re-render the sample lines and compare duration and loudness"
+	@echo ""
 	@echo "Direct docker compose commands:"
 	@echo "  docker compose up -d              # Start services"
 	@echo "  docker compose up -d --build      # Build and start"
@@ -191,6 +196,21 @@ specs:
 .PHONY: specs-check
 specs-check:
 	@$(SPECS_GEN) --check
+
+# Voice catalog (#2107, UC-031 BR-007, C-050): generated voice files are
+# committed (compose mounts the assets from the checkout). `make voice` after
+# editing services/audio/voice/lines.yaml, commit; CI runs `make voice-check`.
+VOICE_GEN = scripts/tools/gen-voice.sh
+
+.PHONY: voice voice-check voice-sample
+voice:
+	@$(VOICE_GEN)
+
+voice-check:
+	@$(VOICE_GEN) --check
+
+voice-sample:
+	@$(VOICE_GEN) --sample
 
 # Spec references (#1280): every `path:line` / `path:Symbol` in docs/specs/*.md
 # must name a full repo path that exists (line in range, symbol present); Go

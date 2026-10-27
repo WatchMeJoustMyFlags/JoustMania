@@ -2,10 +2,12 @@
 //!
 //! Translates gRPC calls into DeviceCmd messages sent to the device manager
 //! thread. The StreamIO bidir stream registers a sender for continuous
-//! sensor data and forwards IOCommands as SetOutput.
+//! sensor data and hands IOCommands to the per-controller output slots
+//! (`output::OutputRouter`, coalesced and rate-capped, UC-002 BR-005).
 
 use std::pin::Pin;
 use std::sync::mpsc as std_mpsc;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
@@ -13,6 +15,7 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, trace, warn};
 
 use crate::device_manager::{DeviceCmd, StreamSensorData};
+use crate::output::OutputRouter;
 use crate::service::proto;
 
 use proto::controller_io_service_server::ControllerIoService;
@@ -21,14 +24,29 @@ use proto::{
     DiscoverResponse, DiscoveredController, IoCommand, OpenRequest, OpenResponse, SensorData,
 };
 
+/// How long Discover / Open wait for the device-manager thread (#2125): a
+/// stalled loop answers UNAVAILABLE instead of holding the RPC for good.
+const DEVICE_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Wait for the device-manager thread's reply, within `DEVICE_REPLY_TIMEOUT`.
+#[allow(clippy::result_large_err)]
+async fn device_reply<T>(reply: oneshot::Receiver<T>) -> Result<T, Status> {
+    match tokio::time::timeout(DEVICE_REPLY_TIMEOUT, reply).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) => Err(Status::internal("Device manager did not respond")),
+        Err(_) => Err(Status::unavailable("Device manager busy: no reply within 10 s")),
+    }
+}
+
 /// gRPC service implementation for PS Move controller I/O.
 pub struct ControllerIoServiceImpl {
     cmd_tx: std_mpsc::Sender<DeviceCmd>,
+    outputs: OutputRouter,
 }
 
 impl ControllerIoServiceImpl {
-    pub fn new(cmd_tx: std_mpsc::Sender<DeviceCmd>) -> Self {
-        Self { cmd_tx }
+    pub fn new(cmd_tx: std_mpsc::Sender<DeviceCmd>, outputs: OutputRouter) -> Self {
+        Self { cmd_tx, outputs }
     }
 
     #[allow(clippy::result_large_err)]
@@ -55,9 +73,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
             reply: reply_tx,
         })?;
 
-        let discovered = reply_rx
-            .await
-            .map_err(|_| Status::internal("Device manager did not respond"))?;
+        let discovered = device_reply(reply_rx).await?;
 
         if req.verify_only {
             trace!(count = discovered.len(), "Discover verify_only");
@@ -90,9 +106,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
             reply: reply_tx,
         })?;
 
-        let success = reply_rx
-            .await
-            .map_err(|_| Status::internal("Device manager did not respond"))?;
+        let success = device_reply(reply_rx).await?;
 
         info!(serial = %serial, success, "Open");
         Ok(Response::new(OpenResponse { success }))
@@ -130,19 +144,21 @@ impl ControllerIoService for ControllerIoServiceImpl {
         // Register the sender with the device manager
         self.send_cmd(DeviceCmd::RegisterStream { sender: sensor_tx })?;
 
-        // Spawn task to read IOCommands from the client and forward as SetOutput
+        // Spawn task to read IOCommands from the client into the output slots
+        // (never blocks: coalesced per controller, written by its writer thread)
         let cmd_tx_clone = cmd_tx.clone();
+        let outputs = self.outputs.clone();
         tokio::spawn(async move {
             while let Some(result) = inbound.next().await {
                 match result {
                     Ok(io_cmd) => {
-                        let _ = cmd_tx_clone.send(DeviceCmd::SetOutput {
-                            serial: io_cmd.serial,
-                            r: io_cmd.r.clamp(0, 255) as u8,
-                            g: io_cmd.g.clamp(0, 255) as u8,
-                            b: io_cmd.b.clamp(0, 255) as u8,
-                            rumble: io_cmd.rumble.clamp(0, 255) as u8,
-                        });
+                        outputs.submit(
+                            &io_cmd.serial,
+                            io_cmd.r.clamp(0, 255) as u8,
+                            io_cmd.g.clamp(0, 255) as u8,
+                            io_cmd.b.clamp(0, 255) as u8,
+                            io_cmd.rumble.clamp(0, 255) as u8,
+                        );
                     }
                     Err(e) => {
                         warn!(error = %e, "Error reading IOCommand from stream");

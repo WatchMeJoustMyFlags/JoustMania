@@ -58,6 +58,7 @@ rectangle "JoustMania" {
     }
     package "Operations" {
         usecase "UC-060\nOperate the Stage Pi" as UC060
+        usecase "UC-061\nReach the Stage Pi over its own Hotspot" as UC061
     }
     package "Talk" {
         usecase "UC-070\nPresent the Talk Demo" as UC070
@@ -87,6 +88,7 @@ host --> UC013
 host --> UC014
 host --> UC015
 host --> UC053
+host --> UC061
 
 operator --> UC003
 operator --> UC004
@@ -101,6 +103,7 @@ operator --> UC050
 operator --> UC052
 operator --> UC053
 operator --> UC060
+operator --> UC061
 
 agent --> UC040
 agent --> UC041

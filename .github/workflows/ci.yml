@@ -610,6 +610,13 @@ jobs:
           fi
           echo "OK: no module-global random.* calls under games/"
 
+      # #2107 (UC-031 BR-007, C-050): the voice catalog, voice_manifest.json and
+      # the committed generated voice files agree. No TTS, no network; a
+      # generator-only change is covered by tests/contract/test_gen_voice.py.
+      - name: Voice catalog check
+        if: matrix.service == 'audio'
+        run: make voice-check
+
       - name: Typecheck
         continue-on-error: true  # ty is immature, don't block CI
         run: |
@@ -807,6 +814,11 @@ jobs:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: scripts/ci/spec-refs-gate.sh
+
+      - name: Install GLib for the GKeyFile round trip (UC-061 BR-004)
+        # tests/contract/test_hotspot_profile.py parses the rendered NM keyfile with
+        # GLib's own GKeyFile parser through the system python3; it fails in CI without it.
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends python3-gi gir1.2-glib-2.0
 
       - name: Run telemetry contract tests
         # test_flagd_resolution.py runs in the Flagd Contract job below.

@@ -129,7 +129,7 @@ impl WatchdogState {
 }
 
 /// One health probe over a fresh connection: true only for SERVING within the budget.
-async fn probe_health(addr: &str, budget: Duration) -> bool {
+pub(crate) async fn probe_health(addr: &str, budget: Duration) -> bool {
     let call = async {
         let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
             .ok()?
