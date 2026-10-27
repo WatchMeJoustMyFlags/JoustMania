@@ -359,10 +359,12 @@ async def test_shutdown_cancels_a_pending_stop():
     rig.step(1)
     rig.previewer.end_hold()
     await settle()
-    assert rig.previewer._stops
+    pending = set(rig.previewer._stops)
+    assert pending
     rig.previewer.cancel()
     await settle()
     assert rig.previewer._stops == set()
+    assert all(task.cancelled() for task in pending)
 
 
 @pytest.mark.uc("UC-015", flow="A1", br=["BR-017"], steps=[5])

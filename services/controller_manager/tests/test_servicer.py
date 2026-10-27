@@ -569,6 +569,7 @@ class TestExtractedHelpers:
             speed=0,
             trace_parent="",
             trace_state="",
+            shield_hold=None,
         )
 
     @pytest.mark.asyncio
@@ -600,6 +601,7 @@ class TestExtractedHelpers:
             speed=3,
             trace_parent="",
             trace_state="",
+            shield_hold=None,
         )
 
     def _make_mock_state(self, serial="AA:BB", name="P1"):

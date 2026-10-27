@@ -71,6 +71,25 @@ SHIELD_ENDING_PULSES = 2
 CHARGE_SLOT_WAIT_S = 1.0  # a cue waits this long for a busy rumble slot, then is skipped
 CHARGE_SLOT_POLL_S = 0.05
 
+# Shield hold (#2096, UC-040 BR-026): the idle energy layer shows four states in the
+# player's colour, the running activation is white by the energy left. Pure functions.
+HOLD_STATE_EMPTY = "empty"
+HOLD_STATE_LOW = "low"
+HOLD_STATE_CHARGED = "charged"
+HOLD_STATE_FULL = "full"
+HOLD_LOW_FRACTION = 1.0 / 3.0  # below a third of the cap is "low"
+HOLD_FULL_EPSILON_S = 0.05  # the coordinator's pool-full room (SHIELD_HOLD_POOL_FULL_ROOM_SECONDS)
+HOLD_LOW_MIN = 0.20
+HOLD_LOW_HZ = 1.0
+HOLD_FULL_WHITE_BLEND = 0.50
+HOLD_FULL_HZ = 0.5
+HOLD_ACTIVE_FLOOR = 0.30
+HOLD_COLOR = (255, 255, 255)  # protected, as every shield (BR-008)
+DEFAULT_HOLD_RUMBLE_INTENSITY = 70
+HOLD_RUMBLE_MAX = 150
+DEFAULT_EMPTY_PULSE_MS = 400
+EMPTY_PULSE_MS_RANGE = (100, 800)
+
 
 @dataclass(frozen=True)
 class ChargeCues:
@@ -118,6 +137,115 @@ def resolve_charge_cues(intensity: object, pulse_ms: object, reminder_s: object,
 
 def _scale(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
     return tuple(int(round(c * factor)) for c in color)  # type: ignore[return-value]
+
+
+@dataclass(frozen=True)
+class HoldCues:
+    """The cue values of a hold game, as the coordinator latched them (UC-040 BR-026)."""
+
+    pulses: ChargeCues = ChargeCues()
+    ending_lead_s: float = DEFAULT_SHIELD_ENDING_LEAD_S
+    hold_rumble: int = DEFAULT_HOLD_RUMBLE_INTENSITY
+    empty_pulse_ms: int = DEFAULT_EMPTY_PULSE_MS
+
+    @property
+    def empty_pulse(self) -> ChargeCues:
+        """One pulse of ``empty_pulse_ms`` at the cue intensity."""
+        return ChargeCues(intensity=self.pulses.intensity, pulse_ms=self.empty_pulse_ms)
+
+
+def resolve_hold_rumble_intensity(value: object) -> int:
+    """Validate ``shield.hold_rumble_intensity`` (flags.md §4): bad -> 70, clamped to 0..150."""
+    level = _finite_number(value)
+    if level is None or level < 0:
+        return DEFAULT_HOLD_RUMBLE_INTENSITY
+    return int(min(HOLD_RUMBLE_MAX, level))
+
+
+def resolve_empty_pulse_ms(value: object) -> int:
+    """Validate ``shield.empty_pulse_ms`` (flags.md §4): bad -> 400, clamped to 100..800."""
+    pulse = _finite_number(value)
+    if pulse is None or pulse <= 0:
+        return DEFAULT_EMPTY_PULSE_MS
+    return int(max(EMPTY_PULSE_MS_RANGE[0], min(EMPTY_PULSE_MS_RANGE[1], pulse)))
+
+
+@dataclass(frozen=True)
+class HoldEnergy:
+    """A player's idle shield energy as last sent by the coordinator (UC-040 BR-024, BR-026).
+
+    ``start`` is the controller clock at receipt; the level recharges at ``rate_per_s``
+    up to ``full_s`` (``min(cap, budget remaining)``), so it is a pure function of time.
+    """
+
+    energy_s: float
+    cap_s: float
+    full_s: float
+    min_burst_s: float
+    rate_per_s: float
+    start: float
+
+    def level(self, now: float) -> float:
+        energy = self.energy_s
+        if self.rate_per_s > 0 and energy < self.full_s:
+            energy = min(self.full_s, energy + self.rate_per_s * max(0.0, now - self.start))
+        return max(0.0, energy)
+
+    def is_full(self, energy: float) -> bool:
+        return energy >= self.full_s - HOLD_FULL_EPSILON_S and energy >= self.min_burst_s
+
+    def full_at(self) -> float | None:
+        """Controller time the recharge fills the pool; None when it never does or is full already."""
+        if self.rate_per_s <= 0 or self.is_full(self.energy_s) or self.full_s < self.min_burst_s:
+            return None
+        return self.start + max(0.0, self.full_s - HOLD_FULL_EPSILON_S - self.energy_s) / self.rate_per_s
+
+
+def hold_energy_state(energy_s: float, cap_s: float, full_s: float, min_burst_s: float) -> str:
+    """The idle energy state (UC-040 BR-026): empty, low, charged or full."""
+    if energy_s < min_burst_s - 1e-9:
+        return HOLD_STATE_EMPTY  # cannot activate (also once the budget is used up)
+    if energy_s >= full_s - HOLD_FULL_EPSILON_S:
+        return HOLD_STATE_FULL
+    if energy_s < cap_s * HOLD_LOW_FRACTION:
+        return HOLD_STATE_LOW
+    return HOLD_STATE_CHARGED
+
+
+def hold_energy_frame(elapsed_s: float, state: str, color: tuple[int, int, int]) -> tuple[int, int, int]:
+    """LED colour of the idle energy layer in ``state`` (UC-040 BR-026); never red, off or plain white.
+
+    - empty: the base colour, steady (as in a game without a shield);
+    - low: the base colour breathing 20 % to 100 % at 1 Hz;
+    - charged: the base colour breathing 60 % to 100 % at 0.5 Hz (the charge look, BR-021);
+    - full: breathing between the base colour and a 50 % white blend at 0.5 Hz.
+    """
+    elapsed_s = max(0.0, elapsed_s)
+    if state == HOLD_STATE_LOW:
+        wave = (1 - math.cos(2 * math.pi * HOLD_LOW_HZ * elapsed_s)) / 2
+        return _scale(color, 1.0 - (1.0 - HOLD_LOW_MIN) * wave)
+    if state == HOLD_STATE_CHARGED:
+        return charge_frame(elapsed_s, color)
+    if state == HOLD_STATE_FULL:
+        wave = (1 - math.cos(2 * math.pi * HOLD_FULL_HZ * elapsed_s)) / 2
+        blend = HOLD_FULL_WHITE_BLEND * wave
+        return tuple(int(round(c + (255 - c) * blend)) for c in color)  # type: ignore[return-value]
+    return tuple(color)  # type: ignore[return-value]
+
+
+def hold_active_frame(remaining_s: float, cap_s: float) -> tuple[int, int, int] | None:
+    """LED colour of a running hold activation with ``remaining_s`` of energy left (UC-040 BR-026).
+
+    White at 30 % + 70 % x (energy left / cap); the last second blinks at 4 Hz like a
+    shield (BR-008). None once the energy is gone: the layer below shows.
+    """
+    if remaining_s <= 0:
+        return None
+    if remaining_s <= SHIELD_BLINK_WINDOW_S:
+        phase = ((SHIELD_BLINK_WINDOW_S - remaining_s) * SHIELD_BLINK_HZ) % 1.0
+        return (0, 0, 0) if phase >= 0.5 else HOLD_COLOR
+    fill = min(1.0, remaining_s / cap_s) if cap_s > 0 else 1.0
+    return _scale(HOLD_COLOR, HOLD_ACTIVE_FLOOR + (1.0 - HOLD_ACTIVE_FLOOR) * fill)
 
 
 def shield_frame(

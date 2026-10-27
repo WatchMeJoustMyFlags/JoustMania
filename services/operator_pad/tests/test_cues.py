@@ -209,7 +209,9 @@ async def test_lock_drops_a_running_announcement_so_its_value_never_plays_over_i
     sleep.gate.set()
     await asyncio.wait_for(cues.drain(), 0.2)
     assert played(stub) == [Sound.MENU_VOX_LABEL_TEAMS.value, Sound.MENU_VOX_PAD_LOCKED.value]
-    assert stub.PlaySound.await_args_list[-1].args[0].group == ANNOUNCE_GROUP  # cuts the label clip too
+    stub.StopSound.assert_awaited_once()  # cuts the label clip too
+    assert stub.StopSound.await_args.args[0].group == ANNOUNCE_GROUP
+    assert stub.PlaySound.await_args_list[-1].args[0].group == ""  # a preview hold can never cut the lock word
 
 
 @pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])

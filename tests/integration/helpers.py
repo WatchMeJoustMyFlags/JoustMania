@@ -1264,7 +1264,7 @@ async def mark_controllers_ready(mock_client, serials: list[str]):
     """Mark controllers as ready by simulating button presses.
 
     In the Menu system, pressing TRIGGER marks controller as ready.
-    (MOVE cycles game modes instead)
+    (MOVE has no lobby action; the mode is chosen with select_game or the pad)
 
     Controllers are automatically known to the Menu via initial connection
     events sent when the Menu subscribes to the button stream.

@@ -117,7 +117,10 @@ class CuePlayer:
     async def lock(self, locked: bool) -> None:
         """ "Pad locked" / "Pad unlocked" (A6); a cue still to come never plays over it."""
         self.cancel_all()
-        await self.voice(LOCK_VOICES[locked], ANNOUNCE_GROUP)
+        # The announcement clip still playing stops (in the background), but the lock word plays with no
+        # group, so a later preview hold (which stops `pad_announce`, BR-017) can never cut it.
+        self._start(self.stop_group(ANNOUNCE_GROUP))
+        await self.voice(LOCK_VOICES[locked])
 
     async def announce(self, label: Sound, value: Sound) -> None:
         """BR-011: the label, then the value once the label has ended, in the background.

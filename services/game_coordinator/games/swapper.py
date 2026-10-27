@@ -20,6 +20,7 @@ from proto import controller_manager_pb2
 from services.game_coordinator import metrics
 from services.game_coordinator.games.base import Phase, Player
 from services.game_coordinator.games.teams_base import TEAM_WIN_SOUNDS, TeamsGameBase
+from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -264,7 +265,7 @@ class SwapperGame(TeamsGameBase):
                 duration_ms=400,
             )
         )
-        await self.gameplay_stream.write(effect_cmd)
+        await serialized_write(self.gameplay_stream, effect_cmd)
 
         # After flash, set new team color
         await self._swap_pause()
@@ -415,7 +416,7 @@ class SwapperGame(TeamsGameBase):
                 color=controller_manager_pb2.RGB(r=color[0], g=color[1], b=color[2]),
             )
         )
-        await self.gameplay_stream.write(base_color_cmd)
+        await serialized_write(self.gameplay_stream, base_color_cmd)
 
     def _get_team_counts(self) -> dict[int, int]:
         """Get count of players on each team."""
