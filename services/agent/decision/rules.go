@@ -202,16 +202,17 @@ func (r *ObjectiveRules) Evaluate(_ context.Context, c gamecontext.GameContext) 
 // build constructs the decide.Request lazily: it is called (under the engine
 // lock, so it must be pure and cheap enough) only when the evalInterval throttle
 // lets this evaluation actually rank, so the per-Export hot path never builds a
-// State it would throw away. It receives the ranking's shield-charge snapshot
-// (#1870), so the state marks exactly the players the ranking skipped. ranked is false on a throttled call (no decisions,
+// State it would throw away. It receives the ranking's shield-ledger snapshot
+// (#1870, #2066): the charged players and the no-shield set the ranking used, so
+// the state marks exactly the players the ranking skipped. ranked is false on a throttled call (no decisions,
 // no answers, req and resp are zero).
-func (r *ObjectiveRules) EvaluateDecide(_ context.Context, c gamecontext.GameContext, build func(charged map[string]bool) decide.Request) (out []Decision, req decide.Request, resp decide.Response, ranked bool) {
+func (r *ObjectiveRules) EvaluateDecide(_ context.Context, c gamecontext.GameContext, build func(charged, noShield map[string]bool) decide.Request) (out []Decision, req decide.Request, resp decide.Response, ranked bool) {
 	return r.evaluate(c, build)
 }
 
 // evaluate is the shared body of Evaluate and EvaluateDecide. With a nil build it
 // is exactly the pre-#1226 Evaluate.
-func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func(charged map[string]bool) decide.Request) ([]Decision, decide.Request, decide.Response, bool) {
+func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func(charged, noShield map[string]bool) decide.Request) ([]Decision, decide.Request, decide.Response, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -256,7 +257,7 @@ func (r *ObjectiveRules) evaluate(c gamecontext.GameContext, build func(charged 
 	// (out[0] == ranked[0]): the questions are widened to the engine's own ranked
 	// interventions and targets, so the allow-list (applied afterwards by the
 	// permission chain) cannot filter the answers into a different choice.
-	req := emissionRequest(build(charged), ranked)
+	req := emissionRequest(build(charged, noShield), ranked)
 	return out, req, answerFromRanked(ranked, req, true), true
 }
 

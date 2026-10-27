@@ -357,3 +357,25 @@ func TestRender_ShieldChargedToken(t *testing.T) {
 		}
 	})
 }
+
+// TestRender_ShieldLimitedAndLevelTokens: the shield_limited marker and the applied
+// factors (#2066) reach the user message and the system prompt explains them.
+//
+// UC: UC-040 main step 4 A33 A35
+func TestRender_ShieldLimitedAndLevelTokens(t *testing.T) {
+	t.Run("UC-040/A33 shield_limited and the factors are rendered and explained", func(t *testing.T) {
+		req := decide.Request{State: decide.State{
+			Players:   []decide.PlayerState{{Serial: "P1", Alive: true, ShieldLimited: true}},
+			Narrative: "players:\n  P1 alive danger=near_threshold shield_limited sensitivity_factor=0.80\n",
+		}}
+		p := Render(req)
+		if !strings.Contains(p.User, " shield_limited sensitivity_factor=0.80") {
+			t.Errorf("user message missing the tokens:\n%s", p.User)
+		}
+		for _, want := range []string{`"shield_limited" marks a player the agent would refuse another shield for now`, `"sensitivity_factor" / "handicap_factor" are the per-player levels the agent already applied`} {
+			if !strings.Contains(p.System, want) {
+				t.Errorf("system prompt does not explain: %s", want)
+			}
+		}
+	})
+}
