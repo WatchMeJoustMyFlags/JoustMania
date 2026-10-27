@@ -318,6 +318,25 @@ class TestMenuServicerStartStopMenu:
         assert ("menu_started", {}) in _published(real_servicer)
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11", br=["BR-010"])
+    async def test_start_menu_bounds_hung_lobby_music(self, real_servicer):
+        """A hung start_lobby_music cannot keep StartMenu open; the idle monitor still starts (#2195)."""
+
+        async def _hangs():
+            await asyncio.Event().wait()
+
+        real_servicer.audio.start_lobby_music.side_effect = _hangs
+        with patch("services.menu.servicer.LOBBY_RESTORE_STEP_TIMEOUT_SECONDS", 0.05):
+            task = asyncio.ensure_future(real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock()))
+            done, _ = await asyncio.wait({task}, timeout=2)
+            if task not in done:
+                task.cancel()
+            assert task in done, "StartMenu did not return: lobby music is not bounded"
+        assert task.result().success is True
+        real_servicer.idle_monitor.start.assert_called_once()
+        assert ("menu_started", {}) in _published(real_servicer)
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="main")  # Post-S-1: the next StartMenu restores current_game
     async def test_start_menu_restores_persisted_selection(self, real_servicer):
         """StartMenu restores the persisted current_game (UC-011 success postcondition)."""
