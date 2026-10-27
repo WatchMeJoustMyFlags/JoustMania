@@ -54,6 +54,25 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
+# UC-010 BR-010 (#2072): bound for each lobby-restore step, so a hung gRPC call cannot keep the
+# restore (and the window in which reset_menu is ignored) open for good. A recovery bound, not a
+# stage knob, so a constant (C-035).
+LOBBY_RESTORE_STEP_TIMEOUT_SECONDS = 10.0
+
+
+async def _bounded_restore_step(step: str, run) -> None:
+    """Run one lobby-restore step within LOBBY_RESTORE_STEP_TIMEOUT_SECONDS (UC-010 BR-010).
+
+    On a timeout the step is cancelled and logged. A cancel from outside
+    (menu stop, shutdown) is not a timeout: asyncio.timeout passes it on as CancelledError.
+    """
+    bound = LOBBY_RESTORE_STEP_TIMEOUT_SECONDS
+    try:
+        async with asyncio.timeout(bound):
+            await run()
+    except TimeoutError:
+        logger.error(f"Lobby restore: {step} did not finish within {bound}s; cancelled and skipped")
+
 
 def _variant(details) -> str:
     """The resolved variant name of an OpenFeature evaluation, empty when the client fell back to the default."""
@@ -1270,7 +1289,16 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         return game_started
 
     async def _restart_lobby(self):
-        """Restart lobby state after game ends."""
+        """Restart lobby state after game ends.
+
+        UC-010 BR-010: every step is bounded; a step that times out is logged and skipped, so the
+        restore always ends and the idle monitor always starts.
+        """
+
+        async def start_button_monitor_and_wait() -> None:
+            await self.start_button_monitor()
+            await self.controller_events.wait_for_connection()
+
         # UC-010 A8: a start refused in this window beeps (the players are back in the lobby).
         self._lobby_restarting = True
         try:
@@ -1278,16 +1306,15 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
             # Start button monitor with fresh trace context (not chained to game trace)
             with tracer.start_as_current_span("restart_button_monitor", context=otel_context.Context()):
-                await self.start_button_monitor()
-                await self.controller_events.wait_for_connection()
+                await _bounded_restore_step("button monitor", start_button_monitor_and_wait)
 
             # Reset lobby state
             with tracer.start_as_current_span("reset_lobby_state"):
                 # Reset state_manager and re-register controllers (sets lobby colors)
-                await self.state_manager.reset()
+                await _bounded_restore_step("controller re-registration", self.state_manager.reset)
 
             with tracer.start_as_current_span("restart_lobby_music"):
-                await self.audio.start_lobby_music()
+                await _bounded_restore_step("lobby music", self.audio.start_lobby_music)
 
             # Restart idle monitor with fresh timer
             self.idle_monitor.start()

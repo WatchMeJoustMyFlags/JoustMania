@@ -30,11 +30,33 @@
 HANDLER_FLAG_READS = {
     ("game", "shield.activation"): {
         "targeting": ["gameId"],
-        "readers": "games/base.py _shield_activation_mode <- grant_shield <- handle_shield_seconds",
+        "readers": "games/base.py _shield_activation_mode, _latch_shield_hold <- grant_shield <- handle_shield_seconds",
     },
     ("game", "shield.charge_expiry_seconds"): {
         "targeting": ["gameId"],
         "readers": "games/base.py _read_charge_expiry <- grant_shield <- handle_shield_seconds",
+    },
+    # Hold mode (#2096, UC-040 BR-027): latched once per game, at the start of the game
+    # loop or by the first grant, whichever is first; stack-only until FR-162.
+    ("game", "shield.energy_max_seconds"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
+    ("game", "shield.energy_budget_seconds"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
+    ("game", "shield.energy_initial_seconds"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
+    ("game", "shield.recharge_per_second"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
+    ("game", "shield.min_burst_seconds"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
     # Shield limits (#2044, UC-040 BR-022): operator flags the agent is to read with an empty
     # context too (#2044 agent half), so no targeting at all, or the two sides could differ.
