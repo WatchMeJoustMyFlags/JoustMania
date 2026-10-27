@@ -2315,6 +2315,39 @@ class TestConsumeGameEvents:
         return s
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", br=["BR-008"])
+    async def test_hold_energy_events_log_at_debug(self, servicer, caplog):
+        """UC-035 BR-008: the high-rate player_shield_energy is logged at DEBUG, other events at INFO."""
+        import logging
+
+        from services.menu.servicer import MenuServicer
+
+        events = []
+        for event_type in ("game_started", "player_shield_energy", "player_death"):
+            event = MagicMock()
+            event.event_type = event_type
+            event.data = {}
+            events.append(event)
+
+        async def fake_stream():
+            for event in events:
+                yield event
+
+        with caplog.at_level(logging.DEBUG, logger="services.menu.servicer"):
+            await MenuServicer._consume_game_events(servicer, fake_stream(), False, MagicMock())
+
+        levels = {
+            r.getMessage().removeprefix("Game event received: "): r.levelno
+            for r in caplog.records
+            if r.getMessage().startswith("Game event received: ")
+        }
+        assert levels == {
+            "game_started": logging.INFO,
+            "player_shield_energy": logging.DEBUG,
+            "player_death": logging.INFO,
+        }
+
+    @pytest.mark.asyncio
     async def test_game_ended_event_returns_should_return_true(self, servicer):
         """A game_ended event should trigger restart and return should_return=True."""
         from services.menu.servicer import MenuServicer, _GameEventResult
