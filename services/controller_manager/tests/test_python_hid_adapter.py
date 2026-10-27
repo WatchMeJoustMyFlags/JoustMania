@@ -31,10 +31,10 @@ def _make_adapter() -> PythonHidAdapter:
     return adapter
 
 
-@pytest.mark.uc("UC-002", flow="main", steps=[3])
 class TestUnaryCallsCarryADeadline:
     """A wedged python-hid must not freeze the controller manager (#2140)."""
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
     def test_every_unary_call_has_the_deadline(self):
         adapter = _make_adapter()
         adapter._stub.Discover.return_value.controllers = []
