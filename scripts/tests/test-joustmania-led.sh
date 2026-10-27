@@ -7,8 +7,11 @@
 #  - the board's own trigger is saved once and put back by restore
 #  - stop-post: a clean stop restores, a failed or timed-out start is `failed`
 #  - from-request applies the state joustmania-status --led left; a missing,
-#    invalid, symlinked or FIFO request shows `degraded`; no request falls back
-#    to the start.env result, else restores; starting drops a stale request
+#    invalid, symlinked or FIFO request shows `degraded`, also a request (or
+#    start.env) swapped for a symlink between the check and the open (#2135);
+#    no request falls back to the start.env result, else restores; starting
+#    drops a stale request
+#  - a change waits while another holder has the lock (#2135)
 #  - the UC-061 hotspot cue (#2137): its own pattern (timer 200/1800 ms), kept
 #    apart from the state; it wins over ok, degraded and the board's trigger,
 #    loses to starting and failed, comes back after them, and clearing it shows
@@ -165,6 +168,42 @@ ln -s "${CASE}/elsewhere" "${CASE}/run/led.request"
 led from-request
 expect "${CASE}/state/state" degraded
 
+# The unit's user swaps the request for a symlink after the -f/-L check and
+# before the open (#2135): a `timeout` on PATH does the swap just before the
+# helper's read runs. The open must refuse the symlink, never read through it.
+REAL_TIMEOUT="$(command -v timeout)"
+mkdir -p "${WORK}/swap-bin"
+cat >"${WORK}/swap-bin/timeout" <<STUB
+#!/usr/bin/env bash
+# swap <path> for a symlink to <target>, once, then run the real timeout
+if [[ -s "\${SWAP_SPEC:-}" ]]; then
+  read -r path target <"\$SWAP_SPEC"
+  : >"\$SWAP_SPEC"
+  rm -f "\$path" && ln -s "\$target" "\$path"
+fi
+exec "${REAL_TIMEOUT}" "\$@"
+STUB
+chmod +x "${WORK}/swap-bin/timeout"
+led_swap() { PATH="${WORK}/swap-bin:${PATH}" SWAP_SPEC="${CASE}/swap" "$LED" "$@" >"${CASE}/out" 2>&1; }
+
+make_case request-swapped
+printf 'ok\n' >"${CASE}/elsewhere"
+printf 'failed\n' >"${CASE}/run/led.request"
+printf '%s %s\n' "${CASE}/run/led.request" "${CASE}/elsewhere" >"${CASE}/swap"
+led_swap from-request
+[[ ! -s "${CASE}/swap" ]] || fail "request-swapped: the read did not go through timeout (test stub unused)"
+expect "${CASE}/state/state" degraded
+
+make_case start-env-swapped
+printf 'phase=start\nresult=ok\n' >"${CASE}/elsewhere"
+printf 'phase=start\nresult=failed\n' >"${CASE}/run/start.env"
+printf '%s %s\n' "${CASE}/run/start.env" "${CASE}/elsewhere" >"${CASE}/swap"
+led starting
+led_swap from-request
+[[ ! -s "${CASE}/swap" ]] || fail "start-env-swapped: the read did not go through timeout (test stub unused)"
+expect "${CASE}/state/state" default
+expect "${CASE}/sys/ACT/trigger" mmc0
+
 make_case request-stale
 printf 'ok\n' >"${CASE}/run/led.request"
 led starting
@@ -286,6 +325,32 @@ make_case cue-clear-none
 led ok
 led hotspot-clear || fail "cue-clear-none: exit $?"
 expect_pattern ok
+
+# --- every change runs under the lock (UC-061 BR-011; #2135) ---------------
+# The game unit's hooks and the hotspot timer can run the helper at the same
+# moment. While another holder has STATE_DIR/lock, a change must wait: a lock()
+# that does nothing would write the LED at once.
+if command -v flock >/dev/null 2>&1; then
+  make_case lock-held
+  led starting
+  flock "${CASE}/state/lock" sleep 3 &
+  holder=$!
+  for _ in $(seq 50); do
+    flock -n "${CASE}/state/lock" true || break
+    sleep 0.05
+  done
+  led ok &
+  writer=$!
+  sleep 1
+  expect "${CASE}/sys/ACT/trigger" heartbeat
+  expect "${CASE}/state/state" starting
+  wait "$holder" || true
+  wait "$writer" || fail "lock-held: the waiting writer failed"
+  expect "${CASE}/sys/ACT/trigger" default-on
+  expect "${CASE}/state/state" ok
+else
+  echo "SKIP lock-held: no flock on this host"
+fi
 
 if [[ $fails -gt 0 ]]; then
   echo "test-joustmania-led: ${fails} failure(s)"

@@ -25,7 +25,8 @@
 # /usr/local/lib/joustmania/joustmania-led and the unit runs that copy with the
 # `+` prefix, so no sudoers rule is needed and the code that runs as root is not
 # writable by the unit's user. It reads only one validated word from the
-# unit's runtime dir and writes only to the LED and to its own state dir.
+# unit's runtime dir (opened without following a symlink and without blocking,
+# #2135) and writes only to the LED and to its own state dir.
 # No LED (dev box) or no permission: one line, exit 0. It never fails the unit.
 #
 # Test overrides: JOUSTMANIA_LED_SYSFS (default /sys/class/leds),
@@ -220,12 +221,22 @@ hotspot_cue() { # $1 = failed|clear
     log "hotspot cue $1 (UC-061 A10); the LED shows $(describe "$SHOWN") on $dir (UC-061 BR-011)"
 }
 
-# The first line of a file the unit's user owns: a regular file, not a
-# symlink, read with a bound (a FIFO swapped in must not hang the unit). The
-# content is only compared with the state words, never logged.
-read_word() { # $1 = file
+# At most $2 bytes of a file in the unit's runtime dir, which the unit's user
+# owns and can change at any moment (#2135). The -f/-L test is only a filter:
+# the unit's user can swap the path for a symlink (to /dev/watchdog, say) after
+# it, so the open itself refuses a symlink (O_NOFOLLOW) and never blocks
+# (O_NONBLOCK: a FIFO reads empty), and the read is bounded in time and size.
+# 1 when the path is not a regular file or cannot be opened that way.
+read_bounded() { # $1 = file, $2 = max bytes
     [[ -f "$1" && ! -L "$1" ]] || return 1
-    timeout 2 head -c 64 -- "$1" </dev/null 2>/dev/null | head -n 1
+    timeout 2 dd if="$1" iflag=nofollow,nonblock bs="$2" count=1 status=none </dev/null 2>/dev/null
+}
+
+# The first line of the request: only compared with the state words, never logged
+read_word() { # $1 = file
+    local content
+    content="$(read_bounded "$1" 64)" || return 1
+    head -n 1 <<<"$content"
 }
 
 from_request() {
@@ -244,7 +255,7 @@ from_request() {
     # No request: joustmania-status has no --led (a rollback to a version
     # without it) or it stopped first. The start succeeded (ExecStartPost), so
     # take what joustmania-start.sh recorded, never a guessed degraded.
-    word="$(read_word "$START_ENV" >/dev/null && timeout 2 grep -m 1 '^result=' -- "$START_ENV" </dev/null 2>/dev/null)"
+    word="$(read_bounded "$START_ENV" 4096 | grep -m 1 '^result=')"
     case "${word#result=}" in
         ok | degraded)
             log "no led.request from joustmania-status --led; using start.env result ${word#result=}"
