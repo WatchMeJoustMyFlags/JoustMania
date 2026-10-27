@@ -44,7 +44,7 @@ visible under `/dev/snd` on the host.
 2. Wrong output (for example the Pi 4 jack while no USB card is present, so an HDMI card was picked): set `ALSA_CARD` to the number from
    `aplay -l` and restart the audio container.
 3. "Permission denied" on `/dev/snd/*`: the `group_add` GID does not match the host `audio` group.
-4. Cards that appear after the container started (USB hot-plug): the audio service notices within about 5 s, logs "ALSA card change" and exits with code 75; the restart policy brings it back on the new card (UC-031 BR-008). With an explicit `ALSA_CARD` restart the container by hand.
+4. Cards that appear after the container started (USB hot-plug): the audio service notices within about 10 s (2 polls of 5 s; it waits for the lobby if a game runs), logs "ALSA card change" and exits with code 75; the restart policy brings it back on the new card (UC-031 BR-008). With an explicit `ALSA_CARD` restart the container by hand.
 5. Check `play_audio` is on and the volume flags are not zero.
 6. Choppy music during tempo changes is CPU load from resampling; check `docker stats` on a loaded Pi.
 7. Custom music and sounds, formats and limits: see UC-031 BR-003 and services.md.

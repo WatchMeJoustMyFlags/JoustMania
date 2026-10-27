@@ -547,6 +547,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         # If flagd is unavailable, default to audio enabled (hardware initialized).
         self.audio_enabled = self._load_play_audio_flag()
         self.audio_manager = AudioManager(silent=not self.audio_enabled)
+        # Lobby/game phase for the ALSA card watcher (UC-031 BR-008): True until a non-Menu track starts.
+        self.in_lobby = True
         # Voice profiles and partners from the voice manifest (UC-031 BR-007, #2107).
         self.voice_profiles = sound_catalog.load_voice_profiles(_PACKAGED_ASSETS)
         self._rejected_voices: set[str] = set()  # warned about already, once per value
@@ -915,6 +917,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         span.set_attribute("audio.pattern", request.file_pattern)
 
         # Check if audio is disabled via settings (read at use time, #1352)
+        # The phase follows the request even when muted: the watcher must not restart mid-game.
+        self.in_lobby = music_dir == "Menu"
         await self._refresh_play_audio()
         self._refresh_operator_gain()
         if not self.audio_enabled:
@@ -947,6 +951,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
     async def StopMusic(self, request, _context):
         """Stop music track."""
         success = self.audio_manager.stop_music(request.track_id)
+        if success:
+            self.in_lobby = True
         return audio_pb2.StopMusicResponse(success=success, error="" if success else "Failed to stop music")
 
     def ChangeTempo(self, request, _context):

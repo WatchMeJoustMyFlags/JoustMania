@@ -255,6 +255,12 @@ class TestWatcher:
     def test_busy_but_playback_failed_restarts(self):
         assert _run_watcher([HDMI, USB], is_busy=lambda: True, failed=True) == [1]
 
+    def test_restarts_in_lobby_waits_in_game(self):
+        in_lobby = {"v": False}
+        assert _run_watcher([HDMI, USB], is_busy=lambda: not in_lobby["v"]) == []
+        in_lobby["v"] = True
+        assert _run_watcher([HDMI, USB], is_busy=lambda: not in_lobby["v"]) == [1]
+
     def test_restarts_once_idle(self):
         busy = iter([True, True, False])
         assert _run_watcher([HDMI, USB], is_busy=lambda: next(busy, False)) == [1]

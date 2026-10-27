@@ -118,7 +118,7 @@ async def serve():
             watch_card_changes(
                 get_detected_card(),
                 _on_card_change,
-                is_busy=lambda: bool(audio_servicer.audio_manager.music_player.is_playing),
+                is_busy=lambda: not audio_servicer.in_lobby,
             )
         )
 

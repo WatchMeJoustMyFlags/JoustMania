@@ -236,7 +236,7 @@ async def watch_card_changes(
 
     Keeps only counters and flags between polls (nothing grows per poll). A change must be seen on
     CARD_STABLE_POLLS polls in a row (a flapping card resets the count), and while is_busy() (music
-    playing, i.e. a game runs) the restart is deferred, with one log line, unless playback has failed.
+    a game runs, not the lobby) the restart is deferred, with one log line, unless playback has failed.
     max_polls bounds the loop (tests); None = until cancelled.
     """
     import asyncio

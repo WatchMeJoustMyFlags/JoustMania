@@ -3,7 +3,7 @@ Unit tests for Audio gRPC Servicer.
 """
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -751,3 +751,40 @@ class TestVoiceFollowUps2164:
         assert (
             servicer._resolve_sound_path("Fightclub-instructions") == "Menu/vox/gen_female/Fightclub-instructions.ogg"
         )
+
+
+@pytest.mark.uc("UC-031", flow="A6", br=["BR-008"])
+class TestInLobbyFlag:
+    """in_lobby feeds the card watcher: True until a non-Menu track starts, also when muted."""
+
+    @staticmethod
+    def _play(servicer, pattern):
+        import asyncio
+
+        from proto import audio_pb2
+
+        asyncio.run(servicer.PlayMusic(audio_pb2.PlayMusicRequest(file_pattern=pattern, loop=True), None))
+
+    def test_initially_in_lobby(self, mock_audio_servicer):
+        assert mock_audio_servicer.in_lobby is True
+
+    def test_game_track_leaves_lobby_menu_track_returns(self, mock_audio_servicer):
+        self._play(mock_audio_servicer, "Joust/music/*.ogg")
+        assert mock_audio_servicer.in_lobby is False
+        self._play(mock_audio_servicer, "Menu/music/*.ogg")
+        assert mock_audio_servicer.in_lobby is True
+
+    def test_muted_game_track_still_leaves_lobby(self, mock_audio_servicer):
+        mock_audio_servicer.audio_enabled = False
+        with patch.object(type(mock_audio_servicer), "_refresh_play_audio", new=AsyncMock()):
+            self._play(mock_audio_servicer, "Joust/music/*.ogg")
+        assert mock_audio_servicer.in_lobby is False
+
+    def test_stop_music_returns_to_lobby(self, mock_audio_servicer):
+        import asyncio
+
+        from proto import audio_pb2
+
+        self._play(mock_audio_servicer, "Joust/music/*.ogg")
+        asyncio.run(mock_audio_servicer.StopMusic(audio_pb2.StopMusicRequest(), None))
+        assert mock_audio_servicer.in_lobby is True
