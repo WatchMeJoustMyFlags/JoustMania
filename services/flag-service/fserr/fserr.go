@@ -18,6 +18,7 @@ const (
 	GameNotLive      = "game_not_live"
 	SetNotServed     = "set_not_served"
 	TooManyGames     = "too_many_games"
+	RealGameLive     = "real_game_live"
 	FlagReadOnly     = "flag_read_only"
 	OutOfBounds      = "out_of_bounds"
 	SerialNotInGame  = "serial_not_in_game"

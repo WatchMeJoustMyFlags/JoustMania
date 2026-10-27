@@ -18,6 +18,7 @@ const (
 	ctxExperimentID = "experiment_id"
 	ctxArm          = "arm"
 	gameKindReal    = "real"
+	gameKindShadow  = "shadow"
 )
 
 // renderedFlag is one flag as flagd reads it.
