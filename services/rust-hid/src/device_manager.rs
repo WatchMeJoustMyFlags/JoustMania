@@ -10,7 +10,7 @@
 
 use hidapi::HidApi;
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc, Mutex, TryLockError};
+use std::sync::{Arc, Mutex, TryLockError, mpsc};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -29,7 +29,7 @@ const MAX_CMDS_PER_PASS: usize = 64;
 #[derive(Debug, Clone)]
 pub struct DiscoveredControllerInfo {
     pub serial: String,
-    pub adapter_name: String,  // empty if unknown
+    pub adapter_name: String, // empty if unknown
     pub product_id: u32,
 }
 
@@ -195,7 +195,12 @@ fn handle_command<B: HidBackend>(
         DeviceCmd::Discover { reply, .. } if reply.is_closed() => {
             debug!("Skipped Discover: caller gone");
         }
-        DeviceCmd::Discover { force, verify_only, exclude_serials, reply } => {
+        DeviceCmd::Discover {
+            force,
+            verify_only,
+            exclude_serials,
+            reply,
+        } => {
             let serials =
                 handle_discover(api, devices, force, verify_only, &exclude_serials, outputs);
             let _ = reply.send(serials);
@@ -248,9 +253,11 @@ fn handle_discover<B: HidBackend>(
             .filter_map(|(serial, entry)| {
                 let mut buf = [0u8; 64];
                 // Busy = its writer is in a write: the device is there.
-                let Ok(device) = entry.device.try_lock() else { return None };
+                let Ok(device) = entry.device.try_lock() else {
+                    return None;
+                };
                 match device.read(&mut buf) {
-                    Ok(_) => None,             // Data or no data, device is alive
+                    Ok(_) => None,                  // Data or no data, device is alive
                     Err(_) => Some(serial.clone()), // Device gone
                 }
             })
@@ -278,7 +285,11 @@ fn handle_discover<B: HidBackend>(
                 info!(serial = %serial, "New controller discovered");
                 let device = Arc::new(Mutex::new(device));
                 outputs.open(&serial, &device);
-                DeviceEntry { device, product_id, adapter_name }
+                DeviceEntry {
+                    device,
+                    product_id,
+                    adapter_name,
+                }
             });
         }
     }
@@ -313,7 +324,14 @@ fn handle_open<B: HidBackend>(
             info!(serial = %serial, "Opened controller");
             let device = Arc::new(Mutex::new(device));
             outputs.open(serial, &device);
-            devices.insert(serial.to_string(), DeviceEntry { device, product_id, adapter_name: None });
+            devices.insert(
+                serial.to_string(),
+                DeviceEntry {
+                    device,
+                    product_id,
+                    adapter_name: None,
+                },
+            );
             true
         }
         None => {
@@ -429,7 +447,12 @@ mod tests {
         }
 
         fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
-            vec![(SERIAL.to_string(), self.device.clone(), PRODUCT_ID_ZCM2, Some("hci0".to_string()))]
+            vec![(
+                SERIAL.to_string(),
+                self.device.clone(),
+                PRODUCT_ID_ZCM2,
+                Some("hci0".to_string()),
+            )]
         }
 
         fn open_controller_by_serial(&self, serial: &str) -> Option<(FakeDevice, u16)> {
@@ -446,7 +469,9 @@ mod tests {
         heartbeat: Heartbeat,
     ) -> (mpsc::Sender<DeviceCmd>, JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel();
-        let backend = FakeBackend { device: device.clone() };
+        let backend = FakeBackend {
+            device: device.clone(),
+        };
         let handle = std::thread::spawn(move || {
             run_device_loop(backend, cmd_rx, &heartbeat, &DeviceOutputs::default())
         });
@@ -504,7 +529,9 @@ mod tests {
         assert_eq!(discovered[0].product_id, PRODUCT_ID_ZCM2 as u32);
 
         let (sensor_tx, mut sensor_rx) = tokio::sync::mpsc::channel(16);
-        cmd_tx.send(DeviceCmd::RegisterStream { sender: sensor_tx }).unwrap();
+        cmd_tx
+            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .unwrap();
         device.0.lock().unwrap().pending.push_back(sample_report());
 
         let data = recv_within(&mut sensor_rx, Duration::from_secs(2))
@@ -527,18 +554,27 @@ mod tests {
 
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         cmd_tx
-            .send(DeviceCmd::Open { serial: SERIAL.to_string(), reply: reply_tx })
+            .send(DeviceCmd::Open {
+                serial: SERIAL.to_string(),
+                reply: reply_tx,
+            })
             .unwrap();
         assert!(reply_rx.blocking_recv().unwrap());
         let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
-        cmd_tx.send(DeviceCmd::RegisterStream { sender: sensor_tx }).unwrap();
+        cmd_tx
+            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .unwrap();
 
         std::thread::sleep(Duration::from_millis(300));
         shutdown(&cmd_tx, handle);
 
         let polls = std::mem::take(&mut device.0.lock().unwrap().drained_at);
         let mut intervals: Vec<Duration> = polls.windows(2).map(|w| w[1] - w[0]).collect();
-        assert!(intervals.len() >= 50, "only {} poll intervals in 300 ms", intervals.len());
+        assert!(
+            intervals.len() >= 50,
+            "only {} poll intervals in 300 ms",
+            intervals.len()
+        );
         intervals.sort();
         let min = intervals[0];
         let median = intervals[intervals.len() / 2];
@@ -555,9 +591,18 @@ mod tests {
         // A median within 2 ms keeps up with the ~1 kHz controller, and p90 within 5 ms
         // catches periodic stalls. The max is not bounded: one scheduler hiccup under
         // CI load is not a defect.
-        assert!(min >= POLL_INTERVAL, "min poll interval {min:?} < 1 ms: busy-waiting");
-        assert!(median <= Duration::from_millis(2), "median poll interval {median:?} > 2 ms");
-        assert!(p90 <= Duration::from_millis(5), "p90 poll interval {p90:?} > 5 ms");
+        assert!(
+            min >= POLL_INTERVAL,
+            "min poll interval {min:?} < 1 ms: busy-waiting"
+        );
+        assert!(
+            median <= Duration::from_millis(2),
+            "median poll interval {median:?} > 2 ms"
+        );
+        assert!(
+            p90 <= Duration::from_millis(5),
+            "p90 poll interval {p90:?} > 5 ms"
+        );
     }
 
     // UC: UC-002 A7
@@ -599,7 +644,10 @@ mod tests {
 
         fn open_controller_by_serial(&self, serial: &str) -> Option<(FakeDevice, u16)> {
             if serial != SERIAL {
-                self.opens.lock().unwrap().push((Instant::now(), self.heartbeat.age()));
+                self.opens
+                    .lock()
+                    .unwrap()
+                    .push((Instant::now(), self.heartbeat.age()));
                 std::thread::sleep(Duration::from_micros(200));
             }
             self.inner.open_controller_by_serial(serial)
@@ -615,7 +663,9 @@ mod tests {
         let heartbeat = Heartbeat::new();
         let opens = Arc::new(Mutex::new(Vec::new()));
         let backend = FloodBackend {
-            inner: FakeBackend { device: device.clone() },
+            inner: FakeBackend {
+                device: device.clone(),
+            },
             heartbeat: heartbeat.clone(),
             opens: opens.clone(),
         };
@@ -623,13 +673,25 @@ mod tests {
         // Everything is queued before the loop starts, so its first pass sees the whole flood.
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (open_tx, open_rx) = tokio::sync::oneshot::channel();
-        cmd_tx.send(DeviceCmd::Open { serial: SERIAL.to_string(), reply: open_tx }).unwrap();
+        cmd_tx
+            .send(DeviceCmd::Open {
+                serial: SERIAL.to_string(),
+                reply: open_tx,
+            })
+            .unwrap();
         let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
-        cmd_tx.send(DeviceCmd::RegisterStream { sender: sensor_tx }).unwrap();
+        cmd_tx
+            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .unwrap();
         let mut replies = Vec::new();
         for i in 0..FLOOD {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            cmd_tx.send(DeviceCmd::Open { serial: format!("unknown-{i}"), reply: tx }).unwrap();
+            cmd_tx
+                .send(DeviceCmd::Open {
+                    serial: format!("unknown-{i}"),
+                    reply: tx,
+                })
+                .unwrap();
             replies.push(rx);
         }
         let handle = std::thread::spawn(move || {
@@ -717,7 +779,14 @@ mod tests {
         fn discover_controllers(&self) -> Vec<(String, LoadDevice, u16, Option<String>)> {
             self.devices
                 .iter()
-                .map(|(s, d)| (s.clone(), d.clone(), PRODUCT_ID_ZCM2, Some("hci0".to_string())))
+                .map(|(s, d)| {
+                    (
+                        s.clone(),
+                        d.clone(),
+                        PRODUCT_ID_ZCM2,
+                        Some("hci0".to_string()),
+                    )
+                })
                 .collect()
         }
 
@@ -736,22 +805,33 @@ mod tests {
 
         const RATE_HZ: u32 = 20;
         const RUN: Duration = Duration::from_secs(2);
-        let devices: Vec<(String, LoadDevice)> =
-            (0..9).map(|i| (format!("00:06:f7:00:00:{i:02x}"), LoadDevice::default())).collect();
+        let devices: Vec<(String, LoadDevice)> = (0..9)
+            .map(|i| (format!("00:06:f7:00:00:{i:02x}"), LoadDevice::default()))
+            .collect();
         let stuck = devices[0].1.clone();
         stuck.0.block.store(true, Relaxed);
 
-        let outputs = DeviceOutputs { router: OutputRouter::default(), rate: OutputRate::new(RATE_HZ) };
+        let outputs = DeviceOutputs {
+            router: OutputRouter::default(),
+            rate: OutputRate::new(RATE_HZ),
+        };
         let heartbeat = Heartbeat::new();
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let handle = {
-            let backend = LoadBackend { devices: devices.clone() };
+            let backend = LoadBackend {
+                devices: devices.clone(),
+            };
             let (outputs, heartbeat) = (outputs.clone(), heartbeat.clone());
             std::thread::spawn(move || run_device_loop(backend, cmd_rx, &heartbeat, &outputs))
         };
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         cmd_tx
-            .send(DeviceCmd::Discover { force: false, verify_only: false, exclude_serials: vec![], reply: reply_tx })
+            .send(DeviceCmd::Discover {
+                force: false,
+                verify_only: false,
+                exclude_serials: vec![],
+                reply: reply_tx,
+            })
             .unwrap();
         assert_eq!(reply_rx.blocking_recv().unwrap().len(), 9);
 
@@ -775,7 +855,9 @@ mod tests {
 
             // Sensor stream consumer: samples per serial.
             let (sensor_tx, mut sensor_rx) = tokio::sync::mpsc::channel(1024);
-            cmd_tx.send(DeviceCmd::RegisterStream { sender: sensor_tx }).unwrap();
+            cmd_tx
+                .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+                .unwrap();
             let counter = tokio::spawn(async move {
                 let mut per_serial: HashMap<String, usize> = HashMap::new();
                 let deadline = tokio::time::Instant::now() + RUN;
@@ -793,7 +875,13 @@ mod tests {
                 let mut i = 0u32;
                 while start.elapsed() < RUN {
                     for s in &serials {
-                        router.submit(s, (i % 256) as u8, 0, 0, if i.is_multiple_of(20) { 255 } else { 0 });
+                        router.submit(
+                            s,
+                            (i % 256) as u8,
+                            0,
+                            0,
+                            if i.is_multiple_of(20) { 255 } else { 0 },
+                        );
                     }
                     i += 1;
                     std::thread::sleep(Duration::from_millis(10));
@@ -826,8 +914,14 @@ mod tests {
             health_latencies.len(),
             samples.values().collect::<Vec<_>>()
         );
-        assert!(max_health < Duration::from_millis(500), "health answered in {max_health:?}");
-        assert!(heartbeat_age < Duration::from_millis(100), "device loop stalled: {heartbeat_age:?}");
+        assert!(
+            max_health < Duration::from_millis(500),
+            "health answered in {max_health:?}"
+        );
+        assert!(
+            heartbeat_age < Duration::from_millis(100),
+            "device loop stalled: {heartbeat_age:?}"
+        );
         let max_writes = (RUN.as_secs_f64() * f64::from(RATE_HZ)).ceil() as usize + 3;
         for (serial, device) in &devices[1..] {
             let writes = device.0.writes.load(Relaxed);
@@ -857,7 +951,12 @@ mod tests {
         }
 
         fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
-            vec![(SERIAL.to_string(), self.device.clone(), PRODUCT_ID_ZCM2, None)]
+            vec![(
+                SERIAL.to_string(),
+                self.device.clone(),
+                PRODUCT_ID_ZCM2,
+                None,
+            )]
         }
 
         fn open_controller_by_serial(&self, serial: &str) -> Option<(FakeDevice, u16)> {
@@ -866,15 +965,31 @@ mod tests {
         }
     }
 
-    fn handle(cmd: DeviceCmd, api: &mut CountingBackend) -> HashMap<String, DeviceEntry<FakeDevice>> {
+    fn handle(
+        cmd: DeviceCmd,
+        api: &mut CountingBackend,
+    ) -> HashMap<String, DeviceEntry<FakeDevice>> {
         let mut devices = HashMap::new();
         let mut stream_sender = None;
-        assert!(handle_command(cmd, api, &mut devices, &mut stream_sender, &DeviceOutputs::default()));
+        assert!(handle_command(
+            cmd,
+            api,
+            &mut devices,
+            &mut stream_sender,
+            &DeviceOutputs::default()
+        ));
         devices
     }
 
-    fn discover_cmd(reply: tokio::sync::oneshot::Sender<Vec<DiscoveredControllerInfo>>) -> DeviceCmd {
-        DeviceCmd::Discover { force: true, verify_only: false, exclude_serials: vec![], reply }
+    fn discover_cmd(
+        reply: tokio::sync::oneshot::Sender<Vec<DiscoveredControllerInfo>>,
+    ) -> DeviceCmd {
+        DeviceCmd::Discover {
+            force: true,
+            verify_only: false,
+            exclude_serials: vec![],
+            reply,
+        }
     }
 
     // UC: UC-002 BR-005
@@ -888,7 +1003,10 @@ mod tests {
         let devices = handle(discover_cmd(reply_tx), &mut api);
 
         assert_eq!(api.refreshes, 0, "an abandoned Discover still enumerated");
-        assert!(devices.is_empty(), "an abandoned Discover still opened a device");
+        assert!(
+            devices.is_empty(),
+            "an abandoned Discover still opened a device"
+        );
     }
 
     // UC: UC-002 BR-005
@@ -899,9 +1017,19 @@ mod tests {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         drop(reply_rx);
 
-        let devices = handle(DeviceCmd::Open { serial: SERIAL.to_string(), reply: reply_tx }, &mut api);
+        let devices = handle(
+            DeviceCmd::Open {
+                serial: SERIAL.to_string(),
+                reply: reply_tx,
+            },
+            &mut api,
+        );
 
-        assert_eq!(api.opens.get(), 0, "an abandoned Open still opened the device");
+        assert_eq!(
+            api.opens.get(),
+            0,
+            "an abandoned Open still opened the device"
+        );
         assert!(devices.is_empty());
     }
 
@@ -917,7 +1045,13 @@ mod tests {
         assert!(devices.contains_key(SERIAL));
 
         let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
-        let devices = handle(DeviceCmd::Open { serial: SERIAL.to_string(), reply: reply_tx }, &mut api);
+        let devices = handle(
+            DeviceCmd::Open {
+                serial: SERIAL.to_string(),
+                reply: reply_tx,
+            },
+            &mut api,
+        );
         assert_eq!(api.opens.get(), 1);
         assert!(reply_rx.try_recv().unwrap());
         assert!(devices.contains_key(SERIAL));

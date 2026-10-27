@@ -202,8 +202,8 @@ pub fn pair_controller(
     device_path: &str,
     adapter_address: &str,
 ) -> Result<(bool, String), String> {
-    let c_path = std::ffi::CString::new(device_path)
-        .map_err(|e| format!("Invalid device path: {e}"))?;
+    let c_path =
+        std::ffi::CString::new(device_path).map_err(|e| format!("Invalid device path: {e}"))?;
 
     let device = api
         .open_path(&c_path)
@@ -242,27 +242,45 @@ pub fn pair_controller(
 #[derive(Debug, Clone)]
 pub struct ParsedInputReport {
     pub buttons: u32,
-    pub trigger: u8,         // Second frame analog trigger (0-255)
-    pub battery: i32,        // Percentage (0-100)
+    pub trigger: u8,  // Second frame analog trigger (0-255)
+    pub battery: i32, // Percentage (0-100)
     pub temperature: i32,
-    pub accel_x: f32,        // Scaled, units of g
+    pub accel_x: f32, // Scaled, units of g
     pub accel_y: f32,
     pub accel_z: f32,
-    pub gyro_x: f32,         // Raw units
+    pub gyro_x: f32, // Raw units
     pub gyro_y: f32,
     pub gyro_z: f32,
 }
 
 impl ParsedInputReport {
-    pub fn button_move(&self) -> bool { self.buttons & Button::MOVE != 0 }
-    pub fn button_trigger(&self) -> bool { self.buttons & Button::T != 0 }
-    pub fn button_ps(&self) -> bool { self.buttons & Button::PS != 0 }
-    pub fn button_cross(&self) -> bool { self.buttons & Button::CROSS != 0 }
-    pub fn button_circle(&self) -> bool { self.buttons & Button::CIRCLE != 0 }
-    pub fn button_square(&self) -> bool { self.buttons & Button::SQUARE != 0 }
-    pub fn button_triangle(&self) -> bool { self.buttons & Button::TRIANGLE != 0 }
-    pub fn button_select(&self) -> bool { self.buttons & Button::SELECT != 0 }
-    pub fn button_start(&self) -> bool { self.buttons & Button::START != 0 }
+    pub fn button_move(&self) -> bool {
+        self.buttons & Button::MOVE != 0
+    }
+    pub fn button_trigger(&self) -> bool {
+        self.buttons & Button::T != 0
+    }
+    pub fn button_ps(&self) -> bool {
+        self.buttons & Button::PS != 0
+    }
+    pub fn button_cross(&self) -> bool {
+        self.buttons & Button::CROSS != 0
+    }
+    pub fn button_circle(&self) -> bool {
+        self.buttons & Button::CIRCLE != 0
+    }
+    pub fn button_square(&self) -> bool {
+        self.buttons & Button::SQUARE != 0
+    }
+    pub fn button_triangle(&self) -> bool {
+        self.buttons & Button::TRIANGLE != 0
+    }
+    pub fn button_select(&self) -> bool {
+        self.buttons & Button::SELECT != 0
+    }
+    pub fn button_start(&self) -> bool {
+        self.buttons & Button::START != 0
+    }
 }
 
 /// Convert battery raw value to percentage (0-100).
@@ -314,7 +332,7 @@ pub fn parse_input_report(data: &[u8], zcm2: bool) -> Result<ParsedInputReport, 
     let buttons = (data[2] as u32)                          // buttons2: face buttons
         | ((data[1] as u32) << 8)                           // buttons1: Select, Start
         | (((data[3] & 0x01) as u32) << 16)                 // buttons3 bit 0: PS
-        | (((data[4] & 0xF0) as u32) << 13);                // buttons4 bits 4-7: Move, T
+        | (((data[4] & 0xF0) as u32) << 13); // buttons4 bits 4-7: Move, T
 
     // Trigger analog: byte 6 (frame 2)
     let trigger = data[6];
@@ -331,7 +349,9 @@ pub fn parse_input_report(data: &[u8], zcm2: bool) -> Result<ParsedInputReport, 
         let gx = i16::from_le_bytes([data[31], data[32]]);
         let gy = i16::from_le_bytes([data[33], data[34]]);
         let gz = i16::from_le_bytes([data[35], data[36]]);
-        (ax as i32, ay as i32, az as i32, gx as i32, gy as i32, gz as i32)
+        (
+            ax as i32, ay as i32, az as i32, gx as i32, gy as i32, gz as i32,
+        )
     } else {
         // ZCM1: unsigned 16-bit offset by 0x8000
         let ax = u16::from_le_bytes([data[19], data[20]]) as i32 - 0x8000;
@@ -725,10 +745,10 @@ mod tests {
         // So: buttons2 = result & 0xFF, buttons1 = (result >> 8) & 0xFF
         //     buttons3 bit 0 = (result >> 16) & 0x01
         //     buttons4 high nibble = (result >> 13) & 0xF0
-        data[1] = ((buttons >> 8) & 0xFF) as u8;        // buttons1
-        data[2] = (buttons & 0xFF) as u8;                // buttons2
-        data[3] = ((buttons >> 16) & 0x01) as u8;        // buttons3
-        data[4] = ((buttons >> 13) & 0xF0) as u8;        // buttons4 high nibble
+        data[1] = ((buttons >> 8) & 0xFF) as u8; // buttons1
+        data[2] = (buttons & 0xFF) as u8; // buttons2
+        data[3] = ((buttons >> 16) & 0x01) as u8; // buttons3
+        data[4] = ((buttons >> 13) & 0xF0) as u8; // buttons4 high nibble
         // Trigger frame 2: byte 6
         data[6] = trigger2;
         // Battery: byte 12
@@ -750,11 +770,11 @@ mod tests {
     fn test_parse_input_report_zcm1_buttons() {
         let data = make_input_report(
             Button::MOVE | Button::T | Button::CROSS,
-            128,  // trigger
-            0x05, // battery MAX
+            128,                      // trigger
+            0x05,                     // battery MAX
             (0x8000, 0x8000, 0x9000), // accel at 0, 0, ~1g
             (0x8000, 0x8000, 0x8000), // gyro all zero
-            300, // temperature
+            300,                      // temperature
         );
         let report = parse_input_report(&data, false).unwrap();
         assert!(report.button_move());
@@ -772,7 +792,9 @@ mod tests {
         // 0x9000 = 36864 unsigned, offset by 0x8000 = 4096 raw
         // 4096 / ACCEL_SCALE(4096.0) = 1.0g
         let data = make_input_report(
-            0, 0, 0,
+            0,
+            0,
+            0,
             (0x8000, 0x8000, 0x9000),
             (0x8000, 0x8000, 0x8000),
             0,
@@ -789,12 +811,7 @@ mod tests {
         let ax: i16 = 0;
         let ay: i16 = 0;
         let az: i16 = 4096; // ~1g
-        let data = make_input_report(
-            0, 0, 0,
-            (ax as u16, ay as u16, az as u16),
-            (0, 0, 0),
-            0,
-        );
+        let data = make_input_report(0, 0, 0, (ax as u16, ay as u16, az as u16), (0, 0, 0), 0);
         let report = parse_input_report(&data, true).unwrap();
         assert!((report.accel_x).abs() < 0.001);
         assert!((report.accel_z - 1.0).abs() < 0.001);
@@ -818,9 +835,23 @@ mod tests {
 
     #[test]
     fn test_parse_input_report_all_buttons() {
-        let all = Button::TRIANGLE | Button::CIRCLE | Button::CROSS | Button::SQUARE
-            | Button::SELECT | Button::START | Button::PS | Button::MOVE | Button::T;
-        let data = make_input_report(all, 255, 0, (0x8000, 0x8000, 0x8000), (0x8000, 0x8000, 0x8000), 0);
+        let all = Button::TRIANGLE
+            | Button::CIRCLE
+            | Button::CROSS
+            | Button::SQUARE
+            | Button::SELECT
+            | Button::START
+            | Button::PS
+            | Button::MOVE
+            | Button::T;
+        let data = make_input_report(
+            all,
+            255,
+            0,
+            (0x8000, 0x8000, 0x8000),
+            (0x8000, 0x8000, 0x8000),
+            0,
+        );
         let report = parse_input_report(&data, false).unwrap();
         assert!(report.button_triangle());
         assert!(report.button_circle());
@@ -845,7 +876,7 @@ mod tests {
         assert_eq!(battery_to_percent(0x05), 100);
         assert_eq!(battery_to_percent(0xEE), 100); // Charging
         assert_eq!(battery_to_percent(0xEF), 100); // Charging done
-        assert_eq!(battery_to_percent(0xFF), 50);  // Unknown
+        assert_eq!(battery_to_percent(0xFF), 50); // Unknown
     }
 
     // --- Output report tests ---
@@ -856,11 +887,11 @@ mod tests {
         assert_eq!(report.len(), OUTPUT_REPORT_SIZE);
         assert_eq!(report[0], 0x06); // Report ID
         assert_eq!(report[1], 0x00); // Reserved
-        assert_eq!(report[2], 255);  // R
-        assert_eq!(report[3], 128);  // G
-        assert_eq!(report[4], 64);   // B
+        assert_eq!(report[2], 255); // R
+        assert_eq!(report[3], 128); // G
+        assert_eq!(report[4], 64); // B
         assert_eq!(report[5], 0x00); // Reserved
-        assert_eq!(report[6], 200);  // Rumble
+        assert_eq!(report[6], 200); // Rumble
         assert_eq!(report[7], 0x00); // Padding
         assert_eq!(report[8], 0x00); // Padding
     }

@@ -9,8 +9,8 @@ use std::pin::Pin;
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, trace, warn};
 
@@ -34,7 +34,9 @@ async fn device_reply<T>(reply: oneshot::Receiver<T>) -> Result<T, Status> {
     match tokio::time::timeout(DEVICE_REPLY_TIMEOUT, reply).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(_)) => Err(Status::internal("Device manager did not respond")),
-        Err(_) => Err(Status::unavailable("Device manager busy: no reply within 10 s")),
+        Err(_) => Err(Status::unavailable(
+            "Device manager busy: no reply within 10 s",
+        )),
     }
 }
 
@@ -91,10 +93,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
         Ok(Response::new(DiscoverResponse { controllers }))
     }
 
-    async fn open(
-        &self,
-        request: Request<OpenRequest>,
-    ) -> Result<Response<OpenResponse>, Status> {
+    async fn open(&self, request: Request<OpenRequest>) -> Result<Response<OpenResponse>, Status> {
         let serial = request.into_inner().serial;
         if serial.is_empty() {
             return Err(Status::invalid_argument("serial is required"));
@@ -129,7 +128,8 @@ impl ControllerIoService for ControllerIoServiceImpl {
         Ok(Response::new(CloseAllResponse {}))
     }
 
-    type StreamIOStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<SensorData, Status>> + Send>>;
+    type StreamIOStream =
+        Pin<Box<dyn tokio_stream::Stream<Item = Result<SensorData, Status>> + Send>>;
 
     async fn stream_io(
         &self,

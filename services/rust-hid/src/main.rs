@@ -13,9 +13,9 @@ mod service;
 mod watchdog;
 
 use controller_io_service::ControllerIoServiceImpl;
+use service::PairingServiceImpl;
 use service::proto::controller_io_service_server::ControllerIoServiceServer;
 use service::proto::pairing_service_server::PairingServiceServer;
-use service::PairingServiceImpl;
 use tonic::transport::Server;
 use tonic_health::server::health_reporter;
 use tracing::info;
@@ -114,15 +114,12 @@ fn resolve_host_name() -> String {
 fn build_otel_resource() -> opentelemetry_sdk::Resource {
     use opentelemetry::KeyValue;
 
-    let service_name =
-        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
+    let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
     let namespace =
         std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
-    let version =
-        std::env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.0.0-dev".into());
+    let version = std::env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.0.0-dev".into());
     let hostname = resolve_host_name();
-    let instance_id =
-        std::env::var("HOSTNAME").unwrap_or_else(|_| hostname.clone());
+    let instance_id = std::env::var("HOSTNAME").unwrap_or_else(|_| hostname.clone());
     let environment =
         std::env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_else(|_| "development".into());
 
@@ -188,16 +185,14 @@ fn init_tracing(
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let fmt_layer = tracing_subscriber::fmt::layer();
     let logs_layer = log_provider.as_ref().map(OpenTelemetryTracingBridge::new);
 
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
 
     if let Some(endpoint) = endpoint {
-        let service_name =
-            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
+        let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
 
         let exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
@@ -277,8 +272,7 @@ fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
                 && let Ok(stat) = me.stat()
             {
                 let ticks_per_sec = procfs::ticks_per_second() as f64;
-                let total_secs =
-                    (stat.utime as f64 + stat.stime as f64) / ticks_per_sec;
+                let total_secs = (stat.utime as f64 + stat.stime as f64) / ticks_per_sec;
                 observer.observe(total_secs, &[]);
             }
         })
