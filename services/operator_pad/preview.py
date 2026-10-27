@@ -96,6 +96,8 @@ class _ModeLeds:
     start: str
     queued: str  # the last mode queued for a pulse (a step back to it queues it again)
     sent: str  # the last mode whose `preview_setting` went out to the menu
+    ended: bool = False  # the hold is over: a pulse not yet sent is dropped
+    seq: int = 0  # the newest queued pulse: an older one not yet sent is dropped
 
 
 class Previewer:
@@ -177,6 +179,8 @@ class Previewer:
         """
         if self.hold_key is None:
             return
+        if self._leds is not None:
+            self._leds.ended = True  # pulses still queued are dropped; one already sent is not cancelled
         leds = self._leds if self._restore_wanted(commit_steps) else None
         self._drop_hold()
         self._stop(PREVIEW_GROUP)
@@ -306,9 +310,13 @@ class Previewer:
         if pending.value == leds.queued:
             return  # the same as the last one shown
         leds.queued = mode = pending.value
-        self._queue_pulse(lambda: self._pulse(leds, mode))
+        leds.seq += 1
+        seq = leds.seq
+        self._queue_pulse(lambda: self._pulse(leds, mode, seq))
 
-    async def _pulse(self, leds: _ModeLeds, mode: str) -> None:
+    async def _pulse(self, leds: _ModeLeds, mode: str, seq: int) -> None:
+        if leds.ended or seq != leds.seq:
+            return  # superseded by a newer step, or the hold ended first: at most one call waits (BR-010)
         leds.sent = mode  # set as it goes out, never at queueing: the restore reads it
         await self._show_mode(mode)
 

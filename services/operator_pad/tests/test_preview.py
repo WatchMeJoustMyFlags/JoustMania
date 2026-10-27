@@ -636,15 +636,45 @@ async def test_a_pulse_back_to_the_selected_mode_is_sent_even_when_the_hold_ends
 
 
 @pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
-async def test_m1_m2_m1_then_a_quick_commit_sends_every_pulse_in_order_and_no_restore():
+async def test_m1_m2_m1_then_a_quick_commit_sends_no_pulse_after_the_commit_and_no_restore():
     rig = Rig()
     menu = BlockedMenu(rig)
     for net in (1, 2, 1):
         rig.step_mode(net)
         await rig.time.advance(0.2)
-    rig.previewer.end_hold(commit_steps=1)  # released before the last pulse went out: M1 is committed
+    rig.previewer.end_hold(commit_steps=1)  # released before the queued pulses went out: M1 is committed
     await settle()
-    assert menu.sent == [MODE_LADDER[1]]
     menu.answer.set()
     await rig.previewer.drain()
-    assert menu.sent == [MODE_LADDER[1], MODE_LADDER[2], MODE_LADDER[1]]
+    # The queued M2 and M1 pulses are dropped: nothing reaches the menu after its commit pulse.
+    assert menu.sent == [MODE_LADDER[1]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-010"], steps=[4])
+async def test_a_stuck_menu_holds_at_most_the_call_in_flight_and_the_newest_pulse():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    for net in (1, 2, 3, 2, 3, 4):
+        rig.step_mode(net)
+        await rig.time.advance(0.2)
+    assert menu.sent == [MODE_LADDER[1]]  # stuck on the first call
+    menu.answer.set()
+    await rig.time.advance(0.2)
+    await rig.previewer.drain()
+    # Only the newest queued mode follows; the steps in between never reach the menu.
+    assert menu.sent == [MODE_LADDER[1], MODE_LADDER[4]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_no_pulse_reaches_the_menu_after_a_committing_release():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    rig.step_mode(1)
+    await rig.time.advance(0.2)  # M1 on the wire
+    rig.step_mode(2)
+    await rig.time.advance(0.2)  # M2 queued
+    rig.previewer.end_hold(commit_steps=2)  # M2 is committed: the menu's commit pulses it
+    await settle()
+    menu.answer.set()
+    await rig.previewer.drain()
+    assert menu.sent == [MODE_LADDER[1]]
