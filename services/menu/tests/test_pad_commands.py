@@ -843,6 +843,75 @@ async def test_pad_mode_step_at_the_limit_gives_no_voice_and_no_pulse(servicer):
     servicer.state_manager.led.send_game_effect.assert_not_awaited()
 
 
+# --- preview_setting: the K1 LED preview (#2106, UC-015 BR-017, services.md §3.1) ------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="main", steps=[4], br=["BR-017", "BR-015", "BR-005"])
+async def test_preview_setting_pulses_lobby_controllers_and_writes_nothing(servicer, flags):
+    servicer.state_manager.controller_states = {
+        "dim": ControllerState.CONNECTED,
+        "ready": ControllerState.READY,
+        "admin": ControllerState.ADMIN,
+        "idle": ControllerState.IDLE,
+    }
+    before = servicer.current_selection
+    previewed = GAME_MODES[2]
+    with (
+        patch.object(FlagServiceWriter, "update_default_variant", autospec=True) as update_default_variant,
+        patch.object(FlagServiceWriter, "step_variant", autospec=True) as step_variant,
+    ):
+        reply = await pad(servicer, "preview_setting", option="current_game", mode=previewed)
+
+    assert (reply.success, reply.error) == (True, "")
+    pulse = (controller_manager_pb2.GAME_EFFECT_PULSE, GAME_MODE_COLORS[previewed], settings_ops.MODE_PULSE_MS)
+    assert sorted(_pulses(servicer)) == [("dim", *pulse), ("ready", *pulse)]
+    # Nothing written, nothing selected, no voice, no lobby repaint (BR-005).
+    update_default_variant.assert_not_called()
+    step_variant.assert_not_called()
+    assert flags.puts == []
+    assert servicer.current_selection == before
+    servicer.state_manager.audio.play_game_mode_voice.assert_not_awaited()
+    servicer.state_manager.audio.play_voice.assert_not_awaited()
+    servicer.state_manager.audio.play_sound.assert_not_awaited()
+    servicer.state_manager.led.set_connected_color.assert_not_awaited()
+    servicer.state_manager.led.set_ready_color.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A8", br=["BR-017"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"option": "current_game", "mode": "NoSuchMode"},
+        {"option": "current_game", "mode": ""},
+        {"option": "current_game"},
+        {"option": "sensitivity", "mode": GAME_MODES[1]},
+        {"mode": GAME_MODES[1]},
+    ],
+)
+async def test_preview_setting_bad_option_or_mode_is_refused_without_a_pulse(servicer, flags, data):
+    servicer.state_manager.controller_states = {"dim": ControllerState.CONNECTED}
+    reply = await pad(servicer, "preview_setting", **data)
+    assert (reply.success, reply.error) == (False, "bad_option")
+    servicer.state_manager.led.send_game_effect.assert_not_awaited()
+    assert flags.puts == []
+    assert failure_cues(servicer) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A1", br=["BR-017", "BR-012"])
+async def test_preview_setting_is_refused_while_a_game_is_live_without_a_pulse(servicer, flags):
+    servicer.state_manager.controller_states = {"dim": ControllerState.CONNECTED}
+    live = live_lifecycle(servicer)
+    reply = await pad(servicer, "preview_setting", option="current_game", mode=GAME_MODES[1])
+    assert (reply.success, reply.error) == (False, "game_active")
+    servicer.state_manager.led.send_game_effect.assert_not_awaited()
+    assert flags.puts == []
+    assert failure_cues(servicer) == 0
+    live.cancel()
+
+
 # --- Refused start: the not-enough-players path with a real publisher (#2105, UC-010 A3) -------
 
 

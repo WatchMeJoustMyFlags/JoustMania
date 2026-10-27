@@ -681,7 +681,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         return None
 
     # Operator pad commands (#2050, UC-015, services.md §3.1): no serial, no LEDs, error codes.
-    PAD_COMMANDS = frozenset({"force_start", "step_setting", "agent_switch", "set_backend"})
+    PAD_COMMANDS = frozenset({"force_start", "step_setting", "preview_setting", "agent_switch", "set_backend"})
 
     async def _handle_pad_command(self, data: dict, span) -> tuple[bool, str]:
         """Run one pad command; (success, error code). A failed write plays the failure cue (BR-009)."""
@@ -691,6 +691,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             result = await self._pad_force_start(data, span)
         elif command == "step_setting":
             result = await self._pad_step_setting(data)
+        elif command == "preview_setting":
+            result = await self._pad_preview_setting(data)
         elif command == "agent_switch":
             direction = data.get("direction", "")
             result = await self.settings_ops.agent_switch(direction)
@@ -720,6 +722,22 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         if result.error is None:
             await self.settings_ops.announce(option, result.new)
         return result
+
+    async def _pad_preview_setting(self, data: dict) -> Result:
+        """preview_setting: the K1 live preview (UC-015 BR-017, #2106); a mode pulse, nothing written.
+
+        Writes no flag, changes no selection and plays no voice: only the BR-015 pulse of the mode's
+        colour on every lobby controller. Refused like a mode step while the lifecycle is live (A1).
+        """
+        if data.get("option", "") != "current_game":
+            return Result(None, None, BAD_OPTION)
+        mode = Games.from_name(data.get("mode", ""))
+        if mode is None or mode.name not in GAME_MODES:
+            return Result(None, None, BAD_OPTION)
+        if self._lifecycle_live():
+            return Result(None, None, GAME_ACTIVE)
+        await self.settings_ops.show_mode_on_lobby(mode.name)
+        return Result(None, mode.name)
 
     async def _pad_force_start(self, data: dict, span) -> Result:
         """force_start: UC-014 steps 3-5 with the live roster and no host serial (UC-015 BR-008, A2).
