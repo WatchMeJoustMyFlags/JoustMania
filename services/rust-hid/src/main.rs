@@ -40,12 +40,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         opentelemetry_sdk::propagation::TraceContextPropagator::new(),
     );
 
-    // Initialize OTEL metrics (process metrics pushed to collector)
-    let _meter_provider = init_metrics();
-
-    // Initialize OpenFeature flagd provider for feature flags
     // Output side of the device loop: per-controller writers, rate cap from a flag
     let outputs = device_manager::DeviceOutputs::default();
+
+    // Initialize OTEL metrics (process metrics and the output writers' in-flight age)
+    let _meter_provider = init_metrics(outputs.router.clone());
+
+    // Initialize OpenFeature flagd provider for feature flags
     feature_flags::init_flagd(outputs.rate.clone()).await;
 
     let addr = format!("[::]:{GRPC_PORT}").parse()?;
@@ -73,7 +74,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Self-healing (UC-002 A7, NFR-054, #2125): exits when this server or the
     // device loop hangs, so the compose restart policy brings rust-hid back.
-    watchdog::spawn(format!("127.0.0.1:{GRPC_PORT}"), device_heartbeat);
+    // Its tick also reports a stuck output writer (#2142); that never trips it.
+    let mut stuck_writers = output::StuckWriterMonitor::new(output::STUCK_WRITE_THRESHOLD);
+    let watched_router = outputs.router.clone();
+    watchdog::spawn(
+        format!("127.0.0.1:{GRPC_PORT}"),
+        device_heartbeat,
+        move || {
+            stuck_writers.check(&watched_router);
+        },
+    );
 
     let controller_io_service = ControllerIoServiceImpl::new(cmd_tx, outputs.router.clone());
 
@@ -237,7 +247,11 @@ fn init_tracing(
 /// - process_cpu_seconds_total (observable counter)
 /// - process_resident_memory_bytes (gauge)
 /// - process_threads (gauge)
-fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
+///
+/// and, per open controller, rust_hid_output_write_in_flight_seconds (gauge, #2142).
+fn init_metrics(
+    router: output::OutputRouter,
+) -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
     use opentelemetry::metrics::MeterProvider;
     use opentelemetry_otlp::WithExportConfig;
 
@@ -302,6 +316,23 @@ fn init_metrics() -> Option<opentelemetry_sdk::metrics::SdkMeterProvider> {
                 && let Ok(stat) = me.stat()
             {
                 observer.observe(stat.num_threads, &[]);
+            }
+        })
+        .build();
+
+    // rust_hid_output_write_in_flight_seconds{serial}: how long the controller's
+    // current output write has been in flight, 0 when idle (#2142, NFR-055).
+    let _in_flight = meter
+        .f64_observable_gauge("rust_hid_output_write_in_flight_seconds")
+        .with_description(
+            "Seconds the controller's current output write has been in flight; 0 when idle",
+        )
+        .with_callback(move |observer| {
+            for w in router.writes_in_flight() {
+                observer.observe(
+                    w.age.as_secs_f64(),
+                    &[opentelemetry::KeyValue::new("serial", w.serial)],
+                );
             }
         })
         .build();

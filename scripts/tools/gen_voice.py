@@ -11,7 +11,8 @@ services/audio/assets/<Area>/vox/<profile>/<id>.ogg plus
 services/audio/assets/voice_manifest.json. A line is rendered again only when
 its input hash (spoken text, profile parameters, model sha256, loudness and
 output format, generator version) changed, so an unchanged catalog leaves every
-committed byte alone. The recorded profiles (`aaron`, `ivy`) are never written.
+committed byte alone. Every voice profile is generated: the recorded `aaron` and
+`ivy` were deleted in #2107 part 3.
 
 Piper output is not bit-reproducible (the VITS noise has no seed), so the
 manifest pins the inputs, not the PCM; `--sample` compares a fresh render with
@@ -58,12 +59,10 @@ PROFILE_KEYS = {
     "noise_scale",
     "noise_scale_w",
 }
-LINE_KEYS = {"id", "sound", "text", "say", "recorded"}
-TOP_KEYS = {"version", "recorded", "loudness", "audio", "profiles", "sample", "areas"}
+LINE_KEYS = {"id", "sound", "text", "say"}
+TOP_KEYS = {"version", "loudness", "audio", "profiles", "sample", "areas"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]*$")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
-# The recordings: never written, whatever the catalog's `recorded` list says (C-050).
-PROTECTED_PROFILES = frozenset({"aaron", "ivy"})
 
 # --sample tolerances (Piper output varies run to run).
 SAMPLE_DURATION_TOLERANCE = 0.10
@@ -107,12 +106,6 @@ def validate_catalog(cat: dict) -> list[str]:
     errors += [f"catalog: unknown key {k!r}" for k in sorted(set(cat) - TOP_KEYS)]
     if cat.get("version") != 1:
         errors.append("catalog: version must be 1")
-    recorded = cat.get("recorded") or []
-    if not isinstance(recorded, list) or not all(
-        isinstance(r, str) and SAFE_NAME.match(r) for r in recorded
-    ):
-        errors.append("catalog: recorded must be a list of profile names")
-        recorded = []
     loudness = cat.get("loudness") or {}
     if not all(
         isinstance(loudness.get(k), int | float)
@@ -132,10 +125,6 @@ def validate_catalog(cat: dict) -> list[str]:
     for name, prof in profiles.items():
         if not SAFE_NAME.match(str(name)):
             errors.append(f"profile {name!r}: invalid name")
-        if name in recorded or name in PROTECTED_PROFILES:
-            errors.append(
-                f"profile {name!r}: is a recorded profile; the generator never writes it"
-            )
         if not isinstance(prof, dict):
             errors.append(f"profile {name!r}: not a mapping")
             continue
@@ -146,9 +135,11 @@ def validate_catalog(cat: dict) -> list[str]:
             f"profile {name!r}: unknown key {k!r}"
             for k in sorted(set(prof) - PROFILE_KEYS)
         ]
-        if "partner" in prof and prof["partner"] not in recorded:
+        if "partner" in prof and (
+            prof["partner"] == name or prof["partner"] not in profiles
+        ):
             errors.append(
-                f"profile {name!r}: partner {prof['partner']!r} is not a recorded profile"
+                f"profile {name!r}: partner {prof['partner']!r} is not another generated profile"
             )
         if "model_sha256" in prof and not re.fullmatch(
             r"[0-9a-f]{64}", str(prof["model_sha256"])
@@ -222,8 +213,6 @@ def assert_generated_path(cat: dict, rel: str) -> None:
         or parts[1] != "vox"
         or ".." in parts
         or parts[2] not in cat["profiles"]
-        or parts[2] in cat["recorded"]
-        or parts[2] in PROTECTED_PROFILES
     ):
         raise CatalogError(f"refusing to write {rel!r}: not under a generated profile")
 
@@ -260,7 +249,6 @@ def _manifest_head(cat: dict) -> dict:
         "version": 1,
         "generator": GENERATOR_VERSION,
         "catalog": "services/audio/voice/lines.yaml",
-        "recorded": list(cat["recorded"]),
         "profiles": {
             name: {
                 "partner": p["partner"],
@@ -322,8 +310,9 @@ def check(cat: dict, assets: Path) -> list[str]:
     if manifest is None:
         return [f"{MANIFEST_NAME}: missing; run `make voice`"]
     head = _manifest_head(cat)
+    # "recorded" is gone from the head (#2107 part 3): a manifest that still has it is stale.
     for key in ("recorded", "profiles"):
-        if manifest.get(key) != head[key]:
+        if manifest.get(key) != head.get(key):
             problems.append(
                 f"{MANIFEST_NAME}: {key} differ from the catalog; run `make voice`"
             )

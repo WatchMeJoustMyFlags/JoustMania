@@ -3,9 +3,8 @@
 With ``game_instructions`` on, each mode plays its own recording before the
 countdown: Teams and Random Teams (UC-021 A3), Traitor and Werewolf (UC-022 A3),
 Zombies (UC-023 A2), Swapper (UC-024 A2), Tournament and Fight Club (UC-025 A5).
-Non-Stop Joust has no recording (UC-026 A3). Fight Club's line is
-recorded in ivy only; its plain id follows ``menu_voice`` and the audio service
-falls back to the partner profile (#2164).
+Non-Stop Joust has no clip (UC-026 A3). Fight Club's line is a plain id that
+follows ``menu_voice``; every voice profile has it (#2164, #2107).
 
 The modes with their own ``run()`` (Werewolf, Zombies, Fight Club, Tournament)
 play the clip after their intro, while the stream is drained, and before the
@@ -154,7 +153,7 @@ async def test_mode_plays_its_own_clip(mode_cls, clip):
 
 @pytest.mark.parametrize(("mode_cls", "clip"), MODE_CLIPS)
 def test_clip_file_exists_in_every_voice_it_plays_in(mode_cls, clip):
-    """Each clip resolves to a recording under every voice (Fight Club via the partner fallback)."""
+    """Each clip resolves to a file in every voice's own directory (no partner fallback needed)."""
     resolved = _game(mode_cls, None).get_instruction_clip()
     assert getattr(resolved, "value", resolved) == clip
     assert "/" not in clip, clip
@@ -165,13 +164,15 @@ def test_clip_file_exists_in_every_voice_it_plays_in(mode_cls, clip):
     for voice in profiles.names:
         path = sound_catalog.relative_path(registry, clip, voice=voice, profiles=profiles, assets_dir=ASSETS_DIR)
         assert path is not None and (ASSETS_DIR / path).is_file(), (voice, clip)
+        assert path.startswith(f"Menu/vox/{voice}/"), (voice, path)
 
 
 @pytest.mark.uc("UC-025", flow="A5", steps=[1])
 def test_fight_club_clip_is_the_plain_id_so_it_follows_menu_voice():
-    """The plain id follows menu_voice; aaron has no recording and plays its partner's (#2164)."""
+    """The plain id follows menu_voice; every generated profile has the line (#2164, #2107)."""
     assert FIGHT_CLUB_INSTRUCTIONS == "Fightclub-instructions"
-    assert not (ASSETS_DIR / "Menu/vox/aaron/Fightclub-instructions.ogg").exists()
+    for voice in ("gen_female", "gen_male"):
+        assert (ASSETS_DIR / f"Menu/vox/{voice}/Fightclub-instructions.ogg").is_file()
 
 
 @pytest.mark.asyncio

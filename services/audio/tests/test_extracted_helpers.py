@@ -159,21 +159,21 @@ class TestResolveSimpleName:
             "explosion34": ("sound", "Joust"),
             "zombie_victory": ("vox", "Zombie"),
         }
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         return servicer
 
     def test_vox_sound_returns_voice_path(self, servicer):
         result = servicer._resolve_simple_name("congratulations")
-        assert result == "Joust/vox/ivy/congratulations.ogg"
+        assert result == "Joust/vox/gen_female/congratulations.ogg"
 
     def test_sound_effect_returns_sounds_path(self, servicer):
         result = servicer._resolve_simple_name("Explosion34")
         assert result == "Joust/sounds/Explosion34.ogg"
 
     def test_vox_with_different_voice(self, servicer):
-        servicer.menu_voice = "aaron"
+        servicer.menu_voice = "gen_male"
         result = servicer._resolve_simple_name("congratulations")
-        assert result == "Joust/vox/aaron/congratulations.ogg"
+        assert result == "Joust/vox/gen_male/congratulations.ogg"
 
     def test_case_insensitive_lookup(self, servicer):
         result = servicer._resolve_simple_name("explosion34")
@@ -181,16 +181,16 @@ class TestResolveSimpleName:
 
     def test_different_base_dir(self, servicer):
         result = servicer._resolve_simple_name("zombie_victory")
-        assert result == "Zombie/vox/ivy/zombie_victory.ogg"
+        assert result == "Zombie/vox/gen_female/zombie_victory.ogg"
 
     def test_unknown_sound_falls_back_to_joust_vox(self, servicer):
         result = servicer._resolve_simple_name("nonexistent_xyz")
-        assert result == "Joust/vox/ivy/nonexistent_xyz.ogg"
+        assert result == "Joust/vox/gen_female/nonexistent_xyz.ogg"
 
     def test_unknown_sound_uses_current_voice(self, servicer):
-        servicer.menu_voice = "aaron"
+        servicer.menu_voice = "gen_male"
         result = servicer._resolve_simple_name("nonexistent_xyz")
-        assert result == "Joust/vox/aaron/nonexistent_xyz.ogg"
+        assert result == "Joust/vox/gen_male/nonexistent_xyz.ogg"
 
 
 class TestResolveVoxPath:
@@ -199,7 +199,7 @@ class TestResolveVoxPath:
     @pytest.fixture
     def servicer(self, mock_audio_servicer):
         servicer = mock_audio_servicer
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         return servicer
 
     def test_no_vox_in_path_returns_as_is(self, servicer):
@@ -208,20 +208,20 @@ class TestResolveVoxPath:
 
     def test_inserts_voice_when_missing(self, servicer):
         result = servicer._resolve_vox_path("Joust/vox/congratulations.ogg")
-        assert result == "Joust/vox/ivy/congratulations.ogg"
+        assert result == "Joust/vox/gen_female/congratulations.ogg"
 
-    def test_preserves_aaron_voice(self, servicer):
-        result = servicer._resolve_vox_path("Joust/vox/aaron/congratulations.ogg")
-        assert result == "Joust/vox/aaron/congratulations.ogg"
+    def test_preserves_gen_male_voice(self, servicer):
+        result = servicer._resolve_vox_path("Joust/vox/gen_male/congratulations.ogg")
+        assert result == "Joust/vox/gen_male/congratulations.ogg"
 
-    def test_preserves_ivy_voice(self, servicer):
-        result = servicer._resolve_vox_path("Joust/vox/ivy/congratulations.ogg")
-        assert result == "Joust/vox/ivy/congratulations.ogg"
+    def test_preserves_gen_female_voice(self, servicer):
+        result = servicer._resolve_vox_path("Joust/vox/gen_female/congratulations.ogg")
+        assert result == "Joust/vox/gen_female/congratulations.ogg"
 
     def test_uses_current_menu_voice(self, servicer):
-        servicer.menu_voice = "aaron"
-        result = servicer._resolve_vox_path("Zombie/vox/zombie_death.ogg")
-        assert result == "Zombie/vox/aaron/zombie_death.ogg"
+        servicer.menu_voice = "gen_male"
+        result = servicer._resolve_vox_path("Zombie/vox/zombie_victory.ogg")
+        assert result == "Zombie/vox/gen_male/zombie_victory.ogg"
 
     def test_path_without_vox_segment(self, servicer):
         result = servicer._resolve_vox_path("Joust/music/track.ogg")
@@ -246,7 +246,7 @@ class TestUC040UnknownSoundWarning:
     @pytest.fixture
     def servicer(self, mock_audio_servicer):
         servicer = mock_audio_servicer
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         return servicer
 
     @pytest.mark.uc("UC-040", flow="main", br=["BR-007"])

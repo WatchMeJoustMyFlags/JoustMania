@@ -6,12 +6,10 @@
     "menu_voice": {
       "state": "ENABLED",
       "variants": {
-        "aaron": "aaron",
-        "ivy": "ivy",
-        "gen_male": "gen_male",
-        "gen_female": "gen_female"
+        "gen_female": "gen_female",
+        "gen_male": "gen_male"
       },
-      "defaultVariant": "ivy"
+      "defaultVariant": "gen_female"
     },
     "play_audio": {
       "state": "ENABLED",

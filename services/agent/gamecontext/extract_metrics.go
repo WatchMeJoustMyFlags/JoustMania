@@ -72,7 +72,7 @@ const (
 	attrSerial   = "serial"
 	attrName     = "name"    // controller_info only (#1295)
 	attrSetting  = "setting" // game_shield_hold_setting only (#2096)
-	attrStat    = "stat"    // game_player_shield_stats only (#2096)
+	attrStat     = "stat"    // game_player_shield_stats only (#2096)
 	attrMode     = "mode"
 	attrGameID   = "game_id"
 	attrGameKind = "game_kind"

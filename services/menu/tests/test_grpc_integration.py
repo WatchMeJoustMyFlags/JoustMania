@@ -27,7 +27,7 @@ from proto import menu_pb2, menu_pb2_grpc
 def _make_flag_client_mock():
     """Create a mock OpenFeature flag client with sensible defaults."""
     mock = MagicMock()
-    mock.get_string_value.return_value = "ivy"
+    mock.get_string_value.return_value = "gen_female"
     mock.get_integer_value.return_value = 2
     mock.get_boolean_value.return_value = True
     mock.get_float_value.return_value = 4.0

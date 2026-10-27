@@ -15,12 +15,20 @@
 //!   unless a newer value replaced it: a lit value at most `MAX_RETRIES` times,
 //!   a quiet one (rumble 0, so also the off of a close) until it lands, so a
 //!   controller never keeps rumbling because its "stop" was dropped.
+//!
+//! A write stuck in the kernel holds that controller's device mutex, so the
+//! device loop skips its reads and its input freezes while the heartbeat and
+//! the health check stay fine (#2142). Each slot records when its in-flight
+//! write started; the gauge `rust_hid_output_write_in_flight_seconds` reads it,
+//! and `StuckWriterMonitor` (driven by the watchdog tick, off the hot path)
+//! logs a write in flight longer than `STUCK_WRITE_THRESHOLD` once per
+//! episode. Report only: a stuck writer never trips the watchdog.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::hid::{self, HidDeviceIo};
 
@@ -29,6 +37,12 @@ pub const DEFAULT_RATE_HZ: u32 = 20;
 /// A failed write of a value with rumble is retried at most this many times
 /// (counted per value); the off of a close at most this many times too.
 const MAX_RETRIES: u32 = 3;
+/// A write in flight longer than this is reported as stuck (NFR-055, #2142).
+/// A healthy hidraw write of one 49-byte report returns in milliseconds, so
+/// 1 s (20 missed slots at the default rate cap) is far outside normal jitter.
+/// A constant, not a flag (C-035): it only picks when a WARN line is logged,
+/// changes no behaviour, and the gauge carries the raw age for any other cut.
+pub const STUCK_WRITE_THRESHOLD: Duration = Duration::from_secs(1);
 
 /// The per-controller output rate cap, shared by every writer and refreshed from the flag.
 #[derive(Debug, Clone)]
@@ -85,6 +99,9 @@ struct SlotState {
 pub struct OutputSlot {
     state: Mutex<SlotState>,
     wake: Condvar,
+    /// Start of the write in flight, as milliseconds since the router's
+    /// origin plus 1; 0 while no write is in flight.
+    write_started: AtomicU64,
 }
 
 impl OutputSlot {
@@ -120,13 +137,56 @@ impl OutputSlot {
     }
 }
 
+/// One open controller's writer, as seen by the stuck-writer check and the gauge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteInFlight {
+    pub serial: String,
+    /// Identity of the write in flight (its start stamp); `None` when idle.
+    pub started: Option<u64>,
+    /// How long the write has been in flight; zero when idle.
+    pub age: Duration,
+}
+
 /// Serial -> slot of every open controller, shared by the gRPC stream and the device loop.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct OutputRouter {
     slots: Arc<Mutex<HashMap<String, Arc<OutputSlot>>>>,
+    /// Time base of every slot's `write_started` stamp.
+    origin: Instant,
+}
+
+impl Default for OutputRouter {
+    fn default() -> Self {
+        Self {
+            slots: Arc::default(),
+            origin: Instant::now(),
+        }
+    }
 }
 
 impl OutputRouter {
+    /// Every open controller's write in flight, if any (never touches a device).
+    pub fn writes_in_flight(&self) -> Vec<WriteInFlight> {
+        let now_ms = self.origin.elapsed().as_millis() as u64;
+        self.slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(serial, slot)| {
+                let stamp = slot.write_started.load(Ordering::Relaxed);
+                let started = (stamp != 0).then_some(stamp);
+                let age = started.map_or(Duration::ZERO, |s| {
+                    Duration::from_millis(now_ms.saturating_sub(s - 1))
+                });
+                WriteInFlight {
+                    serial: serial.clone(),
+                    started,
+                    age,
+                }
+            })
+            .collect()
+    }
+
     /// Route one IOCommand; an unknown serial is dropped (as before: no open device).
     pub fn submit(&self, serial: &str, r: u8, g: u8, b: u8, rumble: u8) -> bool {
         let slot = self
@@ -156,6 +216,7 @@ impl OutputRouter {
             serial: serial.to_string(),
             slot: slot.clone(),
             slots: self.slots.clone(),
+            origin: self.origin,
         };
         let spawned = std::thread::Builder::new()
             .name(format!("hid-out-{serial}"))
@@ -194,6 +255,7 @@ struct Writer {
     serial: String,
     slot: Arc<OutputSlot>,
     slots: Arc<Mutex<HashMap<String, Arc<OutputSlot>>>>,
+    origin: Instant,
 }
 
 impl Writer {
@@ -251,10 +313,14 @@ impl Writer {
 
             let (r, g, b) = out.rgb;
             let report = hid::build_output_report(r, g, b, out.rumble_peak);
+            // Stamped before the device lock: waiting on it is part of the stall.
+            let stamp = self.origin.elapsed().as_millis() as u64 + 1;
+            slot.write_started.store(stamp, Ordering::Relaxed);
             let result = device
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .write(&report);
+            slot.write_started.store(0, Ordering::Relaxed);
             last_write = Some(Instant::now());
             let mut gave_up = false;
             match result {
@@ -284,6 +350,86 @@ impl Writer {
                 }
             }
         }
+    }
+}
+
+/// A change in the stuck-writer report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StuckWriterEvent {
+    /// A write has been in flight longer than the threshold.
+    Stuck { serial: String, age: Duration },
+    /// No longer stuck: the write returned or its controller was closed.
+    Recovered { serial: String },
+}
+
+/// Reports a writer stuck in one write once per episode (#2142). Report only:
+/// it never closes a controller or trips the watchdog.
+#[derive(Debug)]
+pub struct StuckWriterMonitor {
+    threshold: Duration,
+    /// Serial -> start stamp of the write reported as stuck.
+    reported: HashMap<String, u64>,
+}
+
+impl StuckWriterMonitor {
+    pub fn new(threshold: Duration) -> Self {
+        Self {
+            threshold,
+            reported: HashMap::new(),
+        }
+    }
+
+    /// Compare the router's writes in flight with the last report; log and
+    /// return what changed. A new write that sticks again is a new episode.
+    pub fn check(&mut self, router: &OutputRouter) -> Vec<StuckWriterEvent> {
+        self.observe(router.writes_in_flight())
+    }
+
+    /// `check` on a given snapshot of the writes in flight.
+    fn observe(&mut self, writes: Vec<WriteInFlight>) -> Vec<StuckWriterEvent> {
+        let mut stuck: HashMap<String, (u64, Duration)> = HashMap::new();
+        for w in writes {
+            if let Some(started) = w.started
+                && w.age > self.threshold
+            {
+                stuck.insert(w.serial, (started, w.age));
+            }
+        }
+        let mut events = Vec::new();
+        let mut gone: Vec<&String> = self
+            .reported
+            .iter()
+            .filter(|(serial, started)| stuck.get(*serial).map(|s| s.0) != Some(**started))
+            .map(|(serial, _)| serial)
+            .collect();
+        gone.sort();
+        for serial in gone {
+            info!(
+                serial = %serial,
+                "Output write no longer stuck (the write returned or the controller was closed)"
+            );
+            events.push(StuckWriterEvent::Recovered {
+                serial: serial.clone(),
+            });
+        }
+        let mut new: Vec<(&String, &(u64, Duration))> = stuck
+            .iter()
+            .filter(|(serial, (started, _))| self.reported.get(*serial) != Some(started))
+            .collect();
+        new.sort();
+        for (serial, (_, age)) in new {
+            warn!(
+                serial = %serial,
+                in_flight_ms = age.as_millis() as u64,
+                "Output write stuck: this controller's input is frozen until it returns"
+            );
+            events.push(StuckWriterEvent::Stuck {
+                serial: serial.clone(),
+                age: *age,
+            });
+        }
+        self.reported = stuck.into_iter().map(|(k, (s, _))| (k, s)).collect();
+        events
     }
 }
 
@@ -636,6 +782,151 @@ pub(crate) mod tests {
             "the backlog was written: {}",
             stuck.reports().len()
         );
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    #[test]
+    fn test_a_stuck_write_is_reported_once_and_cleared_when_it_returns() {
+        let router = OutputRouter::default();
+        let stuck = RecordingDevice::new(WriteMode::Block);
+        let healthy = RecordingDevice::new(WriteMode::Ok);
+        for (serial, dev) in [("stuck", &stuck), ("ok", &healthy)] {
+            router.open(
+                serial,
+                Arc::new(Mutex::new(dev.clone())),
+                OutputRate::new(100),
+            );
+        }
+        let threshold = Duration::from_millis(60);
+        let mut monitor = StuckWriterMonitor::new(threshold);
+        router.submit("stuck", 1, 1, 1, 0);
+        router.submit("ok", 2, 2, 2, 0);
+        assert!(wait_for(
+            || healthy.reports().len() == 1,
+            Duration::from_secs(1)
+        ));
+        std::thread::sleep(threshold + Duration::from_millis(40));
+        let events = monitor.check(&router);
+        assert!(
+            matches!(&events[..], [StuckWriterEvent::Stuck { serial, age }]
+                if serial == "stuck" && *age > threshold),
+            "expected one stuck report for the blocked writer only, got {events:?}"
+        );
+        // Still stuck on the same write: logged once per episode.
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(monitor.check(&router), vec![]);
+
+        stuck.release.store(true, Ordering::Relaxed);
+        assert!(wait_for(
+            || stuck.reports().len() == 1,
+            Duration::from_secs(1)
+        ));
+        assert!(wait_for(
+            || router
+                .writes_in_flight()
+                .iter()
+                .all(|w| w.started.is_none()),
+            Duration::from_secs(1)
+        ));
+        assert_eq!(
+            monitor.check(&router),
+            vec![StuckWriterEvent::Recovered {
+                serial: "stuck".into()
+            }]
+        );
+        assert_eq!(monitor.check(&router), vec![]);
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    #[test]
+    fn test_writes_in_flight_reports_the_age_of_a_blocked_write_and_zero_when_idle() {
+        let router = OutputRouter::default();
+        let stuck = RecordingDevice::new(WriteMode::Block);
+        let healthy = RecordingDevice::new(WriteMode::Ok);
+        router.open(
+            "stuck",
+            Arc::new(Mutex::new(stuck.clone())),
+            OutputRate::new(100),
+        );
+        router.open(
+            "ok",
+            Arc::new(Mutex::new(healthy.clone())),
+            OutputRate::new(100),
+        );
+        router.submit("stuck", 1, 1, 1, 0);
+        router.submit("ok", 1, 1, 1, 0);
+        assert!(wait_for(
+            || healthy.reports().len() == 1,
+            Duration::from_secs(1)
+        ));
+        std::thread::sleep(Duration::from_millis(50));
+        let mut got = router.writes_in_flight();
+        got.sort_by(|a, b| a.serial.cmp(&b.serial));
+        assert_eq!(got[0].serial, "ok");
+        assert_eq!((got[0].started, got[0].age), (None, Duration::ZERO));
+        assert_eq!(got[1].serial, "stuck");
+        assert!(got[1].started.is_some());
+        assert!(
+            got[1].age >= Duration::from_millis(40),
+            "age {:?}",
+            got[1].age
+        );
+
+        // A closed controller has no entry, even while its last write is still stuck.
+        router.close("stuck");
+        assert!(router.writes_in_flight().iter().all(|w| w.serial == "ok"));
+        stuck.release.store(true, Ordering::Relaxed);
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    #[test]
+    fn test_a_new_write_that_sticks_again_is_a_new_episode() {
+        let threshold = Duration::from_secs(1);
+        let mut monitor = StuckWriterMonitor::new(threshold);
+        let write = |started: Option<u64>, age_ms: u64| WriteInFlight {
+            serial: "s1".into(),
+            started,
+            age: Duration::from_millis(age_ms),
+        };
+        assert_eq!(
+            monitor.observe(vec![write(Some(10), 1500)]),
+            vec![StuckWriterEvent::Stuck {
+                serial: "s1".into(),
+                age: Duration::from_millis(1500)
+            }]
+        );
+        // The same write, still stuck: no new report.
+        assert_eq!(monitor.observe(vec![write(Some(10), 4500)]), vec![]);
+        // Between two ticks the write returned and the next one stuck too.
+        assert_eq!(
+            monitor.observe(vec![write(Some(9000), 1200)]),
+            vec![
+                StuckWriterEvent::Recovered {
+                    serial: "s1".into()
+                },
+                StuckWriterEvent::Stuck {
+                    serial: "s1".into(),
+                    age: Duration::from_millis(1200)
+                },
+            ]
+        );
+        // Under the threshold or idle: not stuck.
+        assert_eq!(
+            monitor.observe(vec![write(Some(20000), 900)]),
+            vec![StuckWriterEvent::Recovered {
+                serial: "s1".into()
+            }]
+        );
+        assert_eq!(monitor.observe(vec![write(None, 0)]), vec![]);
+    }
+
+    // NFR: NFR-055
+    #[test]
+    fn test_stuck_write_threshold_matches_nfr_055() {
+        assert_eq!(STUCK_WRITE_THRESHOLD, Duration::from_secs(1));
     }
 
     #[test]
