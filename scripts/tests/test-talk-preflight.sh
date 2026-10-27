@@ -241,6 +241,24 @@ restart_fake
 STUB_BUDGET=30 run_preflight
 check "missing blackhole variant fails" "FAIL  decision.jev.base_url has no blackhole variant"
 
+# --- beat variants missing ----------------------------------------------------
+fixture
+python3 - "${FAKE_AGENT_FLAGS}" <<'PY3'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+del data["flags"]["decision.jev.act_confidence_threshold"]["variants"]["strict"]
+del data["flags"]["decision.claude.timeout_ms"]["variants"]["patient"]
+json.dump(data, open(path, "w"), indent=2)
+PY3
+restart_fake
+STUB_BUDGET=30 run_preflight
+check "missing strict threshold variant fails" "FAIL  decision.jev.act_confidence_threshold has no strict variant"
+check "missing patient timeout variant warns" "WARN  decision.claude.timeout_ms has no patient variant"
+fixture
+STUB_BUDGET=30 run_preflight
+check "beat variants present pass" "PASS  decision.jev.act_confidence_threshold has the strict and gate variants"
+
 # --- expected backend override ---------------------------------------------
 fixture decision.backend=claude
 TALK_EXPECT_BACKEND=claude run_preflight
