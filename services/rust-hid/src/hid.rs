@@ -479,8 +479,12 @@ pub fn discover_controllers(api: &HidApi) -> Vec<(String, HidDevice, u16, Option
 /// Open a specific controller by serial via HID enumeration.
 ///
 /// Enumerates devices, finds one matching the serial, opens it in
-/// non-blocking mode, and returns (HidDevice, product_id).
-pub fn open_controller_by_serial(api: &HidApi, target_serial: &str) -> Option<(HidDevice, u16)> {
+/// non-blocking mode, and returns (HidDevice, product_id, adapter_name).
+/// `adapter_name` is resolved from sysfs once at open, as in `discover_controllers`.
+pub fn open_controller_by_serial(
+    api: &HidApi,
+    target_serial: &str,
+) -> Option<(HidDevice, u16, Option<String>)> {
     let target = normalize_serial(target_serial);
 
     for &pid in &ALL_PRODUCT_IDS {
@@ -505,7 +509,9 @@ pub fn open_controller_by_serial(api: &HidApi, target_serial: &str) -> Option<(H
                         warn!(serial = %serial, error = %e, "Failed to set non-blocking");
                         return None;
                     }
-                    return Some((device, pid));
+                    let path = dev_info.path().to_string_lossy();
+                    let adapter_name = resolve_adapter_from_sysfs(&path);
+                    return Some((device, pid, adapter_name));
                 }
                 Err(e) => {
                     warn!(serial = %serial, error = %e, "Failed to open controller");
