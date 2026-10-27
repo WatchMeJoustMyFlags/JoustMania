@@ -2,7 +2,7 @@
 
 # Flag counts (generated)
 
-Part of [flags.md](../flags.md). **187 flags in 9 flag sets**; the `ci/` copies (flags.md §12) are not counted.
+Part of [flags.md](../flags.md). **188 flags in 9 flag sets**; the `ci/` copies (flags.md §12) are not counted.
 
 | Flag set | File | Flags |
 |---|---|---|
