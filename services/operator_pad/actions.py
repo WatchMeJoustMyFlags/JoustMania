@@ -33,7 +33,7 @@ from services.operator_pad.state import ENABLED_STATES, is_known, is_stopped
 logger = logging.getLogger(__name__)
 tracer = get_tracer(__name__)
 
-# Every command but the agent switch: at most one flag read and one write settled by a re-read (#2095).
+# Every command but the agent switch: at most two flag reads and one write settled by a re-read (#2095).
 COMMAND_TIMEOUT_SECONDS = 4.0
 # The resume is the menu's slowest command (#2093): from level `none` two flag reads (0.5 s each) and three
 # writes whose timeout is settled by a re-read (0.5 s + 0.5 s each, #2095), 4.0 s of flag-service deadlines,
