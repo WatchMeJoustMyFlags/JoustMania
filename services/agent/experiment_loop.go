@@ -277,6 +277,9 @@ type experimentLoop struct {
 	// Each entry has one timer in graceTimers that bounds it.
 	parked   map[string]gamecontext.GameContext
 	outcomes map[string]gamerunner.Outcome
+	// hold is the UC-043 A17 gate of the declarer; main shares its policy with the
+	// proposer vocabulary.
+	hold *holdGate
 }
 
 // gameFitnessFunc scores a finished game (its pre-reset GameContext) into one
@@ -397,7 +400,9 @@ func buildExperimentLoop(
 		Log:       logger,
 		// UC-046: pin experiment.mock_archetypes at each experiment's first spawn;
 		// the kill switch force-ends in-flight pattern games through the tracker.
-		Patterns:       pinner,
+		Patterns: pinner,
+		// UC-043 A17 step 2: hold-flag experiments are checked at the pin and per tick.
+		HoldGate:       registryHoldGate(gameFlags),
 		FlagDigest:     resolvedFlagDigest,
 		PatternTracker: patterngame.Default,
 	})
@@ -408,6 +413,14 @@ func buildExperimentLoop(
 		registry.SetTerminalHook(window.Forget)
 	}
 	spawner.SetPatternCallbacks(registry.RecordPatternStart, patternEndChain(registry.RecordPatternEnd, windowSink))
+
+	// UC-043 A17 step 1: the declarer offers a hold key only while the selected
+	// archetypes all press the trigger in a Free-for-All shadow mode.
+	hold := &holdGate{}
+	hold.setPolicy(func(ctx context.Context) bool {
+		pin := pinner.Pin(ctx)
+		return pin.Active() && len(experiment.ArchetypesWithoutTriggerPolicy(pin)) == 0
+	})
 
 	thresholds := flagsFitnessSource{flags: flagsClient}
 	loop := &experimentLoop{
@@ -422,6 +435,7 @@ func buildExperimentLoop(
 		thresholds:   thresholds,
 		ceilings:     experimentCeilingsFromEnv(logger),
 		dynamic:      newDynamicDeclarer(gameFlags, nil),
+		hold:         hold,
 		// #1184: the retro-seeded thesis proposer is ALWAYS built (like the #995
 		// declarer) so the retro coordinator can Record into it unconditionally; whether
 		// it actually DECLARES is gated by the proposer gate (env AND flag, #1810) in
@@ -433,6 +447,7 @@ func buildExperimentLoop(
 		// A re-watch revert journals on its experiment (UC-043 step 7, #1883).
 		promoter.SetRewatchJournal(loop.journalRewatchRevert)
 	}
+	loop.dynamic.hold = hold
 	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled; settings are the experiment_dynamic_* flags, read per tick (#1907)")
 	// Wire the #1014 terminal-outcome backstop: each spawned game signals its
 	// terminal outcome here, and a non-concluding game releases its in-flight slot

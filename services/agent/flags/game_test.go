@@ -115,6 +115,44 @@ func TestShieldCharge_CoordinatorContext(t *testing.T) {
 	})
 }
 
+// UC: UC-043 A17
+func TestShieldCharge_ExperimentArmContext(t *testing.T) {
+	// #2096: shield.activation has an experiment rung since FR-162, which matches only
+	// game_kind != real with experiment_id and arm; the coordinator reads it in the
+	// game's flag context, so the agent's ledger must read the same arm.
+	t.Run("UC-043/A17 a shadow arm game reads with its kind, experiment_id and arm", func(t *testing.T) {
+		rec := &ctxRecorder{stubEvaluator: stubEvaluator{strings: map[string]string{"shield.activation": "trigger"}}}
+		f := gameFlags(rec, nil)
+		f.SetGameAttrs(func(gameID string) GameAttrs {
+			if gameID != "g-7" {
+				t.Fatalf("lookup for %q", gameID)
+			}
+			return GameAttrs{GameKind: "shadow", ExperimentID: "exp_1", Arm: "experimental"}
+		})
+		_, _ = f.ShieldCharge(context.Background(), "g-7")
+		f.LatchShieldMode(context.Background(), "g-7")
+		if len(rec.seen) != 3 {
+			t.Fatalf("evaluations = %d, want 3", len(rec.seen))
+		}
+		for i, ec := range rec.seen {
+			attrs := ec.Attributes()
+			if len(attrs) != 4 || attrs["game_kind"] != "shadow" || attrs["experiment_id"] != "exp_1" ||
+				attrs["arm"] != "experimental" || attrs["gameId"] != "g-7" {
+				t.Fatalf("evaluation %d attrs %v, want shadow arm context", i, attrs)
+			}
+		}
+	})
+	t.Run("UC-043/A17 an unseen kind reads as real", func(t *testing.T) {
+		rec := &ctxRecorder{stubEvaluator: stubEvaluator{strings: map[string]string{"shield.activation": "trigger"}}}
+		f := gameFlags(rec, nil)
+		f.SetGameAttrs(func(string) GameAttrs { return GameAttrs{} })
+		_, _ = f.ShieldCharge(context.Background(), "g-8")
+		if attrs := rec.seen[0].Attributes(); len(attrs) != 2 || attrs["game_kind"] != "real" {
+			t.Fatalf("attrs %v, want game_kind=real and gameId", attrs)
+		}
+	})
+}
+
 // UC: UC-040 A31
 func TestShieldCharge_UnreadableWarnsThrottled(t *testing.T) {
 	t.Run("UC-040/A31 an unready game set warns once per 30 s, not on every check", func(t *testing.T) {

@@ -351,6 +351,9 @@ type Registry struct {
 	// is a test-only seam for the allocation mechanics (the production spawner
 	// refuses any spawn without an archetype).
 	patterns PatternPinner
+	// holdGate checks an experiment on a hold flag against the current defaults
+	// (UC-043 A17); nil skips the check (test seam).
+	holdGate HoldGate
 	// flagDigest computes UC-046 BR-011's digest for an arm before it spawns.
 	flagDigest func(ctx context.Context, experimentID, arm string) string
 	// patternTracker force-ends in-flight pattern games on the kill switch (A12).
@@ -422,6 +425,10 @@ type RegistryConfig struct {
 	// first allocation pass (UC-046). Production always wires it; nil is a test-only
 	// seam for the allocation mechanics.
 	Patterns PatternPinner
+	// HoldGate returns why an experiment on a hold flag cannot run on the current
+	// defaults ("" = it can), at its pin and at every tick (UC-043 A17 step 2). An
+	// error keeps the experiment. nil skips the check (test seam).
+	HoldGate HoldGate
 	// FlagDigest computes the arm's resolved-values flag digest (UC-046 BR-011)
 	// before the spawn; nil ⇒ no digest.
 	FlagDigest func(ctx context.Context, experimentID, arm string) string
@@ -503,6 +510,7 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 		entries:           make(map[string]*entry),
 		releaseTombstones: make(map[string]string),
 		patterns:          cfg.Patterns,
+		holdGate:          cfg.HoldGate,
 		flagDigest:        cfg.FlagDigest,
 		patternTracker:    cfg.PatternTracker,
 	}
@@ -529,6 +537,12 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	// objective which folds as balanced) pass through unchanged.
 	if !decision.IsExperimentable(in.Objective) {
 		return "", fmt.Errorf("registry: declare experiment: objective %q is not experimentable: no fitness function", in.Objective)
+	}
+	// UC-043 A17 step 1 (#2096): shield.activation is experimented on only toward
+	// hold, whoever declares it (the declarer forces it; a proposer cannot pick another
+	// value and experiment its way out of hold).
+	if err := checkHoldValue(in.FlagKey, in.ExperimentalValue); err != nil {
+		return "", fmt.Errorf("registry: declare experiment: %w", err)
 	}
 
 	arms := in.Arms
@@ -730,6 +744,8 @@ func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
 	if r.spawner == nil {
 		return 0
 	}
+	// UC-043 A17 step 2: a running hold-flag experiment whose condition flipped ends.
+	r.discardHoldStale(ctx)
 	// UC-046 step 2: pin the archetype selection of experiments that have not spawned yet.
 	r.pinPending(ctx)
 	// UC-046 A6 / BR-015: conclude pattern experiments whose archetypes are all used

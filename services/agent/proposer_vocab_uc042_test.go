@@ -28,12 +28,12 @@ func TestGameFlagVocab_ExperimentCatalogOnly(t *testing.T) {
 		{Flag: "operator_only", Policy: &flagservice.Policy{Scopes: []string{"stack"}}},
 		{Flag: "no_policy"},
 	}}}
-	got := gameFlagVocab(r)()
+	got := gameFlagVocab(r, nil)()
 	if _, ok := got["sensitivity"]; !ok || len(got) != 1 {
 		t.Fatalf("vocab = %v, want exactly {sensitivity}", got)
 	}
 
-	if got := gameFlagVocab(setReader{err: errors.New("down")})(); len(got) != 0 {
+	if got := gameFlagVocab(setReader{err: errors.New("down")}, nil)(); len(got) != 0 {
 		t.Fatalf("vocab on read error = %v, want empty (fail closed)", got)
 	}
 }

@@ -10,10 +10,9 @@ import (
 	"github.com/joustmania/flag-service/fserr"
 )
 
-// guardRegistry widens two hold keys to scope real (as FR-162 will) and keeps
-// sensitivity, a real-scoped key without the attribute, as the control. The
-// real registry.yaml keeps the hold keys stack-only, so the guard is inert
-// there until the widening PR.
+// guardRegistry widens two hold keys to scope real (as registry.yaml does since
+// FR-162) and keeps sensitivity, a real-scoped key without the attribute, as the
+// control.
 const guardRegistry = `
 flags:
   - {set: game, key: shield.activation, kind: overlay, scope: [stack, experiment+arm, real], bounds: {variants: [instant, trigger, hold]}, real_write: no_live_real_game}

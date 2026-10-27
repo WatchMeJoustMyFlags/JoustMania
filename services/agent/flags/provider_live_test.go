@@ -100,7 +100,7 @@ func waitGameDomainServes(t *testing.T) {
 	client := openfeature.NewClient(GameDomain)
 	deadline := time.Now().Add(liveSetupTimeout)
 	for {
-		d, err := client.StringValueDetails(context.Background(), "shield.activation", "", shieldChargeContext("live-game"))
+		d, err := client.StringValueDetails(context.Background(), "shield.activation", "", shieldChargeContext("live-game", GameAttrs{}))
 		if err == nil && d.ErrorCode == "" {
 			return
 		}

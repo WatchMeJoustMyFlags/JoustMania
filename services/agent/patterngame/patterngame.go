@@ -71,6 +71,10 @@ const (
 	DiscardArchetypeInvalid = "pattern_archetype_invalid"
 	DiscardSelectionSmall   = "pattern_selection_too_small"
 	DiscardModeUnsupported  = "pattern_mode_unsupported"
+	// DiscardTriggerPolicyMissing: an experiment on a hold flag pinned an archetype
+	// without a trigger_policy, whose pair would be instant against instant
+	// (UC-046 A17, BR-018).
+	DiscardTriggerPolicyMissing = "pattern_trigger_policy_missing"
 )
 
 const (
