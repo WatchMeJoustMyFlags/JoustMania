@@ -24,7 +24,7 @@ The totals (the number of names, of names without a consumer and of names never 
 | `controller_accel_x` | gauge | `serial` | controller-manager | yes | (none) |  |
 | `controller_accel_y` | gauge | `serial` | controller-manager | yes | (none) |  |
 | `controller_accel_z` | gauge | `serial` | controller-manager | yes | (none) |  |
-| `controller_adapter_info` | gauge | `serial`, `adapter` | controller-manager | yes | grafana |  |
+| `controller_adapter_info` | gauge | `serial`, `adapter` | controller-manager | yes | dashboard, grafana |  |
 | `controller_backend_info` | gauge | `serial`, `backend` | controller-manager | yes | grafana |  |
 | `controller_battery_check_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |  |
 | `controller_battery_checks_total` | counter | (none) | controller-manager | yes | (none) |  |

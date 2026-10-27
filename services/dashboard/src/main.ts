@@ -26,6 +26,7 @@ import {
   needsFlagStateFallback,
 } from "./agent.js";
 import type { FlagPanel, InterventionOverlay } from "./agent.js";
+import { fetchAdapters } from "./adapters.js";
 import { createPoller } from "./poller.js";
 import { PageGate } from "./pageGate.js";
 import { ShieldStore } from "./shield.js";
@@ -133,7 +134,7 @@ async function init() {
   console.log("JoustMania Dashboard initializing...");
 
   // Initialize components
-  controllerGrid = new ControllerGrid("controller-grid");
+  controllerGrid = new ControllerGrid("controller-grid", "adapter-counts");
   gameStatus = new GameStatus();
   controls = new Controls({
     onStartGame: handleStartGame,
@@ -160,6 +161,9 @@ async function init() {
   // Start streaming game events
   startGameEventStream();
 
+  // Start polling the controllers' HCI adapters (VictoriaMetrics, UC-035 BR-009)
+  startAdapterPolling();
+
   // Start polling the experiment.progress spans (Jaeger)
   startExperimentsPolling();
 
@@ -178,6 +182,7 @@ async function init() {
 let decidePoller: Poller | null = null;
 let agentPoller: Poller | null = null;
 let experimentsPoller: Poller | null = null;
+let adapterPoller: Poller | null = null;
 // Pollers that only feed one tab run while it is shown and the page is visible
 // (pageGate.ts): a hidden tab, a hidden page or a page in the back/forward cache
 // costs no queries; coming back resumes them.
@@ -185,7 +190,7 @@ const pageGate = new PageGate(
   document,
   globalThis,
   (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
-  () => [decidePoller, agentPoller, experimentsPoller],
+  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller],
 );
 
 function tabActive(tab: string): boolean {
@@ -220,6 +225,7 @@ function setupTabs() {
         agentPoller?.poke();
       }
       if (tabId === "experiments") experimentsPoller?.poke();
+      if (tabId === "controllers") adapterPoller?.poke();
 
       console.log(`Switched to tab: ${tabId}`);
     });
@@ -334,6 +340,26 @@ function startAgentPolling() {
 
   setInterval(() => agentView.updateFreshness(), 1000);
   agentPoller.poke();
+}
+
+// The HCI adapter of each controller card (UC-035 BR-009): controller_adapter_info
+// from VictoriaMetrics with nocache=1, only while the Controllers tab is shown and
+// the page is visible. VictoriaMetrics down keeps the last labels, marked stale (A3).
+const ADAPTER_POLL_MS = 10_000;
+const ADAPTER_MAX_BACKOFF_MS = 30_000;
+const ADAPTER_TIMEOUT_MS = 5000;
+
+function startAdapterPolling() {
+  adapterPoller = createPoller({
+    baseMs: ADAPTER_POLL_MS,
+    maxMs: ADAPTER_MAX_BACKOFF_MS,
+    timeoutMs: ADAPTER_TIMEOUT_MS,
+    isActive: () => tabActive("controllers"),
+    run: async (signal) => {
+      controllerGrid.setAdapters(await fetchAdapters(signal));
+    },
+  });
+  adapterPoller.poke();
 }
 
 // Poll the agent.decide spans from Jaeger (#1233). Only while the Agent tab is
