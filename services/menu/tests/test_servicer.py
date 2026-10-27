@@ -1378,6 +1378,108 @@ class TestStartWhileGameActive:
         await self._assert_refused(real_servicer, task, stream, "web", release)
 
 
+class TestLobbyRestoreBounded:
+    """UC-010 BR-010 (#2072): each lobby-restore step is bounded, so a hung gRPC call cannot block reset_menu."""
+
+    _BOUND = "services.menu.servicer.LOBBY_RESTORE_STEP_TIMEOUT_SECONDS"
+
+    @staticmethod
+    async def _ends(coro) -> None:
+        """Assert the restore ends well within 2 s (an unbounded hung step would block it for good)."""
+        task = asyncio.ensure_future(coro)
+        done, _ = await asyncio.wait({task}, timeout=2)
+        if task not in done:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        assert task in done, "the lobby restore did not end: a hung step is not bounded"
+        task.result()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008", "BR-010"])
+    async def test_hung_lobby_music_times_out_and_reset_menu_recovers(self, real_servicer):
+        """reset_menu's restore with hung lobby music ends: the flag clears and the next start is accepted."""
+        from proto import game_coordinator_pb2
+
+        never = asyncio.Event()
+        await TestStartWhileGameActive._live_game(real_servicer, never)
+        TestStartWhileGameActive._game_state(real_servicer, game_coordinator_pb2.GameState.ENDED)
+        hang = asyncio.Event()
+        music_cancelled = asyncio.Event()
+
+        async def _music_hangs():
+            try:
+                await hang.wait()
+            except asyncio.CancelledError:
+                music_cancelled.set()
+                raise
+
+        real_servicer.audio.start_lobby_music.side_effect = _music_hangs
+        request = menu_pb2.ProcessInputRequest(input_type="reset_menu")
+        with patch(self._BOUND, 0.05):
+            await self._ends(real_servicer.ProcessInput(request, MagicMock()))
+
+        assert music_cancelled.is_set()
+        assert real_servicer._lobby_restarting is False
+        assert real_servicer._game_lifecycle_task is None
+        real_servicer.idle_monitor.start.assert_called_once()
+        assert real_servicer.state_manager.connected_controllers == {"s1", "s2"}
+
+        real_servicer.audio.start_lobby_music.side_effect = None
+        with patch.object(type(real_servicer), "_run_game_event_stream", autospec=True) as stream:
+            await real_servicer.start_game("s1", source="web", controllers=["s1", "s2"])
+            await _await_lifecycle(real_servicer)
+        stream.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[8], br=["BR-010"])
+    async def test_hung_led_during_reregistration_keeps_every_controller(self, real_servicer):
+        """A hung LED call in state_manager.reset times out; every controller stays CONNECTED, music and idle on."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2", "s3")
+        led = real_servicer.state_manager.led
+        hang = asyncio.Event()
+
+        async def _colour_hangs(serial, *_args, **_kwargs):
+            if serial == "s2":
+                await hang.wait()
+            return True
+
+        led.set_connected_color.side_effect = _colour_hangs
+        with patch(self._BOUND, 0.05):
+            await self._ends(real_servicer._restart_lobby())
+
+        assert real_servicer._lobby_restarting is False
+        assert real_servicer.state_manager.controller_states == {
+            "s1": ControllerState.CONNECTED,
+            "s2": ControllerState.CONNECTED,
+            "s3": ControllerState.CONNECTED,
+        }
+        real_servicer.audio.start_lobby_music.assert_awaited_once()
+        real_servicer.idle_monitor.start.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[8], br=["BR-010"])
+    async def test_cancel_from_outside_during_a_hung_step_is_passed_on(self, real_servicer):
+        """Cancelling the restore (menu stop) is not a timeout: CancelledError propagates, no later step runs."""
+        in_music = asyncio.Event()
+
+        async def _music_hangs():
+            in_music.set()
+            await asyncio.Event().wait()
+
+        real_servicer.audio.start_lobby_music.side_effect = _music_hangs
+        with patch(self._BOUND, 30):
+            restore = asyncio.create_task(real_servicer._restart_lobby())
+            await asyncio.wait_for(in_music.wait(), timeout=2)
+            restore.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await restore
+
+        assert real_servicer._lobby_restarting is False
+        real_servicer.idle_monitor.start.assert_not_called()
+
+
 class TestMenuServicerLifecycle:
     """Button monitor, game lifecycle task and shutdown on the real servicer."""
 
