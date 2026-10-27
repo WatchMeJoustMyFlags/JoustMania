@@ -20,7 +20,8 @@
 #  - A10 (#2137): a failed hotspot asks the real UC-060 LED helper (on a fake
 #    sysfs) for the hotspot cue once per change; the hotspot coming up, the
 #    uplink back, enabled=no and remove clear it; the UC-060 failure cue (5 Hz)
-#    wins over it (BR-011); no LED helper is one line and exit 0 (BR-006)
+#    wins over it (BR-011); no LED helper or an older one is one line and
+#    exit 0, and the next check asks again (BR-006)
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-hotspot.sh
 # UC: UC-061 main A1 A2 A3 A4 A5 A6 A7 A9 A10 Pre-1 Post-S-2 Post-F-1 BR-001 BR-002 BR-004 BR-006 BR-008 BR-010 BR-011
 set -euo pipefail
@@ -632,6 +633,20 @@ touch "${NM}/up-fails"
 at 10000; once; at 10020; once; at 10080; once
 expect_state failed
 [[ "$(grep -c 'no LED helper' "${CASE}/out" || true)" == 1 ]] || fail "a10-no-helper: want one line: $(cat "${CASE}/out")"
+
+# an older LED helper without the hotspot commands (usage on stderr, exit 64):
+# one line, exit 0; after install_autostart.sh the next check shows the cue
+led_case a10-old-helper
+H="${CASE}/root/usr/local/lib/joustmania/joustmania-led"
+printf '#!/bin/bash\necho "usage: joustmania-led starting|ok|degraded|failed|restore|from-request|stop-post" >&2\nexit 64\n' >"$H"
+touch "${NM}/up-fails"
+at 10000; once; at 10020; once; at 10080; once
+expect_state failed
+[[ "$(grep -c 'the LED helper failed (rc 64)' "${CASE}/out" || true)" == 1 ]] || fail "a10-old-helper: want one failure line: $(cat "${CASE}/out")"
+grep -q "usage:" "${CASE}/out" && fail "a10-old-helper: the old helper's usage reached the journal"
+cp "${ROOT}/scripts/setup/joustmania-led.sh" "$H"
+at 10140; once
+led_is timer 200 1800
 
 if [[ "$fails" -gt 0 ]]; then
   echo "test-joustmania-hotspot: ${fails} failure(s)"

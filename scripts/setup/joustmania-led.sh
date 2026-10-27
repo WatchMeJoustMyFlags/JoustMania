@@ -111,8 +111,19 @@ save_default_trigger() { # $1 = LED dir
     fi
 }
 
-# Write one pattern word to the LED; 1 when the trigger cannot be written
-show() { # $1 = LED dir, $2 = pattern word
+# Write one pattern word to the LED; `default` is the board's saved trigger.
+# 1 when nothing could be written
+show() { # $1 = LED dir, $2 = pattern word or default
+    local own
+    if [[ "$2" == default ]]; then
+        own="$(head -n 1 "$STATE_DIR/default-trigger" 2>/dev/null || true)"
+        [[ -n "$own" ]] || return 1
+        write_sysfs "$1/trigger" "$own" || {
+            log "cannot write $1/trigger; trigger $own not restored"
+            return 1
+        }
+        return 0
+    fi
     pattern "$2" || return 1
     write_sysfs "$1/trigger" "$TRIGGER" || {
         log "cannot write $1/trigger; $2 not shown"
@@ -124,12 +135,23 @@ show() { # $1 = LED dir, $2 = pattern word
     fi
 }
 
-describe() { # $1 = pattern word
-    pattern "$1" && echo "$TRIGGER${ON:+ $ON/$OFF ms}"
+describe() { # $1 = pattern word or default
+    if [[ "$1" == default ]]; then
+        echo "the board trigger $(head -n 1 "$STATE_DIR/default-trigger" 2>/dev/null || true)"
+    elif pattern "$1"; then
+        echo "$TRIGGER${ON:+ $ON/$OFF ms}"
+    fi
+}
+
+# The one place the precedence is applied (UC-061 BR-011): show the winner of
+# the UC-060 state and the hotspot cue. Sets SHOWN to the word written.
+render() { # $1 = LED dir, $2 = UC-060 state word or ""
+    SHOWN="$(effective "$2")"
+    show "$1" "$SHOWN"
 }
 
 apply() { # $1 = starting|ok|degraded|failed
-    local dir word
+    local dir
     if ! pattern "$1"; then
         log "unknown state '$1'"
         return 0
@@ -139,10 +161,9 @@ apply() { # $1 = starting|ok|degraded|failed
         return 0
     fi
     save_default_trigger "$dir"
-    word="$(effective "$1")"
-    show "$dir" "$word" || return 0
+    render "$dir" "$1" || return 0
     record "$1"
-    if [[ "$word" == "$1" ]]; then
+    if [[ "$SHOWN" == "$1" ]]; then
         log "state $1 ($(describe "$1")) on $dir"
     else
         log "state $1 recorded; the hotspot cue ($(describe hotspot)) wins on $dir (UC-061 BR-011)"
@@ -160,68 +181,43 @@ restore() {
         log "no writable ACT/led0 LED under $SYSFS; nothing restored"
         return 0
     fi
-    if cue_set; then
-        show "$dir" hotspot || return 0
-        record default
-        log "the board trigger $own is due, but the hotspot cue ($(describe hotspot)) wins on $dir (UC-061 BR-011)"
-    elif write_sysfs "$dir/trigger" "$own"; then
-        record default
+    render "$dir" default || return 0
+    record default
+    if [[ "$SHOWN" == default ]]; then
         log "restored the board trigger $own on $dir"
     else
-        log "cannot write $dir/trigger; trigger $own not restored"
+        log "the board trigger $own is due, but the hotspot cue ($(describe hotspot)) wins on $dir (UC-061 BR-011)"
     fi
 }
 
-# UC-061 A10: the hotspot helper's cue, kept apart from the UC-060 state
+# UC-061 A10: the hotspot helper's cue. Only the record changes here; what the
+# LED shows comes from render, like for every UC-060 state.
 hotspot_cue() { # $1 = failed|clear
-    local dir base own
+    local dir base
     base="$(head -n 1 "$STATE_DIR/state" 2>/dev/null || true)"
-    if [[ "$1" == clear ]]; then
-        if ! cue_set; then
-            log "no hotspot cue to clear"
-            return 0
-        fi
-        rm -f "$STATE_DIR/hotspot"
-        case "$base" in
-            failed | starting)
-                log "hotspot cue cleared; state $base stays on the LED"
-                return 0
-                ;;
-        esac
-        if ! dir="$(led_dir)"; then
-            log "no writable ACT/led0 LED under $SYSFS; hotspot cue cleared"
-            return 0
-        fi
-        case "$base" in
-            ok | degraded)
-                show "$dir" "$base" && log "hotspot cue cleared; state $base ($(describe "$base")) on $dir"
-                ;;
-            *)
-                own="$(head -n 1 "$STATE_DIR/default-trigger" 2>/dev/null || true)"
-                if [[ -n "$own" ]] && write_sysfs "$dir/trigger" "$own"; then
-                    log "hotspot cue cleared; restored the board trigger $own on $dir"
-                else
-                    log "hotspot cue cleared; cannot restore the board trigger on $dir"
-                fi
-                ;;
-        esac
+    if [[ "$1" == clear ]] && ! cue_set; then
+        log "no hotspot cue to clear"
         return 0
     fi
     if ! dir="$(led_dir)"; then
-        log "no writable ACT/led0 LED under $SYSFS (no LED or not root); hotspot cue not shown"
+        [[ "$1" == clear ]] && rm -f "$STATE_DIR/hotspot"
+        log "no writable ACT/led0 LED under $SYSFS (no LED or not root); hotspot cue $1 not shown"
         return 0
     fi
-    case "$base" in
-        failed | starting)
-            mkdir -p "$STATE_DIR" 2>/dev/null && : >"$STATE_DIR/hotspot" 2>/dev/null
-            log "hotspot cue recorded; state $base wins on $dir (UC-061 BR-011)"
-            return 0
-            ;;
-    esac
     save_default_trigger "$dir"
-    show "$dir" hotspot || return 0
-    mkdir -p "$STATE_DIR" 2>/dev/null && : >"$STATE_DIR/hotspot" 2>/dev/null
-    log "hotspot cue ($(describe hotspot)) on $dir: the hotspot should be on but failed (UC-061 A10)"
+    if [[ "$1" == clear ]]; then
+        rm -f "$STATE_DIR/hotspot"
+    elif ! { mkdir -p "$STATE_DIR" 2>/dev/null && : >"$STATE_DIR/hotspot"; } 2>/dev/null; then
+        log "cannot record the hotspot cue in $STATE_DIR; not shown"
+        return 0
+    fi
+    if ! render "$dir" "$base"; then
+        # a cue that could not be shown is not recorded
+        [[ "$1" == failed ]] && rm -f "$STATE_DIR/hotspot"
+        log "hotspot cue $1: nothing written to $dir"
+        return 0
+    fi
+    log "hotspot cue $1 (UC-061 A10); the LED shows $(describe "$SHOWN") on $dir (UC-061 BR-011)"
 }
 
 # The first line of a file the unit's user owns: a regular file, not a

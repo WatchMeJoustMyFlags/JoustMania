@@ -271,21 +271,34 @@ write_status() { # $1 = state, $2 = reason
 
 # Ask the UC-060 LED helper for the cue only when it changes (led_cue in
 # STATE_DIR, cleared at boot like the helper's own record), so a check every
-# 60 s does not rewrite the LED or fill the journal. A missing helper or a
-# failed call is one line; the hotspot goes on as before (BR-006).
+# 60 s does not rewrite the LED or fill the journal. led_cue is recorded only
+# when the helper answers 0, so a missing, old or stuck helper is asked again
+# by the next check (an install_autostart.sh run later is picked up); its
+# failure is logged once per kind (led_error). The hotspot goes on as before
+# (BR-006).
 led_cue() { # $1 = the recorded hotspot state
-    local want=clear last rc=0
+    local want=clear last rc=0 err=""
     [[ "$1" == failed ]] && want=failed
     last="$(state_get led_cue)"
-    # nothing was asked since boot: there is no cue to clear
+    # nothing was shown since boot: there is no cue to clear
     [[ "$last" == "$want" || (-z "$last" && "$want" == clear) ]] && return 0
-    state_set led_cue "$want" 2>/dev/null || true
     if [[ ! -x "$LED_HELPER" ]]; then
-        log "no LED helper at $LED_HELPER (the UC-060 autostart is not installed); hotspot LED cue $want not shown"
+        err="no LED helper at $LED_HELPER (the UC-060 autostart is not installed); hotspot LED cue $want not shown"
+    else
+        # longer than the helper's own lock wait (flock -w 10); an older helper
+        # without the hotspot commands prints its usage on stderr: drop it
+        timeout 15 "$LED_HELPER" "hotspot-$want" </dev/null 2>/dev/null || rc=$?
+        ((rc == 0)) || err="the LED helper failed (rc $rc) on hotspot-$want; re-run install_autostart.sh if it is older than this helper"
+    fi
+    if [[ -z "$err" ]]; then
+        state_set led_cue "$want" 2>/dev/null || true
+        state_clear led_error
         return 0
     fi
-    timeout 10 "$LED_HELPER" "hotspot-$want" </dev/null || rc=$?
-    ((rc == 0)) || log "the LED helper failed (rc $rc) on hotspot-$want; re-run install_autostart.sh if it is older than this helper"
+    if [[ "$(state_get led_error)" != "$want $rc" ]]; then
+        log "$err"
+        state_set led_error "$want $rc" 2>/dev/null || true
+    fi
     return 0
 }
 
