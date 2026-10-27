@@ -68,8 +68,8 @@ joustmania.menu.MenuService/StreamMenuEvents: Stream menu events (button presses
   gRPC clients only, the connect-proxy does not forward the early headers (#1613).
 joustmania.menu.MenuService/ProcessInput: 'Process menu input. `web_command` `start_game` with a `mode` selects that
   mode first; an unknown or unimplemented mode returns `success=false` with the error and publishes
-  `game_start_rejected` (UC-010 A6, UC-011 BR-002); a start refused while a game lifecycle is live returns `success=false`,
-  `game_active` (UC-010 A8)'
+  `game_start_rejected` (UC-010 A6, UC-011 BR-002); a start (`start_game` or a `button_press` trigger) refused while a game lifecycle is live returns
+  `success=false`, `game_active` and selects nothing (UC-010 A8)'
 joustmania.menu.MenuService/ListGameModes: The playable modes (`game_modes`, menu cycle order, UC-011 BR-001) and the
   mode to preselect (`default_mode`, `JoustFFA`); the dashboard builds its mode selector from it (UC-011 BR-002)
 joustmania.menu.MenuService/GetMenuStatus: 'Read-only menu snapshot for the operator pad: menu state, `lifecycle_live`,

@@ -527,15 +527,16 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 status = "ok" if success else "error"
                 metrics.grpc_requests_total.labels(method="ProcessInput", status=status).inc()
                 return menu_pb2.ProcessInputResponse(success=success, error=error)
+            rejection = None
             if input_type == "button_press":
-                await self._handle_button_input(data, span)
+                rejection = await self._handle_button_input(data, span)
             elif input_type == "web_command":
                 rejection = await self._handle_web_command(data, span)
-                if rejection is not None:
-                    metrics.grpc_requests_total.labels(method="ProcessInput", status="error").inc()
-                    return menu_pb2.ProcessInputResponse(success=False, error=rejection)
             elif input_type == "reset_menu":
                 await self._handle_reset_menu()
+            if rejection is not None:
+                metrics.grpc_requests_total.labels(method="ProcessInput", status="error").inc()
+                return menu_pb2.ProcessInputResponse(success=False, error=rejection)
 
             metrics.grpc_requests_total.labels(method="ProcessInput", status="ok").inc()
             return menu_pb2.ProcessInputResponse(success=True, error="")
@@ -628,17 +629,19 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
     # Input handlers
 
-    async def _handle_button_input(self, data: dict, span) -> None:
-        """Handle button_press input type."""
+    async def _handle_button_input(self, data: dict, span) -> str | None:
+        """Handle button_press input type; the error code when the start is refused (UC-010 A8), else None."""
         button = data.get("button", "")
         span.set_attribute("button", button)
 
         if button == "trigger":
-            await self._start_game(serial="process_input", source="button_input")
+            if not await self._start_game(serial="process_input", source="button_input"):
+                return GAME_ACTIVE
 
         elif button == "select":
             next_mode = get_next_game_mode(self.current_selection)
             await self.select_game_mode(next_mode.name, source="button_input")
+        return None
 
     async def _handle_web_command(self, data: dict, span) -> str | None:
         """Handle web_command input type.
@@ -655,6 +658,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 game_mode = Games.from_name(requested_mode)
                 if game_mode is None or game_mode.name not in GAME_MODES:
                     return await self._reject_web_start_mode(requested_mode, span)
+                if self._lifecycle_live():
+                    # UC-010 A8 (#2177 review): a refused start changes nothing, not even the selection.
+                    await self._reject_start_while_active("web", "web", game_mode)
+                    return GAME_ACTIVE
                 await self.select_game_mode(game_mode.name, source="web")
             if not await self._start_game(serial="web", source="web", game_mode=game_mode):
                 # UC-010 A8, UC-015 A1 (#2176): the caller sees the refusal, not success=true.

@@ -406,6 +406,24 @@ class TestMenuServicerStartStopMenu:
         assert real_servicer._game_lifecycle_task is None
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11", br=["BR-001"])
+    async def test_start_menu_drops_a_controller_disconnected_during_the_repaint(self, real_servicer):
+        """#2177 review: a disconnect processed during the StartMenu repaint leaves no ghost in the roster."""
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+
+        async def paint(serial, _mode):
+            if serial == "s1":
+                await real_servicer.on_disconnect("s3")
+            return True
+
+        real_servicer.led.set_connected_color.side_effect = paint
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+
+        assert real_servicer.connected_controllers == {"s1", "s2"}
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A11")
     async def test_start_menu_repaints_kept_controllers_in_the_lobby_colour(self, real_servicer):
         """#2175: StartMenu shows every kept controller dim in the restored mode's lobby colour."""
@@ -1117,8 +1135,34 @@ class TestStartWhileGameActive:
         release = asyncio.Event()
         task, stream = await self._live_game(real_servicer, release)
         request = menu_pb2.ProcessInputRequest(input_type="button_press", data={"button": "trigger"})
-        await real_servicer.ProcessInput(request, MagicMock())
+        reply = await real_servicer.ProcessInput(request, MagicMock())
+        assert (reply.success, reply.error) == (False, "game_active")  # #2176
         await self._assert_refused(real_servicer, task, stream, "button_input", release)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    @pytest.mark.uc("UC-010", flow="A6")
+    async def test_web_start_game_with_mode_mid_game_changes_nothing(self, real_servicer):
+        """#2176 review: a refused web start with a mode selects, persists and publishes nothing."""
+        release = asyncio.Event()
+        task, stream = await self._live_game(real_servicer, release)
+        before = real_servicer.current_selection
+        other = Games.Swapper if before != Games.Swapper else Games.JoustFFA
+        real_servicer.user_prefs_writer.update_default_variant.reset_mock()
+        request = menu_pb2.ProcessInputRequest(
+            input_type="web_command", data={"command": "start_game", "mode": other.name}
+        )
+        reply = await real_servicer.ProcessInput(request, MagicMock())
+        assert (reply.success, reply.error) == (False, "game_active")
+        assert real_servicer.current_selection == before
+        real_servicer.user_prefs_writer.update_default_variant.assert_not_called()
+        assert not [e for e in _published(real_servicer) if e[0] == "selection_changed"]
+        rejected = {"game_name": other.name, "source": "web", "reason": "game_active"}
+        assert ("game_start_rejected", rejected) in _published(real_servicer)
+        assert real_servicer._game_lifecycle_task is task and not task.done()
+        assert stream.await_count == 1
+        release.set()
+        await task
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])

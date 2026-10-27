@@ -392,6 +392,8 @@ class StateManager:
 
         # Re-register each controller as CONNECTED (triggers on_enter -> sets colors)
         for serial in serials:
+            if serial not in self.controller_states:
+                continue  # disconnected during an earlier LED call: no ghost (UC-002, BR-001)
             await self.on_controller_connected(serial)
 
         logger.info(f"StateManager reset, re-registered {len(serials)} controllers")
