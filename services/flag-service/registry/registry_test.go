@@ -52,6 +52,7 @@ type mdRow struct {
 	set, key, kind, bounds string
 	scopes                 []string
 	persist                bool
+	realWrite              bool // the row names `real_write: no_live_real_game`
 }
 
 var backticked = regexp.MustCompile("`([^`]+)`")
@@ -107,7 +108,8 @@ func parseFlagsMD(t *testing.T) []mdRow {
 		for _, k := range keys {
 			rows = append(rows, mdRow{
 				set: set, key: k[1], kind: cells[1], scopes: scopes, bounds: cells[3],
-				persist: strings.HasPrefix(cells[4], "**yes**"),
+				persist:   strings.HasPrefix(cells[4], "**yes**"),
+				realWrite: strings.Contains(strings.Join(cells[5:], "|"), "`real_write: "+RealWriteNoLiveRealGame+"`"),
 			})
 		}
 	}
@@ -189,6 +191,9 @@ func TestRegistryMatchesFlagsMD(t *testing.T) {
 			}
 			if p.Persist != row.persist {
 				t.Errorf("%s: persist %v in registry, %v in flags.md", row.key, p.Persist, row.persist)
+			}
+			if p.RealWriteNeedsNoRealGame() != row.realWrite {
+				t.Errorf("%s: real_write %q in registry, flags.md names it: %v", row.key, p.RealWrite, row.realWrite)
 			}
 			checkBounds(t, row, p)
 		}
@@ -386,6 +391,43 @@ func TestOperatorSetIsReadOnlyBaseline(t *testing.T) {
 				if reg.Get("operator", key) != nil {
 					t.Fatalf("operator/%s must not be mutable at runtime", key)
 				}
+			}
+		})
+	}
+}
+
+// UC: UC-043 A17
+func TestRealWriteAttribute(t *testing.T) {
+	t.Run("UC-043/A17 exactly the eight hold keys carry real_write: no_live_real_game", func(t *testing.T) {
+		want := []string{
+			"game/shield.activation", "game/shield.empty_pulse_ms", "game/shield.energy_budget_seconds",
+			"game/shield.energy_initial_seconds", "game/shield.energy_max_seconds", "game/shield.hold_rumble_intensity",
+			"game/shield.min_burst_seconds", "game/shield.recharge_per_second",
+		}
+		for _, dir := range []string{"", "ci"} {
+			var got []string
+			for _, p := range loadReal(t, dir).Policies() {
+				if p.RealWriteNeedsNoRealGame() {
+					got = append(got, id(p.Set, p.Key))
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("flagd/%s: real_write keys %v, want %v", dir, got, want)
+			}
+		}
+	})
+	b, err := baseline.Load(filepath.Join(root(t), "..", "flagd", "ci"), baseline.DefaultFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := []struct{ name, row string }{
+		{"an unknown value", `{set: game, key: sensitivity, kind: overlay, scope: [stack, real], real_write: always}`},
+		{"a kind other than overlay", `{set: game, key: tempo_schedule_mode, kind: state, scope: [game], real_write: no_live_real_game}`},
+	}
+	for _, c := range bad {
+		t.Run("UC-043/A17 the registry refuses real_write with "+c.name, func(t *testing.T) {
+			if _, err := Parse([]byte("flags:\n  - "+c.row+"\n"), b); err == nil {
+				t.Fatalf("accepted %s", c.row)
 			}
 		})
 	}

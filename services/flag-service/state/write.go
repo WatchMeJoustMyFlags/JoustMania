@@ -151,7 +151,28 @@ func (s *State) liveChecksLocked(f *flagState, sc Scope, scopeName string, res *
 			return fserr.Unprocessable(fserr.SerialNotInGame, "serial %q is not a player of game %q", sc.Serial, sc.GameID)
 		}
 	}
+	// #2096, UC-043 A17: a real write of a flag marked real_write:
+	// no_live_real_game waits for every real game to end. Checked under s.mu,
+	// the lock RegisterGame and Reconcile hold, so no registration can slip in
+	// between this check and the write. Clear (the kill-switch revert) never
+	// comes here.
+	if scopeName == registry.ScopeReal && f.policy.RealWriteNeedsNoRealGame() {
+		if id := s.liveRealGameLocked(); id != "" {
+			return fserr.Conflict(fserr.RealGameLive, "real game %q is registered; a real write of %s waits until no real game runs", id, f.key)
+		}
+	}
 	return nil
+}
+
+// liveRealGameLocked returns the id of a registered game of kind real (the
+// smallest, for a stable message), or "" when none is registered.
+func (s *State) liveRealGameLocked() string {
+	for _, id := range sortedKeys(s.games) {
+		if s.games[id].Kind == gameKindReal {
+			return id
+		}
+	}
+	return ""
 }
 
 func (s *State) streamCheckLocked(set string) *fserr.Error {
