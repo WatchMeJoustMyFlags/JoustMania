@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 )
@@ -33,6 +34,13 @@ import (
 // record of the charges it WROTE: at most one agent charge per player per window. A
 // second grant_shield to the same player inside the window is blocked already_charged
 // before the rate limit, so it charges no budget and the coordinator never sees it.
+//
+// In a hold game (#2096; UC-040 A37 step 1) a grant_shield adds energy to the
+// player's pool. The charge check does not apply; instead, before the cap and the
+// cooldown, the grant is refused shield_budget_exhausted or shield_pool_full from the
+// coordinator's game_player_shield_* gauges (decide.HoldShieldRefusal), counting the
+// seconds of this player's grants in flight. The mode comes from the
+// game_shield_activation_mode gauge, never from flagd.
 //
 // The ledger lives in the per-game Loop (one Loop per game id, so a new game starts with
 // an empty ledger) under its own mutex, on the loop clock. It is in memory only: an
@@ -99,7 +107,7 @@ type chargeEntry struct {
 	// yet. The cap counts both, so two concurrent cycles cannot both take the last
 	// slot.
 	committed int
-	pending   map[uint64]struct{}
+	pending   map[uint64]time.Duration
 	// lastEnd is the latest end of the written shields: write + granted seconds +
 	// chargeLedgerMargin (in trigger mode too: the cooldown runs from the grant).
 	lastEnd time.Time
@@ -139,12 +147,55 @@ type chargeLedger struct {
 }
 
 // shieldRequest is what one targeted grant_shield asks the ledger for: a charge
-// window (trigger mode only, 0 = no charge check), the live limits and the granted
-// length.
+// window (trigger mode only, 0 = no charge check), the hold-mode pool of the target
+// (hold games only, nil = no hold check), the live limits and the granted length.
 type shieldRequest struct {
 	chargeWindow time.Duration
+	hold         *holdPool
 	limits       shieldLimits
 	seconds      time.Duration
+}
+
+// holdPool is a hold-mode player's pool as the game context shows it (#2096).
+type holdPool struct {
+	energy, budgetLeft, cap, minBurst *float64
+	active                            bool
+}
+
+// holdPoolOf returns serial's pool in c, nil outside a hold game or for a player the
+// context does not show alive.
+func holdPoolOf(c gamecontext.GameContext, serial string) *holdPool {
+	if !c.Session.IsShieldHold() {
+		return nil
+	}
+	p := c.Players[serial]
+	if p == nil || p.Active == nil || !*p.Active {
+		return nil
+	}
+	return &holdPool{
+		energy:     p.ShieldEnergy,
+		budgetLeft: p.ShieldBudgetRemaining,
+		cap:        c.Session.ShieldSetting(gamecontext.ShieldSettingEnergyMax),
+		minBurst:   c.Session.ShieldSetting(gamecontext.ShieldSettingMinBurst),
+		active:     p.ShieldActive != nil && *p.ShieldActive,
+	}
+}
+
+// refusal is the hold check of the pool with inFlight more seconds on the way.
+func (h *holdPool) refusal(inFlight time.Duration) BlockReason {
+	if h == nil {
+		return ""
+	}
+	return BlockReason(decide.HoldShieldRefusal(h.energy, h.budgetLeft, h.active, h.cap, h.minBurst, inFlight.Seconds()))
+}
+
+// inFlight is the seconds of the entry's grants reserved and not finished yet.
+func (e chargeEntry) inFlight() time.Duration {
+	var sum time.Duration
+	for _, seconds := range e.pending {
+		sum += seconds
+	}
+	return sum
 }
 
 // reserve atomically checks serial's entry and reserves it. It returns exactly one
@@ -154,21 +205,26 @@ func (cl *chargeLedger) reserve(serial string, now time.Time, req shieldRequest)
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 	cl.limits = req.limits
+	if cl.entries == nil {
+		// A hold refusal can be the first record of a serial (#2096).
+		cl.entries = make(map[string]chargeEntry)
+	}
 	e := cl.entries[serial]
-	if r := e.refusal(now, req.limits, req.chargeWindow > 0); r != "" {
+	r := req.hold.refusal(e.inFlight())
+	if r == "" {
+		r = e.refusal(now, req.limits, req.chargeWindow > 0)
+	}
+	if r != "" {
 		first := e.reported != r
 		e.reported = r
 		cl.entries[serial] = e
 		return nil, r, first
 	}
-	if cl.entries == nil {
-		cl.entries = make(map[string]chargeEntry)
-	}
 	cl.gen++
 	if e.pending == nil {
-		e.pending = make(map[uint64]struct{})
+		e.pending = make(map[uint64]time.Duration)
 	}
-	e.pending[cl.gen] = struct{}{}
+	e.pending[cl.gen] = req.seconds
 	e.reported = ""
 	if req.chargeWindow > 0 {
 		e.chargeGen, e.chargeCommitted, e.chargeUntil = cl.gen, false, now.Add(req.chargeWindow)
@@ -277,12 +333,63 @@ func (l *Loop) ChargedSerials() map[string]bool {
 	return l.charges.live(l.nowOrDefault()())
 }
 
-// ShieldSerials is the rules engine's view of the ledger, taken once per ranking
-// (UC-040 A31, A33): charged feeds the decide state the ranking builds, noShield
-// (charged plus the players at the shield cap or in the cooldown) feeds the rules'
-// no-shield filter, so R4 does not propose a shield the ledger would refuse.
-func (l *Loop) ShieldSerials() (charged, noShield map[string]bool) {
-	return l.charges.views(l.nowOrDefault()())
+// ShieldSerials is the rules engine's view of the ledger for the game context c,
+// taken once per ranking (UC-040 A31, A33, A37): charged feeds the decide state the
+// ranking builds, noShield (charged plus the players at the shield cap or in the
+// cooldown, and in a hold game the players whose pool is full or whose budget is used
+// up, #2096) feeds the rules' no-shield filter, so R4 does not propose a shield the
+// ledger would refuse.
+func (l *Loop) ShieldSerials(c gamecontext.GameContext) (charged, noShield map[string]bool) {
+	charged, noShield = l.charges.views(l.nowOrDefault()())
+	if !c.Session.IsShieldHold() {
+		return charged, noShield
+	}
+	inFlight := l.charges.inFlight()
+	for serial := range c.Players {
+		if l.holdRefusal(c, serial, inFlight[serial]) == "" {
+			continue
+		}
+		if noShield == nil {
+			noShield = make(map[string]bool, len(c.Players))
+		}
+		noShield[serial] = true
+	}
+	return charged, noShield
+}
+
+func (l *Loop) holdRefusal(c gamecontext.GameContext, serial string, inFlight time.Duration) BlockReason {
+	return holdPoolOf(c, serial).refusal(inFlight)
+}
+
+// ShieldInFlight is the seconds of the agent's grant_shield writes in flight per
+// serial (reserved, not finished): the decide state adds them to a hold-mode
+// player's energy (#2096). nil when none.
+func (l *Loop) ShieldInFlight() map[string]float64 {
+	var out map[string]float64
+	for serial, d := range l.charges.inFlight() {
+		if out == nil {
+			out = make(map[string]float64)
+		}
+		out[serial] = d.Seconds()
+	}
+	return out
+}
+
+// inFlight returns, from one lock, the seconds in flight per serial (only serials
+// with some).
+func (cl *chargeLedger) inFlight() map[string]time.Duration {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	var out map[string]time.Duration
+	for serial, e := range cl.entries {
+		if d := e.inFlight(); d > 0 {
+			if out == nil {
+				out = make(map[string]time.Duration)
+			}
+			out[serial] = d
+		}
+	}
+	return out
 }
 
 // chargeReservation is the handle of one reservation. runDecision defers finish
@@ -320,9 +427,14 @@ func chargeLedgerWindow(expiry time.Duration) time.Duration {
 
 // chargeLedgerApplies reports whether the ledger governs d and the window to use: a
 // targeted grant_shield in a real Free-for-All game whose shield.activation resolves to
-// trigger. The cheap checks run first, so the flag is read only for such a grant.
+// trigger. The cheap checks run first, so the flag is read only for such a grant. A
+// game latched to hold (game_shield_activation_mode, #2096) has no charges, whatever
+// the flag reads now.
 func (l *Loop) chargeLedgerApplies(ctx context.Context, c gamecontext.GameContext, d Decision) (time.Duration, bool) {
 	if l.shieldChargeMode == nil || d.Intervention != InterventionGrantShield || d.TargetSerial == "" {
+		return 0, false
+	}
+	if c.Session.IsShieldHold() {
 		return 0, false
 	}
 	mode := derefStr(c.Session.GameMode)
@@ -348,7 +460,8 @@ func shieldSeconds(d Decision) time.Duration {
 
 // reserveShield runs the shield-ledger step of the permission chain (decide-contract
 // §4.5 step 4): for a targeted grant_shield it checks, in order, the trigger-mode
-// charge (already_charged, A31), the cap (shield_cap_reached) and the cooldown
+// charge (already_charged, A31) or in a hold game the pool (shield_budget_exhausted,
+// shield_pool_full, A37), the cap (shield_cap_reached) and the cooldown
 // (shield_cooldown, A33), and reserves. It returns the reservation to finish (nil
 // when the ledger does not apply or refused), the refusal reason ("" when not
 // refused) and whether that refusal is the first of its kind against the entry.
@@ -356,7 +469,7 @@ func (l *Loop) reserveShield(ctx context.Context, snapshot flags.Snapshot, c gam
 	if d.Intervention != InterventionGrantShield || d.TargetSerial == "" {
 		return nil, "", false
 	}
-	req := shieldRequest{limits: limitsOf(snapshot.Policy), seconds: shieldSeconds(d)}
+	req := shieldRequest{limits: limitsOf(snapshot.Policy), seconds: shieldSeconds(d), hold: holdPoolOf(c, d.TargetSerial)}
 	if window, ok := l.chargeLedgerApplies(ctx, c, d); ok {
 		req.chargeWindow = window
 	}

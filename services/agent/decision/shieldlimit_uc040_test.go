@@ -12,6 +12,7 @@ import (
 
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/gamecontext"
 )
 
 // shieldlimit_uc040_test.go covers the agent's shield cap and cooldown per player per
@@ -90,7 +91,7 @@ func TestShieldLimits_RulesAcceptance(t *testing.T) {
 		if after := limiterEntries(l); after != before {
 			t.Fatalf("limiter entries %d -> %d: a cap refusal must not charge the budget", before, after)
 		}
-		if _, noShield := l.ShieldSerials(); !noShield["WEAK"] {
+		if _, noShield := l.ShieldSerials(gamecontext.GameContext{}); !noShield["WEAK"] {
 			t.Fatal("WEAK must be in the rules' no-shield set at the cap")
 		}
 	})
@@ -431,7 +432,7 @@ func TestShieldLimits_NewGameAndInert(t *testing.T) {
 		if n := shieldWritesTo(sink, "WEAK"); n != 10 {
 			t.Fatalf("writes = %d, want 10", n)
 		}
-		if charged, noShield := l.ShieldSerials(); charged != nil || noShield != nil {
+		if charged, noShield := l.ShieldSerials(gamecontext.GameContext{}); charged != nil || noShield != nil {
 			t.Fatalf("views = %v / %v, want nil / nil", charged, noShield)
 		}
 	})

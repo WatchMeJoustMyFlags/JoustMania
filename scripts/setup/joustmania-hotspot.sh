@@ -32,11 +32,16 @@
 # client that is up or connecting on wlan0 always wins (A2). Every decision the
 # helper cannot carry out is logged and recorded, and it still exits 0 (BR-006).
 #
+# ACT LED (A10, BR-011; #2137): on a change into or out of state=failed it asks
+# the root-owned UC-060 LED helper (hotspot-failed / hotspot-clear), the only
+# writer of the LED, which decides what wins; it never writes the LED itself.
+#
 # Test overrides: JOUSTMANIA_HOTSPOT_CONF, JOUSTMANIA_HOTSPOT_STATE_DIR,
 # JOUSTMANIA_HOTSPOT_ROOT (prefix for `remove`), JOUSTMANIA_HOTSPOT_NOW_FILE
 # (fake clock: epoch seconds in a file; a pause adds to it instead of sleeping),
 # JOUSTMANIA_HOTSPOT_PROC_UPTIME (also the debounce clock), JOUSTMANIA_HOTSPOT_DNSMASQ,
-# JOUSTMANIA_HOTSPOT_DNSMASQ_PID, JOUSTMANIA_HOTSPOT_MAX_RUN_S, and PATH stubs.
+# JOUSTMANIA_HOTSPOT_DNSMASQ_PID, JOUSTMANIA_HOTSPOT_MAX_RUN_S,
+# JOUSTMANIA_HOTSPOT_LED_HELPER, and PATH stubs.
 
 # Shell tracing would print the password in `render` (BR-004)
 case $- in
@@ -63,6 +68,7 @@ PROC_UPTIME="${JOUSTMANIA_HOTSPOT_PROC_UPTIME:-/proc/uptime}"
 DNSMASQ="${JOUSTMANIA_HOTSPOT_DNSMASQ:-/usr/sbin/dnsmasq}"
 DNSMASQ_PID="${JOUSTMANIA_HOTSPOT_DNSMASQ_PID:-/run/nm-dnsmasq-${WLAN}.pid}"
 MAX_RUN_S="${JOUSTMANIA_HOTSPOT_MAX_RUN_S:-180}"
+LED_HELPER="${JOUSTMANIA_HOTSPOT_LED_HELPER:-${ROOT}/usr/local/lib/joustmania/joustmania-led}"
 readonly PASS_INTERVAL_S=5
 readonly UP_WAIT_S=30
 
@@ -261,6 +267,41 @@ write_status() { # $1 = state, $2 = reason
     } >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$STATE_DIR/status"
 }
 
+# --- ACT LED cue (A10, BR-011) ---------------------------------------------------
+
+# Ask the UC-060 LED helper for the cue only when it changes (led_cue in
+# STATE_DIR, cleared at boot like the helper's own record), so a check every
+# 60 s does not rewrite the LED or fill the journal. led_cue is recorded only
+# when the helper answers 0, so a missing, old or stuck helper is asked again
+# by the next check (an install_autostart.sh run later is picked up); its
+# failure is logged once per kind (led_error). The hotspot goes on as before
+# (BR-006).
+led_cue() { # $1 = the recorded hotspot state
+    local want=clear last rc=0 err=""
+    [[ "$1" == failed ]] && want=failed
+    last="$(state_get led_cue)"
+    # nothing was shown since boot: there is no cue to clear
+    [[ "$last" == "$want" || (-z "$last" && "$want" == clear) ]] && return 0
+    if [[ ! -x "$LED_HELPER" ]]; then
+        err="no LED helper at $LED_HELPER (the UC-060 autostart is not installed); hotspot LED cue $want not shown"
+    else
+        # longer than the helper's own lock wait (flock -w 10); an older helper
+        # without the hotspot commands prints its usage on stderr: drop it
+        timeout 15 "$LED_HELPER" "hotspot-$want" </dev/null 2>/dev/null || rc=$?
+        ((rc == 0)) || err="the LED helper failed (rc $rc) on hotspot-$want; re-run install_autostart.sh if it is older than this helper"
+    fi
+    if [[ -z "$err" ]]; then
+        state_set led_cue "$want" 2>/dev/null || true
+        state_clear led_error
+        return 0
+    fi
+    if [[ "$(state_get led_error)" != "$want $rc" ]]; then
+        log "$err"
+        state_set led_error "$want $rc" 2>/dev/null || true
+    fi
+    return 0
+}
+
 # --- evaluate --------------------------------------------------------------------
 
 # One pass: sets STATE, REASON and DONE (1 = no reason to look again soon)
@@ -400,6 +441,7 @@ evaluate() {
     while :; do
         evaluate_pass
         write_status "$STATE" "$REASON" || log "cannot write $STATE_DIR/status"
+        led_cue "$STATE"
         # one line per kind of decision, not per waiting second
         if [[ "$STATE: ${REASON//[0-9]/}" != "$last" ]]; then
             log "$STATE: $REASON"
@@ -578,6 +620,8 @@ remove() {
     local f
     systemctl disable --now joustmania-hotspot.timer joustmania-hotspot.service >/dev/null 2>&1 || true
     hotspot_down
+    # the cue lives in the LED helper's record, which outlives STATE_DIR
+    led_cue removed
     nmcli connection delete uuid "$UUID" >/dev/null 2>&1 || true
     for f in \
         "$ROOT/etc/NetworkManager/dispatcher.d/90-joustmania-hotspot" \

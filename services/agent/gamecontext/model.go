@@ -65,6 +65,17 @@ type PlayerSignals struct {
 	// never as raw floats — via RenderSparkline / ComputeProximity / ClassifyActivity.
 	History []MovementSample
 
+	// Hold-mode shield (#2096, UC-040 A37, UC-042 BR-007; nil / empty outside a hold
+	// game). Sources: game_player_shield_energy_seconds,
+	// game_player_shield_budget_remaining_seconds, game_player_shield_active and
+	// game_player_shield_stats{stat} (live; set at every hold transition and at least
+	// every 2 s, so up to one export interval old). ShieldTotals is keyed by the stat
+	// label: granted_seconds, recharged_seconds, used_seconds, activations, empties.
+	ShieldEnergy          *float64
+	ShieldBudgetRemaining *float64
+	ShieldActive          *bool
+	ShieldTotals          map[string]float64
+
 	// LastUpdate is the last time any signal for this player changed.
 	LastUpdate time.Time
 
@@ -164,6 +175,15 @@ type SessionSignals struct {
 	// against DeathThreshold. nil until observed.
 	DeathThreshold   *float64
 	WarningThreshold *float64
+
+	// ShieldActivation is the shield activation mode the game latched: "instant",
+	// "trigger" or "hold" (#2096). Source: game_shield_activation_mode{mode} (value 1).
+	// nil until observed. ShieldSettings holds a hold game's latched values keyed by
+	// flag key (shield.energy_max_seconds, ...). Source:
+	// game_shield_hold_setting{setting}. Both are read from the gauges, never from
+	// flagd, so an experiment arm or a latched promotion reads right.
+	ShieldActivation *string
+	ShieldSettings   map[string]float64
 
 	// LastUpdate is the last time any session signal changed.
 	LastUpdate time.Time
@@ -265,3 +285,29 @@ const (
 	// data is incomplete: experiments and the retro, summary and proposer skip it.
 	EndReasonStale = "stale"
 )
+
+// Hold-mode setting keys (game_shield_hold_setting{setting}, the flag keys; #2096).
+const (
+	ShieldSettingEnergyMax     = "shield.energy_max_seconds"
+	ShieldSettingEnergyBudget  = "shield.energy_budget_seconds"
+	ShieldSettingEnergyInitial = "shield.energy_initial_seconds"
+	ShieldSettingRecharge      = "shield.recharge_per_second"
+	ShieldSettingMinBurst      = "shield.min_burst_seconds"
+)
+
+// ShieldActivationHold is the game_shield_activation_mode value of a hold game.
+const ShieldActivationHold = "hold"
+
+// IsShieldHold reports whether the game latched shield.activation=hold (#2096).
+func (s SessionSignals) IsShieldHold() bool {
+	return s.ShieldActivation != nil && *s.ShieldActivation == ShieldActivationHold
+}
+
+// ShieldSetting returns a latched hold value by flag key, nil when not observed.
+func (s SessionSignals) ShieldSetting(key string) *float64 {
+	v, ok := s.ShieldSettings[key]
+	if !ok {
+		return nil
+	}
+	return &v
+}
