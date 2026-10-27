@@ -72,6 +72,7 @@ and the files together. `scripts/tools/gen-voice.sh --only <id> --dry-run` shows
   (`loudness.target_lufs`), encoded with ffmpeg `+bitexact` so an unchanged input never changes the committed bytes.
 - Licences: the generated files are CC BY-SA 4.0 like the other audio assets (C-017); the voice models and their
   sources are listed in `services/audio/assets/audio_credits.txt`.
-- Scope: every voice line the code plays (Menu, Joust, Zombie) plus the #2106 pad lines. Recordings no caller plays are
+- Scope: every voice line the code plays (Menu, Joust, Zombie), the #2106 pad lines and the mode instructions of the
+  FR-014 backlog (#2151). Recordings no caller plays are
   not catalogued (`NOT_CATALOGED` in `services/audio/tests/test_voice_catalog.py`); a new caller of one adds its line. The audio service does not play the generated profiles yet; selecting them
   with `menu_voice` and the partner fallback (`gen_male` to `aaron`, `gen_female` to `ivy`) come with #2107 part 2.

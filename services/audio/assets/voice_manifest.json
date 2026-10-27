@@ -235,6 +235,46 @@
    "lufs": -20.51,
    "text_sha256": "c5d3a5bbc4612039bdd7e70d7a76e9213e2c19eecb9229f13e0bbd74bb6543a7"
   },
+  "Menu/vox/gen_female/Fightclub-instructions.ogg": {
+   "line": "Menu/Fightclub-instructions",
+   "input_sha256": "d3186085ad3791b1a08e1093bba52694a7a73c733502b6ee44740fe03343ae99",
+   "text_sha256": "3ee64c0e9b1d984ebc635296d0bc1bf92048eba1ddc29e251bfe4c83b3170507",
+   "sha256": "4fc449405dc76626e15a395000f50c7522fe9ec714ab4f3349f91ebb0211421f",
+   "duration_s": 5.368,
+   "lufs": -20.43
+  },
+  "Menu/vox/gen_female/Swapper-instructions.ogg": {
+   "line": "Menu/Swapper-instructions",
+   "input_sha256": "cf32d8e32e9a6da4a5ff416c3401fd368aa37eb618b7f680fa6a605ffb092c67",
+   "text_sha256": "e9adf285bd1fea56ae603d2b8d943bb63ba5726bd220dc0df2ca480b3ccd85c6",
+   "sha256": "b1a737a7941a63b7d9d98f4d8a8d026b890e9d95bab91c009c9669d2fc0dbcb2",
+   "duration_s": 10.855,
+   "lufs": -20.45
+  },
+  "Menu/vox/gen_female/Teams-instructions.ogg": {
+   "line": "Menu/Teams-instructions",
+   "input_sha256": "896203e46de77815f74c84622c4c89979eba62fa0a2d7008c1c96db49cf0e71f",
+   "text_sha256": "8cf4494ba9ea2cf6697fe5eebc9be1d689013bcd17da6cfae43fce75276ad941",
+   "sha256": "064b44342cd865d62a9d5cfcd9da9fddbc8982f5a31f8e55ca10fb34902f0a16",
+   "duration_s": 13.879,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_female/Tournament-instructions.ogg": {
+   "line": "Menu/Tournament-instructions",
+   "input_sha256": "ee71136d14f48a1bfbce666f932bd86288e79592571caf5d9e05306a03bd0b81",
+   "text_sha256": "1f5963774b5cd260f605f3a947c6cd8542cfaec6d70c07f3c22b7dd109b59130",
+   "sha256": "2c8b5f18576667ad758066df262233940da38339ecef7990663c32f48fd113fb",
+   "duration_s": 16.802,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_female/Traitor-instructions.ogg": {
+   "line": "Menu/Traitor-instructions",
+   "input_sha256": "25496ae2b5da13230c6ba83eb9345baddb8b8fcb62fdc0a0a0b6e17508a7fedb",
+   "text_sha256": "61af877baca7c6f28a24890f162170a7c387212deebd87317980f21fa3726a5f",
+   "sha256": "3315610b2e3de794a7068a8e7df0b833bafd9943253f32bfa14c448c42f433b1",
+   "duration_s": 13.39,
+   "lufs": -20.48
+  },
   "Menu/vox/gen_female/adminop_1.ogg": {
    "line": "Menu/adminop_1",
    "input_sha256": "22eefff9ea002b5abf3bcf114b8a9e27813044846ec606f4ae8dbc594cca823c",
@@ -603,6 +643,22 @@
    "lufs": -20.56,
    "text_sha256": "aa7fb89e77906e65a20fb18becec7426d44512fb213361c8f026e006b5cb671f"
   },
+  "Menu/vox/gen_female/werewolf-instructions.ogg": {
+   "line": "Menu/werewolf-instructions",
+   "input_sha256": "391b9740faf8ef4dc1ce0e04821808e9b921723b88fd8b3992430183a2448c0f",
+   "text_sha256": "352dc0a9de6fb386be51a6f27b264f82d6fa7b7a1d8fcd21c93ba603f7f4ce0a",
+   "sha256": "4dbe98df528303239d867203f32180bc89d4acc7e87c169c9d434ba4ac6bf12f",
+   "duration_s": 13.509,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_female/zombie-instructions.ogg": {
+   "line": "Menu/zombie-instructions",
+   "input_sha256": "9f53ee72c11afa73a30ab9921a0b65c9cc2edb1db5d96c249ed4b8910e20eeaa",
+   "text_sha256": "98dfd8cbc325523b783afce17f662f997c98c1796042186ff1fe7285d58f26ad",
+   "sha256": "6dc7ff9a3ee21b1bcb223d41f53e7a996af9de8bec2e3d7a51156d38e9557a99",
+   "duration_s": 36.996,
+   "lufs": -20.46
+  },
   "Menu/vox/gen_male/FFA-instructions.ogg": {
    "line": "Menu/FFA-instructions",
    "input_sha256": "ac0f8898f530a27af5f339ea853deda4e54c843a8196103730ada588d176f32b",
@@ -610,6 +666,46 @@
    "duration_s": 12.651,
    "lufs": -20.48,
    "text_sha256": "c5d3a5bbc4612039bdd7e70d7a76e9213e2c19eecb9229f13e0bbd74bb6543a7"
+  },
+  "Menu/vox/gen_male/Fightclub-instructions.ogg": {
+   "line": "Menu/Fightclub-instructions",
+   "input_sha256": "688089fd5bc6f82ffa2dac6881863adbe61a50a621142bbc7c6795b0272e8663",
+   "text_sha256": "3ee64c0e9b1d984ebc635296d0bc1bf92048eba1ddc29e251bfe4c83b3170507",
+   "sha256": "bcd08ebe84b5453add7b07d858e1cc5b1757b9602f95201ffa40585c50a6ec50",
+   "duration_s": 5.706,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/Swapper-instructions.ogg": {
+   "line": "Menu/Swapper-instructions",
+   "input_sha256": "3479f64462f0ccb47737540ca05259000dffd8474d37d7eed2eae6ccb56e7f2b",
+   "text_sha256": "e9adf285bd1fea56ae603d2b8d943bb63ba5726bd220dc0df2ca480b3ccd85c6",
+   "sha256": "64f3ea4dc0b12295d396f709195e19c8f2bca8b29b5d3a1c0e4b455cc447075f",
+   "duration_s": 12.771,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/Teams-instructions.ogg": {
+   "line": "Menu/Teams-instructions",
+   "input_sha256": "77f797ed2c50d1409bf3121c280faddaca5cd257524ae175f13d0b7b611c9591",
+   "text_sha256": "8cf4494ba9ea2cf6697fe5eebc9be1d689013bcd17da6cfae43fce75276ad941",
+   "sha256": "0422224359d960b11985d7c11ec6cf908f8df6b036553b8ff849a1f486ccbd29",
+   "duration_s": 16.712,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/Tournament-instructions.ogg": {
+   "line": "Menu/Tournament-instructions",
+   "input_sha256": "ac679b9cad1ffccff72e5f926670c441aaeede52f628bee43c4ae5b9c20662bc",
+   "text_sha256": "1f5963774b5cd260f605f3a947c6cd8542cfaec6d70c07f3c22b7dd109b59130",
+   "sha256": "9f16967e5c9e3cd329d5e04022f94663e476305f92da2b74a7dadd069e7c1210",
+   "duration_s": 20.035,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_male/Traitor-instructions.ogg": {
+   "line": "Menu/Traitor-instructions",
+   "input_sha256": "0fea4aa5474af44504c775481279a7f6bc933317a8fdfeda700be5fb9d66f883",
+   "text_sha256": "61af877baca7c6f28a24890f162170a7c387212deebd87317980f21fa3726a5f",
+   "sha256": "2529af6dd574f30d3d483460dbdc5608e56c538cb1622ab7cfda17e3a0d7f200",
+   "duration_s": 14.667,
+   "lufs": -20.5
   },
   "Menu/vox/gen_male/adminop_1.ogg": {
    "line": "Menu/adminop_1",
@@ -978,6 +1074,22 @@
    "duration_s": 1.47,
    "lufs": -20.43,
    "text_sha256": "aa7fb89e77906e65a20fb18becec7426d44512fb213361c8f026e006b5cb671f"
+  },
+  "Menu/vox/gen_male/werewolf-instructions.ogg": {
+   "line": "Menu/werewolf-instructions",
+   "input_sha256": "040415bdcd2bda3631139a55f08f4eeb27022a432a173de9456b08145f986d70",
+   "text_sha256": "352dc0a9de6fb386be51a6f27b264f82d6fa7b7a1d8fcd21c93ba603f7f4ce0a",
+   "sha256": "a83e18343e8ca3dcf56aac9b7a08ce9b280439c2ccf48b8246a64d0b91df5806",
+   "duration_s": 16.533,
+   "lufs": -20.48
+  },
+  "Menu/vox/gen_male/zombie-instructions.ogg": {
+   "line": "Menu/zombie-instructions",
+   "input_sha256": "2a6a70dd2e1b824b065e947208f054e335d834fbe8b74321610f8608d7b5448a",
+   "text_sha256": "98dfd8cbc325523b783afce17f662f997c98c1796042186ff1fe7285d58f26ad",
+   "sha256": "38015e6c9233688405dfa1d2456957c0b720c55073795a04b01ca9371e0ee529",
+   "duration_s": 42.904,
+   "lufs": -20.47
   },
   "Zombie/vox/gen_female/10 seconds left.ogg": {
    "line": "Zombie/10 seconds left",

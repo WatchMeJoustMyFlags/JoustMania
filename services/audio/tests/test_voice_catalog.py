@@ -28,12 +28,6 @@ _JOUST_UNUSED = {
     "explosiondeath", "game_over", "werewolf intro_1", "werewolf reveal 2", "red team win",
     "orange team win", "pink team win", "purple team win",
 }  # fmt: skip
-# ivy-only "-32" duplicates still on disk; eight more were deleted by maintainer decision (#2147).
-_JOUST_32 = {
-    "10 werewolf", "3 minutes", "5 minutes", "FakedoutCounter", "blue team win", "green team win", "human win",
-    "magenta team win", "orange team win", "pink team win", "purple team win", "red team win", "werewolf intro",
-    "werewolf reveal 2", "werewolf reveal", "yellow team win",
-}  # fmt: skip
 _COMMANDER = {
     "10 seconds begins", "blue overdrive", "blue revive", "blue shift", "blue winner", "blue_power_ready",
     "commander intro", "commanders chosen", "power_ready", "red overdrive", "red revive", "red shift",
@@ -50,9 +44,8 @@ _FIGHT_CLUB = {
     "tie_game",
 }
 _MENU_UNUSED = {
-    "menu Commander", "menu ninjabomb", "menu Random", "Teams-instructions", "Swapper-instructions",
-    "Tournament-instructions", "Traitor-instructions", "werewolf-instructions", "zombie-instructions",
-    "commander-instructions", "Ninjabomb-instructions", "Fightclub-instructions", "added_random", "removed_random",
+    "menu Commander", "menu ninjabomb", "menu Random",
+    "commander-instructions", "Ninjabomb-instructions", "added_random", "removed_random",
     "tradeoff2", "adminop_force_all_start", "adminop_random_team_size", "adminop_freeze_mode", "adminop_lives",
     "adminop_resurrection", "adminop_sheilds", "adminop_traitor_team_size", "update_started",
     "joustmania_updated", "large_update", "joustmania_failed",
@@ -61,12 +54,14 @@ _MENU_UNUSED = {
 NOT_SPEECH = {"Zombie/zombie_death"}
 NOT_CATALOGED = NOT_SPEECH | (
     {f"Joust/{s}" for s in _JOUST_UNUSED}
-    | {f"Joust/{s}-32" for s in _JOUST_32}
     | {f"Commander/{s}" for s in _COMMANDER}
     | {f"Zombie/{s}" for s in _ZOMBIE_UNUSED}
     | {f"Fight_Club/{s}" for s in _FIGHT_CLUB}
     | {f"Menu/{s}" for s in _MENU_UNUSED}
 )
+
+# Recorded in one profile only; the other plays it through the partner fallback (part 2).
+RECORDED_ONLY_IN = {"Menu/Fightclub-instructions": {"ivy"}}
 
 pytestmark = pytest.mark.uc("UC-031", br=["BR-007"])
 
@@ -136,7 +131,8 @@ def test_every_recording_is_catalogued_or_known_unused(catalog):
     stale = NOT_CATALOGED - set(stems)
     assert not stale, f"NOT_CATALOGED names files that do not exist: {sorted(stale)}"
     for key in recorded:
-        assert stems[key] == set(catalog["recorded"]), f"{key}: recorded only in {sorted(stems[key])}"
+        expected = RECORDED_ONLY_IN.get(key, set(catalog["recorded"]))
+        assert stems[key] == expected, f"{key}: recorded only in {sorted(stems[key])}"
 
 
 def test_new_ids_do_not_collide_with_any_area(catalog):

@@ -83,7 +83,9 @@ areas:
     - {id: instructions_on, sound: MENU_VOX_INSTRUCTIONS_ON, text: "Instructions on.", recorded: true}
     - {id: instructions_off, sound: MENU_VOX_INSTRUCTIONS_OFF, text: "Instructions off.", recorded: true}
 
-    # Mode instructions (only Free-for-All plays its clip, with game_instructions on)
+    # Mode instructions. Only Free-for-All plays its clip today (game_instructions on);
+    # the other modes are the FR-014 backlog (#2151), catalogued so it can wire them.
+    # Fight Club has an ivy recording only.
     - id: FFA-instructions
       sound: MENU_VOX_FFA_INSTRUCTIONS
       recorded: true
@@ -91,6 +93,58 @@ areas:
         Joust free-for-all selected. Protect your own controller while trying to jostle others.
         When the music speeds up, your controller sensitivity decreases and you are harder to kill.
         Get ready to joust!
+    - id: Teams-instructions
+      sound: MENU_VOX_TEAMS_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Joust random teams selected. Protect your own controller while trying to jostle others.
+        When the music speeds up, your controller sensitivity decreases and you are harder to kill.
+        Your selected team will be the color of your controller. Get ready to joust.
+    - id: Swapper-instructions
+      sound: MENU_VOX_SWAPPER_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Swapper selected. Protect your own controller while trying to jostle others. There are two teams.
+        If you die, you will respawn on the other team. The last player is on their own. Get ready to joust!
+    - id: Tournament-instructions
+      sound: MENU_VOX_TOURNAMENT_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Tournament selected. Everyone will be paired up against another player.
+        Your opponent will have the same color as your controller.
+        If you defeat your opponent, you will go on to the next round.
+        If your controller is white, wait to be assigned to a new player.
+        The last player standing wins. Get ready to joust.
+    - id: Traitor-instructions
+      sound: MENU_VOX_TRAITOR_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Traitor selected. Three teams face off against one another. However, there is one traitor on every team.
+        Traitors are on a secret fourth team. If your controller vibrates during the start countdown,
+        you are a traitor. Get ready to joust!
+    - id: werewolf-instructions
+      sound: MENU_VOX_WEREWOLF_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Werewolf joust selected. If your controller vibrates at the start of the match, you are a werewolf.
+        Werewolves will have a short period of time to kill as many humans as possible before they are revealed.
+        Listen for further instructions, and get ready to joust.
+    - id: zombie-instructions
+      sound: MENU_VOX_ZOMBIE_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Zombies selected. Two zombies will be randomly selected at the beginning of play.
+        Zombies have a few minutes to turn all humans into more zombies. Otherwise, humans win.
+        If you die as a human or a zombie, your controller will vibrate and turn red.
+        You must stand still during this period until you respawn as a zombie.
+        Humans can kill zombies via regular melee or with bullets.
+        Use the trigger button to fire one bullet to kill one random zombie.
+        If you collect five bullets, your controller will turn magenta, and you can throw a Molotov to kill all zombies.
+        Humans can get more bullets by killing zombies in any way. Good luck, and get ready for the invasion!
+    - id: Fightclub-instructions
+      recorded: true
+      text: >-
+        Two players fight. The winner must defend their title. The player with the highest score wins.
 
     # Lobby announcements
     - {id: notenoughplayers, sound: MENU_VOX_NOT_ENOUGH_PLAYERS, text: "Not enough players.", recorded: true}
