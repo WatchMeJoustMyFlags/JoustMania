@@ -17,8 +17,12 @@
 #  - the hook maps NM events to `systemctl start --no-block`, never a restart
 #  - selftest only with the uplink connected and wlan0 free (BR-001), always
 #    takes the hotspot down again; remove deletes every installed file
+#  - A10 (#2137): a failed hotspot asks the real UC-060 LED helper (on a fake
+#    sysfs) for the hotspot cue once per change; the hotspot coming up, the
+#    uplink back, enabled=no and remove clear it; the UC-060 failure cue (5 Hz)
+#    wins over it (BR-011); no LED helper is one line and exit 0 (BR-006)
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-hotspot.sh
-# UC: UC-061 main A1 A2 A3 A4 A5 A6 A7 A9 Pre-1 Post-S-2 Post-F-1 BR-001 BR-002 BR-004 BR-006 BR-008 BR-010
+# UC: UC-061 main A1 A2 A3 A4 A5 A6 A7 A9 A10 Pre-1 Post-S-2 Post-F-1 BR-001 BR-002 BR-004 BR-006 BR-008 BR-010 BR-011
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -541,6 +545,93 @@ left="$(cd "$R" && find . -type f | sort | tr '\n' ' ')"
 grep -q "disable --now joustmania-hotspot.timer joustmania-hotspot.service" "${CASE}/systemctl.argv" || fail "remove: units not disabled"
 [[ "$(downs)" == 1 ]] || fail "remove: hotspot not taken down"
 grep -q "connection delete uuid ${UUID}" "${CASE}/nmcli.argv" || fail "remove: profile not deleted"
+
+# --- A10: the ACT LED cue through the UC-060 LED helper (BR-011, #2137) -----------
+# led_case <name>: make_case plus the real LED helper installed under the root
+# prefix, a fake ACT LED (board trigger mmc0) and its own state dirs
+led_case() {
+  make_case "$1"
+  mkdir -p "${CASE}/root/usr/local/lib/joustmania" "${CASE}/sys/ACT" "${CASE}/ledstate" "${CASE}/ledrun"
+  cp "${ROOT}/scripts/setup/joustmania-led.sh" "${CASE}/root/usr/local/lib/joustmania/joustmania-led"
+  chmod 0755 "${CASE}/root/usr/local/lib/joustmania/joustmania-led"
+  printf 'none timer heartbeat default-on [mmc0] mmc1\n' >"${CASE}/sys/ACT/trigger"
+  export JOUSTMANIA_LED_SYSFS="${CASE}/sys" JOUSTMANIA_LED_STATE_DIR="${CASE}/ledstate" \
+    JOUSTMANIA_RUN_STATE_DIR="${CASE}/ledrun"
+}
+led_is() { # <trigger> [on off]
+  local got
+  got="$(cat "${CASE}/sys/ACT/trigger")"
+  [[ "$got" == "$1" ]] || fail "${CASE##*/}: LED trigger '$got', want '$1'"
+  if [[ -n "${2:-}" ]]; then
+    [[ "$(cat "${CASE}/sys/ACT/delay_on" 2>/dev/null || true)/$(cat "${CASE}/sys/ACT/delay_off" 2>/dev/null || true)" == "$2/$3" ]] ||
+      fail "${CASE##*/}: LED delays $(cat "${CASE}/sys/ACT/delay_on" 2>/dev/null || true)/$(cat "${CASE}/sys/ACT/delay_off" 2>/dev/null || true), want $2/$3"
+  fi
+}
+led_calls() { grep -c '^joustmania-led: ' "${CASE}/out" || true; }
+
+# failed: the cue, asked once however often the check runs; up: cleared
+led_case a10-up
+touch "${NM}/up-fails"
+at 10000; once; at 10020; once
+expect_state failed
+led_is timer 200 1800
+[[ -e "${CASE}/ledstate/hotspot" ]] || fail "a10-up: cue not recorded"
+at 10080; once; at 10140; once
+expect_state failed
+[[ "$(led_calls)" == 1 ]] || fail "a10-up: want one LED helper call, got $(led_calls): $(cat "${CASE}/out")"
+rm -f "${NM}/up-fails"
+at 10200; once
+expect_state on
+led_is mmc0
+[[ ! -e "${CASE}/ledstate/hotspot" ]] || fail "a10-up: cue still recorded after the hotspot came up"
+
+# the radio is off (A3), then the uplink comes back (A1): cleared, UC-060 ok shown again
+led_case a10-uplink
+"${CASE}/root/usr/local/lib/joustmania/joustmania-led" ok >/dev/null
+set_dev wlan0 "20 (unavailable)" ""
+at 10000; once; expect_state failed "radio off"
+led_is timer 200 1800
+eth0_connected
+at 10010; once; at 10025; once
+expect_state off
+led_is default-on
+[[ "$(cat "${CASE}/ledstate/state")" == ok ]] || fail "a10-uplink: the UC-060 state changed"
+
+# no longer wanted: enabled=no clears it (A5)
+led_case a10-disabled
+rm -f "${NM}/wlan0-state"
+at 10000; once; expect_state failed "no wlan0"
+led_is timer 200 1800
+printf 'enabled=no\n' >"${CASE}/etc/hotspot.conf"
+at 10060; once; expect_state disabled
+led_is mmc0
+
+# precedence with the existing UC-060 failure cue: 5 Hz stays, the cue is kept
+# for later and shown once the game unit is ok again (BR-011)
+led_case a10-under-failed
+"${CASE}/root/usr/local/lib/joustmania/joustmania-led" failed >/dev/null
+touch "${NM}/up-fails"
+at 10000; once; at 10020; once
+expect_state failed
+led_is timer 100 100
+[[ -e "${CASE}/ledstate/hotspot" ]] || fail "a10-under-failed: cue not recorded"
+"${CASE}/root/usr/local/lib/joustmania/joustmania-led" ok >/dev/null
+led_is timer 200 1800
+
+# remove clears a set cue before it deletes the state
+led_case a10-remove
+touch "${NM}/up-fails"
+at 10000; once; at 10020; once
+led_is timer 200 1800
+"$HELPER" remove >>"${CASE}/out" 2>&1 || fail "a10-remove: exit $?"
+led_is mmc0
+
+# no LED helper (UC-060 not installed): one line, the state is still recorded
+make_case a10-no-helper
+touch "${NM}/up-fails"
+at 10000; once; at 10020; once; at 10080; once
+expect_state failed
+[[ "$(grep -c 'no LED helper' "${CASE}/out" || true)" == 1 ]] || fail "a10-no-helper: want one line: $(cat "${CASE}/out")"
 
 if [[ "$fails" -gt 0 ]]; then
   echo "test-joustmania-hotspot: ${fails} failure(s)"

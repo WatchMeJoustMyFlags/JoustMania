@@ -25,10 +25,11 @@
 # problem, a branch checkout), 2 failed (a game service down or its image
 # missing, the unit failed, docker not reachable). While the unit is starting,
 # a game service that is not running yet is INFO and the state is `starting`.
-# An INFO `led:` line shows the ACT LED state (C-042) joustmania-led recorded.
+# An INFO `led:` line shows the ACT LED state (C-042) joustmania-led recorded,
+# with `+ hotspot cue` while the UC-061 hotspot cue is set (UC-061 BR-011).
 # An INFO `hotspot:` line shows the stage hotspot (UC-061, FR-187) from the
 # root-owned helper's non-secret status file (format 1); it never changes the
-# state, the exit code or the LED (UC-061 BR-007).
+# state or the exit code (UC-061 BR-007); the hotspot helper sets the LED cue (BR-011).
 #
 #   ./scripts/setup/joustmania-status.sh --led
 #
@@ -244,7 +245,10 @@ for led in ACT led0; do
     fi
 done
 LED_REC="$(head -n 1 "$LED_STATE_DIR/state" 2>/dev/null || true)"
-report INFO "led: ${LED_REC:-not set since boot}${LED_NOW:+ ($LED_NOW)}"
+# The UC-061 hotspot cue the helper keeps apart from the state (UC-061 BR-011)
+LED_CUE=""
+[[ -e "$LED_STATE_DIR/hotspot" ]] && LED_CUE=" + hotspot cue"
+report INFO "led: ${LED_REC:-not set since boot}${LED_CUE}${LED_NOW:+ ($LED_NOW)}"
 if [[ ! -e "$LED_HELPER" ]]; then
     report INFO "led helper: $LED_HELPER not installed (no LED cue); install it with: sudo $JOUSTMANIA_DIR/scripts/setup/install_autostart.sh"
 elif ! cmp -s "$LED_HELPER" "$SCRIPT_DIR/joustmania-led.sh"; then
