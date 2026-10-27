@@ -18,7 +18,8 @@ host systemd service, `install.sh` or `psmove-pairing.service`. It provides:
 
 1. Plug in PS Move via USB
 2. Check the logs (`docker compose logs -f pairing-daemon`); `PAIRING FAILED` means the next poll retries.
-   The daemon gives no LED feedback while pairing (UC-001 BR-002, D-C4).
+   The controller's LED shows the pairing state while it is on USB: slow white pulse, three green flashes when
+   paired, steady red when pairing failed (UC-001 BR-010).
 3. Unplug USB cable
 4. Press PS button to connect via Bluetooth
 

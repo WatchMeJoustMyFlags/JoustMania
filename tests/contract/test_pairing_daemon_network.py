@@ -29,7 +29,7 @@ def _env(service: dict) -> dict[str, str]:
     return dict(item.split("=", 1) for item in env)
 
 
-@pytest.mark.uc("UC-001", flow="main", cond=["Pre-1"])
+@pytest.mark.uc("UC-001", cond=["Pre-1"])
 @pytest.mark.parametrize("stack", sorted(STACKS))
 def test_pairing_daemon_uses_the_host_network(stack):
     daemon = _services(stack)["pairing-daemon"]
