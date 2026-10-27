@@ -118,3 +118,29 @@ joustmania_missing_hint() {
     ref="$(joustmania_pin_ref "$1")"
     printf 'when online, run: %s/scripts/setup/joustmania-upgrade.sh %s\n' "$1" "${ref:-<joustmania-vX.Y.Z | sha>}"
 }
+
+# joustmania_hotspot_hint <checkout dir>: one line when the stage hotspot is
+# installed (UC-061) and its installed root-owned copies differ from this
+# checkout. They never change with the checkout (UC-061 BR-006), so the operator
+# re-runs the setup to take the new ones; a version without the setup (a
+# rollback past #2099) names the installed remover instead.
+# JOUSTMANIA_HOTSPOT_INSTALL_ROOT prefixes the installed paths (tests).
+joustmania_hotspot_hint() {
+    local prefix="${JOUSTMANIA_HOTSPOT_INSTALL_ROOT:-}" setup="$1/scripts/setup" pair installed source
+    [[ -e "$prefix/usr/local/lib/joustmania/joustmania-hotspot" ]] || return 0
+    if [[ ! -f "$setup/install_hotspot.sh" ]]; then
+        printf 'the stage hotspot (UC-061) is installed but this version has no setup for it; it keeps running on its own, or remove it with: sudo /usr/local/lib/joustmania/joustmania-hotspot remove\n'
+        return 0
+    fi
+    for pair in \
+        "usr/local/lib/joustmania/joustmania-hotspot:joustmania-hotspot.sh" \
+        "etc/systemd/system/joustmania-hotspot.service:joustmania-hotspot.service" \
+        "etc/systemd/system/joustmania-hotspot.timer:joustmania-hotspot.timer" \
+        "etc/NetworkManager/dispatcher.d/90-joustmania-hotspot:90-joustmania-hotspot"; do
+        installed="$prefix/${pair%%:*}" source="$setup/${pair#*:}"
+        if ! cmp -s "$installed" "$source"; then
+            printf 'hotspot files changed: run sudo %s/install_hotspot.sh (UC-061; the password is asked again)\n' "$setup"
+            return 0
+        fi
+    done
+}
