@@ -29,6 +29,8 @@ DEFAULT_HOLD_END_MS = 1500
 DEFAULT_HOLD_LOCK_MS = 3000
 DEFAULT_KNOB_EVENTS_PER_STEP = 4
 KNOB_EVENTS_PER_STEP_RANGE = (1, 12)
+DEFAULT_PREVIEW_DEBOUNCE_MS = 150  # BR-017: wait after the last knob step before the preview speaks
+PREVIEW_DEBOUNCE_MS_RANGE = (0, 1000)
 DEFAULT_KEYMAP = (
     "K1=F13,K2=F14,K3=F18,K4=F19,K5=F20,K6=F21,K7=F22,K8=F23,KNOB_PRESS=F15,KNOB_TURN_A=F16,KNOB_TURN_B=F17"
 )
@@ -130,6 +132,28 @@ class PadConfig:
         except Exception as e:
             logger.warning(f"Reading operator_pad.enabled failed, keeping the pad on: {e}")
             return True
+
+    def preview_enabled(self) -> bool:
+        """`operator_pad.preview_enabled` (BR-017); unreadable keeps the preview on (it writes nothing)."""
+        try:
+            return bool(self._client.get_boolean_value("operator_pad.preview_enabled", True))
+        except Exception as e:
+            logger.warning(f"Reading operator_pad.preview_enabled failed, keeping the preview on: {e}")
+            return True
+
+    def preview_debounce_ms(self) -> int:
+        """`operator_pad.preview_debounce_ms` (BR-017); 0 is valid, the default outside 0 to 1000 or malformed."""
+        key, default = "operator_pad.preview_debounce_ms", DEFAULT_PREVIEW_DEBOUNCE_MS
+        try:
+            value = self._client.get_integer_value(key, default)
+        except Exception as e:
+            logger.warning(f"Reading {key} failed, using {default}: {e}")
+            return default
+        low, high = PREVIEW_DEBOUNCE_MS_RANGE
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            logger.warning(f"Malformed or out of range {key}={value!r} (valid {low} to {high}), using {default}")
+            return default
+        return value
 
     def device(self) -> tuple[str, str] | None:
         raw = self._str("operator_pad.device", DEFAULT_DEVICE)

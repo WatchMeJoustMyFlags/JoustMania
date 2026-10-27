@@ -79,14 +79,16 @@ def test_profile_is_a_5ghz_access_point_on_wlan0_that_never_autoconnects():
     assert profile["wifi"]["powersave"] == "2"
 
 
-@pytest.mark.uc("UC-061", br=["BR-004"])
+@pytest.mark.uc("UC-061", br=["BR-004", "BR-005"])
 def test_profile_is_wpa2_psk_ccmp_only_with_pmf_explicit_and_no_password():
     sec = _ini(TEMPLATE)["wifi-security"]
     assert sec["key-mgmt"] == "wpa-psk"
     assert sec["proto"] == "rsn"
     assert sec["pairwise"] == "ccmp"
     assert sec["group"] == "ccmp"
-    assert sec["pmf"] in {"1", "2", "3"}, "pmf must be set explicitly (C-043)"
+    assert sec["pmf"] == "1", (
+        "pmf is pinned to 1 (disabled) until the on-Pi check (C-043)"
+    )
     assert sec["psk"] == "@PSK@"
 
 
@@ -122,7 +124,7 @@ def test_unit_has_no_start_limit_a_bounded_start_and_runs_the_root_owned_copy():
     assert "NetworkManager.service" in unit["Unit"]["After"]
 
 
-@pytest.mark.uc("UC-061", flow="A3", br=["BR-006"])
+@pytest.mark.uc("UC-061", flow="main", br=["BR-006"])
 def test_unit_is_started_only_by_the_timer_and_the_hook_never_by_a_boot_target():
     # A oneshot WantedBy=multi-user.target would hold boot until the check ends
     # (minutes while it waits); the timer's OnBootSec starts the first check

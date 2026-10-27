@@ -42,8 +42,6 @@ _FIGHT_CLUB = {
     "last_round",
     "tie_game",
 }
-# Mapped by menu.utils.audio.GAME_MODE_VOICE (Commander is not selectable yet): the file stays.
-_MENU_UNUSED = {"menu Commander"}
 # Played, but not speech: no line, the recording plays for every profile (partner fallback, part 2).
 NOT_SPEECH = {"Zombie/zombie_death"}
 NOT_CATALOGED = NOT_SPEECH | (
@@ -51,7 +49,6 @@ NOT_CATALOGED = NOT_SPEECH | (
     | {f"Commander/{s}" for s in _COMMANDER}
     | {f"Zombie/{s}" for s in _ZOMBIE_UNUSED}
     | {f"Fight_Club/{s}" for s in _FIGHT_CLUB}
-    | {f"Menu/{s}" for s in _MENU_UNUSED}
 )
 
 # Recordings deleted for #2166 (no code path played them): stems, in every recorded profile.
@@ -61,6 +58,7 @@ DELETED_RECORDINGS = {
         "removed_random", "tradeoff2", "adminop_force_all_start", "adminop_random_team_size",
         "adminop_freeze_mode", "adminop_lives", "adminop_resurrection", "adminop_sheilds",
         "adminop_traitor_team_size", "update_started", "joustmania_updated", "large_update", "joustmania_failed",
+        "menu Commander",
     },
     "Commander": {"red shift"},
     "Fight_Club": {"defender_winning"},

@@ -365,15 +365,14 @@ class TestMenuServicerStartStopMenu:
 
         assert response.success is True
         assert real_servicer.state == menu_pb2.MenuState.STOPPED
-        assert real_servicer.connected_controllers == set()
-        assert real_servicer.state_manager.controller_states == {}
+        assert real_servicer.ready_controllers == set()
         real_servicer.idle_monitor.stop.assert_called_once()
         assert ("menu_stopped", {}) in _published(real_servicer)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A11")
-    async def test_stop_menu_releases_admin_lock_and_clears_controllers(self, real_servicer):
-        """StopMenu clears every controller state and calls abandon_session to release the admin lock."""
+    async def test_stop_menu_releases_admin_lock_and_unreadies_controllers(self, real_servicer):
+        """StopMenu puts every controller back to CONNECTED and calls abandon_session to release the admin lock."""
         real_servicer.state = menu_pb2.MenuState.RUNNING
         await _connect(real_servicer, "s1", "s2")
         await _enter_admin(real_servicer, "s1")
@@ -385,7 +384,66 @@ class TestMenuServicerStartStopMenu:
 
         abandon.assert_called_once()
         assert handler.active is False
-        assert real_servicer.state_manager.controller_states == {}
+        assert real_servicer.state_manager.controller_states == {
+            "s1": ControllerState.CONNECTED,
+            "s2": ControllerState.CONNECTED,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11", br=["BR-001"])
+    @pytest.mark.uc("UC-010", flow="main", steps=[4])
+    async def test_stop_start_keeps_idle_controllers_so_a_subset_ready_does_not_auto_start(self, real_servicer):
+        """#2175: after StopMenu + StartMenu, two of four ready must not auto start (every connected must be ready)."""
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+        await _connect(real_servicer, "s1", "s2", "s3", "s4")
+        await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+
+        await _ready_up(real_servicer, "s1", "s2")
+
+        assert real_servicer.connected_controllers == {"s1", "s2", "s3", "s4"}
+        assert real_servicer.ready_controllers == {"s1", "s2"}
+        assert real_servicer._game_lifecycle_task is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11", br=["BR-001"])
+    async def test_start_menu_drops_a_controller_disconnected_during_the_repaint(self, real_servicer):
+        """#2177 review: a disconnect processed during the StartMenu repaint leaves no ghost in the roster."""
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+        await _connect(real_servicer, "s1", "s2", "s3")
+        await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+
+        async def paint(serial, _mode):
+            if serial == "s1":
+                await real_servicer.on_disconnect("s3")
+            return True
+
+        real_servicer.led.set_connected_color.side_effect = paint
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+
+        assert real_servicer.connected_controllers == {"s1", "s2"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11")
+    async def test_start_menu_repaints_kept_controllers_in_the_lobby_colour(self, real_servicer):
+        """#2175: StartMenu shows every kept controller dim in the restored mode's lobby colour."""
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+        await _connect(real_servicer, "s1", "s2")
+        await _enter_admin(real_servicer, "s1")
+        await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+        real_servicer.user_prefs_client.get_string_value.side_effect = lambda key, default, *_a, **_k: (
+            "Tournament" if key == "current_game" else default
+        )
+        real_servicer.led.set_connected_color.reset_mock()
+
+        await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
+
+        painted = {c.args for c in real_servicer.led.set_connected_color.await_args_list}
+        assert painted == {("s1", "Tournament"), ("s2", "Tournament")}
+        assert real_servicer.state_manager.controller_states == {
+            "s1": ControllerState.CONNECTED,
+            "s2": ControllerState.CONNECTED,
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A11")
@@ -1077,8 +1135,34 @@ class TestStartWhileGameActive:
         release = asyncio.Event()
         task, stream = await self._live_game(real_servicer, release)
         request = menu_pb2.ProcessInputRequest(input_type="button_press", data={"button": "trigger"})
-        await real_servicer.ProcessInput(request, MagicMock())
+        reply = await real_servicer.ProcessInput(request, MagicMock())
+        assert (reply.success, reply.error) == (False, "game_active")  # #2176
         await self._assert_refused(real_servicer, task, stream, "button_input", release)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
+    @pytest.mark.uc("UC-010", flow="A6")
+    async def test_web_start_game_with_mode_mid_game_changes_nothing(self, real_servicer):
+        """#2176 review: a refused web start with a mode selects, persists and publishes nothing."""
+        release = asyncio.Event()
+        task, stream = await self._live_game(real_servicer, release)
+        before = real_servicer.current_selection
+        other = Games.Swapper if before != Games.Swapper else Games.JoustFFA
+        real_servicer.user_prefs_writer.update_default_variant.reset_mock()
+        request = menu_pb2.ProcessInputRequest(
+            input_type="web_command", data={"command": "start_game", "mode": other.name}
+        )
+        reply = await real_servicer.ProcessInput(request, MagicMock())
+        assert (reply.success, reply.error) == (False, "game_active")
+        assert real_servicer.current_selection == before
+        real_servicer.user_prefs_writer.update_default_variant.assert_not_called()
+        assert not [e for e in _published(real_servicer) if e[0] == "selection_changed"]
+        rejected = {"game_name": other.name, "source": "web", "reason": "game_active"}
+        assert ("game_start_rejected", rejected) in _published(real_servicer)
+        assert real_servicer._game_lifecycle_task is task and not task.done()
+        assert stream.await_count == 1
+        release.set()
+        await task
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A8", br=["BR-008"])
@@ -1087,7 +1171,9 @@ class TestStartWhileGameActive:
         release = asyncio.Event()
         task, stream = await self._live_game(real_servicer, release)
         request = menu_pb2.ProcessInputRequest(input_type="web_command", data={"command": "start_game"})
-        await real_servicer.ProcessInput(request, MagicMock())
+        reply = await real_servicer.ProcessInput(request, MagicMock())
+        # #2176: the caller (dashboard, operator pad) sees the refusal in the reply.
+        assert (reply.success, reply.error) == (False, "game_active")
         await self._assert_refused(real_servicer, task, stream, "web", release)
 
     @pytest.mark.asyncio
@@ -2227,6 +2313,39 @@ class TestConsumeGameEvents:
         # Bind real methods from MenuServicer so _consume_game_events can call them
         s._handle_first_game_event = lambda event, span: MenuServicer._handle_first_game_event(s, event, span)
         return s
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", br=["BR-008"])
+    async def test_hold_energy_events_log_at_debug(self, servicer, caplog):
+        """UC-035 BR-008: the high-rate player_shield_energy is logged at DEBUG, other events at INFO."""
+        import logging
+
+        from services.menu.servicer import MenuServicer
+
+        events = []
+        for event_type in ("game_started", "player_shield_energy", "player_death"):
+            event = MagicMock()
+            event.event_type = event_type
+            event.data = {}
+            events.append(event)
+
+        async def fake_stream():
+            for event in events:
+                yield event
+
+        with caplog.at_level(logging.DEBUG, logger="services.menu.servicer"):
+            await MenuServicer._consume_game_events(servicer, fake_stream(), False, MagicMock())
+
+        levels = {
+            r.getMessage().removeprefix("Game event received: "): r.levelno
+            for r in caplog.records
+            if r.getMessage().startswith("Game event received: ")
+        }
+        assert levels == {
+            "game_started": logging.INFO,
+            "player_shield_energy": logging.DEBUG,
+            "player_death": logging.INFO,
+        }
 
     @pytest.mark.asyncio
     async def test_game_ended_event_returns_should_return_true(self, servicer):

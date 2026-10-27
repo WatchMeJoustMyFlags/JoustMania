@@ -14,6 +14,8 @@ Rules:
   events in one direction make one step, per layer key or, with no layer key, for the volume; a
   change of direction restarts the count, and the remainder is dropped on the layer key's release,
   after a pause of ``KNOB_PAUSE_MS`` in turning (the volume commit pause) and on ``reset()``;
+- each completed layer step also emits ``layer_step`` with the running net total, the number the
+  release would commit, for the live preview (BR-017); it never commits anything itself;
 - the knob press is bound when it goes down: to the held layer key (marks it used, never a
   mute), or alone to a mute (``knob_press``, fired at press); its release is swallowed;
 - a chord (a key goes down while another key, or the knob press, is down) blocks every key
@@ -54,6 +56,7 @@ TAP = "tap"
 HOLD = "hold"
 CANCEL = "cancel"
 LAYER = "layer"
+LAYER_STEP = "layer_step"  # BR-017: a completed step of a held layer key (preview only, never a write)
 KNOB_TURN = "knob_turn"
 KNOB_PRESS_GESTURE = "knob_press"
 LOCK = "lock"
@@ -72,7 +75,7 @@ class KeyEvent:
 class Gesture:
     kind: str
     key: str
-    steps: int = 0  # knob_turn: +1 / -1; layer: net turns while the layer key was down
+    steps: int = 0  # knob_turn: +1 / -1; layer / layer_step: net turns while the layer key was down
     held_ms: int = 0
     locked: bool = False  # hold: the pad was locked (only the stop direction may act); lock: new state
 
@@ -102,6 +105,13 @@ class GestureMachine:
 
     def keys_down(self) -> bool:
         return bool(self._down) or self._knob_down
+
+    def preview_key(self) -> str | None:
+        """The layer key whose live preview may run (BR-017): the only key down, used, no chord, unlocked."""
+        if self._chord or self.locked:
+            return None
+        key = self._single_layer_key()
+        return key if key is not None and key in self._used else None
 
     def feed(self, event: KeyEvent, timings: Timings) -> list[Gesture]:
         if event.value == REPEAT:
@@ -197,6 +207,8 @@ class GestureMachine:
             events, step = self._count(self._layer_events.get(layer, (0, 0)), direction, timings.knob_events_per_step)
             self._layer_events[layer] = events
             self._layer_steps[layer] = self._layer_steps.get(layer, 0) + step
+            if step:
+                return [Gesture(LAYER_STEP, layer, steps=self._layer_steps[layer])]
             return []
         if self._down:
             return []  # a turn while K4, K6 or K8 is down does nothing

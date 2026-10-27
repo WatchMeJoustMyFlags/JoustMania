@@ -56,6 +56,24 @@
       },
       "defaultVariant": "default"
     },
+    "operator_pad.preview_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "operator_pad.preview_debounce_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "instant": 0,
+        "fast": 100,
+        "default": 150,
+        "slow": 300
+      },
+      "defaultVariant": "default"
+    },
     "operator_pad.keymap": {
       "state": "ENABLED",
       "variants": {

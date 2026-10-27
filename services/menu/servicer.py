@@ -465,6 +465,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         game = Games.from_name(current_game_name)
         self.current_selection = game if game and game.name in GAME_MODES else DEFAULT_GAME_MODE
         self.state_manager.set_game_mode(self.current_selection)
+        # UC-010 A11 (#2175): every controller the menu knows is CONNECTED again and shows the restored
+        # mode's dim lobby colour; bounded like the post-game restore (BR-010).
+        await _bounded_restore_step("controller re-registration", self.state_manager.reset)
 
         await self.audio.start_lobby_music()
         self.idle_monitor.start()
@@ -484,10 +487,12 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             # Stop idle monitor
             self.idle_monitor.stop()
 
-            # Clear all lobby state
+            # UC-010 A11 (#2175): un-ready the lobby but keep the roster. The button stream stays open
+            # and the controller manager re-sends no connect events, so a cleared roster would let a
+            # subset of the controllers auto start after the next StartMenu (BR-001, step 4).
             self._clear_ready_state()
-            self.state_manager.controller_states.clear()
-            # UC-012 BR-004: controller state is gone, so release the single-admin lock.
+            self.state_manager.return_all_to_connected()
+            # UC-012 BR-004: no controller is in ADMIN any more, so release the single-admin lock.
             self.admin_handler.abandon_session()
 
             await self.event_publisher.publish("menu_stopped", {})
@@ -522,15 +527,16 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 status = "ok" if success else "error"
                 metrics.grpc_requests_total.labels(method="ProcessInput", status=status).inc()
                 return menu_pb2.ProcessInputResponse(success=success, error=error)
+            rejection = None
             if input_type == "button_press":
-                await self._handle_button_input(data, span)
+                rejection = await self._handle_button_input(data, span)
             elif input_type == "web_command":
                 rejection = await self._handle_web_command(data, span)
-                if rejection is not None:
-                    metrics.grpc_requests_total.labels(method="ProcessInput", status="error").inc()
-                    return menu_pb2.ProcessInputResponse(success=False, error=rejection)
             elif input_type == "reset_menu":
                 await self._handle_reset_menu()
+            if rejection is not None:
+                metrics.grpc_requests_total.labels(method="ProcessInput", status="error").inc()
+                return menu_pb2.ProcessInputResponse(success=False, error=rejection)
 
             metrics.grpc_requests_total.labels(method="ProcessInput", status="ok").inc()
             return menu_pb2.ProcessInputResponse(success=True, error="")
@@ -623,17 +629,19 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
 
     # Input handlers
 
-    async def _handle_button_input(self, data: dict, span) -> None:
-        """Handle button_press input type."""
+    async def _handle_button_input(self, data: dict, span) -> str | None:
+        """Handle button_press input type; the error code when the start is refused (UC-010 A8), else None."""
         button = data.get("button", "")
         span.set_attribute("button", button)
 
         if button == "trigger":
-            await self._start_game(serial="process_input", source="button_input")
+            if not await self._start_game(serial="process_input", source="button_input"):
+                return GAME_ACTIVE
 
         elif button == "select":
             next_mode = get_next_game_mode(self.current_selection)
             await self.select_game_mode(next_mode.name, source="button_input")
+        return None
 
     async def _handle_web_command(self, data: dict, span) -> str | None:
         """Handle web_command input type.
@@ -650,8 +658,14 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 game_mode = Games.from_name(requested_mode)
                 if game_mode is None or game_mode.name not in GAME_MODES:
                     return await self._reject_web_start_mode(requested_mode, span)
+                if self._lifecycle_live():
+                    # UC-010 A8 (#2177 review): a refused start changes nothing, not even the selection.
+                    await self._reject_start_while_active("web", "web", game_mode)
+                    return GAME_ACTIVE
                 await self.select_game_mode(game_mode.name, source="web")
-            await self._start_game(serial="web", source="web", game_mode=game_mode)
+            if not await self._start_game(serial="web", source="web", game_mode=game_mode):
+                # UC-010 A8, UC-015 A1 (#2176): the caller sees the refusal, not success=true.
+                return GAME_ACTIVE
 
         elif command == "select_game":
             game_name = data.get("game_name", "")
@@ -909,9 +923,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         source: str = "controller",
         controllers: list[str] | None = None,
         game_mode: Games | None = None,
-    ):
+    ) -> bool:
         """
-        Schedule game start as a background task.
+        Schedule game start as a background task; False when it is refused (UC-010 A8).
 
         This is called from button event handlers, so we can't block or stop
         the button monitor synchronously. Instead, schedule the game lifecycle
@@ -929,7 +943,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # the start; never cancel the live game's stream. A finished task needs no cancel.
         if self._lifecycle_live():
             await self._reject_start_while_active(serial, source, game_mode)
-            return
+            return False
 
         # Schedule game lifecycle as background task to avoid blocking button monitor
         self._game_lifecycle_task = asyncio.create_task(
@@ -945,6 +959,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 logger.error(f"Game lifecycle task failed: {exc}", exc_info=exc)
 
         self._game_lifecycle_task.add_done_callback(_log_exception)
+        return True
 
     async def _run_game_lifecycle(
         self,
@@ -1213,7 +1228,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                     return result
                 game_started = True
 
-            logger.info(f"Game event received: {event.event_type}")
+            # High-rate, droppable events (the hold energy bar, UC-035 BR-008) log at DEBUG.
+            log = logger.debug if event.event_type == GameEvent.PLAYER_SHIELD_ENERGY else logger.info
+            log(f"Game event received: {event.event_type}")
 
             if GameEvent.is_game_ending(event.event_type):
                 logger.info(f"Game ended: {event.event_type}")

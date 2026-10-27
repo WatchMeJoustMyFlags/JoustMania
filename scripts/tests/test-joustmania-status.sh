@@ -26,7 +26,7 @@
 #  - --led (ExecStartPost, #2027 PR 4): the unit still activating counts as
 #    started, the state (never `starting`) is written to led.request
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-status.sh
-# UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7; UC-061 BR-007
+# UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7; UC-061 main BR-007
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -54,6 +54,16 @@ from services.game_coordinator import metrics
 
 logger = logging.getLogger(__name__)
 
+# Events a slow subscriber may lose (UC-035 BR-008, telemetry.md §5): the shield
+# hold's energy state for the dashboard bar. A droppable event is dropped in
+# _deliver, on the subscriber's own loop, once that queue is a quarter full, so
+# droppable events never hold more than a quarter of a queue and at least three
+# quarters stay for player_death, game_ended and game_winner (a full queue still
+# drops any event). A droppable event records no span event.
+DROPPABLE_EVENT_TYPES = frozenset({"player_shield_energy"})
+# Droppable events are delivered only while the queue holds less than maxsize / this.
+DROPPABLE_QUEUE_SHARE_DIVISOR = 4
+
 
 # UC-027 BR-002: one bus is used from several event loops, so the next game after a force end streams normally.
 class EventBus:
@@ -149,9 +159,9 @@ class EventBus:
             # Snapshot subscribers to avoid dict modification during iteration
             subscribers_snapshot = dict(self._subscribers)
 
-        # Record as span event for observability
+        # Record as span event for observability (not a droppable event: UC-035 BR-008)
         current_span = trace.get_current_span()
-        if current_span.is_recording():
+        if str(event_type) not in DROPPABLE_EVENT_TYPES and current_span.is_recording():
             attributes = {
                 "event.type": event_type,
                 "subscribers.count": len(subscribers_snapshot),
@@ -199,6 +209,14 @@ class EventBus:
     def _deliver(self, sub_id: str, event_queue: asyncio.Queue, event) -> None:
         """Put one event on a subscriber queue. Runs on the queue's own loop."""
         event_type = event.event_type
+        if (
+            event_type in DROPPABLE_EVENT_TYPES
+            and event_queue.maxsize > 0
+            and event_queue.qsize() * DROPPABLE_QUEUE_SHARE_DIVISOR >= event_queue.maxsize
+        ):
+            metrics.event_bus_publish_drops_total.labels(event_type=event_type).inc()
+            logger.debug(f"Subscriber {sub_id} queue a quarter full, dropping {event_type}")
+            return
         try:
             event_queue.put_nowait(event)
             logger.debug(f"Published {event_type} to subscriber {sub_id}")

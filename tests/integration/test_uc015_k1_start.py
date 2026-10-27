@@ -4,8 +4,8 @@ The pad service sends `ProcessInput` `start_game` for a K1 tap (UC-015 step 2); 
 that exact command to the real menu on mock controllers and check step 3: the game starts as in
 UC-010 step 5 onwards, announced by the countdown (`game_starting`, then RUNNING).
 
-The menu forgets controllers across StopMenu / StartMenu (#2175), so the positive test never
-restarts the menu and registers every idle controller with a button event instead.
+The menu keeps its controller roster across StopMenu / StartMenu since #2175; the negative test
+checks that two of four ready then do not auto start.
 """
 
 import asyncio
@@ -115,7 +115,6 @@ async def _ready_is_two(menu_client) -> bool:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(strict=True, reason="#2175: StopMenu/StartMenu forgets idle controllers, so 2 of 4 ready auto-starts")
 @pytest.mark.uc("UC-010", flow="main", steps=[4])
 async def test_uc015_two_of_four_ready_after_a_menu_restart_does_not_auto_start(docker_compose, ensure_game_stopped):
     """UC-010 step 4: auto start needs every connected controller ready, also after StopMenu / StartMenu."""
@@ -127,7 +126,7 @@ async def test_uc015_two_of_four_ready_after_a_menu_restart_does_not_auto_start(
     started = await menu_client.StartMenu(menu_pb2.StartMenuRequest())
     assert started.success, f"StartMenu failed: {started.error}"
 
-    # Not fatal: under #2175 the menu knows fewer than four controllers, which the asserts below report.
+    # Not fatal: a menu that lost controllers (#2175) is reported by the asserts below.
     await _wait_connected(menu_client, CONTROLLERS, timeout=3.0)
     await mark_controllers_ready(mock_client, serials[:2])
     await asyncio.sleep(SETTLE_SECONDS)

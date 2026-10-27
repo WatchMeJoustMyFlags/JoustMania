@@ -278,6 +278,15 @@ async def test_k1_tap_in_the_lobby_starts_a_game(actions, menu):
     assert sent(menu) == [{"command": "start_game"}]
 
 
+@pytest.mark.uc("UC-015", flow="A1", br=["BR-012"])
+async def test_k1_tap_refused_by_the_menu_plays_the_refusal_cue(actions, menu, cues):
+    """#2176: a game started after the status read; the menu's A8 guard answers game_active."""
+    menu.ProcessInput.return_value = reply(False, "game_active")
+    assert await actions.dispatch(Gesture(TAP, "K1"), status()) == ("start_game", "game_active")
+    cues.refusal.assert_awaited_once()
+    cues.failure.assert_not_awaited()
+
+
 @pytest.mark.uc("UC-015", flow="main", br=["BR-011"])
 @pytest.mark.parametrize(("instructions", "direction"), [(False, "up"), (True, "down")])
 async def test_k6_tap_toggles_instructions(actions, menu, instructions, direction):
