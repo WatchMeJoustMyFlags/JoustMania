@@ -137,7 +137,7 @@ async def test_menu_unreachable_sends_nothing_and_plays_the_failure_cue(actions,
     cues.failure.assert_awaited_once()
 
 
-@pytest.mark.uc("UC-015", flow="A3", br=["BR-010"])
+@pytest.mark.uc("UC-015", flow="A3", br=["BR-010"], cond=["Post-F-1"])
 async def test_a_failed_command_rpc_is_not_retried(actions, menu, cues):
     menu.ProcessInput.side_effect = grpc.aio.AioRpcError(
         grpc.StatusCode.UNAVAILABLE, grpc.aio.Metadata(), grpc.aio.Metadata(), "down"

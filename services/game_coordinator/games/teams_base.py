@@ -20,6 +20,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.colors import Colors
 from lib.types import GameEvent, Sound
 from services.game_coordinator.games.base import BaseGameMode
+from services.game_coordinator.stream_writes import serialized_write
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
@@ -219,7 +220,7 @@ class TeamsGameBase(BaseGameMode):
                             speed=3,  # Medium pulse speed
                         )
                     )
-                    await self.gameplay_stream.write(pulse_cmd)
+                    await serialized_write(self.gameplay_stream, pulse_cmd)
                     logger.debug(
                         f"Set {serial} to team {player.team} ({self.team_colors[player.team]['name']}) with pulse"
                     )
@@ -231,7 +232,7 @@ class TeamsGameBase(BaseGameMode):
                             color=controller_manager_pb2.RGB(r=team_color[0], g=team_color[1], b=team_color[2]),
                         )
                     )
-                    await self.gameplay_stream.write(base_color_cmd)
+                    await serialized_write(self.gameplay_stream, base_color_cmd)
                     logger.debug(f"Set {serial} to team {player.team} ({self.team_colors[player.team]['name']}) color")
 
             logger.info(
@@ -306,7 +307,7 @@ class TeamsGameBase(BaseGameMode):
                             color=controller_manager_pb2.RGB(r=r, g=g, b=b),
                         )
                     )
-                    await self.gameplay_stream.write(base_color_cmd)
+                    await serialized_write(self.gameplay_stream, base_color_cmd)
 
             # Wait for phase duration (in 50ms increments to allow interruption)
             wait_iterations = phase_duration_ms // 50

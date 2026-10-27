@@ -137,7 +137,7 @@ flags:
   - {set: game, key: tempo.ramp_down_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 10]}}
   # Shield charge (#1837, UC-040 BR-019): human flags, changeable on stage; never
   # experiment+arm or real, so no agent writer can reach them (C-034).
-  - {set: game, key: shield.activation, kind: overlay, scope: [stack], bounds: {variants: [instant, trigger]}}
+  - {set: game, key: shield.activation, kind: overlay, scope: [stack], bounds: {variants: [instant, trigger, hold]}}
   - {set: game, key: shield.charge_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 120]}}
   # Shield charge rumble pattern (#2094, UC-040 BR-021): read by the controller manager per charge.
   - {set: game, key: shield.charge_rumble_intensity, kind: overlay, scope: [stack], bounds: {range: [0, 255]}}
@@ -152,6 +152,9 @@ flags:
   - {set: game, key: shield.energy_initial_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 5]}}
   - {set: game, key: shield.recharge_per_second, kind: overlay, scope: [stack], bounds: {range: [0, 0.5]}}
   - {set: game, key: shield.min_burst_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 1]}}
+  # Hold feedback (#2096, UC-040 BR-026): latched per hold game and shipped to the controller.
+  - {set: game, key: shield.hold_rumble_intensity, kind: overlay, scope: [stack], bounds: {range: [0, 150]}}
+  - {set: game, key: shield.empty_pulse_ms, kind: overlay, scope: [stack], bounds: {range: [100, 800]}}
 
   # --- user, controller, rollout (flags.md §13.4) ------------------------------
   - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}

@@ -625,6 +625,9 @@ func main() {
 		// UC-040 A31 step 1 (#1837): the per-loop shield-charge ledger reads the game's
 		// shield.activation / shield.charge_expiry_seconds from the read-only game domain.
 		loop.SetShieldChargeMode(agentFlags.ShieldCharge)
+		// UC-040 A31 step 1, BR-027 (#2096): the game's first shield.activation is latched
+		// when the agent first sees the game, so a later flip to `hold` keeps a trigger game trigger.
+		agentFlags.LatchShieldMode(context.Background(), gameID)
 		// Shared decision-backend registry (#1226): decision.backend selects who decides.
 		loop.SetDecideRegistry(decideBackends)
 		// The objective-weighted rules engine (#726) is the active default, built
