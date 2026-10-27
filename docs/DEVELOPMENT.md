@@ -369,6 +369,7 @@ images are multi-stage: a builder stage with uv, a slim runtime stage copying th
 | Symptom | Check |
 |---|---|
 | A service will not start | `docker compose logs <service>`; `docker compose ps` for restarts and health |
+| A service stays `unhealthy` (`joustmania-status` FAIL / WARN) | Compose restarts a container only when it exits, never on `unhealthy`: `docker restart joustmania-<service>` (the line `joustmania-status` prints). rust-hid restarts itself after about 15 to 30 s (UC-002 A7, NFR-054); `docker logs joustmania-rust-hid \| grep watchdog` shows why |
 | Old behaviour after a rebuild | `.env` pins the release `IMAGE_TAG`; set `IMAGE_TAG=latest` and verify the image, not just the tag |
 | Port in use on 80 or 50052-50056 | Another stack or process holds it: `ss -ltnp \| grep -E ':(80\|5005)'` |
 | gRPC connection refused from the host | Dev ports exist only with `docker-compose.override.yml`; the Pi start path does not publish them |

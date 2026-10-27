@@ -19,6 +19,7 @@ from services.controller_manager.backend_factory import (
     _create_adapter_by_name,
     create_backend,
 )
+from services.controller_manager.multiplexer.adapter import DiscoveryFailedError
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
 
@@ -116,16 +117,14 @@ class TestFactoryCreatesMixedAdapters:
 class TestRustAdapterGracefulDegradation:
     """When rust-hid service is unreachable, discover() returns empty list (not crash)."""
 
-    def test_discover_returns_empty_on_rpc_error(self):
-        """RPC failure during discover() returns empty list instead of raising."""
+    def test_discover_raises_discovery_failed_on_rpc_error(self):
+        """RPC failure during discover() is a failed pass, not "no controllers" (UC-002 A1, #2125)."""
         adapter = _make_rust_adapter()
         adapter._stub.Discover.side_effect = grpc.RpcError()
         adapter._stream_running = True
 
-        serials = adapter.discover()
-
-        assert serials == []
-        assert isinstance(serials, list)
+        with pytest.raises(DiscoveryFailedError):
+            adapter.discover()
 
     def test_open_returns_false_on_rpc_error(self):
         """RPC failure during open() returns False instead of raising."""

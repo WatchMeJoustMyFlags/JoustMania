@@ -145,6 +145,13 @@ flags:
   - {set: game, key: shield.charge_reminder_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 30]}}
   - {set: game, key: shield.charge_pre_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 8]}}
   - {set: game, key: shield.ending_rumble_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 3]}}
+  # Hold-mode shield energy (#2096, UC-040 BR-024, BR-027): latched per hold game.
+  # Stack-only until FR-162 widens them (flags.md §4a), so no agent writer reaches them (C-034).
+  - {set: game, key: shield.energy_max_seconds, kind: overlay, scope: [stack], bounds: {range: [1, 10]}}
+  - {set: game, key: shield.energy_budget_seconds, kind: overlay, scope: [stack], bounds: {range: [3, 30]}}
+  - {set: game, key: shield.energy_initial_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 5]}}
+  - {set: game, key: shield.recharge_per_second, kind: overlay, scope: [stack], bounds: {range: [0, 0.5]}}
+  - {set: game, key: shield.min_burst_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 1]}}
 
   # --- user, controller, rollout (flags.md §13.4) ------------------------------
   - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}
@@ -152,6 +159,8 @@ flags:
   - {set: user, key: audio_volume.master, kind: overlay, scope: [stack], persist: true, bounds: {variants: [mute, quiet, normal, loud, max]}}
   - {set: user, key: play_audio, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   - {set: controller, key: bluetooth_backend, kind: overlay, scope: [stack, fraction], bounds: {fraction: [1, 100]}}
+  # rust-hid's per-controller output rate cap (#2125, UC-002 BR-005): tunable on stage.
+  - {set: controller, key: rust_hid.output_rate_hz, kind: overlay, scope: [stack], persist: true, bounds: {variants: [slow, normal, fast, max]}}
   - {set: rollout, key: current_controller_count, kind: overlay, scope: [stack], bounds: {variants: [none, one, three, six, all]}}
   - {set: rollout, key: target_backend, kind: overlay, scope: [stack]}
   - {set: rollout, key: strategy, kind: overlay, scope: [stack]}

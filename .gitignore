@@ -5,6 +5,8 @@
 # Pi upgrade record: current and previous pin (scripts/setup/joustmania-upgrade.sh, UC-060 A2/A3)
 .joustmania-release
 .joustmania-release.tmp
+# Rendered NM keyfiles hold the stage hotspot password (UC-061 BR-004); only the template is tracked
+*.nmconnection
 
 .python_history
 

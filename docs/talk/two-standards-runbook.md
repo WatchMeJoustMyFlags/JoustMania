@@ -138,8 +138,10 @@ the `llm.max_requests_per_minute` flag (`conservative` 3, `default` 6,
 `aggressive` 12, `stage` 30), capped by `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`
 when that is set: the cap is `min(env, flag)`, so the env can only lower the
 flag, never raise it (#1788, `ceilBudget`, `services/agent/decision/llmbudget.go`). One game on a remote
-backend at `decision.min_interval_ms=3000` wants about 15-20 calls a minute,
-so the default budget runs out after six calls: the rest fall back to rules
+backend at `decision.min_interval_ms=3000` (plus `decision.min_gap_after_answer_ms`,
+1000 ms after each answer, #2123) wants about 20 calls a minute on Jev, about 15 on
+warm Claude and 6 to 7 when Claude runs into the 8 s `patient` timeout, so the
+`stage` budget (30) leaves room for the summary, while the default budget runs out after six calls: the rest fall back to rules
 with `decide.fallback_reason=llm_budget_exhausted`, and the summary at game end
 finds the budget full. For the talk use the **`stage` variant** (30/min, a live
 flag flip, part of the baseline in section 6); leave the env unset or at 30 or
@@ -540,8 +542,8 @@ The infra loop is not gated by the `enabled` kill switch, only by
 Stage values: `decision.backend=rules` (the session start; beat 2 flips to
 `jev`), `decision.jev.act_confidence_threshold=gate` (0.6, Jev's calibrated
 bar), `decision.act_confidence_threshold=default` (0.8, claude/openai),
-`decision.min_interval_ms=default` (3000 ms), `decision.claude.timeout_ms=default`
-(5000 ms; `patient` = 8000 only if rehearsal says so), `decision.jev.timeout_ms=default`
+`decision.min_interval_ms=default` (3000 ms), `decision.claude.timeout_ms=patient`
+(8000 ms, #2123: covers cold Claude calls), `decision.jev.timeout_ms=default`
 (2500 ms), `llm.max_requests_per_minute=stage` (30/min; the flag sets the budget, a set
 `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` can only lower it), `decision.capture_content=on`, `enabled=on`, `experiments_enabled=off`,
 `interventions_allowed=standard` (all of it: `./scripts/talk-stage.sh reset`).
@@ -558,8 +560,8 @@ bar), `decision.act_confidence_threshold=default` (0.8, claude/openai),
 `talk-stage.sh reset` clears every stage overlay (`DELETE /agent?writer=stage`)
 and applies `scripts/talk-baseline.json` again through the flag service:
 `decision.backend=rules`, both thresholds (`default`,
-Jev's `gate`), capture `on`, `min_interval_ms`, claude model `haiku`, both
-timeouts `default`, `llm.eligible_game_kinds=real_only`, `enabled=on`,
+Jev's `gate`), capture `on`, `min_interval_ms` `default`, claude model `haiku`,
+claude timeout `patient`, jev timeout `default`, `llm.eligible_game_kinds=real_only`, `enabled=on`,
 `interventions_enabled=on`, **`interventions_allowed=standard`**,
 **`policy.max_interventions_per_minute=aggressive`** (4), `experiments_enabled=off`, `rollout_enabled=off`, plus `decision.jev.base_url`,
 `decision.openai.base_url` / `.model` / `.reasoning_effort` back to their
@@ -596,10 +598,11 @@ minute) stays far away. The shipped default stays 2.
 an interrupted permissions beat for `none` / `probe`,
 `rollout_enabled=off`, `experiments_enabled=off`, `decision.backend=rules`,
 both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`
-`default`, claude model `haiku`, `decision.claude.timeout_ms` and
+`default`, claude model `haiku`, `decision.claude.timeout_ms` `patient`,
 `decision.jev.timeout_ms` `default`, `llm.eligible_game_kinds=real_only`,
 `decision.jev.base_url` not left on `blackhole` and the `blackhole` variant
-present). It
+present; FAIL when Jev's threshold flag lacks the `strict` or `gate` variant of beat 3a, WARN when
+`decision.claude.timeout_ms` lacks `patient`). It
 checks the budget (the flag's value ≥ 30, i.e. `stage`, and that a set env ceiling is not below 30),
 that `JEV_API_KEY` and `ANTHROPIC_API_KEY` are present (presence only) and that
 the stage baseline `inference.backend = claude`, and the effective `inference.backend` flag again in the agent section (FAIL otherwise: beat 8 shows a capture-only
@@ -644,7 +647,7 @@ first step above prevents that; the pre-flight WARN names the persisted backend.
 | `~~jev~~ -> rules` with `timeout` or `error` on every row | Jev unreachable or slow from the venue (network, TypeSafe outage, 401 / 429 / 5xx; `error.type` says which) | `error.type` and `decide.latency_ms` on the span | **`backend.sh claude`** (the manual backup; there is no automatic jev -> claude chain). Rules already covered every cycle, so the game never stalled: say so. Try `backend.sh jev` again later |
 | `~~claude~~ -> rules`, `backend_unavailable` | `ANTHROPIC_API_KEY` missing | `talk-preflight.sh` key section | Add it to `.env.local`, recreate the agent; on stage go back to `backend.sh jev` |
 | `fallback_reason=llm_budget_exhausted` after a minute of remote decisions | Global budget spent (decisions + summaries share it); baseline not applied | `talk-preflight.sh` budget line | `setflag agent llm.max_requests_per_minute stage` (live; the flag sets the budget). If `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` is set below 30 it caps the flag: raising it needs an agent recreate, the only live lever is `setflag agent decision.min_interval_ms slow` (10 s cadence) |
-| `fallback_reason=timeout` on Claude | Slow venue network or slow model (`decision.claude.timeout_ms` default 5000 ms; Haiku warm about 2.7-3.0 s, Sonnet about 2.85 s) | `decide.latency_ms` on earlier rows | `setflag agent decision.claude.timeout_ms patient` (8000 ms); stay on haiku; or back to `backend.sh jev` |
+| `fallback_reason=timeout` on Claude | Slow venue network or slow model (`decision.claude.timeout_ms` stage baseline `patient` 8000 ms since #2123, shipped default 5000 ms; Haiku warm about 2.7-3.0 s, Sonnet about 2.85 s) | `decide.latency_ms` on earlier rows; `decision.claude.timeout_ms` still at `patient` | `setflag agent decision.claude.timeout_ms patient` if it drifted; stay on haiku; or back to `backend.sh jev` |
 | Jev never acts in beat 2 | The game is calm (gate p_yes below 0.6) | `jev.gate.p_yes` on the stage-1 chat span | Push the players to the edge / let eliminations pile up (mock: `demo_driver.py --scenario death_cascade`); if `jev-latest` changed, `backend.sh jev pinned`. Do not lower the bar on stage unless you say why |
 | `held` never appears in 3a | No open gate during the beat (calm play gives `noop`, not `held`) | `decide.outcome` on recent rows | Keep players near the threshold; narrate the evaluation event of a captured held trace |
 | Beat 8: no `agent.llm.retro` span at all | The budget was full at game end: the retro is gated before any span is created | `docker compose logs agent \| grep agent.llm.retro_gated` (`fallback_reason=llm_budget_exhausted`) | `setflag agent llm.max_requests_per_minute stage` (an env ceiling below 30 must be raised or unset first); show the summary of an earlier game or a captured trace |
@@ -661,6 +664,8 @@ first step above prevents that; the pre-flight WARN names the persisted backend.
 | A flip is refused (`422 flag_read_only` / `out_of_bounds`) | The flag is not runtime-mutable, or the variant does not exist | the helper's error line | Use a declared variant (`./scripts/flags.sh get agent <flag>`); read-only flags change only by a reviewed file edit and a flag-service restart |
 | Dashboard Decisions panel empty / stale, Jaeger slow | Jaeger query slow on the Pi (whole game traces) | Open the Jaeger search directly | Narrow the Jaeger lookback; restart jaeger as a last resort (`docker compose restart jaeger`); present from the captured screenshots |
 | `invalid_answer` rows on the vendor (6b) | Model does not follow the JSON schema / rejects `reasoning_effort` | `error.type`, `decide.invalid_reason` | `backend.sh effort omit`; pick another model; or skip 6b |
+| Triggers do not ready controllers, `joustmania-status` shows `service rust-hid: running (unhealthy)` | rust-hid wedged under many controllers (#2125) | `joustmania-status`; `docker logs joustmania-rust-hid \| grep watchdog` | Wait about 30 s: its watchdog exits and compose restarts it (UC-002 A7); if still unhealthy, `docker restart joustmania-rust-hid` (the line `joustmania-status` prints). Controllers reconnect on their own; players press the trigger again |
+| LEDs lag or skip with many controllers; `dmesg` shows `Output queue is full` | More LED / rumble reports than the Bluetooth links drain (#2125) | `sudo dmesg \| grep 'Output queue is full'` | `setflag controller rust_hid.output_rate_hz slow` (10 per second per controller, live within 1 s); back with `normal` (20) |
 | Real controllers will not pair or keep dropping (venue Bluetooth) | 2.4 GHz congestion, dongle, batteries | `talk-preflight.sh` real-controller line | Try re-pairing once; then [Fallback: Bluetooth down](#fallback-bluetooth-down) |
 | Fallback on, screen empty right after the kill-switch beat | `enabled=off` aborted every experiment and force-ended its shadow games | `talk-stage.sh status`; Experiments tab | `agent-killswitch.sh on`; the next tick (about 10 s with the fallback) declares a new experiment. See [Fallback: Bluetooth down](#fallback-bluetooth-down) |
 | Whole demo wedged | anything | `docker compose ps` | `backend.sh rules`: rules need no network and no key. Last resort: screenshots and captured traces |

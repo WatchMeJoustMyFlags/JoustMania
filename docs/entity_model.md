@@ -160,10 +160,15 @@ A controller's participation in one game (`proto/game_coordinator.proto` `Player
 | invincible_until | No-death deadline from match / round start (Tournament, Fight Club) | DateTime | - | Optional |
 | shield_charge_seconds | Seconds of a held shield charge, the shield the player gets on activation (#1837, UC-040 A30, UC-030 A6); 0 = no charge, at most one charge | Decimal | 5,2 | Not Null, Min: 0 |
 | shield_charge_expires_at | When a held charge expires, fixed at grant time from `shield.charge_expiry_seconds` (UC-040 BR-020) | DateTime | - | Optional (none = never) |
+| hold_energy | Stored shield energy in seconds of a hold game (#2096, UC-040 BR-024), materialised at an activation, a grant or the game-loop start; the current value adds the recharge since `hold_energy_at` and is clamped to `min(cap, budget remaining)` | Decimal | 5,2 | Not Null, Min: 0, Max: 10 |
+| hold_energy_at | When `hold_energy` was materialised (0 before the game loop starts: no recharge yet) | DateTime | - | Optional |
+| hold_budget_used | Active shield time used in this game, summed over every ended activation (UC-040 BR-024) | Decimal | 5,2 | Not Null, Min: 0, Max: 30 |
+| hold_started_at | Start of the running hold activation (UC-030 A7); 0 = none | DateTime | - | Optional |
+| hold_until | Protection deadline of the running activation: the energy's end while held, start + cost after a release; part of the effective grace (UC-030 BR-008) | DateTime | - | Optional |
 | winner | Whether the player's side won the game (`winner` on the player span; false after a force-end that declared no winner, UC-020 BR-003). Champion of a Tournament / Fight Club game is the winner | Boolean | 1 | Optional |
 | smoothed_accel | EMA of acceleration magnitude in g | Decimal | 6,3 | Not Null, Min: 0 |
 
-**Constraints:** the player cannot die while `now < max(grace_until, invincible_until)`. In the base path (`games/base.py` `_compute_effective_thresholds`), effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(min(max(handicap_factor, active toughness boost, rubberband_boost), soft_penalty_factor), 0.5, 2.0)`. Exception: Werewolf werewolves and Zombies zombies use a fixed role threshold table per sensitivity (`game.werewolf.thresholds`, `game.zombie.thresholds`; `werewolf.py` / `zombie.py` `_compute_effective_thresholds`), so tempo and the per-player and global factors do not apply to them. Fight Club runs its own death detection (D-G9, #1347).
+**Constraints:** the player cannot die while `now < max(grace_until, invincible_until, hold_until)` (`hold_until` only in a hold game, #2096). In the base path (`games/base.py` `_compute_effective_thresholds`), effective thresholds are divided by `clamp(sensitivity_factor × global_difficulty_factor, 0.5, 2.0)` and multiplied by `clamp(min(max(handicap_factor, active toughness boost, rubberband_boost), soft_penalty_factor), 0.5, 2.0)`. Exception: Werewolf werewolves and Zombies zombies use a fixed role threshold table per sensitivity (`game.werewolf.thresholds`, `game.zombie.thresholds`; `werewolf.py` / `zombie.py` `_compute_effective_thresholds`), so tempo and the per-player and global factors do not apply to them. Fight Club runs its own death detection (D-G9, #1347).
 
 ### DECIDE_PLAYER_STATE
 
@@ -390,7 +395,7 @@ A bounded in-game change written for one game to the `interventions` flag set th
 | weight | Rate-limit weight class | String | 6 | Not Null, Values: soft, medium, hard |
 | target_serial | Player targeted (player-scoped types) | String | 17 | Optional, Foreign Key (PLAYER.serial) |
 | value | Resolved magnitude or payload | String | 60 | Optional |
-| blocked_by_coordinator | Coordinator block reason (`block_reason` on `game_intervention_*` metrics and the `agent_intervention` event). `game_loop_late` is recorded as a reason but is not a block: the effect had started and may still apply | String | 21 | Optional, Values: not_allowed, rate_limited, low_battery, mode_unsupported, already_charged, shield_cap_reached, shield_cooldown, revive_refused, eliminate_refused, experiment_override, handler_error, game_loop_unavailable, game_loop_timeout, game_loop_late |
+| blocked_by_coordinator | Coordinator block reason (`block_reason` on `game_intervention_*` metrics and the `agent_intervention` event). `game_loop_late` is recorded as a reason but is not a block: the effect had started and may still apply | String | 21 | Optional, Values: not_allowed, rate_limited, low_battery, mode_unsupported, already_charged, shield_cap_reached, shield_cooldown, shield_pool_full, shield_budget_exhausted, revive_refused, eliminate_refused, experiment_override, handler_error, game_loop_unavailable, game_loop_timeout, game_loop_late |
 
 **Constraints:**
 - The type must be in the live `interventions_allowed` list (checked by the agent and again by the coordinator); writes happen only while `interventions_enabled` is on.

@@ -13,7 +13,8 @@
 #   - last start: what joustmania-start.sh recorded (start.env)
 #   - images: images missing on the Pi, with the joustmania-upgrade.sh command
 #     that pulls them (boot never pulls, BR-001)
-#   - service <name>: running / healthy, per active service
+#   - service <name>: running / healthy, per active service; a running but
+#     unhealthy one names its recovery, `docker restart <container>` (#2125)
 #   - clock: NTP synchronised, or INFO when not (no RTC, accepted: until NTP
 #     sync TLS to the registry fails, so an upgrade cannot pull; the start does
 #     not need it, so it never changes the state)
@@ -83,9 +84,11 @@ compose() { "$SCRIPT_DIR/joustmania-compose.sh" "$@"; }
 # --- version (BR-003, A4) ---------------------------------------------------
 if PIN_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
     report OK "version: $(joustmania_pin_ref "$JOUSTMANIA_DIR") (image tag $PIN_TAG)"
-else
-    BRANCH="$(git -C "$JOUSTMANIA_DIR" symbolic-ref -q --short HEAD 2>/dev/null || echo unknown)"
+elif BRANCH="$(git -C "$JOUSTMANIA_DIR" symbolic-ref -q --short HEAD 2>/dev/null)"; then
     report WARN "version: not pinned (branch $BRANCH at $(git -C "$JOUSTMANIA_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)); pin with scripts/setup/joustmania-upgrade.sh <joustmania-vX.Y.Z | sha> (UC-060 A4)"
+else
+    # Not a proven branch: git cannot read the checkout (A4 fails open)
+    report WARN "version: git cannot read the checkout (check: git -C $JOUSTMANIA_DIR status)"
 fi
 
 # --- unit (A5, BR-006) ------------------------------------------------------
@@ -114,7 +117,7 @@ fi
 
 # --- last start (start.env) -------------------------------------------------
 if [[ -r "$STATE_FILE" ]]; then
-    LAST="$(grep -E '^(result|missing|down|ts)=' "$STATE_FILE" | grep -vE '^[a-z]+=$' | tr '\n' ' ')"
+    LAST="$(grep -E '^(result|reason|missing|down|ts)=' "$STATE_FILE" | grep -vE '^[a-z]+=$' | tr '\n' ' ')"
     report INFO "last start: ${LAST% }"
 else
     report INFO "last start: no start.env (not started since boot)"
@@ -145,12 +148,17 @@ else
     else
         report OK "images: all present"
     fi
-    PS="$(compose ps -a --format '{{.Service}}|{{.State}}|{{.Health}}' 2>/dev/null || true)"
+    PS="$(compose ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.Name}}' 2>/dev/null || true)"
     while IFS='|' read -r svc _; do
         [[ -n "$svc" ]] || continue
         line="$(grep -m 1 "^$svc|" <<<"$PS" || true)"
-        IFS='|' read -r _ state health <<<"$line"
+        IFS='|' read -r _ state health name <<<"$line"
         text="service $svc: ${state:-no container}${health:+ ($health)}"
+        if [[ "$state" == running && "$health" == unhealthy ]]; then
+            # Running but wedged: compose restart policies do not act on health
+            # (#2125), so name the restart that recovers it.
+            text="$text; recover with: docker restart ${name:-joustmania-$svc}"
+        fi
         if [[ "$state" == running && (-z "$health" || "$health" == healthy) ]]; then
             report OK "$text"
         elif [[ $LED_MODE -eq 0 && (("$state" == running && "$health" == starting) || "${ACTIVE:-}" == activating) ]]; then

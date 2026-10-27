@@ -276,6 +276,53 @@ class TestGameLoopTiming:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.nfr("NFR-004")
+    @pytest.mark.uc("UC-030", flow="A7", br=["BR-008"])
+    async def test_iteration_timing_8_players_toggling_the_shield_hold(self):
+        """8 players in a hold game toggle the trigger every other frame (#2096, UC-030 BR-008).
+
+        The stream write and the sound RPC each take 20 ms here: a hold transition
+        that awaited either would blow the frame budget, so the frame path must
+        not await anything for a hold transition (feedback goes to an outbound
+        task, UC-040 BR-026).
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from services.game_coordinator.games.base import ShieldHoldParams
+
+        num_controllers = 8
+        num_iterations = 300
+        game, serials = create_ffa_game(num_controllers)
+        game._shield_hold = ShieldHoldParams(cap=10.0, budget=30.0, initial=10.0, recharge=0.5, min_burst=0.1)
+        game._shield_hold_latched = True
+        for serial in serials:
+            game.players[serial].hold_energy = 10.0
+            game.players[serial].hold_energy_at = time.time()
+
+        async def slow(*_args, **_kwargs):
+            await asyncio.sleep(0.02)
+
+        game.gameplay_stream.write = slow
+        result = TimingResult()
+        with patch.object(game, "_play_sound", side_effect=slow):
+            for iteration in range(num_iterations):
+                pressed = iteration % 2 == 1
+                mock_data = generate_mock_accel(num_controllers, movement="gentle")
+                for controller_data in mock_data:
+                    controller_data.trigger_pressed = pressed
+                with measure_time() as timer:
+                    for controller_data in mock_data:
+                        await game._process_controller_state(controller_data)
+                result.frame_times_ms.append(timer.elapsed_ms)
+
+        print(f"\n--- Hold toggling: {num_controllers} players, p99 {result.p99_ms:.3f}ms ---")
+        assert any(game.players[s].hold_budget_used > 0 or game.players[s].hold_started_at for s in serials)
+        assert result.p99_ms < MEAN_ITERATION_BUDGET_MS / 2, (
+            f"P99 frame time ({result.p99_ms:.3f}ms) with hold toggling uses more than half the frame budget"
+        )
+
+    @pytest.mark.asyncio
     @pytest.mark.nfr("NFR-004")  # the cost of a death frame, on top of TestDeathDetectionLatency's frame count
     async def test_death_processing_overhead(self):
         """Measure overhead of death processing vs normal frame processing.

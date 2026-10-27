@@ -32,7 +32,6 @@ class StateManager:
         publish_event: Callable[[str, dict], Coroutine],
         *,
         agent_settings_writer: FlagServiceWriter | None = None,
-        game_settings_client=None,
         agent_settings_client=None,
         select_game_mode: Callable[..., Coroutine] | None = None,
     ):
@@ -46,9 +45,6 @@ class StateManager:
             user_prefs_writer: flag-service writer for the user set
             publish_event: Async function to publish events
             agent_settings_writer: flag-service writer for the agent set (kill-switch, #819)
-            game_settings_client: OpenFeature client for the "game" domain, used to
-                resolve effective (agent-override-aware) values for the truthful
-                admin display (#818).
             agent_settings_client: OpenFeature client for the "agent" domain, used
                 to read the effective ``interventions_allowed`` level (#819).
             select_game_mode: async ``(game_name, *, source, serial)`` callback that
@@ -62,7 +58,6 @@ class StateManager:
         self.game_settings_writer = game_settings_writer
         self.user_prefs_writer = user_prefs_writer
         self.agent_settings_writer = agent_settings_writer
-        self.game_settings_client = game_settings_client
         self.agent_settings_client = agent_settings_client
         self.publish_event = publish_event
         self._select_game_mode = select_game_mode
@@ -379,6 +374,11 @@ class StateManager:
         ready_handler = self._handlers.get(ControllerState.READY)
         if ready_handler and hasattr(ready_handler, "reset_game_start_flag"):
             ready_handler.reset_game_start_flag()
+
+        # Put every controller back to CONNECTED first, so a re-registration cut short (UC-010 BR-010:
+        # a hung LED call times out) drops no controller from the lobby.
+        for serial in serials:
+            self.controller_states[serial] = ControllerState.CONNECTED
 
         # Re-register each controller as CONNECTED (triggers on_enter -> sets colors)
         for serial in serials:

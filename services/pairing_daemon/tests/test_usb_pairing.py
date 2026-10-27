@@ -16,6 +16,7 @@ from psmove_pairing.bluez_agent import PairingAgent
 from psmove_pairing.bluez_records import HID_SDP_RECORD
 from psmove_pairing.pairing_backend import HidapiBackend, PairingResult, RustServiceBackend, UsbController
 from psmove_pairing.registrations import PsMoveRegistration, RemovalResult
+from psmove_pairing.usb_led import GREEN, OFF, RED, UsbLedCue
 from psmove_pairing.usb_pairing import (
     DEFAULT_PAIRING_BACKEND,
     VARIANT_TO_PAIRING_BACKEND,
@@ -32,6 +33,8 @@ def usb_pairing(mock_tracer, tmp_path):
     """Provide USBPairing instance for tests; BlueZ storage never points at the host's."""
     pairing = USBPairing(mock_tracer)
     pairing.bluetooth_dir = tmp_path / "no-bluez-storage"
+    # No LED cue tasks unless a test asks for them (UC-001 BR-010: TestPairingLedCue2091)
+    pairing.led_cue = create_autospec(UsbLedCue, instance=True)
     return pairing
 
 
@@ -563,6 +566,8 @@ class _PairingFlowEnv:
             patch("lib.bluez_dbus.get_system_bus", AsyncMock(return_value=bus)),
             patch("asyncio.create_subprocess_exec", _record_subprocesses(runner)),
             patch("asyncio.sleep", AsyncMock()),
+            # Restart at the end of the pairing poll unless a test sets the quiet period (#2091)
+            patch("psmove_pairing.bluez_reload.get_restart_quiet_period", return_value=0),
         ):
             yield backend, runner, set_tree, _UnitRestarts(bus)
 
@@ -1277,3 +1282,204 @@ class TestPairingAgentFollowsUsbPairing(_PairingFlowEnv):
 
         assert self.SERIAL not in usb_pairing._verified_serials
         assert usb_pairing.paired_this_session(self.SERIAL)
+
+
+class TestRestartWaitsForQuietUsb2091(_PairingFlowEnv):
+    """#2091: one bluetoothd restart for a stack of pairings, once USB has been quiet (UC-001 BR-005, A7)."""
+
+    SERIALS = ("00:06:F7:00:00:01", "00:06:F7:00:00:02", "00:06:F7:00:00:03")
+
+    def _restart_units(self) -> list:
+        return [c.args[0].body for c in self.bus.call.await_args_list if c.args[0].member == "RestartUnit"]
+
+    @staticmethod
+    def _flags(quiet: float = 20):
+        return (
+            patch("psmove_pairing.bluez_reload.get_bluez_restart_mode", return_value="when_idle"),
+            patch("psmove_pairing.bluez_reload.get_restart_quiet_period", return_value=quiet),
+        )
+
+    async def _poll_at(self, usb_pairing, backend, now, t: float, serial: str | None) -> None:
+        now["t"] = t
+        backend.get_usb_controllers.return_value = (
+            [UsbController(f"/dev/hidraw{serial[-1]}".encode(), serial, 0x03D5)] if serial else []
+        )
+        await usb_pairing.poll()
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005", "BR-008"])
+    async def test_three_pairings_in_a_row_cost_one_restart(self, usb_pairing, env, metrics):
+        """Plug, pair, unplug, next: no restart while controllers come and go; one after 20 s of quiet USB."""
+        backend, _runner, _set_tree, _restart = env
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        now = {"t": 0.0}
+        usb_pairing.bluez_reloader._clock = lambda: now["t"]
+        mode, quiet = self._flags()
+
+        with mode, quiet:
+            t = 0.0
+            for serial in self.SERIALS:
+                await self._poll_at(usb_pairing, backend, now, t, serial)  # paired, record written
+                await self._poll_at(usb_pairing, backend, now, t + 10, None)  # unplugged
+                assert self._restart_units() == [], f"restarted while pairing {serial}"
+                t += 20
+            # Last controller seen at t=40; quiet until t=60
+            await self._poll_at(usb_pairing, backend, now, 55, None)
+            assert self._restart_units() == []
+            await self._poll_at(usb_pairing, backend, now, 60, None)
+
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+        assert usb_pairing.bluez_reloader.pending is False
+        for serial in self.SERIALS:  # each got its record on the free adapter (A7)
+            assert (self.bluetooth_dir / self.ADAPTER_FREE / serial / "info").is_file()
+        assert metrics["pairing_success_total"].inc.call_count == 3
+
+    @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"], cond=["Post-S-3"])
+    async def test_quiet_usb_still_waits_for_the_real_game(self, usb_pairing, env, metrics):
+        """Idle game but a pairing on USB: wait. Quiet USB but a busy game: deferred. Both clear: restart."""
+        backend, _runner, _set_tree, _restart = env
+        busy = {"value": False}
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(side_effect=lambda: busy["value"])
+        now = {"t": 0.0}
+        usb_pairing.bluez_reloader._clock = lambda: now["t"]
+        mode, quiet = self._flags()
+
+        with mode, quiet:
+            serial = self.SERIALS[0]
+            await self._poll_at(usb_pairing, backend, now, 0, serial)  # paired, still plugged in
+            await self._poll_at(usb_pairing, backend, now, 10, serial)  # paired 10 s ago: holds the restart
+            assert self._restart_units() == []
+
+            busy["value"] = True
+            await self._poll_at(usb_pairing, backend, now, 40, None)  # unplugged, game started
+            await self._poll_at(usb_pairing, backend, now, 90, None)  # quiet, game running: deferred
+            assert self._restart_units() == []
+            assert usb_pairing.bluez_reloader.pending is True
+
+            busy["value"] = False
+            await self._poll_at(usb_pairing, backend, now, 100, None)  # game over: next idle poll restarts
+
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_a_paired_move_left_charging_does_not_hold_the_restart(self, usb_pairing, env, metrics):
+        """Move 1 stays on USB to charge while Move 2 is paired and unplugged: restart 20 s after Move 2."""
+        backend, _runner, _set_tree, _restart = env
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        now = {"t": 0.0}
+        usb_pairing.bluez_reloader._clock = lambda: now["t"]
+        charging, second = (UsbController(f"/dev/hidraw{s[-1]}".encode(), s, 0x03D5) for s in self.SERIALS[:2])
+
+        async def poll_at(t: float, *controllers: UsbController) -> None:
+            now["t"] = t
+            backend.get_usb_controllers.return_value = list(controllers)
+            await usb_pairing.poll()
+
+        mode, quiet = self._flags()
+        with mode, quiet:
+            await poll_at(0, charging)  # Move 1 paired, left on USB
+            await poll_at(10, charging, second)  # Move 2 paired next to it
+            await poll_at(20, charging)  # Move 2 unplugged; Move 1 charges on
+            await poll_at(29, charging)
+            assert self._restart_units() == []
+            await poll_at(30, charging)  # 20 s after Move 2 settled
+
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+        assert usb_pairing.bluez_reloader.pending is False
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_quiet_period_zero_restarts_at_the_end_of_the_pairing_poll(self, usb_pairing, env, metrics):
+        backend, _runner, _set_tree, _restart = env
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        mode, quiet = self._flags(quiet=0)
+        with mode, quiet:
+            await usb_pairing.poll()  # controller still on USB
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+
+
+class TestPairingLedCue2091(_PairingFlowEnv):
+    """#2091: the controller on USB shows the pairing state on its LED (UC-001 BR-010), fake device."""
+
+    SECOND = "00:06:F7:AA:BB:DD"
+    SECOND_PATH = b"/dev/hidraw9"
+
+    @pytest.fixture
+    async def device(self, usb_pairing):
+        from psmove_pairing.usb_led import _real_sleep
+
+        frames: dict[bytes, list] = {}
+
+        async def tick(_seconds):
+            await _real_sleep(0)
+
+        usb_pairing.led_cue = UsbLedCue(write=lambda path, rgb: frames.setdefault(path, []).append(rgb), sleep=tick)
+        yield frames
+        await usb_pairing.led_cue.close()
+
+    @pytest.mark.uc("UC-001", flow="main", steps=[2, 6], br=["BR-010"])
+    async def test_pulse_while_waiting_then_green_when_paired(self, usb_pairing, env, metrics, device):
+        """Both listed controllers pulse from the start of the poll; each flashes green once paired."""
+        backend, _runner, _set_tree, _restart = env
+        backend.get_usb_controllers.return_value = [
+            UsbController(FAKE_PATH_1, self.SERIAL, 0x03D5),
+            UsbController(self.SECOND_PATH, self.SECOND, 0x03D5),
+        ]
+        seen = []
+
+        async def pair(path, serial, adapter):
+            seen.append(dict(usb_pairing.led_cue.states))
+            return PairingResult(success=True)
+
+        backend.pair_controller.side_effect = pair
+        await usb_pairing.poll()
+
+        # While the first one pairs, both pulse (the second waits for its turn)
+        first, second = (FAKE_PATH_1, self.SERIAL), (self.SECOND_PATH, self.SECOND)
+        assert seen[0] == {first: "pairing", second: "pairing"}
+        assert seen[1][first] == "paired" and seen[1][second] == "pairing"
+        await asyncio.gather(*usb_pairing.led_cue._tasks.values())
+        for key in (first, second):
+            assert usb_pairing.led_cue.states[key] == "paired"
+            assert device[key[0]][-6:] == [GREEN, OFF] * 3
+
+        # Next poll: both verified (A1): no new cue; unplugged: the cues are gone
+        await usb_pairing.poll()
+        assert usb_pairing.led_cue.states == {first: "paired", second: "paired"}
+        backend.get_usb_controllers.return_value = []
+        await usb_pairing.poll()
+        assert usb_pairing.led_cue.states == {}
+
+    @pytest.mark.uc("UC-001", flow="main", br=["BR-010"], cond=["Post-F-1"])
+    async def test_failed_pairing_shows_red_and_the_retry_pulses(self, usb_pairing, env, metrics, device):
+        backend, _runner, _set_tree, _restart = env
+        backend.pair_controller.return_value = PairingResult(success=False)
+
+        await usb_pairing.poll()
+        assert usb_pairing.led_cue.states[(FAKE_PATH_1, self.SERIAL)] == "failed"
+        from psmove_pairing.usb_led import _real_sleep  # asyncio.sleep is patched in env
+
+        for _ in range(1000):
+            if RED in device.get(FAKE_PATH_1, []):
+                break
+            await _real_sleep(0.001)
+        assert RED in device[FAKE_PATH_1]
+        assert GREEN not in device[FAKE_PATH_1]
+
+        seen = []
+
+        async def pair(_path, _serial, _adapter):
+            seen.append(usb_pairing.led_cue.states[(FAKE_PATH_1, self.SERIAL)])
+            return PairingResult(success=True)
+
+        backend.pair_controller.side_effect = pair
+        await usb_pairing.poll()
+        assert seen == ["pairing"]
+        assert usb_pairing.led_cue.states[(FAKE_PATH_1, self.SERIAL)] == "paired"
+
+    @pytest.mark.uc("UC-001", flow="A8", br=["BR-008", "BR-010"])
+    async def test_unwritable_record_shows_red(self, usb_pairing, env, metrics, device):
+        """Product id not reported (A8): the pairing is kept, but the controller cannot connect: red."""
+        backend, _runner, _set_tree, _restart = env
+        backend.get_usb_controllers.return_value = [UsbController(FAKE_PATH_1, self.SERIAL, 0)]
+        await usb_pairing.poll()
+        assert usb_pairing.led_cue.states[(FAKE_PATH_1, self.SERIAL)] == "failed"
+        metrics["pairing_success_total"].inc.assert_called_once()

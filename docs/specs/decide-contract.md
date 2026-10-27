@@ -76,6 +76,8 @@ the digest and the Jev state. `shield_charged` is rendered as the narrative toke
 ` shield_charged=true` only when set, so a state without a charge keeps its digest. Danger reads the session threshold, so per-player factors and shields are not
 reflected. Entity: [DECIDE_PLAYER_STATE](../entity_model.md#decide_player_state).
 
+**Hold mode (planned, #2096; [UC-040](../use_cases/UC-040.md) A36, A37).** In a game whose `game_shield_activation_mode` gauge says `hold`, each alive player gets `shield_energy_s`, `shield_budget_remaining_s` and `shield_active`, and the state gets `shield_activation="hold"`, `shield_energy_max_s`, `shield_budget_s`, `shield_recharge_per_s` and `shield_min_burst_s`, all from the `game_player_shield_*` / `game_shield_*` gauges (telemetry.md §6), never from flagd, so experiment arms and latched promotions read right. `shield_charged` is not emitted in a hold game, and `shielded` means `shield_active`. Narrative token `shield_energy=2.4/5 budget=9.1`; digest fields only in a hold game, so instant and trigger digests (and `decision/testdata/rules_path_golden.json`) stay byte-identical. The values are up to one export interval old (about 3 s); pending ledger grants are added to the energy. The Jev and LLM wire carry the fields (`llmio`, `jev/criteria.go`).
+
 ## 2. The FFA question set
 
 `decide/ffa.go`. FFA is the only question set on `main`; other modes are not asked.
@@ -271,8 +273,14 @@ Order on landing (`services/agent/decision/decide_hook.go:Loop.runDecideRemote`,
 3. Answer path: cross-question check (`invalid`), `noop`, then confidence routing (`held` below the
    threshold). Only an answer that would act is then checked against the current context: missing →
    `discarded/stale_context`; game no longer active → `discarded/game_ended`; target absent or inactive →
-   `discarded/target_gone` (`decision/async_state.go`). A low-confidence answer after the game ended is
-   therefore `held`, not `discarded`.
+   `discarded/target_gone` (`decision/async_state.go`); the state the request was built on (the fire-time
+   `GameContext.UpdatedAt`) older than the live `decision.max_state_age_ms` when the answer landed →
+   `discarded/state_too_old` (#2123, `services/agent/decision/decide_hook.go:stateTooOld`; 0 disables it, an
+   unset `UpdatedAt` never discards). A low-confidence answer after the game ended is therefore `held`, not
+   `discarded`.
+
+Every remote `agent.decide` span that carries a `decide.discarded_reason` (steps 1 to 3, and the shutdown discard
+of §9) is also counted in `agent_decide_discarded_total{reason}` (#2123).
 
 ### 4.5 Permission chain (both paths)
 
@@ -284,6 +292,7 @@ Order on landing (`services/agent/decision/decide_hook.go:Loop.runDecideRemote`,
 4. The shield ledger (`decision/chargeledger.go` `reserveShield`; targeted `grant_shield` only). One per-game ledger by serial holds the trigger-mode charge (A31), the shield count and the end of the last shield (A33). One check returns exactly one of `already_charged`, `shield_cap_reached`, `shield_cooldown` or a reservation, in that order, so a refusal never leaves a reservation behind; the one reservation is kept only when the write is applied and is released by the caller's deferred finish on every other path (a rate-limit block, a gated write, a failed write). The check-only already-applied step (3) goes ahead of this step, so it cannot leak a reservation either.
    - `already_charged` (#1837 PR-4a; UC-040 A31 step 1): at most one agent charge per player per window, in trigger mode only. Trigger mode means `game.mode` is `FFA`, the game is real and `shield.activation` resolves to `trigger`, read per targeted `grant_shield` from the `game` set (`services/agent/flags/game.go:ShieldCharge`) with `gameId` and `game_kind=real`, no `targetingKey` and no `game_mode`. The coordinator's grant read carries the game's transaction context as well (UC-040 BR-018, #1970), but targeting on these flags may reference only `gameId` and `game_kind` (flags.md §4) and the agent reads them only for a real game, so both resolve the same value. A `grant_shield` whose target holds an entry in the loop's charge ledger is blocked before the rate limit: it charges no budget, writes nothing and measures no effect. The window is `min(shield.charge_expiry_seconds, 20 s)` (20 s when the expiry is 0) plus 2 s for the write to reach the coordinator, so at most 22 s. The check reserves the entry; it is kept only when the write is applied (`applied=true`) and released by a rate-limit block, a gated write (UC-040 A11) or a failed write (A27). Every entry, a reserved one too, ends with its window, so a lost release blocks at most 22 s. The first refusal per entry gets the full spans, the `agent.decision_blocked` warning and a timeline entry; repeats only count in `agent_decisions_total` and log `agent.decision_already_charged_repeat` at debug level (as the `rate_limit` repeats below). On the remote path an answer that lands for such a target is blocked the same way and `agent.decide` carries `decide.blocked` / `decide.block_reason=already_charged`. Fail open: any other mode, a shadow game, an unknown mode or an unreadable `game` set (not READY) means no block; an unreadable set logs `agent.shield_charge_mode_unreadable` at most once per 30 s. The ledger is the agent's own record (no shield-state gauge, in memory only, lost on an agent restart), so it also refuses a grant after the player activated, which the coordinator would accept (UC-040 A31, BR-020), by design. The coordinator stays authoritative. The ledger also feeds the decide state (`shield_charged`, §1.2) and the rules engine, which drops a `grant_shield` candidate to a `shield_charged` target before ranking (`applyChargePolicy`, like the battery policy; the rules path takes one ledger snapshot per ranking and hands the same snapshot to the state it builds). An activation, an expiry or a death does not shorten the window: it is a pacing rule (#1870).
    - `shield_cap_reached` and `shield_cooldown` (#2044; UC-040 A33, BR-022), in every mode and game kind, from the live `policy.max_shields_per_player_per_game` (default 3, 0 = unlimited) and `policy.shield_cooldown_seconds` (default 15, 0 = off) of the cycle's snapshot (a read error or a negative value gives the default; flags.md §3). The cap counts the player's written `grant_shield`s in this game plus the ones in flight, so concurrent cycles cannot both take the last slot. The cooldown refuses while now is before the last shield's end plus the cooldown; the end is write time + granted seconds (the decision's value, 5 when empty) + the same 2 s margin, in trigger mode too (the cooldown runs from the grant, BR-022). While a cooldown is set, a grant still in flight for the player also refuses `shield_cooldown`: it has no end yet. The count is an upper bound of the coordinator's (BR-022): it also counts a write the coordinator refused or kept. 0/0 refuses nothing (the zero `Policy` of a hand-built snapshot, so the rules golden is unchanged). Repeats are quiet as for `already_charged`: the first refusal per reason since the last reservation or write is emitted in full, later ones only count in `agent_decisions_total` and log `agent.decision_shield_cap_reached_repeat` / `agent.decision_shield_cooldown_repeat` at debug level. The rules engine's no-shield filter (`applyChargePolicy`) is fed with the charged players plus the capped and cooling-down ones (`Loop.ShieldSerials`, one snapshot per ranking), so R4 does not propose a refused shield; the decide state marks only the charged ones `shield_charged` (a `shield_limited` marker is a follow-up).
+   - Planned (#2096; UC-040 A37 step 1), in a hold game only, after the allow-list and battery and before the cap and cooldown: `already_charged` does not apply; `shield_budget_exhausted` when the player's budget remaining is below the minimum burst, then `shield_pool_full` when energy plus the seconds of grants in flight is at least the cap minus 0.5 s. Both are skipped for a player whose shield is active (the gauge over-reads a draining pool) and fail open when the gauges are missing. The mode for both ledgers comes from `game_shield_activation_mode`, not flagd. `applyChargePolicy` drops R4 candidates for such players, and `Loop.ShieldSerials` adds them to `noShield`.
 5. weighted per-game rate limit `policy.max_interventions_per_minute` → `rate_limit` (budget charged only on admit)
 
 Budget-aware admission (#1326, UC-040 A20/A21, BR-014/BR-015; `decision/budget.go`, `decision/ratelimit.go`):
@@ -362,12 +371,14 @@ reached the permission chain: outcome `act`, or `fallback` when the rules fallba
 So a rules decision blocked by the allow-list reads `outcome=act`, `decide.blocked=true`,
 `decide.block_reason=not_allowed`, with answers naming the blocked intervention and target. `already_applied` (§4.5 step 3, UC-040 A35) is not a refusal by a gate: the decided value is already in place, so nothing needed writing; it uses `blocked` so the closed outcome vocabulary stays as it is (`noop` keeps meaning "the backend chose noop").
 
-`decide.discarded_reason`: `stale_context`, `game_ended`, `target_gone`,
-`kill_switch`, `backend_changed`, `shutdown` (`services/agent/decision/telemetry.go:57-65`;
-`services/agent/decision/decide_hook.go:502-512`).
+`decide.discarded_reason`: `stale_context`, `game_ended`, `target_gone`, `state_too_old` (#2123),
+`kill_switch`, `backend_changed`, `shutdown` (`services/agent/decision/telemetry.go:DiscardStateTooOld`;
+`services/agent/decision/decide_hook.go:DecideDiscardBackendChanged`).
 
-Outcomes are recorded **only as span attributes**; no metric counts them (the
-dashboard Agent tab reads them from Jaeger, `services/dashboard/src/agent.ts:455-560`).
+Outcomes are recorded **only as span attributes** (the dashboard Agent tab reads them from Jaeger,
+`services/dashboard/src/agent.ts:455-560`). One exception: since #2123 every remote `agent.decide` record that carries
+a `decide.discarded_reason` is counted in `agent_decide_discarded_total{reason}`
+(`services/agent/decision/metrics.go:newDecideDiscardedCounter`), so dropped answers show without Jaeger.
 
 ## 7. Fallback reasons
 
@@ -404,7 +415,8 @@ in that cycle (#1350, `services/agent/decision/decision.go:OnEvaluate`, `service
 A decided cycle gets its `agent.decide` span every time, unthrottled.
 
 **Not fallbacks** (rules stay quiet that cycle, no decision): the per-game cadence
-gate (`decide_interval`, counted in `agent_llm_gated_total{reason}`), a remote
+gate (`decision.min_interval_ms` from the previous call's start and `decision.min_gap_after_answer_ms` from its end,
+#2123; both `decide_interval`, counted in `agent_llm_gated_total{reason}`), a remote
 call already in flight for that game (`services/agent/decision/decide_hook.go:decideRemote`), and an empty
 allow-list (`no_interventions_allowed`, §7.1).
 
@@ -426,6 +438,7 @@ empty ids and `noop` dropped), so the `none` variant (`""`) and the `probe` vari
 |---|---|
 | Remote call | none (no Jev / Claude / OpenAI request built or sent) |
 | Cadence `decision.min_interval_ms` | not charged (`lastDecideAttempt` unchanged) |
+| Gap `decision.min_gap_after_answer_ms` | not started (`lastDecideEnded` is set only when a call ends) |
 | Global budget `llm.max_requests_per_minute` | not charged |
 | Rules engine | not run: nothing it emits could pass the allow-list; not a fallback |
 | `agent.decide` span | none (the cycle runs at 10 to 60 Hz; a span per cycle would be noise) |
@@ -448,9 +461,11 @@ the kill switch `enabled` and the shared LLM budget (NFR-011).
 
 | Knob | Default | Scope | Source |
 |---|---|---|---|
-| `decision.claude.timeout_ms` | 5000 ms (variants fast 1500 / tight 2500 / default 5000 / patient 8000, PR #1257) | per call | `services/agent/flags/decision_backend.go:30,109-116,214` |
+| `decision.claude.timeout_ms` | 5000 ms (variants fast 1500 / tight 2500 / default 5000 / patient 8000, PR #1257); the talk stage baseline runs `patient` (#2123, `scripts/talk-baseline.json`) | per call | `services/agent/flags/decision_backend.go:30,109-116,214` |
 | `decision.openai.timeout_ms` / `decision.jev.timeout_ms` | 2500 ms (variants 1500 / 2500 / 5000) | per call | `services/agent/flags/decision_backend.go:33,37,219,226` |
-| `decision.min_interval_ms` | 3000 ms (1500 / 10000; 0 disables) | per game, from admission | `services/agent/flags/decision_backend.go:28,70-86,279-286` |
+| `decision.min_interval_ms` | 3000 ms (1500 / 10000; 0 disables) | per game, from admission (the previous call's start) | `services/agent/flags/decision_backend.go:DefaultDecisionMinIntervalMs`, `services/agent/decision/decide_hook.go:gateRemoteDecide` |
+| `decision.min_gap_after_answer_ms` (#2123) | 1000 ms (off 0 / slow 3000) | per game, from when the previous call returned (an answer, a timeout or a failure), before the live flag re-read and any action write; set while the call still holds the in-flight slot, and a later discard does not move it. A call is admitted only when both this gap and `decision.min_interval_ms` have passed | `services/agent/flags/decision_backend.go:DefaultDecisionMinGapAfterAnswerMs`, `services/agent/decision/decide_hook.go:noteDecideEnded` |
+| `decision.max_state_age_ms` (#2123) | 10000 ms (off 0 / tight 6000) | per answer that would act, read live at landing: older fire-time state → `discarded/state_too_old` (§4.4). The default sits above the longest timeout (`patient` 8000 ms) so it only drops answers built on a state that was already stale at fire time | `services/agent/flags/decision_backend.go:DefaultDecisionMaxStateAgeMs`, `services/agent/decision/decide_hook.go:stateTooOld` |
 | `llm.max_requests_per_minute` | 6 (conservative 3 / aggressive 12 / `stage` 30, PR #1257) | **global**, shared by in-game decisions, the retro and the proposer (PR #1284) | `services/agent/flags/flags.go:43`; `services/agent/decision/llmbudget.go:22-67` |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (env) | unset | read once at startup; a positive value is a ceiling: the cap is `min(env, flag)`, so a flag can only tighten it (#1788, C-034) | `services/agent/tuning.go:llmBudgetCeiling`, `services/agent/decision/llmbudget.go:ceilBudget` |
 | `llm.eligible_game_kinds` | `real` | which game kinds may call a remote backend; read by in-game decisions, the retro and the proposer | `services/agent/flags/flags.go:llmGate` |
@@ -463,7 +478,19 @@ the kill switch `enabled` and the shared LLM budget (NFR-011).
 where the LLM was a length-gated async upgrade
 (`expected_seconds = players × llm.seconds_per_player × llm.style_factor`). PR #1252 (the change for issue
 #1234, which removed the LiteLLM gateway and the legacy in-game LLM path) removed it from the code; none of
-those flags exist on `main`. There is no game-length admission gate **by design** (#1231): the cadence,
+those flags exist on `main`.
+
+**Budget fit at the stage baseline (#2123).** The stage keeps `decision.min_interval_ms` at its 3000 ms default
+and runs Claude with the `patient` timeout. One game asks at most once per `max(min_interval, call latency + gap)`,
+with the gap counted from when the answer lands: Jev (≈ 0.3 s answers, the main stage backend) every 3 s, about
+20 calls a minute; warm Claude (≈ 3 s) every 4 s, about 15; a Claude call that runs into the 8 s `patient`
+timeout every 9 s, about 6 to 7. Each fits the `stage` budget of 30 a minute with room for the post-game retro;
+a second concurrent remote game on Jev can reach it (`llm_budget_exhausted` → rules, never a stall). A shorter
+interval (the `fast` 1500 ms variant) would let Jev ask about 40 a minute, fill the budget during play and gate
+the retro, so the stage does not use it. The longer timeout only lowers demand: a call in flight holds the
+game's slot, so a slow answer is fewer calls, not more.
+
+There is no game-length admission gate **by design** (#1231): the cadence,
 the global budget and the per-game in-flight guard are the gates (`services/agent/decision/decide_hook.go:gateRemoteDecide`). The
 always-true `remoteDecideAdmitted` seam that stood in for the length gate was removed in the #1322 cleanup.
 
@@ -555,8 +582,8 @@ decisions fall back to rules (§7). Keep keys out of the tracked `.env`: export 
   `AGENT_EXPERIMENT_PROPOSER_ENABLED=true` AND `experiment_proposer_enabled` (FR-152 d, C-034); closed, it makes no
   model call and draws no budget slot.
 - **The budget is tight during a remote-decide session.** The window is a sliding 60 s shared by decisions, the
-  retro and the proposer. With a remote `decision.backend` and `decision.min_interval_ms` 3000 one game wants
-  about 20 calls a minute against the default cap of 6, so at game end the retro and proposer usually find it
+  retro and the proposer. With a remote `decision.backend`, `decision.min_interval_ms` 3000 and
+  `decision.min_gap_after_answer_ms` 1000 one game wants about 15 to 20 calls a minute against the default cap of 6, so at game end the retro and proposer usually find it
   full (`llm_budget_exhausted`). For retros or proposals in such a session use the `stage` cap
   (`llm.max_requests_per_minute` = 30) or `decision.backend=rules`.
 - **Shadow-only runs make no proposals** with the default `llm.eligible_game_kinds = real`. `real_and_shadow`

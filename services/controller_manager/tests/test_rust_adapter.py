@@ -3,10 +3,13 @@
 import queue
 from unittest.mock import MagicMock
 
+import grpc
 import pytest
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
+from services.controller_manager.multiplexer.adapter import DiscoveryFailedError
 from services.controller_manager.multiplexer.rust_adapter import (
+    RPC_TIMEOUT_S,
     RustServiceAdapter,
     _sensor_data_to_dict,
 )
@@ -79,16 +82,16 @@ class TestDiscover:
         call_args = adapter._stub.Discover.call_args[0][0]
         assert call_args.verify_only is True
 
-    def test_discover_rpc_error_returns_empty(self):
+    def test_discover_rpc_error_raises_discovery_failed(self):
+        """A failed Discover is not "no controllers" (UC-002 A1, #2125)."""
         import grpc
 
         adapter = _make_adapter()
         adapter._stub.Discover.side_effect = grpc.RpcError()
         adapter._stream_running = True
 
-        serials = adapter.discover()
-
-        assert serials == []
+        with pytest.raises(DiscoveryFailedError):
+            adapter.discover()
 
 
 class TestGetAdapterForSerial:
@@ -357,6 +360,42 @@ class TestStreamReconnection:
         # Should not have changed the thread
         assert adapter._stream_thread is old_thread
 
+    @pytest.mark.uc("UC-002", flow="A7")
+    def test_stream_reopens_and_rediscovers_after_rust_hid_restart(self):
+        """A7 step 2: StreamIO ends when rust-hid exits; the next discover() reopens it."""
+        import threading
+
+        import grpc
+
+        adapter = _make_adapter()
+        stream_calls = []
+        second_stream_open = threading.Event()
+
+        def stream_io(_command_iterator):
+            stream_calls.append(1)
+            if len(stream_calls) == 1:
+                raise grpc.RpcError()  # rust-hid exited (watchdog, code 70)
+            second_stream_open.set()
+            return iter(())
+
+        adapter._stub.StreamIO.side_effect = stream_io
+        adapter._stub.Discover.return_value = MagicMock(controllers=[])
+
+        adapter._ensure_stream()
+        adapter._stream_thread.join(timeout=2.0)
+        assert adapter._stream_running is False  # the first stream ended
+
+        # Discovery pass after the restart: no controllers yet (A1), stream reopened
+        assert adapter.discover(force=True) == []
+        assert second_stream_open.wait(timeout=2.0)
+        assert len(stream_calls) == 2
+
+        # Controllers reappear once rust-hid has re-enumerated them (A4)
+        ctrl = MagicMock(serial="AABBCCDDEEFF", adapter_name="hci0", product_id=0x03D5)
+        adapter._stub.Discover.return_value = MagicMock(controllers=[ctrl])
+        adapter._stream_thread.join(timeout=2.0)
+        assert adapter.discover(force=True) == ["AABBCCDDEEFF"]
+
 
 class TestSensorDataConversion:
     """Tests for _sensor_data_to_dict proto -> dict conversion."""
@@ -404,3 +443,44 @@ class TestSensorDataConversion:
         assert result[StateKey.GYRO][AxisKey.X] == pytest.approx(10.0)
         assert result[StateKey.GYRO][AxisKey.Y] == pytest.approx(-5.0)
         assert result[StateKey.GYRO][AxisKey.Z] == pytest.approx(0.0)
+
+
+@pytest.mark.uc("UC-002", flow="main", steps=[3])
+class TestUnaryCallsCarryADeadline:
+    """A wedged rust-hid must not freeze the controller manager (#2125)."""
+
+    def test_every_unary_call_has_the_deadline(self):
+        adapter = _make_adapter()
+        adapter._stream_running = True  # Skip stream start
+        adapter._stub.Discover.return_value.controllers = []
+        adapter._stub.Open.return_value.success = True
+
+        adapter.discover()
+        adapter.open("AABBCCDDEEFF")
+        adapter.close("AABBCCDDEEFF")
+        adapter.close_all()
+
+        for rpc in (adapter._stub.Discover, adapter._stub.Open, adapter._stub.Close, adapter._stub.CloseAll):
+            assert rpc.call_args.kwargs.get("timeout") == RPC_TIMEOUT_S, rpc
+
+    @pytest.mark.uc("UC-002", flow="A1")
+    def test_a_timed_out_discover_is_a_failed_pass_not_an_empty_one(self):
+        adapter = _make_adapter()
+        adapter._stream_running = True
+        err = grpc.RpcError()
+        err.code = lambda: grpc.StatusCode.DEADLINE_EXCEEDED
+        adapter._stub.Discover.side_effect = err
+
+        with pytest.raises(DiscoveryFailedError):
+            adapter.discover()
+
+    def test_stream_io_has_no_deadline(self):
+        """The long-lived StreamIO stream must not inherit the unary deadline."""
+        adapter = _make_adapter()
+        adapter._stub.StreamIO.return_value = iter([])
+        adapter._stream_running = True
+
+        adapter._stream_loop()
+
+        adapter._stub.StreamIO.assert_called_once()
+        assert "timeout" not in adapter._stub.StreamIO.call_args.kwargs

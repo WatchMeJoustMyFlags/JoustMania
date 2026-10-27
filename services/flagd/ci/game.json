@@ -123,6 +123,52 @@
       },
       "defaultVariant": "default"
     },
+    "shield.energy_max_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "small": 3,
+        "default": 5,
+        "large": 8
+      },
+      "defaultVariant": "default"
+    },
+    "shield.energy_budget_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "tight": 10,
+        "default": 15,
+        "loose": 20
+      },
+      "defaultVariant": "default"
+    },
+    "shield.energy_initial_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "empty": 0,
+        "some": 2,
+        "full": 5
+      },
+      "defaultVariant": "empty"
+    },
+    "shield.recharge_per_second": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "slow": 0.1,
+        "medium": 0.25,
+        "fast": 0.5
+      },
+      "defaultVariant": "off"
+    },
+    "shield.min_burst_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 0.2,
+        "default": 0.3,
+        "long": 0.5
+      },
+      "defaultVariant": "default"
+    },
     "sensitivity": {
       "state": "ENABLED",
       "variants": {

@@ -110,13 +110,14 @@ class TestRustAdapterWiring:
         adapter = RustServiceAdapter()
         assert isinstance(adapter, ControllerIOAdapter)
 
-    def test_rust_adapter_discover_returns_empty_without_service(self):
-        """RustServiceAdapter.discover() returns empty list when service unavailable."""
+    def test_rust_adapter_discover_fails_without_service(self):
+        """RustServiceAdapter.discover() raises DiscoveryFailedError when the service is unavailable."""
+        from services.controller_manager.multiplexer.adapter import DiscoveryFailedError
         from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
 
         adapter = RustServiceAdapter()
-        result = adapter.discover()
-        assert result == []
+        with pytest.raises(DiscoveryFailedError):
+            adapter.discover()
 
     def test_rust_adapter_interface_methods_exist(self):
         """RustServiceAdapter has all required ControllerIOAdapter methods."""

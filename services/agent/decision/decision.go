@@ -218,6 +218,12 @@ type Loop struct {
 	// lastDecideAttempt is the time this game's most recent remote decide call was
 	// admitted (#1226): the decision.min_interval_ms cadence clock.
 	lastDecideAttempt time.Time
+	// lastDecideEnded is the time this game's most recent remote decide call
+	// returned (answer, timeout or failure), set by noteDecideEnded while the call
+	// still holds the in-flight slot, before the flag re-read and any action
+	// write; a later discard does not move it (#2123): the
+	// decision.min_gap_after_answer_ms clock.
+	lastDecideEnded time.Time
 	// skippingNoInterventions is true while this game's remote decide cycles are
 	// gated because the allow-list is empty (#1298). Guarded by llmGate; it only
 	// drives the log-on-state-change debug line.
@@ -244,6 +250,10 @@ type Loop struct {
 	// llmGated counts gated remote decide cycles (agent_llm_gated_total{reason=...}). Defaults
 	// to a no-op so a Loop built without metrics wiring still works.
 	llmGated otelmetric.Int64Counter
+	// decideDiscarded counts remote agent.decide records that carry a
+	// decide.discarded_reason (agent_decide_discarded_total{reason}, #2123).
+	// Defaults to the global meter provider's counter.
+	decideDiscarded otelmetric.Int64Counter
 
 	// evaluations counts EVERY eval cycle (agent_evaluations_total{signal,outcome},
 	// #1053), so signal arrival is observable even on idle cycles where no rule fires
@@ -354,6 +364,7 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 		now:                  time.Now,
 		throttle:             DefaultThrottleInterval,
 		llmGated:             defaultLLMGatedCounter(),
+		decideDiscarded:      defaultDecideDiscardedCounter(),
 		evaluations:          defaultEvaluationsCounter(),
 		decisions:            defaultDecisionsCounter(),
 		interventionsApplied: defaultInterventionsAppliedCounter(),

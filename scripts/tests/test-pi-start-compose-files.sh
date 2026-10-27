@@ -135,7 +135,7 @@ elif [[ "\$1" == compose && " \$* " == *" ps "*"{{.Service}}"* ]]; then
 fi
 exit 0
 STUB
-  printf '#!/usr/bin/env bash\nexit 1\n' >"${case_dir}/bin/git"     # no readable checkout: not pinned
+  printf '#!/usr/bin/env bash\ncase " $* " in *" symbolic-ref "*) exit 1 ;; *" rev-parse "*) echo 0123456789abcdef0123456789abcdef01234567 ;; *) exit 1 ;; esac\n' >"${case_dir}/bin/git" # detached HEAD at a sha: pinned (UC-060 A4)
   printf '#!/usr/bin/env bash\nexit 0\n' >"${case_dir}/bin/amixer"
   chmod +x "${case_dir}/bin/"*
   PATH="${case_dir}/bin:${PATH}" JOUSTMANIA_DOCKER_WAIT_S=1 JOUSTMANIA_GAME_READY_S=1 JOUSTMANIA_STATUS_DIR="${case_dir}/status" COMPOSE_PROFILES= \

@@ -7,6 +7,8 @@
 #  - a game image missing: FAIL naming it, the exact joustmania-upgrade.sh
 #    command, exit 2
 #  - an observability service exited: WARN, `state: degraded`, exit 1
+#  - a game service running but unhealthy (rust-hid wedged, #2125): FAIL with
+#    `docker restart <container>`, exit 2; an unhealthy observability service: WARN
 #  - the clock not NTP synchronised: INFO only (no RTC, accepted), `state: ok`
 #  - docker not reachable: FAIL "not reachable", no image reported missing
 #  - the unit still activating, a game service not running yet: `state: starting`, exit 1
@@ -14,10 +16,13 @@
 #  - no env value is printed
 #  - the ACT LED line (C-042): the recorded state and the live trigger; a stale
 #    installed helper is named
+#  - git cannot read the checkout: WARN naming that (not a branch), degraded (A4)
+#  - a start refused on a branch checkout (A4): the reason from start.env is
+#    shown on the last-start line, exit 2
 #  - --led (ExecStartPost, #2027 PR 4): the unit still activating counts as
 #    started, the state (never `starting`) is written to led.request
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-status.sh
-# UC: UC-060 BR-005 A1 A4 A5 BR-006
+# UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -32,11 +37,12 @@ fail() {
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
-SERVICES="flagd game-coordinator menu jaeger"
+SERVICES="flagd rust-hid game-coordinator menu jaeger"
 SECRET="dummy-secret-status-2027"
 
 # make_case <name>: ${WORK}/<name>/{repo,bin}; sets CASE
-#   $CASE/missing: images not on the Pi; $CASE/exited: services not running
+#   $CASE/missing: images not on the Pi; $CASE/exited: services not running;
+#   $CASE/unhealthy: services running but unhealthy
 #   $CASE/active, $CASE/result: the unit's ActiveState / Result; $CASE/ntp
 make_case() {
   CASE="${WORK}/$1"
@@ -51,6 +57,7 @@ make_case() {
   git -C "${CASE}/repo" checkout -q --detach
   : >"${CASE}/missing"
   : >"${CASE}/exited"
+  : >"${CASE}/unhealthy"
   echo active >"${CASE}/active"
   echo success >"${CASE}/result"
   echo yes >"${CASE}/ntp"
@@ -66,7 +73,9 @@ case " \$* " in
     exit 0 ;;
   *" compose "*" ps "*)
     for s in ${SERVICES}; do
-      if grep -qxF "\$s" "\$C/exited"; then echo "\$s|exited|"; else echo "\$s|running|healthy"; fi
+      if grep -qxF "\$s" "\$C/exited"; then echo "\$s|exited||joustmania-\$s"
+      elif grep -qxF "\$s" "\$C/unhealthy"; then echo "\$s|running|unhealthy|joustmania-\$s"
+      else echo "\$s|running|healthy|joustmania-\$s"; fi
     done; exit 0 ;;
   " image inspect "*) grep -qxF "\$3" "\$C/missing" && exit 1; exit 0 ;;
 esac
@@ -136,6 +145,20 @@ make_case obs-down
 echo jaeger >"${CASE}/exited"
 expect obs-down 1 degraded
 grep -qx 'WARN service jaeger: exited' "${CASE}/out.log" || fail "obs-down: jaeger not reported"
+
+# --- a game service running but unhealthy: FAIL with the restart (#2125) ----
+make_case unhealthy
+echo rust-hid >"${CASE}/unhealthy"
+expect unhealthy 2 failed
+grep -qx 'FAIL service rust-hid: running (unhealthy); recover with: docker restart joustmania-rust-hid' "${CASE}/out.log" \
+  || fail "unhealthy: rust-hid not FAIL with its restart command: $(grep rust-hid "${CASE}/out.log")"
+
+# --- an observability service unhealthy: degraded, with the restart ---------
+make_case obs-unhealthy
+echo jaeger >"${CASE}/unhealthy"
+expect obs-unhealthy 1 degraded
+grep -qx 'WARN service jaeger: running (unhealthy); recover with: docker restart joustmania-jaeger' "${CASE}/out.log" \
+  || fail "obs-unhealthy: jaeger not WARN with its restart command: $(grep jaeger "${CASE}/out.log")"
 
 # --- clock not synchronised -------------------------------------------------
 make_case clock
@@ -214,6 +237,26 @@ expect led-failed 2 failed --led
 
 make_case led-usage
 run_status --bogus && fail "led-usage: an unknown argument exits 0"
+
+# --- a start refused on a branch checkout (A4): failed, the reason shown -----
+make_case branch-refused
+git -C "${CASE}/repo" checkout -q -b main
+echo failed >"${CASE}/active"
+echo exit-code >"${CASE}/result"
+printf 'phase=start\nresult=failed\nreason=not pinned (branch main); pin with scripts/setup/joustmania-upgrade.sh\nmissing=\ndown=\nts=2026-10-26T10:00:00+01:00\n' >"${CASE}/status/start.env"
+expect branch-refused 2 failed
+grep -q '^WARN version: not pinned (branch main' "${CASE}/out.log" || fail "branch-refused: the branch is not named"
+grep -q '^INFO last start: result=failed reason=not pinned (branch main); pin with scripts/setup/joustmania-upgrade.sh ts=' "${CASE}/out.log" \
+  || fail "branch-refused: the refusal reason is not shown: $(grep 'last start' "${CASE}/out.log")"
+
+# --- git cannot read the checkout: named as such, not as a branch (A4) -------
+make_case git-unreadable
+printf '#!/usr/bin/env bash\necho "fatal: not a git repository" >&2\nexit 128\n' >"${CASE}/bin/git"
+chmod +x "${CASE}/bin/git"
+expect git-unreadable 1 degraded
+grep -qx "WARN version: git cannot read the checkout (check: git -C ${CASE}/repo status)" "${CASE}/out.log" \
+  || fail "git-unreadable: not reported as unreadable: $(grep version "${CASE}/out.log")"
+grep -q 'not pinned (branch' "${CASE}/out.log" && fail "git-unreadable: reported as a branch checkout"
 
 if [[ "${fails}" -ne 0 ]]; then
   exit 1

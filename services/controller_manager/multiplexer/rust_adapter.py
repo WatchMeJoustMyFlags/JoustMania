@@ -19,9 +19,15 @@ import threading
 import grpc
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_serial
-from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
+from services.controller_manager.multiplexer.adapter import ControllerIOAdapter, DiscoveryFailedError
 
 logger = logging.getLogger(__name__)
+
+# Deadline of every unary rust-hid call (Discover, Open, Close, CloseAll; #2125).
+# Without it a wedged rust-hid froze discovery for as long as it was wedged. A
+# failed or timed-out Discover raises DiscoveryFailedError (not "no controllers");
+# a failed Open returns False.
+RPC_TIMEOUT_S = 5.0
 
 
 class RustServiceAdapter(ControllerIOAdapter):
@@ -140,7 +146,8 @@ class RustServiceAdapter(ControllerIOAdapter):
                     force=force,
                     verify_only=verify_only,
                     exclude_serials=exclude_serials or [],
-                )
+                ),
+                timeout=RPC_TIMEOUT_S,
             )
             serials = []
             for c in response.controllers:
@@ -153,7 +160,7 @@ class RustServiceAdapter(ControllerIOAdapter):
             return serials
         except grpc.RpcError as e:
             logger.warning(f"Discover RPC failed: {e}")
-            return []
+            raise DiscoveryFailedError(str(e)) from e
 
     def get_adapter_for_serial(self, serial: str) -> str | None:
         return self._adapter_names.get(serial) or None
@@ -166,7 +173,7 @@ class RustServiceAdapter(ControllerIOAdapter):
         self._ensure_stream()
 
         try:
-            response = self._stub.Open(psmove_hid_pb2.OpenRequest(serial=serial))
+            response = self._stub.Open(psmove_hid_pb2.OpenRequest(serial=serial), timeout=RPC_TIMEOUT_S)
             return response.success
         except grpc.RpcError as e:
             logger.warning(f"Open RPC failed for {serial}: {e}")
@@ -225,7 +232,7 @@ class RustServiceAdapter(ControllerIOAdapter):
         self._adapter_names.pop(serial, None)
 
         try:
-            self._stub.Close(psmove_hid_pb2.CloseRequest(serial=serial))
+            self._stub.Close(psmove_hid_pb2.CloseRequest(serial=serial), timeout=RPC_TIMEOUT_S)
         except grpc.RpcError as e:
             logger.warning(f"Close RPC failed for {serial}: {e}")
 
@@ -246,7 +253,7 @@ class RustServiceAdapter(ControllerIOAdapter):
         self._adapter_names.clear()
 
         try:
-            self._stub.CloseAll(psmove_hid_pb2.CloseAllRequest())
+            self._stub.CloseAll(psmove_hid_pb2.CloseAllRequest(), timeout=RPC_TIMEOUT_S)
         except grpc.RpcError as e:
             logger.warning(f"CloseAll RPC failed: {e}")
 
