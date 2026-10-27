@@ -238,6 +238,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             speed=cmd.speed,
             trace_parent=cmd.trace_parent,
             trace_state=cmd.trace_state,
+            shield_hold=cmd.shield_hold if cmd.HasField("shield_hold") else None,
         )
 
         effect_name = controller_manager_pb2.GameEffect.Name(cmd.effect)

@@ -61,7 +61,8 @@
       "state": "ENABLED",
       "variants": {
         "instant": "instant",
-        "trigger": "trigger"
+        "trigger": "trigger",
+        "hold": "hold"
       },
       "defaultVariant": "trigger"
     },
@@ -164,6 +165,24 @@
         "short": 0.2,
         "default": 0.3,
         "long": 0.5
+      },
+      "defaultVariant": "default"
+    },
+    "shield.hold_rumble_intensity": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "light": 70,
+        "medium": 100
+      },
+      "defaultVariant": "light"
+    },
+    "shield.empty_pulse_ms": {
+      "state": "ENABLED",
+      "variants": {
+        "short": 250,
+        "default": 400,
+        "long": 600
       },
       "defaultVariant": "default"
     },

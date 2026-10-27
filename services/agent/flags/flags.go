@@ -747,7 +747,12 @@ type Flags struct {
 	// defaults, never a read through client.
 	game     Evaluator
 	gameWarn gameReadWarn
-	log      *slog.Logger
+	// gameModes keeps the first shield.activation read per game, so a `hold` read
+	// follows the coordinator's per-game latch (UC-040 A31, BR-027, #2096).
+	gameModes gameModeLatch
+	// now is the clock of gameModes; nil means time.Now (tests inject one).
+	now func() time.Time
+	log *slog.Logger
 }
 
 // New builds a Flags wrapper over the given evaluator. log may be nil, in which
