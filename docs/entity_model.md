@@ -395,7 +395,7 @@ A bounded in-game change written for one game to the `interventions` flag set th
 | weight | Rate-limit weight class | String | 6 | Not Null, Values: soft, medium, hard |
 | target_serial | Player targeted (player-scoped types) | String | 17 | Optional, Foreign Key (PLAYER.serial) |
 | value | Resolved magnitude or payload | String | 60 | Optional |
-| blocked_by_coordinator | Coordinator block reason (`block_reason` on `game_intervention_*` metrics and the `agent_intervention` event). `game_loop_late` is recorded as a reason but is not a block: the effect had started and may still apply | String | 21 | Optional, Values: not_allowed, rate_limited, low_battery, mode_unsupported, already_charged, shield_cap_reached, shield_cooldown, shield_pool_full, shield_budget_exhausted, revive_refused, eliminate_refused, experiment_override, handler_error, game_loop_unavailable, game_loop_timeout, game_loop_late |
+| blocked_by_coordinator | Coordinator block reason (`block_reason` on `game_intervention_*` metrics and the `agent_intervention` event). `game_loop_late` is recorded as a reason but is not a block: the effect had started and may still apply | String | 23 | Optional, Values: not_allowed, rate_limited, low_battery, mode_unsupported, already_charged, shield_cap_reached, shield_cooldown, shield_pool_full, shield_budget_exhausted, revive_refused, eliminate_refused, experiment_override, handler_error, game_loop_unavailable, game_loop_timeout, game_loop_late |
 
 **Constraints:**
 - The type must be in the live `interventions_allowed` list (checked by the agent and again by the coordinator); writes happen only while `interventions_enabled` is on.
