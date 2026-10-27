@@ -127,10 +127,12 @@ async def test_uc015_two_of_four_ready_after_a_menu_restart_does_not_auto_start(
     started = await menu_client.StartMenu(menu_pb2.StartMenuRequest())
     assert started.success, f"StartMenu failed: {started.error}"
 
-    assert await _wait_connected(menu_client, CONTROLLERS), "the menu does not know all four controllers"
+    # Not fatal: under #2175 the menu knows fewer than four controllers, which the asserts below report.
+    await _wait_connected(menu_client, CONTROLLERS, timeout=3.0)
     await mark_controllers_ready(mock_client, serials[:2])
     await asyncio.sleep(SETTLE_SECONDS)
 
     status = await _status(menu_client)
+    assert status.connected_count == CONTROLLERS
     assert status.ready_count == 2
     assert not status.lifecycle_live
