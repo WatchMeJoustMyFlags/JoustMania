@@ -51,13 +51,13 @@ class TestPlaySound:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-031", flow="main", steps=[4])
     async def test_play_sound_voice_selection(self, servicer, mock_grpc_context):
-        servicer.menu_voice = "aaron"
+        servicer.menu_voice = "gen_male"
         servicer.audio_manager.play_sound = MagicMock(return_value=True)
         request = audio_pb2.PlaySoundRequest(file_path="congratulations", volume=1.0, priority=2)
         await servicer.PlaySound(request, mock_grpc_context)
         call_args = servicer.audio_manager.play_sound.call_args
         resolved_path = call_args.kwargs.get("file_path", call_args[0][0] if call_args[0] else "")
-        assert "aaron" in resolved_path
+        assert "gen_male" in resolved_path
 
     @pytest.mark.asyncio
     async def test_play_sound_respects_audio_disabled(self, mock_grpc_context):
@@ -139,7 +139,7 @@ class TestPlaySoundDuration:
             )
         assert response.duration_seconds == 0.0
         with patch("services.audio.servicer.miniaudio.get_file_info", side_effect=OSError("bad header")):
-            assert servicer.audio_manager.sound_duration("Menu/vox/ivy/FFA-instructions.ogg") == 0.0
+            assert servicer.audio_manager.sound_duration("Menu/vox/gen_female/FFA-instructions.ogg") == 0.0
 
 
 class TestPlayMusic:
@@ -258,12 +258,12 @@ class TestSoundPathResolution:
         return mock_audio_servicer
 
     def test_resolve_simple_vox_name(self, servicer):
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         # "congratulations" should be in registry as vox
         if "congratulations" in servicer.sound_registry:
             path = servicer._resolve_sound_path("congratulations")
             assert "vox" in path
-            assert "ivy" in path
+            assert "gen_female" in path
             assert path.endswith("congratulations.ogg")
 
     def test_resolve_sfx_name(self, servicer):
@@ -275,19 +275,19 @@ class TestSoundPathResolution:
             assert "vox" not in path
 
     def test_resolve_path_with_vox_inserts_voice(self, servicer):
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         path = servicer._resolve_sound_path("Joust/vox/congratulations.ogg")
-        assert "ivy" in path
+        assert "gen_female" in path
 
     def test_resolve_path_with_voice_already_present(self, servicer):
-        path = servicer._resolve_sound_path("Joust/vox/aaron/congratulations.ogg")
-        assert path == "Joust/vox/aaron/congratulations.ogg"
+        path = servicer._resolve_sound_path("Joust/vox/gen_male/congratulations.ogg")
+        assert path == "Joust/vox/gen_male/congratulations.ogg"
 
     def test_resolve_unknown_sound_falls_back(self, servicer):
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         path = servicer._resolve_sound_path("nonexistent_sound_xyz")
         assert "vox" in path
-        assert "ivy" in path
+        assert "gen_female" in path
 
 
 class TestResolvePath:
@@ -320,7 +320,7 @@ class TestOnFlagsChanged:
         servicer.audio_manager.stop_music = MagicMock(return_value=True)
         mock_client = MagicMock()
         mock_client.get_boolean_value.return_value = False
-        mock_client.get_string_value.return_value = "ivy"
+        mock_client.get_string_value.return_value = "gen_female"
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             servicer._on_flags_changed(None)
@@ -335,7 +335,7 @@ class TestOnFlagsChanged:
         assert servicer.audio_manager.silent is True
         mock_client = MagicMock()
         mock_client.get_boolean_value.return_value = True
-        mock_client.get_string_value.return_value = "ivy"
+        mock_client.get_string_value.return_value = "gen_female"
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
@@ -349,19 +349,19 @@ class TestOnFlagsChanged:
 
     @pytest.mark.uc("UC-031", flow="A4")
     def test_changes_menu_voice(self, servicer):
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         mock_client = MagicMock()
         mock_client.get_boolean_value.return_value = True
-        mock_client.get_string_value.return_value = "aaron"
+        mock_client.get_string_value.return_value = "gen_male"
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             servicer._on_flags_changed(None)
 
-        assert servicer.menu_voice == "aaron"
+        assert servicer.menu_voice == "gen_male"
 
     @pytest.mark.uc("UC-031", flow="A4")
     def test_rejects_invalid_voice(self, servicer):
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         mock_client = MagicMock()
         mock_client.get_boolean_value.return_value = True
         mock_client.get_string_value.return_value = "invalid_voice"
@@ -369,7 +369,7 @@ class TestOnFlagsChanged:
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             servicer._on_flags_changed(None)
 
-        assert servicer.menu_voice == "ivy"
+        assert servicer.menu_voice == "gen_female"
 
     def test_handles_flagd_failure_gracefully(self, servicer):
         servicer.audio_enabled = True
@@ -386,7 +386,7 @@ class TestOnFlagsChanged:
         servicer.audio_manager.stop_music = MagicMock()
         mock_client = MagicMock()
         mock_client.get_boolean_value.return_value = False
-        mock_client.get_string_value.return_value = "ivy"
+        mock_client.get_string_value.return_value = "gen_female"
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
             servicer._on_flags_changed(None)
@@ -419,13 +419,13 @@ class TestSoundRegistry:
         assert servicer._resolve_vox_path(path) == path
 
     def test_resolve_vox_path_inserts_voice(self, servicer):
-        servicer.menu_voice = "aaron"
+        servicer.menu_voice = "gen_male"
         result = servicer._resolve_vox_path("Joust/vox/hello.ogg")
-        assert result == "Joust/vox/aaron/hello.ogg"
+        assert result == "Joust/vox/gen_male/hello.ogg"
 
     def test_resolve_vox_path_preserves_existing_voice(self, servicer):
-        result = servicer._resolve_vox_path("Joust/vox/ivy/hello.ogg")
-        assert result == "Joust/vox/ivy/hello.ogg"
+        result = servicer._resolve_vox_path("Joust/vox/gen_female/hello.ogg")
+        assert result == "Joust/vox/gen_female/hello.ogg"
 
 
 class TestAudioManagerFindChannel:
@@ -656,29 +656,30 @@ class TestVoiceProfileSelection:
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
     @pytest.mark.parametrize("voice", ["gen_male", "gen_female"])
     def test_accepts_generated_profiles(self, servicer, voice):
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         self._flag_event(servicer, voice)
         assert servicer.menu_voice == voice
         assert servicer._resolve_sound_path("high") == f"Menu/vox/{voice}/high.ogg"
 
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
     def test_flag_change_rebuilds_the_partner_table(self, servicer):
-        """ivy plays the generated label from gen_female; after a switch to aaron it plays from gen_male."""
-        servicer.menu_voice = "ivy"
+        """gen_female plays the label from its own files; after a switch to gen_male, from gen_male's."""
+        servicer.menu_voice = "gen_female"
         assert servicer._resolve_sound_path("label_sensitivity") == "Menu/vox/gen_female/label_sensitivity.ogg"
-        self._flag_event(servicer, "aaron")
+        self._flag_event(servicer, "gen_male")
         assert servicer._resolve_sound_path("label_sensitivity") == "Menu/vox/gen_male/label_sensitivity.ogg"
-        assert servicer._resolve_sound_path("high") == "Menu/vox/aaron/high.ogg"
+        assert servicer._resolve_sound_path("high") == "Menu/vox/gen_male/high.ogg"
 
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
     def test_unknown_voice_keeps_the_current_one_and_its_table(self, servicer):
         self._flag_event(servicer, "gen_male")
         self._flag_event(servicer, "robot")
         assert servicer.menu_voice == "gen_male"
-        assert servicer._resolve_sound_path("zombie_death") == "Zombie/vox/aaron/zombie_death.ogg"
+        assert servicer._resolve_sound_path("high") == "Menu/vox/gen_male/high.ogg"
+        assert servicer._resolve_sound_path("zombie_death") == "Zombie/sounds/zombie_death.ogg"
 
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
-    def test_unknown_voice_at_start_gives_ivy(self):
+    def test_unknown_voice_at_start_gives_gen_female(self):
         from services.audio.servicer import AudioServiceServicer
 
         client = MagicMock()
@@ -689,11 +690,11 @@ class TestVoiceProfileSelection:
             patch("lib.feature_flags.init_flag_domain"),
         ):
             servicer = AudioServiceServicer()
-        assert servicer.menu_voice == "ivy"
+        assert servicer.menu_voice == "gen_female"
 
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
     def test_path_naming_a_generated_profile_is_used_as_is(self, servicer):
-        servicer.menu_voice = "ivy"
+        servicer.menu_voice = "gen_female"
         assert servicer._resolve_sound_path("Menu/vox/gen_male/high.ogg") == "Menu/vox/gen_male/high.ogg"
 
 
@@ -705,13 +706,18 @@ class TestVoiceFollowUps2164:
         return mock_audio_servicer
 
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
-    def test_vox_path_without_voice_falls_back_to_the_partner(self, servicer):
-        """aaron has no Fightclub-instructions: the path form plays gen_male, as the plain id does."""
-        servicer.menu_voice = "aaron"
+    def test_vox_path_without_voice_falls_back_to_the_partner(self, tmp_path, servicer):
+        """A line gen_male lacks plays from gen_female, in the path form as in the plain id."""
+        (tmp_path / "Menu/vox/gen_female").mkdir(parents=True)
+        (tmp_path / "Menu/vox/gen_female/Fightclub-instructions.ogg").write_bytes(b"x")
+        servicer.audio_manager.assets_dir = str(tmp_path)
+        servicer.menu_voice = "gen_male"
         assert servicer._resolve_vox_path("Menu/vox/Fightclub-instructions.ogg") == (
-            "Menu/vox/gen_male/Fightclub-instructions.ogg"
+            "Menu/vox/gen_female/Fightclub-instructions.ogg"
         )
-        assert servicer._resolve_sound_path("Fightclub-instructions") == "Menu/vox/gen_male/Fightclub-instructions.ogg"
+        assert (
+            servicer._resolve_sound_path("Fightclub-instructions") == "Menu/vox/gen_female/Fightclub-instructions.ogg"
+        )
 
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
     def test_registry_is_the_shared_catalog_scan(self, servicer):
@@ -737,9 +743,11 @@ class TestVoiceFollowUps2164:
     def test_partner_existence_is_checked_under_audio_assets_dir(self, tmp_path, servicer):
         """With AUDIO_ASSETS_DIR lacking the partner's file, the selected voice's path stays."""
         servicer.audio_manager.assets_dir = str(tmp_path)
-        servicer.menu_voice = "aaron"
-        assert servicer._resolve_sound_path("Fightclub-instructions") == "Menu/vox/aaron/Fightclub-instructions.ogg"
-        (tmp_path / "Menu/vox/gen_male").mkdir(parents=True)
-        (tmp_path / "Menu/vox/gen_male/Fightclub-instructions.ogg").write_bytes(b"x")
-        servicer.menu_voice = "aaron"
+        servicer.menu_voice = "gen_male"
         assert servicer._resolve_sound_path("Fightclub-instructions") == "Menu/vox/gen_male/Fightclub-instructions.ogg"
+        (tmp_path / "Menu/vox/gen_female").mkdir(parents=True)
+        (tmp_path / "Menu/vox/gen_female/Fightclub-instructions.ogg").write_bytes(b"x")
+        servicer.menu_voice = "gen_male"
+        assert (
+            servicer._resolve_sound_path("Fightclub-instructions") == "Menu/vox/gen_female/Fightclub-instructions.ogg"
+        )

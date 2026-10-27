@@ -1,4 +1,5 @@
-"ivy" voice by Ivy Dupler: soundcloud.com/ivy-dupler/
+Zombie/sounds/zombie_death.ogg (the zombie growl), from the "ivy" voice recordings by Ivy Dupler: soundcloud.com/ivy-dupler/
+(the recorded voices "aaron" and "ivy" themselves are no longer shipped, #2107)
 Bach Brandenburg Concerto No. 6 in B flat major, BWV 1051, US Army Band, Public Domain, musopen.org
 
 Generated voices (#2107): services/audio/assets/*/vox/gen_male and gen_female,

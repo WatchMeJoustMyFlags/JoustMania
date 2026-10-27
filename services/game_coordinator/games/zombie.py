@@ -510,7 +510,7 @@ class ZombieGame(BaseGameMode):
                 self._mark_alive_in_metrics(serial)
 
             # Play conversion sound (use zombie death sound for conversion)
-            await self._play_sound(Sound.VOX_ZOMBIE_DEATH, priority=2)
+            await self._play_sound(Sound.SFX_ZOMBIE_DEATH, priority=2)
 
             if player.span:
                 player.span.add_event(

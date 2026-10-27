@@ -53,8 +53,9 @@ visible under `/dev/snd` on the host.
 
 Every voice line is text in one catalog, `services/audio/voice/lines.yaml` (UC-031 BR-007, FR-039, #2107). The
 generator renders each line for the generated voice profiles `gen_male` and `gen_female` (one pinned Piper voice each,
-run through sherpa-onnx) and commits the files next to the recordings, so nothing synthesises speech on the stage Pi
-(C-050). The recordings stay as the profiles `aaron` and `ivy`; the generator never writes them.
+run through sherpa-onnx) and commits the files, so nothing synthesises speech on the stage Pi (C-050). The recorded
+profiles `aaron` and `ivy` were deleted after the maintainer's listening check (#2107 part 3); the Zombie death growl,
+the one recording still played, is the sound effect `Zombie/sounds/zombie_death.ogg`.
 
 | Command | What it does |
 |---|---|
@@ -68,16 +69,17 @@ and the files together. `scripts/tools/gen-voice.sh --only <id> --dry-run` shows
 
 - Dev machine only: the wrapper needs `uv` and pins its own Python 3.12 and tool packages (sherpa-onnx, numpy, soxr,
   pyloudnorm, imageio-ffmpeg for a pinned ffmpeg); `FFMPEG` overrides the ffmpeg binary.
-- Format: 44.1 kHz stereo Ogg Vorbis, silence trimmed, normalised to the median loudness of the `ivy` Menu recordings
+- Format: 44.1 kHz stereo Ogg Vorbis, silence trimmed, normalised to the median loudness of the former `ivy` Menu recordings
   (`loudness.target_lufs`), encoded with ffmpeg `+bitexact` so an unchanged input never changes the committed bytes.
 - Licences: the generated files are CC BY-SA 4.0 like the other audio assets (C-017); the voice models and their
   sources are listed in `services/audio/assets/audio_credits.txt`.
 - Scope: every voice line the code plays (Menu, Joust, Zombie), the #2106 pad lines and the mode instructions of the
-  FR-014 backlog (#2151). Recordings no caller plays are
-  not catalogued (`NOT_CATALOGED` in `services/audio/tests/test_voice_catalog.py`); a new caller of one adds its line.
-  The recordings no code path played at all (21 lines in `aaron` and `ivy`: unused Menu lines, the Commander mode name `menu Commander` (#2166, removed with
-  its `GAME_MODE_VOICE` entry), Commander `red shift`, Fight Club `defender_winning`) were deleted (#2166); `DELETED_RECORDINGS` in the same test keeps them gone.
-- Playback: `menu_voice` selects any profile of the manifest (`aaron`, `ivy`, `gen_male`, `gen_female`; default `ivy`).
-  A line the selected profile lacks plays from its partner (`gen_male` <-> `aaron`, `gen_female` <-> `ivy`), so with
-  `ivy` the pad labels play in the `gen_female` voice before Ivy's recorded value (UC-031 BR-007, #2107 part 2).
+  FR-014 backlog (#2151). A new voice line is a catalog line; there are no recordings to fall back on. The recordings no
+  code path played at all were deleted first (#2166: unused Menu lines, `menu Commander`, Commander `red shift`, Fight
+  Club `defender_winning`), then all others with their profiles (#2107 part 3), together with the `Sound` members that
+  only named them; `DELETED_RECORDINGS` and the no-recorded-profile guard in `services/audio/tests/test_voice_catalog.py`
+  keep them gone.
+- Playback: `menu_voice` selects any profile of the manifest (`gen_female`, the default, or `gen_male`). A line the
+  selected profile lacks plays from its partner (`gen_female` <-> `gen_male`); `make voice-check` keeps every line in
+  both, so the fallback is a safety net (UC-031 BR-007, #2107).
   Check an id for one voice with `python -m services.audio.sound_catalog --voice gen_female label_sensitivity`.

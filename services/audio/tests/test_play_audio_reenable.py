@@ -30,7 +30,7 @@ class _FakeUserFlagClient:
         return self.play_audio if flag_key == "play_audio" else default_value
 
     def get_string_value(self, flag_key, default_value, *_args, **_kwargs):
-        return "ivy" if flag_key == "menu_voice" else default_value
+        return "gen_female" if flag_key == "menu_voice" else default_value
 
 
 @pytest.fixture

@@ -41,8 +41,7 @@ DEFAULT_INVINCIBILITY_DURATION = 4.0  # Seconds of invincibility at round start
 DEFAULT_MIN_ROUNDS = 10  # Minimum rounds before game can end
 COUNTDOWN_BEEPS = 3  # Beeps in last 3 seconds of round
 FC_INTRO_DURATION_S = 2.0  # Intro length; the stream is drained meanwhile (UC-025 A2 step 1)
-# Fight Club's instructions are recorded in ivy only; the plain id follows menu_voice and the
-# audio service falls back to the partner profile (aaron -> gen_male), so no voice is silent (UC-025 A5, #2164).
+# Fight Club's instructions: the plain id follows menu_voice; every voice profile has the line (UC-025 A5, #2164).
 FIGHT_CLUB_INSTRUCTIONS = "Fightclub-instructions"
 ROUND_PAUSE_SECONDS = 1.0  # Pause between a round's kill and the next round
 

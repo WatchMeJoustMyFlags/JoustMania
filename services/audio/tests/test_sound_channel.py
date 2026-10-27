@@ -123,9 +123,9 @@ class TestSoundChannelPlaybackFlag:
 class TestClipGroups:
     @pytest.mark.uc("UC-031", br=["BR-007"])
     def test_second_clip_of_a_group_stops_the_first(self, playing_manager):
-        assert playing_manager.play_sound("Menu/vox/ivy/high.ogg", group="pad_preview")
+        assert playing_manager.play_sound("Menu/vox/gen_female/high.ogg", group="pad_preview")
         first = next(c for c in playing_manager.channels if c.is_playing)
-        assert playing_manager.play_sound("Menu/vox/ivy/low.ogg", group="pad_preview")
+        assert playing_manager.play_sound("Menu/vox/gen_female/low.ogg", group="pad_preview")
         playing = [c for c in playing_manager.channels if c.is_playing]
         assert len(playing) == 1
         assert playing[0].group == "pad_preview"
@@ -134,15 +134,15 @@ class TestClipGroups:
     @pytest.mark.uc("UC-031", br=["BR-007"])
     def test_other_groups_and_ungrouped_clips_keep_playing(self, playing_manager):
         assert playing_manager.play_sound("Joust/sounds/beep_loud.ogg")
-        assert playing_manager.play_sound("Menu/vox/ivy/high.ogg", group="other")
-        assert playing_manager.play_sound("Menu/vox/ivy/low.ogg", group="pad_preview")
-        assert playing_manager.play_sound("Menu/vox/ivy/medium.ogg", group="pad_preview")
+        assert playing_manager.play_sound("Menu/vox/gen_female/high.ogg", group="other")
+        assert playing_manager.play_sound("Menu/vox/gen_female/low.ogg", group="pad_preview")
+        assert playing_manager.play_sound("Menu/vox/gen_female/medium.ogg", group="pad_preview")
         assert _playing_files(playing_manager) == ["", "other", "pad_preview"]
 
     @pytest.mark.uc("UC-031", br=["BR-007"])
     def test_stop_sounds_with_a_group_stops_only_that_group(self, playing_manager):
         playing_manager.play_sound("Joust/sounds/beep_loud.ogg")
-        playing_manager.play_sound("Menu/vox/ivy/high.ogg", group="pad_preview")
+        playing_manager.play_sound("Menu/vox/gen_female/high.ogg", group="pad_preview")
         assert playing_manager.stop_sounds(group="pad_preview") == 1
         assert _playing_files(playing_manager) == [""]
 
@@ -151,7 +151,7 @@ class TestClipGroups:
     async def test_stop_sound_rpc_passes_the_group(self, mock_audio_servicer, mock_grpc_context, playing_manager):
         mock_audio_servicer.audio_manager = playing_manager
         playing_manager.play_sound("Joust/sounds/beep_loud.ogg")
-        playing_manager.play_sound("Menu/vox/ivy/high.ogg", group="pad_preview")
+        playing_manager.play_sound("Menu/vox/gen_female/high.ogg", group="pad_preview")
         response = await mock_audio_servicer.StopSound(
             audio_pb2.StopSoundRequest(group="pad_preview"), mock_grpc_context
         )
@@ -166,7 +166,7 @@ class TestClipGroups:
         """UC-020 A5 regression: a StopSound without a group stops grouped and ungrouped clips alike."""
         mock_audio_servicer.audio_manager = playing_manager
         playing_manager.play_sound("Joust/sounds/beep_loud.ogg")
-        playing_manager.play_sound("Menu/vox/ivy/high.ogg", group="pad_preview")
+        playing_manager.play_sound("Menu/vox/gen_female/high.ogg", group="pad_preview")
         response = await mock_audio_servicer.StopSound(audio_pb2.StopSoundRequest(), mock_grpc_context)
         assert response.success and response.stopped == 2
         assert _playing_files(playing_manager) == []

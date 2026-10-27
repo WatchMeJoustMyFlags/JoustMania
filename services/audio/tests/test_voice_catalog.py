@@ -1,8 +1,9 @@
 """The voice catalog against the Sound enum, the registry and the asset tree (#2107, UC-031 BR-007, BR-003).
 
-The catalog holds every voice line the code plays, in every area. Recordings no
-caller can reach are listed in NOT_CATALOGED (audited for #2147): they keep
-their files, they are not generated. Those the maintainer chose to drop (#2166) are in
+The catalog holds every voice line the code plays, in every area, and every
+profile is generated. The recorded profiles (aaron, ivy) were deleted after the
+maintainer's listening check (#2107 part 3): no directory may come back and no
+source may name them as a profile. The recordings dropped first (#2166) are in
 DELETED_RECORDINGS: no file may come back and no source may name them.
 """
 
@@ -22,34 +23,8 @@ CATALOG_PATH = ROOT / "services" / "audio" / "voice" / "lines.yaml"
 MANIFEST_PATH = ASSETS / "voice_manifest.json"
 AREAS = ("Joust", "Menu", "Zombie", "Fight_Club", "Commander")
 
-# Recordings no code path plays (audit for #2147). Each entry is <area>/<stem>.
-_JOUST_UNUSED = {
-    "10 werewolf", "30 werewolf", "3 minutes", "5 minutes", "Fakedout", "FakedoutCounter", "countered",
-    "explosiondeath", "game_over", "werewolf intro_1", "werewolf reveal 2", "red team win",
-    "orange team win", "pink team win", "purple team win",
-}  # fmt: skip
-_COMMANDER = {
-    "10 seconds begins", "blue overdrive", "blue revive", "blue shift", "blue winner", "blue_power_ready",
-    "commander intro", "commanders chosen", "power_ready", "red overdrive", "red revive",
-    "red winner", "red_power_ready", "blue_overdrive", "red_overdrive",
-}  # fmt: skip
-_ZOMBIE_UNUSED = {"1 minute", "3 minutes", "5 minutes", "molotov found"}
-_FIGHT_CLUB = {
-    "5_rounds",
-    "Defender_high_score",
-    "defender_lead",
-    "game_over",
-    "last_round",
-    "tie_game",
-}
-# Played, but not speech: no line, the recording plays for every profile (partner fallback, part 2).
-NOT_SPEECH = {"Zombie/zombie_death"}
-NOT_CATALOGED = NOT_SPEECH | (
-    {f"Joust/{s}" for s in _JOUST_UNUSED}
-    | {f"Commander/{s}" for s in _COMMANDER}
-    | {f"Zombie/{s}" for s in _ZOMBIE_UNUSED}
-    | {f"Fight_Club/{s}" for s in _FIGHT_CLUB}
-)
+# The recorded profiles, deleted with every file after the listening check (#2107 part 3).
+DELETED_PROFILES = ("aaron", "ivy")
 
 # Recordings deleted for #2166 (no code path played them): stems, in every recorded profile.
 DELETED_RECORDINGS = {
@@ -63,9 +38,6 @@ DELETED_RECORDINGS = {
     "Commander": {"red shift"},
     "Fight_Club": {"defender_winning"},
 }  # fmt: skip
-
-# Recorded in one profile only; the other plays it through the partner fallback (part 2).
-RECORDED_ONLY_IN = {"Menu/Fightclub-instructions": {"ivy"}}
 
 pytestmark = pytest.mark.uc("UC-031", br=["BR-007"])
 
@@ -90,16 +62,6 @@ def _keys(catalog):
     return {f"{area}/{line['id']}" for area, line in _lines(catalog)}
 
 
-def _recorded_stems(catalog):
-    """<area>/<stem> -> the recorded profiles that have it."""
-    stems = {}
-    for area in AREAS:
-        for voice in catalog["recorded"]:
-            for f in (ASSETS / area / "vox" / voice).glob("*.ogg"):
-                stems.setdefault(f"{area}/{f.stem}", set()).add(voice)
-    return stems
-
-
 def test_every_registered_voice_id_is_catalogued_or_known_unused(catalog):
     """Every Sound member (aliases included) that resolves to a voice file has a line in the area it plays from."""
     registry = build_sound_registry(ASSETS)
@@ -110,7 +72,7 @@ def test_every_registered_voice_id_is_catalogued_or_known_unused(catalog):
         if entry is None or entry[0] != "vox":
             continue
         key = f"{entry[1]}/{member.value}"
-        if key not in keys and key not in NOT_CATALOGED:
+        if key not in keys:
             missing[name] = key
     assert not missing, f"voice Sound members without a catalog line: {missing}"
 
@@ -124,33 +86,22 @@ def test_every_named_sound_is_a_real_member_with_the_line_id(catalog):
         assert member.value == line["id"], f"{line['sound']} is {member.value!r}, not {line['id']!r}"
 
 
-def test_every_recording_is_catalogued_or_known_unused(catalog):
-    """Both ways (BR-003): a recorded line exists in every recorded profile, and no recording is unaccounted for."""
-    stems = _recorded_stems(catalog)
-    recorded = {f"{area}/{line['id']}" for area, line in _lines(catalog) if line.get("recorded")}
-    assert not recorded & NOT_CATALOGED
-    assert recorded - set(stems) == set(), "catalog says recorded, no file"
-    unaccounted = set(stems) - recorded - NOT_CATALOGED
-    assert not unaccounted, f"recordings neither catalogued nor listed as unused: {sorted(unaccounted)}"
-    stale = NOT_CATALOGED - set(stems)
-    assert not stale, f"NOT_CATALOGED names files that do not exist: {sorted(stale)}"
-    for key in recorded:
-        expected = RECORDED_ONLY_IN.get(key, set(catalog["recorded"]))
-        assert stems[key] == expected, f"{key}: recorded only in {sorted(stems[key])}"
+def test_every_voice_directory_is_a_generated_profile(catalog):
+    """No recorded profile is left (#2107 part 3): every <area>/vox/<profile> is a catalog profile."""
+    on_disk = {d.relative_to(ASSETS).as_posix() for d in ASSETS.glob("*/vox/*") if d.is_dir()}
+    stray = {d for d in on_disk if d.split("/")[2] not in catalog["profiles"]}
+    assert not stray, f"voice directories outside the generated profiles: {sorted(stray)}"
+    assert not set(DELETED_PROFILES) & set(catalog["profiles"])
 
 
 def test_new_ids_do_not_collide_with_any_area(catalog):
-    """A generated-only id that matches an existing stem anywhere would resolve to the wrong file."""
+    """A line id that matches a sound effect or music stem anywhere would resolve to the wrong file."""
     existing = {}
     for area in AREAS:
         for f in (ASSETS / area).rglob("*.ogg"):
-            if "/gen_" not in f.as_posix():
+            if "/vox/" not in f.as_posix():
                 existing.setdefault(f.stem, area)
-    clashes = {
-        line["id"]: existing[line["id"]]
-        for _, line in _lines(catalog)
-        if not line.get("recorded") and line["id"] in existing
-    }
+    clashes = {line["id"]: existing[line["id"]] for _, line in _lines(catalog) if line["id"] in existing}
     assert not clashes, f"new catalog ids already used as asset stems: {clashes}"
 
 
@@ -184,6 +135,9 @@ def test_deleted_recordings_stay_deleted_and_unreferenced():
         for stem in stems:
             assert not list((ASSETS / area / "vox").glob(f"*/{stem}.ogg")), f"{area}/{stem} was deleted"
     needles = {stem for stems in DELETED_RECORDINGS.values() for stem in stems}
+    # The deleted profiles as a value or a path (#2107 part 3), outside tests; prose mentions stay allowed.
+    profile_needles = {f"{q}{name}{q}" for name in DELETED_PROFILES for q in ('"', "'")}
+    profile_needles |= {f"vox/{name}/" for name in DELETED_PROFILES}
     suffixes = {".py", ".go", ".yaml", ".yml", ".json", ".sh", ".ts", ".tsx"}
     offenders = []
     for top in ("lib", "services", "scripts", "flags"):
@@ -199,4 +153,6 @@ def test_deleted_recordings_stay_deleted_and_unreferenced():
                 continue
             text = path.read_text(errors="ignore")
             offenders += [f"{path.relative_to(ROOT)}: {n}" for n in sorted(needles) if n in text]
+            if "tests" not in parts:
+                offenders += [f"{path.relative_to(ROOT)}: {n}" for n in sorted(profile_needles) if n in text]
     assert not offenders, f"deleted recordings are still named: {offenders}"

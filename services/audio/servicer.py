@@ -598,7 +598,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
     def _load_menu_voice_flag(self) -> str:
         """Load menu_voice flag from flagd at startup.
 
-        Returns the flag default (ivy) if flagd is unavailable, or when the flag
+        Returns the flag default (gen_female) if flagd is unavailable, or when the flag
         names a profile the voice manifest does not list (UC-031 A4).
         """
         default = sound_catalog.DEFAULT_VOICE
@@ -759,7 +759,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         at lookup time, so they always follow the file they name.
 
         Voice lines are the union of every profile's directory (UC-031 BR-007),
-        so a line only one profile has (generated-only, or ``ivy`` only) exists.
+        so a line only one profile has exists.
         """
         self.sound_registry = sound_catalog.build_sound_registry(_PACKAGED_ASSETS, self.voice_profiles)
         logger.info(f"Sound registry built: {len(self.sound_registry)} sounds indexed")
@@ -785,7 +785,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         - Simple name: "congratulations" -> {base_dir}/vox/{voice}/congratulations.ogg
         - Name with extension: "congratulations.ogg" -> {base_dir}/vox/{voice}/congratulations.ogg
         - Partial path: "Joust/vox/congratulations.ogg" -> Joust/vox/{voice}/congratulations.ogg
-        - Full path with voice: "Joust/vox/aaron/congratulations.ogg" -> used as-is
+        - Full path with voice: "Joust/vox/gen_male/congratulations.ogg" -> used as-is
 
         The registry tracks both sound type (vox/sound) and base directory (Joust/Menu).
 
@@ -874,7 +874,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         # Resolve sound name/path to full path with voice selection
         resolved_path = self._resolve_sound_path(request.file_path)
 
-        # Extract sound name for span (e.g., "congratulations" from "Joust/vox/ivy/congratulations.ogg")
+        # Extract sound name for span (e.g., "congratulations" from "Joust/vox/gen_female/congratulations.ogg")
         sound_name = Path(resolved_path).stem
 
         # Enrich the server span created by the gRPC interceptor

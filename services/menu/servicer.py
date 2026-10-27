@@ -192,8 +192,8 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         self.state_manager.register_handler(self.connected_handler)
         self.state_manager.register_handler(self.ready_handler)
 
-        # Voice actor setting (aaron or ivy)
-        self.voice_actor = "ivy"
+        # Voice profile (flag menu_voice: gen_female or gen_male)
+        self.voice_actor = DEFAULT_VOICE_ACTOR
 
         # Settings core shared by admin mode and the operator pad commands (#2050, UC-015).
         self.settings_ops = SettingsOps(

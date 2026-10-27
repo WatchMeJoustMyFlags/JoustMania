@@ -19,17 +19,17 @@ An alias names an exact, voice-independent asset path, so it can pick a sound
 effect even where a voice line of the same name wins the registry lookup.
 
 Voice profiles come from ``assets/voice_manifest.json`` (written by
-``make voice``): the recorded profiles (``aaron``, ``ivy``) plus the generated
-ones (``gen_male``, ``gen_female``), each generated profile with a recorded
-partner. Not every profile has every file: a voice line missing in the selected
-profile plays from its partner (``aaron`` <-> ``gen_male``, ``ivy`` <->
-``gen_female``). Without a readable manifest the profiles are the recorded ones
-and there is no partner.
+``make voice``): the generated ``gen_female`` (the default) and ``gen_male``,
+each the other's partner; the recorded ``aaron`` and ``ivy`` were deleted in
+#2107 part 3. ``make voice-check`` keeps every line in both, so the partner
+fallback (a line missing in the selected profile plays from its partner) is a
+safety net. Without a readable manifest both profiles stay selectable, without
+partners.
 
 Run as a module to check ids against the assets on disk (used by
 ``scripts/talk-preflight.sh`` inside the running audio container)::
 
-    python -m services.audio.sound_catalog [--voice ivy] agent_cue
+    python -m services.audio.sound_catalog [--voice gen_male] agent_cue
 
 Exit 0 and print the relative path when every id resolves to an existing file,
 exit 1 otherwise.
@@ -49,14 +49,14 @@ ASSETS_DIR = Path(__file__).parent / "assets"
 # Directories scanned for sounds, in priority order (first found wins).
 SOUND_BASE_DIRS = ("Joust", "Menu", "Zombie", "Fight_Club", "Commander")
 
-# The voice a lookup without a voice uses (the CLI default is the flag default instead).
-REFERENCE_VOICE = "aaron"
-
 # The menu_voice flag default; also the voice kept when the flag names an unknown profile at start.
-DEFAULT_VOICE = "ivy"
+DEFAULT_VOICE = "gen_female"
 
-# The recorded profiles when the manifest is missing or unreadable.
-RECORDED_VOICES = ("aaron", "ivy")
+# The voice a lookup without a voice uses: the flag default.
+REFERENCE_VOICE = DEFAULT_VOICE
+
+# The profiles when the manifest is missing or unreadable (no partners then).
+FALLBACK_VOICES = ("gen_female", "gen_male")
 
 MANIFEST_NAME = "voice_manifest.json"
 
@@ -73,7 +73,7 @@ Registry = dict[str, tuple[str, str]]  # sound id -> (type "vox"|"sound", base_d
 class VoiceProfiles:
     """The selectable voice profiles and their partners (UC-031 BR-007)."""
 
-    names: tuple[str, ...] = RECORDED_VOICES
+    names: tuple[str, ...] = FALLBACK_VOICES
     partners: Mapping[str, str] = field(default_factory=dict)
 
     def candidates(self, voice: str) -> tuple[str, ...]:
@@ -85,32 +85,28 @@ class VoiceProfiles:
 def load_voice_profiles(assets_dir: Path = ASSETS_DIR) -> VoiceProfiles:
     """Read the profiles and partners from the voice manifest.
 
-    A missing or malformed manifest never stops the service: the recorded
-    profiles stay selectable, without partners, and a warning says why.
+    A missing or malformed manifest never stops the service: the fallback
+    profiles stay selectable, without partners, and a warning says why. A
+    partner must be another profile of the manifest; anything else is ignored.
     """
     path = Path(assets_dir) / MANIFEST_NAME
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        recorded = tuple(str(name) for name in (data.get("recorded") or RECORDED_VOICES))
         generated = data.get("profiles") or {}
+        names = tuple(str(name) for name in sorted(generated))
+        if not names:
+            raise ValueError("no profiles")
         partners: dict[str, str] = {}
-        names = list(recorded)
-        for name in sorted(generated):
+        for name in names:
             entry = generated[name]
-            if name in names:
-                continue
-            names.append(str(name))
             partner = entry.get("partner") if isinstance(entry, dict) else None
-            if partner in recorded:
-                partners[str(name)] = str(partner)
-                partners.setdefault(str(partner), str(name))
-        return VoiceProfiles(names=tuple(names), partners=partners)
+            if partner in names and partner != name:
+                partners[name] = str(partner)
+        return VoiceProfiles(names=names, partners=partners)
     except FileNotFoundError:
-        logger.warning("Voice manifest %s not found: only the recorded voices %s, no partner", path, RECORDED_VOICES)
+        logger.warning("Voice manifest %s not found: voices %s, no partner", path, FALLBACK_VOICES)
     except (OSError, ValueError, AttributeError, TypeError) as e:
-        logger.warning(
-            "Voice manifest %s unreadable (%s): only the recorded voices %s, no partner", path, e, RECORDED_VOICES
-        )
+        logger.warning("Voice manifest %s unreadable (%s): voices %s, no partner", path, e, FALLBACK_VOICES)
     return VoiceProfiles()
 
 
