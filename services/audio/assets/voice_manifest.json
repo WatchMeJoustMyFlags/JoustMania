@@ -2,18 +2,14 @@
  "version": 1,
  "generator": "1",
  "catalog": "services/audio/voice/lines.yaml",
- "recorded": [
-  "aaron",
-  "ivy"
- ],
  "profiles": {
   "gen_female": {
-   "partner": "ivy",
+   "partner": "gen_male",
    "model": "vits-piper-en_US-kristin-medium",
    "model_sha256": "c2206f572df2956c50b1ae3367eebce3853c663e890cba8048cd62b1e4dbe6c7"
   },
   "gen_male": {
-   "partner": "aaron",
+   "partner": "gen_female",
    "model": "vits-piper-en_US-john-medium",
    "model_sha256": "d90362cfa48e429d3096f644785184446145b6e38216f2eaf4c0601b8aad5a36"
   }

@@ -91,7 +91,7 @@ class FakeMenuServicer:
         self.game_settings_client.get_string_value = MagicMock(return_value="medium")
 
         self.user_prefs_client = MagicMock()
-        self.user_prefs_client.get_string_value = MagicMock(return_value="ivy")
+        self.user_prefs_client.get_string_value = MagicMock(return_value="gen_female")
         self.user_prefs_client.get_boolean_value = MagicMock(return_value=True)
 
         self.event_publisher = MagicMock()

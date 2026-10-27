@@ -21,7 +21,7 @@ def validate_mode_keys(mapping: dict[str, object], map_name: str) -> None:
 
 
 DEFAULT_GAME_MODE: Games = Games.JoustFFA
-DEFAULT_VOICE_ACTOR: str = "ivy"
+DEFAULT_VOICE_ACTOR: str = "gen_female"  # menu_voice default (UC-031 A4, #2107)
 
 
 def get_next_game_mode(current: Games, forward: bool = True) -> Games:

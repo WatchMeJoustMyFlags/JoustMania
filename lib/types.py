@@ -226,14 +226,12 @@ class Sound(StrEnum):
 
     # Victory/End sounds (VOX)
     VOX_CONGRATULATIONS = "congratulations"
-    VOX_GAME_OVER = "game_over"
     VOX_HUMAN_WIN = "human win"
     VOX_WEREWOLF_WIN = "werewolf win"
     VOX_TRAITOR_WIN = "traitor win"
 
     # Team win sounds (VOX)
     VOX_BLUE_TEAM_WIN = "blue team win"
-    VOX_RED_TEAM_WIN = "red team win"
     VOX_GREEN_TEAM_WIN = "green team win"
     VOX_YELLOW_TEAM_WIN = "yellow team win"
     VOX_CYAN_TEAM_WIN = "cyan team win"
@@ -241,20 +239,10 @@ class Sound(StrEnum):
 
     # Time announcements (VOX)
     VOX_1_MINUTE = "1 minute"
-    VOX_3_MINUTES = "3 minutes"
-    VOX_5_MINUTES = "5 minutes"
 
     # Werewolf announcements (VOX)
-    VOX_10_WEREWOLF = "10 werewolf"
-    VOX_30_WEREWOLF = "30 werewolf"
     VOX_WEREWOLF_INTRO = "werewolf intro"
     VOX_WEREWOLF_REVEAL = "werewolf reveal"
-
-    # Other VOX sounds
-    VOX_FAKEDOUT = "Fakedout"
-    VOX_FAKEDOUT_COUNTER = "FakedoutCounter"
-    VOX_COUNTERED = "countered"
-    VOX_EXPLOSION_DEATH = "explosiondeath"
 
     # Sound effects (SFX)
     SFX_EXPLOSION = "Explosion34"
@@ -276,18 +264,13 @@ class Sound(StrEnum):
 
     # Zombie game sounds (in Zombie/vox/)
     VOX_ZOMBIE_VICTORY = "zombie_victory"
-    VOX_ZOMBIE_DEATH = "zombie_death"
     VOX_HUMAN_VICTORY = "human_victory"
     # Time announcements (in Zombie/vox/)
     VOX_ZOMBIE_ONE_MINUTE = "1 minute"
     VOX_ZOMBIE_THIRTY_SECONDS = "30 seconds"
     VOX_ZOMBIE_TEN_SECONDS = "10 seconds left"
-
-    # Fight Club game sounds (in Fight_Club/vox/)
-    VOX_FIGHT_CLUB_5_ROUNDS = "5_rounds"
-    VOX_FIGHT_CLUB_LAST_ROUND = "last_round"
-    VOX_FIGHT_CLUB_GAME_OVER = "game_over"
-    VOX_FIGHT_CLUB_TIE_GAME = "tie_game"
+    # Zombie death growl: a sound effect (Zombie/sounds/), not a voice line (#2107)
+    SFX_ZOMBIE_DEATH = "zombie_death"
 
     # Menu sensitivity sounds (in Menu/sounds/)
     # Only 3 audio files exist, so ultra levels map to slow/fast
@@ -340,9 +323,8 @@ class Sound(StrEnum):
     MENU_VOX_ADMINOP_TRUE = "adminop_True"
     MENU_VOX_ADMINOP_FALSE = "adminop_False"
 
-    # Pad labels, backend names and status words (#2106). Generated only
-    # (Menu/vox/gen_*/, catalog services/audio/voice/lines.yaml); the recorded
-    # voices play them from their partner (UC-031 BR-007).
+    # Pad labels, backend names and status words (#2106)
+    # (Menu/vox/gen_*/, catalog services/audio/voice/lines.yaml, UC-031 BR-007).
     MENU_VOX_LABEL_SENSITIVITY = "label_sensitivity"
     MENU_VOX_LABEL_TEAMS = "label_teams"
     MENU_VOX_LABEL_AGENT = "label_agent"

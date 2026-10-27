@@ -85,6 +85,8 @@ class TestSoundRegistry:
             assert sound_name in registry, f"{sound_name} not in registry"
             sound_type, base_dir = registry[sound_name]
             assert base_dir == "Zombie", f"{sound_name} should be in 'Zombie', got '{base_dir}'"
+        # The growl is a sound effect, the same for every voice (#2107 part 3).
+        assert registry["zombie_death"] == ("sound", "Zombie")
 
 
 class TestPathResolution:
@@ -101,7 +103,7 @@ class TestPathResolution:
             "menu Joust FFA": ("vox", "Menu"),
         }
 
-    def resolve_sound_path(self, sound_input: str, registry: dict, menu_voice: str = "ivy") -> str:
+    def resolve_sound_path(self, sound_input: str, registry: dict, menu_voice: str = "gen_female") -> str:
         """Simulate the audio service's _resolve_sound_path method."""
         lookup_name = sound_input
         if lookup_name.endswith(".ogg"):
@@ -120,18 +122,18 @@ class TestPathResolution:
             parts = sound_input.split("/vox/")
             if len(parts) == 2:
                 remainder = parts[1]
-                if not remainder.startswith("aaron/") and not remainder.startswith("ivy/"):
+                if not remainder.startswith(("gen_female/", "gen_male/")):
                     return f"{parts[0]}/vox/{menu_voice}/{remainder}"
 
         return sound_input
 
     def test_vox_sound_uses_voice_directory(self, registry):
         """Verify vox sounds include voice folder in path."""
-        path = self.resolve_sound_path("congratulations", registry, menu_voice="ivy")
-        assert path == "Joust/vox/ivy/congratulations.ogg"
+        path = self.resolve_sound_path("congratulations", registry, menu_voice="gen_female")
+        assert path == "Joust/vox/gen_female/congratulations.ogg"
 
-        path = self.resolve_sound_path("congratulations", registry, menu_voice="aaron")
-        assert path == "Joust/vox/aaron/congratulations.ogg"
+        path = self.resolve_sound_path("congratulations", registry, menu_voice="gen_male")
+        assert path == "Joust/vox/gen_male/congratulations.ogg"
 
     def test_sfx_sound_uses_sounds_directory(self, registry):
         """Verify sound effects use sounds folder, not vox."""
@@ -141,13 +143,13 @@ class TestPathResolution:
 
     def test_zombie_vox_uses_zombie_directory(self, registry):
         """Verify zombie vox sounds use Zombie base directory."""
-        path = self.resolve_sound_path("zombie_victory", registry, menu_voice="ivy")
-        assert path == "Zombie/vox/ivy/zombie_victory.ogg"
+        path = self.resolve_sound_path("zombie_victory", registry, menu_voice="gen_female")
+        assert path == "Zombie/vox/gen_female/zombie_victory.ogg"
 
     def test_menu_vox_uses_menu_directory(self, registry):
         """Verify menu vox sounds use Menu base directory."""
-        path = self.resolve_sound_path("menu Joust FFA", registry, menu_voice="ivy")
-        assert path == "Menu/vox/ivy/menu Joust FFA.ogg"
+        path = self.resolve_sound_path("menu Joust FFA", registry, menu_voice="gen_female")
+        assert path == "Menu/vox/gen_female/menu Joust FFA.ogg"
 
 
 class TestSoundEnumValues:
@@ -176,7 +178,6 @@ class TestSoundEnumValues:
         """Team win sounds should all resolve."""
         team_sounds = [
             Sound.VOX_BLUE_TEAM_WIN,
-            Sound.VOX_RED_TEAM_WIN,
             Sound.VOX_GREEN_TEAM_WIN,
             Sound.VOX_YELLOW_TEAM_WIN,
         ]
@@ -187,7 +188,7 @@ class TestSoundEnumValues:
         """Zombie game sounds should resolve."""
         zombie_sounds = [
             Sound.VOX_ZOMBIE_VICTORY,
-            Sound.VOX_ZOMBIE_DEATH,
+            Sound.SFX_ZOMBIE_DEATH,
             Sound.VOX_HUMAN_VICTORY,
             Sound.VOX_ZOMBIE_ONE_MINUTE,
             Sound.VOX_ZOMBIE_THIRTY_SECONDS,
@@ -213,7 +214,7 @@ class TestActualFileExistence:
 
     def resolve_full_path(self, sound_value: str) -> Path | None:
         """Resolve a sound value to its full file path."""
-        relative = relative_path(build_sound_registry(ASSETS_DIR), sound_value, voice="ivy")
+        relative = relative_path(build_sound_registry(ASSETS_DIR), sound_value, voice="gen_female")
         return None if relative is None else ASSETS_DIR / relative
 
     def test_all_sound_enum_files_exist(self):
@@ -239,8 +240,8 @@ class TestActualFileExistence:
         assert path.exists(), f"beep_loud.ogg not found at {path}"
 
     def test_congratulations_file_exists_for_both_voices(self):
-        """congratulations.ogg should exist for both aaron and ivy."""
-        for voice in ["aaron", "ivy"]:
+        """congratulations.ogg should exist for both gen_female and gen_male."""
+        for voice in ["gen_female", "gen_male"]:
             path = ASSETS_DIR / "Joust" / "vox" / voice / "congratulations.ogg"
             assert path.exists(), f"congratulations.ogg not found for voice '{voice}' at {path}"
 
@@ -330,44 +331,49 @@ class TestVoiceProfilesUC031:
 
     @pytest.mark.uc("UC-031", br=["BR-007"])
     def test_profiles_and_partners_come_from_the_manifest(self, profiles):
-        assert set(profiles.names) == {"aaron", "ivy", "gen_male", "gen_female"}
-        assert profiles.names[:2] == ("aaron", "ivy")
-        assert profiles.candidates("aaron") == ("aaron", "gen_male")
-        assert profiles.candidates("gen_male") == ("gen_male", "aaron")
-        assert profiles.candidates("ivy") == ("ivy", "gen_female")
-        assert profiles.candidates("gen_female") == ("gen_female", "ivy")
+        """#2107 part 3: only the generated profiles, each the other's partner."""
+        assert profiles.names == ("gen_female", "gen_male")
+        assert profiles.candidates("gen_male") == ("gen_male", "gen_female")
+        assert profiles.candidates("gen_female") == ("gen_female", "gen_male")
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_default_voice_is_gen_female_and_plays_every_sound_from_its_own_files(self, registry, profiles):
+        """#2107 part 3: the default plays every Sound member (aliases included) without any fallback."""
+        from services.audio.sound_catalog import DEFAULT_VOICE, REFERENCE_VOICE, VoiceProfiles
+
+        assert DEFAULT_VOICE == REFERENCE_VOICE == "gen_female"
+        alone = VoiceProfiles(names=(DEFAULT_VOICE,), partners={})
+        missing = {}
+        for name, member in Sound.__members__.items():
+            rel = relative_path(registry, member.value, voice=DEFAULT_VOICE, profiles=alone)
+            if rel is None or not (ASSETS_DIR / rel).is_file() or "/vox/gen_male/" in rel:
+                missing[name] = rel
+        assert not missing, missing
 
     @pytest.mark.uc("UC-031", br=["BR-003", "BR-007"])
     def test_registry_is_the_union_of_every_profile_directory(self, registry):
-        """Fightclub-instructions is only in ivy, label_sensitivity only in gen_*: both are registered."""
         assert registry["Fightclub-instructions"] == ("vox", "Menu")
         assert registry[Sound.MENU_VOX_LABEL_SENSITIVITY.value] == ("vox", "Menu")
         assert registry[Sound.MENU_VOX_STATUS_NO_CONNECTION.value] == ("vox", "Menu")
 
-    @pytest.mark.uc("UC-031", br=["BR-003", "BR-007"])
-    def test_union_keeps_every_id_the_aaron_scan_registered(self, registry):
-        """The union only adds ids: an id the old aaron-only scan knew keeps its type and area."""
-        from services.audio.sound_catalog import SOUND_BASE_DIRS, scan_directory
-
-        aaron_only: dict[str, tuple[str, str]] = {}
-        for base_dir in SOUND_BASE_DIRS:
-            scan_directory(aaron_only, ASSETS_DIR / base_dir / "vox" / "aaron", "vox", base_dir)
-            scan_directory(aaron_only, ASSETS_DIR / base_dir / "sounds", "sound", base_dir)
-        changed = {k: (v, registry.get(k)) for k, v in aaron_only.items() if registry.get(k) != v}
-        assert not changed
-
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
-    def test_generated_only_line_plays_from_the_partner_of_a_recorded_voice(self, registry, profiles):
-        label = Sound.MENU_VOX_LABEL_SENSITIVITY.value
-        assert relative_path(registry, label, voice="aaron", profiles=profiles) == f"Menu/vox/gen_male/{label}.ogg"
-        assert relative_path(registry, label, voice="ivy", profiles=profiles) == f"Menu/vox/gen_female/{label}.ogg"
+    def test_line_one_profile_lacks_plays_from_its_partner(self, tmp_path):
+        """The partner fallback between the generated profiles (a safety net: voice-check keeps both full)."""
+        from services.audio.sound_catalog import VoiceProfiles
 
-    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
-    def test_line_not_generated_plays_from_the_recorded_partner(self, registry, profiles):
-        """zombie_death is a growl with no catalog line: a generated voice plays the recording."""
-        death = Sound.VOX_ZOMBIE_DEATH.value
-        assert relative_path(registry, death, voice="gen_female", profiles=profiles) == f"Zombie/vox/ivy/{death}.ogg"
-        assert relative_path(registry, death, voice="gen_male", profiles=profiles) == f"Zombie/vox/aaron/{death}.ogg"
+        (tmp_path / "Menu/vox/gen_male").mkdir(parents=True)
+        (tmp_path / "Menu/vox/gen_male/only_male.ogg").write_bytes(b"x")
+        profiles = VoiceProfiles(names=("gen_female", "gen_male"), partners={"gen_female": "gen_male"})
+        registry = {"only_male": ("vox", "Menu")}
+        rel = relative_path(registry, "only_male", voice="gen_female", profiles=profiles, assets_dir=tmp_path)
+        assert rel == "Menu/vox/gen_male/only_male.ogg"
+
+    @pytest.mark.uc("UC-031", br=["BR-007"])
+    def test_zombie_death_growl_is_a_voice_independent_effect(self, registry, profiles):
+        """zombie_death is not speech: one sound effect for every voice (#2107 part 3)."""
+        death = Sound.SFX_ZOMBIE_DEATH.value
+        for voice in profiles.names:
+            assert relative_path(registry, death, voice=voice, profiles=profiles) == f"Zombie/sounds/{death}.ogg"
 
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
     def test_selected_profile_wins_when_it_has_the_line(self, registry, profiles):
@@ -376,7 +382,7 @@ class TestVoiceProfilesUC031:
             assert relative_path(registry, high, voice=voice, profiles=profiles) == f"Menu/vox/{voice}/{high}.ogg"
 
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
-    @pytest.mark.parametrize("voice", ["aaron", "ivy", "gen_male", "gen_female"])
+    @pytest.mark.parametrize("voice", ["gen_female", "gen_male"])
     def test_every_sound_member_resolves_to_a_file_in_every_profile(self, registry, profiles, voice):
         """Aliases included (__members__): any profile can be selected without a silent line."""
         missing = {}
@@ -396,28 +402,42 @@ class TestVoiceProfilesUC031:
             assert table[sound_id] == relative_path(registry, sound_id, voice="gen_female", profiles=profiles)
 
     @pytest.mark.uc("UC-031", br=["BR-007"])
-    def test_missing_manifest_keeps_the_recorded_voices_without_partners(self, tmp_path):
+    def test_missing_manifest_keeps_the_generated_voices_without_partners(self, tmp_path):
         from services.audio.sound_catalog import load_voice_profiles
 
         profiles = load_voice_profiles(tmp_path)
-        assert profiles.names == ("aaron", "ivy")
-        assert profiles.candidates("ivy") == ("ivy",)
+        assert profiles.names == ("gen_female", "gen_male")
+        assert profiles.candidates("gen_female") == ("gen_female",)
         (tmp_path / "voice_manifest.json").write_text("{not json")
-        assert load_voice_profiles(tmp_path).names == ("aaron", "ivy")
+        assert load_voice_profiles(tmp_path).names == ("gen_female", "gen_male")
+
+    @pytest.mark.uc("UC-031", br=["BR-007"])
+    def test_a_manifest_partner_outside_the_profiles_is_ignored(self, tmp_path):
+        """An old manifest naming a deleted recorded partner gives no fallback to a missing profile."""
+        import json
+
+        from services.audio.sound_catalog import load_voice_profiles
+
+        (tmp_path / "voice_manifest.json").write_text(
+            json.dumps({"recorded": ["ivy"], "profiles": {"gen_female": {"partner": "ivy"}}})
+        )
+        profiles = load_voice_profiles(tmp_path)
+        assert profiles.names == ("gen_female",)
+        assert profiles.candidates("gen_female") == ("gen_female",)
 
     @pytest.mark.uc("UC-031", br=["BR-007"])
     def test_line_in_neither_profile_keeps_the_selected_voice_path(self, tmp_path):
         from services.audio.sound_catalog import VoiceProfiles
 
-        profiles = VoiceProfiles(names=("aaron", "ivy", "gen_female"), partners={"ivy": "gen_female"})
+        profiles = VoiceProfiles(names=("gen_female", "gen_male"), partners={"gen_female": "gen_male"})
         registry = {"ghost": ("vox", "Menu")}
-        rel = relative_path(registry, "ghost", voice="ivy", profiles=profiles, assets_dir=tmp_path)
-        assert rel == "Menu/vox/ivy/ghost.ogg"
+        rel = relative_path(registry, "ghost", voice="gen_female", profiles=profiles, assets_dir=tmp_path)
+        assert rel == "Menu/vox/gen_female/ghost.ogg"
 
     @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
     def test_cli_takes_a_voice(self, capsys):
         from services.audio.sound_catalog import main
 
-        assert main(["--voice", "aaron", Sound.MENU_VOX_LABEL_AGENT.value]) == 0
+        assert main(["--voice", "gen_male", Sound.MENU_VOX_LABEL_AGENT.value]) == 0
         assert "Menu/vox/gen_male/label_agent.ogg" in capsys.readouterr().out
-        assert main(["--voice", "nobody", "agent_cue"]) == 2
+        assert main(["--voice", "ivy", "agent_cue"]) == 2  # the recorded voices are gone (#2107)

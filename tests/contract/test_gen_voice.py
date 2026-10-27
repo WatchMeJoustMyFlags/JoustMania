@@ -22,12 +22,11 @@ pytestmark = pytest.mark.uc("UC-031", br=["BR-007"])
 
 CATALOG = {
     "version": 1,
-    "recorded": ["aaron", "ivy"],
     "loudness": {"target_lufs": -20.4, "tolerance_lu": 1.5},
     "audio": {"sample_rate": 44100, "channels": 2, "vorbis_quality": 4},
     "profiles": {
         "gen_male": {
-            "partner": "aaron",
+            "partner": "gen_female",
             "model": "m1",
             "model_url": "https://example.invalid/m1.tar.bz2",
             "model_sha256": "a" * 64,
@@ -37,7 +36,7 @@ CATALOG = {
             "noise_scale_w": 0.333,
         },
         "gen_female": {
-            "partner": "ivy",
+            "partner": "gen_male",
             "model": "m2",
             "model_url": "https://example.invalid/m2.tar.bz2",
             "model_sha256": "b" * 64,
@@ -53,7 +52,6 @@ CATALOG = {
                 "id": "high",
                 "sound": "MENU_VOX_SENSITIVITY_HIGH",
                 "text": "High sensitivity.",
-                "recorded": True,
             },
             {"id": "label_sensitivity", "text": "Sensitivity"},
             {"id": "backend_jev", "text": "Jev", "say": "Jeff"},
@@ -72,12 +70,11 @@ def _sha(path):
 
 @pytest.fixture
 def assets(tmp_path):
-    """An asset tree with one recorded file per recorded profile."""
+    """An asset tree with one sound effect the generator must never touch."""
     root = tmp_path / "assets"
-    for voice in ("aaron", "ivy"):
-        d = root / "Menu" / "vox" / voice
-        d.mkdir(parents=True)
-        (d / "high.ogg").write_bytes(b"recorded " + voice.encode())
+    d = root / "Zombie" / "sounds"
+    d.mkdir(parents=True)
+    (d / "zombie_death.ogg").write_bytes(b"growl")
     return root
 
 
@@ -94,9 +91,9 @@ def test_generates_every_line_for_every_generated_profile(assets):
         for line_id in ("high", "label_sensitivity", "backend_jev"):
             assert (assets / "Menu" / "vox" / profile / f"{line_id}.ogg").is_file()
     manifest = json.loads((assets / gv.MANIFEST_NAME).read_text())
-    assert manifest["recorded"] == ["aaron", "ivy"]
-    assert manifest["profiles"]["gen_male"]["partner"] == "aaron"
-    assert manifest["profiles"]["gen_female"]["partner"] == "ivy"
+    assert "recorded" not in manifest
+    assert manifest["profiles"]["gen_male"]["partner"] == "gen_female"
+    assert manifest["profiles"]["gen_female"]["partner"] == "gen_male"
     entry = manifest["files"]["Menu/vox/gen_female/high.ogg"]
     assert entry["line"] == "Menu/high"
     assert entry["sha256"] == _sha(assets / "Menu/vox/gen_female/high.ogg")
@@ -141,23 +138,35 @@ def test_manifest_is_deterministic(tmp_path):
     assert (a / gv.MANIFEST_NAME).read_bytes() == (b / gv.MANIFEST_NAME).read_bytes()
 
 
-def test_never_writes_a_recorded_profile(assets):
-    recorded = {p: _sha(p) for p in assets.rglob("*.ogg")}
+def test_writes_only_under_a_generated_profile(assets):
+    others = {p: _sha(p) for p in assets.rglob("*.ogg")}
     _generate(_catalog(), assets)
-    assert {p: _sha(p) for p in recorded} == recorded
-    with pytest.raises(gv.CatalogError):
-        gv.assert_generated_path(_catalog(), "Menu/vox/aaron/high.ogg")
-    with pytest.raises(gv.CatalogError):
-        gv.assert_generated_path(_catalog(), "Menu/vox/gen_male/../aaron/high.ogg")
+    assert {p: _sha(p) for p in others} == others
+    for rel in (
+        "Zombie/sounds/zombie_death.ogg",
+        "Menu/vox/aaron/high.ogg",
+        "Menu/vox/gen_male/../aaron/high.ogg",
+    ):
+        with pytest.raises(gv.CatalogError):
+            gv.assert_generated_path(_catalog(), rel)
 
 
-def test_a_profile_named_like_a_recorded_one_is_refused(assets):
+@pytest.mark.parametrize("partner", ["gen_male", "ivy", "bob"])
+def test_partner_must_be_another_generated_profile(partner):
+    """#2107 part 3: the partners are the generated profiles; itself or a deleted recording is refused."""
     catalog = _catalog()
-    catalog["profiles"]["ivy"] = catalog["profiles"].pop("gen_female")
-    assert any("recorded" in e for e in gv.validate_catalog(catalog))
-    with pytest.raises(gv.CatalogError):
-        _generate(catalog, assets)
-    assert (assets / "Menu/vox/ivy/high.ogg").read_bytes() == b"recorded ivy"
+    catalog["profiles"]["gen_male"]["partner"] = partner
+    assert any("partner" in e for e in gv.validate_catalog(catalog))
+
+
+def test_the_recorded_keys_are_gone():
+    """No `recorded` list and no `recorded` line flag since the recordings were deleted (#2107 part 3)."""
+    catalog = _catalog()
+    catalog["recorded"] = ["aaron", "ivy"]
+    assert any("unknown key 'recorded'" in e for e in gv.validate_catalog(catalog))
+    catalog = _catalog()
+    catalog["areas"]["Menu"][0]["recorded"] = True
+    assert any("unknown key 'recorded'" in e for e in gv.validate_catalog(catalog))
 
 
 @pytest.mark.parametrize(
@@ -231,18 +240,12 @@ def test_text_edit_without_say_change_is_drift(assets):
     assert gv.check(catalog, assets) == []
 
 
-def test_aaron_and_ivy_are_protected_even_when_not_listed_as_recorded(assets):
-    """The floor does not depend on the catalog's own `recorded` list (review F2)."""
-    catalog = _catalog()
-    catalog["recorded"] = ["ivy"]
-    catalog["profiles"]["gen_male"]["partner"] = "ivy"
-    catalog["profiles"]["aaron"] = catalog["profiles"].pop("gen_male")
-    assert any("aaron" in e for e in gv.validate_catalog(catalog))
-    with pytest.raises(gv.CatalogError):
-        _generate(catalog, assets)
-    with pytest.raises(gv.CatalogError):
-        gv.assert_generated_path(catalog, "Menu/vox/aaron/high.ogg")
-    assert (assets / "Menu/vox/aaron/high.ogg").read_bytes() == b"recorded aaron"
+def test_a_manifest_that_still_lists_recorded_profiles_is_stale(assets):
+    _generate(_catalog(), assets)
+    path = assets / gv.MANIFEST_NAME
+    manifest = json.loads(path.read_text())
+    path.write_text(json.dumps({**manifest, "recorded": ["aaron", "ivy"]}))
+    assert any("recorded" in p for p in gv.check(_catalog(), assets))
 
 
 def test_stray_file_in_an_area_outside_the_catalog_is_reported(assets):
