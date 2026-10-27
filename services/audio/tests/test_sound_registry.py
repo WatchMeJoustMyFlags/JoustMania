@@ -313,3 +313,111 @@ class TestUC040InterventionSounds:
         assert main(["no_such_sound_xyz"]) == 1
         assert "not in the sound registry" in capsys.readouterr().out
         assert main([]) == 2
+
+
+class TestVoiceProfilesUC031:
+    """UC-031 BR-007 / A4 (#2107): manifest-driven profiles, union registry, partner fallback."""
+
+    @pytest.fixture(scope="class")
+    def profiles(self):
+        from services.audio.sound_catalog import load_voice_profiles
+
+        return load_voice_profiles(ASSETS_DIR)
+
+    @pytest.fixture(scope="class")
+    def registry(self, profiles):
+        return build_sound_registry(ASSETS_DIR, profiles)
+
+    @pytest.mark.uc("UC-031", br=["BR-007"])
+    def test_profiles_and_partners_come_from_the_manifest(self, profiles):
+        assert set(profiles.names) == {"aaron", "ivy", "gen_male", "gen_female"}
+        assert profiles.names[:2] == ("aaron", "ivy")
+        assert profiles.candidates("aaron") == ("aaron", "gen_male")
+        assert profiles.candidates("gen_male") == ("gen_male", "aaron")
+        assert profiles.candidates("ivy") == ("ivy", "gen_female")
+        assert profiles.candidates("gen_female") == ("gen_female", "ivy")
+
+    @pytest.mark.uc("UC-031", br=["BR-003", "BR-007"])
+    def test_registry_is_the_union_of_every_profile_directory(self, registry):
+        """Fightclub-instructions is only in ivy, label_sensitivity only in gen_*: both are registered."""
+        assert registry["Fightclub-instructions"] == ("vox", "Menu")
+        assert registry[Sound.MENU_VOX_LABEL_SENSITIVITY.value] == ("vox", "Menu")
+        assert registry[Sound.MENU_VOX_STATUS_NO_CONNECTION.value] == ("vox", "Menu")
+
+    @pytest.mark.uc("UC-031", br=["BR-003", "BR-007"])
+    def test_union_keeps_every_id_the_aaron_scan_registered(self, registry):
+        """The union only adds ids: an id the old aaron-only scan knew keeps its type and area."""
+        from services.audio.sound_catalog import SOUND_BASE_DIRS, scan_directory
+
+        aaron_only: dict[str, tuple[str, str]] = {}
+        for base_dir in SOUND_BASE_DIRS:
+            scan_directory(aaron_only, ASSETS_DIR / base_dir / "vox" / "aaron", "vox", base_dir)
+            scan_directory(aaron_only, ASSETS_DIR / base_dir / "sounds", "sound", base_dir)
+        changed = {k: (v, registry.get(k)) for k, v in aaron_only.items() if registry.get(k) != v}
+        assert not changed
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_generated_only_line_plays_from_the_partner_of_a_recorded_voice(self, registry, profiles):
+        label = Sound.MENU_VOX_LABEL_SENSITIVITY.value
+        assert relative_path(registry, label, voice="aaron", profiles=profiles) == f"Menu/vox/gen_male/{label}.ogg"
+        assert relative_path(registry, label, voice="ivy", profiles=profiles) == f"Menu/vox/gen_female/{label}.ogg"
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_line_not_generated_plays_from_the_recorded_partner(self, registry, profiles):
+        """zombie_death is a growl with no catalog line: a generated voice plays the recording."""
+        death = Sound.VOX_ZOMBIE_DEATH.value
+        assert relative_path(registry, death, voice="gen_female", profiles=profiles) == f"Zombie/vox/ivy/{death}.ogg"
+        assert relative_path(registry, death, voice="gen_male", profiles=profiles) == f"Zombie/vox/aaron/{death}.ogg"
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_selected_profile_wins_when_it_has_the_line(self, registry, profiles):
+        high = Sound.MENU_VOX_SENSITIVITY_HIGH.value
+        for voice in profiles.names:
+            assert relative_path(registry, high, voice=voice, profiles=profiles) == f"Menu/vox/{voice}/{high}.ogg"
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    @pytest.mark.parametrize("voice", ["aaron", "ivy", "gen_male", "gen_female"])
+    def test_every_sound_member_resolves_to_a_file_in_every_profile(self, registry, profiles, voice):
+        """Aliases included (__members__): any profile can be selected without a silent line."""
+        missing = {}
+        for name, member in Sound.__members__.items():
+            rel = relative_path(registry, member.value, voice=voice, profiles=profiles)
+            if rel is None or not (ASSETS_DIR / rel).is_file():
+                missing[name] = rel
+        assert not missing, f"{voice}: {missing}"
+
+    @pytest.mark.uc("UC-031", br=["BR-007"])
+    def test_resolution_table_matches_relative_path(self, registry, profiles):
+        from services.audio.sound_catalog import resolution_table
+
+        table = resolution_table(registry, "gen_female", profiles, ASSETS_DIR)
+        assert set(table) == set(registry)
+        for sound_id in ("high", "label_backend", "zombie_death", "Explosion34", "congratulations"):
+            assert table[sound_id] == relative_path(registry, sound_id, voice="gen_female", profiles=profiles)
+
+    @pytest.mark.uc("UC-031", br=["BR-007"])
+    def test_missing_manifest_keeps_the_recorded_voices_without_partners(self, tmp_path):
+        from services.audio.sound_catalog import load_voice_profiles
+
+        profiles = load_voice_profiles(tmp_path)
+        assert profiles.names == ("aaron", "ivy")
+        assert profiles.candidates("ivy") == ("ivy",)
+        (tmp_path / "voice_manifest.json").write_text("{not json")
+        assert load_voice_profiles(tmp_path).names == ("aaron", "ivy")
+
+    @pytest.mark.uc("UC-031", br=["BR-007"])
+    def test_line_in_neither_profile_keeps_the_selected_voice_path(self, tmp_path):
+        from services.audio.sound_catalog import VoiceProfiles
+
+        profiles = VoiceProfiles(names=("aaron", "ivy", "gen_female"), partners={"ivy": "gen_female"})
+        registry = {"ghost": ("vox", "Menu")}
+        rel = relative_path(registry, "ghost", voice="ivy", profiles=profiles, assets_dir=tmp_path)
+        assert rel == "Menu/vox/ivy/ghost.ogg"
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_cli_takes_a_voice(self, capsys):
+        from services.audio.sound_catalog import main
+
+        assert main(["--voice", "aaron", Sound.MENU_VOX_LABEL_AGENT.value]) == 0
+        assert "Menu/vox/gen_male/label_agent.ogg" in capsys.readouterr().out
+        assert main(["--voice", "nobody", "agent_cue"]) == 2

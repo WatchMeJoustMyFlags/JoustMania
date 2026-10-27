@@ -216,7 +216,7 @@ class Sound(StrEnum):
 
     Use these enums instead of string literals for type safety.
     The audio service resolves these to actual file paths, handling:
-    - Voice selection (aaron/ivy) for VOX sounds
+    - Voice selection (flag menu_voice: the voice manifest's profiles, partner fallback) for VOX sounds
     - Directory lookup (sounds/ vs vox/) based on sound type
 
     Naming convention:
@@ -348,6 +348,28 @@ class Sound(StrEnum):
     MENU_VOX_ADMINOP_FALSE = "adminop_False"
     MENU_VOX_ADMINOP_FORCE_ALL_START = "adminop_force_all_start"
     MENU_VOX_ADMINOP_RANDOM_TEAM_SIZE = "adminop_random_team_size"
+
+    # Pad labels, backend names and status words (#2106). Generated only
+    # (Menu/vox/gen_*/, catalog services/audio/voice/lines.yaml); the recorded
+    # voices play them from their partner (UC-031 BR-007).
+    MENU_VOX_LABEL_SENSITIVITY = "label_sensitivity"
+    MENU_VOX_LABEL_TEAMS = "label_teams"
+    MENU_VOX_LABEL_AGENT = "label_agent"
+    MENU_VOX_LABEL_BACKEND = "label_backend"
+    MENU_VOX_LABEL_VOLUME = "label_volume"
+    MENU_VOX_LABEL_GAME_MODE = "label_game_mode"
+    MENU_VOX_LABEL_INSTRUCTIONS = "label_instructions"
+    MENU_VOX_PAD_LOCKED = "pad_locked"
+    MENU_VOX_PAD_UNLOCKED = "pad_unlocked"
+    MENU_VOX_BACKEND_RULES = "backend_rules"
+    MENU_VOX_BACKEND_CLAUDE = "backend_claude"
+    MENU_VOX_BACKEND_OPENAI = "backend_openai"
+    MENU_VOX_BACKEND_JEV = "backend_jev"
+    MENU_VOX_STATUS_NOT_POSSIBLE = "status_not_possible"
+    MENU_VOX_STATUS_MAXIMUM = "status_maximum"
+    MENU_VOX_STATUS_MINIMUM = "status_minimum"
+    MENU_VOX_STATUS_CANCELLED = "status_cancelled"
+    MENU_VOX_STATUS_NO_CONNECTION = "status_no_connection"
 
     # Agent kill-switch (#819) voice announcements. Reuse existing on/off and
     # numbered admin vox assets so no new audio is required; the LED color is the
