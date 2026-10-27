@@ -383,8 +383,8 @@ async def test_uc030_a7_uc040_a36_grant_hold_release_energy_events_and_gauges(
         # Step 8: the gauges agree (telemetry.md §6; the agent's view, UC-040 A37).
         player = f'serial="{holder}",game_id="{game_id}"'
 
-        def total(name: str) -> str:
-            return f'game_player_shield_total{{{player},total="{name}"}}'
+        def stat(name: str) -> str:
+            return f'game_player_shield_stats{{{player},stat="{name}"}}'
 
         checks = [
             (
@@ -396,9 +396,9 @@ async def test_uc030_a7_uc040_a36_grant_hold_release_energy_events_and_gauges(
                 f"game_player_shield_energy_seconds{{{player}}}",
                 lambda v: abs(v * 1000 - energy_after_ms) <= 50,
             ),
-            (total("granted_seconds"), lambda v: v >= _GRANT_SECONDS),
-            (total("activations"), lambda v: v >= 1),
-            (total("used_seconds"), lambda v: abs(v * 1000 - used_ms) <= 50),
+            (stat("granted_seconds"), lambda v: v >= _GRANT_SECONDS),
+            (stat("activations"), lambda v: v >= 1),
+            (stat("used_seconds"), lambda v: abs(v * 1000 - used_ms) <= 50),
         ]
         for query, check in checks:
             ok, value = await _gauge_matches(query, check)
