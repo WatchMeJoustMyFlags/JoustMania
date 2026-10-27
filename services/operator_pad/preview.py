@@ -89,6 +89,15 @@ class _Pending:
     up: bool = True
 
 
+@dataclass
+class _ModeLeds:
+    """The LED preview of one K1 hold: the mode at the press, the last one queued and the last one sent."""
+
+    start: str
+    queued: str  # the last mode queued for a pulse (a step back to it queues it again)
+    sent: str  # the last mode whose `preview_setting` went out to the menu
+
+
 class Previewer:
     def __init__(
         self,
@@ -103,9 +112,11 @@ class Previewer:
         self._sleep = sleep
         self._clock = clock
         self._menu = menu_stub  # None: no LED preview of the mode
-        self._tasks: set[asyncio.Task] = set()  # this hold's label, timer, value and mode pulses
-        # StopSound calls and the mode restore: they outlive the hold they end.
+        self._tasks: set[asyncio.Task] = set()  # this hold's label, timer and value
+        # StopSound calls, mode pulses and the mode restore: they outlive the hold they end.
         self._stops: set[asyncio.Task] = set()
+        # The last `preview_setting` task: every pulse and restore waits for it, so they reach the menu in order.
+        self._last_pulse: asyncio.Task | None = None
         self._reset()
 
     def _reset(self) -> None:
@@ -121,8 +132,7 @@ class Previewer:
         self._timer: asyncio.Task | None = None  # waiting out the debounce; restarted by a step
         self._option: str | None = None
         self._status = None  # the status read at the press
-        self._start_mode: str | None = None  # K1: the mode selected at the press
-        self._shown_mode: str | None = None  # K1: the mode the lobby LEDs last pulsed in this hold
+        self._leds: _ModeLeds | None = None  # K1 with a menu stub: this hold's LED preview
 
     # --- entry points ---------------------------------------------------------------------
 
@@ -167,11 +177,12 @@ class Previewer:
         """
         if self.hold_key is None:
             return
-        restore = self._mode_to_restore(commit_steps)
+        leds = self._leds if self._restore_wanted(commit_steps) else None
         self._drop_hold()
         self._stop(PREVIEW_GROUP)
-        if restore is not None:
-            self._detach(self._show_mode(restore))
+        if leds is not None:
+            # After every pulse of the hold: decided on the mode the last one actually sent.
+            self._queue_pulse(lambda: self._restore(leds))
 
     def cancel(self) -> None:
         """Drop every preview task and pending stop (device gone, shutdown); nothing plays on afterwards."""
@@ -199,13 +210,30 @@ class Previewer:
         self._stops.add(task)
         task.add_done_callback(self._stop_finished)
 
-    def _mode_to_restore(self, commit_steps: int) -> str | None:
-        if self._option != MODE_OPTION or self._start_mode is None or self._shown_mode == self._start_mode:
-            return None
+    def _restore_wanted(self, commit_steps: int) -> bool:
+        if self._leds is None:
+            return False
         committed = setting_ladders.preview_value(MODE_OPTION, self._status, commit_steps).value
-        if commit_steps != 0 and committed != self._start_mode:
-            return None  # the menu's commit pulses the new mode itself (BR-015)
-        return self._start_mode
+        # A commit of another mode: the menu's commit pulses the new mode itself (BR-015).
+        return commit_steps == 0 or committed == self._leds.start
+
+    async def _restore(self, leds: _ModeLeds) -> None:
+        if leds.sent != leds.start:
+            await self._show_mode(leds.start)
+
+    def _queue_pulse(self, make: Callable[[], Awaitable[None]]) -> None:
+        """Run ``make()`` after the previous pulse has finished; never cancelled by the end of a hold."""
+        previous = self._last_pulse
+
+        async def ordered() -> None:
+            if previous is not None and not previous.done():
+                await asyncio.wait({previous})
+            await make()
+
+        task = asyncio.create_task(ordered())
+        self._last_pulse = task
+        self._stops.add(task)
+        task.add_done_callback(self._stop_finished)
 
     def _stop_finished(self, task: asyncio.Task) -> None:
         self._stops.discard(task)
@@ -235,7 +263,7 @@ class Previewer:
         self._last_value = start.value
         self._option, self._status = option, status
         if option == MODE_OPTION and self._menu is not None:
-            self._start_mode = self._shown_mode = start.value
+            self._leds = _ModeLeds(start.value, start.value, start.value)
         label = LABEL_VOICES.get(option)
         if label is not None:
             self._label_task = self._spawn(self._play_label(label))
@@ -272,12 +300,17 @@ class Previewer:
 
     def _show_pending_mode(self) -> None:
         pending = self._pending
-        if self._start_mode is None or pending is None or pending.sound is None:
+        leds = self._leds
+        if leds is None or pending is None or pending.sound is None:
             return  # not a K1 hold with the LED preview, or the limit word (the mode is unchanged)
-        if pending.value == self._shown_mode:
-            return
-        self._shown_mode = pending.value
-        self._spawn(self._show_mode(pending.value))
+        if pending.value == leds.queued:
+            return  # the same as the last one shown
+        leds.queued = mode = pending.value
+        self._queue_pulse(lambda: self._pulse(leds, mode))
+
+    async def _pulse(self, leds: _ModeLeds, mode: str) -> None:
+        leds.sent = mode  # set as it goes out, never at queueing: the restore reads it
+        await self._show_mode(mode)
 
     async def _show_mode(self, mode: str) -> None:
         """One `preview_setting` (services.md §3.1): the menu pulses ``mode`` on the lobby; never retried."""

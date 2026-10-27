@@ -556,3 +556,95 @@ async def test_a_k1_release_restores_only_when_nothing_is_committed(back_turn, e
     await pad.on_code(CODE["K1"], RELEASE, 720)
     await rig.time.advance(1.0)
     assert [(d["command"], d.get("mode", d.get("steps"))) for d in rig.mode_previews()] == expected
+
+
+@pytest.mark.uc("UC-015", flow="A1", br=["BR-017", "BR-015"], steps=[4])
+@pytest.mark.parametrize("release_status", ["missing", "live"])
+async def test_a_k1_release_the_pad_does_not_send_restores_the_selected_mode(release_status):
+    rig = Rig()
+    actions = Actions(rig.menu, create_autospec(CoordinatorStubSpec, instance=True), rig.cues, previewer=rig.previewer)
+    rig.config.enabled.return_value = True
+    rig.config.timings.return_value = Timings(knob_events_per_step=1)
+    reader = create_autospec(MenuStatusReader, instance=True)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(selection=MODE_LADDER[0])
+    pad = PadController(rig.config, reader, actions, rig.cues)
+    pad.attached(KEYMAP)
+
+    await pad.on_code(CODE["K1"], PRESS, 0)
+    await pad.on_code(CODE["KNOB_TURN_B"], PRESS, 10)
+    await pad.on_code(CODE["KNOB_TURN_B"], RELEASE, 11)
+    await rig.time.advance(0.6)
+    # The status read at the release: unreadable (the release sends nothing) or live (refused, A1).
+    reader.fetch.return_value = (
+        None
+        if release_status == "missing"
+        else menu_pb2.GetMenuStatusResponse(selection=MODE_LADDER[0], lifecycle_live=True)
+    )
+    await pad.on_code(CODE["K1"], RELEASE, 720)
+    await rig.time.advance(1.0)
+    assert [(d["command"], d.get("mode")) for d in rig.mode_previews()] == [
+        ("preview_setting", MODE_LADDER[1]),
+        ("preview_setting", MODE_LADDER[0]),
+    ]
+
+
+class BlockedMenu:
+    """A menu whose `preview_setting` answers only when the test lets it; records each mode as it goes out."""
+
+    def __init__(self, rig: Rig) -> None:
+        self.sent: list[str] = []
+        self.answered: list[str] = []  # calls that ran to the menu's answer (not cancelled mid-flight)
+        self.answer = asyncio.Event()
+        rig.menu.ProcessInput.side_effect = self._process_input
+
+    async def _process_input(self, request, **_kwargs):
+        self.sent.append(request.data["mode"])
+        await self.answer.wait()
+        self.answered.append(request.data["mode"])
+        return menu_pb2.ProcessInputResponse(success=True)
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_the_restore_waits_for_a_pulse_still_in_flight():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    rig.step_mode(1)
+    await rig.time.advance(0.2)  # the M1 pulse is on the wire, unanswered
+    rig.previewer.end_hold()
+    await settle()
+    assert menu.sent == [MODE_LADDER[1]]  # the restore never overtakes it
+    menu.answer.set()
+    await rig.previewer.drain()
+    assert menu.sent == [MODE_LADDER[1], MODE_LADDER[0]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_a_pulse_back_to_the_selected_mode_is_sent_even_when_the_hold_ends_first():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    rig.step_mode(1)
+    await rig.time.advance(0.2)  # M1 on the wire
+    rig.step_mode(0)
+    await rig.time.advance(0.2)  # M0 queued behind it
+    rig.previewer.end_hold()  # net zero: nothing is committed
+    await settle()
+    menu.answer.set()
+    await rig.previewer.drain()
+    # M0 is the last pulse that went out, so no extra restore; the hold end cancelled neither call.
+    assert menu.sent == [MODE_LADDER[1], MODE_LADDER[0]]
+    assert menu.answered == [MODE_LADDER[1], MODE_LADDER[0]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_m1_m2_m1_then_a_quick_commit_sends_every_pulse_in_order_and_no_restore():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    for net in (1, 2, 1):
+        rig.step_mode(net)
+        await rig.time.advance(0.2)
+    rig.previewer.end_hold(commit_steps=1)  # released before the last pulse went out: M1 is committed
+    await settle()
+    assert menu.sent == [MODE_LADDER[1]]
+    menu.answer.set()
+    await rig.previewer.drain()
+    assert menu.sent == [MODE_LADDER[1], MODE_LADDER[2], MODE_LADDER[1]]
