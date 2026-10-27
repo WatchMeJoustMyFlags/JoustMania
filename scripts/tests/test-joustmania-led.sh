@@ -9,8 +9,13 @@
 #  - from-request applies the state joustmania-status --led left; a missing,
 #    invalid, symlinked or FIFO request shows `degraded`; no request falls back
 #    to the start.env result, else restores; starting drops a stale request
+#  - the UC-061 hotspot cue (#2137): its own pattern (timer 200/1800 ms), kept
+#    apart from the state; it wins over ok, degraded and the board's trigger,
+#    loses to starting and failed, comes back after them, and clearing it shows
+#    the state (or the board's trigger) again
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-led.sh
 # UC: UC-060 BR-005 A1 A5 Post-S-4
+# UC: UC-061 A10 BR-011
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -166,6 +171,121 @@ led starting
 [[ ! -e "${CASE}/run/led.request" ]] || fail "starting kept a stale request"
 led from-request
 expect "${CASE}/state/state" default
+
+# --- UC-061 hotspot cue and its precedence (UC-061 A10, BR-011; #2137) ------
+# expect_cue: the hotspot pattern is on the LED
+expect_cue() {
+  expect "${CASE}/sys/ACT/trigger" timer
+  expect "${CASE}/sys/ACT/delay_on" 200
+  expect "${CASE}/sys/ACT/delay_off" 1800
+}
+# expect_pattern <state>: the LED shows that UC-060 state, not the cue
+expect_pattern() {
+  case "$1" in
+    ok) expect "${CASE}/sys/ACT/trigger" default-on ;;
+    starting) expect "${CASE}/sys/ACT/trigger" heartbeat ;;
+    degraded)
+      expect "${CASE}/sys/ACT/trigger" timer
+      expect "${CASE}/sys/ACT/delay_on" 500
+      expect "${CASE}/sys/ACT/delay_off" 500
+      ;;
+    failed)
+      expect "${CASE}/sys/ACT/trigger" timer
+      expect "${CASE}/sys/ACT/delay_on" 100
+      expect "${CASE}/sys/ACT/delay_off" 100
+      ;;
+  esac
+}
+
+# rank 3 over 4 and 5: the cue covers ok and degraded, clearing it shows them again
+for base in ok degraded; do
+  make_case "cue-over-${base}"
+  led "$base"
+  led hotspot-failed || fail "cue-over-${base}: exit $?"
+  expect_cue
+  expect "${CASE}/state/state" "$base"
+  [[ -e "${CASE}/state/hotspot" ]] || fail "cue-over-${base}: cue not recorded"
+  led hotspot-clear || fail "cue-over-${base}: clear exit $?"
+  expect_pattern "$base"
+  [[ ! -e "${CASE}/state/hotspot" ]] || fail "cue-over-${base}: cue still recorded"
+  # a state applied while the cue is set records the state and keeps the cue
+  led hotspot-failed
+  led "$base"
+  expect_cue
+  expect "${CASE}/state/state" "$base"
+done
+
+# rank 3 over 6: nothing set since boot; clearing puts the board's trigger back
+make_case cue-no-state
+led hotspot-failed
+expect_cue
+expect "${CASE}/state/default-trigger" mmc0
+[[ ! -e "${CASE}/state/state" ]] || fail "cue-no-state: recorded a UC-060 state"
+led hotspot-clear
+expect "${CASE}/sys/ACT/trigger" mmc0
+
+# a clean stop of the game unit keeps the cue; clearing it then restores the board
+make_case cue-clean-stop
+led ok
+led hotspot-failed
+SERVICE_RESULT=success led stop-post
+expect_cue
+expect "${CASE}/state/state" default
+led hotspot-clear
+expect "${CASE}/sys/ACT/trigger" mmc0
+
+# ranks 1 and 2 win over the cue: the existing failure cue stays 5 Hz
+for top in failed starting; do
+  make_case "cue-under-${top}"
+  led hotspot-failed
+  led "$top"
+  expect_pattern "$top"
+  expect "${CASE}/state/state" "$top"
+  [[ -e "${CASE}/state/hotspot" ]] || fail "cue-under-${top}: the cue record was dropped"
+  # the cue set while the higher rank shows changes nothing on the LED
+  make_case "cue-set-under-${top}"
+  led "$top"
+  led hotspot-failed
+  expect_pattern "$top"
+  [[ -e "${CASE}/state/hotspot" ]] || fail "cue-set-under-${top}: cue not recorded"
+  led hotspot-clear
+  expect_pattern "$top"
+done
+
+# a failed start (ExecStopPost) with the cue set: 5 Hz
+make_case cue-stop-failed
+led hotspot-failed
+led starting
+SERVICE_RESULT=exit-code led stop-post
+expect_pattern failed
+
+# starting, then ExecStartPost judges ok: the cue comes back
+make_case cue-after-start
+led hotspot-failed
+led starting
+expect_pattern starting
+printf 'ok\n' >"${CASE}/run/led.request"
+led from-request
+expect_cue
+expect "${CASE}/state/state" ok
+
+# the cue is its own pattern: none of the UC-060 states uses timer 200/1800
+for state in starting ok degraded failed; do
+  make_case "cue-distinct-${state}"
+  led "$state"
+  got="$(cat "${CASE}/sys/ACT/trigger") $(cat "${CASE}/sys/ACT/delay_on" 2>/dev/null || true) $(cat "${CASE}/sys/ACT/delay_off" 2>/dev/null || true)"
+  [[ "$got" != "timer 200 1800" ]] || fail "cue-distinct-${state}: uses the hotspot pattern"
+done
+
+# no LED: one line, exit 0, nothing recorded; clearing without a cue changes nothing
+make_case cue-noled none
+led hotspot-failed || fail "cue-noled: exit $?"
+[[ "$(wc -l <"${CASE}/out")" -eq 1 ]] || fail "cue-noled: want one line, got: $(cat "${CASE}/out")"
+[[ ! -e "${CASE}/state/hotspot" ]] || fail "cue-noled: recorded a cue"
+make_case cue-clear-none
+led ok
+led hotspot-clear || fail "cue-clear-none: exit $?"
+expect_pattern ok
 
 if [[ $fails -gt 0 ]]; then
   echo "test-joustmania-led: ${fails} failure(s)"

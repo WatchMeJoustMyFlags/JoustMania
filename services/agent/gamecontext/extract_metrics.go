@@ -54,12 +54,25 @@ const (
 	// from it for the player.name attribute on targeted decisions; it is not a
 	// game signal and is never routed to a partition.
 	metricControllerInfo = "controller_info" // live
+
+	// Hold-mode shield (#2096, UC-040 A37, UC-042 BR-007): the latched mode (value 1,
+	// label mode), the latched hold values (label setting = flag key), and per player
+	// the energy, budget left, active flag and per-game totals (label stat). The
+	// coordinator removes them at game end.
+	metricShieldActivationMode   = "game_shield_activation_mode"
+	metricShieldHoldSetting      = "game_shield_hold_setting"
+	metricPlayerShieldEnergy     = "game_player_shield_energy_seconds"
+	metricPlayerShieldBudgetLeft = "game_player_shield_budget_remaining_seconds"
+	metricPlayerShieldActive     = "game_player_shield_active"
+	metricPlayerShieldStats      = "game_player_shield_stats"
 )
 
 // Attribute keys.
 const (
 	attrSerial   = "serial"
-	attrName     = "name" // controller_info only (#1295)
+	attrName     = "name"    // controller_info only (#1295)
+	attrSetting  = "setting" // game_shield_hold_setting only (#2096)
+	attrStat     = "stat"    // game_player_shield_stats only (#2096)
 	attrMode     = "mode"
 	attrGameID   = "game_id"
 	attrGameKind = "game_kind"
@@ -360,7 +373,48 @@ func (s *Store) applyDataPoint(name string, dp pmetric.NumberDataPoint) bool {
 			return true
 		}
 
+	case metricPlayerShieldEnergy:
+		if serial, ok := serialOf(); ok {
+			s.adoptGame(labels)
+			s.SetPlayerShieldEnergy(serial, v)
+			return true
+		}
+	case metricPlayerShieldBudgetLeft:
+		if serial, ok := serialOf(); ok {
+			s.adoptGame(labels)
+			s.SetPlayerShieldBudgetRemaining(serial, v)
+			return true
+		}
+	case metricPlayerShieldActive:
+		if serial, ok := serialOf(); ok {
+			s.adoptGame(labels)
+			s.SetPlayerShieldActive(serial, v == 1)
+			return true
+		}
+	case metricPlayerShieldStats:
+		if serial, ok := serialOf(); ok {
+			if tv, ok := attrs.Get(attrStat); ok && tv.AsString() != "" {
+				s.adoptGame(labels)
+				s.SetPlayerShieldTotal(serial, tv.AsString(), v)
+				return true
+			}
+		}
+
 	// --- session signals (no serial attr; carry game_id + game_kind) ---
+	case metricShieldActivationMode:
+		if v != 0 {
+			if mv, ok := attrs.Get(attrMode); ok && mv.AsString() != "" {
+				s.adoptGame(labels)
+				s.SetShieldActivation(mv.AsString())
+				return true
+			}
+		}
+	case metricShieldHoldSetting:
+		if sv, ok := attrs.Get(attrSetting); ok && sv.AsString() != "" {
+			s.adoptGame(labels)
+			s.SetShieldSetting(sv.AsString(), v)
+			return true
+		}
 	case metricDuration:
 		s.adoptGame(labels)
 		s.SetSessionDuration(v)

@@ -7,10 +7,19 @@
 #   joustmania-led from-request                  the state joustmania-status --led left
 #   joustmania-led stop-post                     ExecStopPost: restore on a clean stop,
 #                                                failed otherwise ($SERVICE_RESULT)
+#   joustmania-led hotspot-failed|hotspot-clear  set or clear the UC-061 hotspot cue
+#                                                (the hotspot helper, #2137)
 #
 # starting = trigger heartbeat; degraded = timer 500/500 ms (1 Hz); failed =
 # timer 100/100 ms (5 Hz); ok = default-on (solid on). `trigger` is written
 # first, then delay_on and delay_off. The LED is /sys/class/leds/ACT, else led0.
+#
+# This is the only writer of the LED (UC-061 BR-011). It keeps the UC-060 state
+# (STATE_DIR/state) and the UC-061 hotspot cue (STATE_DIR/hotspot, timer
+# 200/1800 ms: one short flash every 2 s) as two records and shows the winner,
+# highest first: failed, starting, the hotspot cue, degraded, ok, the board's
+# own trigger. Every change runs under STATE_DIR/lock, because the game unit's
+# hooks and the hotspot timer can call it at the same moment.
 #
 # It runs as root: install_autostart.sh installs a root-owned copy as
 # /usr/local/lib/joustmania/joustmania-led and the unit runs that copy with the
@@ -57,40 +66,108 @@ record() { # $1 = state word for joustmania-status
     return 0
 }
 
-apply() { # $1 = starting|ok|degraded|failed
-    local dir trigger on="" off=""
+# Serialise every change: the game unit's hooks and the hotspot helper's
+# timer both run this as root and may overlap. Without flock or a state dir
+# (a dev box) it goes on unlocked.
+lock() {
+    command -v flock >/dev/null 2>&1 || return 0
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+    exec 8>"$STATE_DIR/lock" 2>/dev/null || return 0
+    flock -w 10 8 || log "another joustmania-led holds $STATE_DIR/lock; going on"
+}
+
+# Sets TRIGGER ON OFF for a pattern word; 1 for an unknown word
+pattern() {
+    ON="" OFF=""
     case "$1" in
-        starting) trigger=heartbeat ;;
-        ok) trigger=default-on ;;
-        degraded) trigger=timer on=500 off=500 ;;
-        failed) trigger=timer on=100 off=100 ;;
-        *)
-            log "unknown state '$1'"
-            return 0
-            ;;
+        starting) TRIGGER=heartbeat ;;
+        ok) TRIGGER=default-on ;;
+        degraded) TRIGGER=timer ON=500 OFF=500 ;;
+        failed) TRIGGER=timer ON=100 OFF=100 ;;
+        hotspot) TRIGGER=timer ON=200 OFF=1800 ;;
+        *) return 1 ;;
     esac
-    if ! dir="$(led_dir)"; then
-        log "no writable ACT/led0 LED under $SYSFS (no LED or not root); state $1 not shown"
-        return 0
-    fi
+}
+
+cue_set() { [[ -e "$STATE_DIR/hotspot" ]]; }
+
+# The word to show for a UC-060 state (UC-061 BR-011): the hotspot cue covers
+# ok, degraded, the board's trigger (default) and nothing set since boot
+effective() { # $1 = UC-060 state word or ""
+    case "$1" in
+        failed | starting) echo "$1" ;;
+        *) if cue_set; then echo hotspot; else echo "${1:-default}"; fi ;;
+    esac
+}
+
+save_default_trigger() { # $1 = LED dir
     # Save the board's own trigger once per boot (/run is cleared at boot), so
     # restore puts back what the board had before we touched it
     if [[ ! -s "$STATE_DIR/default-trigger" ]]; then
         local own
-        own="$(current_trigger "$dir")"
+        own="$(current_trigger "$1")"
         mkdir -p "$STATE_DIR" 2>/dev/null && [[ -n "$own" ]] &&
             printf '%s\n' "$own" >"$STATE_DIR/default-trigger" 2>/dev/null
     fi
-    if ! write_sysfs "$dir/trigger" "$trigger"; then
-        log "cannot write $dir/trigger; state $1 not shown"
+}
+
+# Write one pattern word to the LED; `default` is the board's saved trigger.
+# 1 when nothing could be written
+show() { # $1 = LED dir, $2 = pattern word or default
+    local own
+    if [[ "$2" == default ]]; then
+        own="$(head -n 1 "$STATE_DIR/default-trigger" 2>/dev/null || true)"
+        [[ -n "$own" ]] || return 1
+        write_sysfs "$1/trigger" "$own" || {
+            log "cannot write $1/trigger; trigger $own not restored"
+            return 1
+        }
         return 0
     fi
-    if [[ -n "$on" ]]; then
-        write_sysfs "$dir/delay_on" "$on" || log "cannot write $dir/delay_on"
-        write_sysfs "$dir/delay_off" "$off" || log "cannot write $dir/delay_off"
+    pattern "$2" || return 1
+    write_sysfs "$1/trigger" "$TRIGGER" || {
+        log "cannot write $1/trigger; $2 not shown"
+        return 1
+    }
+    if [[ -n "$ON" ]]; then
+        write_sysfs "$1/delay_on" "$ON" || log "cannot write $1/delay_on"
+        write_sysfs "$1/delay_off" "$OFF" || log "cannot write $1/delay_off"
     fi
+}
+
+describe() { # $1 = pattern word or default
+    if [[ "$1" == default ]]; then
+        echo "the board trigger $(head -n 1 "$STATE_DIR/default-trigger" 2>/dev/null || true)"
+    elif pattern "$1"; then
+        echo "$TRIGGER${ON:+ $ON/$OFF ms}"
+    fi
+}
+
+# The one place the precedence is applied (UC-061 BR-011): show the winner of
+# the UC-060 state and the hotspot cue. Sets SHOWN to the word written.
+render() { # $1 = LED dir, $2 = UC-060 state word or ""
+    SHOWN="$(effective "$2")"
+    show "$1" "$SHOWN"
+}
+
+apply() { # $1 = starting|ok|degraded|failed
+    local dir
+    if ! pattern "$1"; then
+        log "unknown state '$1'"
+        return 0
+    fi
+    if ! dir="$(led_dir)"; then
+        log "no writable ACT/led0 LED under $SYSFS (no LED or not root); state $1 not shown"
+        return 0
+    fi
+    save_default_trigger "$dir"
+    render "$dir" "$1" || return 0
     record "$1"
-    log "state $1 ($trigger${on:+ $on/$off ms}) on $dir"
+    if [[ "$SHOWN" == "$1" ]]; then
+        log "state $1 ($(describe "$1")) on $dir"
+    else
+        log "state $1 recorded; the hotspot cue ($(describe hotspot)) wins on $dir (UC-061 BR-011)"
+    fi
 }
 
 restore() {
@@ -104,12 +181,43 @@ restore() {
         log "no writable ACT/led0 LED under $SYSFS; nothing restored"
         return 0
     fi
-    if write_sysfs "$dir/trigger" "$own"; then
-        record default
+    render "$dir" default || return 0
+    record default
+    if [[ "$SHOWN" == default ]]; then
         log "restored the board trigger $own on $dir"
     else
-        log "cannot write $dir/trigger; trigger $own not restored"
+        log "the board trigger $own is due, but the hotspot cue ($(describe hotspot)) wins on $dir (UC-061 BR-011)"
     fi
+}
+
+# UC-061 A10: the hotspot helper's cue. Only the record changes here; what the
+# LED shows comes from render, like for every UC-060 state.
+hotspot_cue() { # $1 = failed|clear
+    local dir base
+    base="$(head -n 1 "$STATE_DIR/state" 2>/dev/null || true)"
+    if [[ "$1" == clear ]] && ! cue_set; then
+        log "no hotspot cue to clear"
+        return 0
+    fi
+    if ! dir="$(led_dir)"; then
+        [[ "$1" == clear ]] && rm -f "$STATE_DIR/hotspot"
+        log "no writable ACT/led0 LED under $SYSFS (no LED or not root); hotspot cue $1 not shown"
+        return 0
+    fi
+    save_default_trigger "$dir"
+    if [[ "$1" == clear ]]; then
+        rm -f "$STATE_DIR/hotspot"
+    elif ! { mkdir -p "$STATE_DIR" 2>/dev/null && : >"$STATE_DIR/hotspot"; } 2>/dev/null; then
+        log "cannot record the hotspot cue in $STATE_DIR; not shown"
+        return 0
+    fi
+    if ! render "$dir" "$base"; then
+        # a cue that could not be shown is not recorded
+        [[ "$1" == failed ]] && rm -f "$STATE_DIR/hotspot"
+        log "hotspot cue $1: nothing written to $dir"
+        return 0
+    fi
+    log "hotspot cue $1 (UC-061 A10); the LED shows $(describe "$SHOWN") on $dir (UC-061 BR-011)"
 }
 
 # The first line of a file the unit's user owns: a regular file, not a
@@ -150,6 +258,10 @@ from_request() {
 }
 
 case "${1:-}" in
+    starting | ok | degraded | failed | restore | from-request | stop-post | hotspot-failed | hotspot-clear) lock ;;
+esac
+
+case "${1:-}" in
     starting)
         # A request left by an earlier start must not be applied to this one
         rm -f "$REQUEST" 2>/dev/null
@@ -158,6 +270,8 @@ case "${1:-}" in
     ok | degraded | failed) apply "$1" ;;
     restore) restore ;;
     from-request) from_request ;;
+    hotspot-failed) hotspot_cue failed ;;
+    hotspot-clear) hotspot_cue clear ;;
     stop-post)
         if [[ "${SERVICE_RESULT:-}" == success ]]; then
             restore
@@ -167,7 +281,7 @@ case "${1:-}" in
         fi
         ;;
     *)
-        echo "usage: joustmania-led starting|ok|degraded|failed|restore|from-request|stop-post" >&2
+        echo "usage: joustmania-led starting|ok|degraded|failed|restore|from-request|stop-post|hotspot-failed|hotspot-clear" >&2
         exit 64
         ;;
 esac

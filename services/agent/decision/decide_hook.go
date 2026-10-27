@@ -210,14 +210,15 @@ func (rec *decideRecord) notePermission(state *LayerState, before int) {
 // ledger view at this moment (#1870). withContext attaches the raw snapshot (for
 // the in-process rules adapter only); remote requests never carry it.
 func (l *Loop) buildDecideRequest(c gamecontext.GameContext, allowed []string, withContext bool) decide.Request {
-	return decideRequestWith(c, allowed, withContext, l.ChargedSerials())
+	return decideRequestWith(c, allowed, withContext, l.ChargedSerials(), l.ShieldInFlight())
 }
 
 // decideRequestWith builds the FFA decide request for c whose state marks the
-// charged players shield_charged. The rules path passes the snapshot its ranking
-// used, so the state and the charge policy agree.
-func decideRequestWith(c gamecontext.GameContext, allowed []string, withContext bool, charged map[string]bool) decide.Request {
-	st := decide.BuildStateWith(c, decide.Annotations{Charged: charged})
+// charged players shield_charged and, in a hold game, adds the grants in flight to
+// the players' energy (#2096). The rules path passes the snapshot its ranking used,
+// so the state and the charge policy agree.
+func decideRequestWith(c gamecontext.GameContext, allowed []string, withContext bool, charged map[string]bool, inFlight map[string]float64) decide.Request {
+	st := decide.BuildStateWith(c, decide.Annotations{Charged: charged, ShieldInFlight: inFlight})
 	req := decide.Request{State: st, Questions: decide.FFAQuestions(st, allowed)}
 	if withContext {
 		cc := c
@@ -247,7 +248,7 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, rules R
 	now := l.nowOrDefault()
 	start := now()
 	out, req, resp, ranked := eng.EvaluateDecide(ctx, c, func(charged map[string]bool) decide.Request {
-		return decideRequestWith(c, snapshot.InterventionsAllowed, true, charged)
+		return decideRequestWith(c, snapshot.InterventionsAllowed, true, charged, l.ShieldInFlight())
 	})
 	if !ranked {
 		return out, nil
@@ -693,7 +694,7 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 	var decisions []Decision
 	if eng, isDecide := rules.(decideEngine); isDecide {
 		out, req, resp, ranked := eng.EvaluateDecide(ctx, current, func(charged map[string]bool) decide.Request {
-			return decideRequestWith(current, snapshot.InterventionsAllowed, true, charged)
+			return decideRequestWith(current, snapshot.InterventionsAllowed, true, charged, l.ShieldInFlight())
 		})
 		decisions = out
 		if ranked {

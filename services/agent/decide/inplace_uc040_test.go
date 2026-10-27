@@ -15,7 +15,7 @@ func TestRecentlyShielded_InPlaceIsNoShield(t *testing.T) {
 			{At: now.Add(-2 * time.Second), Kind: gamecontext.EventIntervention, Detail: "toughness_boost", Serial: "AA", InPlace: true},
 			{At: now.Add(-2 * time.Second), Kind: gamecontext.EventIntervention, Detail: "toughness_boost", Serial: "BB"},
 		}}
-		got := recentlyShielded(c, nil)
+		got := recentlyShielded(c, nil, false)
 		if got["AA"] || !got["BB"] {
 			t.Errorf("shielded = %v, want only BB", got)
 		}

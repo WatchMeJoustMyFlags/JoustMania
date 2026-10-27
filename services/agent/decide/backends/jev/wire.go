@@ -132,6 +132,12 @@ type jevState struct {
 	// MostHeadroom / Struggling are decide.State's session-level hints (#1262).
 	MostHeadroom string `json:"most_headroom,omitempty"`
 	Struggling   string `json:"struggling,omitempty"`
+	// Hold mode only (#2096): decide.State's latched hold values; absent otherwise.
+	ShieldActivation   string   `json:"shield_activation,omitempty"`
+	ShieldEnergyMaxS   *float64 `json:"shield_energy_max_s,omitempty"`
+	ShieldBudgetS      *float64 `json:"shield_budget_s,omitempty"`
+	ShieldRechargePerS *float64 `json:"shield_recharge_per_s,omitempty"`
+	ShieldMinBurstS    *float64 `json:"shield_min_burst_s,omitempty"`
 }
 
 type jevQuestion struct {
@@ -229,6 +235,8 @@ func encodeState(st decide.State, chosen string) jevState {
 		p.Variance = finiteOrNil(p.Variance)
 		p.Skill = finiteOrNil(p.Skill)
 		p.BatteryPct = finiteOrNil(p.BatteryPct)
+		p.ShieldEnergyS = finiteOrNil(p.ShieldEnergyS)
+		p.ShieldBudgetRemainingS = finiteOrNil(p.ShieldBudgetRemainingS)
 		players[i] = p
 	}
 	alive := st.AliveSerials()
@@ -248,6 +256,12 @@ func encodeState(st decide.State, chosen string) jevState {
 		Narrative:      st.Narrative,
 		MostHeadroom:   st.MostHeadroom,
 		Struggling:     st.Struggling,
+
+		ShieldActivation:   st.ShieldActivation,
+		ShieldEnergyMaxS:   finiteOrNil(st.ShieldEnergyMaxS),
+		ShieldBudgetS:      finiteOrNil(st.ShieldBudgetS),
+		ShieldRechargePerS: finiteOrNil(st.ShieldRechargePerS),
+		ShieldMinBurstS:    finiteOrNil(st.ShieldMinBurstS),
 
 		ChosenIntervention: chosen,
 	}
