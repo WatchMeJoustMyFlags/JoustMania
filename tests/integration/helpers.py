@@ -171,6 +171,8 @@ def flagd_probe_client(docker_compose, flag_set: str, *, resolver: str = "in_pro
     from openfeature.contrib.provider.flagd import FlagdProvider
     from openfeature.contrib.provider.flagd.config import CacheType, ResolverType
 
+    from tests.contract.flagd_rpc_retry import retry_decode_failures
+
     if resolver == "in_process":
         provider = FlagdProvider(
             host=docker_compose.get_service_host("flagd", 8015),
@@ -186,6 +188,8 @@ def flagd_probe_client(docker_compose, flag_set: str, *, resolver: str = "in_pro
             selector=f"flagSetId={flag_set}",
             cache=CacheType.DISABLED,
         )
+        # Rare unparsable ResolveInt response on CI (#2184): flagd_rpc_retry.
+        retry_decode_failures(provider)
     domain = f"it_probe_{flag_set}_{resolver}"
     api.set_provider(provider, domain=domain)
     try:

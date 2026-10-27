@@ -228,6 +228,8 @@ class FlagdContainer:
         from openfeature.contrib.provider.flagd import FlagdProvider
         from openfeature.contrib.provider.flagd.config import CacheType, ResolverType
 
+        from flagd_rpc_retry import retry_decode_failures
+
         if resolver == "in_process":
             provider = FlagdProvider(
                 host=self.host,
@@ -243,6 +245,8 @@ class FlagdContainer:
                 selector=f"flagSetId={flag_set}",
                 cache=CacheType.DISABLED,
             )
+            # Rare unparsable ResolveInt response on CI (#2184): flagd_rpc_retry.
+            retry_decode_failures(provider)
         domain = f"contract_{flag_set}_{resolver}_{uuid.uuid4().hex[:6]}"
         api.set_provider(provider, domain=domain)
         try:

@@ -40,6 +40,8 @@ def _rollout_client(stack):
     from openfeature.contrib.provider.flagd import FlagdProvider
     from openfeature.contrib.provider.flagd.config import CacheType, ResolverType
 
+    from tests.contract.flagd_rpc_retry import retry_decode_failures
+
     provider = FlagdProvider(
         host=stack.get_service_host("flagd", 8013),
         port=int(stack.get_service_port("flagd", 8013)),
@@ -48,6 +50,8 @@ def _rollout_client(stack):
         # Live re-resolution is the point: no RPC cache (CI run 27029212634).
         cache=CacheType.DISABLED,
     )
+    # Rare unparsable ResolveInt response on CI (#2184): flagd_rpc_retry.
+    retry_decode_failures(provider)
     api.set_provider(provider, domain="it_rollout")
     return api.get_client("it_rollout"), provider
 
