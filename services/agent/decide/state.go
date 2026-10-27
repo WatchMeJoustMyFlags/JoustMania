@@ -32,11 +32,57 @@ type Annotations struct {
 	// writes in flight (reserved, not finished) at the moment the state is built. In
 	// a hold game they are added to the player's energy (#2096; UC-040 A37).
 	ShieldInFlight map[string]float64
+	// NoShield holds the serials the agent would refuse a grant_shield to at the
+	// moment the state is built, for any reason (Loop.ShieldSerials' no-shield set:
+	// charged, capped, cooling down, and in a hold game a full pool or a used-up
+	// budget). An alive player in it but not in Charged is marked ShieldLimited
+	// (#2066; UC-040 A33, A37).
+	NoShield map[string]bool
+	// Levels holds the values the agent last wrote to this game, keyed
+	// LevelKey(intervention, serial) (the applied-value ledger, Loop.AppliedValues;
+	// UC-040 A35). The per-player sensitivity and handicap factors are read from it
+	// (#2066).
+	Levels map[string]string
+}
+
+// LevelKey is the Annotations.Levels key of an intervention and its target serial
+// ("" for a game-wide intervention): the applied-value ledger's key.
+func LevelKey(intervention, serial string) string { return intervention + "|" + serial }
+
+// levelFactor is the per-player factor of intervention in levels for serial: the
+// value as a finite number, or for an empty value (the writer then writes its
+// default) the Default of the intervention's magnitude bounds; nil when absent,
+// unparsable or the neutral value.
+func levelFactor(levels map[string]string, intervention, serial string) *float64 {
+	v, ok := levels[LevelKey(intervention, serial)]
+	if !ok {
+		return nil
+	}
+	b, hasBounds := MagnitudeBounds(intervention)
+	var f float64
+	if t := strings.TrimSpace(v); t == "" {
+		if !hasBounds {
+			return nil
+		}
+		f = b.Default
+	} else {
+		parsed, err := strconv.ParseFloat(t, 64)
+		if err != nil || !finite(parsed) {
+			return nil
+		}
+		f = parsed
+	}
+	if hasBounds && b.HasNeutral && f == b.Neutral {
+		return nil
+	}
+	return &f
 }
 
 // BuildStateWith is BuildState plus the decision loop's annotations: an alive
 // player in ann.Charged is marked ShieldCharged, and a grant_shield to them no
-// longer counts as Shielded.
+// longer counts as Shielded; an alive player in ann.NoShield but not in ann.Charged
+// is marked ShieldLimited, and the non-neutral per-player factors in ann.Levels are
+// set (#2066).
 func BuildStateWith(c gamecontext.GameContext, ann Annotations) State {
 	st := State{
 		GameID:         c.SessionID,
@@ -80,7 +126,7 @@ func buildPlayers(c gamecontext.GameContext, ann Annotations) []PlayerState {
 			serial = key
 		}
 		alive := p.Active != nil && *p.Active
-		out = append(out, PlayerState{
+		ps := PlayerState{
 			Serial:           serial,
 			Alive:            alive,
 			Intensity:        p.MovementIntensity,
@@ -90,7 +136,13 @@ func buildPlayers(c gamecontext.GameContext, ann Annotations) []PlayerState {
 			EliminationOrder: elimOrder[serial],
 			Shielded:         shielded[serial],
 			ShieldCharged:    alive && ann.Charged[serial],
-		})
+			ShieldLimited:    alive && ann.NoShield[serial] && !ann.Charged[serial],
+		}
+		if alive {
+			ps.SensitivityFactor = levelFactor(ann.Levels, "adjust_player_sensitivity", serial)
+			ps.HandicapFactor = levelFactor(ann.Levels, "set_player_handicap", serial)
+		}
+		out = append(out, ps)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Serial < out[j].Serial })
 	return out
@@ -145,6 +197,7 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 			b.WriteString(" movement=" + gamecontext.RenderSparkline(src.History, c.Session.DeathThreshold))
 		}
 		b.WriteString(dangerNarrative(p, ranked))
+		b.WriteString(limitNarrative(p, st))
 		b.WriteString("\n")
 	}
 
@@ -183,6 +236,16 @@ func digest(st State) string {
 		if p.ShieldCharged {
 			b.WriteString(" shield_charged=true")
 		}
+		// #2066: likewise written only when set, so existing digests stay the same.
+		if p.ShieldLimited {
+			b.WriteString(" shield_limited=true")
+		}
+		if p.SensitivityFactor != nil {
+			b.WriteString(" sensitivity_factor=" + exact(p.SensitivityFactor))
+		}
+		if p.HandicapFactor != nil {
+			b.WriteString(" handicap_factor=" + exact(p.HandicapFactor))
+		}
 		// Hold mode only (#2096), so instant and trigger digests stay the same.
 		if st.ShieldActivation != "" {
 			b.WriteString(" shield_energy_s=" + exact(p.ShieldEnergyS) +
@@ -202,6 +265,26 @@ func digest(st State) string {
 	b.WriteString("narrative=" + strconv.Quote(st.Narrative) + "\n")
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
+}
+
+// limitNarrative is a player's shield-limit and applied-level suffix (#2066), e.g.
+// " shield_limited sensitivity_factor=0.80", or " shield_limited=shield_pool_full"
+// when the hold state itself gives the refusal. Empty when none is set.
+func limitNarrative(p PlayerState, st State) string {
+	var s string
+	if p.ShieldLimited {
+		s += " shield_limited"
+		if r := st.HoldRefusal(p); r != "" {
+			s += "=" + r
+		}
+	}
+	if p.SensitivityFactor != nil {
+		s += " sensitivity_factor=" + strconv.FormatFloat(*p.SensitivityFactor, 'f', 2, 64)
+	}
+	if p.HandicapFactor != nil {
+		s += " handicap_factor=" + strconv.FormatFloat(*p.HandicapFactor, 'f', 2, 64)
+	}
+	return s
 }
 
 func exact(v *float64) string {

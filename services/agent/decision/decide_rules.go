@@ -73,7 +73,8 @@ func (b *RulesBackend) Decide(_ context.Context, req decide.Request) (decide.Res
 	if known {
 		b.engine.mu.Lock()
 		// Same no-shield set as EvaluateDecide: the ledger's charged, capped and
-		// cooling-down players, plus the charges the request's state shows.
+		// cooling-down players, plus the charged and limited players the request's
+		// state shows.
 		_, noShield := b.engine.shieldLocked(*req.Context)
 		for serial := range chargedFromState(req.State) {
 			if noShield == nil {
@@ -87,12 +88,13 @@ func (b *RulesBackend) Decide(_ context.Context, req decide.Request) (decide.Res
 	return answerFromRanked(ranked, req, known), nil
 }
 
-// chargedFromState is the shield-charge snapshot the request's state was built
-// with (#1870): the rules backend ranks on the same view the state shows.
+// chargedFromState is the no-shield snapshot the request's state was built with
+// (#1870, #2066): the charged and the limited players, so the rules backend ranks
+// on the same view the state shows.
 func chargedFromState(st decide.State) map[string]bool {
 	var out map[string]bool
 	for _, p := range st.Players {
-		if p.ShieldCharged {
+		if p.ShieldCharged || p.ShieldLimited {
 			if out == nil {
 				out = map[string]bool{}
 			}

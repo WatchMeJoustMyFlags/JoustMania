@@ -508,6 +508,50 @@ func TestExpireGames(t *testing.T) {
 	})
 }
 
+// UC: UC-053 A11
+func TestExpireGames_LastSeen(t *testing.T) {
+	t.Run("UC-053/A11 a game reconciled every few minutes never expires", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.register("game_long", "c/1", "S1")
+		registeredAt := f.state.Game("game_long").RegisteredAt
+		for i := 0; i < 30; i++ { // 2.5 h in 5 min steps
+			f.clock.Advance(5 * time.Minute)
+			if _, err := f.state.Reconcile("c/1", []Game{{ID: "game_long", Serials: []string{"S1"}}}); err != nil {
+				t.Fatal(err)
+			}
+			if ends := f.state.ExpireGames(); len(ends) != 0 {
+				t.Fatalf("step %d: a reconciled game expired: %+v", i, ends)
+			}
+		}
+		if !f.state.Game("game_long").RegisteredAt.Equal(registeredAt) {
+			t.Fatal("registered_at changed")
+		}
+	})
+
+	t.Run("UC-053/A11 a re-registration refreshes last-seen", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.register("game_a", "c/1", "S1")
+		f.clock.Advance(50 * time.Minute)
+		f.register("game_a", "c/1", "S1")
+		f.clock.Advance(50 * time.Minute)
+		if ends := f.state.ExpireGames(); len(ends) != 0 {
+			t.Fatalf("expired %+v", ends)
+		}
+	})
+
+	t.Run("UC-053/A11 a game not seen for the maximum age expires", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.register("game_a", "c/1", "S1")
+		f.clock.Advance(30 * time.Minute)
+		f.register("game_a", "c/1", "S1")
+		f.clock.Advance(61 * time.Minute)
+		ends := f.state.ExpireGames()
+		if len(ends) != 1 || ends[0].Reason != EndReasonExpired {
+			t.Fatalf("ends %+v", ends)
+		}
+	})
+}
+
 // UC: UC-053 A3
 func TestExperimentArm_NeverResolvesForReal(t *testing.T) {
 	t.Run("UC-053/A3 an arm value resolves only for non-real games of that experiment and arm", func(t *testing.T) {

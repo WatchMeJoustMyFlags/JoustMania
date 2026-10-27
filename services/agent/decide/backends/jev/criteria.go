@@ -387,6 +387,11 @@ func suitability(iv string, p decide.PlayerState, st decide.State) string {
 				return "Shield energy already full: another shield is refused."
 			}
 		}
+		// #2066: the per-game cap or the cooldown (and a hold refusal the state's
+		// own fields do not show) refuse another grant.
+		if iv == "grant_shield" && p.ShieldLimited {
+			return "No more agent shields for this player right now (per-game cap or cooldown): another shield is refused."
+		}
 		if p.Shielded && (iv != "grant_shield" || st.ShieldActivation == "") {
 			return "Already shielded a moment ago: another shield would be wasted."
 		}
@@ -450,6 +455,7 @@ func describeCandidates(st decide.State, iv string) map[string]string {
 			b.WriteString(" Holds an agent shield charge, or has just used it.")
 		}
 		b.WriteString(holdPhrase(p, st))
+		b.WriteString(levelPhrase(p))
 		if v := finiteOrNil(p.Skill); v != nil {
 			b.WriteString(" Skill " + strconv.FormatFloat(*v, 'f', 2, 64) + ".")
 		}
@@ -459,6 +465,19 @@ func describeCandidates(st decide.State, iv string) map[string]string {
 		out[p.Serial] = b.String()
 	}
 	return out
+}
+
+// levelPhrase names the per-player factors the agent already applied (#2066), e.g.
+// " Agent sensitivity factor 0.80 already applied.". Empty when none is set.
+func levelPhrase(p decide.PlayerState) string {
+	var s string
+	if p.SensitivityFactor != nil {
+		s += " Agent sensitivity factor " + strconv.FormatFloat(*p.SensitivityFactor, 'f', 2, 64) + " already applied."
+	}
+	if p.HandicapFactor != nil {
+		s += " Agent handicap factor " + strconv.FormatFloat(*p.HandicapFactor, 'f', 2, 64) + " already applied."
+	}
+	return s
 }
 
 // rankWord is "most" for rank 1, "least" for the last rank, else "2nd most".

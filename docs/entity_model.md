@@ -188,11 +188,14 @@ A player as the decision backends see it (`decide.PlayerState`, `services/agent/
 | danger | Intensity / session death threshold: `safe` < 0.60 ≤ `elevated` < 0.85 ≤ `near_threshold`; empty when unknown | String | 14 | Optional, Values: safe, elevated, near_threshold |
 | shielded | A grant_shield / toughness_boost was dispatched to the player in the last 10 s; a grant_shield to a shield_charged player does not count; in a hold game `shield_active` or a toughness_boost (a grant_shield there is energy, #2096) | Boolean | 1 | Not Null |
 | shield_charged | Alive player with a live entry in the agent's shield-charge ledger when the state is built (trigger mode, UC-040 A31): holds an agent charge or has just used it; never set in a hold game | Boolean | 1 | Not Null |
+| shield_limited | Alive player the agent would refuse another grant_shield for a reason other than already_charged when the state is built (#2066, UC-040 A33, A37): the per-game cap, the cooldown, or in a hold game a full pool or a used-up budget; never set together with shield_charged | Boolean | 1 | Not Null |
+| sensitivity_factor | The per-player sensitivity factor the agent last wrote to this game (`adjust_player_sensitivity`, applied-value ledger, UC-040 A35; #2066), only when not the neutral 1.0 | Decimal | 4,2 | Optional, Min: 0.7, Max: 1.5 |
+| handicap_factor | The per-player handicap factor the agent last wrote to this game (`set_player_handicap`, applied-value ledger; #2066), only when not the neutral 1.0 | Decimal | 4,2 | Optional, Min: 0.75, Max: 1.75 |
 | shield_energy_s | Hold game only (#2096, UC-040 A36): the alive player's shield energy in seconds from `game_player_shield_energy_seconds`, plus the agent's grants in flight, at most the cap | Decimal | 5,2 | Optional, Min: 0 |
 | shield_budget_remaining_s | Hold game only: shield seconds the player has left this game (`game_player_shield_budget_remaining_seconds`) | Decimal | 5,2 | Optional, Min: 0 |
 | shield_active | Hold game only: the player holds the trigger and is protected now (`game_player_shield_active`) | Boolean | 1 | Not Null |
 
-**Constraints:** danger reads the **session** death threshold, so per-player factors and shields are not reflected (`shielded` flags shields separately). `shield_charged` comes from the decision loop's in-memory ledger, not from telemetry, and is lost on an agent restart. Session-level fields on the state: `most_headroom` (alive player with the strictly lowest intensity) and `struggling` (strictly highest intensity when elevated or near_threshold); ties leave them empty.
+**Constraints:** danger reads the **session** death threshold, so per-player factors and shields are not reflected (`shielded` flags shields separately). `shield_charged`, `shield_limited` and the two factors come from the decision loop's in-memory ledgers, not from telemetry, and are lost on an agent restart; the factors are the agent's own writes, not the coordinator's flag value. Session-level fields on the state: `most_headroom` (alive player with the strictly lowest intensity) and `struggling` (strictly highest intensity when elevated or near_threshold); ties leave them empty.
 
 ### TEAM
 
@@ -276,7 +279,7 @@ file is the source). A flag without a policy is read-only baseline. There are no
 
 Delivered by #1417 (FR-135). The flag service's record of one live game (`services/flag-service/state/games.go`), registered by the game coordinator
 at admission and dropped at the game's end, by a reconcile call of its coordinator instance, or after the
-maximum game age (1 h). In-memory, lost on restart.
+maximum game age (1 h) since it was last seen (registered or reconciled, #2217). In-memory, lost on restart.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -286,10 +289,11 @@ maximum game age (1 h). In-memory, lost on restart.
 | experiment_id | Experiment of a shadow experiment game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
 | coordinator_instance | Coordinator instance that registered it; reconcile calls drop only that instance's scopes | String | 80 | Not Null |
-| registered_at | Registration time | DateTime | | Not Null |
+| registered_at | First registration time (display only) | DateTime | | Not Null |
+| last_seen_at | Time of the latest registration or reconcile entry; the maximum game age counts from it (#2217) | DateTime | | Not Null |
 
 **Constraints:** at most 64 KiB of values per scope (NFR-051); a write naming a game without a scope is rejected
-(`game_not_live`). A second registration of the same game id updates the record and keeps `registered_at`; per-player values of serials it no longer lists are dropped (UC-053 A13).
+(`game_not_live`). A second registration of the same game id updates the record, keeps `registered_at` and refreshes `last_seen_at`; per-player values of serials it no longer lists are dropped (UC-053 A13).
 
 ### FLAG_OVERLAY
 

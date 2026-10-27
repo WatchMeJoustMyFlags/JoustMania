@@ -188,3 +188,20 @@ func TestRealWriteGuardConcurrency(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-043 A17
+func TestRealWriteGuard_LongReconciledGame(t *testing.T) {
+	t.Run("UC-043/A17 a real game past 1 h that keeps being reconciled keeps blocking the write", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+		f.registerKind("g-real", "real")
+		for i := 0; i < 15; i++ { // 75 min, reconciled every 5 min
+			f.clock.Advance(5 * time.Minute)
+			f.state.ExpireGames() // the expiry sweep runs between two reconciles
+			_, err := f.state.Put(budgetReal("20"))
+			wantReason(t, err, http.StatusConflict, fserr.RealGameLive)
+			if _, err := f.state.Reconcile("c1", []Game{{ID: "g-real", Kind: "real"}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+}
