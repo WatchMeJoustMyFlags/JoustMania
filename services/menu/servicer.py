@@ -63,7 +63,9 @@ LOBBY_RESTORE_STEP_TIMEOUT_SECONDS = 10.0
 async def _bounded_restore_step(step: str, run) -> None:
     """Run one lobby-restore step within LOBBY_RESTORE_STEP_TIMEOUT_SECONDS (UC-010 BR-010).
 
-    On a timeout the step is cancelled and logged. A cancel from outside
+    On a timeout the step is cancelled, logged and marked on the current span: status ERROR, attributes
+    `menu.restore.timed_out_step` / `menu.restore.deadline_seconds` and a `restore_step_timeout` event
+    (telemetry.md §2, #2146). A success leaves the span untouched. A cancel from outside
     (menu stop, shutdown) is not a timeout: asyncio.timeout passes it on as CancelledError.
     """
     bound = LOBBY_RESTORE_STEP_TIMEOUT_SECONDS
@@ -72,6 +74,11 @@ async def _bounded_restore_step(step: str, run) -> None:
             await run()
     except TimeoutError:
         logger.error(f"Lobby restore: {step} did not finish within {bound}s; cancelled and skipped")
+        span = trace.get_current_span()
+        span.set_attribute("menu.restore.timed_out_step", step)
+        span.set_attribute("menu.restore.deadline_seconds", bound)
+        span.add_event("restore_step_timeout", {"menu.restore.step": step, "menu.restore.deadline_seconds": bound})
+        span.set_status(trace.Status(trace.StatusCode.ERROR, f"lobby restore step '{step}' timed out after {bound}s"))
 
 
 def _variant(details) -> str:

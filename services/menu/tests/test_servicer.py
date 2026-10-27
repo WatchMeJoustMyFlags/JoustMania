@@ -1481,6 +1481,55 @@ class TestLobbyRestoreBounded:
         assert task in done, "the lobby restore did not end: a hung step is not bounded"
         task.result()
 
+    @staticmethod
+    def _span_for(step_run, monkeypatch):
+        """Run one bounded step inside a span of an in-memory exporter; return the finished span."""
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        from services.menu.servicer import _bounded_restore_step
+
+        monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+        async def _go():
+            with provider.get_tracer("t").start_as_current_span("restart_lobby_music"):
+                await _bounded_restore_step("lobby music", step_run)
+
+        return _go, exporter
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[8], br=["BR-010"])
+    async def test_timed_out_step_marks_its_span(self, monkeypatch):
+        """A timed-out step sets ERROR status, the step and deadline attributes and an event; success sets none."""
+        from opentelemetry.trace import StatusCode
+
+        async def _hangs():
+            await asyncio.Event().wait()
+
+        go, exporter = self._span_for(_hangs, monkeypatch)
+        with patch(self._BOUND, 0.05):
+            await go()
+        (span,) = exporter.get_finished_spans()
+        assert span.status.status_code == StatusCode.ERROR
+        assert "lobby music" in span.status.description
+        assert span.attributes["menu.restore.timed_out_step"] == "lobby music"
+        assert span.attributes["menu.restore.deadline_seconds"] == 0.05
+        assert [e.name for e in span.events] == ["restore_step_timeout"]
+
+        async def _ok():
+            return None
+
+        go, exporter = self._span_for(_ok, monkeypatch)
+        await go()
+        (span,) = exporter.get_finished_spans()
+        assert span.status.status_code == StatusCode.UNSET
+        assert "menu.restore.timed_out_step" not in span.attributes
+        assert not span.events
+
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A8", br=["BR-008", "BR-010"])
     async def test_hung_lobby_music_times_out_and_reset_menu_recovers(self, real_servicer):
