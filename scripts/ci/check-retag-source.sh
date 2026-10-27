@@ -136,9 +136,14 @@ created="${SOURCE_CREATED-}"
 if [[ -z "${SOURCE_REVISION+x}" || -z "${SOURCE_CREATED+x}" ]]; then
   : "${IMAGE_PREFIX:?IMAGE_PREFIX must be set (e.g. ghcr.io/owner/repo)}"
   # Read the amd64 image config straight from the registry (no layers pulled).
-  if ! config_json="$(read_image_config "$ref")"; then
+  rc=0
+  config_json="$(read_image_config "$ref")" || rc=$?
+  if [[ "$rc" == 1 ]]; then
     echo "::warning::check-retag-source: ${ref} not found"
     exit 2
+  elif [[ "$rc" != 0 ]]; then
+    echo "::error::check-retag-source: cannot read ${ref} (registry error, not a missing tag)"
+    exit 1
   fi
   [[ -n "${SOURCE_REVISION+x}" ]] ||
     revision="$(jq -r --arg l "$REVISION_LABEL" '.config.Labels[$l] // ""' <<<"$config_json")"
