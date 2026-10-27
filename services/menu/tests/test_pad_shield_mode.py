@@ -1,9 +1,9 @@
 """The pad's shield mode in the menu (UC-015 step 9, BR-018, BR-017, A1, A7; #2215, services.md §3.1).
 
-`step_setting` option `shield.activation` writes `game/shield.activation` without persist (the
-registry row has none), says the mode and pulses its colour on the lobby controllers; it is
-lobby only. `preview_setting` pulses a shield mode without writing. `GetMenuStatus` carries the
-variant the pad's live preview starts from.
+`step_setting` option `shield.activation` writes `game/shield.activation` as a persisted admin value
+(like the other pad settings, so it survives a flag-service restart), says the mode and pulses
+its colour on the lobby controllers; it is lobby only. `preview_setting` pulses a shield mode
+without writing. `GetMenuStatus` carries the variant the pad's live preview starts from.
 """
 
 import pytest
@@ -51,7 +51,7 @@ def lobby(menu) -> None:
         ("hold", "down", 2, "instant", Sound.MENU_VOX_SHIELD_INSTANT),
     ],
 )
-async def test_shield_step_writes_once_without_persist_says_and_pulses_the_mode(
+async def test_shield_step_writes_once_persisted_says_and_pulses_the_mode(
     servicer, flags, start, direction, steps, new, voice
 ):
     lobby(servicer)
@@ -60,7 +60,7 @@ async def test_shield_step_writes_once_without_persist_says_and_pulses_the_mode(
 
     assert (reply.success, reply.error) == (True, "")
     assert flags.written() == [("game", SHIELD, new)]
-    assert "persist" not in flags.puts[0][2]  # in memory: the registry refuses a persisted write
+    assert flags.puts[0][2].get("persist") is True  # persisted: survives a flag-service restart (BR-001)
     servicer.state_manager.audio.play_voice.assert_awaited_once_with(voice)
     color = settings_ops.SHIELD_MODE_COLORS[new]
     assert sorted(_pulses(servicer)) == [

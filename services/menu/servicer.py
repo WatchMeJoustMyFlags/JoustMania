@@ -170,9 +170,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # agent/interventions_enabled have no persist in the registry (a persisted write is 400) and
         # must not survive a restart (UC-045 step 7).
         self.agent_enabled_writer = FlagServiceWriter("agent", persist=False)
-        # The pad's shield mode (UC-015 BR-018, #2215): game/shield.activation has no persist in the
-        # registry, so it is an in-memory stack overlay.
-        self.game_overlay_writer = FlagServiceWriter("game", persist=False)
 
         # OpenFeature clients for reading settings
         self.game_settings_client = get_flag_client("game")
@@ -217,7 +214,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             metrics=metrics,
             callbacks=self,
             agent_enabled_writer=self.agent_enabled_writer,
-            game_overlay_writer=self.game_overlay_writer,
         )
 
         # Admin mode handler

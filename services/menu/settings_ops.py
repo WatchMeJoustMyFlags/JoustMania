@@ -62,7 +62,7 @@ AGENT_ENABLED_FLAG = "enabled"
 # UC-015 BR-003 (#2093): the agent's write gate (FR-051); only the resume writes it, in memory only.
 AGENT_WRITE_GATE_FLAG = "interventions_enabled"
 DECISION_BACKEND_FLAG = "decision.backend"
-# UC-015 BR-018 (#2215): the shield mode the pad's K6 layer steps; a `game` stack overlay, never persisted.
+# UC-015 BR-018 (#2215): the shield mode the pad's K6 layer steps; a persisted admin value of the `game` set.
 SHIELD_ACTIVATION_FLAG = "shield.activation"
 
 # Ladders (UC-013, UC-015 BR-004): one source with the pad's preview, lib/setting_ladders.py (#2106).
@@ -159,8 +159,8 @@ STEP_OPTIONS: dict[str, _Option] = {
     "game_instructions": _Option("user_prefs_writer", order=["off", "on"], lobby_only=True),
     "audio_volume.master": _Option("user_prefs_writer"),
     "agent_level": _Option(None),
-    # UC-015 BR-018: written without persist by `game_overlay_writer` (the registry row has no persist).
-    SHIELD_ACTIVATION_FLAG: _Option(None, order=SHIELD_ACTIVATION_LADDER, lobby_only=True),
+    # UC-015 BR-018: persisted like the other lobby settings (registry `persist: true`).
+    SHIELD_ACTIVATION_FLAG: _Option("game_settings_writer", order=SHIELD_ACTIVATION_LADDER, lobby_only=True),
 }
 # UC-015 A1: refused with game_active while the game lifecycle is live.
 LOBBY_ONLY_OPTIONS = frozenset(name for name, opt in STEP_OPTIONS.items() if opt.lobby_only)
@@ -188,7 +188,6 @@ class SettingsOps:
         metrics,
         callbacks=None,
         agent_enabled_writer: FlagServiceWriter | None = None,
-        game_overlay_writer: FlagServiceWriter | None = None,
     ):
         self._get_state_manager = get_state_manager
         self.controller_channel = controller_channel
@@ -197,8 +196,6 @@ class SettingsOps:
         self.callbacks = callbacks
         # UC-015 BR-001: `enabled` cannot persist (the registry row has no persist), so it has its own writer.
         self.agent_enabled_writer = agent_enabled_writer
-        # UC-015 BR-018: `game/shield.activation` cannot persist, so it has its own in-memory writer.
-        self.game_overlay_writer = game_overlay_writer
         # UC-015 BR-002 / BR-003: the level a resume restores; lost on a menu restart.
         self.saved_agent_level: str | None = None
         # Serializes the kill, the resume and the ladder, so a saved level is never read half-written.
@@ -337,10 +334,7 @@ class SettingsOps:
         if option == "agent_level":
             return await self._step_agent_level(forward, steps)
 
-        if option == SHIELD_ACTIVATION_FLAG:
-            writer = self.game_overlay_writer
-        else:
-            writer = getattr(self.state_manager, spec.writer_attr, None)
+        writer = getattr(self.state_manager, spec.writer_attr, None)
         if writer is None:
             return Result(None, None, FLAG_SERVICE_UNAVAILABLE)
         step = await asyncio.to_thread(writer.step_variant, option, forward, False, steps=steps, order=spec.order)

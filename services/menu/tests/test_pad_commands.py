@@ -54,7 +54,7 @@ BASELINE = {
     ("agent", "decision.backend"): ({"rules": "rules", "claude": "claude", "openai": "openai", "jev": "jev"}, "rules"),
 }
 # Registry rows without persist (services/flag-service/registry.yaml): a persisted write is 400.
-NO_PERSIST = {("agent", "enabled"), ("agent", "interventions_enabled"), ("game", "shield.activation")}
+NO_PERSIST = {("agent", "enabled"), ("agent", "interventions_enabled")}
 
 
 class FakeFlagService:

@@ -137,7 +137,7 @@ flags:
   - {set: game, key: tempo.ramp_down_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 10]}}
   # Shield charge (#1837, UC-040 BR-019): human flags, changeable on stage; never
   # experiment+arm or real, so no agent writer can reach them (C-034).
-  - {set: game, key: shield.activation, kind: overlay, scope: [stack], bounds: {variants: [instant, trigger, hold]}}
+  - {set: game, key: shield.activation, kind: overlay, scope: [stack], persist: true, bounds: {variants: [instant, trigger, hold]}}
   - {set: game, key: shield.charge_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 120]}}
   # Shield charge rumble pattern (#2094, UC-040 BR-021): read by the controller manager per charge.
   - {set: game, key: shield.charge_rumble_intensity, kind: overlay, scope: [stack], bounds: {range: [0, 255]}}
