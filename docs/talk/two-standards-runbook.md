@@ -599,7 +599,8 @@ both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`
 `default`, claude model `haiku`, `decision.claude.timeout_ms` and
 `decision.jev.timeout_ms` `default`, `llm.eligible_game_kinds=real_only`,
 `decision.jev.base_url` not left on `blackhole` and the `blackhole` variant
-present). It
+present; FAIL when Jev's threshold flag lacks the `strict` or `gate` variant of beat 3a, WARN when
+`decision.claude.timeout_ms` lacks `patient`). It
 checks the budget (the flag's value ≥ 30, i.e. `stage`, and that a set env ceiling is not below 30),
 that `JEV_API_KEY` and `ANTHROPIC_API_KEY` are present (presence only) and that
 the stage baseline `inference.backend = claude`, and the effective `inference.backend` flag again in the agent section (FAIL otherwise: beat 8 shows a capture-only
