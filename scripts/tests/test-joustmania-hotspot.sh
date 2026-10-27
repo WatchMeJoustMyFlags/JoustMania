@@ -18,7 +18,7 @@
 #  - selftest only with the uplink connected and wlan0 free (BR-001), always
 #    takes the hotspot down again; remove deletes every installed file
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-hotspot.sh
-# UC: UC-061 main A1 A2 A3 A4 A5 A6 A7 A9 Pre-1 Post-S-1 Post-S-2 Post-F-1 BR-001 BR-002 BR-004 BR-006 BR-008 BR-010
+# UC: UC-061 main A1 A2 A3 A4 A5 A6 A7 A9 Pre-1 Post-S-2 Post-F-1 BR-001 BR-002 BR-004 BR-006 BR-008 BR-010
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -64,6 +64,7 @@ dev_show() { # $1 = fields, $2 = device
 }
 case "$*" in
   "-g connection.uuid connection show uuid $UUID")
+    if [[ -f "${NM}/show-rc" ]]; then echo "Error: stub failure" >&2; exit "$(cat "${NM}/show-rc")"; fi
     [[ -f "${NM}/profile" ]] && echo "$UUID" || { echo "Error: unknown connection" >&2; exit 10; } ;;
   "-g "*" device show "*) dev_show "$2" "$5" ;;
   "--wait 30 connection up uuid $UUID")
@@ -362,6 +363,15 @@ at 10000; once; at 10020; once; expect_state on
 rm -f "${NM}/profile"
 at 10030; once; expect_state not-set-up "profile"
 [[ "$(downs)" == 1 ]] || fail "a5-noprofile-running: a running hotspot was not taken down"
+
+# a failed query (D-Bus error, timeout, NM not running) changes nothing
+for rc in 1 3 8; do
+  make_case "a5-query-rc${rc}"
+  at 10000; once; at 10020; once; expect_state on
+  echo "$rc" >"${NM}/show-rc"
+  at 10030; once; expect_state waiting "cannot ask NetworkManager (rc ${rc})"
+  [[ "$(downs)" == 0 ]] || fail "a5-query-rc${rc}: a failed query took the hotspot down"
+done
 
 # --- A9: the cable is on a network the Host cannot join ------------------------------
 # eth0 counts as connected (hotspot off); unplugging it brings the hotspot up
