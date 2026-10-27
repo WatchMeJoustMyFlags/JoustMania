@@ -74,7 +74,8 @@ async def _bounded_restore_step(step: str, run) -> None:
             await run()
     except TimeoutError:
         if not deadline.expired():
-            raise  # raised by the step itself, not the bound
+            logger.error(f"Lobby restore: {step} failed with its own TimeoutError; skipped", exc_info=True)
+            return
         logger.error(f"Lobby restore: {step} did not finish within {bound}s; cancelled and skipped")
         span = trace.get_current_span()
         span.set_attribute("menu.restore.timed_out_step", step)

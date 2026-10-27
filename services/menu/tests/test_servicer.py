@@ -1532,15 +1532,15 @@ class TestLobbyRestoreBounded:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="main", steps=[8], br=["BR-010"])
-    async def test_timeout_error_from_the_step_is_not_a_bound_timeout(self, monkeypatch):
-        """A TimeoutError the step raises itself propagates and leaves the span unmarked."""
+    async def test_timeout_error_from_the_step_is_not_a_bound_timeout(self, monkeypatch, caplog):
+        """A TimeoutError the step raises itself is logged and skipped, and leaves the span unmarked."""
 
         async def _raises():
             raise TimeoutError("inner")
 
         go, exporter = self._span_for(_raises, monkeypatch)
-        with pytest.raises(TimeoutError):
-            await go()
+        await go()
+        assert "failed with its own TimeoutError" in caplog.text
         (span,) = exporter.get_finished_spans()
         assert "menu.restore.timed_out_step" not in span.attributes
         assert "restore_step_timeout" not in [e.name for e in span.events]
