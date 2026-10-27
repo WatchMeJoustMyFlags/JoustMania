@@ -98,11 +98,7 @@ stage_steps() {
     fi
     if ! docker info >/dev/null 2>&1; then
         echo "Docker is not usable by $(id -un) yet (log out and back in for the docker group); images not pulled."
-        if ((autostart)); then
-            LATER+=("$SETUP_DIR/joustmania-upgrade.sh $target   # pin, pull the images, start")
-        else
-            LATER+=("$SETUP_DIR/joustmania-compose.sh pull   # the images, while online")
-        fi
+        defer_pin "$autostart" "$target"
         return 0
     fi
     if ((autostart)); then
@@ -112,8 +108,7 @@ stage_steps() {
                 STEP_FAILED=1
             }
         else
-            echo "Not pinned: the autostart refuses to start a branch checkout (UC-060 A4)."
-            LATER+=("$SETUP_DIR/joustmania-upgrade.sh $target   # pin, pull the images, start")
+            defer_pin "$autostart" "$target"
         fi
     elif joustmania_pin_image_tag "$SCRIPT_DIR" >/dev/null; then
         if ask "Pull the images of $target now, so the first start needs no network?"; then
@@ -121,9 +116,27 @@ stage_steps() {
                 echo "ERROR: pulling the images failed" >&2
                 STEP_FAILED=1
             }
+        else
+            defer_pin "$autostart" "$target"
         fi
     else
-        LATER+=("sudo $SETUP_DIR/install_autostart.sh && $SETUP_DIR/joustmania-upgrade.sh $target   # autostart, pin, pull")
+        defer_pin "$autostart" "$target"
+    fi
+}
+
+# defer_pin <autostart 0|1> <target>: the pin step left for later, the same
+# whichever step deferred it. With the autostart on a branch checkout, the
+# next boot refuses to start (A4) until the pin has run.
+defer_pin() {
+    if (($1)); then
+        LATER+=("$SETUP_DIR/joustmania-upgrade.sh $2   # pin, pull the images, start")
+        if ! joustmania_pin_image_tag "$SCRIPT_DIR" >/dev/null; then
+            echo "Not pinned yet: the autostart refuses to start a branch checkout (UC-060 A4); the next boot starts nothing until you run the pin listed below."
+        fi
+    elif joustmania_pin_image_tag "$SCRIPT_DIR" >/dev/null; then
+        LATER+=("$SETUP_DIR/joustmania-compose.sh pull   # the images of $2, while online")
+    else
+        LATER+=("sudo $SETUP_DIR/install_autostart.sh && $SETUP_DIR/joustmania-upgrade.sh $2   # autostart, pin, pull")
     fi
 }
 

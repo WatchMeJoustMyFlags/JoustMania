@@ -12,7 +12,8 @@
 #    release that contains the pinnable floor, else HEAD's full sha, else the
 #    version a pinned checkout already has
 #  - docker not usable yet (new docker group): nothing pulled, the command is
-#    listed under "Still to do", exit 0
+#    listed under "Still to do" with the A4 warning, exit 0; the steps listed
+#    are the same as with docker usable
 #  - a failed upgrade exits non-zero; declining the pin says the autostart
 #    refuses a branch (A4)
 #  - without the autostart a pinned checkout gets `joustmania-compose.sh pull`
@@ -135,6 +136,19 @@ run_setup 1yyy || fail "docker-group: setup.sh failed: $(tail -5 "${CASE}/out.lo
 called joustmania-upgrade && fail "docker-group: the upgrade ran without docker"
 grep -A3 'Still to do' "${CASE}/out.log" | grep -q 'joustmania-upgrade.sh joustmania-v0.8.0' \
   || fail "docker-group: the pin command is not listed: $(cat "${CASE}/out.log")"
+grep -q 'next boot starts nothing until you run the pin' "${CASE}/out.log" || fail "docker-group: no A4 warning for the deferred pin"
+
+# --- 6b. no autostart on a branch: the same steps whether docker works or not
+todo() { sed -n '/^Still to do:/,/^$/p' "${CASE}/out.log" | sed "s|${CASE}||g"; }
+make_case later-docker-ok
+run_setup 1yn || fail "later-docker-ok: setup.sh failed"
+todo_ok="$(todo)"
+make_case later-docker-down
+touch "${CASE}/docker-down"
+run_setup 1yn || fail "later-docker-down: setup.sh failed"
+[[ -n "${todo_ok}" && "$(todo)" == "${todo_ok}" ]] || fail "later: the steps differ with docker usable or not: [${todo_ok}] vs [$(todo)]"
+grep -q 'install_autostart.sh && .*joustmania-upgrade.sh joustmania-v0.8.0' <<<"${todo_ok}" || fail "later: autostart + pin not listed: ${todo_ok}"
+called 'joustmania-compose pull' && fail "later-docker-down: a branch checkout was offered a pull of the .env tag"
 
 # --- 7. the upgrade fails: exit non-zero ------------------------------------
 make_case upgrade-fails

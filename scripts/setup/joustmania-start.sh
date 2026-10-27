@@ -111,17 +111,23 @@ if PIN_IMAGE_TAG="$(joustmania_pin_image_tag "$JOUSTMANIA_DIR")"; then
     if joustmania_env_local_sets .env.local IMAGE_TAG; then
         echo "WARN: .env.local sets IMAGE_TAG; it is ignored (the pinned checkout decides, UC-060 BR-003). Remove it."
     fi
-else
-    # A4: a branch runs whatever was pulled or checked out by hand, with the
-    # image tag of .env/.env.local, so config and images need not match (C-040).
-    # Start nothing; the unit fails (ACT LED 5 Hz) and status shows the reason.
-    # A version older than MIN_PINNABLE has no such check: the upgrade command
-    # refuses to switch to one (A2 step 1).
-    BRANCH="$(git symbolic-ref -q --short HEAD 2>/dev/null || echo "none, git cannot read the checkout")"
+elif git -C "$JOUSTMANIA_DIR" symbolic-ref -q HEAD >/dev/null 2>&1; then
+    # A4: a branch (proven: HEAD is a symbolic ref) runs whatever was pulled or
+    # checked out by hand, with the image tag of .env/.env.local, so config and
+    # images need not match (C-040). Start nothing; the unit fails (ACT LED
+    # 5 Hz) and status shows the reason. A version older than MIN_PINNABLE has
+    # no such check: the upgrade command refuses to switch to one (A2 step 1).
+    BRANCH="$(git -C "$JOUSTMANIA_DIR" symbolic-ref -q --short HEAD 2>/dev/null || echo unknown)"
     STATE_REASON="not pinned (branch $BRANCH); pin with scripts/setup/joustmania-upgrade.sh"
     echo "FAIL: the checkout is not pinned (branch $BRANCH at commit $HEAD_SHORT); nothing started (UC-060 A4)."
     echo "Pin it to a release tag or an exact commit sha, $(joustmania_missing_hint "$JOUSTMANIA_DIR")"
     exit 1
+else
+    # git cannot read the checkout (no .git, a damaged object after a power
+    # loss, no git binary, a different owner): a branch is not proven, so fail
+    # open (A4): start with the image tag of .env/.env.local, state degraded.
+    STATE_REASON="git cannot read the checkout"
+    echo "WARN: git cannot read the checkout, so the pin is unknown; starting with the IMAGE_TAG of .env/.env.local, state degraded (UC-060 A4). Check: git -C $JOUSTMANIA_DIR status"
 fi
 
 # Targeted cleanup only: a joustmania-* container that is not ours blocks the
@@ -318,7 +324,7 @@ if [[ ${#OBS_PHASE[@]} -gt 0 ]]; then
         echo "WARN: observability did not come up (exit $OBS_RC); the game keeps running (UC-060 A1)"
     fi
 fi
-if [[ -n "$MISSING_OTHER$BLOCKED_OTHER" ]]; then
+if [[ -n "$MISSING_OTHER$BLOCKED_OTHER" || -n "$STATE_REASON" ]]; then
     START_RESULT="degraded"
 fi
 echo "JoustMania started: state $START_RESULT"
