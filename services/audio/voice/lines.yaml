@@ -1,0 +1,232 @@
+# Voice catalog (#2107, UC-031 BR-007, C-050): every voice line once, as text.
+#
+# `make voice` renders each line for every generated profile below into
+# services/audio/assets/<Area>/vox/<profile>/<id>.ogg and records it in
+# services/audio/assets/voice_manifest.json; `make voice-check` (CI) fails when
+# this file, the manifest and the files disagree. Never edit a generated file
+# by hand: change the line here and run `make voice`.
+#
+# Line keys:
+#   id        file stem; equals the `Sound` value in lib/types.py
+#   sound     `Sound` member name, when one exists (the new #2106 lines get
+#             theirs with the audio runtime, #2107 part 2)
+#   text      what the line says
+#   say       optional respelling for the synthesizer (defaults to text)
+#   recorded  true when a recording exists in the recorded profiles
+#
+# The recorded texts were transcribed from <Area>/vox/{aaron,ivy} with a local
+# speech-to-text pass (faster-whisper small.en) and the file names, then
+# corrected by hand; ivy's wording wins where the two recordings differ.
+version: 1
+
+# Recorded profiles: the original recordings. The generator never writes here.
+recorded: [aaron, ivy]
+
+# Loudness target: the median integrated loudness of Menu/vox/ivy (-20.4 LUFS,
+# measured with pyloudnorm, BS.1770-4), so generated and recorded lines sit at
+# the same level.
+loudness:
+  target_lufs: -20.4
+  tolerance_lu: 1.5
+
+# Output format, the same as the recordings the audio service decodes.
+audio:
+  sample_rate: 44100
+  channels: 2
+  vorbis_quality: 4
+
+# Generated profiles: one pinned Piper voice each, run through sherpa-onnx
+# (never the GPL piper-tts package). Licences: services/audio/assets/audio_credits.txt.
+# `partner` is the recorded profile this one stands in for (fallback, part 2).
+# en_US-norman-medium was tried for gen_male and dropped: a speech-to-text
+# check could not recognise its single words.
+profiles:
+  gen_male:
+    partner: aaron
+    model: vits-piper-en_US-john-medium
+    model_url: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-john-medium.tar.bz2
+    model_sha256: d90362cfa48e429d3096f644785184446145b6e38216f2eaf4c0601b8aad5a36
+    speaker: 0
+    length_scale: 1.0
+    # Piper's defaults: lower noise blurred john's single words in a speech-to-text check.
+    noise_scale: 0.667
+    noise_scale_w: 0.8
+  gen_female:
+    partner: ivy
+    model: vits-piper-en_US-kristin-medium
+    model_url: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-kristin-medium.tar.bz2
+    model_sha256: c2206f572df2956c50b1ae3367eebce3853c663e890cba8048cd62b1e4dbe6c7
+    speaker: 0
+    length_scale: 1.0
+    noise_scale: 0.333
+    noise_scale_w: 0.333
+
+# `make voice-sample` re-renders these and compares duration and loudness with
+# the committed files (Piper output is not bit-reproducible).
+sample: [Menu/high, Menu/menu Joust FFA, Menu/label_sensitivity]
+
+areas:
+  Menu:
+    # Game mode selection
+    - {id: menu Joust FFA, sound: MENU_VOX_JOUST_FFA, text: "Joust, free for all.", recorded: true}
+    - {id: menu Joust Teams, sound: MENU_VOX_JOUST_TEAMS, text: "Joust teams.", recorded: true}
+    - {id: menu Joust Random Teams, sound: MENU_VOX_RANDOM_TEAMS, text: "Joust random teams.", recorded: true}
+    - {id: menu Swapper, sound: MENU_VOX_SWAPPER, text: "Swapper.", recorded: true}
+    - {id: menu Werewolves, sound: MENU_VOX_WEREWOLVES, text: "Werewolves.", recorded: true}
+    - {id: menu Traitor, sound: MENU_VOX_TRAITOR, text: "Traitors.", recorded: true}
+    - {id: menu Zombies, sound: MENU_VOX_ZOMBIES, text: "Zombies.", recorded: true}
+    - {id: menu FightClub, sound: MENU_VOX_FIGHT_CLUB, text: "Fight Club.", recorded: true}
+    - {id: menu Tournament, sound: MENU_VOX_TOURNAMENT, text: "Tournament.", say: "Turnament.", recorded: true}
+    - {id: menu NonStopJoust, sound: MENU_VOX_NONSTOP_JOUST, text: "Non-stop joust.", recorded: true}
+
+    # Instructions toggle
+    - {id: instructions_on, sound: MENU_VOX_INSTRUCTIONS_ON, text: "Instructions on.", recorded: true}
+    - {id: instructions_off, sound: MENU_VOX_INSTRUCTIONS_OFF, text: "Instructions off.", recorded: true}
+
+    # Mode instructions. Only Free-for-All plays its clip today (game_instructions on);
+    # the other modes are the FR-014 backlog (#2151), catalogued so it can wire them.
+    # Fight Club has an ivy recording only.
+    - id: FFA-instructions
+      sound: MENU_VOX_FFA_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Joust free-for-all selected. Protect your own controller while trying to jostle others.
+        When the music speeds up, your controller sensitivity decreases and you are harder to kill.
+        Get ready to joust!
+    - id: Teams-instructions
+      sound: MENU_VOX_TEAMS_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Joust random teams selected. Protect your own controller while trying to jostle others.
+        When the music speeds up, your controller sensitivity decreases and you are harder to kill.
+        Your selected team will be the color of your controller. Get ready to joust.
+    - id: Swapper-instructions
+      sound: MENU_VOX_SWAPPER_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Swapper selected. Protect your own controller while trying to jostle others. There are two teams.
+        If you die, you will respawn on the other team. The last player is on their own. Get ready to joust!
+    - id: Tournament-instructions
+      sound: MENU_VOX_TOURNAMENT_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Tournament selected. Everyone will be paired up against another player.
+        Your opponent will have the same color as your controller.
+        If you defeat your opponent, you will go on to the next round.
+        If your controller is white, wait to be assigned to a new player.
+        The last player standing wins. Get ready to joust.
+    - id: Traitor-instructions
+      sound: MENU_VOX_TRAITOR_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Traitor selected. Three teams face off against one another. However, there is one traitor on every team.
+        Traitors are on a secret fourth team. If your controller vibrates during the start countdown,
+        you are a traitor. Get ready to joust!
+    - id: werewolf-instructions
+      sound: MENU_VOX_WEREWOLF_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Werewolf joust selected. If your controller vibrates at the start of the match, you are a werewolf.
+        Werewolves will have a short period of time to kill as many humans as possible before they are revealed.
+        Listen for further instructions, and get ready to joust.
+    - id: zombie-instructions
+      sound: MENU_VOX_ZOMBIE_INSTRUCTIONS
+      recorded: true
+      text: >-
+        Zombies selected. Two zombies will be randomly selected at the beginning of play.
+        Zombies have a few minutes to turn all humans into more zombies. Otherwise, humans win.
+        If you die as a human or a zombie, your controller will vibrate and turn red.
+        You must stand still during this period until you respawn as a zombie.
+        Humans can kill zombies via regular melee or with bullets.
+        Use the trigger button to fire one bullet to kill one random zombie.
+        If you collect five bullets, your controller will turn magenta, and you can throw a Molotov to kill all zombies.
+        Humans can get more bullets by killing zombies in any way. Good luck, and get ready for the invasion!
+    - id: Fightclub-instructions
+      recorded: true
+      text: >-
+        Two players fight. The winner must defend their title. The player with the highest score wins.
+
+    # Lobby announcements
+    - {id: notenoughplayers, sound: MENU_VOX_NOT_ENOUGH_PLAYERS, text: "Not enough players.", recorded: true}
+
+    # Sensitivity
+    - {id: ultra_high, sound: MENU_VOX_SENSITIVITY_ULTRA_HIGH, text: "Ultra high sensitivity.", recorded: true}
+    - {id: high, sound: MENU_VOX_SENSITIVITY_HIGH, text: "High sensitivity.", recorded: true}
+    - {id: medium, sound: MENU_VOX_SENSITIVITY_MEDIUM, text: "Medium sensitivity.", recorded: true}
+    - {id: low, sound: MENU_VOX_SENSITIVITY_LOW, text: "Low sensitivity.", recorded: true}
+    - {id: ultra_low, sound: MENU_VOX_SENSITIVITY_ULTRA_LOW, text: "Ultra low sensitivity.", recorded: true}
+
+    # Admin options (numbers, on/off, true/false)
+    - {id: adminop_1, sound: MENU_VOX_ADMINOP_1, text: "One.", recorded: true}
+    - {id: adminop_2, sound: MENU_VOX_ADMINOP_2, text: "Two.", recorded: true}
+    - {id: adminop_3, sound: MENU_VOX_ADMINOP_3, text: "Three.", recorded: true}
+    - {id: adminop_4, sound: MENU_VOX_ADMINOP_4, text: "Four.", recorded: true}
+    - {id: adminop_5, sound: MENU_VOX_ADMINOP_5, text: "Five.", recorded: true}
+    - {id: adminop_6, sound: MENU_VOX_ADMINOP_6, text: "Six.", recorded: true}
+    - {id: adminop_on, sound: MENU_VOX_ADMINOP_ON, text: "On.", recorded: true}
+    - {id: adminop_off, sound: MENU_VOX_ADMINOP_OFF, text: "Off.", recorded: true}
+    - {id: adminop_True, sound: MENU_VOX_ADMINOP_TRUE, text: "True.", recorded: true}
+    - {id: adminop_False, sound: MENU_VOX_ADMINOP_FALSE, text: "False.", recorded: true}
+
+
+    # word ends with a full stop: without it Piper blurs it.
+    - {id: label_sensitivity, text: "Sensitivity."}
+    - {id: label_teams, text: "Teams."}
+    - {id: label_agent, text: "Agent."}
+    - {id: label_backend, text: "Backend.", say: "Back end."}
+    - {id: label_volume, text: "Volume."}
+    - {id: label_game_mode, text: "Game mode."}
+    - {id: label_instructions, text: "Instructions."}
+    - {id: pad_locked, text: "Pad locked."}
+    - {id: pad_unlocked, text: "Pad unlocked."}
+
+    # Decision backends (#2106)
+    - {id: backend_rules, text: "Rules."}
+    - {id: backend_claude, text: "Claude."}
+    - {id: backend_openai, text: "OpenAI.", say: "Open A I."}
+    - {id: backend_jev, text: "Jev."}
+
+    # Status words (#2106)
+    - {id: status_not_possible, text: "Not possible."}
+    - {id: status_maximum, text: "Maximum."}
+    - {id: status_minimum, text: "Minimum."}
+    - {id: status_cancelled, text: "Cancelled.", say: "Canceled."}
+    - {id: status_no_connection, text: "No connection."}
+
+  # Game announcers: only the lines a game mode plays (audit for #2147). Commander
+  # and Fight Club play no voice line, so they have no area here.
+  Joust:
+    - {id: 1 minute, sound: VOX_1_MINUTE, text: "One minute remaining.", recorded: true}
+    - {id: congratulations, sound: VOX_CONGRATULATIONS, text: "Congratulations!", recorded: true}
+    - {id: human win, sound: VOX_HUMAN_WIN, text: "Humans win!", recorded: true}
+    - {id: werewolf win, sound: VOX_WEREWOLF_WIN, text: "Werewolves win!", recorded: true}
+    - id: werewolf intro
+      sound: VOX_WEREWOLF_INTRO
+      recorded: true
+      text: >-
+        Everyone, close your eyes. If your controller is vibrating right now, you are a werewolf.
+        Werewolves, open your eyes now and look for your team members. Werewolves, close your eyes.
+        In 30 seconds, werewolves will be revealed. Everyone, open your eyes.
+      say: >-
+        Everyone, close your eyes. If your controller is vibrating right now, you are a werewolf.
+        Werewolves, open your eyes now and look for your team members. Werewolves, close your eyes.
+        In thirty seconds, werewolves will be revealed. Everyone, open your eyes.
+    - {id: werewolf reveal, sound: VOX_WEREWOLF_REVEAL, text: "Werewolves are revealed.", recorded: true}
+    - {id: traitor win, sound: VOX_TRAITOR_WIN, text: "Traitors win!", recorded: true}
+    - id: traitor_intro
+      sound: SFX_TRAITOR_INTRO
+      recorded: true
+      text: "If your controller vibrates during the start countdown, you are a traitor."
+    - {id: blue team win, sound: VOX_BLUE_TEAM_WIN, text: "And the winner is... Blue team!", recorded: true}
+    - {id: magenta team win, sound: VOX_MAGENTA_TEAM_WIN, text: "And the winner is... Magenta team!", recorded: true}
+    - {id: yellow team win, sound: VOX_YELLOW_TEAM_WIN, text: "And the winner is... Yellow team!", recorded: true}
+    - {id: green team win, sound: VOX_GREEN_TEAM_WIN, text: "And the winner is... Green team!", recorded: true}
+    - {id: cyan team win, sound: VOX_CYAN_TEAM_WIN, text: "And the winner is... Cyan team!", recorded: true}
+
+  Zombie:
+    # "1 minute" plays from Joust (area order), so it is catalogued there.
+    # zombie_death is a growl, not speech: it stays recorded only (no line).
+    - {id: 30 seconds, sound: VOX_ZOMBIE_THIRTY_SECONDS, text: "Thirty seconds remaining.", recorded: true}
+    - {id: 10 seconds left, sound: VOX_ZOMBIE_TEN_SECONDS, text: "Ten seconds left.", recorded: true}
+    - {id: human_victory, sound: VOX_HUMAN_VICTORY, text: "Human victory!", recorded: true}
+    - {id: zombie_victory, sound: VOX_ZOMBIE_VICTORY, text: "Zombies win!", recorded: true}
