@@ -9,6 +9,14 @@ All methods are sync (blocking) — called via asyncio.to_thread().
 from abc import ABC, abstractmethod
 
 
+class DiscoveryFailedError(Exception):
+    """A discovery pass could not run (backend unreachable or timed out).
+
+    Distinct from an empty result: "no controllers" drops the adapter's routes,
+    a failed pass keeps them for a few passes (UC-002 A1, #2125).
+    """
+
+
 class ControllerIOAdapter(ABC):
     """Thin I/O adapter for controller communication.
 
@@ -37,6 +45,10 @@ class ControllerIOAdapter(ABC):
                 accessible — skip expensive enumeration for new devices.
             exclude_serials: Serials claimed by another adapter — the adapter
                 should avoid opening HID handles for these devices.
+
+        Raises:
+            DiscoveryFailedError: the scan could not run, which is not the same
+                as finding no controllers.
         """
 
     @abstractmethod

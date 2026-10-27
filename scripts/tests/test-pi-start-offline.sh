@@ -18,8 +18,13 @@
 #    named, everything else starts (BR-002)
 #  - docker not reachable: exit 1 with "docker not reachable", no missing-image
 #    report and no `up`
+#  - a branch checkout (not pinned): exit 1, state failed with the reason and
+#    the joustmania-upgrade.sh command that pins it, no container started or
+#    removed (A4)
+#  - git cannot read the checkout (git exits 128, no .git, no git binary): no
+#    branch is proven, so the game starts, state degraded with the reason (A4)
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-pi-start-offline.sh
-# UC: UC-060 BR-001 BR-002 BR-004 A1 A5
+# UC: UC-060 BR-001 BR-002 BR-004 A1 A4 A5
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -117,6 +122,10 @@ STUB
   printf '#!/usr/bin/env bash\necho "$*" >>"%s/curl.log"\nexit 7\n' "${CASE}" >"${CASE}/bin/curl"
   printf '#!/usr/bin/env bash\nexit 0\n' >"${CASE}/bin/amixer"
   chmod +x "${CASE}/bin/"*
+  # A pinned checkout (detached HEAD at a commit); a branch is refused (A4)
+  "${REAL_GIT}" -C "${CASE}/repo" init -q
+  "${REAL_GIT}" -C "${CASE}/repo" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m pin
+  "${REAL_GIT}" -C "${CASE}/repo" checkout -q --detach
 }
 
 # run_start: as the rev-2 unit runs it; returns the script's exit code
@@ -158,11 +167,7 @@ grep -q 'K: v' "${CASE}/out.log" && fail "offline: the full compose config was p
 # --- 2. a game image is missing: fail at once, with the image and the recovery
 make_case game-missing
 echo "ghcr.io/o/joustmania/menu:0.0.0-test" >"${CASE}/missing"
-"${REAL_GIT}" -C "${CASE}/repo" init -q
-"${REAL_GIT}" -C "${CASE}/repo" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m pin
 "${REAL_GIT}" -C "${CASE}/repo" -c user.name=t -c user.email=t@t -c tag.gpgsign=false tag joustmania-v9.9.9
-"${REAL_GIT}" -C "${CASE}/repo" checkout -q --detach
-: >"${CASE}/git.log"
 start_s="${SECONDS}"
 if run_start; then fail "game-missing: start succeeded with the menu image missing"; fi
 ((SECONDS - start_s <= 5)) || fail "game-missing: took $((SECONDS - start_s)) s (must fail at once, no readiness wait)"
@@ -236,6 +241,36 @@ if run_start; then fail "no-docker: start succeeded without docker"; fi
 grep -q 'FAIL: docker not reachable' "${CASE}/out.log" || fail "no-docker: no 'docker not reachable': $(tail -2 "${CASE}/out.log")"
 grep -qi 'missing\|joustmania-upgrade.sh [^w]' "${CASE}/out.log" && fail "no-docker: reported as missing images: $(grep -i missing "${CASE}/out.log")"
 grep -q ' up ' "${CASE}/docker.log" && fail "no-docker: up was called"
+
+# --- 8. a branch checkout: refused, nothing started (A4) ---------------------
+make_case branch
+"${REAL_GIT}" -C "${CASE}/repo" checkout -q -b main
+branch_sha="$("${REAL_GIT}" -C "${CASE}/repo" rev-parse HEAD)"
+if run_start; then fail "branch: start succeeded on a branch checkout"; fi
+no_network branch
+grep -qE ' (up|rm|stop|down)( |$)' "${CASE}/docker.log" && fail "branch: a container was started or removed: $(grep -E ' (up|rm|stop|down)( |$)' "${CASE}/docker.log")"
+grep -q 'FAIL: the checkout is not pinned (branch main' "${CASE}/out.log" || fail "branch: no FAIL naming the branch: $(tail -3 "${CASE}/out.log")"
+grep -qF "${CASE}/repo/scripts/setup/joustmania-upgrade.sh ${branch_sha}" "${CASE}/out.log" \
+  || fail "branch: no exact joustmania-upgrade.sh command to pin it: $(tail -2 "${CASE}/out.log")"
+[[ "$(state result)" == failed ]] || fail "branch: state is not failed: $(state result)"
+[[ "$(state reason)" == "not pinned (branch main)"* ]] || fail "branch: start.env has no reason: $(state reason)"
+
+# --- 9. git cannot read the checkout: fail open, degraded (A4) ---------------
+# git exits 128 for everything (damaged repo, dubious ownership), no .git at
+# all, no git binary (127): a branch is not proven, so the game starts.
+for variant in git-128 no-dotgit no-git; do
+  make_case "${variant}"
+  case "${variant}" in
+    git-128) printf '#!/usr/bin/env bash\necho "fatal: not a git repository" >&2\nexit 128\n' >"${CASE}/bin/git" ;;
+    no-dotgit) rm -rf "${CASE}/repo/.git" ;;
+    no-git) printf '#!/usr/bin/env bash\necho "git: command not found" >&2\nexit 127\n' >"${CASE}/bin/git" ;;
+  esac
+  run_start || fail "${variant}: the start failed although no branch is proven: $(tail -3 "${CASE}/out.log")"
+  grep -qxF "${GAME_UP} ${GAME}" "${CASE}/docker.log" || fail "${variant}: the game did not start: $(grep ' up ' "${CASE}/docker.log")"
+  grep -q 'WARN: git cannot read the checkout' "${CASE}/out.log" || fail "${variant}: no WARN: $(grep -i git "${CASE}/out.log")"
+  [[ "$(state result)" == degraded ]] || fail "${variant}: state is not degraded: $(state result)"
+  [[ "$(state reason)" == "git cannot read the checkout" ]] || fail "${variant}: start.env reason: $(state reason)"
+done
 
 if [[ "${fails}" -ne 0 ]]; then
   exit 1

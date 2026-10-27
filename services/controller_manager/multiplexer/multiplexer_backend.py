@@ -20,10 +20,15 @@ import time
 
 from services.controller_manager import metrics
 from services.controller_manager.backend import ControllerBackend
-from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
+from services.controller_manager.multiplexer.adapter import ControllerIOAdapter, DiscoveryFailedError
 from services.controller_manager.multiplexer.rollout_router import RolloutRouter
 
 logger = logging.getLogger(__name__)
+
+# Consecutive failed discovery passes of one adapter before its controllers are
+# dropped (UC-002 A1, #2125). Until then the adapter keeps its previous routes,
+# so one slow or failed Discover mid-game disconnects nobody.
+MAX_FAILED_DISCOVERY_PASSES = 3
 
 
 def _adapter_owner(adapter: ControllerIOAdapter) -> ControllerIOAdapter:
@@ -98,6 +103,10 @@ class MultiplexerBackend(ControllerBackend):
         self._last_full_discovery: float = 0.0
         self._full_discovery_interval: float = 0.5  # seconds
 
+        # Consecutive failed discovery passes per adapter (UC-002 A1, #2125).
+        # Only the discovery worker thread reads and writes it.
+        self._failed_discovery_passes: dict[ControllerIOAdapter, int] = {}
+
         # Health counter: LED failures accumulated between stream frames
         self._led_failures: dict[str, int] = {}
 
@@ -129,7 +138,12 @@ class MultiplexerBackend(ControllerBackend):
         any_success = False
         for adapter in self._adapters:
             try:
-                serials = adapter.discover()
+                try:
+                    serials = adapter.discover()
+                except DiscoveryFailedError as e:
+                    # Backend not up yet: start with no controllers, discovery retries.
+                    logger.warning(f"{adapter.adapter_type} discovery failed at startup: {e}")
+                    serials = []
                 for serial in serials:
                     adapter.open(serial)
                     self._set_route(serial, adapter)
@@ -234,9 +248,17 @@ class MultiplexerBackend(ControllerBackend):
         # One snapshot of the (copy-on-write) table for the whole pass.
         previous = self._serial_to_adapter
         candidates: dict[str, list[ControllerIOAdapter]] = {}
+        # Routes kept from the previous pass for an adapter whose discovery failed.
+        carried: dict[str, ControllerIOAdapter] = {}
         for adapter in self._adapters:
             claimed_by_others = [s for s, a in previous.items() if a is not adapter]
-            for serial in adapter.discover(force=force, verify_only=verify_only, exclude_serials=claimed_by_others):
+            try:
+                serials = adapter.discover(force=force, verify_only=verify_only, exclude_serials=claimed_by_others)
+            except DiscoveryFailedError as e:
+                carried.update(self._carry_routes_after_failed_discovery(adapter, previous, e))
+                continue
+            self._failed_discovery_passes.pop(adapter, None)
+            for serial in serials:
                 candidates.setdefault(serial, []).append(adapter)
 
         # Phase 2: route — pick winner for each serial
@@ -303,7 +325,40 @@ class MultiplexerBackend(ControllerBackend):
                 old.close(serial)
                 logger.info(f"Switched {serial}: {old.adapter_type} -> {winner.adapter_type}")
 
+        # A serial another adapter found this pass is routed above; the rest of a
+        # failed adapter's previous routes stay as they were.
+        for serial, adapter in carried.items():
+            seen.setdefault(serial, adapter)
+
         return seen
+
+    def _carry_routes_after_failed_discovery(
+        self,
+        adapter: ControllerIOAdapter,
+        previous: dict[str, ControllerIOAdapter],
+        error: DiscoveryFailedError,
+    ) -> dict[str, ControllerIOAdapter]:
+        """Previous routes owned by ``adapter`` to keep after its failed pass.
+
+        A failed pass is not "no controllers" (UC-002 A1, #2125): the routes stay
+        until MAX_FAILED_DISCOVERY_PASSES consecutive passes have failed, then
+        they are dropped and the discovery loop reports the controllers lost.
+        """
+        failures = self._failed_discovery_passes.get(adapter, 0) + 1
+        self._failed_discovery_passes[adapter] = failures
+        owner = _adapter_owner(adapter)
+        owned = {s: a for s, a in previous.items() if _adapter_owner(a) is owner}
+        if failures >= MAX_FAILED_DISCOVERY_PASSES:
+            logger.warning(
+                f"{adapter.adapter_type} discovery failed {failures} passes in a row ({error}): "
+                f"dropping {len(owned)} controllers"
+            )
+            return {}
+        logger.warning(
+            f"{adapter.adapter_type} discovery failed ({error}), pass {failures}/{MAX_FAILED_DISCOVERY_PASSES}: "
+            f"keeping {len(owned)} controllers"
+        )
+        return owned
 
     def _resolve_adapter_for_serial(
         self,
@@ -507,7 +562,12 @@ class MultiplexerBackend(ControllerBackend):
     async def scan_controllers(self) -> list[dict]:
         results: list[dict] = []
         for adapter in self._adapters:
-            for serial in adapter.discover(force=True):
+            try:
+                serials = adapter.discover(force=True)
+            except DiscoveryFailedError as e:
+                logger.warning(f"{adapter.adapter_type} scan failed: {e}")
+                continue
+            for serial in serials:
                 results.append({"address": serial, "serial": serial, "name": f"Controller {serial[-4:]}"})
         return results
 

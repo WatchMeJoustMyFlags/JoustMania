@@ -13,6 +13,7 @@ from psmove_pairing.config import (
     get_bluez_restart_mode,
     get_bt_monitor_interval,
     get_poll_interval,
+    get_restart_quiet_period,
 )
 
 
@@ -199,6 +200,46 @@ class TestGetBluezRestartMode:
             flag = json.loads(flag_file.read_text())["flags"]["pairing.bluez_restart_mode"]
             assert set(flag["variants"].values()) == set(BLUEZ_RESTART_MODES), flag_file
             assert flag["variants"][flag["defaultVariant"]] == "when_idle", flag_file
+
+
+class TestGetRestartQuietPeriod:
+    """pairing.restart_quiet_period (UC-001 BR-005, #2091): read at use time, 20 s when unusable."""
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    def test_default_when_no_flag_client(self):
+        with patch("psmove_pairing.config._system_client", None):
+            assert get_restart_quiet_period() == 20
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    @pytest.mark.parametrize("seconds", [0, 10, 60])
+    def test_returns_flag_value(self, seconds):
+        mock_client = MagicMock()
+        mock_client.get_integer_value.return_value = seconds
+        with patch("psmove_pairing.config._system_client", mock_client):
+            assert get_restart_quiet_period() == seconds
+        assert mock_client.get_integer_value.call_args[0][:2] == ("pairing.restart_quiet_period", 20)
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    def test_negative_value_is_the_default(self):
+        mock_client = MagicMock()
+        mock_client.get_integer_value.return_value = -5
+        with patch("psmove_pairing.config._system_client", mock_client):
+            assert get_restart_quiet_period() == 20
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    def test_default_on_exception(self):
+        mock_client = MagicMock()
+        mock_client.get_integer_value.side_effect = RuntimeError("flagd down")
+        with patch("psmove_pairing.config._system_client", mock_client):
+            assert get_restart_quiet_period() == 20
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    def test_shipped_flag_default_is_20s(self):
+        flagd_dir = Path(__file__).resolve().parents[3] / "services" / "flagd"
+        for flag_file in (flagd_dir / "system.json", flagd_dir / "ci" / "system.json"):
+            flag = json.loads(flag_file.read_text())["flags"]["pairing.restart_quiet_period"]
+            assert flag["variants"][flag["defaultVariant"]] == 20, flag_file
+            assert all(v >= 0 for v in flag["variants"].values()), flag_file
 
 
 @pytest.mark.nfr("NFR-007")

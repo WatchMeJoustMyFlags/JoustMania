@@ -180,6 +180,14 @@ players_alive = Gauge("game_players_alive", "Number of players currently alive")
 # game_player_elimination_order{serial,game_id} (a gauge cleared at game end).
 player_deaths_total = Counter("game_player_deaths_total", "Total player deaths", ["mode", "game_kind"])
 
+# Hold-mode shield activations (#2096, UC-030 A7, UC-040 A39): one per ended
+# activation. outcome = released / empty / budget_exhausted / death / game_end.
+shield_hold_activations_total = Counter(
+    "game_shield_hold_activations_total",
+    "Hold-mode shield activations by outcome",
+    ["mode", "game_kind", "outcome"],
+)
+
 # System metrics
 process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
 
@@ -505,7 +513,8 @@ def clear_session_player_analytics(
 #   block_reason: why a blocked attempt was rejected ('not_allowed', 'rate_limited',
 #                 'low_battery', 'mode_unsupported', 'no_game', 'handler_error',
 #                 'already_charged' (#1837, UC-040 A31), 'shield_cap_reached', 'shield_cooldown'
-#                 (#2044, UC-040 A34), 'revive_refused', 'experiment_override',
+#                 (#2044, UC-040 A34), 'shield_pool_full', 'shield_budget_exhausted'
+#                 (#2096, UC-040 A37), 'revive_refused', 'experiment_override',
 #                 'eliminate_refused' (UC-040 A22)); empty
 #                 string for applied (blocked='false') attempts. Cardinality is bounded
 #                 to this fixed reason set, so it is safe as a label.
