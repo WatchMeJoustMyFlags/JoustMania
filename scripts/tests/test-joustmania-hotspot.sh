@@ -270,6 +270,19 @@ set_dev wlan0 "30 (disconnected)" ""
 at 10350; once; at 10370; once
 expect_state on
 
+# the drop happens long after the last pass saw the client (the timer runs every
+# 60 s): the wait still starts at the first pass after the drop (review F1 delta)
+make_case a2-late-drop
+set_dev wlan0 "100 (connected)" "11111111-2222-3333-4444-555555555555"
+at 10000; once; at 10060; once
+set_dev wlan0 "30 (disconnected)" ""
+at 10110; once
+[[ "$(ups)" == 0 ]] || fail "a2-late-drop: hotspot up at the first pass after the drop"
+at 10129; once
+[[ "$(ups)" == 0 ]] || fail "a2-late-drop: hotspot up before 20 s after the drop was seen"
+at 10130; once
+expect_state on
+
 # --- never up next to a connected uplink (review F2, BR-002) -----------------------
 make_case f2-connected
 set_dev eth0 "70 (connecting (getting IP configuration))" ""

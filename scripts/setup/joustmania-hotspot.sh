@@ -289,6 +289,7 @@ evaluate_pass() {
     fi
     if ((conn_for >= C_STABLE)); then
         state_clear unstable_since
+        state_clear client_seen
         if [[ "$wlan" == ap-on || "$wlan" == ap-starting ]]; then
             hotspot_down
             log "hotspot down: $C_UPLINK connected for ${conn_for}s (UC-061 A1)"
@@ -302,6 +303,14 @@ evaluate_pass() {
         state_set unstable_since "$now"
     }
     unstable_for=$((now - since))
+    # A client was up at the last pass and is gone now: the drop happened at
+    # some point since then, so the wait starts now and NM gets the full delay
+    # to reconnect it before the hotspot takes the radio (A2)
+    if [[ -e "$STATE_DIR/client_seen" && ("$wlan" == free || "$wlan" == client-connecting) ]]; then
+        state_clear client_seen
+        state_set unstable_since "$now"
+        unstable_for=0
+    fi
 
     case "$wlan" in
         ap-on)
@@ -315,9 +324,10 @@ evaluate_pass() {
             return
             ;;
         client-up)
-            # a client connection counts as connectivity: when it drops, the
-            # wait starts again, so NM can reconnect it before the hotspot (A2)
+            # a client connection counts as connectivity: mark it, so the
+            # first pass after it drops restarts the wait (A2)
             state_set unstable_since "$now"
+            state_set client_seen 1
             STATE=off REASON="Wi-Fi client up on $WLAN (UC-061 A2)"
             return
             ;;
