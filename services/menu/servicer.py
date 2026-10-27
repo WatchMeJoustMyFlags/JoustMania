@@ -21,6 +21,7 @@ from lib.feature_flags import (
     set_game_transaction_context,
 )
 from lib.flag_service_writer import FlagServiceWriter
+from lib.setting_ladders import SHIELD_ACTIVATION_LADDER
 from lib.telemetry import get_tracer
 from lib.types import Games, Sound
 from proto import menu_pb2, menu_pb2_grpc
@@ -39,6 +40,7 @@ from services.menu.settings_ops import (
     GAME_ACTIVE,
     LOBBY_ONLY_OPTIONS,
     OK,
+    SHIELD_ACTIVATION_FLAG,
     STALE,
     Result,
     SettingsOps,
@@ -168,6 +170,9 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         # agent/interventions_enabled have no persist in the registry (a persisted write is 400) and
         # must not survive a restart (UC-045 step 7).
         self.agent_enabled_writer = FlagServiceWriter("agent", persist=False)
+        # The pad's shield mode (UC-015 BR-018, #2215): game/shield.activation has no persist in the
+        # registry, so it is an in-memory stack overlay.
+        self.game_overlay_writer = FlagServiceWriter("game", persist=False)
 
         # OpenFeature clients for reading settings
         self.game_settings_client = get_flag_client("game")
@@ -212,6 +217,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             metrics=metrics,
             callbacks=self,
             agent_enabled_writer=self.agent_enabled_writer,
+            game_overlay_writer=self.game_overlay_writer,
         )
 
         # Admin mode handler
@@ -602,6 +608,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             instructions=bool(user.get_boolean_value("game_instructions", False)),
             force_all_start=bool(game.get_boolean_value("force_all_start", False)),
             audio_volume_master=_variant(user.get_float_details("audio_volume.master", 1.0)),
+            shield_activation=_variant(game.get_string_details(SHIELD_ACTIVATION_FLAG, "")),
         )
 
     async def ListGameModes(self, _request, _context):
@@ -734,12 +741,22 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         return result
 
     async def _pad_preview_setting(self, data: dict) -> Result:
-        """preview_setting: the K1 live preview (UC-015 BR-017, #2106); a mode pulse, nothing written.
+        """preview_setting: the K1 / K6 live preview (UC-015 BR-017, #2106, #2215); a pulse, nothing written.
 
         Writes no flag, changes no selection and plays no voice: only the BR-015 pulse of the mode's
-        colour on every lobby controller. Refused like a mode step while the lifecycle is live (A1).
+        colour (or the BR-018 pulse of the shield mode's) on every lobby controller. Refused like a
+        step while the lifecycle is live (A1).
         """
-        if data.get("option", "") != "current_game":
+        option = data.get("option", "")
+        if option == SHIELD_ACTIVATION_FLAG:
+            shield_mode = data.get("mode", "")
+            if shield_mode not in SHIELD_ACTIVATION_LADDER:
+                return Result(None, None, BAD_OPTION)
+            if self._lifecycle_live():
+                return Result(None, None, GAME_ACTIVE)
+            await self.settings_ops.show_shield_mode_on_lobby(shield_mode)
+            return Result(None, shield_mode)
+        if option != "current_game":
             return Result(None, None, BAD_OPTION)
         mode = Games.from_name(data.get("mode", ""))
         if mode is None or mode.name not in GAME_MODES:

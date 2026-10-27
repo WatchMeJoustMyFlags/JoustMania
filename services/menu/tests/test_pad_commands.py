@@ -41,6 +41,7 @@ BASELINE = {
     ("game", "sensitivity"): ({"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4}, "medium"),
     ("game", "num_teams"): ({"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}, "two"),
     ("game", "force_all_start"): ({"on": True, "off": False}, "off"),
+    ("game", "shield.activation"): ({"instant": "instant", "trigger": "trigger", "hold": "hold"}, "trigger"),
     ("user", "game_instructions"): ({"on": True, "off": False}, "off"),
     ("user", "current_game"): ({name: name for name in GAME_MODES}, "JoustFFA"),
     (
@@ -53,7 +54,7 @@ BASELINE = {
     ("agent", "decision.backend"): ({"rules": "rules", "claude": "claude", "openai": "openai", "jev": "jev"}, "rules"),
 }
 # Registry rows without persist (services/flag-service/registry.yaml): a persisted write is 400.
-NO_PERSIST = {("agent", "enabled"), ("agent", "interventions_enabled")}
+NO_PERSIST = {("agent", "enabled"), ("agent", "interventions_enabled"), ("game", "shield.activation")}
 
 
 class FakeFlagService:

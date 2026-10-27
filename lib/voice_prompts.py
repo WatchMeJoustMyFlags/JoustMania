@@ -59,6 +59,13 @@ LABEL_VOICES: dict[str, Sound] = {
     "decision.backend": Sound.MENU_VOX_LABEL_BACKEND,
     "audio_volume.master": Sound.MENU_VOX_LABEL_VOLUME,
     "game_instructions": Sound.MENU_VOX_LABEL_INSTRUCTIONS,
+    "shield.activation": Sound.MENU_VOX_LABEL_SHIELD_MODE,
+}
+# UC-015 BR-018 (#2215): the shield activation modes (`game/shield.activation` variants) by name.
+SHIELD_ACTIVATION_VOICES: dict[str, Sound] = {
+    "instant": Sound.MENU_VOX_SHIELD_INSTANT,
+    "trigger": Sound.MENU_VOX_SHIELD_TRIGGER,
+    "hold": Sound.MENU_VOX_SHIELD_HOLD,
 }
 # UC-044 decision backends by name (UC-015 BR-011), not by knob position.
 BACKEND_VOICES: dict[str, Sound] = {

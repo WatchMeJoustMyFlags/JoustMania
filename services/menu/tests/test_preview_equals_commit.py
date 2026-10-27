@@ -32,7 +32,7 @@ from services.menu.tests.servicer_harness import (
 FLAGD_DIR = Path(__file__).resolve().parents[3] / "services" / "flagd"
 STEPS = [n for n in range(-12, 13) if n != 0]
 KEYS = {
-    "game": ["sensitivity", "num_teams", "force_all_start"],
+    "game": ["sensitivity", "num_teams", "force_all_start", "shield.activation"],
     "user": ["game_instructions", "audio_volume.master", "current_game"],
     "agent": ["interventions_allowed", "enabled", "interventions_enabled", "decision.backend"],
 }
@@ -135,6 +135,7 @@ FLAG_OPTIONS = {
     "force_all_start": ("game", "force_all_start"),
     "game_instructions": ("user", "game_instructions"),
     "audio_volume.master": ("user", "audio_volume.master"),
+    "shield.activation": ("game", "shield.activation"),  # UC-015 BR-018 (#2215)
 }
 
 
