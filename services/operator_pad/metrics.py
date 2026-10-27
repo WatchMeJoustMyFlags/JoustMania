@@ -16,6 +16,12 @@ gestures_total = Counter(
     ["action", "result"],
 )
 
+previews_total = Counter(
+    "operator_pad_previews_total",
+    "Live-preview decisions while a layer key is held and the knob turns, by result (UC-015 BR-017)",
+    ["result"],
+)
+
 unknown_keys_total = Counter(
     "operator_pad_unknown_keys_total",
     "Key codes outside operator_pad.keymap (UC-015 A4)",

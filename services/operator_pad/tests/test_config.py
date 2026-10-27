@@ -115,3 +115,29 @@ def test_knob_events_per_step_outside_1_to_12_or_malformed_falls_back_to_4_with_
 def test_default_timings_after_a_bad_hold_keep_the_valid_knob_setting():
     config = PadConfig(_client({"operator_pad.hold_end_ms": 400, "operator_pad.knob_events_per_step": 2}))
     assert config.timings() == Timings(knob_events_per_step=2)
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])
+@pytest.mark.parametrize("value", [0, 100, 150, 300, 1000])
+def test_preview_debounce_in_range_is_used(value):
+    assert PadConfig(_client({"operator_pad.preview_debounce_ms": value})).preview_debounce_ms() == value
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])
+@pytest.mark.parametrize("value", [-1, 1001, True, "150", 1.5])
+def test_preview_debounce_outside_0_to_1000_or_malformed_falls_back_to_150_with_a_warning(value):
+    with patch.object(config_module, "logger") as log:
+        assert PadConfig(_client({"operator_pad.preview_debounce_ms": value})).preview_debounce_ms() == 150
+    log.warning.assert_called_once()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])
+def test_preview_flags_default_on_and_150_and_survive_an_unreadable_client():
+    assert PadConfig(_client({})).preview_enabled() is True
+    assert PadConfig(_client({})).preview_debounce_ms() == 150
+    assert PadConfig(_client({"operator_pad.preview_enabled": False})).preview_enabled() is False
+    client = create_autospec(OpenFeatureClient, instance=True)
+    client.get_integer_value.side_effect = RuntimeError("no provider")
+    client.get_boolean_value.side_effect = RuntimeError("no provider")
+    assert PadConfig(client).preview_enabled() is True
+    assert PadConfig(client).preview_debounce_ms() == 150

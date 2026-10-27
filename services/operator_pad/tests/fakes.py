@@ -14,6 +14,7 @@ class CoordinatorStubSpec:
 
 class AudioStubSpec:
     async def PlaySound(self, request, timeout=None): ...
+    async def StopSound(self, request, timeout=None): ...
 
 
 class GatedSleep:

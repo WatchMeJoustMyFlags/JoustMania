@@ -10,6 +10,7 @@ from services.operator_pad.gestures import (
     KNOB_PRESS_GESTURE,
     KNOB_TURN,
     LAYER,
+    LAYER_STEP,
     LOCK,
     PRESS,
     RELEASE,
@@ -93,7 +94,7 @@ def test_timings_come_from_the_caller():
 def test_knob_turn_in_a_layer_marks_the_key_used_and_commits_on_release():
     pad = Pad()
     pad.at(0).press("K2")
-    assert pad.turn("B") == []
+    assert [g.kind for g in pad.turn("B")] == [LAYER_STEP]  # a preview step only: nothing commits (BR-017)
     pad.turn("B")
     pad.turn("A")
     assert pad.at(100).release("K2") == [Gesture(LAYER, "K2", steps=1, held_ms=100)]
@@ -362,3 +363,65 @@ def test_a_short_layer_interaction_drops_the_volume_remainder():
     pad.turn("B")
     pad.at(60).release("K2")
     assert _volume_steps(pad, "B", 1, t0=80) == []  # 80 ms after the last volume turn: no pause, still dropped
+
+
+# --- live preview steps (BR-017) ----------------------------------------------------------------
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005", "BR-017"], steps=[5])
+def test_each_completed_layer_step_emits_the_running_net_total():
+    pad = Pad(N4)
+    pad.at(0).press("K2")
+    got = []
+    for _ in range(8):
+        got += pad.turn("B")
+    for _ in range(4):  # a direction change restarts the count: one step back after 4 events
+        got += pad.turn("A")
+    assert got == [
+        Gesture(LAYER_STEP, "K2", steps=1),
+        Gesture(LAYER_STEP, "K2", steps=2),
+        Gesture(LAYER_STEP, "K2", steps=1),
+    ]
+    release = pad.at(300).release("K2")
+    assert release == [Gesture(LAYER, "K2", steps=1, held_ms=300)]  # the release commits the last preview total
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-005", "BR-017"], steps=[5])
+def test_a_partial_step_emits_no_layer_step():
+    pad = Pad(N4)
+    pad.at(0).press("K5")
+    got = []
+    for _ in range(3):
+        got += pad.turn("B")
+    assert got == []
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-007", "BR-017"], steps=[5])
+def test_no_layer_step_in_a_chord_while_locked_or_with_a_non_layer_key():
+    pad = Pad()
+    pad.at(0).press("K2")
+    pad.at(10).press("K5")
+    assert pad.turn("B") == []  # chord
+    assert pad.machine.preview_key() is None
+    pad.release("K2")
+    pad.release("K5")
+    for key in ("K4", "K6", "K8"):
+        pad.press(key)
+        assert pad.turn("B") == []
+        pad.release(key)
+    pad.at(5000).press("K8")
+    pad.at(8100).release("K8")  # locked
+    pad.press("K2")
+    assert pad.turn("B") == []
+    assert pad.machine.preview_key() is None
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])
+def test_preview_key_is_the_used_single_layer_key():
+    pad = Pad()
+    pad.at(0).press("K3")
+    assert pad.machine.preview_key() is None  # not turned yet: may still be a tap or hold
+    pad.turn("B")
+    assert pad.machine.preview_key() == "K3"
+    pad.at(100).release("K3")
+    assert pad.machine.preview_key() is None
