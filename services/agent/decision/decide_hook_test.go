@@ -50,7 +50,7 @@ func TestEvaluateDecide_MatchesEvaluate(t *testing.T) {
 			b := newTestEngine(fx.cfg, &clockB)
 			for step := 0; step < 6; step++ {
 				want := a.Evaluate(context.Background(), fx.ctx)
-				got, req, resp, ranked := b.EvaluateDecide(context.Background(), fx.ctx, func(map[string]bool) decide.Request {
+				got, req, resp, ranked := b.EvaluateDecide(context.Background(), fx.ctx, func(_, _ map[string]bool) decide.Request {
 					return ffaRequest(fx.ctx, allInterventions())
 				})
 				if !reflect.DeepEqual(got, want) {

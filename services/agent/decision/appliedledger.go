@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -68,7 +69,8 @@ func normalisedValue(v string) string {
 	return t
 }
 
-func appliedKey(d Decision) string { return d.Intervention + "|" + d.TargetSerial }
+// appliedKey is the ledger key of d; the decide state reads the same key (decide.LevelKey).
+func appliedKey(d Decision) string { return decide.LevelKey(d.Intervention, d.TargetSerial) }
 
 // appliedEntry is the last value the agent wrote for one key in this game.
 type appliedEntry struct {

@@ -146,7 +146,7 @@ const (
 // decide answers from one ranking. *ObjectiveRules satisfies it; Noop/Probe/test
 // engines do not, and then the loop calls plain Evaluate and emits no span.
 type decideEngine interface {
-	EvaluateDecide(ctx context.Context, c gamecontext.GameContext, build func(charged map[string]bool) decide.Request) ([]Decision, decide.Request, decide.Response, bool)
+	EvaluateDecide(ctx context.Context, c gamecontext.GameContext, build func(charged, noShield map[string]bool) decide.Request) ([]Decision, decide.Request, decide.Response, bool)
 }
 
 // actedRecorder is the optional seam that arms the rules engine's variance
@@ -206,19 +206,41 @@ func (rec *decideRecord) notePermission(state *LayerState, before int) {
 	rec.blockReason = first.BlockReason
 }
 
-// buildDecideRequest builds the FFA decide request for c with the shield-charge
-// ledger view at this moment (#1870). withContext attaches the raw snapshot (for
+// buildDecideRequest builds the FFA decide request for c with the shield-ledger
+// view (one ShieldSerials snapshot: charged and no-shield, #1870, #2066) and the
+// applied levels (#2066) at this moment. withContext attaches the raw snapshot (for
 // the in-process rules adapter only); remote requests never carry it.
 func (l *Loop) buildDecideRequest(c gamecontext.GameContext, allowed []string, withContext bool) decide.Request {
-	return decideRequestWith(c, allowed, withContext, l.ChargedSerials(), l.ShieldInFlight())
+	charged, noShield := l.ShieldSerials(c)
+	return decideRequestWith(c, allowed, withContext, decide.Annotations{
+		Charged:        charged,
+		NoShield:       noShield,
+		ShieldInFlight: l.ShieldInFlight(),
+		Levels:         l.AppliedValues(),
+	})
+}
+
+// rulesRequestBuilder is the rules path's lazy request builder for EvaluateDecide:
+// the state gets the ranking's own shield-ledger snapshot (charged, no-shield) plus
+// the grants in flight and the applied levels at build time (#2066).
+func (l *Loop) rulesRequestBuilder(c gamecontext.GameContext, allowed []string) func(charged, noShield map[string]bool) decide.Request {
+	return func(charged, noShield map[string]bool) decide.Request {
+		return decideRequestWith(c, allowed, true, decide.Annotations{
+			Charged:        charged,
+			NoShield:       noShield,
+			ShieldInFlight: l.ShieldInFlight(),
+			Levels:         l.AppliedValues(),
+		})
+	}
 }
 
 // decideRequestWith builds the FFA decide request for c whose state marks the
-// charged players shield_charged and, in a hold game, adds the grants in flight to
-// the players' energy (#2096). The rules path passes the snapshot its ranking used,
-// so the state and the charge policy agree.
-func decideRequestWith(c gamecontext.GameContext, allowed []string, withContext bool, charged map[string]bool, inFlight map[string]float64) decide.Request {
-	st := decide.BuildStateWith(c, decide.Annotations{Charged: charged, ShieldInFlight: inFlight})
+// charged players shield_charged, the other no-shield players shield_limited, the
+// applied per-player levels and, in a hold game, adds the grants in flight to the
+// players' energy (#2096, #2066). The rules path passes the snapshot its ranking
+// used, so the state and the charge policy agree.
+func decideRequestWith(c gamecontext.GameContext, allowed []string, withContext bool, ann decide.Annotations) decide.Request {
+	st := decide.BuildStateWith(c, ann)
 	req := decide.Request{State: st, Questions: decide.FFAQuestions(st, allowed)}
 	if withContext {
 		cc := c
@@ -247,9 +269,7 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, rules R
 	}
 	now := l.nowOrDefault()
 	start := now()
-	out, req, resp, ranked := eng.EvaluateDecide(ctx, c, func(charged map[string]bool) decide.Request {
-		return decideRequestWith(c, snapshot.InterventionsAllowed, true, charged, l.ShieldInFlight())
-	})
+	out, req, resp, ranked := eng.EvaluateDecide(ctx, c, l.rulesRequestBuilder(c, snapshot.InterventionsAllowed))
 	if !ranked {
 		return out, nil
 	}
@@ -693,9 +713,7 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 	}
 	var decisions []Decision
 	if eng, isDecide := rules.(decideEngine); isDecide {
-		out, req, resp, ranked := eng.EvaluateDecide(ctx, current, func(charged map[string]bool) decide.Request {
-			return decideRequestWith(current, snapshot.InterventionsAllowed, true, charged, l.ShieldInFlight())
-		})
+		out, req, resp, ranked := eng.EvaluateDecide(ctx, current, l.rulesRequestBuilder(current, snapshot.InterventionsAllowed))
 		decisions = out
 		if ranked {
 			rec.req, rec.resp, rec.hasResp = req, resp, true
