@@ -129,7 +129,9 @@ Cut-off runs (power loss, ssh hang-up) and manual recovery:
 - An upgrade cut off after its checkout leaves HEAD at the target but `.joustmania-release` naming the version
   before; `--status` WARNs `HEAD ... is neither recorded version` and `--rollback` refuses. Re-run the same
   upgrade command: it repairs the record (current = HEAD, previous = the recorded current) without a restart;
-  then run `sudo systemctl restart joustmania`, or `--rollback` to go back.
+  then run `sudo systemctl restart joustmania`, or `--rollback` to go back. The same holds when a cut-off
+  rollback came first (its marker still in the record): HEAD is then neither recorded version, the marker is
+  stale, and the repair makes the version that rollback was moving to the previous one.
 - The unit's start limit (3 starts in 15 minutes, UC-060 A5) guards boot crash loops only: every restart the
   upgrade command does runs `sudo systemctl reset-failed joustmania` first (UC-060 BR-006), so upgrades and
   rollbacks in quick succession still start. A start systemd refuses anyway is reported as `refused by systemd
