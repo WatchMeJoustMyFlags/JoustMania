@@ -18,6 +18,8 @@ func defaultDecisionBackend() DecisionBackend {
 		ActConfidenceThreshold: DefaultDecisionActConfidenceThreshold,
 		CaptureContent:         DefaultDecisionCaptureContent,
 		MinInterval:            DefaultDecisionMinIntervalMs * time.Millisecond,
+		MinGapAfterAnswer:      DefaultDecisionMinGapAfterAnswerMs * time.Millisecond,
+		MaxStateAge:            DefaultDecisionMaxStateAgeMs * time.Millisecond,
 		Claude: RemoteBackendConfig{BaseURL: DefaultDecisionClaudeBaseURL, Model: DefaultDecisionClaudeModel,
 			Timeout: DefaultDecisionClaudeTimeoutMs * time.Millisecond},
 		OpenAI: RemoteBackendConfig{BaseURL: DefaultDecisionOpenAIBaseURL, Timeout: timeout,
@@ -74,10 +76,12 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 			keyDecisionJevModel:              "jev-1",
 		},
 		ints: map[string]int64{
-			keyDecisionClaudeTimeoutMs: 1500,
-			keyDecisionOpenAITimeoutMs: 5000,
-			keyDecisionJevTimeoutMs:    2000,
-			keyDecisionMinIntervalMs:   1500,
+			keyDecisionClaudeTimeoutMs:     1500,
+			keyDecisionOpenAITimeoutMs:     5000,
+			keyDecisionJevTimeoutMs:        2000,
+			keyDecisionMinIntervalMs:       1500,
+			keyDecisionMinGapAfterAnswerMs: 3000,
+			keyDecisionMaxStateAgeMs:       6000,
 		},
 		floats: map[string]float64{keyDecisionActConfidenceThreshold: 0.95, keyDecisionJevActConfidenceThreshold: 0.95},
 	}
@@ -87,6 +91,8 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 		ActConfidenceThreshold: 0.95,
 		CaptureContent:         true,
 		MinInterval:            1500 * time.Millisecond,
+		MinGapAfterAnswer:      3 * time.Second,
+		MaxStateAge:            6 * time.Second,
 		Claude:                 RemoteBackendConfig{BaseURL: "http://127.0.0.1:1", Model: "claude-sonnet-5-5", Timeout: 1500 * time.Millisecond},
 		OpenAI: RemoteBackendConfig{BaseURL: "https://example.test/v1", Model: "gpt-x", Timeout: 5 * time.Second,
 			ReasoningEffort: "minimal"},
@@ -126,8 +132,9 @@ func TestDecisionBackend_ClaudeBaseURLReadPerCall(t *testing.T) {
 func TestDecisionBackend_BadValuesFallBack(t *testing.T) {
 	stub := stubEvaluator{
 		strings: map[string]string{keyDecisionBackend: "   ", keyDecisionOpenAIReasoningEffort: " "},
-		ints:    map[string]int64{keyDecisionClaudeTimeoutMs: 0, keyDecisionOpenAITimeoutMs: -5, keyDecisionMinIntervalMs: -1},
-		floats:  map[string]float64{keyDecisionActConfidenceThreshold: 1.5},
+		ints: map[string]int64{keyDecisionClaudeTimeoutMs: 0, keyDecisionOpenAITimeoutMs: -5, keyDecisionMinIntervalMs: -1,
+			keyDecisionMinGapAfterAnswerMs: -1, keyDecisionMaxStateAgeMs: -1},
+		floats: map[string]float64{keyDecisionActConfidenceThreshold: 1.5},
 	}
 	got := New(stub, nil).DecisionBackend(context.Background())
 	if got != defaultDecisionBackend() {
