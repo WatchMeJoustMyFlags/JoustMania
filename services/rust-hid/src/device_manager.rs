@@ -190,10 +190,18 @@ fn handle_command<B: HidBackend>(
     outputs: &DeviceOutputs,
 ) -> bool {
     match cmd {
+        // A closed reply channel means the caller already gave up (client
+        // deadline or DEVICE_REPLY_TIMEOUT): skip the work nobody waits for (#2140).
+        DeviceCmd::Discover { reply, .. } if reply.is_closed() => {
+            debug!("Skipped Discover: caller gone");
+        }
         DeviceCmd::Discover { force, verify_only, exclude_serials, reply } => {
             let serials =
                 handle_discover(api, devices, force, verify_only, &exclude_serials, outputs);
             let _ = reply.send(serials);
+        }
+        DeviceCmd::Open { serial, reply } if reply.is_closed() => {
+            debug!(serial = %serial, "Skipped Open: caller gone");
         }
         DeviceCmd::Open { serial, reply } => {
             let success = handle_open(api, devices, &serial, outputs);
@@ -745,5 +753,87 @@ mod tests {
             assert!(n >= 50, "{serial}: only {n} sensor samples in {RUN:?}");
         }
     }
-}
 
+    /// Backend that counts every enumeration and open (#2140).
+    #[derive(Default)]
+    struct CountingBackend {
+        device: FakeDevice,
+        refreshes: usize,
+        opens: std::cell::Cell<usize>,
+    }
+
+    impl HidBackend for CountingBackend {
+        type Device = FakeDevice;
+
+        fn refresh_devices(&mut self) -> hidapi::HidResult<()> {
+            self.refreshes += 1;
+            Ok(())
+        }
+
+        fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+            vec![(SERIAL.to_string(), self.device.clone(), PRODUCT_ID_ZCM2, None)]
+        }
+
+        fn open_controller_by_serial(&self, serial: &str) -> Option<(FakeDevice, u16)> {
+            self.opens.set(self.opens.get() + 1);
+            (serial == SERIAL).then(|| (self.device.clone(), PRODUCT_ID_ZCM2))
+        }
+    }
+
+    fn handle(cmd: DeviceCmd, api: &mut CountingBackend) -> HashMap<String, DeviceEntry<FakeDevice>> {
+        let mut devices = HashMap::new();
+        let mut stream_sender = None;
+        assert!(handle_command(cmd, api, &mut devices, &mut stream_sender, &DeviceOutputs::default()));
+        devices
+    }
+
+    fn discover_cmd(reply: tokio::sync::oneshot::Sender<Vec<DiscoveredControllerInfo>>) -> DeviceCmd {
+        DeviceCmd::Discover { force: true, verify_only: false, exclude_serials: vec![], reply }
+    }
+
+    // UC: UC-002 main step 2
+    // NFR: NFR-055
+    #[test]
+    fn test_abandoned_discover_is_skipped() {
+        let mut api = CountingBackend::default();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        drop(reply_rx); // the caller gave up (deadline passed) before the loop got to it
+
+        let devices = handle(discover_cmd(reply_tx), &mut api);
+
+        assert_eq!(api.refreshes, 0, "an abandoned Discover still enumerated");
+        assert!(devices.is_empty(), "an abandoned Discover still opened a device");
+    }
+
+    // UC: UC-002 main step 2
+    // NFR: NFR-055
+    #[test]
+    fn test_abandoned_open_is_skipped() {
+        let mut api = CountingBackend::default();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        drop(reply_rx);
+
+        let devices = handle(DeviceCmd::Open { serial: SERIAL.to_string(), reply: reply_tx }, &mut api);
+
+        assert_eq!(api.opens.get(), 0, "an abandoned Open still opened the device");
+        assert!(devices.is_empty());
+    }
+
+    // UC: UC-002 main step 2
+    // NFR: NFR-055
+    #[test]
+    fn test_abandoned_check_keeps_live_discover_and_open() {
+        let mut api = CountingBackend::default();
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        let devices = handle(discover_cmd(reply_tx), &mut api);
+        assert_eq!(api.refreshes, 1);
+        assert_eq!(reply_rx.try_recv().unwrap().len(), 1);
+        assert!(devices.contains_key(SERIAL));
+
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        let devices = handle(DeviceCmd::Open { serial: SERIAL.to_string(), reply: reply_tx }, &mut api);
+        assert_eq!(api.opens.get(), 1);
+        assert!(reply_rx.try_recv().unwrap());
+        assert!(devices.contains_key(SERIAL));
+    }
+}
