@@ -34,7 +34,6 @@ def _server(calls, name):
     return server
 
 
-@pytest.mark.uc("UC-002", flow="main")
 @pytest.mark.asyncio
 async def test_backend_shutdown_runs_once_after_servers_stop():
     calls = []
@@ -45,7 +44,6 @@ async def test_backend_shutdown_runs_once_after_servers_stop():
     assert calls == ["discovery.stop", "server.stop", "mock.stop", "backend.shutdown"]
 
 
-@pytest.mark.uc("UC-002", flow="main")
 @pytest.mark.asyncio
 async def test_second_shutdown_does_not_close_backend_again():
     calls = []
@@ -58,7 +56,6 @@ async def test_second_shutdown_does_not_close_backend_again():
     assert calls.count("backend.shutdown") == 1
 
 
-@pytest.mark.uc("UC-002", flow="main")
 @pytest.mark.asyncio
 async def test_backend_closes_even_when_server_stop_raises():
     calls = []

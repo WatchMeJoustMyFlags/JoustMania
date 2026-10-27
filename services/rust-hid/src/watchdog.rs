@@ -198,6 +198,20 @@ mod tests {
     // UC: UC-002 A7
     // NFR: NFR-054
     #[test]
+    fn test_default_config_and_exit_code_match_nfr_054() {
+        let d = Config::default();
+        assert_eq!(d.max_failed_probes, 5, "NFR-054: 5 failed probes in a row");
+        assert_eq!(d.probe_interval, Duration::from_secs(3), "NFR-054: one probe every 3 s");
+        assert_eq!(d.probe_timeout, Duration::from_secs(3), "NFR-054: 3 s budget per probe");
+        assert_eq!(d.device_stall_limit, Duration::from_secs(15), "NFR-054: 15 s device stall limit");
+        assert_eq!(d.start_grace, Duration::from_secs(30), "NFR-054: 30 s start grace");
+        // Non-zero (EX_SOFTWARE), so `restart: unless-stopped` restarts the container.
+        assert_eq!(EXIT_CODE, 70);
+    }
+
+    // UC: UC-002 A7
+    // NFR: NFR-054
+    #[test]
     fn test_state_trips_only_after_consecutive_failures_once_armed() {
         let t0 = Instant::now();
         let mut s = WatchdogState::new(cfg(), t0);

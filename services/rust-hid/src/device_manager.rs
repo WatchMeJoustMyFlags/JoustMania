@@ -578,6 +578,92 @@ mod tests {
         );
     }
 
+    /// Backend whose opens of an unknown serial are recorded with the time and
+    /// the heartbeat age the device loop left at that moment.
+    struct FloodBackend {
+        inner: FakeBackend,
+        heartbeat: Heartbeat,
+        opens: Arc<Mutex<Vec<(Instant, Duration)>>>,
+    }
+
+    impl HidBackend for FloodBackend {
+        type Device = FakeDevice;
+
+        fn refresh_devices(&mut self) -> hidapi::HidResult<()> {
+            Ok(())
+        }
+
+        fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+            self.inner.discover_controllers()
+        }
+
+        fn open_controller_by_serial(&self, serial: &str) -> Option<(FakeDevice, u16)> {
+            if serial != SERIAL {
+                self.opens.lock().unwrap().push((Instant::now(), self.heartbeat.age()));
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            self.inner.open_controller_by_serial(serial)
+        }
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    #[test]
+    fn test_a_command_flood_still_lets_the_loop_poll_and_beat() {
+        const FLOOD: usize = 4 * MAX_CMDS_PER_PASS;
+        let device = FakeDevice::default();
+        let heartbeat = Heartbeat::new();
+        let opens = Arc::new(Mutex::new(Vec::new()));
+        let backend = FloodBackend {
+            inner: FakeBackend { device: device.clone() },
+            heartbeat: heartbeat.clone(),
+            opens: opens.clone(),
+        };
+
+        // Everything is queued before the loop starts, so its first pass sees the whole flood.
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (open_tx, open_rx) = tokio::sync::oneshot::channel();
+        cmd_tx.send(DeviceCmd::Open { serial: SERIAL.to_string(), reply: open_tx }).unwrap();
+        let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
+        cmd_tx.send(DeviceCmd::RegisterStream { sender: sensor_tx }).unwrap();
+        let mut replies = Vec::new();
+        for i in 0..FLOOD {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            cmd_tx.send(DeviceCmd::Open { serial: format!("unknown-{i}"), reply: tx }).unwrap();
+            replies.push(rx);
+        }
+        let handle = std::thread::spawn(move || {
+            run_device_loop(backend, cmd_rx, &heartbeat, &DeviceOutputs::default())
+        });
+        assert!(open_rx.blocking_recv().unwrap());
+        for rx in replies {
+            assert!(!rx.blocking_recv().unwrap());
+        }
+        shutdown(&cmd_tx, handle);
+
+        let opens = opens.lock().unwrap().clone();
+        assert_eq!(opens.len(), FLOOD);
+        let (first, last) = (opens[0].0, opens[FLOOD - 1].0);
+        let polls_inside = device
+            .0
+            .lock()
+            .unwrap()
+            .drained_at
+            .iter()
+            .filter(|t| **t > first && **t < last)
+            .count();
+        assert!(
+            polls_inside >= 3,
+            "{polls_inside} device polls during a {FLOOD}-command flood: input starved"
+        );
+        // The heartbeat age only drops when a new loop pass beats it.
+        let beats_inside = opens.windows(2).filter(|w| w[1].1 < w[0].1).count();
+        assert!(
+            beats_inside >= 3,
+            "{beats_inside} heartbeats during a {FLOOD}-command flood: the watchdog would trip"
+        );
+    }
+
     // --- load: 9 controllers, one with a blocking write (#2125) -------------
 
     /// A controller that reports at 100 Hz and counts its writes; `block` makes
