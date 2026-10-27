@@ -24,6 +24,9 @@ extensions:
           # ever look at recent traces in a demo/dev stack, and badger v2.19.0
           # exposes no value-log/cache-size knob — the only retention levers are
           # the span TTL and how often expired data is reclaimed.
+          # #2223: memory is badger's defaults (memtables 5 x 64 MiB, 256 MiB block
+          # cache) plus query garbage; the Go soft limit (GOMEMLIMIT in
+          # docker-compose.yml) keeps it under the 1 GiB container limit.
           ttl:
             spans: 24h  # was 168h (7d); a demo only needs the last day of traces
           # Run badger's value-log GC / compaction on a tighter cadence than the
