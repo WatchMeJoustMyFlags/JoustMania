@@ -808,6 +808,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: scripts/ci/spec-refs-gate.sh
 
+      - name: Install GLib for the GKeyFile round trip (UC-061 BR-004)
+        # tests/contract/test_hotspot_profile.py parses the rendered NM keyfile with
+        # GLib's own GKeyFile parser through the system python3; it fails in CI without it.
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends python3-gi gir1.2-glib-2.0
+
       - name: Run telemetry contract tests
         # test_flagd_resolution.py runs in the Flagd Contract job below.
         run: uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -v --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py

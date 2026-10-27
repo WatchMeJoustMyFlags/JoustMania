@@ -251,6 +251,46 @@ set_dev wlan0 "30 (disconnected)" ""
 at 10105; once
 expect_state on
 
+# a client that drops after a long time restarts the wait (review F1): NM gets
+# up_delay_s to reconnect it before the hotspot takes the radio
+make_case a2-drop
+set_dev wlan0 "100 (connected)" "11111111-2222-3333-4444-555555555555"
+at 10000; once; at 10300; once
+expect_state off "Wi-Fi client up"
+set_dev wlan0 "30 (disconnected)" ""
+at 10301; once; at 10319; once
+expect_state waiting "eth0 down"
+[[ "$(ups)" == 0 ]] || fail "a2-drop: hotspot up right after a long-lived client dropped"
+set_dev wlan0 "60 (connecting (need authentication))" "11111111-2222-3333-4444-555555555555"
+at 10322; once; expect_state waiting "Wi-Fi client connecting"
+set_dev wlan0 "100 (connected)" "11111111-2222-3333-4444-555555555555"
+at 10330; once; expect_state off "Wi-Fi client up"
+[[ "$(ups)" == 0 ]] || fail "a2-drop: pre-empted the reconnecting client"
+set_dev wlan0 "30 (disconnected)" ""
+at 10350; once; at 10370; once
+expect_state on
+
+# --- never up next to a connected uplink (review F2, BR-002) -----------------------
+make_case f2-connected
+set_dev eth0 "70 (connecting (getting IP configuration))" ""
+at 10000; once; at 10055; once
+eth0_connected
+at 10060
+"$HELPER" evaluate >"${CASE}/out" 2>&1 || fail "f2-connected: exit $?"
+[[ "$(ups)" == 0 ]] || fail "f2-connected: hotspot up next to a connected eth0"
+expect_state off "eth0 connected"
+(($(cat "${CASE}/now") <= 10075)) || fail "f2-connected: ended at $(cat "${CASE}/now")"
+
+# --- the debounce clock is /proc/uptime, not the wall clock (review F3) ----------
+make_case f3-uptime
+unset JOUSTMANIA_HOTSPOT_NOW_FILE
+echo "1000.10 0" >"${CASE}/uptime"; once
+echo "1019.90 0" >"${CASE}/uptime"; once
+[[ "$(ups)" == 0 ]] || fail "f3-uptime: up before 20 s of uptime"
+echo "1020.00 0" >"${CASE}/uptime"; once
+expect_state on "eth0 down for 20s"
+[[ "$(cat "${CASE}/run/joustmania-hotspot/unstable_since")" == 1000 ]] || fail "f3-uptime: state not on the uptime clock"
+
 # --- boot hold ---------------------------------------------------------------------
 make_case boot-hold
 echo "12.30 20.00" >"${CASE}/uptime"
@@ -399,6 +439,11 @@ printf 'uplink_iface=enp1s0\n' >>"${CASE}/etc/hotspot.conf"
 : >"${CASE}/systemctl.argv"
 hook enp1s0 down; hook eth0 down
 [[ "$(starts)" == 1 ]] || fail "hook: uplink_iface not honoured"
+printf 'uplink_iface=enp2s0\r\n' >"${CASE}/etc/hotspot.conf"
+: >"${CASE}/systemctl.argv"
+hook enp2s0 down
+[[ "$(starts)" == 1 ]] || fail "hook: a CRLF conf line was not read"
+printf 'uplink_iface=enp1s0\n' >"${CASE}/etc/hotspot.conf"
 echo stopping >"${CASE}/sysstate"
 : >"${CASE}/systemctl.argv"
 hook enp1s0 down

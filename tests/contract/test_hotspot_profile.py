@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import configparser
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -119,6 +120,15 @@ def test_unit_has_no_start_limit_a_bounded_start_and_runs_the_root_owned_copy():
     assert 180 < int(unit["Service"]["TimeoutStartSec"]) <= 300
     assert unit["Service"]["KillMode"] == "mixed"
     assert "NetworkManager.service" in unit["Unit"]["After"]
+
+
+@pytest.mark.uc("UC-061", flow="A3", br=["BR-006"])
+def test_unit_is_started_only_by_the_timer_and_the_hook_never_by_a_boot_target():
+    # A oneshot WantedBy=multi-user.target would hold boot until the check ends
+    # (minutes while it waits); the timer's OnBootSec starts the first check
+    assert not _ini(UNIT).has_section("Install")
+    assert "WantedBy" not in _code(UNIT)
+    assert _ini(TIMER)["Install"]["WantedBy"] == "timers.target"
 
 
 @pytest.mark.uc("UC-061", br=["BR-006"])
@@ -247,28 +257,58 @@ def _gkeyfile_string(path, group: str, key: str) -> str:
     raise KeyError(f"[{group}] {key}")
 
 
-@pytest.mark.uc("UC-061", br=["BR-004"])
-def test_render_round_trips_hostile_passwords_through_gkeyfile(tmp_path):
+def _rendered_hostile(tmp_path) -> list:
     rendered = []
     for i, password in enumerate(HOSTILE_PASSWORDS):
         result, out = _render(tmp_path, f"ok{i}", password)
         assert result.returncode == 0, result.stdout + result.stderr
         assert oct(out.stat().st_mode & 0o777) == "0o600"
         rendered.append(out)
+    return rendered
 
+
+def _assert_round_trip(parsed) -> None:
+    for password, (psk, ssid, channel, uuid) in zip(
+        HOSTILE_PASSWORDS, parsed, strict=True
+    ):
+        assert psk == password
+        assert ssid == "Joust Mania"
+        assert channel == 44
+        assert uuid == _helper_uuid()
+
+
+@pytest.mark.uc("UC-061", br=["BR-004"])
+def test_render_round_trips_hostile_passwords_through_glib_gkeyfile(tmp_path):
+    """GLib's own parser, the one NetworkManager uses. CI installs python3-gi for the
+    Telemetry Contract job, so there a missing GLib is a failure, not a skip."""
     python = _glib_python()
-    if python is not None:
-        parsed = json.loads(
-            subprocess.run(
-                [python, "-I", "-c", _GLIB_READER, *map(str, rendered)],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=60,
-            ).stdout
+    if python is None:
+        if os.environ.get("CI"):
+            pytest.fail(
+                "CI must run the GKeyFile round trip with GLib: install python3-gi"
+            )
+        pytest.skip(
+            "no system python3 with PyGObject (python3-gi); the GKeyFile-rules test still runs"
         )
-    else:
-        parsed = [
+    rendered = _rendered_hostile(tmp_path)
+    parsed = json.loads(
+        subprocess.run(
+            [python, "-I", "-c", _GLIB_READER, *map(str, rendered)],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        ).stdout
+    )
+    _assert_round_trip(parsed)
+
+
+@pytest.mark.uc("UC-061", br=["BR-004"])
+def test_render_round_trips_hostile_passwords_through_gkeyfile_rules(tmp_path):
+    """The same round trip with a GKeyFile-rules reader, so it runs without GLib too."""
+    rendered = _rendered_hostile(tmp_path)
+    _assert_round_trip(
+        [
             [
                 _gkeyfile_string(p, "wifi-security", "psk"),
                 _gkeyfile_string(p, "wifi", "ssid"),
@@ -277,13 +317,7 @@ def test_render_round_trips_hostile_passwords_through_gkeyfile(tmp_path):
             ]
             for p in rendered
         ]
-    for password, (psk, ssid, channel, uuid) in zip(
-        HOSTILE_PASSWORDS, parsed, strict=True
-    ):
-        assert psk == password
-        assert ssid == "Joust Mania"
-        assert channel == 44
-        assert uuid == _helper_uuid()
+    )
 
 
 @pytest.mark.uc("UC-061", br=["BR-004"])

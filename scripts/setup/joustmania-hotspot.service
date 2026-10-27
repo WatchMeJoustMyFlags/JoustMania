@@ -1,8 +1,9 @@
 # The stage hotspot check (UC-061, FR-184; #2099). Installed by the hotspot
 # setup; runs only the root-owned copy of scripts/setup/joustmania-hotspot.sh.
-# Started at boot, by the dispatcher hook 90-joustmania-hotspot and by
-# joustmania-hotspot.timer. It is independent of joustmania.service and never
-# orders against it (BR-006).
+# Started by joustmania-hotspot.timer (30 s after boot, then every 60 s) and by
+# the dispatcher hook 90-joustmania-hotspot; never by a target, so no boot
+# target waits for a check that may run for minutes (no [Install] section).
+# It is independent of joustmania.service and never orders against it (BR-006).
 [Unit]
 Description=JoustMania stage hotspot fallback check (UC-061)
 Wants=NetworkManager.service
@@ -16,6 +17,3 @@ ExecStart=/usr/local/lib/joustmania/joustmania-hotspot evaluate
 # evaluate waits at most 180 s plus a 30 s activation; a hung nmcli ends here
 TimeoutStartSec=240
 KillMode=mixed
-
-[Install]
-WantedBy=multi-user.target

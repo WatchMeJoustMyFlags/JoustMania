@@ -35,7 +35,7 @@
 # Test overrides: JOUSTMANIA_HOTSPOT_CONF, JOUSTMANIA_HOTSPOT_STATE_DIR,
 # JOUSTMANIA_HOTSPOT_ROOT (prefix for `remove`), JOUSTMANIA_HOTSPOT_NOW_FILE
 # (fake clock: epoch seconds in a file; a pause adds to it instead of sleeping),
-# JOUSTMANIA_HOTSPOT_PROC_UPTIME, JOUSTMANIA_HOTSPOT_DNSMASQ,
+# JOUSTMANIA_HOTSPOT_PROC_UPTIME (also the debounce clock), JOUSTMANIA_HOTSPOT_DNSMASQ,
 # JOUSTMANIA_HOTSPOT_DNSMASQ_PID, JOUSTMANIA_HOTSPOT_MAX_RUN_S, and PATH stubs.
 
 # Shell tracing would print the password in `render` (BR-004)
@@ -68,11 +68,14 @@ readonly UP_WAIT_S=30
 
 log() { echo "joustmania-hotspot: $*"; }
 
+# The debounce clock: seconds since boot (/proc/uptime), monotonic, so an NTP
+# step of the wall clock never stretches or skips a wait; the state it is
+# compared with lives in /run, which is cleared at boot too
 now() {
     if [[ -n "$NOW_FILE" ]]; then
         head -n 1 "$NOW_FILE"
     else
-        date +%s
+        uptime_s
     fi
 }
 
@@ -245,7 +248,7 @@ write_status() { # $1 = state, $2 = reason
         echo "uplink=$C_UPLINK"
         echo "clients=$clients"
         echo "url=http://$AP_ADDR/"
-        echo "updated=$(now)"
+        echo "updated=$(date +%s)"
     } >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$STATE_DIR/status"
 }
 
@@ -312,6 +315,9 @@ evaluate_pass() {
             return
             ;;
         client-up)
+            # a client connection counts as connectivity: when it drops, the
+            # wait starts again, so NM can reconnect it before the hotspot (A2)
+            state_set unstable_since "$now"
             STATE=off REASON="Wi-Fi client up on $WLAN (UC-061 A2)"
             return
             ;;
@@ -338,6 +344,12 @@ evaluate_pass() {
     fi
     if ((unstable_for < need)); then
         STATE=waiting REASON="$C_UPLINK $uplink for ${unstable_for}s of ${need}s" DONE=0
+        return
+    fi
+    if [[ "$uplink" == connected ]]; then
+        # never next to a connected uplink (BR-002): wait until it is stable
+        # (A1) or a later pass sees it drop
+        STATE=waiting REASON="$C_UPLINK connected for ${conn_for}s, not yet ${C_STABLE}s" DONE=0
         return
     fi
     if hotspot_up; then
