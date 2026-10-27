@@ -560,8 +560,8 @@ bar), `decision.act_confidence_threshold=default` (0.8, claude/openai),
 `talk-stage.sh reset` clears every stage overlay (`DELETE /agent?writer=stage`)
 and applies `scripts/talk-baseline.json` again through the flag service:
 `decision.backend=rules`, both thresholds (`default`,
-Jev's `gate`), capture `on`, `min_interval_ms`, claude model `haiku`, both
-timeouts `default`, `llm.eligible_game_kinds=real_only`, `enabled=on`,
+Jev's `gate`), capture `on`, `min_interval_ms` `default`, claude model `haiku`,
+claude timeout `patient`, jev timeout `default`, `llm.eligible_game_kinds=real_only`, `enabled=on`,
 `interventions_enabled=on`, **`interventions_allowed=standard`**,
 **`policy.max_interventions_per_minute=aggressive`** (4), `experiments_enabled=off`, `rollout_enabled=off`, plus `decision.jev.base_url`,
 `decision.openai.base_url` / `.model` / `.reasoning_effort` back to their

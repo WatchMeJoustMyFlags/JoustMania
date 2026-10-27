@@ -219,8 +219,10 @@ type Loop struct {
 	// admitted (#1226): the decision.min_interval_ms cadence clock.
 	lastDecideAttempt time.Time
 	// lastDecideEnded is the time this game's most recent remote decide call
-	// ended (answer, timeout, failure or discard), set just before the in-flight
-	// slot is released (#2123): the decision.min_gap_after_answer_ms clock.
+	// returned (answer, timeout or failure), set by noteDecideEnded while the call
+	// still holds the in-flight slot, before the flag re-read and any action
+	// write; a later discard does not move it (#2123): the
+	// decision.min_gap_after_answer_ms clock.
 	lastDecideEnded time.Time
 	// skippingNoInterventions is true while this game's remote decide cycles are
 	// gated because the allow-list is empty (#1298). Guarded by llmGate; it only
