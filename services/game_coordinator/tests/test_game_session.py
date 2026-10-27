@@ -63,7 +63,7 @@ class MockSpan:
         return False
 
 
-def _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="", arm=""):
+def _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="", arm="", pattern_trigger_policy=False):
     """Build a GameSession with mocked clients + event bus for loop testing."""
     event_bus = MagicMock()
     event_bus.publish = AsyncMock()
@@ -81,6 +81,7 @@ def _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="", arm=""):
         stream_span_context=None,
         experiment_id=experiment_id,
         arm=arm,
+        pattern_trigger_policy=pattern_trigger_policy,
     )
 
     mock_clients = MagicMock()
@@ -524,6 +525,26 @@ class TestGameSessionLoop:
         # The game object is threaded the attribution for its in-loop flag eval.
         assert mock_game.experiment_id == "exp_abc123"
         assert mock_game.arm == "experimental"
+
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-019"])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy", [True, False])
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_loop_threads_pattern_trigger_policy_to_the_game(
+        self, mock_tracer_mod, mock_factory, mock_metrics, policy
+    ):
+        """UC-040 BR-019 (#2096): the session hands its pattern_trigger_policy to the game mode."""
+        session = _make_session(game_kind=GAME_KIND_SHADOW, pattern_trigger_policy=policy)
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        assert mock_game.pattern_trigger_policy is policy
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.metrics")
