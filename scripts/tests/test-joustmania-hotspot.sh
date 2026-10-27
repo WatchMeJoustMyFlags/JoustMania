@@ -80,6 +80,8 @@ case "$*" in
     echo "100 (connected)" >"${NM}/wlan0-state"; echo "$UUID" >"${NM}/wlan0-uuid"
     printf '%s' "10.42.0.1/24" >"${NM}/wlan0-ip4" ;;
   "connection down uuid $UUID")
+    # #2196: taking wlan0 down fires the NM dispatcher hook
+    [[ -f "${CASE}/hook-on-down" ]] && "$HOOK" wlan0 down
     [[ "$(get wlan0-uuid)" == "$UUID" ]] || exit 10
     echo "30 (disconnected)" >"${NM}/wlan0-state"; : >"${NM}/wlan0-uuid"; : >"${NM}/wlan0-ip4" ;;
   "connection delete uuid $UUID") rm -f "${NM}/profile" ;;
@@ -90,6 +92,9 @@ cat >"${STUBS}/systemctl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${CASE}/systemctl.argv"
 [[ "$1" == is-system-running ]] && cat "${CASE}/sysstate" 2>/dev/null
+# a started unit runs one check, as the unit would (#2196)
+[[ "$*" == "start --no-block joustmania-hotspot.service" && -f "${CASE}/start-runs-check" ]] \
+  && "$HELPER" evaluate --once >>"${CASE}/out" 2>&1
 exit 0
 EOF
 cat >"${STUBS}/iw" <<'EOF'
@@ -103,7 +108,7 @@ case "$*" in
 esac
 EOF
 chmod +x "${STUBS}"/*
-export UUID
+export UUID HELPER HOOK
 
 # make_case <name>: set up, profile loaded, eth0 down, wlan0 free, uptime 1000 s,
 # clock at 10000
@@ -626,6 +631,22 @@ at 10000; once; at 10020; once
 led_is timer 200 1800
 "$HELPER" remove >>"${CASE}/out" 2>&1 || fail "a10-remove: exit $?"
 led_is mmc0
+
+# #2196: the hook fires while remove takes wlan0 down (the unit is disabled, but a
+# disabled unit still starts): remove disarms first, so no check runs, the unit is
+# not started and the cue stays cleared
+led_case a10-remove-hook
+mkdir -p "${CASE}/root/etc/NetworkManager/dispatcher.d"
+touch "${CASE}/root/etc/NetworkManager/dispatcher.d/90-joustmania-hotspot"
+touch "${NM}/up-fails"
+at 10000; once; at 10020; once
+led_is timer 200 1800
+touch "${CASE}/hook-on-down" "${CASE}/start-runs-check"
+"$HELPER" remove >>"${CASE}/out" 2>&1 || fail "a10-remove-hook: exit $?"
+if grep -q "^start --no-block joustmania-hotspot.service" "${CASE}/systemctl.argv"; then fail "a10-remove-hook: the hook started the unit during remove"; fi
+[[ ! -e "${CASE}/etc/hotspot.conf" ]] || fail "a10-remove-hook: conf left"
+led_is mmc0
+[[ ! -e "${CASE}/ledstate/hotspot" ]] || fail "a10-remove-hook: cue left"
 
 # no LED helper (UC-060 not installed): one line, the state is still recorded
 make_case a10-no-helper
