@@ -319,7 +319,7 @@ All pull requests must pass CI checks before merging:
 6. **Package Validation** - All workspace packages must install correctly
 7. **Spec Gate** - Spec lint over `docs/` and the spec-touched check (see [CI spec gate](#ci-spec-gate))
 8. **Spec references** - `make spec-refs-check` in the same job (see [Spec references](#spec-references))
-9. **Generated specs** - `docs/specs/generated/` (metric catalog, RPC tables, flag counts, `ci/` flag diffs) must match the code: run `make specs` and commit (checked by `make specs-check` in the Telemetry Contract job). After a rebase that conflicts in a generated file, take either side and run `make specs`
+9. **Generated specs** - `docs/specs/generated/` (metric catalog, RPC tables, flag sets, `ci/` flag diffs) must match the code: run `make specs` and commit (checked by `make specs-check` in the Telemetry Contract job). Totals (flags, RPCs, metrics) are not committed, so parallel PRs do not conflict on them (#2152): `make specs-counts` prints them. After a rebase that conflicts in a generated file, take either side and run `make specs`
 
 **When the full-stack e2e job runs (#1583).** `Integration Tests` (one job, one
 compose stack, about 5-8 minutes) starts the whole docker-compose stack, so it

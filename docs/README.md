@@ -43,7 +43,7 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 | [specs/flags.md](specs/flags.md) | Every flag: type, variants, default, readers, writers, reload behaviour |
 | [specs/telemetry.md](specs/telemetry.md) | Span names, attributes, metrics, game events, log lines others depend on |
 | [specs/decide-contract.md](specs/decide-contract.md) | The decision backend contract: questions, validation, confidence, outcomes, fallbacks |
-| [specs/generated/](specs/generated/) | Tables generated from the code by `make specs` (Python metric catalog, gRPC RPC tables, flag counts, `ci/` flag diffs); never hand-edited, hand-written notes live in [specs/notes/](specs/notes/) |
+| [specs/generated/](specs/generated/) | Tables generated from the code by `make specs` (Python metric catalog, gRPC RPC tables, flag sets, `ci/` flag diffs; totals are not committed, `make specs-counts` prints them, #2152); never hand-edited, hand-written notes live in [specs/notes/](specs/notes/) |
 | [specs-inventory.md](specs-inventory.md) | Every older doc's status and the **discrepancies found** between docs and code |
 
 ## 5. How to: guides and runbooks
