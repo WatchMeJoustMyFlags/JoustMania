@@ -149,8 +149,10 @@ async def test_ffa_force_end_during_the_last_kills_explosion_publishes_no_winner
     game._play_sound = force_end_on_explosion
 
     with patch("services.game_coordinator.games.base.metrics"):
-        assert await game._kill_player("p2", 3.0) is True
+        # The kill gate closes with the force-end: the kill counts nothing (#2033).
+        assert await game._kill_player("p2", 3.0) is False
 
+    assert game.players["p2"].alive is True
     assert not await game._check_win_condition()
     assert events.get_events_of_type(GameEvent.GAME_WINNER) == []
     assert events.get_events_of_type(GameEvent.GAME_TIE) == []

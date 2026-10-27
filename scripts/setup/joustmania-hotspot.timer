@@ -1,0 +1,13 @@
+# Re-checks the stage hotspot every 60 s (UC-061 A3, A7; #2099): picks up a
+# wlan0 that appears late, a hotspot that dropped and a missed NM event. The
+# check is idempotent; a tick while a check runs joins it.
+[Unit]
+Description=Re-check the JoustMania stage hotspot every 60 s (UC-061)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
