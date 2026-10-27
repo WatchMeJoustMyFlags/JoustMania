@@ -11,9 +11,11 @@ controller, so it is governed by the ``pairing.bluez_restart_mode`` flag:
 - ``never`` (fallback when flagd is unreachable): never restart.
 - ``always``: restart after every successful pairing (pre-#1446 behaviour).
 
-With ``when_idle`` the restart also waits until no PS Move has been on USB for
-``pairing.restart_quiet_period`` seconds (#2091): a host pairing a stack of
-controllers one after the other gets one restart, after the last one.
+With ``when_idle`` the restart also waits until no PS Move still to be paired
+has been on USB, and none was paired, for ``pairing.restart_quiet_period``
+seconds (#2091): a host pairing a stack of controllers one after the other gets
+one restart, after the last one. A paired Move left on USB to charge does not
+hold it back.
 
 A restart drops BlueZ's agent registration (#632), so the pairing agent is
 registered again after every restart.
@@ -132,12 +134,20 @@ class BluezReloader:
         self.usb_seen_at: float | None = None
 
     def note_usb_controllers(self, count: int) -> None:
-        """Called after each successful USB listing; a listed PS Move restarts the quiet period."""
+        """Called after each successful USB listing with the PS Moves on it not yet paired this session.
+
+        Each one restarts the quiet period; a Move already paired (e.g. left on USB to
+        charge) is not counted, so it cannot hold the restart back for ever.
+        """
         if count:
             self.usb_seen_at = self._clock()
 
+    def note_usb_settled(self) -> None:
+        """A PS Move on USB was just paired: the quiet period runs from now (UC-001 BR-005, #2091)."""
+        self.usb_seen_at = self._clock()
+
     def _usb_busy(self) -> bool:
-        """A PS Move was on USB within pairing.restart_quiet_period (UC-001 BR-005, #2091)."""
+        """A PS Move was being paired on USB within pairing.restart_quiet_period (UC-001 BR-005, #2091)."""
         quiet = get_restart_quiet_period()
         return quiet > 0 and self.usb_seen_at is not None and self._clock() - self.usb_seen_at < quiet
 

@@ -1335,7 +1335,7 @@ class TestRestartWaitsForQuietUsb2091(_PairingFlowEnv):
 
     @pytest.mark.uc("UC-001", flow="A6", br=["BR-005"], cond=["Post-S-3"])
     async def test_quiet_usb_still_waits_for_the_real_game(self, usb_pairing, env, metrics):
-        """Idle game but a controller on USB: wait. Quiet USB but a busy game: deferred. Both clear: restart."""
+        """Idle game but a pairing on USB: wait. Quiet USB but a busy game: deferred. Both clear: restart."""
         backend, _runner, _set_tree, _restart = env
         busy = {"value": False}
         usb_pairing.bluez_reloader._game_busy = AsyncMock(side_effect=lambda: busy["value"])
@@ -1346,7 +1346,7 @@ class TestRestartWaitsForQuietUsb2091(_PairingFlowEnv):
         with mode, quiet:
             serial = self.SERIALS[0]
             await self._poll_at(usb_pairing, backend, now, 0, serial)  # paired, still plugged in
-            await self._poll_at(usb_pairing, backend, now, 30, serial)  # left plugged in: holds the restart
+            await self._poll_at(usb_pairing, backend, now, 10, serial)  # paired 10 s ago: holds the restart
             assert self._restart_units() == []
 
             busy["value"] = True
@@ -1359,6 +1359,32 @@ class TestRestartWaitsForQuietUsb2091(_PairingFlowEnv):
             await self._poll_at(usb_pairing, backend, now, 100, None)  # game over: next idle poll restarts
 
         assert self._restart_units() == [["bluetooth.service", "replace"]]
+
+    @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
+    async def test_a_paired_move_left_charging_does_not_hold_the_restart(self, usb_pairing, env, metrics):
+        """Move 1 stays on USB to charge while Move 2 is paired and unplugged: restart 20 s after Move 2."""
+        backend, _runner, _set_tree, _restart = env
+        usb_pairing.bluez_reloader._game_busy = AsyncMock(return_value=False)
+        now = {"t": 0.0}
+        usb_pairing.bluez_reloader._clock = lambda: now["t"]
+        charging, second = (UsbController(f"/dev/hidraw{s[-1]}".encode(), s, 0x03D5) for s in self.SERIALS[:2])
+
+        async def poll_at(t: float, *controllers: UsbController) -> None:
+            now["t"] = t
+            backend.get_usb_controllers.return_value = list(controllers)
+            await usb_pairing.poll()
+
+        mode, quiet = self._flags()
+        with mode, quiet:
+            await poll_at(0, charging)  # Move 1 paired, left on USB
+            await poll_at(10, charging, second)  # Move 2 paired next to it
+            await poll_at(20, charging)  # Move 2 unplugged; Move 1 charges on
+            await poll_at(29, charging)
+            assert self._restart_units() == []
+            await poll_at(30, charging)  # 20 s after Move 2 settled
+
+        assert self._restart_units() == [["bluetooth.service", "replace"]]
+        assert usb_pairing.bluez_reloader.pending is False
 
     @pytest.mark.uc("UC-001", flow="A7", br=["BR-005"])
     async def test_quiet_period_zero_restarts_at_the_end_of_the_pairing_poll(self, usb_pairing, env, metrics):
@@ -1407,16 +1433,17 @@ class TestPairingLedCue2091(_PairingFlowEnv):
         await usb_pairing.poll()
 
         # While the first one pairs, both pulse (the second waits for its turn)
-        assert seen[0] == {FAKE_PATH_1: "pairing", self.SECOND_PATH: "pairing"}
-        assert seen[1][FAKE_PATH_1] == "paired" and seen[1][self.SECOND_PATH] == "pairing"
+        first, second = (FAKE_PATH_1, self.SERIAL), (self.SECOND_PATH, self.SECOND)
+        assert seen[0] == {first: "pairing", second: "pairing"}
+        assert seen[1][first] == "paired" and seen[1][second] == "pairing"
         await asyncio.gather(*usb_pairing.led_cue._tasks.values())
-        for path in (FAKE_PATH_1, self.SECOND_PATH):
-            assert usb_pairing.led_cue.states[path] == "paired"
-            assert device[path][-6:] == [GREEN, OFF] * 3
+        for key in (first, second):
+            assert usb_pairing.led_cue.states[key] == "paired"
+            assert device[key[0]][-6:] == [GREEN, OFF] * 3
 
         # Next poll: both verified (A1): no new cue; unplugged: the cues are gone
         await usb_pairing.poll()
-        assert usb_pairing.led_cue.states == {FAKE_PATH_1: "paired", self.SECOND_PATH: "paired"}
+        assert usb_pairing.led_cue.states == {first: "paired", second: "paired"}
         backend.get_usb_controllers.return_value = []
         await usb_pairing.poll()
         assert usb_pairing.led_cue.states == {}
@@ -1427,7 +1454,7 @@ class TestPairingLedCue2091(_PairingFlowEnv):
         backend.pair_controller.return_value = PairingResult(success=False)
 
         await usb_pairing.poll()
-        assert usb_pairing.led_cue.states[FAKE_PATH_1] == "failed"
+        assert usb_pairing.led_cue.states[(FAKE_PATH_1, self.SERIAL)] == "failed"
         from psmove_pairing.usb_led import _real_sleep  # asyncio.sleep is patched in env
 
         for _ in range(1000):
@@ -1440,13 +1467,13 @@ class TestPairingLedCue2091(_PairingFlowEnv):
         seen = []
 
         async def pair(_path, _serial, _adapter):
-            seen.append(usb_pairing.led_cue.states[FAKE_PATH_1])
+            seen.append(usb_pairing.led_cue.states[(FAKE_PATH_1, self.SERIAL)])
             return PairingResult(success=True)
 
         backend.pair_controller.side_effect = pair
         await usb_pairing.poll()
         assert seen == ["pairing"]
-        assert usb_pairing.led_cue.states[FAKE_PATH_1] == "paired"
+        assert usb_pairing.led_cue.states[(FAKE_PATH_1, self.SERIAL)] == "paired"
 
     @pytest.mark.uc("UC-001", flow="A8", br=["BR-008", "BR-010"])
     async def test_unwritable_record_shows_red(self, usb_pairing, env, metrics, device):
@@ -1454,5 +1481,5 @@ class TestPairingLedCue2091(_PairingFlowEnv):
         backend, _runner, _set_tree, _restart = env
         backend.get_usb_controllers.return_value = [UsbController(FAKE_PATH_1, self.SERIAL, 0)]
         await usb_pairing.poll()
-        assert usb_pairing.led_cue.states[FAKE_PATH_1] == "failed"
+        assert usb_pairing.led_cue.states[(FAKE_PATH_1, self.SERIAL)] == "failed"
         metrics["pairing_success_total"].inc.assert_called_once()

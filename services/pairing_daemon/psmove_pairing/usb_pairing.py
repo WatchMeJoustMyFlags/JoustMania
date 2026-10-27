@@ -306,11 +306,11 @@ class USBPairing:
 
             skip_reason = self._skip_reason(serial)
             if skip_reason is not None:
-                self.led_cue.stop_pulse(device_path)
+                self.led_cue.stop_pulse(device_path, serial)
                 span.set_attribute("skipped", True)
                 span.set_attribute("skip_reason", skip_reason)
                 return False
-            self.led_cue.pairing(device_path)
+            self.led_cue.pairing(device_path, serial)
 
             already_in_bluez = not self.adapter_manager.check_if_not_paired(serial)
             if already_in_bluez:
@@ -338,7 +338,7 @@ class USBPairing:
         """Adapter selection through trust; runs under the pairing lock (UC-005 A6)."""
         # An unpair may have run while this call waited for the lock (UC-005 A8)
         if normalize_address(serial) in self._awaiting_replug:
-            self.led_cue.stop_pulse(device_path)
+            self.led_cue.stop_pulse(device_path, serial)
             span.set_attribute("skipped", True)
             span.set_attribute("skip_reason", "unpaired_awaiting_replug")
             return False
@@ -348,7 +348,7 @@ class USBPairing:
 
         if not adapter:
             logger.error("No Bluetooth adapters available for pairing")
-            self.led_cue.failed(device_path)
+            self.led_cue.failed(device_path, serial)
             pairing_failed_total.inc()
             span.record_exception(PairingError("No Bluetooth adapters available"))
             span.set_status(Status(StatusCode.ERROR, "No adapters available"))
@@ -367,7 +367,7 @@ class USBPairing:
         # Pair controller to selected adapter via backend
         if not await self.pair_controller(device_path, serial, adapter.address):
             logger.error(f"PAIRING FAILED: Controller {serial} could not be paired")
-            self.led_cue.failed(device_path)
+            self.led_cue.failed(device_path, serial)
             pairing_failed_total.inc()
             span.record_exception(PairingError(f"Controller {serial} pairing failed"))
             span.set_status(Status(StatusCode.ERROR, "Pairing failed"))
@@ -399,12 +399,14 @@ class USBPairing:
 
         # Green flashes: unplug it now; red when its record could not be written (A8, BR-010)
         if record is not None and not record.needs_reload:
-            self.led_cue.failed(device_path)
+            self.led_cue.failed(device_path, serial)
         else:
-            self.led_cue.paired(device_path)
+            self.led_cue.paired(device_path, serial)
 
         # Mark as verified so we don't re-process every poll cycle
         self._verified_serials.add(serial)
+        # Settled now: from here on this controller on USB (e.g. charging) no longer holds a restart back
+        self.bluez_reloader.note_usb_settled()
         self._paired_addresses.add(normalize_address(serial) or serial.upper())
 
         # Success message
@@ -529,13 +531,15 @@ class USBPairing:
         }
         span.set_attribute("controllers.count", len(controllers))
         self._forget_unplugged_deferred()
-        # A Move on USB holds a when_idle restart back (UC-001 BR-005, #2091)
-        self.bluez_reloader.note_usb_controllers(len(controllers))
+        # A Move on USB still to be paired holds a when_idle restart back; one paired this
+        # session (e.g. left on USB to charge) only until the quiet period after it settled
+        # (UC-001 BR-005, #2091)
+        self.bluez_reloader.note_usb_controllers(sum(1 for c in controllers if c.serial not in self._verified_serials))
         # Cues end when their controller left USB; every controller about to be paired pulses (BR-010)
-        self.led_cue.keep_only(c.device_path for c in controllers)
+        self.led_cue.keep_only((c.device_path, c.serial) for c in controllers)
         for controller in controllers:
             if self._skip_reason(controller.serial) is None:
-                self.led_cue.pairing(controller.device_path)
+                self.led_cue.pairing(controller.device_path, controller.serial)
 
         if not controllers:
             logger.debug("No USB controllers found")

@@ -61,8 +61,22 @@ def pulse_level(elapsed: float) -> int:
     return round(PULSE_MIN + (PULSE_MAX - PULSE_MIN) * ramp)
 
 
+# A cue belongs to one controller at one hidraw node: a node number reused by another
+# controller between two polls starts a new cue (#2091 review)
+CueKey = tuple[bytes, str]  # (device_path, serial)
+
+
+class _SupersededError(Exception):
+    """A newer cue owns the hidraw node; this cue writes nothing more."""
+
+
 class UsbLedCue:
-    """One cue task per USB device path: ``pairing`` -> ``paired`` / ``failed``."""
+    """One cue task per controller on USB: ``pairing`` -> ``paired`` / ``failed``.
+
+    Writes to one hidraw node run one at a time and only for the cue started
+    last on it: a cancelled cue's write already handed to a thread finishes
+    before the next cue writes, and no frame of the old cue follows it.
+    """
 
     def __init__(
         self,
@@ -71,43 +85,48 @@ class UsbLedCue:
     ):
         self._write = write
         self._sleep = sleep
-        self._tasks: dict[bytes, asyncio.Task] = {}
-        # Last cue started per device path ("pairing", "paired", "failed")
-        self.states: dict[bytes, str] = {}
+        self._tasks: dict[CueKey, asyncio.Task] = {}
+        # Last cue started per controller ("pairing", "paired", "failed")
+        self.states: dict[CueKey, str] = {}
+        # Per hidraw node: the lock held across a write, and the generation of the cue allowed to write
+        self._locks: dict[bytes, asyncio.Lock] = {}
+        self._generations: dict[bytes, int] = {}
 
-    def pairing(self, device_path: bytes) -> None:
+    def pairing(self, device_path: bytes, serial: str) -> None:
         """Pulse while the controller waits for or goes through pairing."""
-        if self.states.get(device_path) == "pairing" and self._running(device_path):
+        key = (device_path, serial)
+        if self.states.get(key) == "pairing" and self._running(key):
             return
-        self._start(device_path, "pairing", lambda: self._pulse(device_path))
+        self._start(key, "pairing", self._pulse)
 
-    def paired(self, device_path: bytes) -> None:
+    def paired(self, device_path: bytes, serial: str) -> None:
         """Three short green flashes, then off."""
-        self._start(device_path, "paired", lambda: self._flash(device_path))
+        self._start((device_path, serial), "paired", self._flash)
 
-    def failed(self, device_path: bytes) -> None:
+    def failed(self, device_path: bytes, serial: str) -> None:
         """Steady red until the next cue or until the controller leaves USB."""
-        self._start(device_path, "failed", lambda: self._hold(device_path, RED))
+        self._start((device_path, serial), "failed", self._hold_red)
 
-    def stop(self, device_path: bytes) -> None:
+    def stop(self, device_path: bytes, serial: str) -> None:
         """End the cue of a controller (it left USB)."""
-        self._cancel(device_path)
-        self.states.pop(device_path, None)
+        self._stop((device_path, serial))
 
-    def stop_pulse(self, device_path: bytes) -> None:
+    def stop_pulse(self, device_path: bytes, serial: str) -> None:
         """End a pulse of a controller that is skipped after all (e.g. unpaired meanwhile, UC-005 A8)."""
-        if self.states.get(device_path) == "pairing":
-            self.stop(device_path)
+        if self.states.get((device_path, serial)) == "pairing":
+            self._stop((device_path, serial))
 
-    def keep_only(self, device_paths: Iterable[bytes]) -> None:
-        """End the cues of controllers no longer listed on USB."""
-        keep = set(device_paths)
-        for path in [p for p in self.states if p not in keep]:
-            self.stop(path)
+    def keep_only(self, controllers: Iterable[CueKey]) -> None:
+        """End the cues of controllers no longer listed on USB, or now listed under another node."""
+        keep = set(controllers)
+        for key in [k for k in self.states if k not in keep]:
+            self._stop(key)
 
     async def close(self) -> None:
         """Cancel every cue (daemon shutdown)."""
         tasks = list(self._tasks.values())
+        for path in {key[0] for key in self._tasks}:
+            self._next_generation(path)
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -116,47 +135,78 @@ class UsbLedCue:
         self._tasks.clear()
         self.states.clear()
 
-    def _running(self, device_path: bytes) -> bool:
-        task = self._tasks.get(device_path)
+    def _running(self, key: CueKey) -> bool:
+        task = self._tasks.get(key)
         return task is not None and not task.done()
 
-    def _cancel(self, device_path: bytes) -> None:
-        task = self._tasks.pop(device_path, None)
+    def _next_generation(self, device_path: bytes) -> int:
+        generation = self._generations.get(device_path, 0) + 1
+        self._generations[device_path] = generation
+        return generation
+
+    def _stop(self, key: CueKey) -> None:
+        if key in self.states or key in self._tasks:
+            self._next_generation(key[0])
+        self._cancel(key)
+        self.states.pop(key, None)
+
+    def _cancel(self, key: CueKey) -> None:
+        task = self._tasks.pop(key, None)
         if task is not None and not task.done():
             task.cancel()
 
-    def _start(self, device_path: bytes, state: str, cue: Callable[[], Coroutine[None, None, None]]) -> None:
-        self._cancel(device_path)
-        self.states[device_path] = state
-        self._tasks[device_path] = asyncio.get_running_loop().create_task(self._guarded(device_path, cue))
+    def _start(self, key: CueKey, state: str, cue: Callable[[bytes, int], Coroutine[None, None, None]]) -> None:
+        device_path = key[0]
+        # One cue per hidraw node: a cue of another controller on this node ends too
+        for other in [k for k in {*self._tasks, *self.states} if k[0] == device_path]:
+            self._cancel(other)
+            self.states.pop(other, None)
+        generation = self._next_generation(device_path)
+        self.states[key] = state
+        self._tasks[key] = asyncio.get_running_loop().create_task(self._guarded(key, cue, generation))
 
-    async def _guarded(self, device_path: bytes, cue: Callable[[], Coroutine[None, None, None]]) -> None:
+    async def _guarded(
+        self, key: CueKey, cue: Callable[[bytes, int], Coroutine[None, None, None]], generation: int
+    ) -> None:
         try:
-            await cue()
+            await cue(key[0], generation)
+        except _SupersededError:
+            pass
         except OSError as e:
-            logger.debug(f"LED cue on {device_path!r} ended: {e}")
+            logger.debug(f"LED cue on {key[0]!r} ended: {e}")
         except Exception as e:  # never let a cue fail the daemon
-            logger.debug(f"LED cue on {device_path!r} failed: {e}")
+            logger.debug(f"LED cue on {key[0]!r} failed: {e}")
 
-    async def _show(self, device_path: bytes, rgb: Rgb) -> None:
-        await asyncio.to_thread(self._write, device_path, rgb)
+    async def _show(self, device_path: bytes, generation: int, rgb: Rgb) -> None:
+        lock = self._locks.setdefault(device_path, asyncio.Lock())
+        async with lock:
+            if self._generations.get(device_path) != generation:
+                raise _SupersededError
+            write = asyncio.ensure_future(asyncio.to_thread(self._write, device_path, rgb))
+            try:
+                await asyncio.shield(write)
+            except asyncio.CancelledError:
+                # A thread cannot be stopped: keep the node locked until this frame landed
+                with contextlib.suppress(Exception):
+                    await write
+                raise
 
-    async def _pulse(self, device_path: bytes) -> None:
+    async def _pulse(self, device_path: bytes, generation: int) -> None:
         elapsed = 0.0
         while True:
             level = pulse_level(elapsed)
-            await self._show(device_path, (level, level, level))
+            await self._show(device_path, generation, (level, level, level))
             await self._sleep(FRAME_SECONDS)
             elapsed += FRAME_SECONDS
 
-    async def _flash(self, device_path: bytes) -> None:
+    async def _flash(self, device_path: bytes, generation: int) -> None:
         for _ in range(FLASH_COUNT):
-            await self._show(device_path, GREEN)
+            await self._show(device_path, generation, GREEN)
             await self._sleep(FLASH_ON_SECONDS)
-            await self._show(device_path, OFF)
+            await self._show(device_path, generation, OFF)
             await self._sleep(FLASH_OFF_SECONDS)
 
-    async def _hold(self, device_path: bytes, rgb: Rgb) -> None:
+    async def _hold_red(self, device_path: bytes, generation: int) -> None:
         while True:
-            await self._show(device_path, rgb)
+            await self._show(device_path, generation, RED)
             await self._sleep(REFRESH_SECONDS)
