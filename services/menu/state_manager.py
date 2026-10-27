@@ -375,6 +375,11 @@ class StateManager:
         if ready_handler and hasattr(ready_handler, "reset_game_start_flag"):
             ready_handler.reset_game_start_flag()
 
+        # Put every controller back to CONNECTED first, so a re-registration cut short (UC-010 BR-010:
+        # a hung LED call times out) drops no controller from the lobby.
+        for serial in serials:
+            self.controller_states[serial] = ControllerState.CONNECTED
+
         # Re-register each controller as CONNECTED (triggers on_enter -> sets colors)
         for serial in serials:
             await self.on_controller_connected(serial)
