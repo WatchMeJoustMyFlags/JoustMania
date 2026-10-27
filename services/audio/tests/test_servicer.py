@@ -780,11 +780,27 @@ class TestInLobbyFlag:
             self._play(mock_audio_servicer, "Joust/music/*.ogg")
         assert mock_audio_servicer.in_lobby is False
 
-    def test_stop_music_returns_to_lobby(self, mock_audio_servicer):
+    def test_stop_music_leaves_lobby(self, mock_audio_servicer):
         import asyncio
 
         from proto import audio_pb2
 
         self._play(mock_audio_servicer, "Joust/music/*.ogg")
         asyncio.run(mock_audio_servicer.StopMusic(audio_pb2.StopMusicRequest(), None))
-        assert mock_audio_servicer.in_lobby is True
+        assert mock_audio_servicer.in_lobby is False
+
+    def test_stop_music_from_lobby_leaves_lobby(self, mock_audio_servicer):
+        import asyncio
+
+        from proto import audio_pb2
+
+        asyncio.run(mock_audio_servicer.StopMusic(audio_pb2.StopMusicRequest(), None))
+        assert mock_audio_servicer.in_lobby is False
+
+    def test_card_watch_busy_follows_phase(self, mock_audio_servicer):
+        from services.audio.alsa_config import card_watch_busy
+
+        busy = card_watch_busy(mock_audio_servicer)
+        assert busy() is False
+        mock_audio_servicer.in_lobby = False
+        assert busy() is True

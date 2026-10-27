@@ -951,8 +951,9 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
     async def StopMusic(self, request, _context):
         """Stop music track."""
         success = self.audio_manager.stop_music(request.track_id)
-        if success:
-            self.in_lobby = True
+        # Any StopMusic leaves the lobby phase: the menu stops its music at game start, and the window until
+        # the game's PlayMusic (or the winner line at game end) counts as a game (UC-031 BR-008).
+        self.in_lobby = False
         return audio_pb2.StopMusicResponse(success=success, error="" if success else "Failed to stop music")
 
     def ChangeTempo(self, request, _context):

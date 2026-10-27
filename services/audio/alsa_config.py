@@ -225,6 +225,11 @@ def should_restart_for_card_change(configured: int, cards: list[tuple[int, str]]
     return failed
 
 
+def card_watch_busy(servicer):
+    """The watcher's is_busy callable: a game runs when the servicer is not in the lobby phase."""
+    return lambda: not servicer.in_lobby
+
+
 async def watch_card_changes(
     configured: int,
     on_change,
@@ -235,7 +240,7 @@ async def watch_card_changes(
     """Poll /proc/asound/cards; log one WARN and call on_change() when a restart is due.
 
     Keeps only counters and flags between polls (nothing grows per poll). A change must be seen on
-    CARD_STABLE_POLLS polls in a row (a flapping card resets the count), and while is_busy() (music
+    CARD_STABLE_POLLS polls in a row (a flapping card resets the count), and while is_busy() (
     a game runs, not the lobby) the restart is deferred, with one log line, unless playback has failed.
     max_polls bounds the loop (tests); None = until cancelled.
     """
@@ -258,7 +263,9 @@ async def watch_card_changes(
             continue
         if not failed and is_busy():
             if not deferred_logged:
-                logger.info("ALSA card change seen (cards %s); restart deferred until the music stops", cards)
+                logger.info(
+                    "ALSA card change seen (cards %s); restart deferred until the game ends (back in the lobby)", cards
+                )
                 deferred_logged = True
             continue
         logger.warning(

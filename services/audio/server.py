@@ -112,13 +112,13 @@ async def serve():
 
     watcher = None
     if alsa_card_setting == "auto":
-        from services.audio.alsa_config import get_detected_card, watch_card_changes
+        from services.audio.alsa_config import card_watch_busy, get_detected_card, watch_card_changes
 
         watcher = asyncio.create_task(
             watch_card_changes(
                 get_detected_card(),
                 _on_card_change,
-                is_busy=lambda: not audio_servicer.in_lobby,
+                is_busy=card_watch_busy(audio_servicer),
             )
         )
 
