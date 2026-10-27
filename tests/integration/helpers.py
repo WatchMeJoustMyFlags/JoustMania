@@ -171,7 +171,10 @@ def flagd_probe_client(docker_compose, flag_set: str, *, resolver: str = "in_pro
     from openfeature.contrib.provider.flagd import FlagdProvider
     from openfeature.contrib.provider.flagd.config import CacheType, ResolverType
 
-    from tests.contract.flagd_rpc_retry import retry_decode_failures
+    from tests.contract.flagd_rpc_retry import (
+        assert_retry_active,
+        retry_decode_failures,
+    )
 
     if resolver == "in_process":
         provider = FlagdProvider(
@@ -194,6 +197,8 @@ def flagd_probe_client(docker_compose, flag_set: str, *, resolver: str = "in_pro
     api.set_provider(provider, domain=domain)
     try:
         yield api.get_client(domain)
+        if resolver != "in_process":
+            assert_retry_active(provider)  # still on the #2184 stub after use
     finally:
         provider.shutdown()
 

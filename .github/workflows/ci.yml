@@ -830,8 +830,8 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends python3-gi gir1.2-glib-2.0
 
       - name: Run telemetry contract tests
-        # test_flagd_resolution.py runs in the Flagd Contract job below.
-        run: uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -v --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py
+        # test_flagd_resolution.py and test_flagd_rpc_retry.py (grpc + provider) run in the Flagd Contract job below.
+        run: uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -v --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py --ignore tests/contract/test_flagd_rpc_retry.py
 
   # flagd contract tier (#1422): ONE real flagd (compose image tag) on a temp
   # copy of services/flagd/ci, no game services, no build. Typed-getter

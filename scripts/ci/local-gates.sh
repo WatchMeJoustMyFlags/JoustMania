@@ -184,7 +184,7 @@ classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
   case "$f" in
     lib/*|proto/*|pyproject.toml|uv.lock|services/flagd/*|services/flag-service/*|services/game_coordinator/*|\
     services/controller_manager/*|services/menu/*|tests/service/*|tests/contract/flagd_harness.py|\
-    tests/contract/infra_config.py|tests/integration/helpers.py|tests/integration/flag_service.py|\
+    tests/contract/flagd_rpc_retry.py|tests/contract/infra_config.py|tests/integration/helpers.py|tests/integration/flag_service.py|\
     docker-compose.yml|Makefile|.github/workflows/ci.yml)
       ci_service=1 ;;
   esac
@@ -199,8 +199,8 @@ classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
       else
         selected[service]=1
       fi ;;
-    tests/contract/flagd_harness.py|tests/contract/infra_config.py|tests/integration/helpers.py|\
-    tests/integration/flag_service.py|tests/integration/fake_openai/*|docker-compose.yml|\
+    tests/contract/flagd_harness.py|tests/contract/flagd_rpc_retry.py|tests/contract/infra_config.py|\
+    tests/integration/helpers.py|tests/integration/flag_service.py|tests/integration/fake_openai/*|docker-compose.yml|\
     services/flagd/*|services/flag-service/*|proto/*|pyproject.toml|uv.lock|\
     services/game_coordinator/server.py|services/menu/server.py|services/controller_manager/server.py)
       selected[service]=1 ;;
@@ -295,7 +295,7 @@ gate_cmd() {  # print the shell command for a gate
     voice-check) echo "make voice-check" ;;
     rust-hid) echo "cd services/rust-hid && cargo clippy --all-targets -- -D warnings && cargo test" ;;
     # Same steps as the Telemetry Contract job: generated specs, then the tests.
-    contract) echo "make specs-check && make spec-refs-check && uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py" ;;
+    contract) echo "make specs-check && make spec-refs-check && uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py --ignore tests/contract/test_flagd_rpc_retry.py" ;;
     contract-flagd) echo "make test-contract-flagd" ;;
     service) echo "make test-service" ;;
     service-touched)

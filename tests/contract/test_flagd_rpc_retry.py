@@ -113,6 +113,8 @@ def _client(fake, *, retry: bool):
             assert time.monotonic() < deadline, "fake flagd: provider never ready"
             time.sleep(0.02)
         yield client
+        if retry:
+            flagd_rpc_retry.assert_retry_active(provider)
     finally:
         provider.shutdown()
 
@@ -164,3 +166,52 @@ def test_other_failures_are_not_retried(status, error_code):
         details = _resolve(client)
     assert details.error_code == error_code
     assert fake.calls == 1
+
+
+def test_decode_failure_logs_the_raw_bytes(caplog):
+    """The next CI hit carries evidence: length and hex of the response that did not parse."""
+    with (
+        caplog.at_level("WARNING", logger=flagd_rpc_retry.__name__),
+        FakeFlagd([UNPARSABLE, GOOD]) as fake,
+        _client(fake, retry=True) as client,
+    ):
+        details = _resolve(client)
+    assert details.error_code is None, details.error_message
+    assert f"3 bytes, first 64 hex {UNPARSABLE.hex()}" in caplog.text
+    assert "ResolveIntResponse" in caplog.text
+
+
+def test_a_stub_rebuilt_after_wiring_is_detected():
+    """A provider that rebuilds its stub on connect would drop the retry: the guard fails."""
+    from openfeature.schemas.protobuf.flagd.evaluation.v2 import evaluation_pb2_grpc
+
+    provider = FlagdProvider(
+        host="127.0.0.1",
+        port=1,
+        resolver_type=ResolverType.RPC,
+        cache=CacheType.DISABLED,
+    )
+    try:
+        flagd_rpc_retry.retry_decode_failures(provider)
+        flagd_rpc_retry.assert_retry_active(provider)
+        provider.resolver.stub = evaluation_pb2_grpc.ServiceStub(
+            provider.resolver.channel
+        )
+        with pytest.raises(AssertionError, match="#2184 retry stub"):
+            flagd_rpc_retry.assert_retry_active(provider)
+    finally:
+        provider.shutdown()
+
+
+def test_an_unwired_provider_is_detected():
+    provider = FlagdProvider(
+        host="127.0.0.1",
+        port=1,
+        resolver_type=ResolverType.RPC,
+        cache=CacheType.DISABLED,
+    )
+    try:
+        with pytest.raises(AssertionError, match="#2184 retry stub"):
+            flagd_rpc_retry.assert_retry_active(provider)
+    finally:
+        provider.shutdown()
