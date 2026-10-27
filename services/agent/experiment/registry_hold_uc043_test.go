@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/patterngame"
@@ -184,6 +185,83 @@ func TestRegistryHoldStaleDiscard(t *testing.T) {
 		}
 		if st, _ := r.Status(other); st != StatusRunning {
 			t.Fatalf("the non-hold experiment = %s, want running", st)
+		}
+	})
+	t.Run("UC-043/A17 a running shield.activation experiment ends once hold is resolved", func(t *testing.T) {
+		gate := &switchGate{}
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 2, Spawner: &patternSpawner{}, HoldGate: gate.gate,
+			Patterns: &queuePinner{pins: []patterngame.Pin{holdPin(t, true, true)}}})
+		id := startHold(t, r, HoldActivationKey, HoldValue)
+		r.AllocateAndSpawn(ctx)
+		if st, _ := r.Status(id); st != StatusRunning {
+			t.Fatalf("status = %s, want running", st)
+		}
+		gate.set(DiscardHoldAlreadyDefault, nil)
+		r.AllocateAndSpawn(ctx)
+		if st, _ := r.Status(id); st != StatusDiscarded {
+			t.Fatalf("status = %s, want discarded", st)
+		}
+		if note := lastOutcomeNote(t, r, id); !strings.HasPrefix(note, DiscardHoldAlreadyDefault) {
+			t.Fatalf("outcome note %q", note)
+		}
+	})
+}
+
+// UC: UC-043 A17
+func TestRegistryHoldRedeclareCooldown(t *testing.T) {
+	ctx := context.Background()
+	run := func(t *testing.T, flagKey string, value any, res PromotionResult) (*Registry, *time.Time) {
+		t.Helper()
+		now := time.Unix(50_000, 0)
+		spawner := &fakeSpawner{}
+		r := newTestRegistry(t, RegistryConfig{
+			Root: t.TempDir(), MaxShadowGames: 4, Spawner: spawner,
+			Verdict:  fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 2, alwaysReport: true},
+			Promoter: &fakePromoter{result: res}, Targeting: &fakeTargeting{},
+			Clock: func() time.Time { return now },
+		})
+		id := startHold(t, r, flagKey, value)
+		if r.AllocateAndSpawn(ctx) == 0 {
+			t.Fatal("no games spawned")
+		}
+		for _, g := range append([]spawnCall(nil), spawner.calls...)[:2] {
+			if _, err := r.ConcludeGame(ctx, g.gameID, 0.7, 120); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if st, _ := r.Status(id); !st.IsTerminal() {
+			t.Fatalf("status = %s, want terminal", st)
+		}
+		return r, &now
+	}
+	discarded := PromotionResult{Outcome: PromotionDiscarded, Reason: "real write of a hold key waits for game end"}
+	t.Run("UC-043/A17 a hold key whose promotion did not act is parked for the cooldown", func(t *testing.T) {
+		r, now := run(t, "shield.energy_budget_seconds", 20.0, discarded)
+		if _, busy := r.ActiveFlags()["shield.energy_budget_seconds"]; !busy {
+			t.Fatal("the key is not busy during its cooldown")
+		}
+		in := sampleIntent()
+		in.FlagKey, in.ExperimentalValue = "shield.energy_budget_seconds", 20.0
+		if _, err := r.Declare(in); err == nil {
+			t.Fatal("re-declared during the cooldown")
+		}
+		*now = now.Add(HoldRedeclareCooldown + time.Second)
+		if _, busy := r.ActiveFlags()["shield.energy_budget_seconds"]; busy {
+			t.Fatal("still busy after the cooldown")
+		}
+		if _, err := r.Declare(in); err != nil {
+			t.Fatalf("declare after the cooldown: %v", err)
+		}
+	})
+	t.Run("UC-043/A17 a non-hold key and an acted promotion are not parked", func(t *testing.T) {
+		in := sampleIntent()
+		r, _ := run(t, in.FlagKey, in.ExperimentalValue, discarded)
+		if _, busy := r.ActiveFlags()[in.FlagKey]; busy {
+			t.Fatal("a non-hold key was parked")
+		}
+		r, _ = run(t, HoldActivationKey, HoldValue, PromotionResult{Outcome: PromotionApplied})
+		if _, busy := r.ActiveFlags()[HoldActivationKey]; busy {
+			t.Fatal("an acted hold promotion was parked")
 		}
 	})
 }

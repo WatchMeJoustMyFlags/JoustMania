@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/joustmania/agent/patterngame"
 )
@@ -32,6 +33,10 @@ const (
 	// resolve hold (both arms would play hold).
 	DiscardHoldAlreadyDefault = "hold_already_default"
 )
+
+// HoldRedeclareCooldown parks a hold key after a promotion of it that did not act
+// (UC-043 A17 step 3 interim, #2096 PR-7b-2b replaces it).
+const HoldRedeclareCooldown = 24 * time.Hour
 
 // IsHoldKey reports whether flagKey is a shield flag, which UC-043 A17 gates.
 func IsHoldKey(flagKey string) bool { return strings.HasPrefix(flagKey, holdKeyPrefix) }

@@ -871,8 +871,8 @@ func main() {
 	// behind ALL of #961's gates (the promoter built above + the kill-switch via the
 	// ConfigResolver).
 	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, gameFlags, sharedContextWindow, logger)
-	proposerHold.setPolicy(expLoop.hold.policyOK)
 	if expLoop != nil {
+		proposerHold.setPolicy(expLoop.hold.policyOK)
 		// Bind the spawner's background game-drive goroutines to the agent's root
 		// context so shutdown cancels in-flight shadow games (no goroutine leak).
 		expLoop.spawner.SetRootContext(ctx)

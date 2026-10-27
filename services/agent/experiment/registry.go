@@ -354,6 +354,9 @@ type Registry struct {
 	// holdGate checks an experiment on a hold flag against the current defaults
 	// (UC-043 A17); nil skips the check (test seam).
 	holdGate HoldGate
+	// holdCooldown is when each hold key may be declared again after a promotion of
+	// it did not act (UC-043 A17 step 3 interim; in memory, guarded by mu).
+	holdCooldown map[string]time.Time
 	// flagDigest computes UC-046 BR-011's digest for an arm before it spawns.
 	flagDigest func(ctx context.Context, experimentID, arm string) string
 	// patternTracker force-ends in-flight pattern games on the kill switch (A12).
@@ -562,6 +565,9 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	// Keep this call inside the lock: TestDeclareCreatesJournalUnderRegistryLock_1731
 	// probes r.mu through r.clock().
 	now := r.clock()
+	if r.holdCoolingLocked(in.FlagKey) {
+		return "", fmt.Errorf("registry: declare experiment: %s is in its re-declare cooldown after a promotion that did not act (UC-043 A17)", in.FlagKey)
+	}
 
 	// Reconcile target_n vs the verdict min-N (#1001). A target_n below the verdict
 	// min-N can NEVER satisfy the verdict's conclusive gate, so the experiment would
@@ -1626,9 +1632,32 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 			Note:      res.Reason,
 			Promotion: &promotion,
 		})
+		r.startHoldCooldownLocked(e.flagKey, res)
 	}
 	r.mu.Unlock()
 	return res
+}
+
+// startHoldCooldownLocked parks a hold key for HoldRedeclareCooldown after a
+// promotion of it that did not act (UC-043 A17 step 3 interim, #2096): until the
+// deferred real write lands (PR-7b-2b, which replaces this), an autonomous
+// promotion of a hold key is discarded, and re-declaring the key at once would
+// spend shadow games on the same answer. Assumes r.mu is held.
+func (r *Registry) startHoldCooldownLocked(flagKey string, res PromotionResult) {
+	if !IsHoldKey(flagKey) || promotionActed(res) {
+		return
+	}
+	if r.holdCooldown == nil {
+		r.holdCooldown = map[string]time.Time{}
+	}
+	r.holdCooldown[flagKey] = r.clock().Add(HoldRedeclareCooldown)
+}
+
+// holdCoolingLocked reports whether flagKey is parked by startHoldCooldownLocked.
+// Assumes r.mu is held.
+func (r *Registry) holdCoolingLocked(flagKey string) bool {
+	until, ok := r.holdCooldown[flagKey]
+	return ok && r.clock().Before(until)
 }
 
 // RecordPromotion journals a later outcome of an experiment's promotion (UC-043
@@ -2082,6 +2111,12 @@ func (r *Registry) ActiveFlags() map[string]struct{} {
 	for _, e := range r.entries {
 		if !e.status.IsTerminal() {
 			out[e.flagKey] = struct{}{}
+		}
+	}
+	// UC-043 A17 step 3 interim: a hold key in its re-declare cooldown counts as busy.
+	for key := range r.holdCooldown {
+		if r.holdCoolingLocked(key) {
+			out[key] = struct{}{}
 		}
 	}
 	return out
