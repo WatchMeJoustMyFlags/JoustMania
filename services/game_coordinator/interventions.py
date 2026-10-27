@@ -1704,24 +1704,29 @@ class InterventionManager:
             from proto import controller_manager_pb2
 
             # Distinct magenta pulse = "agent acted" — not a game event color.
-            # The per-target writes are gathered, but grpc.aio allows one write in
-            # flight per call, so serialized_write runs them one after the other
-            # (#2096; two overlapping writes would end the call with INTERNAL).
-            # Best-effort: any per-write failure is collected (return_exceptions)
-            # and never raised into the intervention path.
-            writes = [
-                serialized_write(
-                    stream,
-                    controller_manager_pb2.GameplayStreamControl(
-                        game_effect=controller_manager_pb2.GameEffectCommand(
-                            serial=target_serial,
-                            effect=controller_manager_pb2.GAME_EFFECT_PULSE,
-                        )
-                    ),
-                )
-                for target_serial in targets
-            ]
-            await asyncio.gather(*writes, return_exceptions=True)
+            # One write after the other: grpc.aio allows one write in flight per call
+            # (#2096), and a sequential loop never queues N writes ahead of a frame's
+            # warning or kill (each waits for at most one cue write). Best-effort: a
+            # failed write is logged and never raised into the intervention path.
+            for target_serial in targets:
+                try:
+                    await serialized_write(
+                        stream,
+                        controller_manager_pb2.GameplayStreamControl(
+                            game_effect=controller_manager_pb2.GameEffectCommand(
+                                serial=target_serial,
+                                effect=controller_manager_pb2.GAME_EFFECT_PULSE,
+                            )
+                        ),
+                    )
+                except asyncio.CancelledError:
+                    # The game end cancels the call under the write: a closed stream, stop.
+                    task = asyncio.current_task()
+                    if task is not None and task.cancelling():
+                        raise
+                    return
+                except Exception as e:
+                    logger.debug(f"agent cue write to {target_serial} failed: {e}")
             logger.debug(f"agent cue: pulsed {len(targets)} controller(s) for '{spec.type_id}'")
         except Exception as e:
             logger.debug(f"agent cue emission failed for '{spec.type_id}': {e}")

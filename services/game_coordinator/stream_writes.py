@@ -6,33 +6,47 @@ INTERNAL. The frame path (warning, kill), the intervention handlers, the hold fe
 and the end-of-game effects all write on the game's ``StreamGameplayData`` call, so every
 write goes through ``serialized_write``: one ``asyncio.Lock`` per call object, in call order.
 
+A write is never cancelled once it started: cancelling a grpc.aio ``write`` cancels the whole
+call, which would cost every later effect of the game (the end-of-game SHIELD 0, the winner
+rainbow). The write runs as its own task behind ``asyncio.shield``; a cancel of the caller
+propagates at once, and the lock is released by the write task itself when it ends, so the
+next write still waits for it.
+
 An uncontended lock is acquired without suspending, so the frame path pays nothing while
-no other write is in flight; when one is, it waits for that single write, as long as its
-own write would have taken.
+no other write is in flight; when one is, it waits for that write, as long as its own
+write would have taken.
 """
 
 import asyncio
 import weakref
 
 _LOCKS: "weakref.WeakKeyDictionary[object, asyncio.Lock]" = weakref.WeakKeyDictionary()
-# Call objects that cannot be weak-referenced (none known today) fall back to an id map.
-_LOCKS_BY_ID: dict[int, tuple[object, asyncio.Lock]] = {}
 
 
 def _lock_for(stream: object) -> asyncio.Lock:
-    try:
-        lock = _LOCKS.get(stream)
-        if lock is None:
-            lock = _LOCKS[stream] = asyncio.Lock()
-        return lock
-    except TypeError:
-        entry = _LOCKS_BY_ID.get(id(stream))
-        if entry is None or entry[0] is not stream:
-            entry = _LOCKS_BY_ID[id(stream)] = (stream, asyncio.Lock())
-        return entry[1]
+    lock = _LOCKS.get(stream)
+    if lock is None:
+        lock = _LOCKS[stream] = asyncio.Lock()
+    return lock
+
+
+def _release_when_done(lock: asyncio.Lock):
+    def _done(task: asyncio.Future) -> None:
+        lock.release()
+        if not task.cancelled():
+            task.exception()  # retrieved: the caller (if still waiting) gets it through the shield
+
+    return _done
 
 
 async def serialized_write(stream, message) -> None:
     """Write ``message`` on ``stream`` once no other write on the same call is in flight."""
-    async with _lock_for(stream):
-        await stream.write(message)
+    lock = _lock_for(stream)
+    await lock.acquire()
+    try:
+        write = asyncio.ensure_future(stream.write(message))
+    except BaseException:
+        lock.release()
+        raise
+    write.add_done_callback(_release_when_done(lock))
+    await asyncio.shield(write)

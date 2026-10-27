@@ -7,6 +7,7 @@ with the hold values and shipped with every command (BR-027).
 """
 
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -438,6 +439,43 @@ class TestUC040HoldCueLatch:
         assert not any(k in base_module.SHIELD_HOLD_CUE_FLAGS for k in flags.reads)
 
 
+@contextlib.asynccontextmanager
+async def aio_loopback_call():
+    """A real grpc.aio StreamGameplayData call against a loopback server; yields (call, received messages)."""
+    import grpc
+    from grpc import aio
+
+    received = []
+
+    async def handler(request_iterator, _context):
+        async for raw in request_iterator:
+            received.append(pb.GameplayStreamControl.FromString(raw))
+        yield b""
+
+    server = aio.server()
+    server.add_generic_rpc_handlers(
+        (
+            grpc.method_handlers_generic_handler(
+                "controller_manager.ControllerManager",
+                {"StreamGameplayData": grpc.stream_stream_rpc_method_handler(handler)},
+            ),
+        )
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = aio.insecure_channel(f"127.0.0.1:{port}")
+    try:
+        call = channel.stream_stream(
+            "/controller_manager.ControllerManager/StreamGameplayData",
+            request_serializer=lambda m: m.SerializeToString(),
+        )()
+        await call.write(pb.GameplayStreamControl())
+        yield call, received
+    finally:
+        await channel.close()
+        await server.stop(0)
+
+
 class OverlapCheckingStream(RecordingStream):
     """A gameplay call like grpc.aio: a write that starts while another is pending fails (#2096 review F1)."""
 
@@ -492,34 +530,7 @@ class TestUC030OneWriteInFlight:
     @pytest.mark.uc("UC-040", br=["BR-026"])
     async def test_a_real_aio_call_survives_hold_marks_and_warnings(self, game):
         """UC-030 BR-006 on a real grpc.aio loopback call: 300 marks plus warnings never end the call."""
-        import grpc
-        from grpc import aio
-
-        received = []
-
-        async def handler(request_iterator, _context):
-            async for raw in request_iterator:
-                received.append(raw)
-            yield b""
-
-        server = aio.server()
-        server.add_generic_rpc_handlers(
-            (
-                grpc.method_handlers_generic_handler(
-                    "controller_manager.ControllerManager",
-                    {"StreamGameplayData": grpc.stream_stream_rpc_method_handler(handler)},
-                ),
-            )
-        )
-        port = server.add_insecure_port("127.0.0.1:0")
-        await server.start()
-        channel = aio.insecure_channel(f"127.0.0.1:{port}")
-        try:
-            call = channel.stream_stream(
-                "/controller_manager.ControllerManager/StreamGameplayData",
-                request_serializer=lambda m: m.SerializeToString(),
-            )()
-            await call.write(pb.GameplayStreamControl())
+        async with aio_loopback_call() as (call, _received):
             game.gameplay_stream = call
             for _ in range(300):
                 assert not call.done(), f"the call ended: {call.code()}"
@@ -531,6 +542,31 @@ class TestUC030OneWriteInFlight:
             assert not call.done(), f"the call ended: {call.code() if call.done() else None}"
             game._cancel_hold_feedback()
             await drain()
-        finally:
-            await channel.close()
-            await server.stop(0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    @pytest.mark.uc("UC-030", br=["BR-006"])
+    async def test_the_game_end_during_a_hold_write_keeps_the_call_and_sends_shield_0(self, game):
+        """UC-040 A39: stopping the task while its write is in flight neither cancels the call nor loses SHIELD 0."""
+        async with aio_loopback_call() as (call, received):
+            started = asyncio.Event()
+
+            class Stream:
+                async def write(self, message):
+                    started.set()
+                    await call.write(message)
+
+            game.gameplay_stream = Stream()
+            game._queue_hold_feedback_all()
+            await asyncio.wait_for(started.wait(), timeout=2)  # the hold task is inside the grpc write
+            mark = len(received)
+            await game._end_shield_feedback()
+            await asyncio.sleep(0.3)
+
+            assert not call.done(), f"the game end cancelled the gameplay call: {call.code()}"
+            shield_0 = [
+                m.game_effect.serial
+                for m in received[mark:]
+                if m.game_effect.effect == pb.GAME_EFFECT_SHIELD and m.game_effect.duration_ms == 0
+            ]
+            assert sorted(shield_0) == ["p1", "p2"]
