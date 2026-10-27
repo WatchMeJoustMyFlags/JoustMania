@@ -322,3 +322,72 @@ func TestRemote_StaleAnswersDiscardedAndCounted(t *testing.T) {
 		}
 	})
 }
+
+// slowSink is an action sink whose write takes `took` on the loop clock, like a
+// flag-service request.
+type slowSink struct {
+	capturingSink
+	clk  *lockedClock
+	took time.Duration
+}
+
+func (s *slowSink) Apply(ctx context.Context, d Decision) error {
+	s.clk.add(s.took)
+	return s.capturingSink.Apply(ctx, d)
+}
+
+// NFR: NFR-012
+// UC: UC-040 A4
+func TestRemote_GapRunsFromAnswerNotFromHandling(t *testing.T) {
+	t.Run("UC-040/A4 the gap starts when the answer lands, not after the action write", func(t *testing.T) {
+		be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
+		h, clk, _ := cadenceHarness(t, time.Second, be)
+		sink := &slowSink{clk: clk, took: 2 * time.Second}
+		h.loop.Actions = sink
+		cycleAndWait(h) // answer lands at t0; the write ends at t0+2s
+		if got := sink.decisions(); len(got) != 1 {
+			t.Fatalf("applied %d decisions, want 1", len(got))
+		}
+		clk.add(500 * time.Millisecond) // t0+2.5s: answer + gap (t0+1s) has passed
+		cycleAndWait(h)
+		if be.callCount() != 2 {
+			t.Fatalf("calls = %d, want 2: the gap must run from the answer (t0), not from the end of the write (t0+2s)", be.callCount())
+		}
+	})
+}
+
+// NFR: NFR-012
+// UC: UC-040 A4
+func TestRemote_GapClockSetBeforeSlotRelease(t *testing.T) {
+	t.Run("UC-040/A4 evaluators spinning while a call ends never start a second call inside the gap", func(t *testing.T) {
+		// Frozen clock and a 1 s gap: once the first call has ended, no further
+		// call may start. A cycle that wins the in-flight slot the moment it is
+		// released must already see the gap clock. Repeated to widen the window.
+		for round := 0; round < 40; round++ {
+			be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, ""))
+			be.block = true
+			h, _, _ := cadenceHarness(t, time.Second, be)
+			h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+			<-be.started
+			var stop atomic.Bool
+			var spinners sync.WaitGroup
+			for w := 0; w < 4; w++ {
+				spinners.Add(1)
+				go func() {
+					defer spinners.Done()
+					for !stop.Load() {
+						h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+					}
+				}()
+			}
+			close(be.release)
+			time.Sleep(5 * time.Millisecond)
+			stop.Store(true)
+			spinners.Wait()
+			h.loop.AwaitInflight()
+			if n := be.callCount(); n != 1 {
+				t.Fatalf("round %d: calls = %d, want 1 (a cycle won the released slot before the gap clock was set)", round, n)
+			}
+		}
+	})
+}

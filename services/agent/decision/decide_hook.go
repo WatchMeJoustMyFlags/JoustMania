@@ -510,18 +510,18 @@ func (l *Loop) launchDecideAsync(ctx context.Context, snapshot flags.Snapshot, b
 	go func() {
 		defer l.inferWG.Done()
 		defer l.inflight.Store(false)
-		// Runs before the slot is released (defers are LIFO): the next cycle that
-		// wins the slot sees this call's end on the gap clock (#2123).
-		defer l.noteDecideEnded()
+		// runDecideRemote starts the gap clock (noteDecideEnded) when the answer
+		// lands, while this goroutine still holds the slot (#2123).
 		l.runDecideRemote(root, snapshot, backend, requested, c, fireSC)
 	}()
 }
 
-// noteDecideEnded starts the decision.min_gap_after_answer_ms clock (#2123): the
-// remote call of this game has ended, whatever its outcome (answer, timeout,
-// failure, discard, shutdown).
-func (l *Loop) noteDecideEnded() {
-	t := l.nowOrDefault()()
+// noteDecideEnded starts the decision.min_gap_after_answer_ms clock (#2123) at
+// t, the moment the remote call of this game returned, whatever its outcome
+// (answer, timeout, failure; a later discard or shutdown does not move it). The
+// caller still holds the in-flight slot, so the next cycle that wins the slot
+// always sees it.
+func (l *Loop) noteDecideEnded(t time.Time) {
 	l.llmGate.Lock()
 	l.lastDecideEnded = t
 	l.llmGate.Unlock()
@@ -593,6 +593,7 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 	timedOut := err != nil && (errors.Is(err, context.DeadlineExceeded) || callCtx.Err() == context.DeadlineExceeded)
 	cancel()
 	rec.end = now()
+	l.noteDecideEnded(rec.end)
 
 	// Shutdown first: a call cancelled by the agent's root context is neither a
 	// backend error nor a fallback. Record it, act on nothing.
