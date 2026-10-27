@@ -182,9 +182,13 @@ class Actions:
         if key == K2 and 0 <= status.sensitivity < len(cues.SENSITIVITY_VOICES):
             voice = cues.SENSITIVITY_VOICES[status.sensitivity]
         elif key == K3:
-            # BR-013: an unresolved kill switch is never announced as stopped (a false all-clear); the
-            # level is not checked here, since a resolved `off` with an empty level is really stopped.
-            if status.agent_enabled_state not in ENABLED_STATES:
+            # BR-013: an unresolved kill switch or write gate is never announced as stopped (a false
+            # all-clear) nor as running (#2093); the level is not checked here, since a resolved `off`
+            # with an empty level is really stopped.
+            if (
+                status.agent_enabled_state not in ENABLED_STATES
+                or status.agent_interventions_enabled_state not in ENABLED_STATES
+            ):
                 voice = None
             elif is_stopped(status):
                 voice = cues.AGENT_STOPPED_VOICE

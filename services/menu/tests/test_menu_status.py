@@ -33,6 +33,7 @@ FLAGS = {
     },
     "agent": {
         "enabled": ("on", True),
+        "interventions_enabled": ("off", False),
         "interventions_allowed": ("standard", "a,b"),
         "decision.backend": ("claude", "claude"),
     },
@@ -138,6 +139,7 @@ async def test_status_reports_every_field_from_memory_and_the_in_process_clients
         force_all_start=True,
         audio_volume_master="quiet",
         agent_enabled_state="on",
+        agent_interventions_enabled_state="off",
     )
     # Never the HTTP flag writer (0.5 s per flag): in-process clients and menu memory only.
     for writer in (
@@ -162,15 +164,17 @@ async def test_status_empty_values_when_nothing_is_set_or_resolvable(menu):
     # The kill switch fails closed: unreadable reads as off, and says it is unknown (#2101).
     assert reply.agent_enabled is False
     assert reply.agent_enabled_state == "unknown"
+    # So does the write gate (#2093).
+    assert reply.agent_interventions_enabled_state == "unknown"
 
 
-def details_client(details: FlagEvaluationDetails):
-    """An agent client whose `enabled` evaluation returns ``details`` (every other key resolves)."""
+def details_client(details: FlagEvaluationDetails, flag_key: str = "enabled"):
+    """An agent client whose ``flag_key`` evaluation returns ``details`` (every other key resolves)."""
     client = in_process_client(FLAGS["agent"])
     resolve = client.get_boolean_details.side_effect
 
     def boolean_details(key, default, *args, **kwargs):
-        return details if key == "enabled" else resolve(key, default, *args, **kwargs)
+        return details if key == flag_key else resolve(key, default, *args, **kwargs)
 
     client.get_boolean_details.side_effect = boolean_details
     return client
@@ -217,6 +221,35 @@ async def test_status_agent_enabled_state_tells_unknown_from_off(menu, details, 
 
     assert reply.agent_enabled_state == expected
     assert reply.agent_enabled is (expected == "on")
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A10", br=["BR-002", "BR-013"])
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        (FlagEvaluationDetails(flag_key="interventions_enabled", value=True, variant="on"), "on"),
+        (FlagEvaluationDetails(flag_key="interventions_enabled", value=False, variant="off"), "off"),
+        (
+            FlagEvaluationDetails(
+                flag_key="interventions_enabled",
+                value=False,
+                reason=Reason.ERROR,
+                error_code=ErrorCode.PROVIDER_NOT_READY,
+            ),
+            "unknown",
+        ),
+    ],
+    ids=["on", "off", "not-ready"],
+)
+async def test_status_reports_the_write_gate_state(menu, details, expected):
+    """#2093: the pad counts a closed write gate as stopped, so the status carries its tri-state."""
+    menu.agent_settings_client = details_client(details, "interventions_enabled")
+
+    reply = await status(menu)
+
+    assert reply.agent_interventions_enabled_state == expected
+    assert reply.agent_enabled_state == "on"  # the kill switch is reported on its own
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,7 @@ from services.menu.idle_monitor import IdleMonitor, read_sentinel_animation
 from services.menu.settings_ops import (
     AGENT_ENABLED_FLAG,
     AGENT_POLICY_FLAG,
+    AGENT_WRITE_GATE_FLAG,
     BAD_OPTION,
     DECISION_BACKEND_FLAG,
     GAME_ACTIVE,
@@ -60,7 +61,9 @@ def _variant(details) -> str:
 
 
 def _enabled_state(details) -> str:
-    """`on`, `off` or `unknown` for the kill switch's evaluation (services.md §3.1, UC-015 BR-013, #2101).
+    """`on`, `off` or `unknown` for an agent on/off flag's evaluation (services.md §3.1, UC-015 BR-013, #2101).
+
+    Used for the kill switch `enabled` and the write gate `interventions_enabled` (#2093).
 
     Unknown is any evaluation that did not come from a resolved flag: an error code, reason ERROR
     (provider not ready, flag not found, ...), no variant (the client fell back to the default),
@@ -556,6 +559,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
             admin_serial=(self.admin_handler.admin_controller or "") if self.admin_handler.is_active else "",
             agent_enabled=enabled_state == "on",
             agent_enabled_state=enabled_state,
+            agent_interventions_enabled_state=_enabled_state(agent.get_boolean_details(AGENT_WRITE_GATE_FLAG, False)),
             agent_level=_variant(agent.get_string_details(AGENT_POLICY_FLAG, "")),
             agent_saved_level=self.settings_ops.saved_agent_level or "",
             agent_backend=_variant(agent.get_string_details(DECISION_BACKEND_FLAG, "")),

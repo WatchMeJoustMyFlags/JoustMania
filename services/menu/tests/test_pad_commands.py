@@ -627,9 +627,34 @@ async def test_stop_never_touches_the_write_gate(servicer, flags):
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="A9")
 async def test_resume_when_running_is_a_no_op(servicer, flags):
+    flags.values[("agent", "interventions_enabled")] = "on"
     reply = await pad(servicer, "agent_switch", direction="resume")
     assert (reply.success, reply.error) == (True, "ok")
     assert flags.puts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A9", br=["BR-002", "BR-003"])
+@pytest.mark.parametrize("gate_readable", [True, False], ids=["gate-off", "gate-unreadable"])
+async def test_resume_with_the_write_gate_closed_opens_it(servicer, flags, gate_readable):
+    """#2093: enabled on and a level set but the gate off (or unreadable) is not running: resume opens it."""
+    if not gate_readable:
+        flags.failing_get = {("agent", "interventions_enabled")}
+    reply = await pad(servicer, "agent_switch", direction="resume")
+
+    assert (reply.success, reply.error) == (True, "ok")
+    assert flags.written() == [("agent", "interventions_enabled", "on"), ("agent", "enabled", "on")]
+    assert flags.values[("agent", "interventions_allowed")] == "standard"  # a set level is kept
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A9", br=["BR-002"])
+async def test_stop_with_only_the_write_gate_closed_still_kills(servicer, flags):
+    """The stop's no-op checks the kill keys only: a closed gate does not end decide calls (#2093)."""
+    reply = await pad(servicer, "agent_switch", direction="stop")
+
+    assert (reply.success, reply.error) == (True, "ok")
+    assert flags.written() == [("agent", "interventions_allowed", "none"), ("agent", "enabled", "off")]
 
 
 @pytest.mark.asyncio

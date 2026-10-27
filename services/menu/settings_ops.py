@@ -299,11 +299,18 @@ class SettingsOps:
 
     def _agent_enabled(self) -> str | None:
         """The kill switch as the flag service serves it (``on`` / ``off``), None when unreadable."""
+        return self._agent_switch_flag(AGENT_ENABLED_FLAG)
+
+    def _agent_switch_flag(self, key: str) -> str | None:
+        """An agent on/off flag (``enabled``, ``interventions_enabled``) as the flag service serves it.
+
+        ``on`` / ``off``, None when unreadable. Blocking.
+        """
         writer = self.agent_enabled_writer or self.state_manager.agent_settings_writer
         try:
-            view = writer.get_flag_view(AGENT_ENABLED_FLAG)
+            view = writer.get_flag_view(key)
         except Exception as e:
-            logger.warning(f"Reading agent/{AGENT_ENABLED_FLAG} failed: {e}")
+            logger.warning(f"Reading agent/{key} failed: {e}")
             return None
         return view.get("effective_default") if view else None
 
@@ -432,8 +439,11 @@ class SettingsOps:
             # The resume is the permissive direction: never enable an agent whose level is unknown.
             return Result(None, None, FAILED)
         if enabled == "on" and level != "none":
-            # A9: already running.
-            return Result("running", "running", OK)
+            # A9: already running only while the write gate is open too (BR-002, #2093); a closed or
+            # unreadable gate goes on to the writes below, which open it.
+            gate = await asyncio.to_thread(self._agent_switch_flag, AGENT_WRITE_GATE_FLAG)
+            if gate == "on":
+                return Result("running", "running", OK)
         level_ok: bool | None = None
         if level == "none":
             # BR-003: restore the saved level only while the level is still "none" (last write wins).
