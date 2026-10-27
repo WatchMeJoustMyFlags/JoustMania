@@ -1,0 +1,30 @@
+{
+  "_comment": "UC-046 BR-018 trigger_policy validation cases, shared by the agent (patterngame/archetype_policy_uc046_test.go) and the controller manager (tests/test_motion_patterns.py). `params` overrides the base archetype; `policy` is set as trigger_policy unless it is absent.",
+  "base": {
+    "players": 2, "stream_rate_hz": 30, "base": 1.0, "drift": 0.0, "amp": 0.5, "period_s": 2.0, "phase": 0.0,
+    "burst_h": 3.0, "burst_period_s": 2.0, "d_base": 0.0, "d_drift": 0.0, "d_amp": 0.0, "d_phase": 0.5
+  },
+  "cases": [
+    {"name": "absent", "valid": true, "has_policy": false},
+    {"name": "explicit_none", "policy": {"kind": "none"}, "valid": true, "has_policy": false},
+    {"name": "burst", "policy": {"kind": "burst"}, "valid": true, "has_policy": true},
+    {"name": "threshold", "policy": {"kind": "threshold", "level": 2.5, "reaction_frames": 3, "hold_frames": 6}, "valid": true, "has_policy": true},
+    {"name": "threshold_bounds", "policy": {"kind": "threshold", "level": 10, "reaction_frames": 60, "hold_frames": 120}, "valid": true, "has_policy": true},
+    {"name": "threshold_low_bounds", "policy": {"kind": "threshold", "level": 0, "reaction_frames": 0, "hold_frames": 2}, "valid": true, "has_policy": true},
+    {"name": "burst_without_bursts", "params": {"burst_h": 0.0, "burst_period_s": 0.0}, "policy": {"kind": "burst"}, "valid": false},
+    {"name": "level_too_high", "policy": {"kind": "threshold", "level": 10.5, "reaction_frames": 0, "hold_frames": 6}, "valid": false},
+    {"name": "level_negative", "policy": {"kind": "threshold", "level": -1, "reaction_frames": 0, "hold_frames": 6}, "valid": false},
+    {"name": "level_bool", "policy": {"kind": "threshold", "level": true, "reaction_frames": 0, "hold_frames": 6}, "valid": false},
+    {"name": "reaction_too_high", "policy": {"kind": "threshold", "level": 2, "reaction_frames": 61, "hold_frames": 6}, "valid": false},
+    {"name": "reaction_fraction", "policy": {"kind": "threshold", "level": 2, "reaction_frames": 1.5, "hold_frames": 6}, "valid": false},
+    {"name": "hold_one_frame", "policy": {"kind": "threshold", "level": 2, "reaction_frames": 0, "hold_frames": 1}, "valid": false},
+    {"name": "hold_too_long", "policy": {"kind": "threshold", "level": 2, "reaction_frames": 0, "hold_frames": 121}, "valid": false},
+    {"name": "hold_missing", "policy": {"kind": "threshold", "level": 2, "reaction_frames": 0}, "valid": false},
+    {"name": "unknown_kind", "policy": {"kind": "sometimes"}, "valid": false},
+    {"name": "kind_missing", "policy": {}, "valid": false},
+    {"name": "not_an_object", "policy": "burst", "valid": false},
+    {"name": "burst_with_level", "policy": {"kind": "burst", "level": 2}, "valid": false},
+    {"name": "threshold_unknown_key", "policy": {"kind": "threshold", "level": 2, "reaction_frames": 0, "hold_frames": 6, "jitter": 1}, "valid": false},
+    {"name": "none_with_level", "policy": {"kind": "none", "level": 2}, "valid": false}
+  ]
+}

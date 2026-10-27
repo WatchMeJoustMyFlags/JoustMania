@@ -604,14 +604,21 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # shadow session deterministic for Common-Random-Numbers pairing, but
             # a real game MUST get entropy (0) so its behavior is byte-unchanged.
             # Same invariant — never seed a primary session from a caller value.
+            #
+            # pattern_trigger_policy (#2096, UC-046 BR-018, UC-040 BR-019) rides it
+            # too: it lets a shadow game honour shield.activation trigger/hold
+            # because its pattern controllers press the trigger; a real start's
+            # value is dropped so it can never change a real game.
             if game_kind == GAME_KIND_SHADOW:
                 experiment_id = getattr(config, "experiment_id", "")
                 arm = getattr(config, "arm", "")
                 rng_seed = getattr(config, "rng_seed", 0)
+                pattern_trigger_policy = bool(getattr(config, "pattern_trigger_policy", False))
             else:
                 experiment_id = ""
                 arm = ""
                 rng_seed = 0
+                pattern_trigger_policy = False
 
             session = GameSession(
                 game_id=game_id,
@@ -625,6 +632,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 experiment_id=experiment_id,
                 arm=arm,
                 rng_seed=rng_seed,
+                pattern_trigger_policy=pattern_trigger_policy,
             )
             # The game thread reports the end to the flag service (#1847).
             session.on_game_ended = self._on_session_game_ended

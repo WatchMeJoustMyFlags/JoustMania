@@ -82,7 +82,7 @@ class TestUC046Adapter:
         adapter.install_pattern(serials, archetype)
         for _ in range(50):
             adapter.poll(serials[0])
-        delivered = [adapter.pattern_frame(serials[0], "game", explicit=True)["z"] for _ in range(300)]
+        delivered = [adapter.pattern_frame(serials[0], "game", explicit=True)[0]["z"] for _ in range(300)]
         expected = [archetype.value(0, k) for k in range(300)]
         assert delivered == expected
         assert adapter.pattern_info(serials[0]).frame_index == 300
@@ -120,20 +120,20 @@ class TestUC046Adapter:
         adapter.install_pattern(serials, archetype)
         serial = serials[0]
         adapter.hold_accel(serial, 3.0, 3.0, 3.0)
-        assert adapter.pattern_frame(serial, "game", explicit=True)["z"] == archetype.value(0, 0)
+        assert adapter.pattern_frame(serial, "game", explicit=True)[0]["z"] == archetype.value(0, 0)
         adapter.poll(serial)
         assert adapter.controllers[serial]["accel"]["x"] == 0.0  # polled state mirrors the pattern, not the hold
         controller = adapter.controllers[serial]
         controller["death_accel"] = {"x": 7.0, "y": 5.0, "z": 5.0}
         controller["death_frames_remaining"] = 2
         latched = adapter.pattern_frame(serial, "game", explicit=True)
-        assert latched == {"x": 7.0, "y": 5.0, "z": 5.0}
+        assert latched == ({"x": 7.0, "y": 5.0, "z": 5.0}, False)
         info = adapter.pattern_info(serial)
         assert info.frame_index == 2  # k advances on a latched frame too
         assert info.last_value == pytest.approx((49 + 25 + 25) ** 0.5)
         adapter.consume_death_frame(serial)
         adapter.consume_death_frame(serial)
-        assert adapter.pattern_frame(serial, "game", explicit=True)["z"] == archetype.value(0, 2)
+        assert adapter.pattern_frame(serial, "game", explicit=True)[0]["z"] == archetype.value(0, 2)
 
     @pytest.mark.uc("UC-046", flow="A10", br=["BR-008"])
     def test_overrun_counted_per_owned_controller_signal_unchanged(self, adapter, archetype):
@@ -144,7 +144,7 @@ class TestUC046Adapter:
             adapter.pattern_frame(s, "game", explicit=True)
         assert adapter.record_pattern_overrun("game") == 4
         assert adapter.record_pattern_overrun("other") == 0
-        assert adapter.pattern_frame(serials[1], "game", explicit=True)["z"] == archetype.value(1, 1)
+        assert adapter.pattern_frame(serials[1], "game", explicit=True)[0]["z"] == archetype.value(1, 1)
         assert adapter.pattern_info(serials[1]).record()["frame_overruns"] == 1
 
 

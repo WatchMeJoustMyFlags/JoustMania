@@ -448,11 +448,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             full_state = self.state_builder.build_state(serial, info)
             accel = full_state.accel
+            pattern_trigger = False
             if serial in pattern_serials:
                 # Evaluated BEFORE consume_death so an active latch is delivered first (BR-012).
                 explicit = current_filter is not None and serial in current_filter
-                pattern_accel = pattern_frame(serial, subscriber_id, explicit)
-                if pattern_accel is not None:
+                pattern_out = pattern_frame(serial, subscriber_id, explicit)
+                if pattern_out is not None:
+                    pattern_accel, pattern_trigger = pattern_out
                     accel = controller_manager_pb2.Vector3(
                         x=pattern_accel["x"], y=pattern_accel["y"], z=pattern_accel["z"]
                     )
@@ -465,7 +467,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 consume_death(serial)
 
             # The trigger is the level OR a press latched since the last game frame.
-            trigger_pressed = full_state.trigger_pressed
+            # A pattern controller presses by its trigger policy (UC-046 BR-018), owner stream only.
+            trigger_pressed = full_state.trigger_pressed or pattern_trigger
             if consume_trigger is not None and game_stream and serial in roster and consume_trigger(serial) is True:
                 trigger_pressed = True
 
