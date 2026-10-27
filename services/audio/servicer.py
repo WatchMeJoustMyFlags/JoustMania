@@ -17,7 +17,7 @@ import numpy as np
 from opentelemetry import trace
 
 from proto import audio_pb2, audio_pb2_grpc
-from services.audio import metrics, sound_catalog
+from services.audio import alsa_config, metrics, sound_catalog
 from services.audio.music_player import DummyMusicPlayer, MusicPlayer
 
 logger = logging.getLogger(__name__)
@@ -89,6 +89,7 @@ class SoundChannel:
                     except Exception as e:
                         logger.warning(f"Playback error on channel {self.channel_id}: {e}")
                         metrics.audio_playback_errors_total.inc()
+                        alsa_config.note_playback_failure()
                     finally:
                         playing.clear()
 

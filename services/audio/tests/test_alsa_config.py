@@ -165,3 +165,64 @@ class TestGetDetectedCard:
     def test_updated_by_configure(self, _mock_resolve, _mock_write):
         configure_alsa_device("5")
         assert get_detected_card() == 5
+
+
+import asyncio
+
+import pytest
+
+from services.audio import alsa_config
+from services.audio.alsa_config import (
+    CARD_CHANGE_EXIT_CODE,
+    preferred_card,
+    read_proc_cards,
+    should_restart_for_card_change,
+    watch_card_changes,
+)
+
+HDMI = (0, "[vc4hdmi0       ]: vc4-hdmi - vc4-hdmi-0")
+USB = (2, "[Audio          ]: USB-Audio - USB Audio")
+
+
+@pytest.mark.uc("UC-031", flow="A6", br=["BR-008"])
+class TestCardChangeDecision:
+    def test_usb_appeared_restarts(self):
+        assert should_restart_for_card_change(0, [HDMI, USB], failed=False)
+
+    def test_same_preferred_card_no_restart(self):
+        assert not should_restart_for_card_change(2, [HDMI, USB], failed=False)
+
+    def test_usb_removed_without_failure_no_restart(self):
+        assert not should_restart_for_card_change(2, [HDMI], failed=False)
+
+    def test_usb_removed_and_playback_failed_restarts(self):
+        assert should_restart_for_card_change(2, [HDMI], failed=True)
+
+    def test_no_cards_no_restart(self):
+        assert not should_restart_for_card_change(0, [], failed=True)
+
+    def test_preferred_card_rule(self):
+        assert preferred_card([HDMI, USB]) == 2
+        assert preferred_card([HDMI]) == 0
+
+    def test_read_proc_cards(self, tmp_path):
+        f = tmp_path / "cards"
+        f.write_text(
+            " 0 [vc4hdmi0       ]: vc4-hdmi - vc4-hdmi-0\n                      vc4-hdmi-0\n"
+            " 2 [Audio          ]: USB-Audio - USB Audio\n                      C-Media USB Audio at usb-1\n"
+        )
+        assert [i for i, _ in read_proc_cards(str(f))] == [0, 2]
+        assert read_proc_cards(str(tmp_path / "missing")) == []
+
+
+@pytest.mark.uc("UC-031", flow="A6", br=["BR-008"])
+def test_watcher_logs_warn_once_and_calls_back(caplog):
+    calls = []
+    with (
+        patch.object(alsa_config, "read_proc_cards", return_value=[HDMI, USB]),
+        caplog.at_level("WARNING"),
+    ):
+        asyncio.run(watch_card_changes(0, lambda: calls.append(1), interval_s=0))
+    assert calls == [1]
+    assert sum("ALSA card change" in r.message for r in caplog.records) == 1
+    assert CARD_CHANGE_EXIT_CODE == 75
