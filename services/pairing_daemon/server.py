@@ -9,8 +9,9 @@ Provides OTEL push metrics and OpenTelemetry tracing for observability.
 
 Runs as a Docker container alongside other JoustMania services.
 
-LED Feedback: none. The daemon gives no LED feedback while pairing; progress
-and failures are visible in the logs and metrics only (UC-001 BR-002, D-C4).
+LED Feedback: while a controller is on USB it shows the pairing state: slow white
+pulse while waiting or pairing, three green flashes when paired, steady red when
+pairing failed (UC-001 BR-010). Progress is also in the logs and metrics.
 
 Environment:
   METRICS_PORT  - port for the health check and control API (default: 8002)

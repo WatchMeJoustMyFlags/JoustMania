@@ -125,7 +125,8 @@ class Actions:
         preview_refused = False
         if gesture.kind == LAYER:
             preview_refused = self._previewer is not None and self._previewer.refused(gesture.key)
-            self.end_preview()  # the preview never plays on over the commit's voice line
+            # The preview never plays on over the commit's voice line.
+            self.end_preview(commit_steps=self._release_commit_steps(gesture, status))
         with tracer.start_as_current_span("operator_pad.gesture") as span:
             span.set_attribute("pad.key", gesture.key)
             span.set_attribute("pad.gesture", gesture.kind)
@@ -133,10 +134,23 @@ class Actions:
             self._record(span, action, result)
             return action, result
 
-    def end_preview(self, unless_key: str | None = None) -> None:
-        """End the live preview (BR-017) unless ``unless_key`` is the key whose hold it previews."""
+    def end_preview(self, unless_key: str | None = None, commit_steps: int = 0) -> None:
+        """End the live preview (BR-017) unless ``unless_key`` is the key whose hold it previews.
+
+        ``commit_steps``: the net steps the release goes on to send (0: no commit follows).
+        """
         if self._previewer is not None and (unless_key is None or unless_key != self._previewer.hold_key):
-            self._previewer.end_hold()
+            self._previewer.end_hold(commit_steps)
+
+    @staticmethod
+    def _release_commit_steps(gesture: Gesture, status) -> int:
+        """The net steps a layer release sends to the menu; 0 when `_layer` sends nothing (BR-005, A1)."""
+        option = PREVIEW_OPTIONS.get(gesture.key)
+        if option is None or status is None:
+            return 0
+        if option in LOBBY_ONLY_OPTIONS and status.lifecycle_live:
+            return 0
+        return gesture.steps
 
     def _preview_step(self, gesture: Gesture, press_status) -> None:
         option = PREVIEW_OPTIONS.get(gesture.key)

@@ -149,7 +149,7 @@ func TestRulesPath_DecideMatchesEmittedDecision(t *testing.T) {
 
 // UC: UC-040 A1
 func TestRulesDecide_NoopNeverReadsAct(t *testing.T) {
-	t.Run("UC-040/A1 a ranking that emits nothing records outcome noop", func(t *testing.T) {
+	t.Run("UC-040/A1 a ranking that emits nothing yields no decisions and a noop answer, never outcome act", func(t *testing.T) {
 		fx := decideFixtures()[5]
 		if fx.name != "no candidates" {
 			t.Fatalf("fixture order changed: got %q", fx.name)

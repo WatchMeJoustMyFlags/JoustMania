@@ -58,7 +58,7 @@ async def serve() -> None:
     menu_stub = menu_pb2_grpc.MenuServiceStub(menu_channel)
 
     cue_player = CuePlayer(audio_pb2_grpc.AudioServiceStub(audio_channel))
-    previewer = Previewer(cue_player, config)
+    previewer = Previewer(cue_player, config, menu_stub=menu_stub)
     devices: DeviceManager | None = None
 
     def set_lock_led(on: bool) -> None:

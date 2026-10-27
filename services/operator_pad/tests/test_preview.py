@@ -8,6 +8,7 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 
+from lib.setting_ladders import MODE_LADDER
 from lib.types import Sound
 from proto import audio_pb2, menu_pb2
 from services.operator_pad import preview as preview_module
@@ -75,7 +76,11 @@ class Rig:
         self.config.preview_enabled.return_value = enabled
         self.config.preview_debounce_ms.return_value = debounce_ms
         self.cues = CuePlayer(self.audio, sleep=self.time.sleep, clock=self.time.clock)
-        self.previewer = Previewer(self.cues, self.config, sleep=self.time.sleep, clock=self.time.clock)
+        self.menu = create_autospec(MenuStubSpec, instance=True)
+        self.menu.ProcessInput.return_value = menu_pb2.ProcessInputResponse(success=True)
+        self.previewer = Previewer(
+            self.cues, self.config, sleep=self.time.sleep, clock=self.time.clock, menu_stub=self.menu
+        )
 
     async def _play(self, request, **_kwargs):
         self.clips.append((request.file_path, request.group))
@@ -88,6 +93,18 @@ class Rig:
 
     def files(self) -> list[str]:
         return [f for f, _ in self.clips]
+
+    def mode_previews(self) -> list[dict]:
+        """The `preview_setting` commands sent to the menu, in order (the K1 LED preview)."""
+        return [dict(c.args[0].data) for c in self.menu.ProcessInput.await_args_list]
+
+    def shown(self) -> list[str]:
+        return [data["mode"] for data in self.mode_previews()]
+
+    def step_mode(self, net: int, status=None) -> None:
+        if status is None:
+            status = menu_pb2.GetMenuStatusResponse(selection=MODE_LADDER[0])
+        self.previewer.step("K1", "current_game", status, net, True)
 
     def step(self, net: int, status=None, key="K5", option="num_teams", lobby_only=True) -> None:
         if status is None:
@@ -388,3 +405,276 @@ async def test_a_refused_hold_says_not_possible_once_including_the_release():
     assert result == "refused"
     assert rig.files() == [Sound.MENU_VOX_STATUS_NOT_POSSIBLE.value]
     menu.ProcessInput.assert_not_awaited()
+
+
+# --- The mode's LED preview: `preview_setting` while K1 is held (#2106, BR-017, BR-015) -----------
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015", "BR-005"], steps=[4])
+async def test_a_k1_hold_pulses_each_previewed_mode_and_sends_no_step():
+    rig = Rig()
+    for net in (1, 2):
+        rig.step_mode(net)
+        await rig.time.advance(0.6)
+    assert rig.mode_previews() == [
+        {"command": "preview_setting", "option": "current_game", "mode": MODE_LADDER[1]},
+        {"command": "preview_setting", "option": "current_game", "mode": MODE_LADDER[2]},
+    ]
+    for call in rig.menu.ProcessInput.await_args_list:
+        assert call.args[0].input_type == "web_command"
+        assert call.kwargs["timeout"] == preview_module.MODE_PREVIEW_TIMEOUT_SECONDS
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_a_fast_k1_spin_pulses_only_the_final_mode():
+    rig = Rig()
+    for net in range(1, 4):
+        rig.step_mode(net)
+        await rig.time.advance(0.05)
+    await rig.time.advance(1.0)
+    assert rig.shown() == [MODE_LADDER[3]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-009"], steps=[4])
+async def test_the_mode_pulse_does_not_wait_for_the_label():
+    rig = Rig(label_seconds=2.0)
+    rig.step_mode(1)
+    await rig.time.advance(0.2)
+    # LED first (BR-009): the pulse goes out after the debounce, the value voice still waits for the label.
+    assert rig.shown() == [MODE_LADDER[1]]
+    assert rig.files() == [Sound.MENU_VOX_LABEL_GAME_MODE.value]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[5])
+@pytest.mark.parametrize(
+    ("key", "option", "status"),
+    [
+        ("K5", "num_teams", menu_pb2.GetMenuStatusResponse(num_teams=2)),
+        ("K2", "sensitivity", menu_pb2.GetMenuStatusResponse(sensitivity=1)),
+        ("K7", "decision.backend", menu_pb2.GetMenuStatusResponse(agent_backend="rules")),
+    ],
+)
+async def test_other_layers_send_no_led_preview(key, option, status):
+    rig = Rig()
+    rig.step(1, status=status, key=key, option=option, lobby_only=key != "K7")
+    await rig.time.advance(1.0)
+    rig.previewer.end_hold()
+    await settle()
+    rig.menu.ProcessInput.assert_not_awaited()
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_a_k1_hold_ending_without_a_commit_restores_the_selected_mode():
+    rig = Rig()
+    rig.step_mode(2)
+    await rig.time.advance(0.6)
+    rig.previewer.end_hold()  # chord, lost device, a net of zero: nothing is committed
+    await settle()
+    assert rig.shown() == [MODE_LADDER[2], MODE_LADDER[0]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_a_k1_release_that_commits_another_mode_sends_no_restore():
+    rig = Rig()
+    rig.step_mode(2)
+    await rig.time.advance(0.6)
+    rig.previewer.end_hold(commit_steps=2)  # the menu's commit pulses the new mode itself
+    await settle()
+    assert rig.shown() == [MODE_LADDER[2]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017"], steps=[4])
+async def test_no_restore_when_the_last_pulse_was_the_selected_mode_or_none_was_sent():
+    rig = Rig()
+    rig.step_mode(1)
+    await rig.time.advance(0.6)
+    rig.step_mode(0)  # back to the start
+    await rig.time.advance(0.6)
+    rig.previewer.end_hold()
+    await settle()
+    assert rig.shown() == [MODE_LADDER[1], MODE_LADDER[0]]
+
+    rig.step_mode(1)  # released before the debounce: nothing was shown
+    await rig.time.advance(0.05)
+    rig.previewer.end_hold()
+    await settle()
+    assert rig.shown() == [MODE_LADDER[1], MODE_LADDER[0]]
+
+
+@pytest.mark.uc("UC-015", flow="A1", br=["BR-017"], steps=[4])
+async def test_a_refused_k1_hold_sends_no_led_preview_and_no_restore():
+    rig = Rig()
+    live = menu_pb2.GetMenuStatusResponse(selection=MODE_LADDER[0], lifecycle_live=True)
+    for net in (1, 2):
+        rig.step_mode(net, status=live)
+        await rig.time.advance(0.6)
+    rig.previewer.end_hold()
+    await settle()
+    rig.menu.ProcessInput.assert_not_awaited()
+    assert rig.files() == [Sound.MENU_VOX_STATUS_NOT_POSSIBLE.value]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-010"], steps=[4])
+async def test_a_failed_led_preview_is_not_retried_and_plays_no_cue():
+    rig = Rig()
+    rig.menu.ProcessInput.side_effect = ConnectionError("menu down")
+    rig.step_mode(1)
+    await rig.time.advance(1.0)
+    assert rig.menu.ProcessInput.await_count == 1
+    value = preview_module.value_voice("current_game", MODE_LADDER[1])
+    assert rig.files() == [Sound.MENU_VOX_LABEL_GAME_MODE.value, value.value]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-005", "BR-015"], steps=[4])
+@pytest.mark.parametrize(
+    ("back_turn", "expected"),
+    [
+        # Turned back to the start and released at once: nothing is committed, the selected mode is restored.
+        (True, [("preview_setting", MODE_LADDER[1]), ("preview_setting", MODE_LADDER[0])]),
+        # Released one mode on: the commit pulses the new mode itself, no restore.
+        (False, [("preview_setting", MODE_LADDER[1]), ("step_setting", "1")]),
+    ],
+)
+async def test_a_k1_release_restores_only_when_nothing_is_committed(back_turn, expected):
+    rig = Rig()
+    menu = rig.menu  # one menu stub: the commit and the LED preview share it
+    actions = Actions(menu, create_autospec(CoordinatorStubSpec, instance=True), rig.cues, previewer=rig.previewer)
+    rig.config.enabled.return_value = True
+    rig.config.timings.return_value = Timings(knob_events_per_step=1)
+    reader = create_autospec(MenuStatusReader, instance=True)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(selection=MODE_LADDER[0])
+    pad = PadController(rig.config, reader, actions, rig.cues)
+    pad.attached(KEYMAP)
+
+    await pad.on_code(CODE["K1"], PRESS, 0)
+    await pad.on_code(CODE["KNOB_TURN_B"], PRESS, 10)
+    await pad.on_code(CODE["KNOB_TURN_B"], RELEASE, 11)
+    await rig.time.advance(0.6)
+    if back_turn:
+        await pad.on_code(CODE["KNOB_TURN_A"], PRESS, 700)
+        await pad.on_code(CODE["KNOB_TURN_A"], RELEASE, 701)
+    await pad.on_code(CODE["K1"], RELEASE, 720)
+    await rig.time.advance(1.0)
+    assert [(d["command"], d.get("mode", d.get("steps"))) for d in rig.mode_previews()] == expected
+
+
+@pytest.mark.uc("UC-015", flow="A1", br=["BR-017", "BR-015"], steps=[4])
+@pytest.mark.parametrize("release_status", ["missing", "live"])
+async def test_a_k1_release_the_pad_does_not_send_restores_the_selected_mode(release_status):
+    rig = Rig()
+    actions = Actions(rig.menu, create_autospec(CoordinatorStubSpec, instance=True), rig.cues, previewer=rig.previewer)
+    rig.config.enabled.return_value = True
+    rig.config.timings.return_value = Timings(knob_events_per_step=1)
+    reader = create_autospec(MenuStatusReader, instance=True)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(selection=MODE_LADDER[0])
+    pad = PadController(rig.config, reader, actions, rig.cues)
+    pad.attached(KEYMAP)
+
+    await pad.on_code(CODE["K1"], PRESS, 0)
+    await pad.on_code(CODE["KNOB_TURN_B"], PRESS, 10)
+    await pad.on_code(CODE["KNOB_TURN_B"], RELEASE, 11)
+    await rig.time.advance(0.6)
+    # The status read at the release: unreadable (the release sends nothing) or live (refused, A1).
+    reader.fetch.return_value = (
+        None
+        if release_status == "missing"
+        else menu_pb2.GetMenuStatusResponse(selection=MODE_LADDER[0], lifecycle_live=True)
+    )
+    await pad.on_code(CODE["K1"], RELEASE, 720)
+    await rig.time.advance(1.0)
+    assert [(d["command"], d.get("mode")) for d in rig.mode_previews()] == [
+        ("preview_setting", MODE_LADDER[1]),
+        ("preview_setting", MODE_LADDER[0]),
+    ]
+
+
+class BlockedMenu:
+    """A menu whose `preview_setting` answers only when the test lets it; records each mode as it goes out."""
+
+    def __init__(self, rig: Rig) -> None:
+        self.sent: list[str] = []
+        self.answered: list[str] = []  # calls that ran to the menu's answer (not cancelled mid-flight)
+        self.answer = asyncio.Event()
+        rig.menu.ProcessInput.side_effect = self._process_input
+
+    async def _process_input(self, request, **_kwargs):
+        self.sent.append(request.data["mode"])
+        await self.answer.wait()
+        self.answered.append(request.data["mode"])
+        return menu_pb2.ProcessInputResponse(success=True)
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_the_restore_waits_for_a_pulse_still_in_flight():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    rig.step_mode(1)
+    await rig.time.advance(0.2)  # the M1 pulse is on the wire, unanswered
+    rig.previewer.end_hold()
+    await settle()
+    assert menu.sent == [MODE_LADDER[1]]  # the restore never overtakes it
+    menu.answer.set()
+    await rig.previewer.drain()
+    assert menu.sent == [MODE_LADDER[1], MODE_LADDER[0]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_a_pulse_back_to_the_selected_mode_is_sent_even_when_the_hold_ends_first():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    rig.step_mode(1)
+    await rig.time.advance(0.2)  # M1 on the wire
+    rig.step_mode(0)
+    await rig.time.advance(0.2)  # M0 queued behind it
+    rig.previewer.end_hold()  # net zero: nothing is committed
+    await settle()
+    menu.answer.set()
+    await rig.previewer.drain()
+    # M0 is the last pulse that went out, so no extra restore; the hold end cancelled neither call.
+    assert menu.sent == [MODE_LADDER[1], MODE_LADDER[0]]
+    assert menu.answered == [MODE_LADDER[1], MODE_LADDER[0]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_m1_m2_m1_then_a_quick_commit_sends_no_pulse_after_the_commit_and_no_restore():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    for net in (1, 2, 1):
+        rig.step_mode(net)
+        await rig.time.advance(0.2)
+    rig.previewer.end_hold(commit_steps=1)  # released before the queued pulses went out: M1 is committed
+    await settle()
+    menu.answer.set()
+    await rig.previewer.drain()
+    # The queued M2 and M1 pulses are dropped: nothing reaches the menu after its commit pulse.
+    assert menu.sent == [MODE_LADDER[1]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-010"], steps=[4])
+async def test_a_stuck_menu_holds_at_most_the_call_in_flight_and_the_newest_pulse():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    for net in (1, 2, 3, 2, 3, 4):
+        rig.step_mode(net)
+        await rig.time.advance(0.2)
+    assert menu.sent == [MODE_LADDER[1]]  # stuck on the first call
+    menu.answer.set()
+    await rig.time.advance(0.2)
+    await rig.previewer.drain()
+    # Only the newest queued mode follows; the steps in between never reach the menu.
+    assert menu.sent == [MODE_LADDER[1], MODE_LADDER[4]]
+
+
+@pytest.mark.uc("UC-015", flow="main", br=["BR-017", "BR-015"], steps=[4])
+async def test_no_pulse_reaches_the_menu_after_a_committing_release():
+    rig = Rig()
+    menu = BlockedMenu(rig)
+    rig.step_mode(1)
+    await rig.time.advance(0.2)  # M1 on the wire
+    rig.step_mode(2)
+    await rig.time.advance(0.2)  # M2 queued
+    rig.previewer.end_hold(commit_steps=2)  # M2 is committed: the menu's commit pulses it
+    await settle()
+    menu.answer.set()
+    await rig.previewer.drain()
+    assert menu.sent == [MODE_LADDER[1]]

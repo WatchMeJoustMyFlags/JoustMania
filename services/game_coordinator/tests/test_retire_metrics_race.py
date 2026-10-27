@@ -18,7 +18,6 @@ retire removes them with the other game-state gauges.
 
 import contextlib
 import sys
-import threading
 import time
 from pathlib import Path
 from unittest.mock import create_autospec, patch
@@ -197,22 +196,68 @@ def _value_for(gauge, game_id: str):
     return values[0] if values else None
 
 
-def _wait_until_removed(gauge, game_id: str, timeout_s: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while _series_for(gauge, game_id) and time.monotonic() < deadline:
-        time.sleep(0.01)
+class _ManualTimer:
+    """Stands in for ``threading.Timer`` in the retire path: records the removal
+    and runs it only when the test fires it.
+
+    A real timer raced the test (#2165): on a slow runner the game loop's
+    teardown took longer than the short delay, the removal ran before the
+    "series reads 0" assertion and it saw None. Production keeps the real timer
+    (3 export intervals); the tests own the moment the removal runs.
+    """
+
+    def __init__(self, interval, function, args=None, kwargs=None):
+        self.interval = interval
+        self.function = function
+        self.args = args or ()
+        self.kwargs = kwargs or {}
+        self.daemon = False
+        self.name = ""
+        self.started = False
+        self.fired = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def fire(self) -> None:
+        assert self.started, "retire scheduled the removal but never started the timer"
+        assert not self.fired, "removal fired twice"
+        self.fired = True
+        self.function(*self.args, **self.kwargs)
+
+
+class _Removals:
+    """The removal timers retire scheduled during one test."""
+
+    def __init__(self) -> None:
+        self.timers: list[_ManualTimer] = []
+
+    def timer(self, *args, **kwargs) -> _ManualTimer:
+        timer = _ManualTimer(*args, **kwargs)
+        self.timers.append(timer)
+        return timer
+
+    def fire_all(self) -> None:
+        """Run every scheduled removal, as the timer thread does after the delay."""
+        assert self.timers, "retire scheduled no delayed removal"
+        for timer in self.timers:
+            assert timer.interval == REMOVAL_DELAY_S
+            assert timer.daemon, "a pending removal must not keep the process alive"
+            assert timer.name.startswith("retire-metrics-")
+            timer.fire()
 
 
 @pytest.fixture
 def delayed_removal():
-    """Retire with a real (short) removal delay, as when metrics are exported."""
-    with patch.object(game_session, "retire_removal_delay_s", autospec=True, return_value=REMOVAL_DELAY_S):
-        yield
-    # A removal timer still pending would fire inside a later test and call
-    # clear_game_state_gauges there (flaked TestMultiSession, #1827): wait for it.
-    for thread in threading.enumerate():
-        if thread.name.startswith("retire-metrics-"):
-            thread.join(timeout=2 * REMOVAL_DELAY_S + 1.0)
+    """Retire with a removal delay, as when metrics are exported; the test fires
+    the removal itself, so no real timer thread races the assertions (#2165)
+    or fires inside a later test (#1827)."""
+    removals = _Removals()
+    with (
+        patch.object(game_session, "retire_removal_delay_s", autospec=True, return_value=REMOVAL_DELAY_S),
+        patch.object(game_session.threading, "Timer", new=removals.timer),
+    ):
+        yield removals
 
 
 class TestRetireExportsTheEnd:
@@ -227,33 +272,34 @@ class TestRetireExportsTheEnd:
 
         await _run_loop(session, game)
 
-        # The loop's teardown is done and retire won: the series still read 0.
+        # The loop's teardown is done and retire won: the series still read 0
+        # until the delayed removal runs.
         assert _value_for(metrics.active_game, GAME_ID) == 0
         assert _value_for(metrics.active_players, GAME_ID) == 0
 
+        delayed_removal.fire_all()
         for gauge in SESSION_GAUGES:
-            _wait_until_removed(gauge, GAME_ID)
             assert _series_for(gauge, GAME_ID) == [], gauge.name
 
     @pytest.mark.uc("UC-041", flow="main", steps=[7])
     @pytest.mark.asyncio
     async def test_force_end_then_retire_exports_zero_then_removes(self, live_gauges, delayed_removal):
         """Force-end + retire while the game thread has not torn down: game_active
-        goes 1 -> 0 at retire, without blocking on the removal delay."""
+        goes 1 -> 0 at retire, and the removal is left to the timer (retire
+        does not wait for it)."""
         session = _make_session()
         session.game_state = game_coordinator_pb2.GameState.RUNNING
         session.current_game = create_autospec(BaseGameMode, instance=True)
         assert _value_for(metrics.active_game, GAME_ID) == 1
 
         ok, _ = await session.force_end("test")
-        started = time.monotonic()
         session.clear_metrics()  # what the servicer's _retire_session does next
-        assert time.monotonic() - started < REMOVAL_DELAY_S, "retire must not wait for the removal"
 
         assert ok
+        assert [t.fired for t in delayed_removal.timers] == [False], "retire must not run the removal itself"
         assert _value_for(metrics.active_game, GAME_ID) == 0
         assert _value_for(metrics.active_players, GAME_ID) == 0
-        _wait_until_removed(metrics.active_game, GAME_ID)
+        delayed_removal.fire_all()
         assert _series_for(metrics.active_game, GAME_ID) == []
         assert _series_for(metrics.active_players, GAME_ID) == []
 
@@ -274,8 +320,8 @@ class TestRetireExportsTheEnd:
         assert _value_for(metrics.active_game, GAME_ID) == 0
         for gauge in (metrics.game_duration_seconds, metrics.current_game_mode, metrics.game_trace_correlation):
             assert _series_for(gauge, GAME_ID) == [], gauge.name
+        delayed_removal.fire_all()
         for gauge in SESSION_GAUGES:
-            _wait_until_removed(gauge, GAME_ID)
             assert _series_for(gauge, GAME_ID) == [], gauge.name
 
     @pytest.mark.uc("UC-041", flow="main", steps=[7])
@@ -379,15 +425,14 @@ class TestRetireGuards:
     def test_second_retire_is_a_no_op(self, live_gauges, delayed_removal):
         """A second retire writes no second zero and starts no second removal timer."""
         session = _make_session()
-        with patch.object(game_session.threading, "Timer", autospec=True) as timer_cls:
-            session.clear_metrics()
-            assert timer_cls.call_count == 1
-            # A write between the two retires would show if the second re-zeroed.
-            metrics.active_game.labels(
-                game_kind=GAME_KIND_SHADOW, game_id=GAME_ID, experiment_id="exp_1", arm="control"
-            ).set(5)
-            session.clear_metrics()
-            assert timer_cls.call_count == 1
+        session.clear_metrics()
+        assert len(delayed_removal.timers) == 1
+        # A write between the two retires would show if the second re-zeroed.
+        metrics.active_game.labels(
+            game_kind=GAME_KIND_SHADOW, game_id=GAME_ID, experiment_id="exp_1", arm="control"
+        ).set(5)
+        session.clear_metrics()
+        assert len(delayed_removal.timers) == 1
         assert _value_for(metrics.active_game, GAME_ID) == 5
 
     @pytest.mark.uc("UC-041", flow="main", steps=[7])

@@ -10,7 +10,6 @@ The pipeline under test:
 These tests exercise the Python game logic directly (no gRPC overhead).
 """
 
-import statistics
 import sys
 import time
 from pathlib import Path
@@ -190,35 +189,39 @@ class TestMotionThroughput:
         Doubling controllers should roughly double the processing time,
         not exhibit worse-than-linear scaling.
         """
-        # Load-robust (#1958): per-frame CPU time (process_time ignores time spent
-        # descheduled) and the median over many frames (ignores load spikes),
-        # instead of the wall-clock mean that parallel suites skewed to 3.8x.
-        frame_count = 200
+        # Load-robust (#1958, #2048): the two sizes are timed in interleaved rounds
+        # (load hits both alike) and each size keeps its fastest round (min time
+        # discards load spikes). A quadratic hot path still gives ~4x for 2x the
+        # controllers, so the 3x bound below keeps its teeth.
+        rounds = 25
+        frames_per_round = 20
+        sizes = (4, 8)
+        games = {n: create_ffa_game(n)[0] for n in sizes}
+        batches = {n: [generate_mock_accel(n, movement="random") for _ in range(frames_per_round)] for n in sizes}
+        for n in sizes:  # warmup
+            for cd in generate_mock_accel(n, movement="idle"):
+                await games[n]._process_controller_state(cd)
 
-        async def median_cpu_frame_ms(num_controllers: int) -> float:
-            game, _ = create_ffa_game(num_controllers)
-            for _ in range(20):  # warmup
-                for cd in generate_mock_accel(num_controllers, movement="idle"):
-                    await game._process_controller_state(cd)
-            samples = []
-            for _ in range(frame_count):
-                mock_data = generate_mock_accel(num_controllers, movement="random")
-                start = time.process_time()
-                for cd in mock_data:
-                    await game._process_controller_state(cd)
-                samples.append((time.process_time() - start) * 1000.0)
-            return statistics.median(samples)
+        best_ms = {n: float("inf") for n in sizes}
+        for _ in range(rounds):
+            for n in sizes:
+                start = time.perf_counter()
+                for frame in batches[n]:
+                    for cd in frame:
+                        await games[n]._process_controller_state(cd)
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                best_ms[n] = min(best_ms[n], elapsed_ms)
 
-        median_4 = await median_cpu_frame_ms(4)
-        median_8 = await median_cpu_frame_ms(8)
+        best_4 = best_ms[4] / frames_per_round
+        best_8 = best_ms[8] / frames_per_round
 
         # Doubling controllers should increase time by at most 3x
         # (allows for overhead; perfect scaling would be 2x)
-        scaling_factor = median_8 / median_4 if median_4 > 0 else float("inf")
+        scaling_factor = best_8 / best_4 if best_4 > 0 else float("inf")
 
         print("\n--- Scaling test ---")
-        print(f"  4 controllers median CPU: {median_4:.3f}ms")
-        print(f"  8 controllers median CPU: {median_8:.3f}ms")
+        print(f"  4 controllers best round: {best_4:.3f}ms")
+        print(f"  8 controllers best round: {best_8:.3f}ms")
         print(f"  Scaling factor:     {scaling_factor:.2f}x (ideal=2.0x)")
 
         assert scaling_factor < 3.0, (
