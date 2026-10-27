@@ -16,13 +16,17 @@
 #  - no env value is printed
 #  - the ACT LED line (C-042): the recorded state and the live trigger; a stale
 #    installed helper is named
+#  - the stage hotspot line (UC-061 FR-187, BR-007): INFO only for every state,
+#    including "should be on but is not"; not set up, no check yet, an unknown
+#    status format and a stale installed helper are named; nothing but the known
+#    non-secret keys is printed
 #  - git cannot read the checkout: WARN naming that (not a branch), degraded (A4)
 #  - a start refused on a branch checkout (A4): the reason from start.env is
 #    shown on the last-start line, exit 2
 #  - --led (ExecStartPost, #2027 PR 4): the unit still activating counts as
 #    started, the state (never `starting`) is written to led.request
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-status.sh
-# UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7
+# UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7; UC-061 BR-007
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -48,6 +52,7 @@ make_case() {
   CASE="${WORK}/$1"
   mkdir -p "${CASE}/repo/scripts/setup" "${CASE}/bin" "${CASE}/status" "${CASE}/run" "${CASE}/ledstate" "${CASE}/sys"
   cp "${ROOT}/scripts/setup/joustmania-status.sh" "${ROOT}/scripts/setup/joustmania-led.sh" "${ROOT}/scripts/setup/joustmania-compose.sh" \
+    "${ROOT}/scripts/setup/joustmania-hotspot.sh" \
     "${ROOT}/scripts/setup/lib-joustmania.sh" "${CASE}/repo/scripts/setup/"
   printf 'IMAGE_TAG=0.0.0-test\n' >"${CASE}/repo/.env"
   printf 'JEV_API_KEY=%s\n' "${SECRET}" >"${CASE}/repo/.env.local"
@@ -98,6 +103,7 @@ run_status() {
   env PATH="${CASE}/bin:${PATH}" JOUSTMANIA_STATUS_DIR="${CASE}/status" \
     JOUSTMANIA_RUN_STATE_DIR="${CASE}/run" JOUSTMANIA_LED_STATE_DIR="${CASE}/ledstate" \
     JOUSTMANIA_LED_SYSFS="${CASE}/sys" JOUSTMANIA_LED_HELPER="${CASE}/helper" \
+    JOUSTMANIA_HOTSPOT_HELPER="${CASE}/hotspot-helper" JOUSTMANIA_HOTSPOT_STATUS="${CASE}/hotspot-status" \
     bash "${CASE}/repo/scripts/setup/joustmania-status.sh" "$@" >"${CASE}/out.log" 2>&1
 }
 expect() { # $1 = case, $2 = expected exit, $3 = expected state, $4.. = status args
@@ -258,6 +264,40 @@ grep -qx "WARN version: git cannot read the checkout (check: git -C ${CASE}/repo
   || fail "git-unreadable: not reported as unreadable: $(grep version "${CASE}/out.log")"
 grep -q 'not pinned (branch' "${CASE}/out.log" && fail "git-unreadable: reported as a branch checkout"
 
+# --- the stage hotspot line (UC-061 FR-187): INFO only (BR-007) --------------
+make_case hotspot-none
+expect hotspot-none 0 ok
+grep -qx "INFO hotspot: not set up (sudo ${CASE}/repo/scripts/setup/install_hotspot.sh, UC-061)" "${CASE}/out.log" ||
+  fail "hotspot-none: not-set-up line: $(grep hotspot "${CASE}/out.log")"
+hotspot_case() { # $1 = name, $2 = status file content
+  make_case "$1"
+  cp "${ROOT}/scripts/setup/joustmania-hotspot.sh" "${CASE}/hotspot-helper"
+  [[ -z "$2" ]] || printf '%s' "$2" >"${CASE}/hotspot-status"
+}
+hotspot_case hotspot-on $'format=1\nstate=on\nreason=eth0 down for 21s\nssid=JoustMania\nband=5GHz\nchannel=36\nuplink=eth0\nclients=2\nurl=http://10.42.0.1/\nupdated=1\npsk=NeverShown99\n'
+expect hotspot-on 0 ok
+grep -qx 'INFO hotspot: on, SSID JoustMania, 5 GHz ch 36, 2 client(s), http://10.42.0.1/ (eth0 down for 21s)' "${CASE}/out.log" ||
+  fail "hotspot-on: line: $(grep hotspot "${CASE}/out.log")"
+grep -q NeverShown99 "${CASE}/out.log" && fail "hotspot-on: an unknown key's value was printed"
+grep -q '^INFO hotspot helper' "${CASE}/out.log" && fail "hotspot-on: an up-to-date helper is reported"
+hotspot_case hotspot-failed $'format=1\nstate=failed\nreason=nmcli: Error: no suitable device (UC-061 A3)\nssid=JoustMania\nchannel=36\n'
+expect hotspot-failed 0 ok
+grep -qx 'INFO hotspot: should be on but is not: nmcli: Error: no suitable device (UC-061 A3); see journalctl -u joustmania-hotspot -b' "${CASE}/out.log" ||
+  fail "hotspot-failed: line: $(grep hotspot "${CASE}/out.log")"
+hotspot_case hotspot-off $'format=1\nstate=off\nreason=eth0 connected\n'
+expect hotspot-off 0 ok
+grep -qx 'INFO hotspot: off (eth0 connected)' "${CASE}/out.log" || fail "hotspot-off: line: $(grep hotspot "${CASE}/out.log")"
+hotspot_case hotspot-nocheck ""
+expect hotspot-nocheck 0 ok
+grep -q '^INFO hotspot: no check ran since boot' "${CASE}/out.log" || fail "hotspot-nocheck: line: $(grep hotspot "${CASE}/out.log")"
+hotspot_case hotspot-format $'format=2\nstate=on\n'
+expect hotspot-format 0 ok
+grep -q "^INFO hotspot: status format '2' unknown to this checkout" "${CASE}/out.log" || fail "hotspot-format: line: $(grep hotspot "${CASE}/out.log")"
+hotspot_case hotspot-stale $'format=1\nstate=off\nreason=eth0 connected\n'
+echo '# older' >>"${CASE}/hotspot-helper"
+expect hotspot-stale 0 ok
+grep -q "^INFO hotspot helper: .* differs from this checkout; update it with: sudo .*install_hotspot.sh" "${CASE}/out.log" ||
+  fail "hotspot-stale: stale helper not named"
 if [[ "${fails}" -ne 0 ]]; then
   exit 1
 fi
