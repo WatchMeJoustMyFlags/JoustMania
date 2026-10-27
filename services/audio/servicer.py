@@ -548,7 +548,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         self.audio_manager = AudioManager(silent=not self.audio_enabled)
         # Voice profiles and partners from the voice manifest (UC-031 BR-007, #2107).
         self.voice_profiles = sound_catalog.load_voice_profiles(_PACKAGED_ASSETS)
-        self._rejected_voice: str | None = None
+        self._rejected_voices: set[str] = set()  # warned about already, once per value
         self.sound_registry: dict[str, tuple[str, str]] = {}  # sound_name -> (type, base_dir)
         self._build_sound_registry()
         # Setting menu_voice builds the id -> path table for that voice (see the property).
@@ -576,6 +576,11 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             return True
 
     @property
+    def _playback_assets(self) -> Path:
+        """Where playback reads files (AUDIO_ASSETS_DIR); partner existence is checked here (#2164)."""
+        return Path(self.audio_manager.assets_dir)
+
+    @property
     def menu_voice(self) -> str:
         """The selected voice profile (flag ``menu_voice``)."""
         return self._voice_state[0]
@@ -587,7 +592,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         Voice and table are swapped as one tuple, so a PlaySound on the event
         loop never sees the new voice with the old table, or the reverse.
         """
-        table = sound_catalog.resolution_table(self.sound_registry, voice, self.voice_profiles, _PACKAGED_ASSETS)
+        table = sound_catalog.resolution_table(self.sound_registry, voice, self.voice_profiles, self._playback_assets)
         self._voice_state = (voice, table)
 
     def _load_menu_voice_flag(self) -> str:
@@ -612,7 +617,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
                 ", ".join(self.voice_profiles.names),
                 default,
             )
-            self._rejected_voice = voice
+            self._rejected_voices.add(voice)
             return default
         except Exception as e:
             logger.debug("Could not load menu_voice flag from flagd: %s, defaulting to %s", e, default)
@@ -623,18 +628,17 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         if new_voice == self.menu_voice:
             return
         if new_voice not in self.voice_profiles.names:
-            if new_voice != self._rejected_voice:  # warn once per value, not on every flag event
+            if new_voice not in self._rejected_voices:  # warn once per value, not on every flag event
                 logger.warning(
                     "Unknown menu_voice value '%s' (profiles: %s), keeping %s",
                     new_voice,
                     ", ".join(self.voice_profiles.names),
                     self.menu_voice,
                 )
-                self._rejected_voice = new_voice
+                self._rejected_voices.add(new_voice)
             return
         logger.info("menu_voice flag changed: %s -> %s", self.menu_voice, new_voice)
         self.menu_voice = new_voice
-        self._rejected_voice = None
 
     def _register_flag_change_handler(self):
         """Register event handler for reactive flag updates from flagd."""
@@ -757,13 +761,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         Voice lines are the union of every profile's directory (UC-031 BR-007),
         so a line only one profile has (generated-only, or ``ivy`` only) exists.
         """
-        for base_dir in sound_catalog.SOUND_BASE_DIRS:
-            assets_dir = _PACKAGED_ASSETS / base_dir
-            for voice in self.voice_profiles.names:
-                self._scan_directory_for_sounds(assets_dir / "vox" / voice, "vox", base_dir)
-            # Scan sounds directory
-            self._scan_directory_for_sounds(assets_dir / "sounds", "sound", base_dir)
-
+        self.sound_registry = sound_catalog.build_sound_registry(_PACKAGED_ASSETS, self.voice_profiles)
         logger.info(f"Sound registry built: {len(self.sound_registry)} sounds indexed")
 
     def _scan_directory_for_sounds(self, directory: Path, sound_type: str, base_dir: str):
@@ -837,7 +835,11 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             return resolved
         # Not in the precomputed table (an id registered after the table was built).
         resolved = sound_catalog.relative_path(
-            self.sound_registry, lookup_name, voice=voice, profiles=self.voice_profiles, assets_dir=_PACKAGED_ASSETS
+            self.sound_registry,
+            lookup_name,
+            voice=voice,
+            profiles=self.voice_profiles,
+            assets_dir=self._playback_assets,
         )
         if resolved is not None:
             return resolved
@@ -854,7 +856,8 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         """Resolve a path that may need voice directory insertion.
 
         If the path contains '/vox/' but no voice folder, inserts the current
-        menu voice. Paths with voice already present are returned as-is.
+        menu voice, or its partner's when the file is missing there (BR-007).
+        Paths with voice already present are returned as-is.
 
         Args:
             sound_input: Sound path potentially containing '/vox/'
@@ -870,7 +873,10 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         remainder = parts[1]
         if "/" in remainder and remainder.split("/", 1)[0] in self.voice_profiles.names:
             return sound_input
-        return f"{parts[0]}/vox/{self.menu_voice}/{remainder}"
+        # Same partner fallback as a simple id: a gen_* voice without the file plays its partner's.
+        return sound_catalog.voice_line_path(
+            parts[0], remainder, self.menu_voice, self.voice_profiles, self._playback_assets
+        )
 
     async def PlaySound(self, request, _context):
         """Play a sound effect."""

@@ -695,3 +695,51 @@ class TestVoiceProfileSelection:
     def test_path_naming_a_generated_profile_is_used_as_is(self, servicer):
         servicer.menu_voice = "ivy"
         assert servicer._resolve_sound_path("Menu/vox/gen_male/high.ogg") == "Menu/vox/gen_male/high.ogg"
+
+
+class TestVoiceFollowUps2164:
+    """#2164: vox-path fallback, shared registry, warn once per value, AUDIO_ASSETS_DIR."""
+
+    @pytest.fixture
+    def servicer(self, mock_audio_servicer):
+        return mock_audio_servicer
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_vox_path_without_voice_falls_back_to_the_partner(self, servicer):
+        """aaron has no Fightclub-instructions: the path form plays gen_male, as the plain id does."""
+        servicer.menu_voice = "aaron"
+        assert servicer._resolve_vox_path("Menu/vox/Fightclub-instructions.ogg") == (
+            "Menu/vox/gen_male/Fightclub-instructions.ogg"
+        )
+        assert servicer._resolve_sound_path("Fightclub-instructions") == "Menu/vox/gen_male/Fightclub-instructions.ogg"
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_registry_is_the_shared_catalog_scan(self, servicer):
+        from services.audio import sound_catalog
+
+        sentinel = {"only_id": ("vox", "Menu")}
+        with patch.object(sound_catalog, "build_sound_registry", return_value=sentinel) as build:
+            servicer._build_sound_registry()
+        build.assert_called_once()
+        assert servicer.sound_registry == sentinel
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_each_rejected_value_warns_once(self, servicer, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="services.audio.servicer"):
+            for voice in ("robot", "alien", "robot", "alien", "robot"):
+                servicer._apply_menu_voice(voice)
+        warned = [r.getMessage() for r in caplog.records if "Unknown menu_voice" in r.getMessage()]
+        assert len(warned) == 2
+
+    @pytest.mark.uc("UC-031", flow="A4", br=["BR-007"])
+    def test_partner_existence_is_checked_under_audio_assets_dir(self, tmp_path, servicer):
+        """With AUDIO_ASSETS_DIR lacking the partner's file, the selected voice's path stays."""
+        servicer.audio_manager.assets_dir = str(tmp_path)
+        servicer.menu_voice = "aaron"
+        assert servicer._resolve_sound_path("Fightclub-instructions") == "Menu/vox/aaron/Fightclub-instructions.ogg"
+        (tmp_path / "Menu/vox/gen_male").mkdir(parents=True)
+        (tmp_path / "Menu/vox/gen_male/Fightclub-instructions.ogg").write_bytes(b"x")
+        servicer.menu_voice = "aaron"
+        assert servicer._resolve_sound_path("Fightclub-instructions") == "Menu/vox/gen_male/Fightclub-instructions.ogg"
