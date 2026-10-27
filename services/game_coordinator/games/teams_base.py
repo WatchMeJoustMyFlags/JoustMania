@@ -349,7 +349,7 @@ class TeamsGameBase(BaseGameMode):
         before its event is published, so a force-end that lands afterwards (same
         tick, the publish, the hold, the rainbow) keeps it (UC-021 BR-003).
 
-        The outcome is latched first: force_end() runs on the servicer thread, so it
+        The outcome is latched first: a force_end() from outside the game
         can land between the caller's ``force_ended`` check and this call. When the
         latched outcome is ``force_ended`` no result is latched and the caller
         publishes nothing.

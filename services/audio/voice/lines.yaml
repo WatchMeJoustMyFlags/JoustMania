@@ -170,28 +170,28 @@ areas:
 
 
     # word ends with a full stop: without it Piper blurs it.
-    - {id: label_sensitivity, text: "Sensitivity."}
-    - {id: label_teams, text: "Teams."}
-    - {id: label_agent, text: "Agent."}
-    - {id: label_backend, text: "Backend.", say: "Back end."}
-    - {id: label_volume, text: "Volume."}
-    - {id: label_game_mode, text: "Game mode."}
-    - {id: label_instructions, text: "Instructions."}
-    - {id: pad_locked, text: "Pad locked."}
-    - {id: pad_unlocked, text: "Pad unlocked."}
+    - {id: label_sensitivity, sound: MENU_VOX_LABEL_SENSITIVITY, text: "Sensitivity."}
+    - {id: label_teams, sound: MENU_VOX_LABEL_TEAMS, text: "Teams."}
+    - {id: label_agent, sound: MENU_VOX_LABEL_AGENT, text: "Agent."}
+    - {id: label_backend, sound: MENU_VOX_LABEL_BACKEND, text: "Backend.", say: "Back end."}
+    - {id: label_volume, sound: MENU_VOX_LABEL_VOLUME, text: "Volume."}
+    - {id: label_game_mode, sound: MENU_VOX_LABEL_GAME_MODE, text: "Game mode."}
+    - {id: label_instructions, sound: MENU_VOX_LABEL_INSTRUCTIONS, text: "Instructions."}
+    - {id: pad_locked, sound: MENU_VOX_PAD_LOCKED, text: "Pad locked."}
+    - {id: pad_unlocked, sound: MENU_VOX_PAD_UNLOCKED, text: "Pad unlocked."}
 
     # Decision backends (#2106)
-    - {id: backend_rules, text: "Rules."}
-    - {id: backend_claude, text: "Claude."}
-    - {id: backend_openai, text: "OpenAI.", say: "Open A I."}
-    - {id: backend_jev, text: "Jev."}
+    - {id: backend_rules, sound: MENU_VOX_BACKEND_RULES, text: "Rules."}
+    - {id: backend_claude, sound: MENU_VOX_BACKEND_CLAUDE, text: "Claude."}
+    - {id: backend_openai, sound: MENU_VOX_BACKEND_OPENAI, text: "OpenAI.", say: "Open A I."}
+    - {id: backend_jev, sound: MENU_VOX_BACKEND_JEV, text: "Jev."}
 
     # Status words (#2106)
-    - {id: status_not_possible, text: "Not possible."}
-    - {id: status_maximum, text: "Maximum."}
-    - {id: status_minimum, text: "Minimum."}
-    - {id: status_cancelled, text: "Cancelled.", say: "Canceled."}
-    - {id: status_no_connection, text: "No connection."}
+    - {id: status_not_possible, sound: MENU_VOX_STATUS_NOT_POSSIBLE, text: "Not possible."}
+    - {id: status_maximum, sound: MENU_VOX_STATUS_MAXIMUM, text: "Maximum."}
+    - {id: status_minimum, sound: MENU_VOX_STATUS_MINIMUM, text: "Minimum."}
+    - {id: status_cancelled, sound: MENU_VOX_STATUS_CANCELLED, text: "Cancelled.", say: "Canceled."}
+    - {id: status_no_connection, sound: MENU_VOX_STATUS_NO_CONNECTION, text: "No connection."}
 
   # Game announcers: only the lines a game mode plays (audit for #2147). Commander
   # and Fight Club play no voice line, so they have no area here.

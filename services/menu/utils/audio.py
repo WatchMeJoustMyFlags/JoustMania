@@ -5,6 +5,7 @@ import logging
 import grpc.aio
 
 from lib.types import Sound
+from lib.voice_prompts import GAME_MODE_VOICE
 from services.menu.utils.settings import validate_mode_keys
 
 logger = logging.getLogger(__name__)
@@ -35,20 +36,7 @@ def _read_volume(client, flag_name: str, default: float) -> float:
         return default
 
 
-# Game mode voice announcements
-GAME_MODE_VOICE: dict[str, Sound] = {
-    "JoustFFA": Sound.MENU_VOX_JOUST_FFA,
-    "JoustTeams": Sound.MENU_VOX_JOUST_TEAMS,
-    "JoustRandomTeams": Sound.MENU_VOX_RANDOM_TEAMS,
-    "Swapper": Sound.MENU_VOX_SWAPPER,
-    "Werewolf": Sound.MENU_VOX_WEREWOLVES,
-    "Traitor": Sound.MENU_VOX_TRAITOR,
-    "Zombies": Sound.MENU_VOX_ZOMBIES,
-    "Commander": Sound.MENU_VOX_COMMANDER,
-    "FightClub": Sound.MENU_VOX_FIGHT_CLUB,
-    "Tournament": Sound.MENU_VOX_TOURNAMENT,
-    "NonStop": Sound.MENU_VOX_NONSTOP_JOUST,
-}
+# Game mode voice announcements: lib/voice_prompts.py, shared with the operator pad (#2106).
 validate_mode_keys(GAME_MODE_VOICE, "GAME_MODE_VOICE")
 
 

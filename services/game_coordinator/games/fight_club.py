@@ -41,6 +41,9 @@ DEFAULT_INVINCIBILITY_DURATION = 4.0  # Seconds of invincibility at round start
 DEFAULT_MIN_ROUNDS = 10  # Minimum rounds before game can end
 COUNTDOWN_BEEPS = 3  # Beeps in last 3 seconds of round
 FC_INTRO_DURATION_S = 2.0  # Intro length; the stream is drained meanwhile (UC-025 A2 step 1)
+# Fight Club's instructions are recorded in the ivy voice only: the full path plays
+# the ivy file whatever menu_voice is, so an aaron lobby never gets silence (UC-025 A5, #2151).
+FIGHT_CLUB_INSTRUCTIONS = "Menu/vox/ivy/Fightclub-instructions.ogg"
 ROUND_PAUSE_SECONDS = 1.0  # Pause between a round's kill and the next round
 
 # Colors
@@ -163,6 +166,10 @@ class FightClubGame(BaseGameMode):
     def get_game_name(self) -> str:
         """Return game mode identifier."""
         return "Fight Club"
+
+    def get_instruction_clip(self) -> str:
+        """Spoken instructions before the countdown, ivy only (UC-025 A5, UC-020 A5)."""
+        return FIGHT_CLUB_INSTRUCTIONS
 
     async def _initialize_players_impl(self, controllers: list):
         """
@@ -952,7 +959,7 @@ class FightClubGame(BaseGameMode):
                 await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
                 # Initialization phase
-                with tracer.start_as_current_span("initialization_phase"):
+                with tracer.start_as_current_span("initialization_phase") as init_span:
                     # invincibility and min_rounds are now set in __init__ from StartGameConfig
                     logger.info(
                         f"Fight Club config: invincibility={self._invincibility_duration}s, "
@@ -964,21 +971,10 @@ class FightClubGame(BaseGameMode):
                     # Before any task is created: tasks copy the context (#1273).
                     self._set_flag_eval_context()
                     self._create_player_spans(None)
-
-                # The intro colours go over the stream, so it opens first; a drain
-                # discards the intro's frames and keeps disconnects (UC-025 A2 step 1).
-                await self._start_gameplay_stream()
-                self._start_early_stream_drain()
-                phases_completed = False
-                try:
-                    for phase in self._get_additional_phases():
-                        if not self.running:
-                            break
-                        with tracer.start_as_current_span(phase.name):
-                            await phase.execute()
-                    phases_completed = True
-                finally:
-                    await self._stop_early_stream_drain(reopen=phases_completed)
+                    # The intro colours go over the stream, so it opens first; a drain
+                    # discards the intro's frames and keeps disconnects (UC-025 A2 step 1).
+                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
+                    await self._run_streamed_intro_and_instructions(init_span)
 
                 if not self.running:
                     return

@@ -803,6 +803,14 @@ jobs:
         # the code; on failure: run `make specs` and commit (#1280).
         run: make specs-check
 
+      - name: Spec counts (job summary, not committed)
+        # Flag, RPC and metric totals are not committed: two PRs that each add
+        # one would always conflict and the merge queue ejected the later (#2152).
+        # Informational: it must never fail the job or skip the steps after it.
+        if: always()
+        continue-on-error: true
+        run: make specs-counts >> "$GITHUB_STEP_SUMMARY"
+
       - name: Spec references resolve (spec-refs-gate.sh)
         # Every path:line / path:Symbol in docs/specs names a full repo path that
         # exists; Go Span*/Attr* values appear in telemetry.md (#1280). Line-ref

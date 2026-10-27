@@ -43,6 +43,7 @@ help:
 	@echo "Specs:"
 	@echo "  make specs           - Regenerate docs/specs/generated/ from the code"
 	@echo "  make specs-check     - Fail if docs/specs/generated/ is stale (CI)"
+	@echo "  make specs-counts    - Print the flag, RPC and metric totals (not committed)"
 	@echo "  make spec-refs-check - Fail on a broken path:line / path:Symbol ref in docs/specs (CI)"
 	@echo "  make spec-refs       - Rewrite the undocumented-attribute baseline (growth needs a label)"
 	@echo ""
@@ -184,9 +185,12 @@ pr-gates:
 # Generated spec tables (#1280)
 # ============================================================================
 # docs/specs/generated/*.md come from the code (metric catalog, RPC tables, flag
-# counts, ci/ flag diffs) plus the hand-written sidecars in docs/specs/notes/.
+# sets, ci/ flag diffs) plus the hand-written sidecars in docs/specs/notes/.
 # After a rebase that conflicts in a generated file: take either side, run
 # `make specs`, commit. CI runs `make specs-check` (Telemetry Contract job).
+# Totals (flags, RPCs, metrics) are never committed, so parallel PRs that each
+# add one do not conflict (#2152): `make specs-counts` prints them, and CI
+# writes them to the Telemetry Contract job summary.
 SPECS_GEN = uv run --no-project --with pyyaml python scripts/gen_specs.py
 
 .PHONY: specs
@@ -196,6 +200,10 @@ specs:
 .PHONY: specs-check
 specs-check:
 	@$(SPECS_GEN) --check
+
+.PHONY: specs-counts
+specs-counts:
+	@$(SPECS_GEN) --counts
 
 # Voice catalog (#2107, UC-031 BR-007, C-050): generated voice files are
 # committed (compose mounts the assets from the checkout). `make voice` after

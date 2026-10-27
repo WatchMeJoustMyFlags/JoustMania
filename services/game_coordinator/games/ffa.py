@@ -103,7 +103,7 @@ class FFAGame(BaseGameMode):
 
         The result is latched once, before ``game_winner`` / ``game_tie`` is
         published (UC-020 BR-003, #2020): the root-span outcome is latched first,
-        because force_end() runs on the servicer thread and can land after the
+        because a force_end() can land (between awaits) after the
         ``force_ended`` check (also while the last kill awaited its explosion).
         A force-ended game publishes nothing; a later call does not republish.
 

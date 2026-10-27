@@ -26,6 +26,9 @@
 # missing, the unit failed, docker not reachable). While the unit is starting,
 # a game service that is not running yet is INFO and the state is `starting`.
 # An INFO `led:` line shows the ACT LED state (C-042) joustmania-led recorded.
+# An INFO `hotspot:` line shows the stage hotspot (UC-061, FR-187) from the
+# root-owned helper's non-secret status file (format 1); it never changes the
+# state, the exit code or the LED (UC-061 BR-007).
 #
 #   ./scripts/setup/joustmania-status.sh --led
 #
@@ -67,6 +70,9 @@ fi
 LED_STATE_DIR="${JOUSTMANIA_LED_STATE_DIR:-/run/joustmania-led}"
 LED_SYSFS="${JOUSTMANIA_LED_SYSFS:-/sys/class/leds}"
 LED_HELPER="${JOUSTMANIA_LED_HELPER:-/usr/local/lib/joustmania/joustmania-led}"
+# The stage hotspot helper and its status file (overrides for tests)
+HOTSPOT_HELPER="${JOUSTMANIA_HOTSPOT_HELPER:-/usr/local/lib/joustmania/joustmania-hotspot}"
+HOTSPOT_STATUS="${JOUSTMANIA_HOTSPOT_STATUS:-/run/joustmania-hotspot/status}"
 RECOVER_CMD="sudo systemctl reset-failed $UNIT && sudo systemctl start $UNIT"
 WORST=0 # 0 ok, 1 warn, 2 fail
 STARTING=0
@@ -172,6 +178,51 @@ else
         fi
     done <<<"$SERVICE_IMAGES"
 fi
+
+# --- stage hotspot (UC-061, FR-187): INFO only, never the state (BR-007) -----
+hotspot_line() {
+    local line key val format="" state="" reason="" ssid="" channel="" clients="" url=""
+    local setup="sudo $JOUSTMANIA_DIR/scripts/setup/install_hotspot.sh"
+    if [[ ! -e "$HOTSPOT_HELPER" ]]; then
+        report INFO "hotspot: not set up ($setup, UC-061)"
+        return
+    fi
+    if [[ ! -f "$HOTSPOT_STATUS" || -L "$HOTSPOT_STATUS" ]]; then
+        report INFO "hotspot: no check ran since boot (the timer runs 30 s after boot; journalctl -u joustmania-hotspot -b)"
+    elif [[ ! -r "$HOTSPOT_STATUS" ]]; then
+        report INFO "hotspot: $HOTSPOT_STATUS is not readable by $(id -un 2>/dev/null || echo this user) (the helper writes it 0644; check its mode)"
+    else
+        # key=value written by the root helper; only known keys, printable, bounded
+        while IFS= read -r line; do
+            key="${line%%=*}" val="$(tr -cd '[:print:]' <<<"${line#*=}" | cut -c1-160)"
+            case "$key" in
+                format) format="$val" ;;
+                state) state="$val" ;;
+                reason) reason="$val" ;;
+                ssid) ssid="$val" ;;
+                channel) channel="$val" ;;
+                clients) clients="$val" ;;
+                url) url="$val" ;;
+            esac
+        done < <(head -n 20 "$HOTSPOT_STATUS" 2>/dev/null)
+        if [[ "$format" != 1 ]]; then
+            report INFO "hotspot: status format '${format:-none}' unknown to this checkout (helper and checkout differ): $setup"
+        else
+            case "$state" in
+                on) report INFO "hotspot: on, SSID $ssid, 5 GHz ch $channel, ${clients:-unknown} client(s), $url ($reason)" ;;
+                failed) report INFO "hotspot: should be on but is not: $reason; see journalctl -u joustmania-hotspot -b" ;;
+                off | waiting | disabled | not-set-up) report INFO "hotspot: $state ($reason)" ;;
+                *) report INFO "hotspot: state '${state:-none}' ($reason)" ;;
+            esac
+        fi
+    fi
+    if [[ ! -r "$HOTSPOT_HELPER" ]]; then
+        report INFO "hotspot helper: $HOTSPOT_HELPER is not readable; cannot compare it with this checkout (it is installed 0755)"
+    elif ! cmp -s "$HOTSPOT_HELPER" "$SCRIPT_DIR/joustmania-hotspot.sh"; then
+        report INFO "hotspot helper: $HOTSPOT_HELPER differs from this checkout; update it with: $setup"
+    fi
+}
+hotspot_line
 
 # --- clock ------------------------------------------------------------------
 if command -v timedatectl >/dev/null 2>&1; then

@@ -10,7 +10,7 @@
 #    invalid, symlinked or FIFO request shows `degraded`; no request falls back
 #    to the start.env result, else restores; starting drops a stale request
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-led.sh
-# UC: UC-060 BR-005 A1 A5
+# UC: UC-060 BR-005 A1 A5 Post-S-4
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

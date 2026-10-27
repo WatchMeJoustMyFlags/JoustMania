@@ -170,6 +170,10 @@ class TournamentGame(BaseGameMode):
         """Return game mode identifier."""
         return "Tournament"
 
+    def get_instruction_clip(self) -> Sound | None:
+        """Spoken instructions before the countdown (UC-025 A5, UC-020 A5)."""
+        return Sound.MENU_VOX_TOURNAMENT_INSTRUCTIONS
+
     def _generate_bracket(self, player_count: int) -> list[Match]:
         """
         Generate tournament bracket for given player count.
@@ -774,7 +778,7 @@ class TournamentGame(BaseGameMode):
         kill, the time limit, a walkover), so a force-end that lands afterwards
         keeps the champion, and one that landed before it (``running`` already
         False) latches none (BR-003). The outcome is latched first and checked
-        again: a force-end from the servicer thread can land between the running
+        again (defensive): a force-end could land between the running
         check and the latch, and then no champion may be set or announced.
         Returns whether it latched.
         """
@@ -1033,28 +1037,17 @@ class TournamentGame(BaseGameMode):
                 await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
                 # Initialization phase
-                with tracer.start_as_current_span("initialization_phase"):
+                with tracer.start_as_current_span("initialization_phase") as init_span:
                     await self._initialize_players()
                     if len(self.players) < 2:
                         raise ValueError(f"Need at least 2 players, got {len(self.players)}")
                     # Before any task is created: tasks copy the context (#1273).
                     self._set_flag_eval_context()
                     self._create_player_spans(None)  # Uses current context
-
-                # The intro colours go over the stream, so it opens first; a drain
-                # discards the intro's frames and keeps disconnects (UC-025 step 1).
-                await self._start_gameplay_stream()
-                self._start_early_stream_drain()
-                phases_completed = False
-                try:
-                    for phase in self._get_additional_phases():
-                        if not self.running:
-                            break
-                        with tracer.start_as_current_span(phase.name):
-                            await phase.execute()
-                    phases_completed = True
-                finally:
-                    await self._stop_early_stream_drain(reopen=phases_completed)
+                    # The intro colours go over the stream, so it opens first; a drain
+                    # discards the intro's frames and keeps disconnects (UC-025 step 1).
+                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
+                    await self._run_streamed_intro_and_instructions(init_span)
 
                 if not self.running:
                     return

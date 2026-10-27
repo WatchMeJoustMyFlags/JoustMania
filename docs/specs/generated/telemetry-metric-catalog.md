@@ -4,9 +4,7 @@
 
 Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the columns.
 
-- **151 unique Python metric names** (175 definitions; 5 names are defined in more than one module).
-- 83 of the 151 names have no consumer (no Grafana or SPA query, agent ingest constant, or `tools/` / `scripts/` source names them).
-- 0 names are defined but never recorded by any service.
+The totals (the number of names, of names without a consumer and of names never recorded) are not committed, so two PRs that each add one do not conflict (#2152): `make specs-counts` prints them, and CI shows them in the Telemetry Contract job summary.
 
 | Metric | Type | Labels | Defined in | Emitted | Consumers | Notes |
 |---|---|---|---|---|---|---|

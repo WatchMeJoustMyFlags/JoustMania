@@ -7,7 +7,9 @@
       "state": "ENABLED",
       "variants": {
         "aaron": "aaron",
-        "ivy": "ivy"
+        "ivy": "ivy",
+        "gen_male": "gen_male",
+        "gen_female": "gen_female"
       },
       "defaultVariant": "ivy"
     },

@@ -445,10 +445,10 @@ class TestSensorDataConversion:
         assert result[StateKey.GYRO][AxisKey.Z] == pytest.approx(0.0)
 
 
-@pytest.mark.uc("UC-002", flow="main", steps=[3])
 class TestUnaryCallsCarryADeadline:
     """A wedged rust-hid must not freeze the controller manager (#2125)."""
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[3])
     def test_every_unary_call_has_the_deadline(self):
         adapter = _make_adapter()
         adapter._stream_running = True  # Skip stream start

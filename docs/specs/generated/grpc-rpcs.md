@@ -2,9 +2,11 @@
 
 # gRPC services (generated)
 
-Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 services.**
+Part of [services.md §3](../services.md#3-grpc-services).
 
-## `joustmania.audio.AudioService` (`proto/audio.proto`, 6 RPCs)
+The totals (RPCs in all and per service) are not committed, so two PRs that each add one do not conflict (#2152): `make specs-counts` prints them, and CI shows them in the Telemetry Contract job summary.
+
+## `joustmania.audio.AudioService` (`proto/audio.proto`)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
@@ -15,7 +17,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 | `ChangeTempo` | unary | `ChangeTempoRequest` → `ChangeTempoResponse` | Change music tempo (ratio clamped to (0.5, 2.0]) with a transition |
 | `SetVolume` | unary | `SetVolumeRequest` → `SetVolumeResponse` | Set master volume |
 
-## `joustmania.controller_manager.ControllerManagerService` (`proto/controller_manager.proto`, 6 RPCs)
+## `joustmania.controller_manager.ControllerManagerService` (`proto/controller_manager.proto`)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
@@ -26,7 +28,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 | `IdentifyController` | unary | `IdentifyControllerRequest` → `IdentifyControllerResponse` | Request → response: `IdentifyControllerRequest` (`serial`, `duration_ms`: 0 = 3000 ms, clamped to 500..10000) → `IdentifyControllerResponse` (`success`, `outcome`: `started` / `not_connected` / `in_game` / `reserved` / `invalid`, `error`, `duration_ms`: the duration used). Flash a controller white at 2 Hz and rumble it briefly, then restore its colour, so the operator can find it; refused for controllers that are not connected, reserved, or players of an open game gameplay stream, and cancelled when a game stream claims the controller (UC-004, FR-121) |
 | `WatchGameplayData` | server stream | `GameplayStreamConfig` → `GameplayDataUpdate` | Browser view of `StreamGameplayData` (#1595): one `GameplayStreamConfig` in (the dashboard sends `{updateFrequencyHz: 30}`), the `GameplayDataUpdate`s out. Served by connect-proxy only: it opens an unfiltered (observer) `StreamGameplayData` stream to the controller manager with only the rate (missing or 0 and below = 30 Hz, capped at 30 Hz; never colours), relays every update and closes that stream when the browser goes away; an upstream error ends the browser stream with it. The controller manager itself answers UNIMPLEMENTED (UC-035 MSS) |
 
-## `controller_manager_mock.MockControllerService` (`proto/controller_manager_mock.proto`, 9 RPCs)
+## `controller_manager_mock.MockControllerService` (`proto/controller_manager_mock.proto`)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
@@ -40,7 +42,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 | `RemoveController` | unary | `RemoveControllerRequest` → `RemoveControllerResponse` | Remove (disconnect) a mock controller; a pattern controller returns its replay record (UC-003 A4, UC-046 step 8) |
 | `AddControllers` | unary | `AddControllersRequest` → `AddControllersResponse` | Add multiple mock controllers at once |
 
-## `joustmania.game_coordinator.GameCoordinatorService` (`proto/game_coordinator.proto`, 4 RPCs)
+## `joustmania.game_coordinator.GameCoordinatorService` (`proto/game_coordinator.proto`)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
@@ -49,7 +51,7 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 | `GetGameState` | unary | `GetGameStateRequest` → `GetGameStateResponse` | Get current game state (for testing/observability) |
 | `ListGames` | unary | `ListGamesRequest` → `ListGamesResponse` | List all live game sessions (primary + shadow). Lets agents and tests enumerate concurrent games and learn their game_ids; the dashboard uses it to pick the shadow game it follows (UC-070 BR-005). |
 
-## `joustmania.menu.MenuService` (`proto/menu.proto`, 6 RPCs)
+## `joustmania.menu.MenuService` (`proto/menu.proto`)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
@@ -60,14 +62,14 @@ Part of [services.md §3](../services.md#3-grpc-services). **38 RPCs in 7 servic
 | `ListGameModes` | unary | `ListGameModesRequest` → `ListGameModesResponse` | The playable modes (`game_modes`, menu cycle order, UC-011 BR-001) and the mode to preselect (`default_mode`, `JoustFFA`); the dashboard builds its mode selector from it (UC-011 BR-002) |
 | `GetMenuStatus` | unary | `GetMenuStatusRequest` → `GetMenuStatusResponse` | Read-only menu snapshot for the operator pad: menu state, `lifecycle_live`, `lifecycle_generation` (the `force_start` `stale` check, UC-015 A5), selection, controller counts, admin serial, agent switch, level, saved level and backend, and the lobby settings; read from menu memory and the in-process flag clients, never the HTTP flag writer (services.md §3.1) |
 
-## `joustmania.psmove_hid.PairingService` (`proto/psmove_hid.proto`, 2 RPCs)
+## `joustmania.psmove_hid.PairingService` (`proto/psmove_hid.proto`)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|
 | `GetUSBControllers` | unary | `GetUSBControllersRequest` → `GetUSBControllersResponse` | List USB-attached controllers: device path, serial and USB product id (`product_id`, `0x03D5` / `0x0C5E`, for the BlueZ device record of UC-001 BR-008) |
 | `PairController` | unary | `PairControllerRequest` → `PairControllerResponse` | Write the host adapter address into a controller |
 
-## `joustmania.psmove_hid.ControllerIOService` (`proto/psmove_hid.proto`, 5 RPCs)
+## `joustmania.psmove_hid.ControllerIOService` (`proto/psmove_hid.proto`)
 
 | RPC | Kind | Request → Response | Description |
 |---|---|---|---|

@@ -477,6 +477,9 @@ do_upgrade() {
     if ! git diff --quiet "$prev_ref" "$commit" -- scripts/setup/joustmania.service scripts/setup/joustmania-led.sh; then
         say "unit file or LED helper changed: run sudo $JOUSTMANIA_DIR/scripts/setup/install_autostart.sh"
     fi
+    local hint
+    hint="$(joustmania_hotspot_hint "$JOUSTMANIA_DIR")"
+    [[ -z "$hint" ]] || say "$hint"
     local apply_rc=0
     apply || apply_rc=$?
     if ((apply_rc == 0)); then
@@ -614,11 +617,15 @@ do_rollback() {
     missing="$(missing_images $T_IMGS)"
     [[ -z "$missing" ]] || die "previous images not on the Pi:$missing; nothing changed"
     say "rolling back to $T_REF${T_BRANCH:+ (branch $T_BRANCH)}"
-    local rc=0 running
+    local rc=0 running hint
     running="$(git rev-parse HEAD)"
     roll_back_to_previous || rc=$?
     case "$rc" in
-        0) say "rolled back to $T_REF" ;;
+        0)
+            say "rolled back to $T_REF"
+            hint="$(joustmania_hotspot_hint "$JOUSTMANIA_DIR")"
+            [[ -z "$hint" ]] || say "$hint"
+            ;;
         2) die "rollback to $T_REF not applied; nothing changed: $running still runs" ;;
         3) die "rollback to $T_REF is checked out, but its start was refused by systemd (start-limit-hit); recover with: $RECOVER_CMD (or re-run --rollback, which finishes on $T_REF)" ;;
         *) die "rollback to $T_REF failed or did not come up healthy (state failed)" ;;

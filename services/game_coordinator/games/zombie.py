@@ -180,6 +180,10 @@ class ZombieGame(BaseGameMode):
         """Return game mode identifier."""
         return "Zombie"
 
+    def get_instruction_clip(self) -> Sound | None:
+        """Spoken instructions before the countdown (UC-023 A2, UC-020 A5)."""
+        return Sound.MENU_VOX_ZOMBIE_INSTRUCTIONS
+
     async def _initialize_players_impl(self, controllers: list):
         """
         Initialize players and assign initial zombies.
@@ -746,28 +750,17 @@ class ZombieGame(BaseGameMode):
                 await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
                 # Initialization phase
-                with tracer.start_as_current_span("initialization_phase"):
+                with tracer.start_as_current_span("initialization_phase") as init_span:
                     await self._initialize_players()
                     if len(self.players) < 2:
                         raise ValueError(f"Need at least 2 players, got {len(self.players)}")
                     # Before any task is created: tasks copy the context (#1273).
                     self._set_flag_eval_context()
                     self._create_player_spans(None)
-
-                # The intro colours go over the stream, so it opens first; a drain
-                # discards the intro's frames and keeps disconnects (UC-023 step 1).
-                await self._start_gameplay_stream()
-                self._start_early_stream_drain()
-                phases_completed = False
-                try:
-                    for phase in self._get_additional_phases():
-                        if not self.running:
-                            break
-                        with tracer.start_as_current_span(phase.name):
-                            await phase.execute()
-                    phases_completed = True
-                finally:
-                    await self._stop_early_stream_drain(reopen=phases_completed)
+                    # The intro colours go over the stream, so it opens first; a drain
+                    # discards the intro's frames and keeps disconnects (UC-023 step 1).
+                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
+                    await self._run_streamed_intro_and_instructions(init_span)
 
                 if not self.running:
                     return

@@ -94,7 +94,7 @@ def test_rpc_table_merges_descriptions_and_escapes_pipes(tmp_repo):
     notes["demo.v1.Demo/Unary"] = "a | b"
     (tmp_repo / "docs/specs/notes/grpc-rpcs.yaml").write_text(json.dumps(notes))
     text = g.grpc_rpcs()
-    assert "**4 RPCs in 1 services.**" in text
+    assert "## `demo.v1.Demo` (`proto/demo.proto`)" in text
     assert "| `Unary` | unary | `AReq` → `AResp` | a \\| b |" in text
 
 
@@ -133,7 +133,11 @@ def test_metric_catalog_has_one_row_per_python_metric():
     text = g.telemetry_metric_catalog()
     rows = [line for line in text.splitlines() if line.startswith("| `")]
     assert len(rows) == len(ti.python_metrics())
-    assert f"**{len(ti.python_metrics())} unique Python metric names**" in text
+    assert "unique Python metric names" not in text  # totals moved to --counts (#2152)
+    assert (
+        f"**{len(ti.python_metrics())} unique Python metric names**"
+        in g.render_counts()
+    )
 
 
 def _flags(**flags):
@@ -155,9 +159,13 @@ def test_flag_counts_and_ci_diff(tmp_repo):
     )
     (flagd / "ci/agent.json").write_text(_flags(c=_flag("x", x="s"), d=_flag("x", x=1)))
 
-    counts = g.flag_counts()
-    assert "**3 flags in 2 flag sets**" in counts
-    assert counts.index("| `agent` |") < counts.index("| `game` |")
+    sets = g.flag_counts()
+    assert sets.index("| `agent` |") < sets.index("| `game` |")
+    assert g.flag_set_counts() == [
+        "- **3 flags in 2 flag sets** (`ci/` copies not counted).",
+        "  - `agent`: 1",
+        "  - `game`: 2",
+    ]
 
     diff = g.flags_ci_diff()
     assert "| game.json | `a` | `on` = true | `off` = false |" in diff
@@ -199,3 +207,75 @@ def test_label_values_for_unknown_label_fail(tmp_repo, monkeypatch):
     )
     with pytest.raises(g.SpecSourceError, match="no label 'nope'"):
         g.telemetry_metric_catalog()
+
+
+# --------------------------------------------------------------------------- #
+# #2152: no count-style aggregate in a committed file. Two PRs that each add a
+# flag (an RPC, a metric) to different places must not touch the same line, or
+# the merge queue ejects the later one on a conflict.
+# --------------------------------------------------------------------------- #
+
+
+def test_adding_a_flag_to_an_existing_set_leaves_flag_counts_md_unchanged(tmp_repo):
+    flagd = tmp_repo / "services/flagd"
+    (flagd / "game.json").write_text(_flags(a=_flag("x", x=1)))
+    (flagd / "agent.json").write_text(_flags(c=_flag("x", x=1)))
+    before = g.flag_counts()
+
+    (flagd / "game.json").write_text(_flags(a=_flag("x", x=1), b=_flag("x", x=2)))
+    assert g.flag_counts() == before
+
+
+def _changed_lines(before: str, after: str) -> list[str]:
+    import difflib
+
+    return [
+        line
+        for line in difflib.ndiff(before.splitlines(), after.splitlines())
+        if line[:2] in ("- ", "+ ")
+    ]
+
+
+def test_adding_an_rpc_changes_only_its_own_row(tmp_repo):
+    names = ("Unary", "Server", "Client", "Bidi")
+    notes = {f"demo.v1.Demo/{r}": f"does {r}" for r in names}
+    (tmp_repo / "proto/demo.proto").write_text(PROTO)
+    (tmp_repo / "docs/specs/notes/grpc-rpcs.yaml").write_text(json.dumps(notes))
+    before = g.grpc_rpcs()
+
+    (tmp_repo / "proto/demo.proto").write_text(
+        PROTO.replace(
+            "  // comment\n", "  // comment\n  rpc Added(AReq) returns (AResp);\n"
+        )
+    )
+    notes["demo.v1.Demo/Added"] = "new"
+    (tmp_repo / "docs/specs/notes/grpc-rpcs.yaml").write_text(json.dumps(notes))
+    assert _changed_lines(before, g.grpc_rpcs()) == [
+        "+ | `Added` | unary | `AReq` → `AResp` | new |"
+    ]
+
+
+def test_counts_print_and_are_never_written(tmp_repo, monkeypatch, capsys):
+    monkeypatch.setattr(g, "metric_counts", lambda: ["- metrics"])
+    (tmp_repo / "proto/demo.proto").write_text(PROTO)
+    (tmp_repo / "services/flagd/game.json").write_text(_flags(a=_flag("x", x=1)))
+
+    assert g.main(["--counts"]) == 0
+    out = capsys.readouterr().out
+    assert "**1 flags in 1 flag sets**" in out
+    assert "**4 RPCs in 1 services.**" in out
+    assert "  - `demo.v1.Demo`: 4" in out
+    assert not list((tmp_repo / "docs/specs/generated").iterdir())
+
+
+def test_ci_diff_has_no_placeholder_rows(tmp_repo):
+    """An empty section is an empty table, not a shared `(none)` line two PRs would both replace."""
+    (tmp_repo / "services/flagd/game.json").write_text(_flags(a=_flag("x", x=1)))
+    (tmp_repo / "services/flagd/ci/game.json").write_text(_flags(a=_flag("x", x=1)))
+    assert "(none)" not in g.flags_ci_diff()
+
+
+def test_check_and_counts_are_mutually_exclusive(capsys):
+    with pytest.raises(SystemExit):
+        g.main(["--check", "--counts"])
+    assert "not allowed with" in capsys.readouterr().err

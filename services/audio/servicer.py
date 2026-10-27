@@ -22,6 +22,10 @@ from services.audio.music_player import DummyMusicPlayer, MusicPlayer
 
 logger = logging.getLogger(__name__)
 
+# The packaged asset tree: the effect / voice registry and the voice manifest
+# always come from here (UC-031 BR-003), not from AUDIO_ASSETS_DIR.
+_PACKAGED_ASSETS = Path(__file__).parent / "assets"
+
 
 class SoundChannel:
     """
@@ -33,8 +37,11 @@ class SoundChannel:
     def __init__(self, channel_id: int):
         """Initialize a sound channel."""
         self.channel_id = channel_id
+        # The current playback's flag. Each play gets a fresh event, so a stopped
+        # clip's thread can never keep the next clip on this channel alive or end it.
         self._playing = threading.Event()
         self.priority = 0
+        self.group = ""  # PlaySoundRequest.group of the current clip ("" = none)
         self._lock = threading.Lock()
 
     @property
@@ -42,7 +49,7 @@ class SoundChannel:
         """Thread-safe check if channel is currently playing."""
         return self._playing.is_set()
 
-    def play(self, file_path: str, volume: float = 1.0, priority: int = 2) -> bool:
+    def play(self, file_path: str, volume: float = 1.0, priority: int = 2, group: str = "") -> bool:
         """
         Play a sound on this channel.
 
@@ -50,6 +57,7 @@ class SoundChannel:
             file_path: Path to the audio file
             volume: Volume level (0.0 to 1.0)
             priority: Priority level for channel selection
+            group: Clip group (``PlaySoundRequest.group``); "" for none
 
         Returns:
             True if sound started successfully
@@ -64,7 +72,10 @@ class SoundChannel:
 
                 # Start playback in a separate thread
                 self.priority = priority
-                self._playing.set()
+                self.group = group
+                playing = threading.Event()
+                playing.set()
+                self._playing = playing
 
                 # Clamp volume to valid range
                 volume = max(0.0, min(1.0, volume))
@@ -72,14 +83,14 @@ class SoundChannel:
                 def play_thread():
                     try:
                         if volume < 1.0:
-                            self._play_with_volume(file_path, volume, file_info.duration)
+                            self._play_with_volume(file_path, volume, file_info.duration, playing)
                         else:
-                            self._play_full_volume(file_path, file_info.duration)
+                            self._play_full_volume(file_path, file_info.duration, playing)
                     except Exception as e:
                         logger.warning(f"Playback error on channel {self.channel_id}: {e}")
                         metrics.audio_playback_errors_total.inc()
                     finally:
-                        self._playing.clear()
+                        playing.clear()
 
                 threading.Thread(target=play_thread, daemon=True).start()
                 return True
@@ -89,14 +100,16 @@ class SoundChannel:
                 self._playing.clear()
                 return False
 
-    def _play_with_volume(self, file_path: str, volume: float, duration: float):
+    def _play_with_volume(self, file_path: str, volume: float, duration: float, playing: threading.Event | None = None):
         """Play a sound with volume scaling by decoding and resampling.
 
         Args:
             file_path: Path to the audio file
             volume: Volume level (0.0 to 1.0, exclusive of 1.0)
             duration: Duration in seconds from file info
+            playing: This playback's flag (defaults to the channel's current one)
         """
+        playing = playing if playing is not None else self._playing
         decoded = miniaudio.decode_file(file_path)
         samples = np.frombuffer(decoded.samples, dtype=np.int16)  # 16-bit signed
 
@@ -113,7 +126,7 @@ class SoundChannel:
         def scaled_stream():
             idx = 0
             required_frames = yield b""  # Priming yield
-            while idx < len(scaled_data) and self._playing.is_set():
+            while idx < len(scaled_data) and playing.is_set():
                 bytes_needed = required_frames * bytes_per_frame
                 end = min(idx + bytes_needed, len(scaled_data))
                 required_frames = yield scaled_data[idx:end]
@@ -128,31 +141,34 @@ class SoundChannel:
         next(stream)  # Prime the generator for send()
         with device:
             device.start(stream)
-            self._wait_for_playback(duration)
+            self._wait_for_playback(duration, playing)
 
-    def _play_full_volume(self, file_path: str, duration: float):
+    def _play_full_volume(self, file_path: str, duration: float, playing: threading.Event | None = None):
         """Play a sound at full volume using streaming for efficiency.
 
         Args:
             file_path: Path to the audio file
             duration: Duration in seconds from file info
+            playing: This playback's flag (defaults to the channel's current one)
         """
         stream = miniaudio.stream_file(file_path)
         device = miniaudio.PlaybackDevice()
         with device:
             device.start(stream)
-            self._wait_for_playback(duration)
+            self._wait_for_playback(duration, playing)
 
-    def _wait_for_playback(self, duration: float):
+    def _wait_for_playback(self, duration: float, playing: threading.Event | None = None):
         """Wait for playback to complete or be stopped.
 
         Args:
             duration: Expected duration in seconds
+            playing: This playback's flag (defaults to the channel's current one)
         """
         import time
 
+        playing = playing if playing is not None else self._playing
         elapsed = 0.0
-        while self._playing.is_set() and elapsed < duration + 0.5:
+        while playing.is_set() and elapsed < duration + 0.5:
             time.sleep(0.05)
             elapsed += 0.05
 
@@ -201,6 +217,8 @@ class AudioManager:
         self.master_volume: float = 1.0  # relative level set by SetVolume (game ramp, agent override)
         self.operator_gain: float = 1.0  # operator's audio_volume.master, multiplies master_volume (#2050)
         self.music_lock = threading.Lock()
+        # Makes "stop the group's clip, then take a channel" one step (PlaySoundRequest.group).
+        self._channels_lock = threading.Lock()
         self.event_loop: asyncio.AbstractEventLoop | None = None  # Set from async context
 
         logger.info(f"AudioManager initialized (assets_dir={self.assets_dir}, silent={self.silent})")
@@ -282,7 +300,7 @@ class AudioManager:
 
         return None
 
-    def play_sound(self, file_path: str, volume: float = 1.0, priority: int = 2) -> bool:
+    def play_sound(self, file_path: str, volume: float = 1.0, priority: int = 2, group: str = "") -> bool:
         """
         Play a sound effect (one-shot).
 
@@ -290,6 +308,8 @@ class AudioManager:
             file_path: Relative path to audio file (e.g., "Joust/sounds/beep.ogg")
             volume: Volume level (0.0 to 1.0)
             priority: Priority level (0=LOW, 3=CRITICAL)
+            group: When not empty, a clip of the same group still playing is
+                stopped first, so the latest clip of a group wins.
 
         Returns:
             True if sound played successfully
@@ -312,11 +332,17 @@ class AudioManager:
                 metrics.audio_sounds_played_total.labels(result="file_not_found").inc()
                 return False
 
-            # Find available channel (or force if critical priority)
-            channel = self._find_channel(force_priority=(priority == 3), priority=priority)
+            with self._channels_lock:
+                if group:
+                    self._stop_channels(group)
+                # Find available channel (or force if critical priority)
+                channel = self._find_channel(force_priority=(priority == 3), priority=priority)
+                started = False
+                if channel:
+                    adjusted_volume = volume * effective
+                    started = channel.play(full_path, volume=adjusted_volume, priority=priority, group=group)
             if channel:
-                adjusted_volume = volume * effective
-                if channel.play(full_path, volume=adjusted_volume, priority=priority):
+                if started:
                     logger.debug(
                         f"Playing sound: {file_path} (channel={channel.channel_id}, volume={adjusted_volume:.2f})"
                     )
@@ -336,20 +362,30 @@ class AudioManager:
             metrics.audio_sounds_played_total.labels(result="error").inc()
             return False
 
-    def stop_sounds(self) -> int:
-        """Stop every playing sound effect (music keeps playing).
+    def _stop_channels(self, group: str = "") -> int:
+        """Stop the playing channels of ``group`` (every playing channel when empty)."""
+        stopped = 0
+        for channel in self.channels:
+            if channel.is_playing and (not group or channel.group == group):
+                channel.stop()
+                stopped += 1
+        return stopped
+
+    def stop_sounds(self, group: str = "") -> int:
+        """Stop the playing sound effects (music keeps playing).
+
+        Args:
+            group: Empty stops every effect (UC-020 A5); a name stops only the
+                clips played with that ``PlaySoundRequest.group``.
 
         Returns:
             Number of channels that were playing and are now stopped.
         """
-        stopped = 0
-        for channel in self.channels:
-            if channel.is_playing:
-                channel.stop()
-                stopped += 1
+        with self._channels_lock:
+            stopped = self._stop_channels(group)
         if stopped:
             self._update_channel_gauge()
-            logger.info(f"Stopped {stopped} playing sound effect(s)")
+            logger.info(f"Stopped {stopped} playing sound effect(s)" + (f" of group {group!r}" if group else ""))
         return stopped
 
     def sound_duration(self, file_path: str) -> float:
@@ -510,10 +546,14 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         # If flagd is unavailable, default to audio enabled (hardware initialized).
         self.audio_enabled = self._load_play_audio_flag()
         self.audio_manager = AudioManager(silent=not self.audio_enabled)
-        self.menu_voice = self._load_menu_voice_flag()
-        self._refresh_operator_gain()
+        # Voice profiles and partners from the voice manifest (UC-031 BR-007, #2107).
+        self.voice_profiles = sound_catalog.load_voice_profiles(_PACKAGED_ASSETS)
+        self._rejected_voice: str | None = None
         self.sound_registry: dict[str, tuple[str, str]] = {}  # sound_name -> (type, base_dir)
         self._build_sound_registry()
+        # Setting menu_voice builds the id -> path table for that voice (see the property).
+        self.menu_voice = self._load_menu_voice_flag()
+        self._refresh_operator_gain()
         self._register_flag_change_handler()
         logger.info("AudioServiceServicer initialized (audio_enabled=%s)", self.audio_enabled)
 
@@ -535,26 +575,66 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             logger.debug("Could not load play_audio flag from flagd: %s, defaulting to enabled", e)
             return True
 
-    @staticmethod
-    def _load_menu_voice_flag() -> str:
+    @property
+    def menu_voice(self) -> str:
+        """The selected voice profile (flag ``menu_voice``)."""
+        return self._voice_state[0]
+
+    @menu_voice.setter
+    def menu_voice(self, voice: str) -> None:
+        """Select a voice and rebuild its resolution table (BR-007).
+
+        Voice and table are swapped as one tuple, so a PlaySound on the event
+        loop never sees the new voice with the old table, or the reverse.
+        """
+        table = sound_catalog.resolution_table(self.sound_registry, voice, self.voice_profiles, _PACKAGED_ASSETS)
+        self._voice_state = (voice, table)
+
+    def _load_menu_voice_flag(self) -> str:
         """Load menu_voice flag from flagd at startup.
 
-        Returns "ivy" if flagd is unavailable or flag is not set.
+        Returns the flag default (ivy) if flagd is unavailable, or when the flag
+        names a profile the voice manifest does not list (UC-031 A4).
         """
+        default = sound_catalog.DEFAULT_VOICE
         try:
             from lib.feature_flags import get_flag_client, init_flag_domain
 
             init_flag_domain("user")
             client = get_flag_client("user")
-            voice = client.get_string_value("menu_voice", "ivy")
-            if voice in ("aaron", "ivy"):
+            voice = client.get_string_value("menu_voice", default)
+            if voice in self.voice_profiles.names:
                 logger.info("menu_voice flag loaded at startup: %s", voice)
                 return voice
-            logger.warning("Invalid menu_voice value '%s', defaulting to ivy", voice)
-            return "ivy"
+            logger.warning(
+                "Unknown menu_voice value '%s' (profiles: %s), using %s",
+                voice,
+                ", ".join(self.voice_profiles.names),
+                default,
+            )
+            self._rejected_voice = voice
+            return default
         except Exception as e:
-            logger.debug("Could not load menu_voice flag from flagd: %s, defaulting to ivy", e)
-            return "ivy"
+            logger.debug("Could not load menu_voice flag from flagd: %s, defaulting to %s", e, default)
+            return default
+
+    def _apply_menu_voice(self, new_voice: str) -> None:
+        """Switch to a profile the manifest lists; an unknown value keeps the current voice (UC-031 A4)."""
+        if new_voice == self.menu_voice:
+            return
+        if new_voice not in self.voice_profiles.names:
+            if new_voice != self._rejected_voice:  # warn once per value, not on every flag event
+                logger.warning(
+                    "Unknown menu_voice value '%s' (profiles: %s), keeping %s",
+                    new_voice,
+                    ", ".join(self.voice_profiles.names),
+                    self.menu_voice,
+                )
+                self._rejected_voice = new_voice
+            return
+        logger.info("menu_voice flag changed: %s -> %s", self.menu_voice, new_voice)
+        self.menu_voice = new_voice
+        self._rejected_voice = None
 
     def _register_flag_change_handler(self):
         """Register event handler for reactive flag updates from flagd."""
@@ -587,10 +667,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             self._refresh_operator_gain()
 
             # Check menu_voice
-            new_voice = client.get_string_value("menu_voice", "ivy")
-            if new_voice in ("aaron", "ivy") and new_voice != self.menu_voice:
-                logger.info("menu_voice flag changed: %s -> %s", self.menu_voice, new_voice)
-                self.menu_voice = new_voice
+            self._apply_menu_voice(client.get_string_value("menu_voice", sound_catalog.DEFAULT_VOICE))
 
         except Exception as e:
             logger.warning("Error handling flag change: %s", e)
@@ -676,13 +753,14 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
 
         Aliases (``sound_catalog.SOUND_ALIASES``, e.g. ``agent_cue``) are resolved
         at lookup time, so they always follow the file they name.
-        """
-        base_assets_dir = Path(__file__).parent / "assets"
 
+        Voice lines are the union of every profile's directory (UC-031 BR-007),
+        so a line only one profile has (generated-only, or ``ivy`` only) exists.
+        """
         for base_dir in sound_catalog.SOUND_BASE_DIRS:
-            assets_dir = base_assets_dir / base_dir
-            # Scan vox directory (use aaron as reference - all voices should have same files)
-            self._scan_directory_for_sounds(assets_dir / "vox" / sound_catalog.REFERENCE_VOICE, "vox", base_dir)
+            assets_dir = _PACKAGED_ASSETS / base_dir
+            for voice in self.voice_profiles.names:
+                self._scan_directory_for_sounds(assets_dir / "vox" / voice, "vox", base_dir)
             # Scan sounds directory
             self._scan_directory_for_sounds(assets_dir / "sounds", "sound", base_dir)
 
@@ -750,7 +828,17 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         Returns:
             Resolved path to the sound file
         """
-        resolved = sound_catalog.relative_path(self.sound_registry, lookup_name, voice=self.menu_voice)
+        voice, table = self._voice_state
+        aliased = sound_catalog.alias_path(lookup_name)
+        if aliased is not None:
+            return aliased
+        resolved = table.get(lookup_name) or table.get(lookup_name.lower())
+        if resolved is not None:
+            return resolved
+        # Not in the precomputed table (an id registered after the table was built).
+        resolved = sound_catalog.relative_path(
+            self.sound_registry, lookup_name, voice=voice, profiles=self.voice_profiles, assets_dir=_PACKAGED_ASSETS
+        )
         if resolved is not None:
             return resolved
         # Unknown sound id: a caller asked for something that will most likely
@@ -780,7 +868,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
         if len(parts) != 2:
             return sound_input
         remainder = parts[1]
-        if remainder.startswith("aaron/") or remainder.startswith("ivy/"):
+        if "/" in remainder and remainder.split("/", 1)[0] in self.voice_profiles.names:
             return sound_input
         return f"{parts[0]}/vox/{self.menu_voice}/{remainder}"
 
@@ -809,7 +897,7 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             span.set_attribute("audio.silent", True)
 
         success = self.audio_manager.play_sound(
-            file_path=resolved_path, volume=request.volume or 1.0, priority=request.priority
+            file_path=resolved_path, volume=request.volume or 1.0, priority=request.priority, group=request.group
         )
         duration = self.audio_manager.sound_duration(resolved_path) if success else 0.0
         span.set_attribute("audio.duration_seconds", duration)
@@ -847,11 +935,12 @@ class AudioServiceServicer(audio_pb2_grpc.AudioServiceServicer):
             return audio_pb2.PlayMusicResponse(track_id=track_id, success=True, error="")
         return audio_pb2.PlayMusicResponse(track_id="", success=False, error="Failed to play music")
 
-    async def StopSound(self, _request, _context):
-        """Stop every playing sound effect (UC-020 A5 force-end, #1586)."""
+    async def StopSound(self, request, _context):
+        """Stop playing sound effects: all of them when ``group`` is empty (UC-020 A5 force-end, #1586),
+        else only the clips of that group (#2107)."""
         span = trace.get_current_span()
         try:
-            stopped = self.audio_manager.stop_sounds()
+            stopped = self.audio_manager.stop_sounds(group=request.group)
         except Exception as e:
             logger.error(f"Error stopping sounds: {e}", exc_info=True)
             return audio_pb2.StopSoundResponse(success=False, error="Failed to stop sounds")

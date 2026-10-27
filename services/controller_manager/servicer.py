@@ -401,6 +401,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
     ) -> controller_manager_pb2.GameplayDataUpdate:
         """Build a GameplayDataUpdate message from current controller state.
 
+        UC-030 BR-002: each frame carries the latest sample per controller, not
+        the maximum since the previous frame.
+
         Args:
             current_filter: Set of serial numbers to include, or None for all.
             subscriber_id: The stream building this frame; a pattern controller's

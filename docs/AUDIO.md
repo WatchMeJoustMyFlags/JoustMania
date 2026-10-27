@@ -74,5 +74,10 @@ and the files together. `scripts/tools/gen-voice.sh --only <id> --dry-run` shows
   sources are listed in `services/audio/assets/audio_credits.txt`.
 - Scope: every voice line the code plays (Menu, Joust, Zombie), the #2106 pad lines and the mode instructions of the
   FR-014 backlog (#2151). Recordings no caller plays are
-  not catalogued (`NOT_CATALOGED` in `services/audio/tests/test_voice_catalog.py`); a new caller of one adds its line. The audio service does not play the generated profiles yet; selecting them
-  with `menu_voice` and the partner fallback (`gen_male` to `aaron`, `gen_female` to `ivy`) come with #2107 part 2.
+  not catalogued (`NOT_CATALOGED` in `services/audio/tests/test_voice_catalog.py`); a new caller of one adds its line.
+  The recordings no code path played at all (20 lines in `aaron` and `ivy`: unused Menu lines, Commander `red shift`,
+  Fight Club `defender_winning`) were deleted (#2166); `DELETED_RECORDINGS` in the same test keeps them gone.
+- Playback: `menu_voice` selects any profile of the manifest (`aaron`, `ivy`, `gen_male`, `gen_female`; default `ivy`).
+  A line the selected profile lacks plays from its partner (`gen_male` <-> `aaron`, `gen_female` <-> `ivy`), so with
+  `ivy` the pad labels play in the `gen_female` voice before Ivy's recorded value (UC-031 BR-007, #2107 part 2).
+  Check an id for one voice with `python -m services.audio.sound_catalog --voice gen_female label_sensitivity`.
