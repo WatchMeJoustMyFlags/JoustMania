@@ -188,6 +188,55 @@ shield_hold_activations_total = Counter(
     ["mode", "game_kind", "outcome"],
 )
 
+# Hold-mode shield state for the agent (#2096, UC-040 A36, A37; UC-042 BR-007). Set at
+# every hold transition and with the 2 s energy keyframe, removed at game end.
+# Per player (serial, game_id), like game_player_alive:
+player_shield_energy_seconds = Gauge(
+    "game_player_shield_energy_seconds",
+    "Hold-mode shield energy of a player (seconds)",
+    ["serial", "game_id"],
+)
+player_shield_budget_remaining_seconds = Gauge(
+    "game_player_shield_budget_remaining_seconds",
+    "Hold-mode shield budget a player has left in this game (seconds)",
+    ["serial", "game_id"],
+)
+player_shield_active = Gauge(
+    "game_player_shield_active",
+    "Whether a player's hold-mode shield is active (1) or not (0)",
+    ["serial", "game_id"],
+)
+# stat: granted_seconds, recharged_seconds, used_seconds, activations, empties (this game).
+PLAYER_SHIELD_STATS = ("granted_seconds", "recharged_seconds", "used_seconds", "activations", "empties")
+player_shield_stats = Gauge(
+    "game_player_shield_stats",
+    "Hold-mode shield statistics of a player in this game (seconds or counts by stat)",
+    ["serial", "game_id", "stat"],
+)
+# Per game: the shield activation mode the game latched (instant, trigger or hold), value 1,
+# and in a hold game every latched hold value (setting = the flag key).
+shield_activation_mode = Gauge(
+    "game_shield_activation_mode",
+    "Shield activation mode a live game latched (always 1)",
+    ["mode", "game_kind", "game_id", "experiment_id", "arm"],
+)
+shield_hold_setting = Gauge(
+    "game_shield_hold_setting",
+    "Latched hold-mode value of a live game (setting = flag key)",
+    ["setting", "game_kind", "game_id", "experiment_id", "arm"],
+)
+
+
+def clear_player_shield_gauges(serial: str, game_id: str) -> None:
+    """Remove one player's hold-mode shield gauges (idempotent)."""
+    for gauge in (player_shield_energy_seconds, player_shield_budget_remaining_seconds, player_shield_active):
+        with suppress(KeyError, ValueError):
+            gauge.remove(serial, game_id)
+    for total in PLAYER_SHIELD_STATS:
+        with suppress(KeyError, ValueError):
+            player_shield_stats.remove(serial, game_id, total)
+
+
 # System metrics
 process_cpu_seconds_total = Counter("process_cpu_seconds_total", "Total user and system CPU time spent in seconds")
 
@@ -462,6 +511,8 @@ def clear_player_analytics(serial: str, game_id: str = "") -> None:
 
         with suppress(KeyError, ValueError):
             player_elimination_order.remove(serial, game_id)
+
+        clear_player_shield_gauges(serial, game_id)
 
 
 def clear_game_state_gauges(game_kind: str, game_id: str) -> None:
