@@ -13,7 +13,7 @@
     "decision.capture_content": "on",
     "decision.min_interval_ms": "default",
     "decision.claude.model": "haiku",
-    "decision.claude.timeout_ms": "default",
+    "decision.claude.timeout_ms": "patient",
     "decision.jev.timeout_ms": "default",
     "llm.eligible_game_kinds": "real_only",
     "inference.backend": "claude"
