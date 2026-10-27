@@ -269,6 +269,36 @@ class ShieldHoldParams:
     min_burst: float
 
 
+# Hold feedback cue flags (flags.md §4, UC-040 BR-026): key -> (default, min, max), the
+# registry bounds. Latched with the hold values and shipped to the controller manager.
+SHIELD_HOLD_CUE_FLAGS: dict[str, tuple[float, float, float]] = {
+    "shield.charge_rumble_intensity": (255.0, 0.0, 255.0),
+    "shield.charge_rumble_pulse_ms": (150.0, 50.0, 500.0),
+    "shield.ending_rumble_seconds": (1.0, 0.0, 3.0),
+    "shield.hold_rumble_intensity": (70.0, 0.0, 150.0),
+    "shield.empty_pulse_ms": (400.0, 100.0, 800.0),
+}
+# shield_up plays on an activation at most this often per player (UC-040 BR-026).
+SHIELD_HOLD_SOUND_MIN_INTERVAL_SECONDS = 2.0
+# Cue of a hold command (proto ShieldHoldCue); a later send keeps the strongest pending one.
+HOLD_CUE_NONE = 0
+HOLD_CUE_FULL = 1
+HOLD_CUE_TOP_UP = 2
+HOLD_CUE_EMPTY = 3
+_HOLD_CUE_PRIORITY = {HOLD_CUE_NONE: 0, HOLD_CUE_TOP_UP: 1, HOLD_CUE_FULL: 2, HOLD_CUE_EMPTY: 3}
+
+
+@dataclass(frozen=True)
+class ShieldHoldCues:
+    """The cue values a hold game latched with its hold values (UC-040 BR-026, BR-027)."""
+
+    rumble_intensity: int = 255
+    pulse_ms: int = 150
+    ending_lead_ms: int = 1000
+    hold_rumble_intensity: int = 70
+    empty_pulse_ms: int = 400
+
+
 # Agent shield limits per player per game (#2044, UC-040 A34, BR-022): the
 # coordinator's backstop. Operator flags in the `agent` set, read per grant.
 DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME = 3
@@ -1025,6 +1055,17 @@ class BaseGameMode(ABC):
         # The mode a non-hold game latched (instant or trigger): a mid-game `hold`
         # read maps back to it, so a running game keeps its mode (UC-040 BR-027).
         self._shield_mode_at_start: str = SHIELD_ACTIVATION_INSTANT
+        # Hold feedback (#2096, UC-040 BR-026): the cue values latched with the hold values,
+        # and one ordered outbound task per game. The frame path only marks a player
+        # (serial -> strongest pending cue); the task sends the player's state when it runs.
+        self._shield_hold_cues: ShieldHoldCues | None = None
+        self._hold_feedback_pending: dict[str, int] = {}
+        self._hold_feedback_wakeup: asyncio.Event | None = None
+        self._hold_feedback_task: asyncio.Task | None = None
+        # SHIELD_HOLD running on the controller: serial -> hold_started_at of the activation sent.
+        self._hold_layer_sent: dict[str, float] = {}
+        self._hold_commands_sent: set[str] = set()  # any hold command sent (ended at game end)
+        self._hold_sound_at: dict[str, float] = {}
 
         # Settings - sensitivity is now passed via StartGameConfig.
         #
@@ -2121,6 +2162,7 @@ class BaseGameMode(ABC):
             # UC-040 BR-027: hold is latched here at the latest; the recharge starts now.
             self._latch_shield_hold()
             self._start_shield_hold_clock(time.time())
+            self._queue_hold_feedback_all()  # UC-040 BR-026: every player's energy layer
 
             # Track current alive set for detecting changes
             last_alive_serials = {p.serial for p in self.players.values() if p.alive}
@@ -3096,7 +3138,10 @@ class BaseGameMode(ABC):
         if self._shield_hold is not None:
             for player in self.players.values():
                 self._drop_shield_hold(player, HOLD_OUTCOME_GAME_END, now)
+        # UC-040 BR-026: no hold command after this point; SHIELD 0 below ends the hold layers too.
+        hold_serials = await self._stop_hold_feedback()
         running = [serial for serial, until in self._shield_feedback_until.items() if until > now]
+        running += [serial for serial in hold_serials if serial not in running]
         self._shield_feedback_until.clear()
         if not running or not self.gameplay_stream:
             return
@@ -3148,8 +3193,10 @@ class BaseGameMode(ABC):
         )
         return resolve_charge_expiry(value)
 
-    async def _write_shield_effect(self, player: "Player", effect_name: str, duration_ms: int) -> None:
-        """Best-effort ``GameEffectCommand`` for a shield-charge effect on the player's controller."""
+    async def _write_shield_effect(
+        self, player: "Player", effect_name: str, duration_ms: int, shield_hold=None
+    ) -> None:
+        """Best-effort ``GameEffectCommand`` for a shield-charge (or hold, #2096) effect on the player's controller."""
         if not self.gameplay_stream:
             return
         try:
@@ -3164,6 +3211,7 @@ class BaseGameMode(ABC):
                         duration_ms=duration_ms,
                         trace_parent=trace_parent,
                         trace_state=trace_state,
+                        shield_hold=shield_hold,
                     )
                 )
             )
@@ -3332,6 +3380,7 @@ class BaseGameMode(ABC):
         toughness boost is re-sent with the time left; a charge with its layer.
         """
         now = time.time()
+        self._queue_hold_feedback_all()  # UC-040 BR-026: the hold state of every living player
         for serial, player in self.players.items():
             if not player.alive:
                 continue
@@ -3351,6 +3400,7 @@ class BaseGameMode(ABC):
     def _close_shield_charge_spans(self) -> None:
         """End every open ``game.shield_charge`` and ``game.shield_hold`` span (error teardown path); no I/O."""
         now = time.time()
+        self._cancel_hold_feedback()
         for player in self.players.values():
             if player._shield_charge_span is not None:
                 self._clear_shield_charge(player)
@@ -3423,6 +3473,7 @@ class BaseGameMode(ABC):
             recharge=values["shield.recharge_per_second"],
             min_burst=values["shield.min_burst_seconds"],
         )
+        self._shield_hold_cues = self._read_shield_hold_cues()
         initial = min(params.initial, params.cap, params.budget)
         for player in self.players.values():
             player.hold_energy = initial
@@ -3430,6 +3481,33 @@ class BaseGameMode(ABC):
         self._shield_hold = params
         logger.info(f"Shield hold latched for {self.game_id}: {params}")
         return params
+
+    def _read_shield_hold_cues(self) -> ShieldHoldCues:
+        """Read the hold feedback cue values once, with the hold values (UC-040 BR-026, BR-027)."""
+        # Literal flag keys, so the contract scan resolves each read.
+        raw = {
+            "shield.charge_rumble_intensity": read_int_flag(
+                "game", "shield.charge_rumble_intensity", 255, game_id=self.game_id
+            ),
+            "shield.charge_rumble_pulse_ms": read_int_flag(
+                "game", "shield.charge_rumble_pulse_ms", 150, game_id=self.game_id
+            ),
+            "shield.ending_rumble_seconds": read_float_flag(
+                "game", "shield.ending_rumble_seconds", 1.0, game_id=self.game_id
+            ),
+            "shield.hold_rumble_intensity": read_int_flag(
+                "game", "shield.hold_rumble_intensity", 70, game_id=self.game_id
+            ),
+            "shield.empty_pulse_ms": read_int_flag("game", "shield.empty_pulse_ms", 400, game_id=self.game_id),
+        }
+        values = {key: resolve_hold_value(raw[key], *bounds) for key, bounds in SHIELD_HOLD_CUE_FLAGS.items()}
+        return ShieldHoldCues(
+            rumble_intensity=int(values["shield.charge_rumble_intensity"]),
+            pulse_ms=int(values["shield.charge_rumble_pulse_ms"]),
+            ending_lead_ms=int(round(values["shield.ending_rumble_seconds"] * 1000)),
+            hold_rumble_intensity=int(values["shield.hold_rumble_intensity"]),
+            empty_pulse_ms=int(values["shield.empty_pulse_ms"]),
+        )
 
     def _start_shield_hold_clock(self, now: float) -> None:
         """Start the recharge clock of every pool at the start of the game loop (UC-040 A38)."""
@@ -3505,6 +3583,7 @@ class BaseGameMode(ABC):
         player.hold_until = now + usable
         player.hold_last_pressed_at = now
         player.hold_min_burst_applied = False
+        self._queue_hold_feedback(player)  # UC-040 BR-026: SHIELD_HOLD, sent by the outbound task
         if player.span:
             with contextlib.suppress(Exception):
                 player._shield_hold_span = tracer.start_span(
@@ -3544,6 +3623,8 @@ class BaseGameMode(ABC):
         player.hold_usable_start = 0.0
         if outcome in (HOLD_OUTCOME_RELEASED, HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED):
             player.hold_prime_cap = True  # UC-030 BR-009
+            # UC-040 BR-026: SHIELD_HOLD 0 and the idle energy, with the empty pulse when it ran out.
+            self._queue_hold_feedback(player, HOLD_CUE_NONE if outcome == HOLD_OUTCOME_RELEASED else HOLD_CUE_EMPTY)
         span, player._shield_hold_span = player._shield_hold_span, None
         if span is not None:
             with contextlib.suppress(Exception):
@@ -3590,6 +3671,140 @@ class BaseGameMode(ABC):
             if player.hold_started_at and player.hold_pressed:
                 self._release_shield_hold(player, player.hold_last_pressed_at, hold)
 
+    # ------------------------------------------------------------------
+    # Hold feedback (#2096, UC-040 BR-026): one ordered outbound task per hold game.
+    # The frame path only marks a player; nothing here is awaited in the frame.
+    # ------------------------------------------------------------------
+
+    def _queue_hold_feedback(self, player: "Player", cue: int = HOLD_CUE_NONE) -> None:
+        """Mark the player for the outbound task, keeping the strongest pending cue; no I/O."""
+        if self._shield_hold is None:
+            return
+        pending = self._hold_feedback_pending
+        previous = pending.get(player.serial, HOLD_CUE_NONE)
+        pending[player.serial] = cue if _HOLD_CUE_PRIORITY[cue] >= _HOLD_CUE_PRIORITY[previous] else previous
+        self._wake_hold_feedback()
+
+    def _queue_hold_feedback_all(self) -> None:
+        """Mark every living player (the start of the game loop, a reconnect)."""
+        for player in self.players.values():
+            if player.alive:
+                self._queue_hold_feedback(player)
+
+    def _wake_hold_feedback(self) -> None:
+        """Start the outbound task on the game's loop if needed and wake it."""
+        if self._hold_feedback_wakeup is None:
+            self._hold_feedback_wakeup = asyncio.Event()
+        task = self._hold_feedback_task
+        if task is None or task.done():
+            try:
+                task = asyncio.get_running_loop().create_task(self._shield_hold_feedback_loop())
+            except RuntimeError:
+                return  # no running loop (a synchronous test): the mark waits for the next wake
+            self._hold_feedback_task = self._track_task(task)
+        self._hold_feedback_wakeup.set()
+
+    async def _shield_hold_feedback_loop(self) -> None:
+        """Send the marked players' hold state, in mark order, one write at a time (UC-040 BR-026)."""
+        wakeup = self._hold_feedback_wakeup
+        while True:
+            await wakeup.wait()
+            wakeup.clear()
+            pending, self._hold_feedback_pending = self._hold_feedback_pending, {}
+            for serial, cue in pending.items():
+                try:
+                    await self._send_hold_feedback(serial, cue)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Hold feedback for {serial} failed (hold state unaffected): {e}")
+
+    def _hold_state_message(self, player: "Player", now: float, cue: int):
+        """The ``ShieldHoldState`` of a player now: energy, cap, full level, rate, cue and the latched cue values."""
+        from proto import controller_manager_pb2
+
+        hold = self._shield_hold
+        cues = self._shield_hold_cues or ShieldHoldCues()
+        energy = self._shield_hold_energy(player, now)
+        full = min(hold.cap, self._shield_hold_budget_left(player, now))
+        recharging = not player.hold_started_at and player.hold_energy_at and energy < full
+        return controller_manager_pb2.ShieldHoldState(
+            energy_ms=int(round(energy * 1000)),
+            cap_ms=int(round(hold.cap * 1000)),
+            full_ms=int(round(full * 1000)),
+            min_burst_ms=int(round(hold.min_burst * 1000)),
+            rate_ms_per_s=int(round(hold.recharge * 1000)) if recharging else 0,
+            cue=cue,
+            cues=controller_manager_pb2.ShieldCueParams(
+                rumble_intensity=cues.rumble_intensity,
+                pulse_ms=cues.pulse_ms,
+                ending_lead_ms=cues.ending_lead_ms,
+                hold_rumble_intensity=cues.hold_rumble_intensity,
+                empty_pulse_ms=cues.empty_pulse_ms,
+            ),
+        )
+
+    async def _send_hold_feedback(self, serial: str, cue: int) -> None:
+        """Send one player's hold state as it is now (UC-040 BR-026).
+
+        Active: ``SHIELD_HOLD`` with the time until the energy runs out (a new activation
+        also plays ``shield_up``, at most once per 2 s). Idle: ``SHIELD_HOLD`` 0 when one
+        was running, then ``SHIELD_ENERGY``. A dead or gone player gets nothing: the death
+        effect and the disconnect end the layers on the controller.
+        """
+        player = self.players.get(serial)
+        if player is None or not player.alive or self._shield_hold is None or not self.gameplay_stream:
+            return
+        now = time.time()
+        if player.hold_started_at and now < player.hold_until:
+            # Keyed by the activation's start: an end and a new start between two sends coalesce.
+            new_activation = self._hold_layer_sent.get(serial) != player.hold_started_at
+            self._hold_layer_sent[serial] = player.hold_started_at
+            self._hold_commands_sent.add(serial)
+            await self._write_shield_effect(
+                player,
+                "GAME_EFFECT_SHIELD_HOLD",
+                max(1, int(round((player.hold_until - now) * 1000))),
+                self._hold_state_message(player, now, cue),
+            )
+            if (
+                new_activation
+                and now - self._hold_sound_at.get(serial, -math.inf) >= SHIELD_HOLD_SOUND_MIN_INTERVAL_SECONDS
+            ):
+                self._hold_sound_at[serial] = now
+                try:
+                    await self._play_sound(Sound.SFX_SHIELD_UP, priority=2, volume=1.0)
+                except Exception as e:
+                    logger.warning(f"Shield sound for {serial} failed (protection unaffected): {e}")
+            return
+        if serial in self._hold_layer_sent:
+            del self._hold_layer_sent[serial]
+            await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_HOLD", 0)
+            if not player.alive or self._shield_hold is None:
+                return  # died (or the game ended) during the write: the death effect owns the LED
+        self._hold_commands_sent.add(serial)
+        state = self._hold_state_message(player, now, cue)
+        await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_ENERGY", max(1, state.cap_ms), state)
+
+    def _cancel_hold_feedback(self) -> None:
+        """Stop the outbound task and drop pending marks (no I/O)."""
+        task, self._hold_feedback_task = self._hold_feedback_task, None
+        if task is not None and not task.done():
+            task.cancel()
+        self._hold_feedback_pending.clear()
+
+    async def _stop_hold_feedback(self) -> list[str]:
+        """Stop the outbound task at game end; returns the serials whose controller got a hold command."""
+        task = self._hold_feedback_task
+        self._cancel_hold_feedback()
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        serials = sorted(self._hold_commands_sent)
+        self._hold_commands_sent.clear()
+        self._hold_layer_sent.clear()
+        return serials
+
     def _prime_ema_after_hold(self, player: "Player", accel_mag: float) -> bool:
         """UC-030 BR-009: prime the EMA with min(raw, warning threshold); True when it primed."""
         player.hold_prime_cap = False
@@ -3631,6 +3846,8 @@ class BaseGameMode(ABC):
                 player.hold_energy_at = now
         self._record_agent_shield(player.serial, now, seconds)
         energy_after = energy + added
+        # UC-040 A36 step 4: the grant pattern when the pool is full, one pulse for a top-up.
+        self._queue_hold_feedback(player, HOLD_CUE_FULL if energy_after >= full - 1e-9 else HOLD_CUE_TOP_UP)
         logger.info(f"Shield energy granted to {player.serial}: +{added:.2f}s of {seconds:.1f}s ({energy_after:.2f}s)")
         if player.span:
             identity = player_identity_attributes(player.serial, player.name)

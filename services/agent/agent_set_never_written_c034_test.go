@@ -507,6 +507,7 @@ var c034HumanOnlyGameKeys = []string{
 	"shield.activation", "shield.charge_expiry_seconds",
 	"shield.energy_max_seconds", "shield.energy_budget_seconds", "shield.energy_initial_seconds",
 	"shield.recharge_per_second", "shield.min_burst_seconds",
+	"shield.hold_rumble_intensity", "shield.empty_pulse_ms",
 }
 
 // UC: UC-040 BR-019
@@ -539,16 +540,18 @@ func TestC034_ShieldChargeFlagsAreNeverWrittenByTheAgent(t *testing.T) {
 				if _, ok := candidates[key]; ok {
 					t.Errorf("C-034 VIOLATION: %s is in the agent's experiment catalog", key)
 				}
-				// A declared variant of the key, so only the scope can refuse the write.
+				// Every declared variant of the key (for shield.activation also `hold`, #2096: no
+				// hold experiment or promotion until FR-162), so only the scope can refuse the write.
 				if len(view.Variants) == 0 {
 					t.Fatalf("%s has no declared variants", key)
 				}
-				variant := view.Variants[len(view.Variants)-1]
-				experimentWrite := flagservice.Write{Variant: variant, Scope: flagservice.Scope{ExperimentID: "exp_c034", Arm: experiment.ArmExperimental}}
-				realWrite := flagservice.Write{Variant: variant, Scope: flagservice.Scope{GameKind: "real"}}
-				for _, w := range []flagservice.Write{experimentWrite, realWrite} {
-					if _, err := svc.Put(context.Background(), experiment.GameFlagSet, key, w); err == nil {
-						t.Errorf("C-034 VIOLATION: the flag service accepted an agent-shaped write to %s: %+v", key, w.Scope)
+				for _, variant := range view.Variants {
+					experimentWrite := flagservice.Write{Variant: variant, Scope: flagservice.Scope{ExperimentID: "exp_c034", Arm: experiment.ArmExperimental}}
+					realWrite := flagservice.Write{Variant: variant, Scope: flagservice.Scope{GameKind: "real"}}
+					for _, w := range []flagservice.Write{experimentWrite, realWrite} {
+						if _, err := svc.Put(context.Background(), experiment.GameFlagSet, key, w); err == nil {
+							t.Errorf("C-034 VIOLATION: the flag service accepted an agent-shaped write of %s=%s: %+v", key, variant, w.Scope)
+						}
 					}
 				}
 			})

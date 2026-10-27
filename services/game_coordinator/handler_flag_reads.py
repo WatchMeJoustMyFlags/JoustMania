@@ -58,6 +58,28 @@ HANDLER_FLAG_READS = {
         "targeting": ["gameId"],
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
+    # Hold feedback cue values (#2096, UC-040 BR-026): latched with the hold values and
+    # shipped to the controller manager with every hold command.
+    ("game", "shield.hold_rumble_intensity"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
+    ("game", "shield.empty_pulse_ms"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
+    ("game", "shield.charge_rumble_intensity"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
+    ("game", "shield.charge_rumble_pulse_ms"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
+    ("game", "shield.ending_rumble_seconds"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
     # Shield limits (#2044, UC-040 BR-022): operator flags the agent is to read with an empty
     # context too (#2044 agent half), so no targeting at all, or the two sides could differ.
     ("agent", "policy.max_shields_per_player_per_game"): {

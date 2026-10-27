@@ -64,11 +64,72 @@ func shieldChargeContext(gameID string) openfeature.EvaluationContext {
 	})
 }
 
+// gameModeLatchTTL bounds how long the first shield.activation read of a game is kept: a
+// game scope older than 1 h is dropped by the flag service as well (UC-053 A11).
+const gameModeLatchTTL = time.Hour
+
+// gameModeLatch is the first shield.activation the agent read per game (UC-040 A31 step 1,
+// BR-027, #2096). The coordinator latches `hold` per game, and a game not latched to hold
+// keeps the mode it latched for a later `hold` read; the agent cannot see that latch, so it
+// keeps its own first read in its place.
+type gameModeLatch struct {
+	mu    sync.Mutex
+	first map[string]gameModeSeen
+}
+
+type gameModeSeen struct {
+	mode string
+	at   time.Time
+}
+
+// latch returns the game's first mode, recording mode as that first mode when the game
+// has none yet. Entries older than gameModeLatchTTL are dropped on the way.
+func (l *gameModeLatch) latch(gameID, mode string, now time.Time) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.first == nil {
+		l.first = map[string]gameModeSeen{}
+	}
+	for id, seen := range l.first {
+		if now.Sub(seen.at) > gameModeLatchTTL {
+			delete(l.first, id)
+		}
+	}
+	if seen, ok := l.first[gameID]; ok {
+		return seen.mode
+	}
+	l.first[gameID] = gameModeSeen{mode: mode, at: now}
+	return mode
+}
+
+func (l *gameModeLatch) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.first)
+}
+
+// ledgerTrigger maps the mode read now and the game's first read to the charge ledger's
+// trigger mode: `hold` stays trigger only in a game first read as trigger (a flip to hold
+// never changes a running game's mode), and a game first read as `hold` is a hold game
+// in which the ledger never applies (fail open; the coordinator decides).
+func ledgerTrigger(mode, first string) bool {
+	switch mode {
+	case "trigger":
+		return first != "hold"
+	case "hold":
+		return first == "trigger"
+	default:
+		return false
+	}
+}
+
 // ShieldCharge reads the game's shield activation mode and charge expiry from the game
-// set for the agent's charge ledger (UC-040 A31 step 1). trigger is true only when
-// shield.activation, trimmed and lower-cased, is "trigger" (as resolve_shield_activation
-// in games/base.py). expiry follows resolve_charge_expiry: NaN or negative gives 20 s,
-// anything else is clamped to 0..120 s (0 = never).
+// set for the agent's charge ledger (UC-040 A31 step 1). The mode, trimmed and
+// lower-cased (as resolve_shield_activation in games/base.py), counts as trigger when it
+// is "trigger" in a game the agent did not first read as "hold", or "hold" in a game the
+// agent first read as "trigger" (ledgerTrigger, #2096). expiry follows
+// resolve_charge_expiry: NaN or negative gives 20 s, anything else is clamped to
+// 0..120 s (0 = never).
 //
 // Fail open: a nil game client, an unready domain or any evaluation error gives
 // (false, 20 s), so the ledger is inert and the coordinator decides (BR-004). An
@@ -87,7 +148,12 @@ func (f *Flags) ShieldCharge(ctx context.Context, gameID string) (trigger bool, 
 		}
 		return false, DefaultShieldChargeExpiry
 	}
-	if strings.ToLower(strings.TrimSpace(mode)) != "trigger" {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	clock := f.now
+	if clock == nil {
+		clock = time.Now
+	}
+	if !ledgerTrigger(mode, f.gameModes.latch(gameID, mode, clock())) {
 		return false, DefaultShieldChargeExpiry
 	}
 	secs, err := f.game.FloatValue(ctx, "shield.charge_expiry_seconds", DefaultShieldChargeExpiry.Seconds(), evalCtx)
