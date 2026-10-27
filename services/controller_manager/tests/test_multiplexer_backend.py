@@ -164,6 +164,8 @@ class TestControllerInfoSeriesRemoval:
     """controller_adapter_info / controller_backend_info series go away with the link (#1468)."""
 
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
+    @pytest.mark.uc("UC-002", flow="A4")
+    @pytest.mark.uc("UC-035", br=["BR-009"])
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_adapter_change_removes_previous_adapter_series(self, mock_metrics):
         a1 = _make_adapter("mock", serials=["AA:AA"])
