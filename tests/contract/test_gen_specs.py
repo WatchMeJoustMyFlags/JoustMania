@@ -266,3 +266,16 @@ def test_counts_print_and_are_never_written(tmp_repo, monkeypatch, capsys):
     assert "**4 RPCs in 1 services.**" in out
     assert "  - `demo.v1.Demo`: 4" in out
     assert not list((tmp_repo / "docs/specs/generated").iterdir())
+
+
+def test_ci_diff_has_no_placeholder_rows(tmp_repo):
+    """An empty section is an empty table, not a shared `(none)` line two PRs would both replace."""
+    (tmp_repo / "services/flagd/game.json").write_text(_flags(a=_flag("x", x=1)))
+    (tmp_repo / "services/flagd/ci/game.json").write_text(_flags(a=_flag("x", x=1)))
+    assert "(none)" not in g.flags_ci_diff()
+
+
+def test_check_and_counts_are_mutually_exclusive(capsys):
+    with pytest.raises(SystemExit):
+        g.main(["--check", "--counts"])
+    assert "not allowed with" in capsys.readouterr().err

@@ -247,7 +247,7 @@ write wakes only its own set.
     `scripts/flags.sh restart`, owned by #1408), so flagd serves the baseline within 5 s.
 - **Latency.** No published numbers; flagd's path from `Recv` to `SetState` to the event and sync
   streams has no debounce, only channel hops and a JSON parse of the snapshot. The whole merged
-  configuration (about 150 flags) is re-sent per write; NFR-051 bounds its size. NFR-050 sets the target,
+  configuration (every flag; `make specs-counts` prints the number) is re-sent per write; NFR-051 bounds its size. NFR-050 sets the target,
   #1413 measures it.
 - **Fan-out (re-review N1).** flagd's `Store.Update` re-inserts every flag of the source on each update, so
   with one source every write wakes the watcher of **every** set: each Python in-process domain provider then
@@ -453,7 +453,7 @@ two, both display-only:
 | flagd's 4–64 s reconnect after an unplanned restart serves a stale snapshot | joint restart for planned restarts; writes rejected with `503 no_sync_stream` meanwhile; `flagservice_sync_streams` metric, pre-flight check and alert |
 | flagd exits if the service is down at its start; `readyz` broken with several gRPC sources (#1985) | `depends_on: service_healthy` on the service, `restart: unless-stopped`; no flagd `readyz` check |
 | A duplicate flag key across sets would collide in the merged payload | explicit file list, refuse to start on a duplicate; fallback §5.3 |
-| Whole configuration re-sent per write | about 150 flags today; NFR-051 bounds the snapshot at 1 MiB; measured in #1413 |
+| Whole configuration re-sent per write | every flag (`make specs-counts` prints the number); NFR-051 bounds the snapshot at 1 MiB; measured in #1413 |
 | One source: every write wakes every set's watcher and every Python domain provider (fan-out) | single-flight `evaluate_all` in the coordinator, last-applied state advanced before dispatch; #1413 measures against NFR-050 with flagd at `cpus: 0.25`; fallback: per-set source addresses (§5.3) |
 | Anyone on the LAN can change flags | accepted by decision (D11): local party game |
 | A promoted default disappears on restart; the #1065 revert cooldown is lost | intended for the default (the PR route persists it); #1415 re-implements the cooldown |

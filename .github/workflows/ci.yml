@@ -806,7 +806,9 @@ jobs:
       - name: Spec counts (job summary, not committed)
         # Flag, RPC and metric totals are not committed: two PRs that each add
         # one would always conflict and the merge queue ejected the later (#2152).
+        # Informational: it must never fail the job or skip the steps after it.
         if: always()
+        continue-on-error: true
         run: make specs-counts >> "$GITHUB_STEP_SUMMARY"
 
       - name: Spec references resolve (spec-refs-gate.sh)

@@ -407,26 +407,28 @@ def flags_ci_diff() -> str:
     out = [
         HEADER.format(sources="services/flagd/*.json and services/flagd/ci/*.json"),
         "# `ci/` flag differences (generated)\n",
-        "Part of [flags.md §12](../flags.md#12-ci-differences).\n",
+        "Part of [flags.md §12](../flags.md#12-ci-differences). A table with no rows means no "
+        "difference of that kind; there is no placeholder row, so the first two PRs that each "
+        "add a row do not both replace the same line (#2152).\n",
         "## Defaults that differ\n",
         "| File | Key | Base default | `ci/` default |",
         "|---|---|---|---|",
-        *(defaults or ["| (none) | | | |"]),
+        *defaults,
         "",
         "## Variants only in `ci/`\n",
         "| File | Key | Variant |",
         "|---|---|---|",
-        *(added or ["| (none) | | |"]),
+        *added,
         "",
         "## Variants only in the base file\n",
         "| File | Key | Variant |",
         "|---|---|---|",
-        *(removed or ["| (none) | | |"]),
+        *removed,
         "",
         "## Keys in only one of the two\n",
         "| File | Key | Where |",
         "|---|---|---|",
-        *(only or ["| (none) | | |"]),
+        *only,
     ]
     return "\n".join(out) + "\n"
 
@@ -472,10 +474,11 @@ def stale_files(rendered: dict[Path, str]) -> list[tuple[Path, str]]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--check", action="store_true", help="fail if a generated file is stale"
     )
-    parser.add_argument(
+    mode.add_argument(
         "--counts",
         action="store_true",
         help="print the flag, RPC and metric totals (not committed, #2152)",
