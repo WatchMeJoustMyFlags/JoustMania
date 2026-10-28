@@ -143,6 +143,8 @@ jobs:
           filters: |
             shared_python: &shared_python
               - 'pyproject.toml'
+              # #2266: images install their dependencies from the lock
+              - 'uv.lock'
               - 'proto/**'
               - 'lib/**'
             lib:
@@ -333,6 +335,7 @@ jobs:
               # root pyproject.toml is a deps-fingerprint input
               # (scripts/ci/deps-fingerprint.sh), so it must force fresh images
               - 'pyproject.toml'
+              - 'uv.lock'
               - 'services/*/Dockerfile'
               - 'services/*/pyproject.toml'
               - 'lib/pyproject.toml'
@@ -617,6 +620,11 @@ jobs:
       - name: Voice catalog check
         if: matrix.service == 'audio'
         run: make voice-check
+
+      # C-046 (#2266): images install from uv.lock, so a pyproject range change
+      # without a relock must fail here instead of testing a fresh resolve.
+      - name: Lock is current
+        run: uv lock --check
 
       - name: Typecheck
         continue-on-error: true  # ty is immature, don't block CI

@@ -21,6 +21,7 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter  # noqa: E402
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter  # noqa: E402
+from services.controller_manager.tests.fake_stream_call import FakeStreamCall  # noqa: E402
 
 SERIAL = "AABBCCDDEE01"  # normalized form, as discover() returns it
 FRAME = {"serial": SERIAL, "battery": 5}
@@ -29,6 +30,7 @@ FRAME = {"serial": SERIAL, "battery": 5}
 def _bare(adapter_cls):
     """Adapter without __init__ (no gRPC channel)."""
     adapter = adapter_cls.__new__(adapter_cls)
+    adapter._init_stream_state()
     adapter._channel = MagicMock()
     adapter._stub = MagicMock()
     adapter._command_queue = queue.Queue(maxsize=256)
@@ -67,8 +69,8 @@ class TestHidAdapterCloseVersusPoll:
         sensor = MagicMock()
         sensor.serial = SERIAL
         hid_adapter._stream_running = True
-        hid_adapter._stub.StreamIO.return_value = iter([sensor])
-        with patch(f"{type(hid_adapter).__module__}._sensor_data_to_dict", return_value=dict(FRAME)):
+        hid_adapter._stub.StreamIO.return_value = FakeStreamCall([sensor])
+        with patch("services.controller_manager.multiplexer.hid_stream.sensor_data_to_dict", return_value=dict(FRAME)):
             hid_adapter._stream_loop()
         assert SERIAL not in hid_adapter._latest_data
 

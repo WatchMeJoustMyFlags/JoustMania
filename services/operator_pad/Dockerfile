@@ -17,12 +17,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # uv: fast Python package installer
-RUN pip install --no-cache-dir uv==0.5.11
+# uv >= 0.8 reads the lockfile (revision 3); keep near the uv CI runs (#2266)
+RUN pip install --no-cache-dir uv==0.11.6
 
 WORKDIR /app
 
 # Copy workspace configuration
-COPY pyproject.toml /app/
+COPY pyproject.toml uv.lock /app/
 
 # Copy proto package (shared protocol buffer contracts)
 COPY proto/pyproject.toml /app/proto/
@@ -41,7 +42,12 @@ COPY services/operator_pad/pyproject.toml /app/services/operator_pad/
 # --no-binary evdev: amd64 compiles it from source too, so the amd64 PR build
 # proves the same toolchain the arm64 (Pi) build needs.
 WORKDIR /app
-RUN uv pip install --system -e proto/ -e lib/ --no-binary evdev -e "services/operator_pad/[device]" \
+# #2266: third-party dependencies come from uv.lock (the versions the unit tests
+# ran), never from a fresh resolve; the workspace packages then install editable
+# with --no-deps. A partial workspace is enough for `uv export --frozen`.
+RUN uv export --frozen --no-dev --no-emit-workspace --package joustmania-operator-pad --extra device -o /tmp/requirements.txt \
+    && uv pip install --system --no-binary evdev -r /tmp/requirements.txt \
+    && uv pip install --system --no-deps -e proto/ -e lib/ -e services/operator_pad/ \
     && python -c "import evdev"
 
 # Runtime stage - Chainguard python (glibc, Python 3.14), same digest as the

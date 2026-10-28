@@ -409,8 +409,8 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "grpcio", specifier = ">=1.70.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
+    { name = "grpcio", specifier = ">=1.85.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.85.0" },
     { name = "joustmania-lib", editable = "lib" },
     { name = "joustmania-proto", editable = "proto" },
     { name = "miniaudio", specifier = ">=1.61" },
@@ -457,8 +457,8 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
-    { name = "grpcio", specifier = ">=1.70.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
+    { name = "grpcio", specifier = ">=1.85.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.85.0" },
     { name = "hidapi", specifier = ">=0.14.0" },
     { name = "joustmania-lib", editable = "lib" },
     { name = "joustmania-proto", editable = "proto" },
@@ -499,8 +499,8 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "grpcio", specifier = ">=1.70.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
+    { name = "grpcio", specifier = ">=1.85.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.85.0" },
     { name = "joustmania-lib", editable = "lib" },
     { name = "joustmania-proto", editable = "proto" },
     { name = "openfeature-hooks-opentelemetry", specifier = ">=0.1.0" },
@@ -532,7 +532,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "grpcio", specifier = ">=1.50.0" },
+    { name = "grpcio", specifier = ">=1.85.0" },
     { name = "joustmania-proto", editable = "proto" },
     { name = "openfeature-provider-flagd", specifier = ">=0.6.1" },
     { name = "openfeature-sdk", specifier = ">=0.8.4" },
@@ -570,7 +570,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.0.0" },
-    { name = "grpcio", specifier = ">=1.70.0" },
+    { name = "grpcio", specifier = ">=1.85.0" },
     { name = "openfeature-hooks-opentelemetry", specifier = ">=0.1.0" },
     { name = "openfeature-provider-flagd", specifier = ">=0.6.1" },
     { name = "openfeature-sdk", specifier = ">=0.8.4" },
@@ -610,8 +610,8 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "grpcio", specifier = ">=1.70.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
+    { name = "grpcio", specifier = ">=1.85.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.85.0" },
     { name = "joustmania-lib", editable = "lib" },
     { name = "joustmania-proto", editable = "proto" },
     { name = "openfeature-hooks-opentelemetry", specifier = ">=0.1.0" },
@@ -653,7 +653,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "evdev", marker = "sys_platform == 'linux' and extra == 'device'", specifier = ">=1.9.0" },
-    { name = "grpcio", specifier = ">=1.70.0" },
+    { name = "grpcio", specifier = ">=1.85.0" },
     { name = "joustmania-lib", editable = "lib" },
     { name = "joustmania-proto", editable = "proto" },
     { name = "openfeature-hooks-opentelemetry", specifier = ">=0.1.0" },
@@ -746,8 +746,8 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "grpcio", specifier = ">=1.70.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
+    { name = "grpcio", specifier = ">=1.85.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.85.0" },
     { name = "hidapi", specifier = ">=0.14.0" },
     { name = "joustmania-lib", editable = "lib" },
     { name = "joustmania-proto", editable = "proto" },
@@ -784,8 +784,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "grpcio", specifier = ">=1.70.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.70.0" },
+    { name = "grpcio", specifier = ">=1.85.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.85.0" },
     { name = "joustmania-controller-manager", editable = "services/controller_manager" },
     { name = "joustmania-game-coordinator", editable = "services/game_coordinator" },
     { name = "joustmania-lib", editable = "lib" },

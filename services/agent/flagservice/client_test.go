@@ -155,3 +155,43 @@ func TestClient_UnreachableFailsClosed(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-043 A19
+func TestClient_PutIfWriterIn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		w         Write
+		wantQuery map[string][]string
+	}{
+		"UC-043/A19 IfWriterIn is sent as one comma-joined if_writer_in, the empty entry kept": {
+			w:         Write{Value: 3.0, Scope: Scope{GameKind: "real"}, IfWriterIn: []string{"promotion", ""}},
+			wantQuery: map[string][]string{"if_writer_in": {"promotion,"}},
+		},
+		"UC-043/A19 without IfWriterIn no precondition is sent": {
+			w:         Write{Value: 3.0, Scope: Scope{GameKind: "real"}},
+			wantQuery: map[string][]string{},
+		},
+		"UC-043/A19 dry run and precondition together": {
+			w:         Write{Value: 3.0, Scope: Scope{GameKind: "real"}, DryRun: true, IfWriterIn: []string{"promotion"}},
+			wantQuery: map[string][]string{"dry_run": {"true"}, "if_writer_in": {"promotion"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got map[string][]string
+			_, c := newRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL.Query()
+				reply(http.StatusOK, `{}`)(w, r)
+			})
+			if _, err := c.Put(context.Background(), "game", "f", tc.w); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(tc.wantQuery) {
+				t.Fatalf("query = %v, want %v", got, tc.wantQuery)
+			}
+			for k, v := range tc.wantQuery {
+				if len(got[k]) != len(v) || got[k][0] != v[0] {
+					t.Fatalf("query %s = %v, want %v", k, got[k], v)
+				}
+			}
+		})
+	}
+}

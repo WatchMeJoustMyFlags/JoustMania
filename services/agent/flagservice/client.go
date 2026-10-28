@@ -40,7 +40,8 @@ const (
 	// registered (409, flags.md §13, UC-043 A17); the promoter defers the write.
 	ReasonRealGameLive = "real_game_live"
 	// ReasonWriterMismatch refuses a compare-and-delete (DELETE ?if_writer=,
-	// 412, #1877): the overlay belongs to another writer; nothing was cleared.
+	// 412, #1877) or a guarded write (PUT ?if_writer_in=, 412, #2260): the
+	// overlay belongs to another writer; nothing was cleared or written.
 	ReasonWriterMismatch = "writer_mismatch"
 )
 
@@ -67,6 +68,10 @@ type Write struct {
 	// DryRun sends PUT ?dry_run=true: the service validates and renders the
 	// write, answers the flag before and after, and applies nothing.
 	DryRun bool `json:"-"`
+	// IfWriterIn sends PUT ?if_writer_in=<labels joined by ","> (#2260, UC-043
+	// A19): the real overlay is written only when its stored writer is in the
+	// list, or none is present and the list holds "". nil = no precondition.
+	IfWriterIn []string `json:"-"`
 }
 
 // Event is a POST body (one event appended to a game's event list).
@@ -215,8 +220,15 @@ func (c *Client) retryGameNotLive(ctx context.Context, gameScoped bool, fn func(
 func (c *Client) Put(ctx context.Context, set, flag string, w Write) (Result, error) {
 	var res Result
 	path := flagPath(set, flag)
+	query := url.Values{}
 	if w.DryRun {
-		path += "?dry_run=true"
+		query.Set("dry_run", "true")
+	}
+	if w.IfWriterIn != nil {
+		query.Set("if_writer_in", strings.Join(w.IfWriterIn, ","))
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
 	}
 	err := c.retryGameNotLive(ctx, w.Scope.GameID != "", func() error {
 		return c.do(ctx, http.MethodPut, path, w, &res)
