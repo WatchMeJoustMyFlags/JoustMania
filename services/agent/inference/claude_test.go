@@ -23,6 +23,7 @@ import (
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flagservice/fake"
+	"github.com/joustmania/agent/internal/anthropichttp"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -184,7 +185,7 @@ func TestClaude_InferReturnsText(t *testing.T) {
 		"gen_ai.response.model":          "claude-opus-5-5",
 		"gen_ai.response.id":             "msg_test",
 		"gen_ai.request.reasoning.level": "medium",
-		"llm.prompt.system_sha256":       systemSHA("sys text"),
+		"llm.prompt.system_sha256":       anthropichttp.SystemSHA("sys text"),
 	} {
 		if a[key].AsString() != want {
 			t.Errorf("%s = %q, want %q", key, a[key].AsString(), want)
@@ -312,7 +313,7 @@ func TestStripDateSuffix(t *testing.T) {
 		"claude-opus-5-5":           "claude-opus-5-5",
 		"x-1234567":                 "x-1234567",
 	} {
-		if got := stripDateSuffix(in); got != want {
+		if got := anthropichttp.StripDateSuffix(in); got != want {
 			t.Errorf("stripDateSuffix(%q) = %q, want %q", in, got, want)
 		}
 	}
@@ -423,6 +424,37 @@ func TestClaude_NeverFollowsRedirects(t *testing.T) {
 		c := NewClaude(Config{APIKey: "sk-redirect-secret", BaseURL: redirector.URL})
 		_, err := c.Infer(context.Background(), llm.Prompt{User: "u"})
 		if err == nil {
+			t.Errorf("status %d: Infer succeeded through a redirect, want an error", status)
+		}
+		target.mu.Lock()
+		got := len(target.headers)
+		target.mu.Unlock()
+		if got != 0 {
+			t.Errorf("status %d: redirect target received %d request(s) (x-api-key leaked)", status, got)
+		}
+	}
+}
+
+// TestClaude_InjectedClientNeverFollowsRedirect: the redirect guard is part of
+// the SDK client (anthropichttp.NewClient), so it also holds for an injected
+// http.Client that follows redirects (#2321).
+// UC: UC-042 Pre-2
+func TestClaude_InjectedClientNeverFollowsRedirect(t *testing.T) {
+	for _, status := range []int{http.StatusFound, http.StatusTemporaryRedirect} {
+		target := &fakeMessages{body: messageBody(`{"ok":true}`, "end_turn")}
+		targetSrv := httptest.NewServer(http.HandlerFunc(target.handler))
+		t.Cleanup(targetSrv.Close)
+		redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, targetSrv.URL+r.URL.Path, status)
+		}))
+		t.Cleanup(redirector.Close)
+
+		c := NewClaude(Config{
+			APIKey:     "sk-redirect-secret",
+			BaseURL:    redirector.URL,
+			HTTPClient: &http.Client{}, // follows redirects by default
+		})
+		if _, err := c.Infer(context.Background(), llm.Prompt{User: "u"}); err == nil {
 			t.Errorf("status %d: Infer succeeded through a redirect, want an error", status)
 		}
 		target.mu.Lock()
