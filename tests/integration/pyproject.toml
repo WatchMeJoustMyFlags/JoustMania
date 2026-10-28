@@ -25,7 +25,7 @@ dependencies = [
     # OpenFeature flagd client — evaluate intervention targeting rules directly
     # against live flagd RPC (tests/integration/helpers.py, #730).
     "openfeature-sdk>=0.8.4",
-    "openfeature-provider-flagd>=0.5.0",
+    "openfeature-provider-flagd>=0.6.1",
 ]
 
 [tool.uv.sources]

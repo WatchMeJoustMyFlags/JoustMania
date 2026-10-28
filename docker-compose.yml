@@ -120,7 +120,7 @@ services:
   # No readyz health check: in v0.16.0 readyz never turns true with a gRPC
   # source (flagd #1985), so dependents keep condition: service_started.
   flagd:
-    image: ghcr.io/open-feature/flagd:v0.16.0
+    image: ghcr.io/open-feature/flagd:v0.18.1
     container_name: joustmania-flagd
     command:
       - "start"

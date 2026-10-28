@@ -798,16 +798,38 @@ class TestClientSpanStatusAtCallEnd:
         assert _code(spans[0]) == grpc.StatusCode.CANCELLED.value[0]
         assert "ended span" not in caplog.text
 
-    async def test_stream_never_read_ends_when_dropped(self, traced_channel, span_exporter):
+    async def test_stream_never_read_ends_on_explicit_cancel(self, traced_channel, span_exporter):
+        """A stream the caller never reads ends its span once the caller cancels it."""
+        exporter, _ = span_exporter
+        call = traced_channel.unary_stream(_PROBE + "StreamForever")(b"x")
+        await call.initial_metadata()
+        call.cancel()
+
+        spans = await _finished_spans(exporter)
+        assert len(spans) == 1
+        assert spans[0].status.status_code == StatusCode.UNSET
+        assert _code(spans[0]) == grpc.StatusCode.CANCELLED.value[0]
+
+    async def test_stream_never_read_and_dropped_stays_live_until_channel_close(self, traced_channel, span_exporter):
+        """Dropping a never-read stream does NOT cancel it (grpcio >= 1.83; 1.82 cancelled on gc).
+
+        The RPC stays live server-side, so its CLIENT span stays open: code that abandons a
+        stream must cancel it explicitly (call-site audit: #2266). Closing the channel ends
+        both. If this starts failing because the span ends on drop, grpcio went back to
+        cancelling on gc: re-check #2266.
+        """
         exporter, _ = span_exporter
         call = traced_channel.unary_stream(_PROBE + "StreamForever")(b"x")
         await call.initial_metadata()
         del call
         gc.collect()
 
+        await asyncio.sleep(0.5)
+        assert exporter.get_finished_spans() == (), "dropped stream was cancelled on gc"
+
+        await traced_channel.close()
         spans = await _finished_spans(exporter)
         assert len(spans) == 1
-        assert spans[0].status.status_code == StatusCode.UNSET
         assert _code(spans[0]) == grpc.StatusCode.CANCELLED.value[0]
 
     async def test_long_stream_finishes_span_once_not_per_message(self, traced_channel, span_exporter):

@@ -60,7 +60,7 @@ coordinator and the menu wait only for flagd); flagd waits for the flag service 
 | connect-proxy | Go | 8080 HTTP | no | Connect (browser) ↔ gRPC bridge; `/canary/*` writes the `controller` set through the flag service | `services/connect-proxy/` |
 | dashboard | TypeScript | 8080 HTTP (static-web-server) | no | SPA: controllers, Agent, Experiments, Metrics, Traces tabs; follows the newest live shadow game when no real game is live (`ListGames`, `GetGameState`, `StreamGameEvents(game_id)`; UC-070 BR-005); mode selector from the menu's `ListGameModes` (UC-011 BR-002); reads VictoriaMetrics through envoy for the Agent tab's intervention counts and, every 10 s, `controller_adapter_info` for the adapter on each controller card (UC-035 BR-009) | `services/dashboard/` |
 | envoy | config | 80 HTTP; 9901 admin | **80** | Single entry point / reverse proxy | `services/envoy/envoy.yaml` |
-| flagd | binary v0.16.0 | 8013 RPC eval (tests and tools only, #1713), 8014 mgmt, 8015 sync (every service client), 8016 OFREP | `127.0.0.1:8015` (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
+| flagd | binary v0.18.1 | 8013 RPC eval (tests and tools only, #1713), 8014 mgmt, 8015 sync (every service client), 8016 OFREP | `127.0.0.1:8015` (8013 via override) | Evaluate flags; its only source is the flag service's gRPC sync stream (no flag file mounted) | `docker-compose.yml` (`flagd`) |
 | flag-service | Go | 50064 gRPC sync (flagd only), 8070 HTTP API | 8070 via override; `/flags/` through envoy | Runtime flag state in memory over the read-only baseline files; the only writer path for runtime flags (§7) | `services/flag-service/` |
 | otel-collector | custom contrib build | 4317 / 4318 OTLP | `127.0.0.1:4317` | Receive OTLP + container logs + host metrics; export to Jaeger, VictoriaMetrics, Loki, agent (the :8889 Prometheus exporter was removed in #1449) | `services/otel-collector/config.yaml` |
 | jaeger | 2.19.0 | 16686 UI, 4317 / 4318 OTLP | no | Trace store (badger, bounded TTL; 1 GiB container limit, Go soft limit `GOMEMLIMIT=850MiB`, #2223) | `services/jaeger/config.yaml`, `docker-compose.yml` |
@@ -494,8 +494,8 @@ The upstream schema (`buf.build/open-feature/flagd`, `flagd/sync/v1/sync.proto`)
 | `FetchAllFlags` | The current merged configuration, filtered like `SyncFlags`. |
 | `GetMetadata` | Deprecated upstream; `UNIMPLEMENTED`. |
 
-Keepalive: the server sends pings (`ServerParameters{Time: 30s, Timeout: 10s}`; flagd v0.16.0's sync client sets
-none) and allows client pings (`EnforcementPolicy{MinTime: 10s, PermitWithoutStream: true}`).
+Keepalive: the server sends pings (`ServerParameters{Time: 30s, Timeout: 10s}`; flagd's sync client sets
+none; not re-checked for v0.18.1, #1945) and allows client pings (`EnforcementPolicy{MinTime: 10s, PermitWithoutStream: true}`).
 
 ### 7.2 HTTP/JSON API (resource-style)
 

@@ -295,7 +295,7 @@ gate_cmd() {  # print the shell command for a gate
     voice-check) echo "make voice-check" ;;
     rust-hid) echo "cd services/rust-hid && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test" ;;
     # Same steps as the Telemetry Contract job: generated specs, then the tests.
-    contract) echo "make specs-check && make spec-refs-check && uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py --ignore tests/contract/test_flagd_rpc_retry.py" ;;
+    contract) echo "make specs-check && make spec-refs-check && uv run --no-project --with pytest --with pyyaml --with pytest-rerunfailures pytest tests/contract -q --tb=short -p no:cacheprovider --ignore tests/contract/test_flagd_resolution.py --ignore tests/contract/test_flagd_rpc_retry.py --ignore tests/contract/test_fractional_bucketing.py" ;;
     contract-flagd) echo "make test-contract-flagd" ;;
     service) echo "make test-service" ;;
     service-touched)

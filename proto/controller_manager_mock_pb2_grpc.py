@@ -5,7 +5,7 @@ import warnings
 
 from proto import controller_manager_mock_pb2 as controller__manager__mock__pb2
 
-GRPC_GENERATED_VERSION = '1.81.0'
+GRPC_GENERATED_VERSION = '1.85.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

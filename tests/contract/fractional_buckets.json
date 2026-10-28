@@ -1,0 +1,39 @@
+{
+  "_comment": "Pinned fractional buckets (#1945). bluetooth_backend with the targeting the flag service renders for a 50 % canary fraction overlay (services/flag-service/state/render.go). Bucket = murmur3 of the canonical CBOR of [flagKey, targetingKey] (flagd v0.18 / core v0.19 / Python provider 0.6.0). A change here re-buckets every canary serial: update every flagd component together and say so in the PR.",
+  "flag_key": "bluetooth_backend",
+  "variants": {
+    "python": "python",
+    "rust": "rust"
+  },
+  "default_variant": "rust",
+  "targeting": {
+    "fractional": [
+      [
+        "python",
+        50
+      ],
+      [
+        "rust",
+        50
+      ]
+    ]
+  },
+  "cases": {
+    "00:06:f7:10:20:30": "rust",
+    "00:06:f7:11:21:31": "rust",
+    "00:06:f7:12:22:32": "python",
+    "00:06:f7:13:23:33": "rust",
+    "00:06:f7:a0:b0:c0": "python",
+    "00:06:f7:a1:b1:c1": "python",
+    "00:06:f7:a2:b2:c2": "python",
+    "00:06:f7:a3:b3:c3": "rust",
+    "00:06:f7:4f:5e:6d": "rust",
+    "00:06:f7:7c:8b:9a": "rust",
+    "00:06:f7:de:ad:01": "rust",
+    "00:06:f7:be:ef:02": "rust",
+    "00:06:f7:ca:fe:03": "python",
+    "00:06:f7:f0:0d:04": "python",
+    "00:06:f7:01:02:03": "python",
+    "00:06:f7:fe:dc:ba": "python"
+  }
+}
