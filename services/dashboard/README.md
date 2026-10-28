@@ -46,14 +46,27 @@ services/dashboard/
 ├── vite.config.ts        # Dev proxy to connect-proxy
 └── src/
     ├── index.html        # SPA shell with tabs, controls, status bar
-    ├── main.ts           # Entry point, streaming loops, event handling
+    ├── main.ts           # Entry point: component wiring, streams and pollers
     ├── style.css
     ├── client.ts         # Connect protocol client (fetch-based)
+    ├── connect.ts        # Connect streaming framing
+    ├── controllerStream.ts / stream.ts   # Reconnecting controller / game-event streams
+    ├── poller.ts / pageGate.ts           # Single-chain pollers (backoff) and tab / page-visibility gate
+    ├── jaeger.ts / vm.ts                 # Jaeger and VictoriaMetrics readers (no browser clock)
+    ├── agent.ts          # agent.decide / flag_state / rollout spans and intervention counts
+    ├── experiments.ts    # experiment.progress snapshots (ExperimentStore)
+    ├── follow.ts         # Followed game (real, else live shadow)
+    ├── degrade.ts        # Per-source degraded-state messages
+    ├── adapters.ts / stageSettings.ts    # Adapter badges and stage settings strip (VictoriaMetrics)
+    ├── shield.ts / gameEvents.ts / identify.ts / unpair.ts / modes.ts / motion.ts / quality.ts
     ├── components/
     │   ├── ControllerCard.ts  # Single controller card (LED, battery, accel dot)
     │   ├── ControllerGrid.ts  # Grid layout managing controller cards
     │   ├── Controls.ts        # Game mode selector and start/stop buttons
-    │   └── GameStatus.ts      # Status bar (state, counts, event log)
+    │   ├── GameStatus.ts      # Status bar (state, counts, event log)
+    │   ├── StageSettings.ts   # Stage settings strip
+    │   ├── AgentView.ts       # Agent tab: decide feed, flag panel, overlay
+    │   └── ExperimentsView.ts # Experiments tab cards
     └── gen/                   # Hand-written TS mirrors of the proto messages the client uses
 ```
 

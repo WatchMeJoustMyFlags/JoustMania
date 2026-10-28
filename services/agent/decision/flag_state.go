@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -116,6 +117,8 @@ func flagStateAttributes(snapshot flags.Snapshot, c gamecontext.GameContext, mod
 	return append(attrs,
 		attribute.String(AttrDecideBackendRequested, requestedBackend(snapshot)),
 		attribute.Float64(AttrDecideActThreshold, snapshot.Decision.ActConfidenceThreshold),
+		attribute.Bool(AttrExperimentsEnabled, snapshot.ExperimentsEnabled),
+		attribute.String(AttrLLMEligibleGameKinds, strings.Join(snapshot.LLMGate.EligibleGameKinds, ",")),
 	)
 }
 

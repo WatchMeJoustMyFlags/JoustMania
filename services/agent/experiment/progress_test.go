@@ -145,6 +145,8 @@ func TestProgress_AttributeSet(t *testing.T) {
 		decision.AttrExperimentTargetN:   strconv.Itoa(r.entries[id].journal.Intent().TargetNPerArm), // reconciled up to min-N
 		decision.AttrExperimentArms:      ArmExperimental + "," + ArmControl,
 		AttrExperimentProgressTrigger:    ProgressTriggerStarted,
+		decision.AttrExperimentThesis:    in.Hypothesis,
+		AttrExperimentValue:              "0.5",
 	}
 	got := map[string]string{}
 	for _, kv := range spans[0].Attributes() {
@@ -532,6 +534,56 @@ func TestProgress_ConcludedSnapshotCarriesFinalVerdict(t *testing.T) {
 	}
 }
 
+func TestCapSpanText(t *testing.T) {
+	if got := capSpanText("short"); got != "short" {
+		t.Fatalf("short text changed: %q", got)
+	}
+	long := strings.Repeat("a", 600)
+	got := capSpanText(long)
+	if len(got) != maxSpanTextLen || !strings.HasSuffix(got, "...") {
+		t.Fatalf("ascii cap: len=%d", len(got))
+	}
+	// multi-byte runes straddling the cut stay valid UTF-8
+	multi := capSpanText(strings.Repeat("\u00e4", 400))
+	if len(multi) > maxSpanTextLen || !utf8.ValidString(multi) || !strings.HasSuffix(multi, "...") {
+		t.Fatalf("utf8 cap: len=%d valid=%v", len(multi), utf8.ValidString(multi))
+	}
+}
+
+func TestProgress_ThesisAndValueCapped(t *testing.T) {
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: &fakeSpawner{}, Verdict: fakeVerdict{concludeAtN: 1000}, Targeting: &fakeTargeting{},
+		MaxShadowGames: 2,
+	})
+	in := sampleIntent()
+	in.Hypothesis = strings.Repeat("h", 2000)
+	in.ExperimentalValue = strings.Repeat("v", 2000)
+	id, err := r.Declare(in)
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if err := r.Start(context.Background(), id); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	spans := progressSpans(sr)
+	if len(spans) == 0 {
+		t.Fatal("no experiment.progress span")
+	}
+	seen := 0
+	for _, kv := range spans[0].Attributes() {
+		k := string(kv.Key)
+		if k == decision.AttrExperimentThesis || k == AttrExperimentValue {
+			seen++
+			if v := kv.Value.AsString(); len(v) != maxSpanTextLen || !strings.HasSuffix(v, "...") {
+				t.Errorf("%s: len=%d, want %d ending in ...", k, len(v), maxSpanTextLen)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d capped attrs, want 2", seen)
+	}
+}
+
 // A promotion refused because another writer owns the real overlay (UC-043 A19,
 // #2276) puts the winning value on the experiment's snapshots as a recommendation.
 // UC: UC-043 A19
@@ -562,6 +614,40 @@ func TestProgress_RefusedPromotionCarriesRecommendation(t *testing.T) {
 	}
 	if _, ok := rootSpanAttr(spans[0], AttrExperimentRecommendationOwner); ok {
 		t.Error("started snapshot carries a recommendation")
+	}
+}
+
+// The recommendation value is capped like the thesis and experimental value.
+// UC: UC-043 A19
+func TestProgress_RecommendationValueCapped(t *testing.T) {
+	spawner := &fakeSpawner{}
+	promoter := &fakePromoter{result: PromotionResult{
+		Outcome: PromotionDiscarded, Reason: "real_overlay_owned_by_another_writer owner=operator", ForeignOwner: "operator",
+	}}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 1},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2, Promoter: promoter,
+	})
+	in := sampleIntent()
+	in.ExperimentalValue = strings.Repeat("v", 2000)
+	id, err := r.Declare(in)
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if err := r.Start(context.Background(), id); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+	spans := progressSpans(sr)
+	got, ok := rootSpanAttr(spans[len(spans)-1], AttrExperimentRecommendationValue)
+	if !ok {
+		t.Fatal("terminal snapshot carries no recommendation value")
+	}
+	if len(got) != maxSpanTextLen || !strings.HasSuffix(got, "...") {
+		t.Errorf("recommendation value len=%d suffix=%q, want %d bytes ending in ...", len(got), got[max(0, len(got)-3):], maxSpanTextLen)
 	}
 }
 
@@ -644,18 +730,6 @@ func TestProgress_DeferredRefusalAfterRestartEmitsSnapshot(t *testing.T) {
 	}
 	if got, _ := rootSpanAttr(spans[0], decision.AttrExperimentStatus); got != string(StatusDiscarded) {
 		t.Errorf("status = %q, want discarded", got)
-	}
-}
-
-// UC: UC-043 A19
-func TestTruncateRecommendationValue(t *testing.T) {
-	long := []byte(strings.Repeat("\u00e9", 600))
-	got := truncateRecommendationValue(long)
-	if len(got) > maxRecommendationValueLen+3 || !strings.HasSuffix(string(got), "...") || !utf8.Valid(got) {
-		t.Errorf("truncated value len %d valid=%v suffix=%q", len(got), utf8.Valid(got), got[len(got)-3:])
-	}
-	if short := []byte(`{"a":1}`); string(truncateRecommendationValue(short)) != string(short) {
-		t.Error("short value changed")
 	}
 }
 

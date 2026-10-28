@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchDecideFeed, fetchFlagStates, fetchInterventionCounts, fetchRollouts, RolloutStore } from "../agent.js";
-import { fetchExperiments } from "../experiments.js";
+import { ExperimentStore, pollExperiments } from "../experiments.js";
 import { JaegerUnavailableError } from "../jaeger.js";
 import { keepGameEventStreamOpen } from "../stream.js";
 import { ShieldStore, shieldBadge } from "../shield.js";
@@ -89,14 +89,14 @@ describe("UC-035: A3 Jaeger down vs no data", () => {
       await expect(fetchDecideFeed(null)).rejects.toBeInstanceOf(JaegerUnavailableError);
       await expect(fetchFlagStates()).rejects.toBeInstanceOf(JaegerUnavailableError);
       await expect(fetchRollouts(new RolloutStore())).rejects.toBeInstanceOf(JaegerUnavailableError);
-      await expect(fetchExperiments()).rejects.toBeInstanceOf(JaegerUnavailableError);
+      await expect(pollExperiments(new ExperimentStore())).rejects.toBeInstanceOf(JaegerUnavailableError);
     });
   }
 
   it("UC-035/A3 Jaeger up without spans (agent or collector down, or an old agent image) is data, not an error", async () => {
     stubBackends({});
     await expect(fetchFlagStates()).resolves.toEqual([]);
-    await expect(fetchExperiments()).resolves.toEqual([]);
+    await expect(pollExperiments(new ExperimentStore())).resolves.toEqual([]);
     const store = new RolloutStore();
     await fetchRollouts(store);
     expect(store.list()).toEqual([]);
@@ -124,7 +124,7 @@ describe("UC-035: A3 Grafana down", () => {
 
     await expect(fetchInterventionCounts()).resolves.toBeDefined();
     await expect(fetchFlagStates()).resolves.toBeDefined();
-    await expect(fetchExperiments()).resolves.toBeDefined();
+    await expect(pollExperiments(new ExperimentStore())).resolves.toBeDefined();
     await expect(fetchDecideFeed(null)).resolves.toBeDefined();
 
     expect(calls.length).toBeGreaterThan(0);

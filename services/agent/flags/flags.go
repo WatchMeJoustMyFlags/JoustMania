@@ -731,6 +731,10 @@ type Snapshot struct {
 	// loop swaps the rules engine for the probe engine (synthetic noop only),
 	// except in pattern games. Read every cycle.
 	ProbeDecisions bool
+	// ExperimentsEnabled is the live experiments_enabled gate (fail-closed false),
+	// carried for agent.flag_state (#2291): the stage fallback (UC-070 A9) turns it
+	// on. The experiment loop reads the gate itself at use time.
+	ExperimentsEnabled bool
 }
 
 // Permits reports whether the named intervention is in the allow-list.
@@ -801,6 +805,7 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 		ProbeDecisions:   f.probeDecisions(ctx),
 
 		InterventionsEnabled: f.InterventionsEnabled(ctx),
+		ExperimentsEnabled:   f.boolFlag(ctx, keyExperimentsEnabled, false),
 	}
 }
 

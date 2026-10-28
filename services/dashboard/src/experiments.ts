@@ -92,6 +92,14 @@ export interface ExperimentView {
   experimentId: string;
   /** experiment.status of the snapshot. */
   status: string;
+  /** experiment.flag_key: the game flag under test ("" on an older agent image). */
+  flagKey: string;
+  /** experiment.objective: the fitness objective being optimized. */
+  objective: string;
+  /** experiment.thesis: why the change should help (#2291). */
+  thesis: string;
+  /** experiment.experimental_value: the experimental arm's flag value as JSON (#2291). */
+  experimentalValue: string;
   arms: ArmAggregate[];
   /** experimental mean minus control mean when both arms have samples, else null. */
   delta: number | null;
@@ -169,6 +177,10 @@ export function experimentFrom(span: JaegerSpan): ExperimentView {
   return {
     experimentId: tagString(tags, "experiment.id"),
     status,
+    flagKey: tagString(tags, "experiment.flag_key"),
+    objective: tagString(tags, "experiment.objective"),
+    thesis: tagString(tags, "experiment.thesis"),
+    experimentalValue: tagString(tags, "experiment.experimental_value"),
     arms,
     delta,
     verdict: resolveVerdict(tagString(tags, "verdict.outcome"), status),
@@ -249,9 +261,4 @@ export async function pollExperiments(store: ExperimentStore, signal?: AbortSign
   );
   store.merge(parseExperimentSnapshots(body));
   return store.list();
-}
-
-/** A one-shot read with a fresh store (cold start). */
-export async function fetchExperiments(signal?: AbortSignal): Promise<ExperimentView[]> {
-  return pollExperiments(new ExperimentStore(), signal);
 }

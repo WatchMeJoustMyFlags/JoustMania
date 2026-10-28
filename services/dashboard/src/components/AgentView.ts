@@ -375,6 +375,8 @@ export function renderFlagPanel(flags: FlagPanel | null): string {
     ["max interventions/min", flags.maxPerMinute || "—"],
     ["interventions allowed", flags.interventionsAllowed || "—"],
     ["interventions enabled (write gate)", onOff(flags.interventionsEnabled)],
+    ["experiments enabled", onOff(flags.experimentsEnabled)],
+    ["LLM eligible game kinds", flags.eligibleGameKinds || "—"],
     ["objectives", flags.objectives || "—"],
     ["game mode", flags.gameMode || "—"],
   ];

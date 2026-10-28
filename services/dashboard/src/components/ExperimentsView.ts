@@ -83,7 +83,7 @@ export class ExperimentsView {
   }
 
   private renderCard(exp: ExperimentView): string {
-    const verdict = normalizeVerdict(exp.verdict, exp.live);
+    const verdict = normalizeVerdict(exp.verdict, exp.live, exp.status);
     const armsHtml = exp.arms.map((arm) => this.renderArm(arm)).join("");
     const deltaHtml = this.renderDelta(exp.delta);
 
@@ -95,13 +95,15 @@ export class ExperimentsView {
           </span>
           <span class="experiment-verdict ${verdict.cssClass}">${escapeHtml(verdict.label)}</span>
         </div>
+        ${renderTested(exp)}
         <div class="experiment-arms">
           ${armsHtml}
         </div>
         <div class="experiment-footer">
           ${deltaHtml}
           ${exp.recommendation ? `<div class="experiment-recommendation">${escapeHtml(recommendationText(exp.recommendation))}</div>` : ""}
-          ${exp.reason ? `<div class="experiment-reason" title="${escapeHtml(exp.reason)}">${escapeHtml(exp.reason)}</div>` : ""}
+          ${exp.reason ? `<div class="experiment-reason" title="${escapeHtml(exp.reason)}">${escapeHtml(endedText(exp))}</div>` : ""}
+          ${renderTraceLink(exp)}
         </div>
       </div>
     `;
@@ -136,6 +138,34 @@ export class ExperimentsView {
   }
 }
 
+/** What is tested (#2291): the flag, the experimental value and the objective, then the thesis. */
+export function testedText(exp: ExperimentView): string {
+  const parts: string[] = [];
+  if (exp.flagKey) parts.push(exp.experimentalValue ? `${exp.flagKey} = ${exp.experimentalValue}` : exp.flagKey);
+  if (exp.objective) parts.push(`objective: ${exp.objective}`);
+  return parts.join(" · ");
+}
+
+/** How it ended (#2291): the status and the end reason, e.g. "aborted: operator stop". */
+export function endedText(exp: ExperimentView): string {
+  return exp.reason ? `${exp.status || "ended"}: ${exp.reason}` : "";
+}
+
+function renderTested(exp: ExperimentView): string {
+  const tested = testedText(exp);
+  if (!tested && !exp.thesis) return "";
+  return `<div class="experiment-tested">
+          ${tested ? `<div class="experiment-flag" title="${escapeHtml(tested)}">${escapeHtml(tested)}</div>` : ""}
+          ${exp.thesis ? `<div class="experiment-thesis" title="${escapeHtml(exp.thesis)}">${escapeHtml(exp.thesis)}</div>` : ""}
+        </div>`;
+}
+
+/** Link to the snapshot's trace in the embedded Jaeger (same host, UC-035 BR-001). */
+function renderTraceLink(exp: ExperimentView): string {
+  if (!exp.traceId) return "";
+  return `<a class="experiment-trace" href="/jaeger/trace/${encodeURIComponent(exp.traceId)}" target="_blank" rel="noopener">trace</a>`;
+}
+
 /** UC-035 step 4 / UC-043 A19 (#2276): the refused promotion as a recommendation. */
 export function recommendationText(rec: Recommendation): string {
   return `would promote ${rec.flag}=${rec.value}; real value owned by ${rec.owner}`;
@@ -147,14 +177,22 @@ function prettyArm(arm: string): string {
   return arm;
 }
 
-interface NormalizedVerdict {
+export interface NormalizedVerdict {
   label: string;
   cssClass: string;
 }
 
-function normalizeVerdict(verdict: string, live: boolean): NormalizedVerdict {
+/**
+ * The card's verdict label. A status of `done` is NOT a promotion: the span does
+ * not say whether the dossier decision was promoted, reverted or deferred (#2291),
+ * so a `done` without a promote outcome reads "Done".
+ */
+export function normalizeVerdict(verdict: string, live: boolean, status = ""): NormalizedVerdict {
   const v = verdict.toLowerCase();
-  if (v === "promote" || v === "promoted" || v === "done") {
+  if (v === "done") {
+    return { label: "Done", cssClass: "verdict-inconclusive" };
+  }
+  if (v === "promote" || v === "promoted") {
     return { label: "Promote", cssClass: "verdict-promote" };
   }
   if (v === "discard" || v === "discarded" || v === "rejected") {
@@ -164,7 +202,7 @@ function normalizeVerdict(verdict: string, live: boolean): NormalizedVerdict {
     return { label: "Inconclusive", cssClass: "verdict-inconclusive" };
   }
   if (!live) {
-    return { label: verdict || "Concluded", cssClass: "verdict-inconclusive" };
+    return { label: verdict || status || "Concluded", cssClass: "verdict-inconclusive" };
   }
   return { label: "Running", cssClass: "verdict-running" };
 }
