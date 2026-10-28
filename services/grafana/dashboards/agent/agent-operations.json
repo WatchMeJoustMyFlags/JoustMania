@@ -614,7 +614,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Why a remote decision backend (decision.backend != rules) or a post-game retro was not called, by gate reason: llm_not_eligible (game kind not in llm.eligible_game_kinds, e.g. shadow games), decide_interval (decision.min_interval_ms cadence), llm_budget_exhausted (llm.max_requests_per_minute spent), no_interventions_allowed (interventions_allowed is none / noop only, #1298), and the configuration fallbacks unknown_backend, backend_unavailable (no API key / model / base URL) and async_not_wired, counted every cycle. 0 (none) while nothing is gated. Source: agent_llm_gated_total.",
+      "description": "Why a remote decision backend (decision.backend != rules) or a post-game retro was not called, by gate reason: llm_not_eligible (game kind not in llm.eligible_game_kinds, e.g. shadow games), decide_interval (decision.min_interval_ms cadence), llm_budget_exhausted (llm.max_requests_per_minute spent), no_interventions_allowed (interventions_allowed is none / noop only, or in an experiment game only levers of the flag under test, #1298, #2251), and the configuration fallbacks unknown_backend, backend_unavailable (no API key / model / base URL) and async_not_wired, counted every cycle. 0 (none) while nothing is gated. Source: agent_llm_gated_total.",
       "fieldConfig": {
         "defaults": {
           "color": {

@@ -767,7 +767,7 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, rules RulesE
 	// The remote call gate is not reached on rules: leave the empty-allow-list
 	// state so its "entering" debug line fires again on a later remote cycle (#1298).
 	l.llmGate.Lock()
-	l.noteNoInterventions(c, false)
+	l.noteNoInterventions(c, false, false)
 	l.noteMisconfigured(c, flags.DecisionBackendRules, "")
 	l.llmGate.Unlock()
 	return l.rulesDecide(ctx, snapshot, rules, c, flags.DecisionBackendRules, "")
