@@ -24,6 +24,7 @@ from services.controller_manager.multiplexer.hid_stream import HidStreamMixin
 from services.controller_manager.multiplexer.hid_stream import (
     sensor_data_to_dict as _sensor_data_to_dict,  # noqa: F401  (tests import it here)
 )
+from services.controller_manager.multiplexer.press_latch import merge_latched_presses
 
 logger = logging.getLogger(__name__)
 
@@ -158,9 +159,10 @@ class RustServiceAdapter(HidStreamMixin, ControllerIOAdapter):
             new_data = self._latest_data.pop(serial, None)
             if new_data is not None:
                 self._last_state[serial] = new_data
-                return new_data
+                # A tap between two polls reads as pressed once; the cache keeps the real sample (#2312).
+                return merge_latched_presses(self._press_latch, serial, new_data)
             # No new stream data — return cached state so callers don't count as drop
-            return self._last_state.get(serial)
+            return merge_latched_presses(self._press_latch, serial, self._last_state.get(serial))
 
     def set_output(self, serial: str, r: int, g: int, b: int, rumble: int) -> bool:
         from proto import psmove_hid_pb2
@@ -190,6 +192,7 @@ class RustServiceAdapter(HidStreamMixin, ControllerIOAdapter):
             self._latest_data.pop(serial, None)
             self._last_state.pop(serial, None)
             self._trigger_latch.discard(serial)
+            self._press_latch.pop(serial, None)
             self._closed.add(serial)
         self._adapter_names.pop(serial, None)
 
@@ -209,6 +212,7 @@ class RustServiceAdapter(HidStreamMixin, ControllerIOAdapter):
             self._latest_data.clear()
             self._last_state.clear()
             self._trigger_latch.clear()
+            self._press_latch.clear()
             self._closed.clear()
         self._adapter_names.clear()
 

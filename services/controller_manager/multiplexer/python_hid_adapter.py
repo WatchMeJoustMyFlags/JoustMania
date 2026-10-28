@@ -24,6 +24,7 @@ import grpc
 from lib.controller_constants import normalize_serial
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter, DiscoveryFailedError
 from services.controller_manager.multiplexer.hid_stream import HidStreamMixin
+from services.controller_manager.multiplexer.press_latch import merge_latched_presses
 
 # Same deadline as the rust adapter on every unary call (#2140): a failed or
 # timed-out Discover raises DiscoveryFailedError, a failed Open returns False.
@@ -156,9 +157,10 @@ class PythonHidAdapter(HidStreamMixin, ControllerIOAdapter):
             new_data = self._latest_data.pop(serial, None)
             if new_data is not None:
                 self._last_state[serial] = new_data
-                return new_data
+                # A tap between two polls reads as pressed once; the cache keeps the real sample (#2312).
+                return merge_latched_presses(self._press_latch, serial, new_data)
             # No new stream data — return cached state so callers don't count as drop
-            return self._last_state.get(serial)
+            return merge_latched_presses(self._press_latch, serial, self._last_state.get(serial))
 
     def set_output(self, serial: str, r: int, g: int, b: int, rumble: int) -> bool:
         from proto import psmove_hid_pb2
@@ -188,6 +190,7 @@ class PythonHidAdapter(HidStreamMixin, ControllerIOAdapter):
             self._latest_data.pop(serial, None)
             self._last_state.pop(serial, None)
             self._trigger_latch.discard(serial)
+            self._press_latch.pop(serial, None)
             self._closed.add(serial)
         self._adapter_names.pop(serial, None)
 
@@ -207,6 +210,7 @@ class PythonHidAdapter(HidStreamMixin, ControllerIOAdapter):
             self._latest_data.clear()
             self._last_state.clear()
             self._trigger_latch.clear()
+            self._press_latch.clear()
             self._closed.clear()
         self._adapter_names.clear()
 

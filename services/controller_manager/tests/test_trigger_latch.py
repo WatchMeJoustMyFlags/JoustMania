@@ -151,7 +151,7 @@ def _bare_hid(adapter_cls):
 class TestUC030HidTriggerLatch:
     @pytest.mark.uc("UC-030", flow="A6", br=["BR-005"])
     def test_press_and_release_between_polls_is_latched(self, adapter_cls):
-        """UC-030 BR-005: poll() only sees the last sample (released), the latch remembers the press."""
+        """UC-030 BR-005: the game-frame latch remembers the press after the release, independent of poll()."""
         adapter = _bare_hid(adapter_cls)
         adapter._stub.StreamIO.return_value = FakeStreamCall(
             [
@@ -164,7 +164,10 @@ class TestUC030HidTriggerLatch:
 
         adapter._stream_loop()
 
+        # The poll path has its own press latch since #2312 (UC-010 BR-012): one poll pressed, then the real level.
+        assert adapter.poll(HID_SERIAL)[ButtonKey.TRIGGER] is True
         assert adapter.poll(HID_SERIAL)[ButtonKey.TRIGGER] is False
+        # A poll never drains the game-frame latch.
         assert adapter.consume_trigger_press(HID_SERIAL) is True
         assert adapter.consume_trigger_press(HID_SERIAL) is False  # a hold is one press
 
