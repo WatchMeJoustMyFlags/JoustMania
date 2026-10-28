@@ -25,6 +25,7 @@ from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
+from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 HID_SERIAL = normalize_serial("AA:BB:CC:DD:EE:01")
 
@@ -131,6 +132,7 @@ class TestUC030MockTriggerLatch:
 
 def _bare_hid(adapter_cls):
     adapter = adapter_cls.__new__(adapter_cls)
+    adapter._init_stream_state()
     adapter._channel = MagicMock()
     adapter._stub = MagicMock()
     adapter._latest_data = {}
@@ -149,7 +151,7 @@ class TestUC030HidTriggerLatch:
     def test_press_and_release_between_polls_is_latched(self, adapter_cls):
         """UC-030 BR-005: poll() only sees the last sample (released), the latch remembers the press."""
         adapter = _bare_hid(adapter_cls)
-        adapter._stub.StreamIO.return_value = iter(
+        adapter._stub.StreamIO.return_value = FakeStreamCall(
             [
                 psmove_hid_pb2.SensorData(serial=HID_SERIAL, button_trigger=False),
                 psmove_hid_pb2.SensorData(serial=HID_SERIAL, button_trigger=True),
@@ -167,7 +169,7 @@ class TestUC030HidTriggerLatch:
     @pytest.mark.uc("UC-030", flow="A6", br=["BR-005"])
     def test_no_press_no_latch_and_close_clears_it(self, adapter_cls):
         adapter = _bare_hid(adapter_cls)
-        adapter._stub.StreamIO.return_value = iter([psmove_hid_pb2.SensorData(serial=HID_SERIAL)])
+        adapter._stub.StreamIO.return_value = FakeStreamCall([psmove_hid_pb2.SensorData(serial=HID_SERIAL)])
         adapter._stream_loop()
         assert adapter.consume_trigger_press(HID_SERIAL) is False
 
