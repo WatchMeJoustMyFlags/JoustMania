@@ -60,11 +60,21 @@ const MAX_FEED_ROWS = 80;
  * `agent_intervention_writes_total{result="ok"|"error"}` is the ActionSink's
  * flag-file write counter (services/agent/actions/writer.go). VM receives the
  * metric under the namespaced job, so we sum across jobs rather than pinning one.
- * Same window as BLOCKED_QUERY (#2288), not the counter's lifetime. The metric
- * carries no game_kind label, so real and shadow writes are not split here.
+ * Same window as BLOCKED_QUERY (#2288), not the counter's lifetime. Grouped by
+ * game_kind so real and shadow writes are counted apart (#2294).
  * Best effort: when VM is unreachable the overlay shows `n/a`.
  */
-const APPLIED_QUERY = `sum by (result) (increase(agent_intervention_writes_total[${LOOKBACK_SECONDS}s]))`;
+const APPLIED_QUERY = `sum by (result, game_kind) (increase(agent_intervention_writes_total[${LOOKBACK_SECONDS}s]))`;
+
+/**
+ * The agent counters carry `game_kind` in the telemetry vocabulary (#2294,
+ * telemetry.md): `primary` is a real, player-facing game, `shadow` a parallel
+ * evaluation game. A series without the label comes from an agent image that
+ * predates it and counts as real, as the panel did before the split.
+ */
+export function isShadowKind(gameKind: string | undefined): boolean {
+  return gameKind === "shadow";
+}
 
 /**
  * VictoriaMetrics query for the blocked decisions of the window, by action and
@@ -73,7 +83,7 @@ const APPLIED_QUERY = `sum by (result) (increase(agent_intervention_writes_total
  * is left out: the value was already in place, not a refusal (#2046, #2288).
  */
 const BLOCKED_QUERY =
-  `sum by (action, block_reason) (increase(agent_decisions_total{blocked="true",block_reason!="already_applied"}[${LOOKBACK_SECONDS}s]))`;
+  `sum by (action, block_reason, game_kind) (increase(agent_decisions_total{blocked="true",block_reason!="already_applied"}[${LOOKBACK_SECONDS}s]))`;
 
 /** Jaeger operation of the effective flag set per game partition (#2059). */
 export const FLAG_STATE_OPERATION = "agent.flag_state";
@@ -159,16 +169,22 @@ export interface InterventionTally {
 
 /** Folded intervention overlay state. */
 export interface InterventionOverlay {
-  /** Per-action blocked counts from VictoriaMetrics (descending). */
+  /** Per-action blocked counts of real games from VictoriaMetrics (descending). */
   blockedByAction: InterventionTally[];
   /** Blocked counts grouped by reason (descending). */
   blockedByReason: { reason: string; count: number }[];
-  /** Total blocked decisions in the window; null when VictoriaMetrics is unreachable. */
+  /** Total blocked decisions of real games in the window; null when VictoriaMetrics is unreachable. */
   totalBlocked: number | null;
+  /** Total blocked decisions of shadow games in the window; null when VictoriaMetrics is unreachable. */
+  shadowBlocked: number | null;
   /** Applied writes (result="ok"), null when VM was unreachable (0 when it had no samples). */
   appliedOk: number | null;
   /** Failed flag-file writes (result="error"), or null when unavailable. */
   appliedError: number | null;
+  /** Applied writes of shadow games (game_kind="shadow"), null when VM was unreachable. */
+  shadowAppliedOk: number | null;
+  /** Failed writes of shadow games, or null when unavailable. */
+  shadowAppliedError: number | null;
 }
 
 /** The full folded state the Agent tab renders. */
@@ -190,36 +206,48 @@ function toSortedReasons(m: Map<string, number>): { reason: string; count: numbe
     .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
 }
 
+/** The applied/error write counts, real and shadow games apart (#2294). */
+export type AppliedCounts = Pick<
+  InterventionOverlay,
+  "appliedOk" | "appliedError" | "shadowAppliedOk" | "shadowAppliedError"
+>;
+
+/** VictoriaMetrics down or no samples: every applied count is n/a. */
+export const APPLIED_UNAVAILABLE: AppliedCounts = {
+  appliedOk: null,
+  appliedError: null,
+  shadowAppliedOk: null,
+  shadowAppliedError: null,
+};
+
 /**
  * Parse a VictoriaMetrics instant-query response into the applied/error counts.
  * Sums across all `result` series. A successful empty answer is zero (no writes in
  * the window), not unavailable; only a malformed body returns nulls ("n/a").
  */
-export function parseAppliedCounts(body: VmQueryResponse): {
-  appliedOk: number | null;
-  appliedError: number | null;
-} {
+export function parseAppliedCounts(body: VmQueryResponse): AppliedCounts {
   const results = body.data?.result;
   if (body.status !== "success" || !results) {
-    return { appliedOk: null, appliedError: null };
+    return APPLIED_UNAVAILABLE;
   }
-  let ok = 0;
-  let err = 0;
+  // The query answered, so a missing outcome (or an empty answer) is zero, not n/a.
+  const out = { appliedOk: 0, appliedError: 0, shadowAppliedOk: 0, shadowAppliedError: 0 };
   for (const series of results) {
     const result = series.metric["result"];
     const v = Math.round(Number.parseFloat(series.value?.[1] ?? ""));
     if (!Number.isFinite(v)) continue;
-    if (result === "ok") ok += v;
-    else if (result === "error") err += v;
+    const shadow = isShadowKind(series.metric["game_kind"]);
+    if (result === "ok") out[shadow ? "shadowAppliedOk" : "appliedOk"] += v;
+    else if (result === "error") out[shadow ? "shadowAppliedError" : "appliedError"] += v;
   }
-  return { appliedOk: ok, appliedError: err };
+  return out;
 }
 
 /** The blocked tallies of the intervention overlay. */
-export type BlockedTallies = Pick<InterventionOverlay, "blockedByAction" | "blockedByReason" | "totalBlocked">;
+export type BlockedTallies = Pick<InterventionOverlay, "blockedByAction" | "blockedByReason" | "totalBlocked" | "shadowBlocked">;
 
 /** VictoriaMetrics down: every blocked tally is n/a (UC-035 A3, UC-040 A21). */
-export const BLOCKED_UNAVAILABLE: BlockedTallies = { blockedByAction: [], blockedByReason: [], totalBlocked: null };
+export const BLOCKED_UNAVAILABLE: BlockedTallies = { blockedByAction: [], blockedByReason: [], totalBlocked: null, shadowBlocked: null };
 
 /**
  * Parse the BLOCKED_QUERY response into the overlay's blocked tallies. `increase`
@@ -231,9 +259,14 @@ export function parseBlockedCounts(body: VmQueryResponse): BlockedTallies {
   const byAction = new Map<string, number>();
   const byReason = new Map<string, number>();
   let total = 0;
+  let shadowTotal = 0;
   for (const series of results) {
     const n = Math.round(Number.parseFloat(series.value?.[1] ?? ""));
     if (!Number.isFinite(n) || n <= 0) continue;
+    if (isShadowKind(series.metric["game_kind"])) {
+      shadowTotal += n;
+      continue;
+    }
     const action = series.metric["action"] ?? "";
     const reason = series.metric["block_reason"] ?? "";
     total += n;
@@ -244,6 +277,7 @@ export function parseBlockedCounts(body: VmQueryResponse): BlockedTallies {
     blockedByAction: toSortedTallies(byAction),
     blockedByReason: toSortedReasons(byReason),
     totalBlocked: total,
+    shadowBlocked: shadowTotal,
   };
 }
 
@@ -252,7 +286,7 @@ export async function fetchInterventionCounts(signal?: AbortSignal): Promise<Int
   const [applied, blocked] = await Promise.all([vmQuery(APPLIED_QUERY, signal), vmQuery(BLOCKED_QUERY, signal)]);
   return {
     ...(blocked ? parseBlockedCounts(blocked) : BLOCKED_UNAVAILABLE),
-    ...(applied ? parseAppliedCounts(applied) : { appliedOk: null, appliedError: null }),
+    ...(applied ? parseAppliedCounts(applied) : APPLIED_UNAVAILABLE),
   };
 }
 
