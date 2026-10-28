@@ -9,6 +9,7 @@ import (
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/flagservice"
 	"github.com/joustmania/agent/inference"
 )
 
@@ -144,7 +145,7 @@ func (b *textBackends) ProposerBackend(ctx context.Context) (experiment.Backend,
 // inert stub as the fixed backend, the per-cycle backend source (inference.backend)
 // and the shared LLM admission, always installed and consulted only for a real
 // cycle. main.go and the proposer wiring tests both use it.
-func newWiredProposer(source experiment.BackendSource, sink experiment.ProposalSink, vocab func() map[string]struct{},
+func newWiredProposer(source experiment.BackendSource, sink experiment.ProposalSink, vocab func() map[string]flagservice.FlagView,
 	admission experiment.LLMAdmission, logger *slog.Logger) *experiment.Proposer {
 	p := experiment.NewProposer(proposeBackend{}, sink, vocab, nil, logger)
 	p.SetLLMAdmission(admission)

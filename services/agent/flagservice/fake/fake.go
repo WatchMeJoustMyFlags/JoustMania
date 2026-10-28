@@ -42,6 +42,8 @@ type Policy struct {
 	Integer bool
 	// Shape accepts an object with the default variant's keys and value kinds.
 	Shape bool
+	// Description is served in the view's policy (flags.md §13, #2345).
+	Description string
 }
 
 type armKey struct{ exp, arm string }
@@ -406,7 +408,10 @@ func (f *flagState) view(key string) flagservice.FlagView {
 		Rendered:         f.rendered(),
 	}
 	if len(scopes) > 0 {
-		v.Policy = &flagservice.Policy{Kind: "overlay", Scopes: scopes}
+		v.Policy = &flagservice.Policy{
+			Kind: "overlay", Scopes: scopes, Description: f.policy.Description,
+			Bounds: flagservice.Bounds{Range: f.policy.Range, Integer: f.policy.Integer},
+		}
 	}
 	if f.stack != nil {
 		v.StackOverlay = &flagservice.ValueView{Variant: f.stack.variant, Value: f.stack.raw, Writer: f.stack.writer}
@@ -508,10 +513,11 @@ func RegistryPolicies(path, set string) (map[string]Policy, error) {
 	}
 	var doc struct {
 		Flags []struct {
-			Set    string   `yaml:"set"`
-			Key    string   `yaml:"key"`
-			Scope  []string `yaml:"scope"`
-			Bounds struct {
+			Set         string   `yaml:"set"`
+			Key         string   `yaml:"key"`
+			Scope       []string `yaml:"scope"`
+			Description string   `yaml:"description"`
+			Bounds      struct {
 				Range   []float64 `yaml:"range"`
 				Integer bool      `yaml:"integer"`
 				Shape   bool      `yaml:"shape"`
@@ -524,7 +530,7 @@ func RegistryPolicies(path, set string) (map[string]Policy, error) {
 	out := map[string]Policy{}
 	for _, f := range doc.Flags {
 		if f.Set == set {
-			out[f.Key] = Policy{Scopes: f.Scope, Range: f.Bounds.Range, Integer: f.Bounds.Integer, Shape: f.Bounds.Shape}
+			out[f.Key] = Policy{Scopes: f.Scope, Range: f.Bounds.Range, Integer: f.Bounds.Integer, Shape: f.Bounds.Shape, Description: f.Description}
 		}
 	}
 	return out, nil

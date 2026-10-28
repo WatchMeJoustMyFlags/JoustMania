@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -53,6 +54,10 @@ var validKinds = map[string]bool{KindState: true, KindLevel: true, KindGrant: tr
 var validScopes = map[string]bool{
 	ScopeStack: true, ScopeGame: true, ScopeGameSerial: true, ScopeExperiment: true, ScopeReal: true, ScopeFraction: true,
 }
+
+// MaxDescription is the longest description a registry row may carry (in
+// characters): it bounds the experiment proposer's prompt (#2345).
+const MaxDescription = 120
 
 // MaxFreeString is the longest value a `free string` bound accepts.
 const MaxFreeString = 512
@@ -102,6 +107,10 @@ type Policy struct {
 	// RealWrite restricts writes in scope real: "" (none) or
 	// RealWriteNoLiveRealGame.
 	RealWrite string `yaml:"real_write,omitempty" json:"real_write,omitempty"`
+	// Description says in one line, in game terms, what the flag does (#2345).
+	// Required on a row that allows ScopeExperiment: the agent's experiment
+	// proposer shows it to the model next to the key, variants and range.
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
 // RealWriteNeedsNoRealGame reports whether a real-scope write of this flag is
@@ -200,6 +209,9 @@ func validatePolicy(p *Policy, b *baseline.Baseline) error {
 	if p.RealWrite != "" && p.RealWrite != RealWriteNoLiveRealGame {
 		return fmt.Errorf("unknown real_write %q (allowed: %s)", p.RealWrite, RealWriteNoLiveRealGame)
 	}
+	if err := validDescription(p); err != nil {
+		return err
+	}
 	if p.RealWrite != "" && p.Kind != KindOverlay {
 		return fmt.Errorf("real_write needs kind overlay")
 	}
@@ -244,6 +256,28 @@ func validatePolicy(p *Policy, b *baseline.Baseline) error {
 		if f := p.Bounds.Fraction; len(f) != 2 || f[0] < 1 || f[1] > 100 || f[0] > f[1] {
 			return fmt.Errorf("a fraction scope needs bounds.fraction [lo, hi] within 1..100")
 		}
+	}
+	return nil
+}
+
+// validDescription checks the description: one line of at most MaxDescription
+// characters, and present on every row of the experiment catalog.
+func validDescription(p *Policy) error {
+	d := p.Description
+	if strings.TrimSpace(d) == "" {
+		if p.AllowsScope(ScopeExperiment) {
+			return fmt.Errorf("a row with scope %s needs a description (one line, in game terms, the experiment proposer shows it)", ScopeExperiment)
+		}
+		if d != "" {
+			return fmt.Errorf("description is blank")
+		}
+		return nil
+	}
+	if strings.ContainsAny(d, "\r\n") {
+		return fmt.Errorf("description must be one line")
+	}
+	if n := utf8.RuneCountInString(d); n > MaxDescription {
+		return fmt.Errorf("description has %d characters, at most %d", n, MaxDescription)
 	}
 	return nil
 }

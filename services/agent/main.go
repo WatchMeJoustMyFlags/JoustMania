@@ -1094,7 +1094,9 @@ func proposerPermit(src proposerGateFlags, proposerCeiling bool) func(ctx contex
 	}
 }
 
-// gameFlagVocab returns the experiment catalog's flag keys (R3, #1415): the
+// gameFlagVocab returns the experiment catalog (R3, #1415), each key with its
+// flag-service view (description, variants, range; the proposer prompt shows
+// them, UC-042 BR-008, #2345): the
 // game flags whose registry row allows an experiment-arm write, read from the
 // flag service on every call. The proposer constrains the model to this set and
 // the decoder validates against it. A read error returns an empty set, which
@@ -1105,14 +1107,14 @@ func proposerPermit(src proposerGateFlags, proposerCeiling bool) func(ctx contex
 // dynamic declarer; a nil gate keeps every hold key out). A key on the built-in
 // denylist floor (defaultDynamicDenylist) is never in the set, even when its
 // catalog row allows an experiment-arm write (UC-070 BR-008, #1961).
-func gameFlagVocab(r gameFlagReader, hold *holdGate) func() map[string]struct{} {
-	return func() map[string]struct{} {
+func gameFlagVocab(r gameFlagReader, hold *holdGate) func() map[string]flagservice.FlagView {
+	return func() map[string]flagservice.FlagView {
 		catalog := readGameCatalog(r)
 		offerable := hold.filter(context.Background(), catalog)
-		set := make(map[string]struct{}, len(catalog))
-		for k := range catalog {
+		set := make(map[string]flagservice.FlagView, len(catalog))
+		for k, view := range catalog {
 			if offerable(k) && !builtinDenied(k) {
-				set[k] = struct{}{}
+				set[k] = view
 			}
 		}
 		return set

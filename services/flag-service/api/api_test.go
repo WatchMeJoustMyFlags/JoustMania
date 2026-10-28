@@ -554,3 +554,40 @@ func TestIfWriterInPut(t *testing.T) {
 		}
 	})
 }
+
+// The read endpoints serve a catalog row's description inside its policy, for
+// one flag and for the whole set; a row without one carries no description key
+// (#2345).
+//
+// UC: UC-042 BR-008
+func TestReadEndpointsServeDescription(t *testing.T) {
+	e := newEnv(t, false)
+	t.Run("UC-042/BR-008 GET /game/{flag} and GET /game carry policy.description", func(t *testing.T) {
+		s, b := e.do("GET", "/game/shield.energy_budget_seconds", nil)
+		if s != 200 {
+			t.Fatalf("GET flag: %d", s)
+		}
+		policy, _ := b["policy"].(map[string]any)
+		if d, _ := policy["description"].(string); !strings.Contains(d, "seconds of active shield") {
+			t.Fatalf("policy.description = %q, want the registry text", d)
+		}
+		s, b = e.do("GET", "/game", nil)
+		if s != 200 {
+			t.Fatalf("GET set: %d", s)
+		}
+		described := 0
+		for _, f := range b["flags"].([]any) {
+			p, _ := f.(map[string]any)["policy"].(map[string]any)
+			if d, _ := p["description"].(string); d != "" {
+				described++
+			}
+		}
+		if described < 20 {
+			t.Fatalf("GET /game: %d flags with a description, want every catalog row", described)
+		}
+		_, b = e.do("GET", "/game/num_teams", nil)
+		if _, ok := b["policy"].(map[string]any)["description"]; ok {
+			t.Fatalf("num_teams has no description, the key must be absent: %v", b["policy"])
+		}
+	})
+}

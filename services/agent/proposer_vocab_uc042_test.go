@@ -24,13 +24,18 @@ func (r setReader) GetSet(context.Context, string) (flagservice.SetView, error) 
 // UC: UC-042 main
 func TestGameFlagVocab_ExperimentCatalogOnly(t *testing.T) {
 	r := setReader{set: flagservice.SetView{Flags: []flagservice.FlagView{
-		{Flag: "sensitivity", Policy: &flagservice.Policy{Scopes: []string{"stack", "experiment+arm"}}},
+		{Flag: "sensitivity", Policy: &flagservice.Policy{Scopes: []string{"stack", "experiment+arm"}, Description: "movement a player survives"}},
 		{Flag: "operator_only", Policy: &flagservice.Policy{Scopes: []string{"stack"}}},
 		{Flag: "no_policy"},
 	}}}
 	got := gameFlagVocab(r, nil)()
 	if _, ok := got["sensitivity"]; !ok || len(got) != 1 {
 		t.Fatalf("vocab = %v, want exactly {sensitivity}", got)
+	}
+	// The entry keeps the flag-service view, so the prompt can show the
+	// description (UC-042 BR-008, #2345).
+	if d := got["sensitivity"].Policy.Description; d != "movement a player survives" {
+		t.Fatalf("vocab entry description = %q, want the served one", d)
 	}
 
 	if got := gameFlagVocab(setReader{err: errors.New("down")}, nil)(); len(got) != 0 {
