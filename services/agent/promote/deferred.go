@@ -550,7 +550,7 @@ func (pr *Promoter) drainWrites(ctx context.Context, resolve ConfigResolver) {
 		case errors.Is(err, ErrRealOverlayOwnedByAnotherWriter):
 			// UC-043 A19 (#2260): another writer owns the real overlay; the
 			// waiting write is dropped, not requeued.
-			pr.journalDeferred(w.proposal, OutcomeDiscarded, ReasonRealOverlayForeign)
+			pr.journalDeferred(w.proposal, OutcomeDiscarded, foreignReason(err))
 			continue
 		case err != nil:
 			pr.journalDeferred(w.proposal, OutcomeDiscarded, err.Error())

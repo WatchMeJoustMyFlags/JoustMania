@@ -213,9 +213,6 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 		if scope != "real" {
 			return flagservice.Result{}, &flagservice.Error{Status: 400, Reason: "malformed", Detail: "if_writer_in outside scope real"}
 		}
-		if !realWriterAllowed(f.real, w.IfWriterIn) {
-			return flagservice.Result{}, &flagservice.Error{Status: 412, Reason: flagservice.ReasonWriterMismatch, Detail: "fake: real overlay owned by another writer"}
-		}
 	}
 	var v value
 	if w.Variant != "" {
@@ -238,6 +235,10 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 		}
 		s.counter++
 		v = value{variant: fmt.Sprintf("rfake_%d", s.counter), raw: raw, writer: w.Writer}
+	}
+	// Checked last, after the 422 value/bounds checks, like the real service.
+	if w.IfWriterIn != nil && !realWriterAllowed(f.real, w.IfWriterIn) {
+		return flagservice.Result{}, &flagservice.Error{Status: 412, Reason: flagservice.ReasonWriterMismatch, Detail: "fake: real overlay owned by another writer"}
 	}
 	var before json.RawMessage
 	var restore func()

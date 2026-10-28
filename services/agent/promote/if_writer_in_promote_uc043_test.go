@@ -1,9 +1,12 @@
 package promote
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/joustmania/agent/experiment"
@@ -53,7 +56,12 @@ func TestUC043_A19_PromotionWritePrecondition(t *testing.T) {
 		svc := newPromotionService(t)
 		putOverlay(t, svc, "operator", 2.0)
 		w := writerForTest(t, svc, t.TempDir())
+		var logBuf bytes.Buffer
+		w.log = slog.New(slog.NewTextHandler(&logBuf, nil))
 		err := w.SetRealDefault(ctx, promotedFlag, 3.0)
+		if !strings.Contains(logBuf.String(), "owner=operator") {
+			t.Fatalf("WARN log = %q, want the owning writer", logBuf.String())
+		}
 		if !errors.Is(err, ErrRealOverlayOwnedByAnotherWriter) {
 			t.Fatalf("SetRealDefault = %v, want ErrRealOverlayOwnedByAnotherWriter", err)
 		}
@@ -74,8 +82,8 @@ func TestUC043_A19_PromotionWritePrecondition(t *testing.T) {
 		ev.RealDefaultValue = 3.0
 		prop := experiment.Proposal{FlagKey: promotedFlag, ExperimentID: "exp-a19", ExperimentalValue: 3.0}
 		res := p.Promote(ctx, prop, promoteVerdict, autoOn, ev)
-		if res.Outcome != OutcomeDiscarded || res.Reason != ReasonRealOverlayForeign {
-			t.Fatalf("outcome = %q (%s), want discarded (%s)", res.Outcome, res.Reason, ReasonRealOverlayForeign)
+		if res.Outcome != OutcomeDiscarded || res.Reason != ReasonRealOverlayForeign+" owner=operator" {
+			t.Fatalf("outcome = %q (%s), want discarded (%s owner=operator)", res.Outcome, res.Reason, ReasonRealOverlayForeign)
 		}
 		if got := realOverlayWriterOf(t, svc); got != "operator" {
 			t.Fatalf("real overlay writer = %q, want operator", got)
@@ -97,10 +105,10 @@ func TestUC043_A19_DeferredWriteMeetsAnotherWriter(t *testing.T) {
 		if res := rig.promote(t, holdProposal("exp-w")); res.Outcome != OutcomeDeferred {
 			t.Fatalf("outcome = %q, want deferred", res.Outcome)
 		}
-		rig.realDef.err = fmt.Errorf("promote game/%s: %w", holdKey, ErrRealOverlayOwnedByAnotherWriter)
+		rig.realDef.err = fmt.Errorf("promote game/%s: %w", holdKey, &foreignOverlayError{Owner: "operator"})
 		rig.probe.set(false)
 		rig.p.DrainDeferred(context.Background(), fixed(autoOn))
-		if got := rig.journal.all(); len(got) != 1 || got[0] != "exp-w|discarded|"+ReasonRealOverlayForeign {
+		if got := rig.journal.all(); len(got) != 1 || got[0] != "exp-w|discarded|"+ReasonRealOverlayForeign+" owner=operator" {
 			t.Fatalf("journal = %v, want one discarded %s", got, ReasonRealOverlayForeign)
 		}
 		if len(rig.p.PendingFlags()) != 0 {

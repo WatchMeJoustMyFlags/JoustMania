@@ -148,9 +148,13 @@ func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey s
 		IfWriterIn: []string{promotionWriter, ""},
 	})
 	if flagservice.IsReason(err, flagservice.ReasonWriterMismatch) {
+		owner := ""
+		if view.RealOverlay != nil {
+			owner = view.RealOverlay.Writer
+		}
 		w.log.Warn("code_improvement promotion not made: another writer owns the real overlay (writer_mismatch); nothing written",
-			"flag", flagKey)
-		return fmt.Errorf("promote %s/%s: %w", gameFlagSet, flagKey, ErrRealOverlayOwnedByAnotherWriter)
+			"flag", flagKey, "owner", owner)
+		return fmt.Errorf("promote %s/%s: %w", gameFlagSet, flagKey, &foreignOverlayError{Owner: owner})
 	}
 	if err != nil {
 		return fmt.Errorf("promote %s/%s: %w", gameFlagSet, flagKey, err)
@@ -198,6 +202,28 @@ var ErrSupersededByAnotherWriter = errors.New("real overlay superseded by anothe
 // promotion the flag service refused because another writer owns the real
 // overlay (PUT ?if_writer_in=, 412 writer_mismatch, #2260, UC-043 A19).
 const ReasonRealOverlayForeign = "real_overlay_owned_by_another_writer"
+
+// foreignOverlayError wraps ErrRealOverlayOwnedByAnotherWriter with the writer
+// that owns the overlay (as read before the write), for the log and the journal.
+type foreignOverlayError struct{ Owner string }
+
+func (e *foreignOverlayError) Error() string {
+	return fmt.Sprintf("%s (owner %q)", ErrRealOverlayOwnedByAnotherWriter, e.Owner)
+}
+
+func (e *foreignOverlayError) Is(target error) bool {
+	return target == ErrRealOverlayOwnedByAnotherWriter
+}
+
+// foreignReason is ReasonRealOverlayForeign, with " owner=<writer>" appended
+// when the owner is known; the fixed reason token stays the prefix.
+func foreignReason(err error) string {
+	var fe *foreignOverlayError
+	if errors.As(err, &fe) && fe.Owner != "" {
+		return ReasonRealOverlayForeign + " owner=" + fe.Owner
+	}
+	return ReasonRealOverlayForeign
+}
 
 // ErrRealOverlayOwnedByAnotherWriter is returned by SetRealDefault when the flag
 // service refused the write with 412 writer_mismatch: nothing was written.

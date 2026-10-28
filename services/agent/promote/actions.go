@@ -155,7 +155,7 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 		// UC-043 A19 (#2260): another writer owns the real overlay; the promotion
 		// is not made and not retried. No cooldown: nothing was reverted.
 		res.Outcome = OutcomeDiscarded
-		res.Reason = ReasonRealOverlayForeign
+		res.Reason = foreignReason(err)
 		return
 	}
 	if err != nil {

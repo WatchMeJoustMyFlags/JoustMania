@@ -114,8 +114,8 @@ func TestIfWriterInPut(t *testing.T) {
 }
 
 // UC: UC-043 A19
-func TestIfWriterInPutConcurrency(t *testing.T) {
-	t.Run("UC-043/A19 compare and write are atomic: a concurrent other writer's overlay is never overwritten (run with -race)", func(t *testing.T) {
+func TestIfWriterInPutRaceFree(t *testing.T) {
+	t.Run("UC-043/A19 concurrent conditional and unconditional PUTs are race-free (run with -race), fail only with writer_mismatch, and the precondition still holds afterwards", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
 		const rounds = 300
 		var wg sync.WaitGroup
