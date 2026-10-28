@@ -23,7 +23,8 @@ import {
   fetchInterventionCounts,
   fetchRollouts,
   needsFlagStateFallback,
-  pollDecides,
+  createDecideRun,
+  DECIDE_SEARCH_TIMEOUT_MS,
   FlagFallbackPacer,
   flagFallbackKey,
 } from "./agent.js";
@@ -43,7 +44,8 @@ import {
   paintAgentPanels,
   settleAgentPoll,
 } from "./degrade.js";
-import { FollowTracker, followBanner, visibleTiles } from "./follow.js";
+import { FollowTracker, GameEventClock, followBanner, isRealGameLive, seedFromPoll, visibleTiles } from "./follow.js";
+import type { GameInfoLike } from "./follow.js";
 import { loadModeChoices, startGameEvent } from "./modes.js";
 import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
@@ -74,7 +76,7 @@ const ROLLOUT_EVERY_TICKS = 2;
 // after DECIDE_TIMEOUT_MS so a struggling Jaeger is not piled onto.
 const DECIDE_POLL_MS = 1500;
 const DECIDE_MAX_BACKOFF_MS = 10_000;
-const DECIDE_TIMEOUT_MS = 4000;
+const DECIDE_TIMEOUT_MS = 2 * DECIDE_SEARCH_TIMEOUT_MS + 1000;
 
 // Poll cadence for the followed game (UC-070 BR-005, #1316): ListGames +
 // GetGameState on the game coordinator, two small unary calls. Decides whether
@@ -437,21 +439,17 @@ function startStageSettingsPolling() {
 // also carry the blocked agent.decision and agent.flag_state spans (#2059).
 function startDecidePolling() {
   const store = decideStore;
-  let tick = 0;
   decidePoller = createPoller({
     baseMs: DECIDE_POLL_MS,
     maxMs: DECIDE_MAX_BACKOFF_MS,
     timeoutMs: DECIDE_TIMEOUT_MS,
     isActive: () => tabActive("agent"),
-    run: async (signal) => {
-      const polled = await pollDecides(store, tick, signal);
-      tick += 1;
+    run: createDecideRun(store, (polled) => {
+      for (const error of polled.laneErrors) console.warn("Decide lane failed (feed kept):", error);
       flagStore.merge(polled.flagStates, store.followState);
       agentView.renderDecide(store.feed());
       renderAgentPanels();
-      // Payload pace (#2287, UC-035 BR-011): a large game trace slows the poll.
-      return polled.paceMs;
-    },
+    }),
     onError: (error) => {
       console.error("Decide feed poll error:", error);
       onDecidePollFailed(agentView);
@@ -539,6 +537,21 @@ function updatePlayerCount(visible: number) {
   gameStatus.updatePlayerCount(state.totalPlayers, state.alivePlayers);
 }
 
+// Start / Stop and the status line from GetGameState (UC-035 A6, #2386): the
+// event bus has no replay, so a reload mid-game would keep Stop disabled.
+let polledLive: boolean | null = null;
+const gameEventClock = new GameEventClock();
+function seedGameControls(primary: GameInfoLike | undefined) {
+  const seed = seedFromPoll(primary, polledLive, state.gameState);
+  polledLive = isRealGameLive(primary);
+  if (!seed) return;
+  controls.setGameRunning(seed.running);
+  if (seed.status !== null) {
+    state.gameState = seed.status;
+    gameStatus.updateState(state.gameState);
+  }
+}
+
 // Same single-chain poller with timeout and backoff as the decide feed: a
 // coordinator outage backs off to FOLLOW_MAX_BACKOFF_MS instead of erroring
 // every 2 s, and a transient error keeps the followed game (FollowTracker).
@@ -550,11 +563,14 @@ function startFollowPolling() {
     timeoutMs: FOLLOW_TIMEOUT_MS,
     isActive: followActive,
     run: async (signal) => {
+      const stamp = gameEventClock.stamp();
       const [primary, list] = await Promise.all([
         gameClient.getGameState({}, signal),
         gameClient.listGames(signal),
       ]);
       followTracker.update(primary.gameInfo, list.games ?? []);
+      // An answer older than a game event or a Start / Stop click must not undo it.
+      if (gameEventClock.isCurrent(stamp)) seedGameControls(primary.gameInfo);
       failing = false;
       applyFollow();
     },
@@ -579,7 +595,10 @@ function handleGameEvent(event: { eventType: string; data: { [key: string]: stri
   state.gameState = effect.state.gameState;
   state.alivePlayers = effect.state.alivePlayers;
   state.winner = effect.state.winner;
-  if (effect.gameRunning !== null) controls.setGameRunning(effect.gameRunning);
+  if (effect.gameRunning !== null) {
+    gameEventClock.bump();
+    controls.setGameRunning(effect.gameRunning);
+  }
   if (effect.feedLine !== null) addEvent(effect.feedLine);
 
   gameStatus.updateState(state.gameState);
@@ -602,6 +621,7 @@ function addEvent(text: string) {
 
 // Game controls
 async function handleStartGame() {
+  gameEventClock.bump();
   const mode = controls.getSelectedMode();
   console.log("Starting game:", mode);
 
@@ -619,6 +639,7 @@ async function handleStartGame() {
 }
 
 async function handleStopGame() {
+  gameEventClock.bump();
   console.log("Stopping game");
 
   try {

@@ -1164,14 +1164,36 @@ export interface DecidePollResult {
   /** Minimum wait before the next poll (decidePaceMs, live-game cap while a game search ran). */
   paceMs: number;
   flagStates: FlagPanel[];
+  /** Failures of lanes other than the primary feed (the shadow lane); their rows are simply missing. */
+  laneErrors: unknown[];
+}
+
+/** Each decide search has its own timeout, so a big game trace cannot starve the lane after it (#2386). */
+export const DECIDE_SEARCH_TIMEOUT_MS = 4000;
+
+/** `signal` plus a timeout of its own: aborts when either does. */
+function withTimeout(signal: AbortSignal | undefined, ms: number): { signal: AbortSignal; done: () => void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  signal?.addEventListener("abort", abort);
+  const timer = setTimeout(abort, ms);
+  return {
+    signal: controller.signal,
+    done: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+    },
+  };
 }
 
 /**
  * One decide poll (#2287): run decideSearches(store, tick) one after the other,
  * merge each lane's rows into the store and return the total answer size and the
  * agent.flag_state spans of the fetched game traces. Throws
- * JaegerUnavailableError like fetchDecideFeed; rows of a lane that answered
- * before the failure stay merged.
+ * JaegerUnavailableError like fetchDecideFeed when the primary (game or all) lane
+ * fails; rows of a lane that answered before the failure stay merged. A failing
+ * shadow lane is reported in `laneErrors` instead (#2386, UC-035 BR-011).
  */
 export async function pollDecides(
   store: DecideStore,
@@ -1181,16 +1203,45 @@ export async function pollDecides(
   let bytes = 0;
   let liveGame = false;
   const flagStates: FlagPanel[] = [];
+  const laneErrors: unknown[] = [];
   for (const { lane, spec } of decideSearches(store, tick)) {
-    if (lane.startsWith(DECIDE_LANE_GAME_PREFIX)) liveGame = true;
-    const answer = await searchTracesSized(spec, signal);
-    bytes += answer.bytes;
-    const feed = parseDecideTraces(answer.body);
-    store.merge(feed.rows, lane);
-    flagStates.push(...(feed.flagStates ?? []));
+    const isGame = lane.startsWith(DECIDE_LANE_GAME_PREFIX);
+    if (isGame) liveGame = true;
+    const guarded = withTimeout(signal, DECIDE_SEARCH_TIMEOUT_MS);
+    try {
+      const answer = await searchTracesSized(spec, guarded.signal);
+      bytes += answer.bytes;
+      const feed = parseDecideTraces(answer.body);
+      store.merge(feed.rows, lane);
+      flagStates.push(...(feed.flagStates ?? []));
+    } catch (error) {
+      // Only the shadow lane is optional: it must not block the primary feed (#2386).
+      if (lane !== DECIDE_LANE_SHADOW || signal?.aborted) throw error;
+      laneErrors.push(error);
+    } finally {
+      guarded.done();
+    }
   }
   const paceMs = decidePaceMs(bytes, liveGame ? DECIDE_LIVE_MAX_PACE_MS : DECIDE_MAX_PACE_MS);
-  return { bytes, paceMs, flagStates };
+  return { bytes, paceMs, flagStates, laneErrors };
+}
+
+/**
+ * The decide poller's `run` (main.ts and its test share it). The tick advances
+ * BEFORE the await: a failing poll must not repeat the same tick's searches
+ * forever, the shadow lane (every 4th tick) would never be reached otherwise
+ * (UC-035 BR-011, #2386). `onPolled` renders the result; its return is the pace.
+ */
+export function createDecideRun(
+  store: DecideStore,
+  onPolled: (polled: DecidePollResult) => void,
+): (signal?: AbortSignal) => Promise<number> {
+  let tick = 0;
+  return async (signal) => {
+    const polled = await pollDecides(store, tick++, signal);
+    onPolled(polled);
+    return polled.paceMs;
+  };
 }
 
 /**
