@@ -309,14 +309,13 @@ import grpc
 from services.controller_manager import controller_manager_mock_pb2_grpc
 from services.game_coordinator import game_coordinator_pb2_grpc
 
+
 async def my_scenario():
     # Connect to services
     mock_client = controller_manager_mock_pb2_grpc.MockControllerServiceStub(
-        grpc.aio.insecure_channel('localhost:50062')
+        grpc.aio.insecure_channel("localhost:50062")
     )
-    game_client = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(
-        grpc.aio.insecure_channel('localhost:50053')
-    )
+    game_client = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(grpc.aio.insecure_channel("localhost:50053"))
 
     # Start game
     # No StartGame RPC: a game starts via StreamGameEvents(start_config)
@@ -328,14 +327,11 @@ async def my_scenario():
 
     # Simulate specific scenario
     await asyncio.sleep(2)
-    await mock_client.SimulateDeath(
-        controller_manager_mock_pb2.DeathRequest(serial="mock_controller_0")
-    )
+    await mock_client.SimulateDeath(controller_manager_mock_pb2.DeathRequest(serial="mock_controller_0"))
 
     # End game
-    await game_client.ForceEndGame(
-        game_coordinator_pb2.ForceEndGameRequest()
-    )
+    await game_client.ForceEndGame(game_coordinator_pb2.ForceEndGameRequest())
+
 
 asyncio.run(my_scenario())
 ```

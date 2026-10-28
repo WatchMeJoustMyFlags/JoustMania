@@ -101,6 +101,9 @@ class FakeElement {
   set innerHTML(_html: string) {}
   addEventListener() {}
   appendChild() {}
+  querySelectorAll(): FakeElement[] {
+    return [];
+  }
   remove() {}
   querySelector(selector: string): FakeElement {
     let child = this.children.get(selector);
