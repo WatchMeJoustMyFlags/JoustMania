@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.9.1](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.9.0...joustmania-v0.9.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **agent:** join the game-end proposer and cancel experiment refills at shutdown ([#2323](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2323)) ([#2328](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2328)) ([44e92ef](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/44e92ef3841dcc1b4c8ebcf9e8d27458181d0983))
+* **agent:** no promotion and no new experiment once shutdown has begun ([#2332](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2332)) ([#2339](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2339)) ([466689c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/466689c080a21d930e7f34f17a62b85b1c0bf4e9))
+* **agent:** no-redirect guard for default chat HTTP clients ([#2330](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2330)) ([#2334](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2334)) ([4d80b77](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4d80b779fec380ba323dc2de191ab7e1125e737c))
+* **ci:** release retag waits for the tag commit's images ([#2338](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2338)) ([#2342](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2342)) ([a84e114](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/a84e1142fe140651385ec1adee611c093e769843))
+* **rust-hid:** stop reopening and reading open controllers on every discovery pass ([#2314](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2314)) ([#2331](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2331)) ([f9e8508](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f9e8508b33be093a35bab787792ebc0733b8d477))
+
+
+### Refactoring
+
+* **agent:** move telemetry key constants to a leaf keys package ([#2320](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2320)) ([#2341](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2341)) ([388554b](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/388554bc00d39a516b465dc51c965850a286943c))
+* **agent:** one intervention catalog in decide ([#2319](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2319)) ([#2329](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2329)) ([481e6cb](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/481e6cb5ab37342f878a3886560fb307c7bdb1a7))
+* **agent:** share one Anthropic client constructor and redirect guard ([#2321](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2321)) ([#2327](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2327)) ([19cd933](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/19cd933176e8d6c1cf963cf0bb8e651a598e7e55))
+* **agent:** split main() into builder functions; join the shadow game on shutdown ([#2318](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2318)) ([#2343](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2343)) ([4cf005a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/4cf005ab297a0f4b33104d7fb15a858bc34d60db))
+* **agent:** split runDecision into helpers ([#2322](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2322)) ([#2333](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2333)) ([81380ce](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/81380ce6ff2ad893ca14ad38eec7475e2fc32d66))
+
+
+### Documentation
+
+* **uc-060:** first-time install scripts, A7 and hermetic setup test ([#2068](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2068)) ([#2336](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2336)) ([f1c72b7](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f1c72b773fa5486898432d6890228c7d74669d73))
+
 ## [0.9.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.8.0...joustmania-v0.9.0) (2026-10-28)
 
 
