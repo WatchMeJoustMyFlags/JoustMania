@@ -36,6 +36,7 @@ from typing import Any
 import grpc
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_serial
+from services.controller_manager.multiplexer.press_latch import latch_presses
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,8 @@ class HidStreamMixin:
         self._stream_closed = False  # set by _close_stream() (close_all): no stream opens again
         # Commands an exiting iterator took but never yielded; the next iterator sends them first.
         self._unsent_commands: deque = deque()
+        # Buttons seen down since the last poll, per serial (#2312); guarded by _data_lock.
+        self._press_latch: dict[str, set[str]] = {}
 
     def _stream_is_current(self, generation: int) -> bool:
         return self._stream_running and self._stream_generation == generation
@@ -163,6 +166,7 @@ class HidStreamMixin:
                         if state.get(ButtonKey.TRIGGER):
                             # Latched until a game frame delivers it (#1837).
                             self._trigger_latch.add(serial)
+                        latch_presses(self._press_latch, serial, state)  # until the next poll (#2312)
         except grpc.RpcError as e:
             if self._stream_is_current(generation):
                 logger.warning(f"StreamIO error: {e}")

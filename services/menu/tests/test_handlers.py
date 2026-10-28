@@ -1,5 +1,6 @@
 """Unit tests for controller state handlers."""
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, create_autospec
 
@@ -182,6 +183,40 @@ class TestConnectedHandler:
         await handler.handle_button("serial1", "trigger")
 
         assert mock_state_manager.get_controller_state("serial1") == ControllerState.READY
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[2], br=["BR-012"])
+    async def test_ready_does_not_wait_for_the_beep(self, handler, mock_state_manager):
+        """#2312: READY and its LED come first; a slow beep never holds the next button event back."""
+        mock_state_manager.register_handler(handler)
+        beep_started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def slow_beep(*_args, **_kwargs):
+            beep_started.set()
+            await never.wait()
+
+        mock_state_manager.audio.play_sound.side_effect = slow_beep
+
+        await asyncio.wait_for(handler.handle_button("serial1", "trigger"), timeout=1.0)
+
+        assert mock_state_manager.get_controller_state("serial1") == ControllerState.READY
+        await asyncio.wait_for(beep_started.wait(), timeout=1.0)  # the beep still plays
+        for task in list(handler._sound_tasks):
+            task.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="main", steps=[2], br=["BR-012"])
+    async def test_a_failing_beep_still_readies(self, handler, mock_state_manager):
+        mock_state_manager.register_handler(handler)
+        mock_state_manager.audio.play_sound.side_effect = RuntimeError("audio down")
+
+        await handler.handle_button("serial1", "trigger")
+        await asyncio.gather(*handler._sound_tasks)  # the detached beep fails, logged, not raised
+        await asyncio.sleep(0)  # its done callback runs
+
+        assert mock_state_manager.get_controller_state("serial1") == ControllerState.READY
+        assert not handler._sound_tasks
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-011", flow="A2")

@@ -547,23 +547,32 @@ impl HidDeviceIo for HidDevice {
 
 /// Read the latest input report from a device (non-blocking).
 ///
-/// Drains all available reports and returns the most recent one,
-/// matching the Python HidapiAdapter.poll() pattern.
+/// Drains all available reports and returns the most recent one, with the
+/// button bits OR'ed across every drained report (#2312, UC-010 BR-012): a
+/// press and release that both land in one drain still reports the press,
+/// and the next drain reports the release. Every other value is the latest.
 pub fn read_latest_input<D: HidDeviceIo>(device: &D, zcm2: bool) -> Option<ParsedInputReport> {
-    let mut latest: Option<[u8; INPUT_REPORT_SIZE]> = None;
+    let mut latest: Option<ParsedInputReport> = None;
+    let mut buttons_seen: u32 = 0;
     let mut buf = [0u8; INPUT_REPORT_SIZE];
 
     loop {
         match device.read(&mut buf) {
             Ok(len) if len >= INPUT_REPORT_SIZE => {
-                latest = Some(buf);
+                if let Ok(report) = parse_input_report(&buf, zcm2) {
+                    buttons_seen |= report.buttons;
+                    latest = Some(report);
+                }
             }
             Ok(_) => break, // Short read or no data
             Err(_) => break,
         }
     }
 
-    latest.and_then(|data| parse_input_report(&data, zcm2).ok())
+    latest.map(|mut report| {
+        report.buttons |= buttons_seen;
+        report
+    })
 }
 
 #[cfg(test)]
@@ -960,5 +969,72 @@ mod tests {
     #[test]
     fn test_resolve_adapter_from_sysfs_nonexistent_device() {
         assert!(resolve_adapter_from_sysfs("/dev/hidraw99999").is_none());
+    }
+
+    // --- read_latest_input: button bits OR'ed across one drain (#2312) ---
+
+    /// Device that returns queued reports, then "no data".
+    struct QueuedReports(std::cell::RefCell<std::collections::VecDeque<[u8; INPUT_REPORT_SIZE]>>);
+
+    impl HidDeviceIo for QueuedReports {
+        fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize> {
+            match self.0.borrow_mut().pop_front() {
+                Some(report) => {
+                    buf[..report.len()].copy_from_slice(&report);
+                    Ok(report.len())
+                }
+                None => Ok(0),
+            }
+        }
+
+        fn write(&self, data: &[u8]) -> hidapi::HidResult<usize> {
+            Ok(data.len())
+        }
+    }
+
+    fn queued(reports: &[[u8; INPUT_REPORT_SIZE]]) -> QueuedReports {
+        QueuedReports(std::cell::RefCell::new(reports.iter().copied().collect()))
+    }
+
+    fn report_with(buttons: u32, trigger: u8, accel_z: u16) -> [u8; INPUT_REPORT_SIZE] {
+        make_input_report(
+            buttons,
+            trigger,
+            0x05,
+            (0x8000, 0x8000, accel_z),
+            (0x8000, 0x8000, 0x8000),
+            300,
+        )
+    }
+
+    // UC: UC-010 BR-012
+    #[test]
+    fn test_read_latest_input_keeps_a_press_released_within_one_drain() {
+        let device = queued(&[
+            report_with(0, 0, 0x8000),
+            report_with(Button::T | Button::MOVE, 255, 0x8000),
+            report_with(0, 0, 0x9000), // released again: the latest report
+        ]);
+
+        let report = read_latest_input(&device, false).expect("a report");
+
+        assert!(report.button_trigger(), "trigger tap lost inside the drain");
+        assert!(report.button_move(), "move tap lost inside the drain");
+        assert!(!report.button_cross());
+        // Everything else is the latest report.
+        assert_eq!(report.trigger, 0);
+        assert!((report.accel_z - 1.0).abs() < 0.001);
+
+        // The next drain shows the release.
+        let device = queued(&[report_with(0, 0, 0x9000)]);
+        let next = read_latest_input(&device, false).expect("a report");
+        assert!(!next.button_trigger());
+        assert!(!next.button_move());
+    }
+
+    // UC: UC-010 BR-012
+    #[test]
+    fn test_read_latest_input_without_reports_is_none() {
+        assert!(read_latest_input(&queued(&[]), false).is_none());
     }
 }
