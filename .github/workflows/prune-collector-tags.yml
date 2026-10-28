@@ -41,5 +41,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           KEEP: ${{ inputs.keep || '5' }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || (github.event_name == 'workflow_dispatch' && '0' || '0') }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
         run: bash scripts/ci/prune-collector-tags.sh
