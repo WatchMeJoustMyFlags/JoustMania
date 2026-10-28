@@ -7,7 +7,9 @@ real in-process gRPC server (the HID service's side) and check that it sees the
 cancellation, through the adapters' real channel with its interceptors.
 """
 
+import queue
 import threading
+import types
 from concurrent import futures
 
 import grpc
@@ -95,11 +97,11 @@ def test_close_all_cancels_the_stream_on_the_server(adapter, hid_server):
 
 
 @pytest.mark.uc("UC-002", flow="A7")
-def test_reopen_after_close_all_leaves_one_live_stream(adapter, hid_server):
+def test_reopen_after_a_stop_leaves_one_live_stream(adapter, hid_server):
     """A7 step 2: the next discovery pass reopens the stream; the old one is gone, the new one stays up."""
     service, _ = hid_server
     first = _start_stream(adapter, service)
-    adapter.close_all()
+    adapter._stop_stream()  # the stream ended (rust-hid restarted); the adapter is not closed
 
     second = _start_stream(adapter, service)
 
@@ -166,12 +168,17 @@ class GatedStub:
         self.calls = list(calls)
         self.open_gate = open_gate
         self.opening = threading.Event()
+        self.iterators: list = []  # the command iterator of each StreamIO, in order
 
-    def StreamIO(self, _command_iterator):  # noqa: N802 (gRPC method name)
+    def StreamIO(self, command_iterator):  # noqa: N802 (gRPC method name)
         self.opening.set()
+        self.iterators.append(command_iterator)
         if self.open_gate is not None:
             assert self.open_gate.wait(timeout=GATE_TIMEOUT_S)
         return self.calls.pop(0)
+
+    def CloseAll(self, _request, timeout=None):  # noqa: N802 (gRPC method name)
+        return None
 
 
 @pytest.fixture
@@ -229,3 +236,206 @@ def test_stop_while_the_call_is_opening_cancels_it(adapter):
     assert call.cancelled.is_set()
     assert adapter._stream_running is False
     assert adapter._stream_call is None
+
+
+@pytest.mark.uc("UC-002", flow="A7")
+def test_no_stream_opens_after_close_all(adapter, hid_server):
+    """#2275: a discovery pass that runs after close_all() (shutdown) opens no stream."""
+    service, _ = hid_server
+    stream = _start_stream(adapter, service)
+    adapter.close_all()
+    assert stream["ended"].wait(timeout=CANCEL_BOUND_S)
+
+    adapter._ensure_stream()  # what discover() / open() do first
+
+    assert not service.stream_started.acquire(timeout=0.3), "a stream opened after close_all()"
+    assert adapter._stream_running is False
+    assert adapter._stream_thread is None
+    assert adapter.set_output(HID_SERIAL, 255, 0, 0, 0) is False
+
+
+@pytest.mark.uc("UC-002", flow="A7")
+def test_close_all_before_the_reader_starts_opens_nothing(adapter, monkeypatch):
+    """#2275: close_all() lands after _ensure_stream() created the reader but before it started."""
+    starting = threading.Event()
+    start_gate = threading.Event()
+
+    class GatedThread(threading.Thread):
+        def start(self):
+            starting.set()
+            assert start_gate.wait(timeout=GATE_TIMEOUT_S)
+            super().start()
+
+    monkeypatch.setattr(
+        hid_stream,
+        "threading",
+        types.SimpleNamespace(Thread=GatedThread, current_thread=threading.current_thread, Lock=threading.Lock),
+    )
+    adapter._stub = GatedStub(GatedCall())
+    opener = threading.Thread(target=adapter._ensure_stream, daemon=True)
+    opener.start()
+    assert starting.wait(timeout=GATE_TIMEOUT_S)
+    reader = adapter._stream_thread
+
+    adapter.close_all()  # must not try to join the reader that has not started
+    start_gate.set()
+    opener.join(timeout=GATE_TIMEOUT_S)
+    reader.join(timeout=GATE_TIMEOUT_S)
+
+    assert not opener.is_alive() and not reader.is_alive()
+    assert not adapter._stub.opening.is_set(), "the reader opened StreamIO after close_all()"
+    assert adapter._stream_running is False
+
+
+class GatedQueue(queue.Queue):
+    """The command queue; its first ``get()`` waits for ``release`` before it takes a command."""
+
+    def __init__(self):
+        super().__init__(maxsize=256)
+        self.in_get = threading.Event()
+        self.release = threading.Event()
+        self._gated = True
+
+    def get(self, block=True, timeout=None):
+        if self._gated:
+            self._gated = False
+            self.in_get.set()
+            assert self.release.wait(timeout=GATE_TIMEOUT_S)
+        return super().get(block, timeout)
+
+
+STOPPED = "stopped"
+
+
+def _next_command(command_iterator):
+    """``next()`` on a command iterator in a thread; ``result["value"]`` is the command or STOPPED.
+
+    The caller joins with its own bound: an iterator with nothing to send keeps waiting (the
+    adapter fixture's stop ends it), so a missing ``value`` after the join means nothing was sent.
+    """
+    result = {}
+
+    def pull():
+        try:
+            result["value"] = next(command_iterator)
+        except StopIteration:
+            result["value"] = STOPPED
+
+    thread = threading.Thread(target=pull, daemon=True)
+    thread.start()
+    return thread, result
+
+
+def _open_stream(adapter, call: GatedCall):
+    adapter._ensure_stream()
+    assert call.reading.wait(timeout=GATE_TIMEOUT_S)
+    return adapter._stub.iterators[-1]
+
+
+def _rumble():
+    return psmove_hid_pb2.IOCommand(serial=HID_SERIAL, r=0, g=0, b=0, rumble=200)
+
+
+@pytest.mark.uc("UC-002", flow="A7")
+@pytest.mark.usefixtures("short_joins")
+def test_command_taken_by_an_exiting_iterator_goes_to_the_next_stream(adapter):
+    """#2275: a rumble the old iterator takes in its last get() is sent by the next stream, once."""
+    old_call, new_call = GatedCall(), GatedCall()
+    adapter._stub = GatedStub(old_call, new_call)
+    adapter._command_queue = commands = GatedQueue()
+    old_iterator = _open_stream(adapter, old_call)
+
+    old_pull, old_result = _next_command(old_iterator)
+    assert commands.in_get.wait(timeout=GATE_TIMEOUT_S)
+    adapter._stop_stream()  # the stream stops while the iterator waits on the queue
+    rumble = _rumble()
+    commands.put_nowait(rumble)
+    commands.release.set()  # ... and its get() then returns the rumble
+    old_pull.join(timeout=GATE_TIMEOUT_S)
+
+    assert old_result.get("value") == STOPPED, "the old iterator yielded the rumble to a stopped stream"
+    new_iterator = _open_stream(adapter, new_call)
+    new_pull, new_result = _next_command(new_iterator)
+    new_pull.join(timeout=GATE_TIMEOUT_S)
+    assert new_result.get("value") is rumble
+    assert commands.empty() and not adapter._unsent_commands  # sent once, nothing left to resend
+
+
+@pytest.mark.uc("UC-002", flow="A7")
+@pytest.mark.usefixtures("short_joins")
+def test_a_sent_command_is_not_handed_back(adapter):
+    """#2275: a command the iterator already yielded counts as sent; the next stream does not resend it."""
+    old_call, new_call = GatedCall(), GatedCall()
+    adapter._stub = GatedStub(old_call, new_call)
+    old_iterator = _open_stream(adapter, old_call)
+    rumble = _rumble()
+    adapter._command_queue.put_nowait(rumble)
+
+    sent, sent_result = _next_command(old_iterator)
+    sent.join(timeout=GATE_TIMEOUT_S)
+    assert sent_result.get("value") is rumble
+    adapter._stop_stream()
+    end, end_result = _next_command(old_iterator)
+    end.join(timeout=GATE_TIMEOUT_S)
+    assert end_result.get("value") == STOPPED
+
+    new_iterator = _open_stream(adapter, new_call)
+    resend, resend_result = _next_command(new_iterator)
+    resend.join(timeout=0.3)  # nothing to send: the iterator keeps waiting
+    assert "value" not in resend_result
+    assert not adapter._unsent_commands
+
+
+class StallAfterGetQueue(queue.Queue):
+    """The command queue; the first ``len(gates)`` ``get()`` calls take a command, then wait for their gate."""
+
+    def __init__(self, gates):
+        super().__init__(maxsize=256)
+        self.gates = gates
+        self.taken = [threading.Event() for _ in gates]
+        self._calls = 0
+
+    def get(self, block=True, timeout=None):
+        index = self._calls
+        self._calls += 1
+        command = super().get(block, timeout)
+        if index < len(self.gates):
+            self.taken[index].set()
+            assert self.gates[index].wait(timeout=GATE_TIMEOUT_S)
+        return command
+
+
+@pytest.mark.uc("UC-002", flow="A7")
+@pytest.mark.usefixtures("short_joins")
+def test_several_handed_back_commands_keep_their_queue_order(adapter):
+    """#2275: two stale iterators hand back A (taken first) and B; the next stream sends A, then B."""
+    calls = [GatedCall(), GatedCall(), GatedCall()]
+    adapter._stub = GatedStub(*calls)
+    gates = [threading.Event(), threading.Event()]
+    adapter._command_queue = commands = StallAfterGetQueue(gates)
+    first, second = _rumble(), _rumble()
+
+    commands.put_nowait(first)
+    old_iterator = _open_stream(adapter, calls[0])
+    old_pull, _ = _next_command(old_iterator)
+    assert commands.taken[0].wait(timeout=GATE_TIMEOUT_S)
+    adapter._stop_stream()
+
+    commands.put_nowait(second)
+    newer_iterator = _open_stream(adapter, calls[1])
+    newer_pull, _ = _next_command(newer_iterator)
+    assert commands.taken[1].wait(timeout=GATE_TIMEOUT_S)
+    adapter._stop_stream()
+
+    gates[1].set()  # the newer iterator hands back B first ...
+    newer_pull.join(timeout=GATE_TIMEOUT_S)
+    gates[0].set()  # ... then the older one hands back A
+    old_pull.join(timeout=GATE_TIMEOUT_S)
+
+    new_iterator = _open_stream(adapter, calls[2])
+    sent = []
+    for _ in range(2):
+        pull, result = _next_command(new_iterator)
+        pull.join(timeout=GATE_TIMEOUT_S)
+        sent.append(result.get("value"))
+    assert sent[0] is first and sent[1] is second, "handed-back commands were sent out of order"

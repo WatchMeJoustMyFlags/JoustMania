@@ -200,7 +200,8 @@ class PythonHidAdapter(HidStreamMixin, ControllerIOAdapter):
         from proto import psmove_hid_pb2
 
         # Cancel the StreamIO call: grpcio >=1.83 does not cancel a dropped call (#2266).
-        self._stop_stream()
+        # Final: a discovery pass racing shutdown opens no stream afterwards (#2275).
+        self._close_stream()
 
         with self._data_lock:
             self._latest_data.clear()
