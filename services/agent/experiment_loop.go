@@ -654,7 +654,7 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	cfg := e.config(ctx)
 	// #1907: an `off` experiment_seed re-arms the seed on ANY tick, so it is seen
 	// while the gates are off too (agent-dryrun-enable.sh off clears them first).
-	e.observeSeedOff(cfg)
+	e.observeSeedOff(ctx, cfg)
 	if !cfg.Enabled {
 		if ids := e.registry.AbortAll(ctx, "experiments_enabled flag off"); len(ids) > 0 {
 			e.log.Warn("experiment: experiments_enabled flag off — aborted live experiments (#1044)", "count", len(ids))

@@ -664,6 +664,13 @@ func (f *Flags) experimentSeed(ctx context.Context) any {
 	return v
 }
 
+// ExperimentSeed resolves only experiment_seed (#1966): the seed decision
+// re-reads it under the declarer lock so a caller holding an older
+// ExperimentConfig never acts on a stale seed. nil = unresolved (no seed).
+func (f *Flags) ExperimentSeed(ctx context.Context) any {
+	return f.experimentSeed(ctx)
+}
+
 // ExperimentProposerEnabled resolves only experiment_proposer_enabled (#1810), the
 // flag half of the proposer gate the M7-4 proposer reads at each game end. An
 // unresolved flag reads false (closed, C-034).

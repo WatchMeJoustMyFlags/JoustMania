@@ -49,10 +49,13 @@ func TestExperimentLoop_StartFailed_AbortsExperiment(t *testing.T) {
 
 	t.Run("UC-043/A8 experiment seed", func(t *testing.T) {
 		loop := buildLoopForTest(t, &recordingSpawner{}, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
-		loop.maybeDeclareSeed(context.Background(), flags.ExperimentConfig{
+		cfg := flags.ExperimentConfig{
 			Enabled: true,
 			Seed:    testSeed(refused.FlagKey, refused.ExperimentalValue, refused.TargetNPerArm),
-		})
+		}
+		// The seed decision re-reads the flag under the declarer lock (#1966).
+		loop.configOverride = func(context.Context) flags.ExperimentConfig { return cfg }
+		loop.maybeDeclareSeed(context.Background(), cfg)
 		assertFreed(t, loop)
 	})
 }
