@@ -463,6 +463,8 @@ mod tests {
         pending: VecDeque<[u8; hid::INPUT_REPORT_SIZE]>,
         /// When a read found no pending report: once per poll of this device.
         drained_at: Vec<Instant>,
+        /// Every read fails: the controller is gone (#2314).
+        read_fails: bool,
     }
 
     /// In-memory HID device shared between the test and the device loop thread.
@@ -472,6 +474,11 @@ mod tests {
     impl HidDeviceIo for FakeDevice {
         fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize> {
             let mut state = self.0.lock().unwrap();
+            if state.read_fails {
+                return Err(hidapi::HidError::HidApiError {
+                    message: "No such device".to_string(),
+                });
+            }
             match state.pending.pop_front() {
                 Some(report) => {
                     buf[..report.len()].copy_from_slice(&report);
@@ -1300,6 +1307,105 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(api.discover_opens.get(), 2);
         assert!(!devices[SERIAL].read_failed);
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_a_read_error_drop_and_reopen_happen_in_one_pass() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        discover_pass(&mut api, &mut devices, false, true);
+        devices.get_mut(SERIAL).unwrap().read_failed = true;
+
+        // The drop runs before the enumeration, so a reconnected controller
+        // is reopened in the same pass instead of vanishing for one pass.
+        let found = discover_pass(&mut api, &mut devices, false, true);
+
+        assert_eq!(
+            found.len(),
+            1,
+            "the reconnected controller was not reopened"
+        );
+        assert_eq!(api.discover_opens.get(), 2);
+        assert!(!devices[SERIAL].read_failed);
+    }
+
+    /// A non-forced Discover through `handle_command`, which derives the
+    /// pass's `polling` from the registered stream.
+    fn discover_via_command(
+        api: &mut CountingBackend,
+        devices: &mut HashMap<String, DeviceEntry<FakeDevice>>,
+        stream_sender: &mut Option<tokio::sync::mpsc::Sender<StreamSensorData>>,
+        verify_only: bool,
+    ) -> Vec<DiscoveredControllerInfo> {
+        let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
+        assert!(handle_command(
+            DeviceCmd::Discover {
+                force: false,
+                verify_only,
+                exclude_serials: vec![],
+                reply,
+            },
+            api,
+            devices,
+            stream_sender,
+            &DeviceOutputs::default(),
+        ));
+        reply_rx.try_recv().unwrap()
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_discover_command_does_not_read_while_the_stream_is_registered() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        let mut stream_sender = None;
+        let outputs = DeviceOutputs::default();
+        let (sender, _stream_rx) = tokio::sync::mpsc::channel(16);
+        assert!(handle_command(
+            DeviceCmd::RegisterStream { sender },
+            &mut api,
+            &mut devices,
+            &mut stream_sender,
+            &outputs,
+        ));
+        discover_via_command(&mut api, &mut devices, &mut stream_sender, false);
+        api.device
+            .0
+            .lock()
+            .unwrap()
+            .pending
+            .push_back(sample_report());
+
+        discover_via_command(&mut api, &mut devices, &mut stream_sender, true);
+        discover_via_command(&mut api, &mut devices, &mut stream_sender, false);
+
+        assert_eq!(
+            api.device.0.lock().unwrap().pending.len(),
+            1,
+            "a Discover consumed an input report the stream needs"
+        );
+        assert!(devices.contains_key(SERIAL));
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_discover_command_without_a_stream_drops_a_dead_controller() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        let mut stream_sender = None;
+        discover_via_command(&mut api, &mut devices, &mut stream_sender, false);
+        assert!(devices.contains_key(SERIAL));
+        api.device.0.lock().unwrap().read_fails = true;
+
+        // Nothing polls without a stream: the Discover's read check finds it.
+        let found = discover_via_command(&mut api, &mut devices, &mut stream_sender, true);
+
+        assert!(
+            found.is_empty(),
+            "a dead controller stayed without a stream"
+        );
+        assert!(!devices.contains_key(SERIAL));
     }
 
     // UC: UC-002 BR-006
