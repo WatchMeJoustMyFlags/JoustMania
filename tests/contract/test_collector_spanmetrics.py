@@ -101,4 +101,4 @@ def test_spanmetrics_reach_victoriametrics(collector):
         if "span_metrics" in p.get("receivers", [])
     ]
     assert consuming == ["metrics/span_metrics"]
-    assert "prometheusremotewrite" in pipelines["metrics/span_metrics"]["exporters"]
+    assert "prometheus_remote_write" in pipelines["metrics/span_metrics"]["exporters"]

@@ -39,7 +39,7 @@ def test_pad_starts_only_with_its_profile():
         path = ic.REPO_ROOT / overlay
         # text match: the overlays use compose merge tags (!override, !reset) safe_load rejects
         if path.exists():
-            redefined = re.search(rf"^  {PAD}:", path.read_text(), re.M)
+            redefined = re.search(rf"^  {PAD}:", path.read_text(), re.MULTILINE)
             assert not redefined, (
                 f"{overlay} redefines {PAD}; a merged profile could start it by default"
             )

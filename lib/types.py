@@ -358,6 +358,10 @@ class Sound(StrEnum):
     MENU_VOX_ADMINOP_OFF = "adminop_off"
     MENU_VOX_ADMINOP_1 = "adminop_1"
 
+    # Admin cues that reinforce an LED cue (#1746): write failed, agent overlay.
+    MENU_VOX_ADMIN_NOT_SAVED = "admin_not_saved"
+    MENU_VOX_ADMIN_AGENT = "admin_agent"
+
 
 class GameEvent(StrEnum):
     """

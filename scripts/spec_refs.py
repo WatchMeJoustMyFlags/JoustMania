@@ -43,7 +43,7 @@ BASELINE = SPECS / "notes" / "spec-refs-baseline.json"
 GROWTH_LABEL = "spec-baseline-growth"
 
 sys.path.insert(0, str(REPO_ROOT / "tests" / "contract"))
-import telemetry_inventory as ti  # noqa: E402
+import telemetry_inventory as ti
 
 IGNORE_MARK = "spec-refs: ignore"
 EXTS = "go|py|rs|ts|tsx|sh|yaml|yml|json|proto|toml|md"
@@ -51,7 +51,7 @@ REF_RE = re.compile(
     rf"(?<![\w/.-])(?P<path>[\w./-]+\.(?:{EXTS})):"
     r"(?:(?P<lines>\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)|(?P<sym>[A-Za-z_][\w.]*))"
 )
-ATTR_RE = re.compile(r'^\s*((?:Span|Attr)\w*)\s*(?:\w+\s*)?=\s*"([^"]+)"', re.M)
+ATTR_RE = re.compile(r'^\s*((?:Span|Attr)\w*)\s*(?:\w+\s*)?=\s*"([^"]+)"', re.MULTILINE)
 _SKIP_WALK = {".git", ".worktrees", "node_modules", "target", ".venv", "__pycache__"}
 
 
@@ -304,7 +304,10 @@ def render_baseline(findings: list[Finding]) -> str:
 # --------------------------------------------------------------------------- #
 def _git(*args: str) -> str | None:
     res = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True
+        ["git", "-C", str(REPO_ROOT), *args],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return res.stdout if res.returncode == 0 else None
 
@@ -343,6 +346,7 @@ def labels() -> set[str]:
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     return {s for s in res.stdout.strip().split(",") if s}
 
