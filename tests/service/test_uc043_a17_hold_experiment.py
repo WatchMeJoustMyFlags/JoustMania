@@ -207,7 +207,13 @@ def test_real_write_of_a_hold_key_waits_while_a_real_game_is_registered(hold_sta
         status, body = client.request("PUT", f"{path}?dry_run=true", write)
         assert status == 409 and body.get("error") == "real_game_live", (status, body)
         with flagd_probe_client(stack, "game") as probe:
-            real = probe.get_string_value(HOLD_FLAG, "", EvaluationContext(attributes={"game_kind": "real"}))
+            real_ctx = EvaluationContext(attributes={"game_kind": "real"})
+            # A fresh provider may not have synced yet: wait until it serves a real value, not the default.
+            assert poll_until(
+                lambda: probe.get_string_value(HOLD_FLAG, "<probe-default>", real_ctx) != "<probe-default>",
+                timeout=DECLARE_TIMEOUT,
+            ), "flagd probe never synced"
+            real = probe.get_string_value(HOLD_FLAG, "<probe-default>", real_ctx)
         assert real == BASELINE_VALUE, f"a real overlay was served while the real game ran: {real}"
     finally:
         client.request("DELETE", f"/games/{game_id}")
