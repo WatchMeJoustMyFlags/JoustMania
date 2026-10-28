@@ -72,16 +72,26 @@ make up-mock
       ┌───────────────┐ ┌───────────┐ ┌───────────────┐
       │     Menu      │ │   Game    │ │  Controller   │
       │    :50054     │ │Coordinator│ │   Manager     │
-      └───────────────┘ │  :50053   │ │    :50052     │
-                        └───────────┘ └───────────────┘
-                              │
+      └───────────────┘ │  :50053   │ │ :50052        │
+                        └───────────┘ │ -> rust-hid   │
+                              │       │    :50058     │
+                              │       └───────────────┘
               ┌───────────────┼───────────────┐
               ▼               ▼               ▼
       ┌───────────────┐ ┌───────────┐ ┌───────────────┐
-      │     Audio     │ │   flagd   │ │ Observability │
-      │    :50056     │ │  :8015    │ │ Jaeger/Prom   │
-      └───────────────┘ └───────────┘ │ Grafana/Loki  │
-                                      └───────────────┘
+      │     Audio     │ │   flagd   │ │ OTel Collector│
+      │    :50056     │ │  :8015    │ │ -> Jaeger     │
+      └───────────────┘ └───────────┘ │ VictoriaMetr. │
+                              ▲       │ Loki, Grafana │
+                              │       └───────┬───────┘
+                      ┌───────┴───────┐       │ OTLP
+                      │ flag-service  │       ▼
+                      │ :50064/:8070  │ ┌───────────────┐
+                      └───────────────┘ │ Agent (Go)    │
+                              ▲         │ AI game master│
+                              └─────────┤ :4317 / :13134│
+                      (interventions    └───────────────┘
+                       via flags)
 ```
 
 **For detailed architecture:** See [docs/specs/services.md](docs/specs/services.md)
@@ -109,6 +119,9 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 | Document | Description |
 |----------|-------------|
 | [Services spec](docs/specs/services.md) | Services, ports, RPCs and service interactions |
+| [Docs index](docs/README.md) | Entry point to the specs: requirements, use cases, technical specs |
+| [Northstar](docs/NORTHSTAR.md) | The "dark factory" goal and its hard constraints |
+| [Operator pad](docs/use_cases/UC-015.md) | USB macro pad as a menu remote (UC-015) |
 | [Development](docs/DEVELOPMENT.md) | Building, running, debugging |
 | [Contributing](docs/CONTRIBUTING.md) | Code style, PR workflow |
 | [Ready up and admin mode](docs/use_cases/UC-010.md) | Button map (UC-010 BR-005, UC-012 BR-005), admin mode |
@@ -125,15 +138,29 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 | Audio | 50056 | Audio playback and mixing |
 | Dashboard | 8080 (container-internal) | Web UI; reached via Envoy on host port 80 |
 | Envoy | 80 (host) | Reverse proxy and single entry point |
-| Connect Proxy | - | gRPC-web bridge |
+| rust-hid | 50058 (loopback) | HID access and pairing; the default Bluetooth backend |
+| Pairing Daemon | 8002 (host network) | USB pairing loop, Bluetooth monitor, unpair |
+| Agent | 4317 (OTLP), 13134 (HTTP) | Go AI game master: observes via OTLP, acts only through flags |
+| Operator Pad | - | Optional (`operator-pad` compose profile): USB macro pad as a menu remote ([UC-015](docs/use_cases/UC-015.md)) |
+| Connect Proxy | 8080 (container-internal) | gRPC-web bridge |
 | flagd | 8015 | Feature flags (OpenFeature) |
+| Flag Service | 50064 (flagd sync), 8070 (HTTP API) | Runtime flag state; the only writer path for runtime flags |
+| OTel Collector | 4317 / 4318 | Receives OTLP and logs; exports to Jaeger, VictoriaMetrics, Loki and the agent |
+| VictoriaMetrics | 8428 | Metric store (Prometheus query API) |
 
 ## Technology Stack
 
-- **Language:** Python 3.14
+- **Languages:** Python 3.14 (game services), Go 1.26 (agent, flag-service, connect-proxy), Rust (rust-hid, edition 2024), TypeScript (dashboard)
 - **Communication:** gRPC with Protocol Buffers
 - **Observability:** OpenTelemetry, Jaeger, VictoriaMetrics, Loki, Grafana
 - **Infrastructure:** Docker, Docker Compose
+
+## Releases
+
+The stack is released as versioned images on GHCR (`joustmania-vX.Y.Z` tags).
+
+- On a Pi, `joustmania-upgrade joustmania-vX.Y.Z` switches to a release and rolls back if it is not healthy ([UC-060](docs/use_cases/UC-060.md)).
+- Without a network at the venue, the Pi opens its own hotspot ([UC-061](docs/use_cases/UC-061.md)).
 
 ## Credits
 
