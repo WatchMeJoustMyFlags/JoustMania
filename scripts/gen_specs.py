@@ -46,7 +46,7 @@ GENERATED = SPECS / "generated"
 NOTES = SPECS / "notes"
 
 sys.path.insert(0, str(REPO_ROOT / "tests" / "contract"))
-import telemetry_inventory as ti  # noqa: E402
+import telemetry_inventory as ti
 
 # Replaces every total in a committed file (#2152).
 COUNTS_NOTE = (
@@ -146,10 +146,14 @@ def metric_counts() -> list[str]:
     no_consumer = sum(not kinds for kinds in consumers.values())
     multi = sorted(n for n, ds in by_name.items() if len({d.module for d in ds}) > 1)
     return [
-        f"- **{len(by_name)} unique Python metric names** ({len(defs)} definitions; "
-        f"{len(multi)} names are defined in more than one module).",
-        f"- {no_consumer} of the {len(by_name)} names have no consumer (no Grafana or SPA query, "
-        "agent ingest constant, or `tools/` / `scripts/` source names them).",
+        (
+            f"- **{len(by_name)} unique Python metric names** ({len(defs)} definitions; "
+            f"{len(multi)} names are defined in more than one module)."
+        ),
+        (
+            f"- {no_consumer} of the {len(by_name)} names have no consumer (no Grafana or SPA query, "
+            "agent ingest constant, or `tools/` / `scripts/` source names them)."
+        ),
         f"- {never_recorded} names are defined but never recorded by any service.",
     ]
 
@@ -169,8 +173,10 @@ def telemetry_metric_catalog() -> str:
             "(tests/contract/telemetry_inventory.py) and docs/specs/notes/telemetry-metric-catalog.yaml"
         ),
         "# Python metric catalog (generated)\n",
-        "Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the "
-        "columns.\n",
+        (
+            "Part of [telemetry.md §6.2](../telemetry.md#62-python-metric-catalog), which defines the "
+            "columns.\n"
+        ),
         COUNTS_NOTE.format(
             what="the number of names, of names without a consumer and of "
             "names never recorded"
@@ -330,8 +336,10 @@ def flag_counts() -> str:
     out = [
         HEADER.format(sources="services/flagd/*.json"),
         "# Flag sets (generated)\n",
-        "Part of [flags.md](../flags.md). One flagd file per flag set; the `ci/` copies "
-        "(flags.md §12) are not listed.\n",
+        (
+            "Part of [flags.md](../flags.md). One flagd file per flag set; the `ci/` copies "
+            "(flags.md §12) are not listed.\n"
+        ),
         COUNTS_NOTE.format(what="flags in all and per set"),
         "| Flag set | File |",
         "|---|---|",
@@ -407,9 +415,11 @@ def flags_ci_diff() -> str:
     out = [
         HEADER.format(sources="services/flagd/*.json and services/flagd/ci/*.json"),
         "# `ci/` flag differences (generated)\n",
-        "Part of [flags.md §12](../flags.md#12-ci-differences). A table with no rows means no "
-        "difference of that kind; there is no placeholder row, so the first two PRs that each "
-        "add a row do not both replace the same line (#2152).\n",
+        (
+            "Part of [flags.md §12](../flags.md#12-ci-differences). A table with no rows means no "
+            "difference of that kind; there is no placeholder row, so the first two PRs that each "
+            "add a row do not both replace the same line (#2152).\n"
+        ),
         "## Defaults that differ\n",
         "| File | Key | Base default | `ci/` default |",
         "|---|---|---|---|",

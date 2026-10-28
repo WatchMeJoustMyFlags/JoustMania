@@ -59,7 +59,9 @@ def _code(path) -> str:
 
 
 def _helper_uuid() -> str:
-    match = re.search(r"^readonly UUID=([0-9a-f-]{36})$", HELPER.read_text(), re.M)
+    match = re.search(
+        r"^readonly UUID=([0-9a-f-]{36})$", HELPER.read_text(), re.MULTILINE
+    )
     assert match, "the helper declares no fixed profile UUID"
     return match.group(1)
 
@@ -242,6 +244,7 @@ def _glib_python() -> str | None:
 def _gkeyfile_string(path, group: str, key: str) -> str:
     """GKeyFile string semantics without GLib: leading blanks of a value are dropped
     and \\s \\n \\t \\r \\\\ are escapes (g_key_file_parse_value_as_string)."""
+    escapes = {"s": " ", "n": "\n", "t": "\t", "r": "\r", "\\": "\\"}
     current = None
     for raw in path.read_text().splitlines():
         if raw.startswith("#") or not raw.strip():
@@ -252,7 +255,6 @@ def _gkeyfile_string(path, group: str, key: str) -> str:
         name, _, value = raw.partition("=")
         if current == group and name.strip() == key:
             value = value.lstrip(" \t")
-            escapes = {"s": " ", "n": "\n", "t": "\t", "r": "\r", "\\": "\\"}
             return re.sub(
                 r"\\(.)", lambda m: escapes.get(m.group(1), m.group(0)), value
             )

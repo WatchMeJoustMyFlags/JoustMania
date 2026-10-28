@@ -31,7 +31,6 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _SKIP_DIR_PARTS = {
@@ -362,14 +361,16 @@ def _uses(
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in _RECORDING_METHODS
+        ) and not _is_reset(node):
+            ref = _resolve_ref(node.func.value, b, local_vars)
+        if (
+            ref is None
+            and isinstance(node, (ast.Attribute, ast.Name, ast.Call))
+            and not isinstance(getattr(node, "ctx", ast.Load()), (ast.Store, ast.Del))
         ):
-            if not _is_reset(node):
-                ref = _resolve_ref(node.func.value, b, local_vars)
-        if ref is None and isinstance(node, (ast.Attribute, ast.Name, ast.Call)):
-            if not isinstance(getattr(node, "ctx", ast.Load()), (ast.Store, ast.Del)):
-                parent = parents.get(node)
-                if parent is not None and _escapes(node, parents):
-                    ref = _resolve_ref(node, b, local_vars)
+            parent = parents.get(node)
+            if parent is not None and _escapes(node, parents):
+                ref = _resolve_ref(node, b, local_vars)
         if ref:
             out.append((ref, node.lineno))
     return out
@@ -474,7 +475,7 @@ _RUST_INSTRUMENT_RE = re.compile(
     r"\.(?:u64|i64|f64)_(?:counter|up_down_counter|histogram|gauge|observable_gauge|observable_counter|observable_up_down_counter)\(\s*\"([^\"]+)\"",
 )
 # semconv GenAI client instruments created via go.opentelemetry.io/otel/semconv genaiconv:
-# (OTel name, Prometheus name as VictoriaMetrics stores it). prometheusremotewrite
+# (OTel name, Prometheus name as VictoriaMetrics stores it). prometheus_remote_write
 # appends the unit suffix: `s` becomes `_seconds`; the `{token}` annotation adds none.
 _GO_SEMCONV_INSTRUMENTS = {
     "NewClientOperationDuration": (
@@ -724,7 +725,7 @@ def promql_selector_labels(expr: str) -> list[tuple[str, str]]:
 
 
 SPA_DIR = REPO_ROOT / "services" / "dashboard" / "src"
-_SPA_QUERY_RE = re.compile(r"const\s+(\w*QUERY\w*)\s*=\s*(['\"`])(.*?)\2", re.S)
+_SPA_QUERY_RE = re.compile(r"const\s+(\w*QUERY\w*)\s*=\s*(['\"`])(.*?)\2", re.DOTALL)
 
 
 def spa_queries() -> list[tuple[str, str, str]]:

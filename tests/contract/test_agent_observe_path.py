@@ -39,7 +39,7 @@ def test_agent_service_listens_on_the_port_the_collector_targets():
 @pytest.mark.uc("UC-041", flow="main", cond=["Post-F-1"])
 @pytest.mark.parametrize(
     ("pipeline", "storage"),
-    [("traces", "otlp/jaeger"), ("metrics", "prometheusremotewrite")],
+    [("traces", "otlp/jaeger"), ("metrics", "prometheus_remote_write")],
 )
 def test_storage_exporters_are_independent_of_the_agent_exporter(
     collector, pipeline, storage

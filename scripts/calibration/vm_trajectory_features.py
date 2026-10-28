@@ -117,7 +117,7 @@ class PromClient:
     def _get(self, path: str, params: dict) -> dict:
         url = f"{self.base_url}{path}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 (trusted local URL)
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         if payload.get("status") != "success":
             raise PrometheusUnavailable(

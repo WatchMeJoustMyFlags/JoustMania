@@ -78,6 +78,7 @@ def _run_suite(
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     return result, int((tmp_path / "setup_runs.txt").read_text() or 0)
 
@@ -133,6 +134,7 @@ def test_setup_command_timeout_is_bounded(tmp_path):
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     assert result.returncode == 0, (result.stdout + result.stderr)[-3000:]
 
