@@ -3,84 +3,6 @@
   "findings": [
     {
       "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/retro_capture.go",
-      "value": "game.elimination_count",
-      "fingerprint": "0293cee19560"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/retro_capture.go",
-      "value": "game.final_active_players",
-      "fingerprint": "61eea5044390"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/retro_capture.go",
-      "value": "llm.retro.bytes",
-      "fingerprint": "8643e80e55bd"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/retro_capture.go",
-      "value": "llm.retro.system_sha256",
-      "fingerprint": "f9b42326caa5"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/telemetry.go",
-      "value": "emphasis",
-      "fingerprint": "c499b93cdf28"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/telemetry.go",
-      "value": "fitness.evaluated",
-      "fingerprint": "ec58b7dc530f"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/telemetry.go",
-      "value": "inference.configured",
-      "fingerprint": "ebc31d04b338"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/telemetry.go",
-      "value": "llm.retro.latency_ms",
-      "fingerprint": "80bd85ab9f30"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/telemetry.go",
-      "value": "llm.retro.parse_ok",
-      "fingerprint": "bd2904173b71"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/telemetry.go",
-      "value": "llm.retro.response_sha256",
-      "fingerprint": "b83e3ad60637"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/telemetry.go",
-      "value": "llm.retro.session_assessment",
-      "fingerprint": "1ac20c3bb6f6"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/telemetry.go",
-      "value": "llm.retro.session_focus",
-      "fingerprint": "47902501654d"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
-      "file": "services/agent/decision/telemetry.go",
-      "value": "llm.retro.suggestion_count",
-      "fingerprint": "0abbcb0fff34"
-    },
-    {
-      "code": "ATTR_UNDOCUMENTED",
       "file": "services/agent/experiment/proposer_telemetry.go",
       "value": "code_improvement.proposed_diff_summary",
       "fingerprint": "4fa610f3f26b"
@@ -144,6 +66,84 @@
       "file": "services/agent/promote/telemetry.go",
       "value": "code_improvement.url",
       "fingerprint": "9b62d1431470"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "emphasis",
+      "fingerprint": "6022431e6a70"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "fitness.evaluated",
+      "fingerprint": "b66e6ff139ad"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "game.elimination_count",
+      "fingerprint": "a4f9ed143276"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "game.final_active_players",
+      "fingerprint": "062bafab52f2"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "inference.configured",
+      "fingerprint": "dfe4df2e0feb"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "llm.retro.bytes",
+      "fingerprint": "cf80681650ff"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "llm.retro.latency_ms",
+      "fingerprint": "5c80ac60153b"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "llm.retro.parse_ok",
+      "fingerprint": "19ff9f5b3a20"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "llm.retro.response_sha256",
+      "fingerprint": "f96036cc9b21"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "llm.retro.session_assessment",
+      "fingerprint": "fa2b5c816b41"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "llm.retro.session_focus",
+      "fingerprint": "59bd4b3563c0"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "llm.retro.suggestion_count",
+      "fingerprint": "5946b0ca6ea9"
+    },
+    {
+      "code": "ATTR_UNDOCUMENTED",
+      "file": "services/agent/telemetry/keys/keys.go",
+      "value": "llm.retro.system_sha256",
+      "fingerprint": "6f3970bb02a6"
     }
   ]
 }
