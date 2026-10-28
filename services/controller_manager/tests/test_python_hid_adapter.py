@@ -17,6 +17,7 @@ SERIAL = "AABBCCDDEEFF"
 def _make_adapter() -> PythonHidAdapter:
     """PythonHidAdapter without __init__ (no gRPC channel), stream marked running."""
     adapter = PythonHidAdapter.__new__(PythonHidAdapter)
+    adapter._init_stream_state()
     adapter._channel = MagicMock()
     adapter._stub = MagicMock(spec_set=["Discover", "Open", "Close", "CloseAll", "StreamIO"])
     adapter._command_queue = queue.Queue(maxsize=256)

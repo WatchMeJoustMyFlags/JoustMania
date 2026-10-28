@@ -131,6 +131,7 @@ class TestUC030MockTriggerLatch:
 
 def _bare_hid(adapter_cls):
     adapter = adapter_cls.__new__(adapter_cls)
+    adapter._init_stream_state()
     adapter._channel = MagicMock()
     adapter._stub = MagicMock()
     adapter._latest_data = {}

@@ -29,6 +29,7 @@ FRAME = {"serial": SERIAL, "battery": 5}
 def _bare(adapter_cls):
     """Adapter without __init__ (no gRPC channel)."""
     adapter = adapter_cls.__new__(adapter_cls)
+    adapter._init_stream_state()
     adapter._channel = MagicMock()
     adapter._stub = MagicMock()
     adapter._command_queue = queue.Queue(maxsize=256)
@@ -68,7 +69,7 @@ class TestHidAdapterCloseVersusPoll:
         sensor.serial = SERIAL
         hid_adapter._stream_running = True
         hid_adapter._stub.StreamIO.return_value = iter([sensor])
-        with patch(f"{type(hid_adapter).__module__}._sensor_data_to_dict", return_value=dict(FRAME)):
+        with patch("services.controller_manager.multiplexer.hid_stream.sensor_data_to_dict", return_value=dict(FRAME)):
             hid_adapter._stream_loop()
         assert SERIAL not in hid_adapter._latest_data
 
