@@ -131,7 +131,7 @@ def make_handler(fake):
             with open(fake.log_path, "a") as fh:
                 fh.write(f"{self.command} {self.path} {body}\n")
 
-        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
+        def do_GET(self):
             self._log()
             parts, _ = self._parts()
             with fake.lock:
@@ -162,7 +162,7 @@ def make_handler(fake):
                     return self._send(200, fake.view(*parts))
             self._err(404, "unknown_flag", self.path)
 
-        def do_PUT(self):  # noqa: N802
+        def do_PUT(self):
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length).decode()
             self._log(raw)
@@ -235,7 +235,7 @@ def make_handler(fake):
                 },
             )
 
-        def do_DELETE(self):  # noqa: N802
+        def do_DELETE(self):
             self._log()
             parts, query = self._parts()
             with fake.lock:

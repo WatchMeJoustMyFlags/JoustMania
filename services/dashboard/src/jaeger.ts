@@ -335,13 +335,23 @@ export function searchParams(spec: SearchSpec): URLSearchParams {
   return params;
 }
 
+/** A Jaeger search answer plus its size (characters of the JSON body, #2287). */
+export interface SizedSearch {
+  body: JaegerTracesResponse;
+  bytes: number;
+}
+
 /**
- * Run one Jaeger search. Throws JaegerUnavailableError when Jaeger cannot answer
- * (fetch rejected, aborted by the poller's timeout, non-2xx such as envoy's 503,
- * or a v3 `error` other than "No traces found"). No matching trace (v3 answers
- * 404 `No traces found`) is data, not an error: an empty response.
+ * Run one Jaeger search and report the size of its answer (#2287): Jaeger
+ * returns whole traces, so the size is what the poll cost Jaeger to decode and
+ * send, and the decide poll paces itself on it. The size is that of the v3
+ * (OTLP) body, about 10% below the legacy one. Throws JaegerUnavailableError
+ * when Jaeger cannot answer (fetch rejected, aborted by the poller's timeout,
+ * non-2xx such as envoy's 503, or a v3 `error` other than "No traces found").
+ * No matching trace (v3 answers 404 `No traces found`) is data, not an error:
+ * an empty response.
  */
-export async function searchTraces(spec: SearchSpec, signal?: AbortSignal): Promise<JaegerTracesResponse> {
+export async function searchTracesSized(spec: SearchSpec, signal?: AbortSignal): Promise<SizedSearch> {
   const url = `${BASE_URL}/jaeger/api/v3/traces?${searchParams(spec).toString()}`;
   let response: Response;
   try {
@@ -352,17 +362,24 @@ export async function searchTraces(spec: SearchSpec, signal?: AbortSignal): Prom
   if (!response.ok && response.status !== 404) {
     throw new JaegerUnavailableError(`Jaeger query failed: ${response.status} ${response.statusText}`);
   }
+  let text: string;
   let body: OtlpTracesResponse | null;
   try {
-    body = (await response.json()) as OtlpTracesResponse | null;
+    text = await response.text();
+    body = JSON.parse(text) as OtlpTracesResponse | null;
   } catch (error) {
     if (response.status === 404) throw new JaegerUnavailableError(`Jaeger query failed: 404 ${response.statusText}`);
     throw new JaegerUnavailableError(`Jaeger answered no JSON: ${String(error)}`);
   }
-  if (isNoTracesAnswer(response.status, body)) return { data: [] };
+  if (isNoTracesAnswer(response.status, body)) return { body: { data: [] }, bytes: text.length };
   if (response.status === 404 || body?.error) {
     const err = body?.error;
     throw new JaegerUnavailableError(`Jaeger error: ${err?.message ?? err?.httpCode ?? response.status}`);
   }
-  return fromOtlp(body);
+  return { body: fromOtlp(body), bytes: text.length };
+}
+
+/** Run one Jaeger search (see searchTracesSized). */
+export async function searchTraces(spec: SearchSpec, signal?: AbortSignal): Promise<JaegerTracesResponse> {
+  return (await searchTracesSized(spec, signal)).body;
 }

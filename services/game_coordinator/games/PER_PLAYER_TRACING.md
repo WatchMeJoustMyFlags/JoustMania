@@ -103,10 +103,7 @@ Player spans are direct children of the `ffa_game_loop` span:
 ```python
 # In _game_loop()
 for serial, player in self.players.items():
-    player_span = tracer.start_span(
-        f"player_{serial}_lifecycle",
-        attributes={...}
-    )
+    player_span = tracer.start_span(f"player_{serial}_lifecycle", attributes={...})
     player.span = player_span
 ```
 
@@ -127,12 +124,13 @@ for serial, player in self.players.items():
 
     # Set context to make player span a child of team span
     from opentelemetry import context
+
     ctx = trace.set_span_in_context(team.span)
 
     player_span = tracer.start_span(
         f"player_{serial}_lifecycle",
         context=ctx,  # Parent is team span
-        attributes={...}
+        attributes={...},
     )
     player.span = player_span
 ```
@@ -252,11 +250,7 @@ async def _warn_player(self, serial: str, accel_mag: float):
     if player.span:
         player.span.add_event(
             "player_warning",
-            attributes={
-                "accel_magnitude": accel_mag,
-                "sensitivity": self.sensitivity.name,
-                "team": player.team
-            }
+            attributes={"accel_magnitude": accel_mag, "sensitivity": self.sensitivity.name, "team": player.team},
         )
 ```
 
@@ -274,8 +268,8 @@ async def _kill_player(self, serial: str, accel_mag: float):
                 "accel_magnitude": accel_mag,
                 "sensitivity": self.sensitivity.name,
                 "alive_count": alive_count,
-                "team_eliminated": team_eliminated  # Teams only
-            }
+                "team_eliminated": team_eliminated,  # Teams only
+            },
         )
         player.span.set_status(Status(StatusCode.OK, "Player died"))
         player.span.end()
@@ -283,8 +277,7 @@ async def _kill_player(self, serial: str, accel_mag: float):
     # If team eliminated, end team span (Teams only)
     if team_eliminated and team.span:
         team.span.add_event(
-            "team_eliminated",
-            attributes={"last_player": serial, "alive_teams_count": len(alive_teams)}
+            "team_eliminated", attributes={"last_player": serial, "alive_teams_count": len(alive_teams)}
         )
         team.span.set_status(Status(StatusCode.OK, "Team eliminated"))
         team.span.end()
@@ -304,11 +297,7 @@ async def _end_game(self):
             is_winner = winning_team_num is not None and player.team == winning_team_num
             player.span.add_event(
                 "player_survived",
-                attributes={
-                    "game_duration": time.time() - self.start_time,
-                    "winner": is_winner,
-                    "team": player.team
-                }
+                attributes={"game_duration": time.time() - self.start_time, "winner": is_winner, "team": player.team},
             )
             player.span.set_status(Status(StatusCode.OK, "Player survived"))
             player.span.end()
@@ -319,10 +308,7 @@ async def _end_game(self):
             is_winning_team = winning_team_num is not None and team_num == winning_team_num
             team.span.add_event(
                 "team_victory" if is_winning_team else "team_survived",
-                attributes={
-                    "game_duration": time.time() - self.start_time,
-                    "winner": is_winning_team
-                }
+                attributes={"game_duration": time.time() - self.start_time, "winner": is_winning_team},
             )
             team.span.set_status(Status(StatusCode.OK, "Team won" if is_winning_team else "Team survived"))
             team.span.end()

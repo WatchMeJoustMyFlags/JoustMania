@@ -36,13 +36,15 @@ def _release_images() -> set[str]:
 def _ci_retag_images() -> set[str]:
     text = (ic.REPO_ROOT / ".github/workflows/ci.yml").read_text()
     return set(
-        re.findall(r'^\s*maybe_retag "\$CH_[A-Z_]+"\s+([a-z0-9-]+)\s*$', text, re.M)
+        re.findall(
+            r'^\s*maybe_retag "\$CH_[A-Z_]+"\s+([a-z0-9-]+)\s*$', text, re.MULTILINE
+        )
     )
 
 
 def _check_retag_source_images() -> set[str]:
     text = (ic.REPO_ROOT / "scripts/ci/check-retag-source.sh").read_text()
-    return set(re.findall(r"^\s+([a-z0-9-]+)\) filter=\w+ ;;\s*$", text, re.M))
+    return set(re.findall(r"^\s+([a-z0-9-]+)\) filter=\w+ ;;\s*$", text, re.MULTILINE))
 
 
 @pytest.mark.parametrize("compose", ["docker-compose.yml", "docker-compose.lite.yml"])
@@ -71,7 +73,9 @@ def _ci_ch_output_keys() -> dict[str, str]:
     text = (ic.REPO_ROOT / ".github/workflows/ci.yml").read_text()
     return dict(
         re.findall(
-            r"^\s+(CH_[A-Z_]+): \$\{\{ steps\.f\.outputs\.(\w+) \}\}\s*$", text, re.M
+            r"^\s+(CH_[A-Z_]+): \$\{\{ steps\.f\.outputs\.(\w+) \}\}\s*$",
+            text,
+            re.MULTILINE,
         )
     )
 
@@ -82,14 +86,16 @@ def _ci_retag_pairs() -> dict[str, str]:
     return {
         image: ch
         for ch, image in re.findall(
-            r'^\s*maybe_retag "\$(CH_[A-Z_]+)"\s+([a-z0-9-]+)\s*$', text, re.M
+            r'^\s*maybe_retag "\$(CH_[A-Z_]+)"\s+([a-z0-9-]+)\s*$', text, re.MULTILINE
         )
     }
 
 
 def _check_retag_source_filters() -> dict[str, str]:
     text = (ic.REPO_ROOT / "scripts/ci/check-retag-source.sh").read_text()
-    return dict(re.findall(r"^\s+([a-z0-9-]+)\) filter=(\w+) ;;\s*$", text, re.M))
+    return dict(
+        re.findall(r"^\s+([a-z0-9-]+)\) filter=(\w+) ;;\s*$", text, re.MULTILINE)
+    )
 
 
 def _ci_filter_keys() -> set[str]:

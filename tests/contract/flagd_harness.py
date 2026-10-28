@@ -224,11 +224,10 @@ class FlagdContainer:
         - ``"in_process"``: the sync stream (port 8015) every Python service
           reads flags through (lib/feature_flags), evaluated client-side.
         """
+        from flagd_rpc_retry import assert_retry_active, retry_decode_failures
         from openfeature import api
         from openfeature.contrib.provider.flagd import FlagdProvider
         from openfeature.contrib.provider.flagd.config import CacheType, ResolverType
-
-        from flagd_rpc_retry import assert_retry_active, retry_decode_failures
 
         if resolver == "in_process":
             provider = FlagdProvider(

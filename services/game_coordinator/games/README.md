@@ -172,7 +172,7 @@ async def test_ffa_game_full_lifecycle(mock_controller_manager, event_collector)
     game = ffa_grpc.FFAGame(
         controller_manager_client=mock_controller_manager,
         event_publisher=event_collector.publish,
-        game_id="test_game_1"
+        game_id="test_game_1",
     )
 
     await game.run()
@@ -220,7 +220,7 @@ self.moves = moves  # Direct PSMove objects
 self.command_queue = command_queue
 
 # Shared namespace ❌
-self.ns.settings['play_audio']
+self.ns.settings["play_audio"]
 
 # Blocking execution ❌
 self.game_loop()  # Blocks

@@ -158,7 +158,7 @@ services:
 
   # Jaeger for distributed tracing UI
   jaeger:
-    image: jaegertracing/jaeger:2.19.0
+    image: jaegertracing/jaeger:2.20.0
     container_name: joustmania-jaeger
     user: "0"  # Run as root to avoid permission issues with badger volume (default UID 10001 can't write)
     # All ports exposed only within Docker network (envoy proxies to it)
@@ -172,7 +172,7 @@ services:
     command: ["--config", "/etc/jaeger/config.yaml"]
     environment:
       # #2223: Go soft memory limit (~83% of the 1 GiB container limit). Badger in
-      # Jaeger 2.19 has no cache knobs (default memtables 5 x 64 MiB + 256 MiB block
+      # Jaeger 2.20 has no cache knobs (default memtables 5 x 64 MiB + 256 MiB block
       # cache, a bounded plateau of ~600 MiB), and each dashboard poll decodes MB-sized
       # experiment traces; the soft limit makes the GC reclaim that query garbage
       # before the cgroup OOM-kills the trace store.
@@ -607,7 +607,7 @@ services:
   # in #1449). Receives metrics via Prometheus remote write from the OTEL Collector
   # and serves the Prometheus query API to Grafana, the dashboard and the tools.
   victoria-metrics:
-    image: victoriametrics/victoria-metrics:v1.144.0
+    image: victoriametrics/victoria-metrics:v1.155.0
     container_name: joustmania-victoria-metrics
     command:
       - "-storageDataPath=/victoria-metrics-data"
@@ -638,7 +638,7 @@ services:
 
   # Grafana for metrics visualization (Phase 38)
   grafana:
-    image: grafana/grafana:13.0.2
+    image: grafana/grafana:13.3.0
     container_name: joustmania-grafana
     # Port exposed only within Docker network (envoy proxies to it)
     expose:
@@ -674,7 +674,7 @@ services:
 
   # Loki for log aggregation with 24h retention
   loki:
-    image: grafana/loki:3.7.2
+    image: grafana/loki:3.7.9
     container_name: joustmania-loki
     user: "0"  # Run as root to avoid permission issues with volume
     # Port exposed only within Docker network (envoy proxies to it)
@@ -890,7 +890,7 @@ services:
   # Envoy - Main entry point (reverse proxy)
   # No dependencies - envoy uses STRICT_DNS and handles unavailable backends with 503
   envoy:
-    image: envoyproxy/envoy:v1.38.1
+    image: envoyproxy/envoy:v1.40.2
     container_name: joustmania-envoy
     ports:
       # UC-035 BR-001: the only host entry for the UIs and HTTP APIs.

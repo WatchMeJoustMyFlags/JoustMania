@@ -12,7 +12,6 @@ import json
 import os
 import re
 import subprocess
-
 from pathlib import Path
 
 import infra_config as ic
@@ -153,7 +152,7 @@ def test_dry_run_seeds_the_experiment_through_the_flag_not_the_env():
 def test_dryrun_enable_sets_a_declared_seed_variant_before_the_gates():
     """FR-090: `agent-dryrun-enable.sh on` seeds the experiment, then opens the gates."""
     script = (REPO_ROOT / "scripts" / "agent-dryrun-enable.sh").read_text()
-    variant = re.search(r'^SEED_VARIANT="(\w+)"', script, re.M)
+    variant = re.search(r'^SEED_VARIANT="(\w+)"', script, re.MULTILINE)
     assert variant, "agent-dryrun-enable.sh names no SEED_VARIANT"
     seed = json.loads((CI_FLAGD_DIR / "agent.json").read_text())["flags"][
         "experiment_seed"

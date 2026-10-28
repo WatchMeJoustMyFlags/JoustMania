@@ -21,7 +21,7 @@ extensions:
             values: /badger/value
           # #1191: bound badger retention so memory/disk can't creep unbounded
           # over a long demo under the agent experiment-loop span volume. We only
-          # ever look at recent traces in a demo/dev stack, and badger v2.19.0
+          # ever look at recent traces in a demo/dev stack, and badger in Jaeger 2.20
           # exposes no value-log/cache-size knob — the only retention levers are
           # the span TTL and how often expired data is reclaimed.
           # #2223: memory is badger's defaults (memtables 5 x 64 MiB, 256 MiB block
