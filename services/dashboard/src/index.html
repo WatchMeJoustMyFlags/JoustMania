@@ -138,11 +138,11 @@
           <div class="embed-container">
             <div class="embed-header">
               <h3>Game Traces</h3>
-              <a href="/jaeger/search?service=game-coordinator-service" target="_blank" class="external-link">Open in Jaeger &#8599;</a>
+              <a href="/jaeger/search?service=game-coordinator-service&amp;tags=%7B%22game.kind%22%3A%22primary%22%7D" target="_blank" class="external-link">Open in Jaeger &#8599;</a>
             </div>
             <iframe
               id="jaeger-embed"
-              src="/jaeger/search?service=game-coordinator-service&limit=20"
+              src="/jaeger/search?service=game-coordinator-service&amp;tags=%7B%22game.kind%22%3A%22primary%22%7D&amp;limit=20"
               class="embed-iframe"
               title="Jaeger Game Traces Search"
             ></iframe>
