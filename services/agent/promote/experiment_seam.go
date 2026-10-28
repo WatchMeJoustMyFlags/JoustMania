@@ -162,7 +162,7 @@ func (a *ExperimentPromoter) Promote(ctx context.Context, view journal.CompactVi
 	if res.Outcome == OutcomeDiscarded && reason != "" {
 		reason = fmt.Sprintf("%s (mode=%s target=%s)", reason, res.Mode, res.Target)
 	}
-	return experiment.PromotionResult{Outcome: string(res.Outcome), Reason: reason, Reference: res.URL}
+	return experiment.PromotionResult{Outcome: string(res.Outcome), Reason: reason, Reference: res.URL, RevertPending: res.RevertPending}
 }
 
 // armMean returns the rolling mean fitness for an arm, or 0 if the arm has no

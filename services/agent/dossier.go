@@ -425,7 +425,9 @@ func gameIDs(games []gameView) []string {
 // whatever its verdict. "inconclusive" maps to "refined": the experiment did not
 // clear the bar and feeds the next thesis. A `done` experiment whose journal holds a
 // promotion event with outcome `reverted` (the kill switch or the watch undid the
-// real default) reads "reverted"; its status stays `done` (#1869). `promoting` is
+// real default) reads "reverted"; its status stays `done` (#1869). A `done`
+// experiment whose last promotion event is `deferred` reads "deferred" and one whose
+// last is `discarded` (the deferred write was dropped) reads "discarded" (UC-043 A17). `promoting` is
 // the live step while a promotion runs (the registry journals it right after
 // `concluded`, UC-043 step 8), so it reads empty until a terminal status lands
 // (#1869). `concluded` keeps the verdict label: it is journaled and left behind
@@ -439,6 +441,14 @@ func decisionLabel(v *journal.Verdict, status string, events []journal.Event) st
 	case string(experiment.StatusDone):
 		if promotionReverted(events) {
 			return "reverted"
+		}
+		// UC-043 A17 step 3 (opposer M3): a deferred hold-key write reads `deferred`
+		// while it waits and `discarded` once it was dropped.
+		switch lastPromotionOutcome(events) {
+		case experiment.PromotionDeferred:
+			return "deferred"
+		case experiment.PromotionDiscarded:
+			return "discarded"
 		}
 		return "promoted"
 	case string(experiment.StatusAborted):
@@ -472,6 +482,16 @@ func promotionReverted(events []journal.Event) bool {
 		}
 	}
 	return false
+}
+
+// lastPromotionOutcome is the outcome of the journal's last promotion event ("" when none).
+func lastPromotionOutcome(events []journal.Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if e := events[i]; e.Kind == journal.KindPromotion && e.Promotion != nil {
+			return e.Promotion.Outcome
+		}
+	}
+	return ""
 }
 
 // isTerminalStatus reports whether a journal status string is a terminal lifecycle

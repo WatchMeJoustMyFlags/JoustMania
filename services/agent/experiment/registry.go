@@ -222,6 +222,12 @@ type entry struct {
 	// (experimentID, pairIndex) — NEVER a clock — so it is reproducible.
 	armCursor int
 
+	// promotionInFlight is set while the experiment's promotion runs and its own
+	// promotion event is not journaled yet; RecordPromotion holds later outcomes in
+	// laterPromotions until then (UC-043 A17: the deferred queue may journal first).
+	promotionInFlight bool
+	laterPromotions   []PromotionResult
+
 	// span is the long-lived experiment ROOT span (#1188, epic #1181 PR2): the
 	// agent.experiment span started when the experiment becomes RUNNING (Start /
 	// Rehydrate) and ended on the terminal transition (teardown). spanCtx is its
@@ -354,9 +360,14 @@ type Registry struct {
 	// holdGate checks an experiment on a hold flag against the current defaults
 	// (UC-043 A17); nil skips the check (test seam).
 	holdGate HoldGate
-	// holdCooldown is when each hold key may be declared again after a promotion of
-	// it did not act (UC-043 A17 step 3 interim; in memory, guarded by mu).
-	holdCooldown map[string]time.Time
+	// pendingPromotions lists the flags whose promotion write waits in the
+	// promoter's deferred queue (UC-043 A17 step 3); they count as under test. nil =
+	// none. Called without mu held.
+	pendingPromotions func() []string
+	// restoredReverts are the waiting hold-key reverts Rehydrate found in done
+	// journals (UC-043 A17); TakeRestoredReverts hands them to the promoter.
+	// Guarded by mu.
+	restoredReverts []RestoredRevert
 	// flagDigest computes UC-046 BR-011's digest for an arm before it spawns.
 	flagDigest func(ctx context.Context, experimentID, arm string) string
 	// patternTracker force-ends in-flight pattern games on the kill switch (A12).
@@ -432,6 +443,10 @@ type RegistryConfig struct {
 	// defaults ("" = it can), at its pin and at every tick (UC-043 A17 step 2). An
 	// error keeps the experiment. nil skips the check (test seam).
 	HoldGate HoldGate
+	// PendingPromotions lists the flags whose deferred promotion write still waits
+	// (promote.Promoter.PendingFlags, UC-043 A17 step 3): Declare refuses them and
+	// ActiveFlags reports them busy. nil = none.
+	PendingPromotions func() []string
 	// FlagDigest computes the arm's resolved-values flag digest (UC-046 BR-011)
 	// before the spawn; nil ⇒ no digest.
 	FlagDigest func(ctx context.Context, experimentID, arm string) string
@@ -514,6 +529,7 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 		releaseTombstones: make(map[string]string),
 		patterns:          cfg.Patterns,
 		holdGate:          cfg.HoldGate,
+		pendingPromotions: cfg.PendingPromotions,
 		flagDigest:        cfg.FlagDigest,
 		patternTracker:    cfg.PatternTracker,
 	}
@@ -560,14 +576,16 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	// experiment tick) is either fully registered when Rehydrate sees its journal,
 	// or not on disk yet. Otherwise Rehydrate would read the fresh PROPOSED journal
 	// as a leftover of a crash and abort it with start_failed (UC-043 A8).
+	// UC-043 A17 step 3 (opposer M6): a flag whose deferred promotion write still
+	// waits counts as under test; a new experiment's baseline would ignore it.
+	if _, waiting := r.pendingPromotionSet()[in.FlagKey]; waiting {
+		return "", fmt.Errorf("registry: declare experiment: %s has a deferred promotion waiting for the end of the real game (UC-043 A17)", in.FlagKey)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// Keep this call inside the lock: TestDeclareCreatesJournalUnderRegistryLock_1731
 	// probes r.mu through r.clock().
 	now := r.clock()
-	if r.holdCoolingLocked(in.FlagKey) {
-		return "", fmt.Errorf("registry: declare experiment: %s is in its re-declare cooldown after a promotion that did not act (UC-043 A17)", in.FlagKey)
-	}
 
 	// Reconcile target_n vs the verdict min-N (#1001). A target_n below the verdict
 	// min-N can NEVER satisfy the verdict's conclusive gate, so the experiment would
@@ -1581,6 +1599,9 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 		return PromotionResult{Outcome: PromotionDiscarded, Reason: "experiment " + string(st) + ", not concluded"}
 	}
 	e.status = StatusPromoting
+	// A later outcome (deferred queue, kill switch) journaled before this promotion's
+	// own event waits until it, so the journal keeps their order (UC-043 A17).
+	e.promotionInFlight = true
 	// UC-043 BR-007 (#2042): write-ahead. The promoter acts only once the promoting
 	// decision is durable, so a restart never finds a promotion that acted without
 	// one (A15). A summary rewrite that fails after the line is durable still counts.
@@ -1632,40 +1653,96 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 			Note:      res.Reason,
 			Promotion: &promotion,
 		})
-		r.startHoldCooldownLocked(e.flagKey, res)
+		r.flushLaterPromotionsLocked(e)
 	}
 	r.mu.Unlock()
 	return res
 }
 
-// startHoldCooldownLocked parks a hold key for HoldRedeclareCooldown after a
-// promotion of it that did not act (UC-043 A17 step 3 interim, #2096): until the
-// deferred real write lands (PR-7b-2b, which replaces this), an autonomous
-// promotion of a hold key is discarded, and re-declaring the key at once would
-// spend shadow games on the same answer. Assumes r.mu is held.
-func (r *Registry) startHoldCooldownLocked(flagKey string, res PromotionResult) {
-	if !IsHoldKey(flagKey) || promotionActed(res) {
+// flushLaterPromotionsLocked journals the later promotion outcomes RecordPromotion
+// held back while e's promotion ran, after its own event. Assumes r.mu is held.
+func (r *Registry) flushLaterPromotionsLocked(e *entry) {
+	e.promotionInFlight = false
+	for _, res := range e.laterPromotions {
+		promotion := res
+		r.appendEvent(e.journal, journal.Event{
+			Kind:      journal.KindPromotion,
+			Status:    res.Outcome,
+			Note:      res.Reason,
+			Promotion: &promotion,
+		})
+	}
+	e.laterPromotions = nil
+}
+
+// RestoredRevert is a hold-key watch or re-watch revert that waited when the agent
+// stopped (its experiment's last promotion event has RevertPending, UC-043 A17).
+type RestoredRevert struct {
+	ExperimentID string
+	FlagKey      string
+	// Rewatch: the re-watch queued it (its journal reason prefix).
+	Rewatch bool
+	// Value is the value the experiment promoted (its intent's experimental value,
+	// which is what the promotion wrote). The revert runs only while the flag's
+	// promotion overlay still holds it, so a restart never deletes a newer
+	// promotion's value.
+	Value any
+}
+
+// DeferredLostAtRestart is the reason journaled for a deferred hold-key write a
+// restart lost (UC-043 A17 step 3, A15).
+const DeferredLostAtRestart = "lost_at_restart"
+
+// sweepDeferredLocked handles a done journal whose last promotion event a restart
+// interrupted (UC-043 A17 step 3): a write still `deferred` was lost with the
+// in-memory queue and is journaled `discarded: lost_at_restart`; a revert still
+// pending is kept for TakeRestoredReverts. Assumes r.mu is held.
+func (r *Registry) sweepDeferredLocked(id string, jrnl *journal.Journal) {
+	events, err := jrnl.Events()
+	if err != nil {
 		return
 	}
-	if r.holdCooldown == nil {
-		r.holdCooldown = map[string]time.Time{}
+	var last *journal.Promotion
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == journal.KindPromotion && events[i].Promotion != nil {
+			last = events[i].Promotion
+			break
+		}
 	}
-	r.holdCooldown[flagKey] = r.clock().Add(HoldRedeclareCooldown)
+	switch {
+	case last == nil:
+	case last.Outcome == PromotionDeferred:
+		promotion := PromotionResult{Outcome: PromotionDiscarded, Reason: DeferredLostAtRestart}
+		r.appendEvent(jrnl, journal.Event{Kind: journal.KindPromotion, Status: promotion.Outcome, Note: promotion.Reason, Promotion: &promotion})
+		r.log.Warn("experiment: a deferred hold-key promotion was lost at restart (UC-043 A17)", "experiment_id", id)
+	case last.RevertPending:
+		r.restoredReverts = append(r.restoredReverts, RestoredRevert{
+			ExperimentID: id, FlagKey: jrnl.Intent().FlagKey, Rewatch: strings.HasPrefix(last.Reason, "re-watch: "),
+			Value: jrnl.Intent().ExperimentalValue,
+		})
+	}
 }
 
-// HoldCooling reports whether flagKey is parked in its hold re-declare cooldown
-// (UC-043 A17 step 3 interim).
-func (r *Registry) HoldCooling(flagKey string) bool {
+// TakeRestoredReverts returns, once, the waiting reverts Rehydrate found.
+func (r *Registry) TakeRestoredReverts() []RestoredRevert {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.holdCoolingLocked(flagKey)
+	out := r.restoredReverts
+	r.restoredReverts = nil
+	return out
 }
 
-// holdCoolingLocked reports whether flagKey is parked by startHoldCooldownLocked.
-// Assumes r.mu is held.
-func (r *Registry) holdCoolingLocked(flagKey string) bool {
-	until, ok := r.holdCooldown[flagKey]
-	return ok && r.clock().Before(until)
+// pendingPromotionSet returns the flags with a waiting deferred promotion write.
+// It must be called without r.mu held.
+func (r *Registry) pendingPromotionSet() map[string]struct{} {
+	out := map[string]struct{}{}
+	if r.pendingPromotions == nil {
+		return out
+	}
+	for _, flag := range r.pendingPromotions() {
+		out[flag] = struct{}{}
+	}
+	return out
 }
 
 // RecordPromotion journals a later outcome of an experiment's promotion (UC-043
@@ -1677,7 +1754,19 @@ func (r *Registry) RecordPromotion(id string, res PromotionResult) {
 	defer r.mu.Unlock()
 	e := r.entries[id]
 	if e == nil {
+		// A done experiment is not held in memory after a restart (Rehydrate skips
+		// it), yet the deferred queue and the kill switch journal on it (UC-043 A17).
+		if jrnl, err := journal.Load(r.root, id); err == nil {
+			promotion := res
+			r.appendEvent(jrnl, journal.Event{Kind: journal.KindPromotion, Status: res.Outcome, Note: res.Reason, Promotion: &promotion})
+			return
+		}
 		r.log.Warn("experiment.promotion_unrecorded", "experiment_id", id, "outcome", res.Outcome, "reason", res.Reason)
+		return
+	}
+	if e.promotionInFlight {
+		// Its own promotion event is not journaled yet: keep the order (UC-043 A17).
+		e.laterPromotions = append(e.laterPromotions, res)
 		return
 	}
 	promotion := res
@@ -1857,7 +1946,10 @@ func (r *Registry) Rehydrate(ids []string) error {
 			st = StatusRunning
 		}
 		if st.IsTerminal() {
-			continue // done experiment — nothing to manage.
+			// Done experiment: nothing to manage, except a deferred hold-key promotion
+			// the restart interrupted (UC-043 A17 step 3).
+			r.sweepDeferredLocked(id, jrnl)
+			continue
 		}
 		e := &entry{
 			id:        id,
@@ -2108,24 +2200,18 @@ func (r *Registry) Live() []string {
 }
 
 // ActiveFlags returns the set of flag keys that have at least one LIVE
-// (non-terminal: PROPOSED or RUNNING) experiment, plus the hold keys parked in
-// their re-declare cooldown (HoldCooling, UC-043 A17 step 3 interim). The dynamic
+// (non-terminal: PROPOSED or RUNNING) experiment, plus the flags whose deferred
+// promotion write still waits (UC-043 A17 step 3, opposer M6). The dynamic
 // declarer (#995) uses it to avoid stacking a second concurrent experiment on a
 // flag that is already under test. Any other flag torn down (terminal) is not
 // included — its targeting branch is stripped, so it is free to experiment on again.
 func (r *Registry) ActiveFlags() map[string]struct{} {
+	out := r.pendingPromotionSet()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make(map[string]struct{}, len(r.entries))
 	for _, e := range r.entries {
 		if !e.status.IsTerminal() {
 			out[e.flagKey] = struct{}{}
-		}
-	}
-	// UC-043 A17 step 3 interim: a hold key in its re-declare cooldown counts as busy.
-	for key := range r.holdCooldown {
-		if r.holdCoolingLocked(key) {
-			out[key] = struct{}{}
 		}
 	}
 	return out

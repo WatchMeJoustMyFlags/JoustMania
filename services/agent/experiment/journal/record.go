@@ -132,6 +132,10 @@ type Promotion struct {
 	Outcome   string `json:"outcome"`
 	Reason    string `json:"reason,omitempty"`
 	Reference string `json:"reference,omitempty"`
+	// RevertPending marks a watch or re-watch revert of a hold key that waits until
+	// no real game runs (UC-043 A17 step 3). Journaled write-ahead, so a restart
+	// re-queues the revert; a later promotion event of the experiment clears it.
+	RevertPending bool `json:"revert_pending,omitempty"`
 }
 
 // PatternFacts carries the UC-046 pattern fields of game_assigned, pattern_pinned
