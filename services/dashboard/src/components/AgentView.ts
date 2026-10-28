@@ -286,7 +286,7 @@ export class AgentView {
     this.overlayEl.innerHTML = `
       <div class="agent-overlay-stats">
         <div class="agent-stat">
-          <span class="agent-stat-label">applied</span>
+          <span class="agent-stat-label">applied (10m)</span>
           ${applied} ${appliedErr}
         </div>
         <div class="agent-stat">
