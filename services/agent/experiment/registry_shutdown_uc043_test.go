@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/joustmania/agent/experiment/journal"
 )
@@ -173,6 +174,41 @@ func TestUC043_A20_NoExperimentStartsAfterShutdown(t *testing.T) {
 		}
 		if n := r.LiveCount(); n != 0 {
 			t.Errorf("live experiments = %d, want 0", n)
+		}
+	})
+}
+
+// The Declare shutdown check runs under r.mu, where AbortAll takes its snapshot:
+// a Declare that was already waiting for the lock when the stop began is refused,
+// so an experiment is either in the teardown snapshot or never declared.
+// UC: UC-043 A20
+func TestUC043_A20_DeclareShutdownCheckRunsUnderRegistryLock(t *testing.T) {
+	t.Run("UC-043/A20 declare waiting on r.mu when the stop begins is refused", func(t *testing.T) {
+		root := t.TempDir()
+		r := newTestRegistry(t, RegistryConfig{Root: root, Spawner: &fakeSpawner{}, Targeting: &fakeTargeting{}})
+		stop, cancel := context.WithCancel(context.Background())
+		r.SetShutdownContext(stop)
+
+		r.mu.Lock() // stands in for AbortAll holding the lock for its snapshot
+		type result struct {
+			id  string
+			err error
+		}
+		done := make(chan result, 1)
+		go func() {
+			id, err := r.Declare(sampleIntent())
+			done <- result{id, err}
+		}()
+		time.Sleep(200 * time.Millisecond) // let Declare reach r.mu.Lock
+		cancel()
+		r.mu.Unlock()
+
+		res := <-done
+		if !errors.Is(res.err, ErrShuttingDown) {
+			t.Fatalf("Declare = (%q, %v), want ErrShuttingDown: the check ran before r.mu", res.id, res.err)
+		}
+		if ids, _ := journal.List(root); len(ids) != 0 {
+			t.Errorf("journals = %v, want none", ids)
 		}
 	})
 }
