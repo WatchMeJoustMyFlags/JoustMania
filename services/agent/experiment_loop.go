@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -206,6 +207,13 @@ type experimentLoop struct {
 	// startup-gate inversion (off→on→off) and the per-knob live reads without a flagd
 	// dependency. Production leaves it nil (the real flags client is consulted).
 	configOverride func(ctx context.Context) flags.ExperimentConfig
+
+	// runCtx is the context run() was started with (#2323). The slot refills that
+	// fire off the tick goroutine (conclude, stale release, terminal outcome, grace
+	// backstops) read it through refillCtx so a refill during shutdown sees the
+	// cancellation instead of spawning a new shadow game. Unset (test wiring that
+	// never calls run) falls back to context.Background().
+	runCtx atomic.Pointer[context.Context]
 
 	// startMu guards startedOnce so the deferred bootstrap runs EXACTLY once even
 	// though allocateIfEnabled is called concurrently from several goroutines (tick,
@@ -519,6 +527,7 @@ func promotionConfigResolver(f *flags.Flags) promote.ConfigResolver {
 // `enabled`) is ALSO honored each tick (agentEnabled), independent of
 // experiments_enabled — either being off tears the surface down.
 func (e *experimentLoop) run(ctx context.Context) {
+	e.runCtx.Store(&ctx)
 	// First action immediately so an already-enabled agent accrues games without
 	// waiting a full tick (and a disabled one tears down promptly), then refill on
 	// the live cadence. The first interval is read before flagd has synced, so it is
@@ -644,6 +653,13 @@ func (e *experimentLoop) tickInterval(ctx context.Context) time.Duration {
 // decision loop obeys. When enabled, it lazily runs the one-time rehydrate, the seed
 // (startup-gate inversion), applies the live caps, then allocates.
 func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
+	// #2323: a refill that arrives after shutdown began does nothing; run()'s own
+	// teardown aborts the live experiments ("agent shutdown"). Without this a
+	// cancelled ctx could also read the gates as failed closed and take the
+	// kill-switch path instead.
+	if ctx.Err() != nil {
+		return
+	}
 	// UC-043 A1 / UC-045 step 5 (#1704): with the kill switch off (or failed closed)
 	// every tick reverts the autonomous promotions this agent run applied, whatever
 	// experiments_enabled says, so none survives the switch.
@@ -1137,7 +1153,7 @@ func (e *experimentLoop) concludeExperimentGame(gc gamecontext.GameContext) {
 	}
 	if status == experiment.StatusRunning {
 		// A freed in-flight slot; refill it (respecting the kill-switch).
-		e.allocateIfEnabled(context.Background())
+		e.allocateIfEnabled(e.refillCtx())
 	}
 }
 
@@ -1155,7 +1171,7 @@ func (e *experimentLoop) releaseStaleGame(gc gamecontext.GameContext, reason str
 		return
 	}
 	if e.registry.ReleaseGame(gc.SessionID, reason) {
-		e.allocateIfEnabled(context.Background())
+		e.allocateIfEnabled(e.refillCtx())
 	}
 }
 
@@ -1233,6 +1249,8 @@ func (e *experimentLoop) experimentParentCtx(experimentID string) context.Contex
 // directly with no span. The returned (status, err) are passed straight through.
 func (e *experimentLoop) concludeWithSpan(gc gamecontext.GameContext, fitness, duration float64, gameLink []trace.SpanStartOption) (experiment.Status, error) {
 	if e.tracer == nil {
+		// context.Background on purpose (#2323): the fold journals a finished game's
+		// sample and must complete even when it lands during shutdown.
 		return e.registry.ConcludeGame(context.Background(), gc.SessionID, fitness, duration)
 	}
 	attrs := []attribute.KeyValue{
@@ -1399,6 +1417,8 @@ func isSampleOutcome(outcome gamerunner.Outcome) bool {
 // pair's rerun does not use up its 3-rerun budget (BR-015).
 func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcome) {
 	sample := isSampleOutcome(outcome)
+	// The grace reads stay on context.Background (#2323): they only size a timer, and a
+	// cancelled ctx must not turn them into the fail-closed defaults.
 	grace := e.config(context.Background()).CompletedGrace
 	window := parkWindowFor(grace)
 
@@ -1433,12 +1453,20 @@ func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcom
 	if e.registry.ReleaseGame(gameID, reason) {
 		e.log.Warn("experiment: released in-flight slot for non-concluding game (#1014)",
 			"game_id", gameID, "outcome", outcome)
-		// Refill the freed slot (respecting the kill-switch). context.Background is
-		// intentional: this runs on the drive goroutine, which has no tick/request
-		// context to thread through — the spawn it triggers is bounded by the runner's
-		// own RPC + ready timeouts, so an unbounded Background cannot stall here.
-		e.allocateIfEnabled(context.Background())
+		// Refill the freed slot (respecting the kill-switch). This runs on the drive
+		// goroutine, which has no tick/request context; refillCtx is run()'s context,
+		// so a refill after shutdown began spawns nothing (#2323).
+		e.allocateIfEnabled(e.refillCtx())
 	}
+}
+
+// refillCtx returns the context run() was started with, so a slot refill fired
+// off the tick goroutine sees shutdown (#2323); context.Background() before run().
+func (e *experimentLoop) refillCtx() context.Context {
+	if p := e.runCtx.Load(); p != nil {
+		return *p
+	}
+	return context.Background()
 }
 
 // parkWindow is how long a parked telemetry end waits for the runner's outcome:
@@ -1477,7 +1505,7 @@ func (e *experimentLoop) fireParkedEnd(gameID string) {
 	if e.registry.ReleaseGame(gameID, releaseReasonNoOutcome) {
 		e.log.Warn("experiment: telemetry end got no terminal outcome — released without a sample (#1405)",
 			"game_id", gameID)
-		e.allocateIfEnabled(context.Background())
+		e.allocateIfEnabled(e.refillCtx())
 	}
 }
 
@@ -1583,10 +1611,9 @@ func (e *experimentLoop) fireCompletedGrace(gameID string) {
 		// normal conclude path) so the drop is visible in the agent's logs/metrics.
 		e.log.Warn("experiment: completed-game grace backstop fired — released leaked slot (#1020)",
 			"game_id", gameID)
-		// Refill the freed slot (respecting the kill-switch). context.Background is
-		// intentional here for the same reason as the #1014 release path: this runs on
-		// a runtime timer goroutine with no request/tick context to thread.
-		e.allocateIfEnabled(context.Background())
+		// Refill the freed slot (respecting the kill-switch) with run()'s context, as
+		// on the #1014 release path: this runs on a runtime timer goroutine (#2323).
+		e.allocateIfEnabled(e.refillCtx())
 	}
 }
 
