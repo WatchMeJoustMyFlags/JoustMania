@@ -195,6 +195,13 @@ make lint
 Weekly GHCR retention (#1787, workflow `prune-collector-tags.yml`) for the
 `otel-collector:<16-hex hash>` tags: deletes hash-only versions beyond the newest
 `KEEP` (default 5), except the hash HEAD produces and hashes referenced by the
-latest release's `.env` / compose files. Never touches X.Y.Z, `latest`, `main`,
-`<sha>` or untagged versions. `DRY_RUN=1` (workflow_dispatch default) only lists.
+latest release's `.env` / compose files (belt and braces: release pins use
+`IMAGE_TAG` = X.Y.Z or sha, which are separate GHCR versions and never
+candidates). Never touches X.Y.Z, `latest`, `main`, `<sha>` or untagged
+versions. `KEEP` must be >= 1. `DRY_RUN=1` (workflow_dispatch default) only lists.
+The scheduled run deletes for real only when the repo variable
+`PRUNE_COLLECTOR_DELETE` is `true` (maintainer sets it); otherwise it is a dry
+run. The job runs only on `WatchMeJoustMyFlags/JoustMania`.
+Known limit: a hash-only version whose digest is also an untagged child of a
+release index would be deleted and break that index's amd64 leg (not observed).
 Test: `scripts/tests/test-prune-collector-tags.sh` (fake `gh`).

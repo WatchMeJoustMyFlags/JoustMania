@@ -20,6 +20,7 @@ echo "$*" >>"${FAKE_LOG}"
 if [[ "$1 $2" == "api --paginate" ]]; then
   [[ "$3" == /orgs/o/packages/container/r%2Fotel-collector/versions* ]] || { echo "bad path $3" >&2; exit 1; }
   cat "${FAKE_VERSIONS}"   # two pages, as --paginate prints them
+  [[ -z "${FAKE_LIST_FAIL:-}" ]] || exit 1
 fi
 FAKE
 chmod +x "${WORK}/gh"
@@ -89,5 +90,18 @@ if (cd "${REPO_DIR}" && env GH="${WORK}/gh" FAKE_LOG="${WORK}/log" REPO=O/R KEEP
   fail "KEEP=x accepted"
 fi
 [[ ! -s "${WORK}/log" ]] || fail "API called on bad input"
+
+# KEEP=0 is refused too.
+if (cd "${REPO_DIR}" && env GH="${WORK}/gh" FAKE_LOG="${WORK}/log" REPO=O/R KEEP=0 bash "$PRUNE") >/dev/null 2>&1; then
+  fail "KEEP=0 accepted"
+fi
+
+# Listing failure after page 1: abort, non-zero, no DELETE.
+: >"${WORK}/log"
+if (cd "${REPO_DIR}" && env GH="${WORK}/gh" FAKE_LOG="${WORK}/log" FAKE_VERSIONS="${WORK}/versions" \
+    FAKE_LIST_FAIL=1 REPO=O/R CURRENT_HASH=1500000000000015 KEEP=3 DRY_RUN=0 bash "$PRUNE") >/dev/null 2>&1; then
+  fail "listing failure did not fail the script"
+fi
+[[ "$(deletes)" == 0 ]] || fail "DELETE called after listing failure"
 
 echo "PASS: test-prune-collector-tags"

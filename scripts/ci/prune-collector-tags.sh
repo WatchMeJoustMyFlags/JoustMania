@@ -12,6 +12,9 @@
 # candidates, kept are: the KEEP newest (created_at), any version tagged with
 # the hash HEAD produces, and any version tagged with a 16-hex token found in
 # .env / docker-compose*.yml at the latest release tag. The rest is deleted.
+# Why deleting is safe: release pins use IMAGE_TAG (X.Y.Z or a sha), which are
+# separate GHCR versions and never candidates. The .env / compose scan is only a
+# belt-and-braces check in case a release ever references a hash tag directly.
 #
 # Usage: scripts/ci/prune-collector-tags.sh
 # Env:   REPO          owner/repo (default $GITHUB_REPOSITORY), lower-cased
@@ -29,7 +32,7 @@ DRY_RUN="${DRY_RUN:-1}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 REPO="${REPO,,}"
 [[ "$REPO" == */* ]] || { echo "ERROR: REPO must be owner/repo" >&2; exit 2; }
-[[ "$KEEP" =~ ^[0-9]+$ ]] || { echo "ERROR: KEEP must be a number" >&2; exit 2; }
+[[ "$KEEP" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: KEEP must be a number >= 1" >&2; exit 2; }
 [[ "$DRY_RUN" == 0 || "$DRY_RUN" == 1 ]] || { echo "ERROR: DRY_RUN must be 0 or 1" >&2; exit 2; }
 
 owner="${REPO%%/*}"
