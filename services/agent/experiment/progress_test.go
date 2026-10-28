@@ -617,6 +617,40 @@ func TestProgress_RefusedPromotionCarriesRecommendation(t *testing.T) {
 	}
 }
 
+// The recommendation value is capped like the thesis and experimental value.
+// UC: UC-043 A19
+func TestProgress_RecommendationValueCapped(t *testing.T) {
+	spawner := &fakeSpawner{}
+	promoter := &fakePromoter{result: PromotionResult{
+		Outcome: PromotionDiscarded, Reason: "real_overlay_owned_by_another_writer owner=operator", ForeignOwner: "operator",
+	}}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 1},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2, Promoter: promoter,
+	})
+	in := sampleIntent()
+	in.ExperimentalValue = strings.Repeat("v", 2000)
+	id, err := r.Declare(in)
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if err := r.Start(context.Background(), id); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+	spans := progressSpans(sr)
+	got, ok := rootSpanAttr(spans[len(spans)-1], AttrExperimentRecommendationValue)
+	if !ok {
+		t.Fatal("terminal snapshot carries no recommendation value")
+	}
+	if len(got) != maxSpanTextLen || !strings.HasSuffix(got, "...") {
+		t.Errorf("recommendation value len=%d suffix=%q, want %d bytes ending in ...", len(got), got[max(0, len(got)-3):], maxSpanTextLen)
+	}
+}
+
 // A deferred write refused after the experiment ended (RecordPromotion) emits a
 // fresh snapshot with the recommendation; a plain later outcome emits none.
 // UC: UC-043 A19
