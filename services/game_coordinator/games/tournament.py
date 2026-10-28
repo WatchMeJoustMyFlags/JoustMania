@@ -442,6 +442,12 @@ class TournamentGame(BaseGameMode):
         p1.alive = True
         p2.alive = True
         self.current_match = match
+        # Invincible from the seating on, before the first await below: a kill or an
+        # eliminate_player the loop runs during match_start or the colour writes is
+        # declined (UC-025 step 2, BR-006; #2025 S3). Duration: invincibility_seconds.
+        invincible_until = time.time() + self._invincibility_duration
+        p1.invincible_until = invincible_until
+        p2.invincible_until = invincible_until
 
         # Create match span (inherits current active context: gameplay_phase)
         self.match_span = tracer.start_span(
@@ -469,11 +475,6 @@ class TournamentGame(BaseGameMode):
         # Set colors
         await self._set_base_color(match.player1_serial, MATCH_COLORS[0])
         await self._set_base_color(match.player2_serial, MATCH_COLORS[1])
-
-        # Set invincibility (duration configurable via tournament_invincibility setting)
-        invincible_until = time.time() + self._invincibility_duration
-        p1.invincible_until = invincible_until
-        p2.invincible_until = invincible_until
 
         # Play match start sound (use beep - no dedicated fight sound exists)
         await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)

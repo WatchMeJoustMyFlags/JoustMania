@@ -125,6 +125,9 @@ class FightClubGame(BaseGameMode):
         self.round_number: int = 0
         self.round_end_time: float = 0.0
         self.round_task: asyncio.Task | None = None
+        # The round timer task while it handles its timeout and seats the next
+        # round: a kill deciding that round must not cancel it (#2025 S4).
+        self._round_change_task: asyncio.Task | None = None
         self.game_over: bool = False
         # True while the current round is a face-off (UC-025 A2 step 3).
         self.face_off_mode: bool = False
@@ -330,12 +333,9 @@ class FightClubGame(BaseGameMode):
             f"{' [FACE-OFF]' if self.face_off_mode else ''}"
         )
 
-        # Update colors
-        await self._update_player_colors()
-
-        # Play round start sound
-        await self._play_sound(Sound.SFX_BEEP, priority=2)
-
+        # Announce the round before its first other await: a forfeit (A4) that
+        # decides it during the colour writes comes after its round_start (#2025 S4).
+        seated = (self._round_id, self.current_defender, self.current_fighter)
         await self.event_publisher(
             "round_start",
             {
@@ -348,9 +348,21 @@ class FightClubGame(BaseGameMode):
             },
         )
 
-        # Start round timer task (unless face-off)
-        if not self.face_off_mode:
+        # Update colors
+        await self._update_player_colors()
+
+        # Play round start sound
+        if not self._round_still_seated(seated):
+            return
+        await self._play_sound(Sound.SFX_BEEP, priority=2)
+
+        # Start round timer task (unless face-off) for a round nothing decided yet
+        if not self.face_off_mode and self._round_still_seated(seated):
             self.round_task = self._track_task(asyncio.create_task(self._round_timer()))
+
+    def _round_still_seated(self, seated: tuple[int, str | None, str | None]) -> bool:
+        """Whether the round seated as ``seated`` is still undecided and current (#2025 S4)."""
+        return self.running and (self._round_id, self.current_defender, self.current_fighter) == seated
 
     def _seat_face_off_pair(self, pair: tuple[str, str]) -> None:
         """Seat the tied leaders as this round's defender and fighter (UC-025 A2 step 3).
@@ -387,7 +399,13 @@ class FightClubGame(BaseGameMode):
             if remaining <= 0:
                 # Time's up - both players lose
                 logger.info("Round time expired - both players lose")
-                await self._handle_timeout()
+                # From here this task changes the round; a kill that decides the
+                # next round during its start does not cancel it (#2025 S4).
+                self._round_change_task = asyncio.current_task()
+                try:
+                    await self._handle_timeout()
+                finally:
+                    self._round_change_task = None
                 break
 
             # Play beeps in last 3 seconds
@@ -723,8 +741,8 @@ class FightClubGame(BaseGameMode):
         # (the combatant slot is cleared below, before the first await).
         fc_player.alive = False
 
-        # Cancel round timer
-        if self.round_task and not self.round_task.done():
+        # Cancel round timer, unless it is the task seating this round (#2025 S4)
+        if self.round_task and not self.round_task.done() and self.round_task is not self._round_change_task:
             self.round_task.cancel()
 
         # Determine winner
