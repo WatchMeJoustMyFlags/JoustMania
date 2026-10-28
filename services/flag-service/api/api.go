@@ -12,7 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
+	"net/url"
 	"strings"
 	"time"
 
@@ -207,14 +207,16 @@ func (a *API) put(w http.ResponseWriter, r *http.Request) {
 	if ferr == nil {
 		req.Variant, req.Scope, req.TTLSeconds, req.Persist = body.Variant, body.Scope, body.TTLSeconds, body.Persist
 		req.Writer, req.DecisionID = body.Writer, body.DecisionID
-		req.DryRun = r.URL.Query().Get("dry_run") == "true"
+		req.DryRun, ferr = boolParam(r.URL.Query(), "dry_run")
 		if v := bytes.TrimSpace(body.Value); len(v) > 0 && !bytes.Equal(v, []byte("null")) {
 			req.Value = v
 		}
 		if body.Reason != "" {
 			span.SetAttributes(attribute.String("flagservice.write_reason", body.Reason))
 		}
-		req.IfWriterIn, ferr = ifWriterIn(r)
+		if ferr == nil {
+			req.IfWriterIn, ferr = ifWriterIn(r)
+		}
 		if ferr == nil {
 			res, ferr = a.State.Put(req)
 		} else {
@@ -277,36 +279,57 @@ func (a *API) post(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-func scopeFromQuery(r *http.Request) state.Scope {
+// boolParam parses one boolean query parameter, strictly (#2367, services.md
+// flag-service API): true|false|1|0, absent = false. Anything else (yes, True,
+// empty, a repeated parameter) is a 400 naming the parameter: a loose parse
+// would turn a dry run into a real write or pick the wrong scope or layer.
+func boolParam(q url.Values, name string) (bool, *fserr.Error) {
+	vals, ok := q[name]
+	if !ok {
+		return false, nil
+	}
+	if len(vals) == 1 {
+		switch vals[0] {
+		case "true", "1":
+			return true, nil
+		case "false", "0":
+			return false, nil
+		}
+	}
+	return false, fserr.BadRequest("%s must be true, false, 1 or 0", name)
+}
+
+func scopeFromQuery(r *http.Request) (state.Scope, *fserr.Error) {
 	q := r.URL.Query()
 	sc := state.Scope{
 		GameID: q.Get("game_id"), Serial: q.Get("serial"),
 		ExperimentID: q.Get("experiment_id"), Arm: q.Get("arm"), GameKind: q.Get("game_kind"),
 	}
-	if q.Has("fraction") || q.Has("fraction_percent") {
+	fraction, ferr := boolParam(q, "fraction")
+	if fraction || q.Has("fraction_percent") {
 		zero := 0
 		sc.FractionPercent = &zero
 	}
-	return sc
+	return sc, ferr
 }
 
 func (a *API) clear(w http.ResponseWriter, r *http.Request) {
 	start := a.now()
 	ctx, span := a.Tracer.Start(r.Context(), telemetry.SpanWrite)
-	sc := scopeFromQuery(r)
-	persist, _ := strconv.ParseBool(r.URL.Query().Get("persist"))
+	sc, ferr := scopeFromQuery(r)
+	var persist, guarded bool
+	if ferr == nil {
+		persist, ferr = boolParam(r.URL.Query(), "persist")
+	}
 	req := state.WriteRequest{Set: r.PathValue("set"), Flag: r.PathValue("flag"), Scope: sc, Writer: r.URL.Query().Get("writer")}
 	// ?unless_real_game=true: the agent's guarded revert (#2236, flags.md §13).
 	// Strict parse: a typo must not silently turn the guard off.
-	var guarded bool
+	if ferr == nil {
+		guarded, ferr = boolParam(r.URL.Query(), "unless_real_game")
+	}
 	var res state.WriteResult
-	var ferr *fserr.Error
-	if q := r.URL.Query(); q.Has("unless_real_game") {
-		var perr error
-		if guarded, perr = strconv.ParseBool(q.Get("unless_real_game")); perr != nil {
-			ferr = fserr.BadRequest("unless_real_game must be a boolean")
-			res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: sc.Name()}
-		}
+	if ferr != nil {
+		res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: sc.Name()}
 	}
 	// ?if_writer=<label>: the compare-and-delete precondition (#1877, flags.md
 	// §13). Strict: an empty value must not silently drop the precondition.

@@ -506,6 +506,8 @@ validated only against the mutable-flag registry ([flags.md §13](flags.md#13-mu
 scope and the sync stream; there are no roles or tokens. `writer`, `decision_id` and `reason` are informational:
 they go on the write span and are never checked (the explicit `DELETE ?if_writer=` precondition is a separate parameter, #1877). Writers use a 500 ms deadline and fail closed.
 
+**Boolean query parameters (#2367).** Every boolean query parameter of this API (`dry_run`, `persist`, `fraction`, `unless_real_game`) is parsed by one strict parser: `true` or `1` = true, `false` or `0` = false, an absent parameter = false. Anything else (`yes`, `True`, an empty value, a repeated parameter) is `400 malformed` whose `detail` names the parameter, and nothing is written: a loose value must never turn a dry run into a real write, pick the fraction scope, or clear the wrong layer. Callers send `true` / `false`.
+
 | Method and path | Purpose | Success |
 |---|---|---|
 | `GET /` | flag sets with their flag counts and whether each is served | 200 |
