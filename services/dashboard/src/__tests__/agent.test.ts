@@ -25,6 +25,7 @@ import {
   fetchRollouts,
   needsFlagStateFallback,
   parseAppliedCounts,
+  APPLIED_UNAVAILABLE,
   parseBlockedCounts,
   parseDecideTraces,
   parseFlagStates,
@@ -333,12 +334,31 @@ describe("UC-035: main step 3, parseAppliedCounts", () => {
         { metric: { result: "error", job: "a/agent" }, value: [1, "1"] },
       ]),
     );
-    expect(out).toEqual({ appliedOk: 5, appliedError: 1 });
+    expect(out).toEqual({ appliedOk: 5, appliedError: 1, shadowAppliedOk: 0, shadowAppliedError: 0 });
+  });
+
+  it("UC-035/A3 game_kind splits real (primary) from shadow; an unlabelled series counts as real", () => {
+    const out = parseAppliedCounts(
+      vm([
+        { metric: { result: "ok", game_kind: "primary" }, value: [1, "4"] },
+        { metric: { result: "ok" }, value: [1, "1"] },
+        { metric: { result: "ok", game_kind: "shadow" }, value: [1, "9"] },
+        { metric: { result: "error", game_kind: "shadow" }, value: [1, "2"] },
+      ]),
+    );
+    expect(out).toEqual({ appliedOk: 5, appliedError: 0, shadowAppliedOk: 9, shadowAppliedError: 2 });
+  });
+
+  it("UC-035/A3 the applied query groups by game_kind", async () => {
+    const urls = stubFetch(() => json(games));
+    await fetchInterventionCounts();
+    const q = new URL(urls.find((u) => u.includes("agent_intervention_writes_total"))!, "http://x").searchParams.get("query") ?? "";
+    expect(q).toContain("game_kind");
   });
 
   it("returns nulls when VM has no samples or a malformed body", () => {
-    expect(parseAppliedCounts(vm([]))).toEqual({ appliedOk: null, appliedError: null });
-    expect(parseAppliedCounts({ status: "error" })).toEqual({ appliedOk: null, appliedError: null });
+    expect(parseAppliedCounts(vm([]))).toEqual(APPLIED_UNAVAILABLE);
+    expect(parseAppliedCounts({ status: "error" })).toEqual(APPLIED_UNAVAILABLE);
   });
 });
 
@@ -356,7 +376,25 @@ describe("UC-040: A21 blocked tallies from agent_decisions_total", () => {
   });
 
   it("UC-040/A21 no samples in the window is zero blocked, not n/a", () => {
-    expect(parseBlockedCounts(vm([]))).toEqual({ blockedByAction: [], blockedByReason: [], totalBlocked: 0 });
+    expect(parseBlockedCounts(vm([]))).toEqual({
+      blockedByAction: [],
+      blockedByReason: [],
+      totalBlocked: 0,
+      shadowBlocked: 0,
+    });
+  });
+
+  it("UC-035/A3 shadow-game refusals are tallied apart and stay out of the real breakdowns", () => {
+    const out = parseBlockedCounts(
+      vm([
+        { metric: { action: "grant_shield", block_reason: "rate_limit", game_kind: "primary" }, value: [1, "2"] },
+        { metric: { action: "grant_shield", block_reason: "rate_limit", game_kind: "shadow" }, value: [1, "30"] },
+      ]),
+    );
+    expect(out.totalBlocked).toBe(2);
+    expect(out.shadowBlocked).toBe(30);
+    expect(out.blockedByAction).toEqual([{ action: "grant_shield", blocked: 2 }]);
+    expect(out.blockedByReason).toEqual([{ reason: "rate_limit", count: 2 }]);
   });
 
   it("UC-040/A21 asks VictoriaMetrics over 600 s; unreachable shows Blocked as n/a, never a span fold", async () => {
@@ -368,7 +406,7 @@ describe("UC-040: A21 blocked tallies from agent_decisions_total", () => {
     const query = new URL(urls.find((u) => u.includes("agent_decisions_total"))!, "http://x").searchParams.get("query") ?? "";
     expect(query).toContain('agent_decisions_total{blocked="true"}');
     expect(query).toContain("[600s]");
-    expect(overlay).toEqual({ ...BLOCKED_UNAVAILABLE, appliedOk: null, appliedError: null });
+    expect(overlay).toEqual({ ...BLOCKED_UNAVAILABLE, ...APPLIED_UNAVAILABLE });
     expect(overlay.totalBlocked).toBeNull();
     expect(urls.some((u) => u.includes("/jaeger/"))).toBe(false);
   });

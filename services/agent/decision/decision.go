@@ -87,6 +87,11 @@ type Decision struct {
 	// game on the flag service (UC-053, FR-136/FR-137), so it reaches only this
 	// game and dies with it; a decision without a game id is not written.
 	GameID string `json:",omitempty"`
+	// GameKind is the deciding game's kind in the flag vocabulary ("real" /
+	// "shadow", GameContext.GameKind), stamped with GameID before the ActionSink
+	// call so the writer can label agent_intervention_writes_total{game_kind}
+	// (#2294). Engines leave it empty.
+	GameKind string `json:",omitempty"`
 }
 
 // RulesEngine turns a context snapshot into zero or more Decisions. The
@@ -502,12 +507,14 @@ func metricAction(intervention string) string {
 // recordDecision bumps agent_decisions_total for one decision the engine returned
 // (#790), applied OR blocked. block_reason is empty when applied and the specific
 // BlockReason ("not_allowed"/"battery_threshold"/"rate_limit") when blocked, so the
-// dashboard can split applied vs blocked by reason. Labels are bounded: action (the
+// dashboard can split applied vs blocked by reason. Labels are bounded: game_kind
+// (primary|shadow, #2294), action (the
 // intervention vocabulary), blocked (bool), block_reason (the closed BlockReason
 // set). The counter is never nil (NewLoop seeds a no-op), so this is safe from the
 // concurrent Export-handler goroutines that drive runDecision.
-func (l *Loop) recordDecision(ctx context.Context, action string, blocked bool, reason BlockReason) {
+func (l *Loop) recordDecision(ctx context.Context, gameKind, action string, blocked bool, reason BlockReason) {
 	l.decisions.Add(ctx, 1, otelmetric.WithAttributes(
+		attribute.String("game_kind", gamecontext.TelemetryGameKind(gameKind)),
 		attribute.String("action", metricAction(action)),
 		attribute.Bool("blocked", blocked),
 		attribute.String("block_reason", string(reason)),
@@ -806,27 +813,27 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	if blocked && reason == ReasonRateLimit && l.repeatRefusal(d, now) {
 		// UC-040 A21: the budget already refused this decision and has not
 		// changed since; count it, but emit no span, warning or timeline entry.
-		l.recordRepeatRefusal(ctx, d, cost, state, ReasonRateLimit)
+		l.recordRepeatRefusal(ctx, c.GameKind, d, cost, state, ReasonRateLimit)
 		return
 	}
 	if blocked && perm.repeatExperimentFlag {
 		// UC-040 A40 step 6 (as A21): this lever was already blocked on the same
 		// experiment flag in this game; count it, but emit no span, warning or
 		// timeline entry.
-		l.recordRepeatRefusal(ctx, d, cost, state, ReasonExperimentFlag)
+		l.recordRepeatRefusal(ctx, c.GameKind, d, cost, state, ReasonExperimentFlag)
 		return
 	}
 	if blocked && perm.repeatApplied {
 		// UC-040 A35 (as A21): the same value was already suppressed against this
 		// entry; count it, but emit no span, log line or timeline entry.
-		l.recordRepeatRefusal(ctx, d, cost, state, ReasonAlreadyApplied)
+		l.recordRepeatRefusal(ctx, c.GameKind, d, cost, state, ReasonAlreadyApplied)
 		return
 	}
 	if blocked && perm.repeatShield {
 		// UC-040 A31 step 1, A33 (as A21): the shield ledger already refused a
 		// grant with this reason against this entry; count it, but emit no span,
 		// warning or timeline entry.
-		l.recordRepeatRefusal(ctx, d, cost, state, reason)
+		l.recordRepeatRefusal(ctx, c.GameKind, d, cost, state, reason)
 		return
 	}
 
@@ -887,7 +894,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// branching — block_reason is empty when applied, the BlockReason when blocked —
 	// so the demo dashboard can split applied vs blocked by reason. Emitted alongside
 	// the existing audit span/log, not in place of it.
-	l.recordDecision(ctx, d.Intervention, blocked, reason)
+	l.recordDecision(ctx, c.GameKind, d.Intervention, blocked, reason)
 
 	if blocked && reason == ReasonAlreadyApplied {
 		// UC-040 A35: not a refusal by a gate, the value is already in place. Info,
@@ -933,6 +940,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// BR-011): the sink needs it so end_game can never end another game (#1310).
 	addressed := d
 	addressed.GameID = c.SessionID
+	addressed.GameKind = c.GameKind
 	// UC-040 A35: an applied state or level value is recorded only after the write
 	// went out; a failed write or an overlapping one deletes the entry.
 	flight := l.beginApplied(d)

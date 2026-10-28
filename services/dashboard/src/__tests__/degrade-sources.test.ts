@@ -59,6 +59,9 @@ describe("UC-035: A3 VictoriaMetrics down", () => {
     expect(overlay.blockedByReason).toEqual([]);
     expect(overlay.appliedOk).toBeNull();
     expect(overlay.appliedError).toBeNull();
+    expect(overlay.shadowAppliedOk).toBeNull();
+    expect(overlay.shadowAppliedError).toBeNull();
+    expect(overlay.shadowBlocked).toBeNull();
   });
 });
 
