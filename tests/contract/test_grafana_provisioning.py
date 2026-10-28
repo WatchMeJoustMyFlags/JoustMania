@@ -96,7 +96,8 @@ def test_talk_dashboard_is_a_single_stage_view():
     assert talk["refresh"] in {"5s", "10s", "30s"}
     panels = [p for p in talk["panels"] if p["type"] != "row"]
     assert len(panels) <= 8, "keep the stage view to a few large panels"
-    assert any(p["datasource"]["type"] == "jaeger" for p in panels)
+    # Grafana 13 cannot search Jaeger 2.21+ (jaeger#7594, #2311): no stage panel uses the Jaeger search.
+    assert not any(p["datasource"]["type"] == "jaeger" for p in panels)
 
 
 @pytest.mark.uc("UC-035", flow="main", steps=[6])
