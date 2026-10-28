@@ -1,7 +1,8 @@
 """The `automatic` rung of sensitivity and num_teams (UC-015 BR-018, BR-017, A1, A3, A7; #2222).
 
 Generalises the shield mode's `automatic` (#2215): the knob ladder is `automatic` followed by the
-value ladder, the knob starts at the operator's persisted value (`automatic` when none), a value is
+value ladder, the knob starts at the operator's persisted value, or at the effective value when
+none is set (`automatic` is the bottom rung), a value is
 written persisted and `automatic` clears it (DELETE ?persist=true), so the flag file's default (or an
 agent promotion) applies again. The menu says "Automatic" and double-flashes the lobby; lobby only.
 `GetMenuStatus.operator_settings` tells operator-set from default per setting.

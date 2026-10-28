@@ -750,6 +750,9 @@ type Flags struct {
 	// gameModes keeps the first shield.activation read per game, so a `hold` read
 	// follows the coordinator's per-game latch (UC-040 A31, BR-027, #2096).
 	gameModes gameModeLatch
+	// gameAttrs returns a game's kind, experiment id and arm as the agent has seen
+	// them (main.go wires the Multiplexer); nil means a real game (#2096).
+	gameAttrs func(gameID string) GameAttrs
 	// now is the clock of gameModes; nil means time.Now (tests inject one).
 	now func() time.Time
 	log *slog.Logger

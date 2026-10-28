@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,9 +15,13 @@ import (
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/flagservice"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/patterngame"
+	"github.com/joustmania/agent/promote"
+
+	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
 // pattern_wiring.go connects the UC-046 pattern-game pieces (#1258) to the agent:
@@ -199,4 +204,84 @@ func nonNilStrings(v []string) []string {
 		return []string{}
 	}
 	return v
+}
+
+// realGameLiveAt is the promoter's real-game probe (UC-043 A17 step 3): true when
+// any telemetry partition reports an active game of kind `real` or without a kind
+// (fail closed) that was updated in the last liveStaleness. A shadow game does not
+// count. It is a prefilter: the flag service's 409 real_game_live is authoritative.
+// mux is read at call time (main assigns it after the promoter is built); without
+// one the probe errors, which the promoter treats as live.
+func realGameLiveAt(mux func() *gamecontext.Multiplexer, now func() time.Time) promote.RealGameProbe {
+	return func(context.Context) (bool, error) {
+		m := mux()
+		if m == nil {
+			return true, errNoMultiplexer
+		}
+		for _, id := range m.Partitions() {
+			snap, ok := m.Snapshot(id)
+			if !ok || snap.Session.GameActive == nil || !*snap.Session.GameActive {
+				continue
+			}
+			if now().Sub(snap.UpdatedAt) > liveStaleness || snap.GameKind == "shadow" {
+				continue
+			}
+			return true, nil
+		}
+		return false, nil
+	}
+}
+
+var errNoMultiplexer = errors.New("real-game probe: no telemetry multiplexer yet")
+
+// gameLister is the flag-service read of the registered games.
+type gameLister interface {
+	ListGames(ctx context.Context) ([]flagservice.Game, error)
+}
+
+// realGameProbe is the promoter's probe (UC-043 A17 step 3): the telemetry
+// prefilter first (live = live, no service call), then the flag service's
+// authoritative registry, where any registered game whose kind is not exactly
+// `shadow` is live, like its 409 real_game_live guard. An error of either counts
+// as live (fail closed). The service check also covers the agent's own reverts,
+// which the service never refuses (review of #2235): it closes the gap of stale
+// or not yet exported telemetry, leaving only the time between the read and the
+// DELETE.
+func realGameProbe(telemetry promote.RealGameProbe, games gameLister) promote.RealGameProbe {
+	return func(ctx context.Context) (bool, error) {
+		if live, err := telemetry(ctx); live || err != nil {
+			return true, err
+		}
+		if games == nil {
+			return true, errNoGameRegistry
+		}
+		list, err := games.ListGames(ctx)
+		if err != nil {
+			return true, err
+		}
+		for _, g := range list {
+			if g.GameKind != "shadow" {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+}
+
+var errNoGameRegistry = errors.New("real-game probe: no flag-service game registry")
+
+// wireDeferredPromotions wires the promoter's real-game probe and the deferred
+// queue's gauges (UC-043 A17 step 3, opposer M4). main calls it before the
+// experiment loop is built, which warns when the probe is missing.
+func wireDeferredPromotions(p *promote.Promoter, mux func() *gamecontext.Multiplexer, games gameLister, mp otelmetric.MeterProvider, logger *slog.Logger) {
+	if p == nil {
+		return
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	p.SetRealGameProbe(realGameProbe(realGameLiveAt(mux, time.Now), games))
+	if err := p.RegisterDeferredMetrics(mp); err != nil {
+		logger.Warn("code_improvement: deferred promotion gauges not registered", "error", err)
+	}
 }

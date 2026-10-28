@@ -43,25 +43,63 @@ func (w *gameReadWarn) allow(now time.Time) bool {
 	return true
 }
 
+// GameAttrs is a game's kind and experiment attribution as the agent saw them on its
+// telemetry (gamecontext Session.GameKind, ExperimentID, Arm).
+type GameAttrs struct {
+	GameKind     string
+	ExperimentID string
+	Arm          string
+}
+
+// SetGameAttrs wires the per-game attribute lookup for the shield reads (#2096,
+// UC-043 A17): in a shadow game of an experiment the agent then resolves the arm's
+// value, as the coordinator does in the game's flag context.
+func (f *Flags) SetGameAttrs(lookup func(gameID string) GameAttrs) {
+	if f != nil {
+		f.gameAttrs = lookup
+	}
+}
+
+func (f *Flags) shieldContext(gameID string) openfeature.EvaluationContext {
+	var attrs GameAttrs
+	if f.gameAttrs != nil {
+		attrs = f.gameAttrs(gameID)
+	}
+	return shieldChargeContext(gameID, attrs)
+}
+
 // shieldChargeContext is the agent's evaluation context for the two shield flags: gameId
-// and game_kind=real. The coordinator reads them inside grant_shield with more: the
+// and the game's game_kind (real when unknown), plus experiment_id and arm for a game of
+// an experiment (#2096: shield.activation has an experiment rung since FR-162). The coordinator reads them inside grant_shield with more: the
 // InterventionManager runs the grant in the game's flag transaction context (#1970), so
 // its read also carries targetingKey and game_mode (the mode), controller_count,
 // sensitivity and the game's game_kind
 // (services/game_coordinator/tests/test_shield_charge_flag_context.py). The agent still
 // resolves what the coordinator does: it reads these flags only for a real FFA game
-// (game_kind=real on both sides), and flags.md §4 restricts their targeting to gameId
-// and game_kind (tests/contract/test_flagd_resolution.py and HANDLER_FLAG_READS in
+// (game_kind=real on both sides) or, in a shadow game, with the game's kind and arm, and
+// flags.md §4 restricts their targeting to gameId, game_kind, experiment_id and arm
+// (tests/contract/test_flagd_resolution.py and HANDLER_FLAG_READS in
 // services/game_coordinator/handler_flag_reads.py), so the extra attributes never
 // change the result.
 //
 // Keep in sync with _agent_context() in tests/contract/test_flagd_resolution.py, the
 // live parity test that resolves both contexts against flagd.
-func shieldChargeContext(gameID string) openfeature.EvaluationContext {
-	return openfeature.NewEvaluationContext("", map[string]any{
-		"game_kind": "real",
+func shieldChargeContext(gameID string, attrs GameAttrs) openfeature.EvaluationContext {
+	kind := attrs.GameKind
+	if kind == "" {
+		kind = "real"
+	}
+	evalCtx := map[string]any{
+		"game_kind": kind,
 		"gameId":    gameID,
-	})
+	}
+	if attrs.ExperimentID != "" {
+		evalCtx["experiment_id"] = attrs.ExperimentID
+	}
+	if attrs.Arm != "" {
+		evalCtx["arm"] = attrs.Arm
+	}
+	return openfeature.NewEvaluationContext("", evalCtx)
 }
 
 // gameModeLatchTTL bounds how long the first shield.activation read of a game is kept: a
@@ -132,7 +170,7 @@ func (f *Flags) LatchShieldMode(ctx context.Context, gameID string) {
 	if f == nil || f.game == nil || gameID == "" {
 		return
 	}
-	mode, err := f.game.StringValue(ctx, "shield.activation", "instant", shieldChargeContext(gameID))
+	mode, err := f.game.StringValue(ctx, "shield.activation", "instant", f.shieldContext(gameID))
 	if err != nil {
 		f.log.Debug("flags shield.activation unreadable at the game's first signal", "game_id", gameID, "error", err)
 		return
@@ -161,7 +199,7 @@ func (f *Flags) ShieldCharge(ctx context.Context, gameID string) (trigger bool, 
 	if f == nil || f.game == nil {
 		return false, DefaultShieldChargeExpiry
 	}
-	evalCtx := shieldChargeContext(gameID)
+	evalCtx := f.shieldContext(gameID)
 	mode, err := f.game.StringValue(ctx, "shield.activation", "instant", evalCtx)
 	if err != nil {
 		if f.gameWarn.allow(time.Now()) {

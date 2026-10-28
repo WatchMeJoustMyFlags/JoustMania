@@ -238,6 +238,11 @@ type experimentLoop struct {
 	// promotions reverts the autonomous promotions this agent run applied when the
 	// kill switch is off (UC-043 A1, UC-045 step 5, #1704). nil: nothing to revert.
 	promotions promotionKillSwitch
+	// deferred drains the promoter's queue of hold-key real writes and reverts
+	// every promote.DeferredDrainInterval with the live promotionConfig (UC-043 A17
+	// step 3); nil = no queue (test wiring).
+	deferred        deferredPromotions
+	promotionConfig promote.ConfigResolver
 
 	// ceilings are the operator's env ceilings on the widening experiment settings
 	// (#1810, C-034): read once at startup (the process env does not change); 0 =
@@ -277,6 +282,9 @@ type experimentLoop struct {
 	// Each entry has one timer in graceTimers that bounds it.
 	parked   map[string]gamecontext.GameContext
 	outcomes map[string]gamerunner.Outcome
+	// hold is the UC-043 A17 gate of the declarer; main shares its policy with the
+	// proposer vocabulary.
+	hold *holdGate
 }
 
 // gameFitnessFunc scores a finished game (its pre-reset GameContext) into one
@@ -395,9 +403,13 @@ func buildExperimentLoop(
 		Promoter:  promo,
 		Targeting: targeting,
 		Log:       logger,
+		// UC-043 A17 step 3: a flag whose deferred promotion waits counts as under test.
+		PendingPromotions: pendingPromotionFlags(promoter),
 		// UC-046: pin experiment.mock_archetypes at each experiment's first spawn;
 		// the kill switch force-ends in-flight pattern games through the tracker.
-		Patterns:       pinner,
+		Patterns: pinner,
+		// UC-043 A17 step 2: hold-flag experiments are checked at the pin and per tick.
+		HoldGate:       registryHoldGate(gameFlags),
 		FlagDigest:     resolvedFlagDigest,
 		PatternTracker: patterngame.Default,
 	})
@@ -408,6 +420,14 @@ func buildExperimentLoop(
 		registry.SetTerminalHook(window.Forget)
 	}
 	spawner.SetPatternCallbacks(registry.RecordPatternStart, patternEndChain(registry.RecordPatternEnd, windowSink))
+
+	// UC-043 A17 step 1: the declarer offers a hold key only while the selected
+	// archetypes all press the trigger in a Free-for-All shadow mode.
+	hold := &holdGate{}
+	hold.setPolicy(func(ctx context.Context) bool {
+		pin := pinner.Pin(ctx)
+		return pin.Active() && len(experiment.ArchetypesWithoutTriggerPolicy(pin)) == 0
+	})
 
 	thresholds := flagsFitnessSource{flags: flagsClient}
 	loop := &experimentLoop{
@@ -422,6 +442,7 @@ func buildExperimentLoop(
 		thresholds:   thresholds,
 		ceilings:     experimentCeilingsFromEnv(logger),
 		dynamic:      newDynamicDeclarer(gameFlags, nil),
+		hold:         hold,
 		// #1184: the retro-seeded thesis proposer is ALWAYS built (like the #995
 		// declarer) so the retro coordinator can Record into it unconditionally; whether
 		// it actually DECLARES is gated by the proposer gate (env AND flag, #1810) in
@@ -432,7 +453,14 @@ func buildExperimentLoop(
 		loop.promotions = promoter
 		// A re-watch revert journals on its experiment (UC-043 step 7, #1883).
 		promoter.SetRewatchJournal(loop.journalRewatchRevert)
+		// UC-043 A17 step 3: the deferred real writes and reverts of hold keys.
+		loop.deferred = promoter
+		loop.promotionConfig = promotionConfigResolver(flagsClient)
+		if !promoter.HasRealGameProbe() {
+			logger.Warn("code_improvement: no real-game probe wired; every autonomous promotion of a hold key waits forever (UC-043 A17, fail closed)")
+		}
 	}
+	loop.dynamic.hold = hold
 	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled; settings are the experiment_dynamic_* flags, read per tick (#1907)")
 	// Wire the #1014 terminal-outcome backstop: each spawned game signals its
 	// terminal outcome here, and a non-concluding game releases its in-flight slot
@@ -512,11 +540,27 @@ func (e *experimentLoop) run(ctx context.Context) {
 	}
 	heartbeat := newHeartbeat(experiment.ProgressHeartbeatInterval)
 	defer heartbeat.Stop()
+	// UC-043 A17 step 3: drain the deferred hold-key writes and reverts.
+	var drain <-chan time.Time
+	if e.deferred != nil {
+		drainTicker := time.NewTicker(promote.DeferredDrainInterval)
+		defer drainTicker.Stop()
+		drain = drainTicker.C
+	}
 	for {
 		select {
 		case <-heartbeat.Chan():
 			e.registry.ProgressHeartbeat()
+		case <-drain:
+			e.drainDeferred(ctx)
 		case <-ctx.Done():
+			// UC-043 A17: journal the dropped deferred writes before the journal closes.
+			// A waiting revert runs now if no real game is live, else it stays journaled.
+			if e.deferred != nil {
+				dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+				e.deferred.DropDeferred(dctx, promote.ReasonShutdown)
+				dcancel()
+			}
 			// Shutdown / kill-switch teardown: abort every live experiment so its
 			// targeting branch is stripped and capacity released. Cancel any pending
 			// completed-grace timers first so none fires after the loop returns (#1020).
@@ -667,6 +711,33 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 // promotion still applied, stops its re-watch and returns what it reverted.
 type promotionKillSwitch interface {
 	RevertOnKillSwitch(ctx context.Context) []promote.KillSwitchRevert
+}
+
+// deferredPromotions is the Promoter half that owns the deferred real writes of
+// hold keys (UC-043 A17 step 3).
+type deferredPromotions interface {
+	DrainDeferred(ctx context.Context, resolve promote.ConfigResolver)
+	DropDeferred(ctx context.Context, reason string)
+	RestoreDeferredReverts(ctx context.Context, restored []experiment.RestoredRevert)
+}
+
+// pendingPromotionFlags is the registry's view of the promoter's waiting writes;
+// nil without a promoter.
+func pendingPromotionFlags(p *promote.Promoter) func() []string {
+	if p == nil {
+		return nil
+	}
+	return p.PendingFlags
+}
+
+// drainDeferred runs one pass of the deferred queue with the live promotion
+// config resolver (read per pass and per write, opposer m2). The promoter journals
+// each outcome.
+func (e *experimentLoop) drainDeferred(ctx context.Context) {
+	if e.deferred == nil || e.promotionConfig == nil {
+		return
+	}
+	e.deferred.DrainDeferred(ctx, e.promotionConfig)
 }
 
 // revertPromotionsOnKillSwitch reverts the applied autonomous promotions and
@@ -870,6 +941,12 @@ func (e *experimentLoop) ensureStarted() {
 	e.startedOnce = true
 	if err := e.rehydrate(); err != nil {
 		e.log.Error("experiment: rehydrate from journal failed (continuing without prior experiments)", "error", err)
+	}
+	// UC-043 A17 step 3: re-queue the hold-key reverts a previous run left waiting.
+	if e.deferred != nil && e.registry != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		e.deferred.RestoreDeferredReverts(ctx, e.registry.TakeRestoredReverts())
+		cancel()
 	}
 }
 

@@ -200,6 +200,20 @@ func (w *serviceRealDefaultWriter) PromotedFlags(ctx context.Context) ([]string,
 	return out, nil
 }
 
+// PromotionOverlay reads the value of flagKey's real overlay when a promotion wrote
+// it (ok false otherwise), so a revert restored after a restart deletes only its
+// own value (UC-043 A17).
+func (w *serviceRealDefaultWriter) PromotionOverlay(ctx context.Context, flagKey string) (json.RawMessage, bool, error) {
+	view, err := w.svc.GetFlag(ctx, gameFlagSet, flagKey)
+	if err != nil {
+		return nil, false, err
+	}
+	if view.RealOverlay == nil || view.RealOverlay.Writer != promotionWriter {
+		return nil, false, nil
+	}
+	return view.RealOverlay.Value, true, nil
+}
+
 // realOverlayWriter is the writer of view's real overlay, or "" when none.
 func realOverlayWriter(view flagservice.FlagView) string {
 	if view.RealOverlay == nil {

@@ -130,12 +130,16 @@ const (
 	PromotionApplied   = "applied"
 	PromotionDiscarded = "discarded"
 	PromotionReverted  = "reverted"
+	// PromotionDeferred: the real write of a hold key waits until no real game runs
+	// (UC-043 A17 step 3); its later outcome is journaled through RecordPromotion.
+	PromotionDeferred = "deferred"
 )
 
 // promotionActed reports whether a promotion acted (applied, or applied and then
-// reverted by the watch); anything else, an unknown outcome included, did not.
+// reverted by the watch, or deferred: the promoter's queue carries the write,
+// UC-043 A17); anything else, an unknown outcome included, did not.
 func promotionActed(res PromotionResult) bool {
-	return res.Outcome == PromotionApplied || res.Outcome == PromotionReverted
+	return res.Outcome == PromotionApplied || res.Outcome == PromotionReverted || res.Outcome == PromotionDeferred
 }
 
 // TargetingWriter scopes / un-scopes the experiment's shadow targeting branch on

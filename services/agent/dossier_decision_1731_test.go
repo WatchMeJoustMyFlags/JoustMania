@@ -70,6 +70,7 @@ func TestDossierDecisionFollowsTerminalStatus_1731(t *testing.T) {
 }
 
 // UC: UC-035 A1
+// UC: UC-043 A17
 func TestDossierDecisionEdgeCases_1869(t *testing.T) {
 	at := time.Date(2026, 6, 16, 12, 10, 0, 0, time.UTC)
 	outcome := func(v string) journal.Event {
@@ -99,6 +100,18 @@ func TestDossierDecisionEdgeCases_1869(t *testing.T) {
 		{"promotion applied, never reverted (done)",
 			[]journal.Event{outcome("promote"), decision("promoting", 1), promotion("applied", 2), decision("done", 3)},
 			"done", "promoted"},
+		{"UC-043 A17 hold-key write still waits (done)",
+			[]journal.Event{outcome("promote"), decision("promoting", 1), promotion("deferred", 2), decision("done", 3)},
+			"done", "deferred"},
+		{"UC-043 A17 waiting write dropped by the kill switch (done)",
+			[]journal.Event{outcome("promote"), decision("promoting", 1), promotion("deferred", 2), decision("done", 3), promotion("discarded", 4)},
+			"done", "discarded"},
+		{"UC-043 A17 waiting write applied after the game (done)",
+			[]journal.Event{outcome("promote"), decision("promoting", 1), promotion("deferred", 2), decision("done", 3), promotion("applied", 4)},
+			"done", "promoted"},
+		{"UC-043 A17 waiting write applied then reverted (done)",
+			[]journal.Event{outcome("promote"), decision("promoting", 1), promotion("deferred", 2), decision("done", 3), promotion("applied", 4), promotion("reverted", 5)},
+			"done", "reverted"},
 		{"legacy journal left at concluded keeps the verdict label",
 			[]journal.Event{outcome("promote")}, "concluded", "promoted"},
 		{"promotion in progress",

@@ -779,7 +779,10 @@ func main() {
 	// llm.eligible_game_kinds. Always installed (inference.backend can flip at run
 	// time, #1810); the proposer consults it only when the cycle's backend is real,
 	// so a stub cycle never charges the budget.
-	proposer := newWiredProposer(textBackends.ProposerBackend, proposalSink, gameFlagVocab(gameFlags),
+	// UC-043 A17 step 1: the proposer's vocabulary offers a hold key under the same
+	// gate as the dynamic declarer; its policy is set once the experiment loop is built.
+	proposerHold := &holdGate{}
+	proposer := newWiredProposer(textBackends.ProposerBackend, proposalSink, gameFlagVocab(gameFlags, proposerHold),
 		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCap, "proposer", logger), logger)
 	// #1270: the kill-switch gate, read at USE time on every game end (never cached
 	// at startup: flagd may be down then). Both `enabled` and `experiments_enabled`
@@ -850,6 +853,9 @@ func main() {
 	objResolver := &promote.LateObjectiveResolver{}
 
 	promoter := buildPromoter(ctx, fitnessStore, objResolver, tuning, logger)
+	// UC-043 A17 step 3: the real-game probe of the deferred hold-key writes reads the
+	// telemetry multiplexer, which is assigned below, at call time.
+	wireDeferredPromotions(promoter, func() *gamecontext.Multiplexer { return mux }, flagservice.NewFromEnv(), globalMeterProvider(), logger)
 	slog.Info("Code-improvement promotion surface enabled (#936, M7-8)",
 		"code_improvement_enabled", getEnv("AGENT_CODE_IMPROVEMENT_ENABLED", "false"),
 		"target", getEnv("AGENT_CODE_IMPROVEMENT_TARGET", string(promote.TargetLocal)),
@@ -869,6 +875,7 @@ func main() {
 	// ConfigResolver).
 	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, gameFlags, sharedContextWindow, logger)
 	if expLoop != nil {
+		proposerHold.setPolicy(expLoop.hold.policyOK)
 		// Bind the spawner's background game-drive goroutines to the agent's root
 		// context so shutdown cancels in-flight shadow games (no goroutine leak).
 		expLoop.spawner.SetRootContext(ctx)
@@ -962,6 +969,8 @@ func main() {
 		return s
 	})
 	mux.SetOwnService(ownService)
+	// #2096 (UC-043 A17): the shield reads of a shadow arm game resolve its arm.
+	agentFlags.SetGameAttrs(gameAttrsFrom(mux))
 	// UC-046 A8: a pattern game is non-exact when any other game is live.
 	patterngame.Default.SetConcurrencyProbe(otherGameLive(mux))
 
@@ -1081,12 +1090,18 @@ func proposerPermit(src proposerGateFlags, proposerCeiling bool) func(ctx contex
 // the decoder validates against it. A read error returns an empty set, which
 // fail-closes the decoder (nothing is proposable until the flag service
 // answers), the safe reading.
-func gameFlagVocab(r gameFlagReader) func() map[string]struct{} {
+//
+// A hold key is in the set only under UC-043 A17 step 1 (the same gate as the
+// dynamic declarer; a nil gate keeps every hold key out).
+func gameFlagVocab(r gameFlagReader, hold *holdGate) func() map[string]struct{} {
 	return func() map[string]struct{} {
 		catalog := readGameCatalog(r)
+		offerable := hold.filter(context.Background(), catalog)
 		set := make(map[string]struct{}, len(catalog))
 		for k := range catalog {
-			set[k] = struct{}{}
+			if offerable(k) {
+				set[k] = struct{}{}
+			}
 		}
 		return set
 	}

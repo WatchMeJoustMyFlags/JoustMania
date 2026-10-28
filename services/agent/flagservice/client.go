@@ -36,6 +36,9 @@ const (
 const (
 	ReasonGameNotLive  = "game_not_live"
 	ReasonNoSyncStream = "no_sync_stream"
+	// ReasonRealGameLive refuses a real write of a hold key while a real game is
+	// registered (409, flags.md §13, UC-043 A17); the promoter defers the write.
+	ReasonRealGameLive = "real_game_live"
 )
 
 // Scope is a write's scope properties.
@@ -301,6 +304,22 @@ func (c *Client) Epoch(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return h.Epoch, nil
+}
+
+// Game is one registered game scope (GET /games).
+type Game struct {
+	GameID   string `json:"game_id"`
+	GameKind string `json:"game_kind"`
+}
+
+// ListGames reads the registered game scopes (GET /games): the flag service's
+// authoritative live-game set (UC-043 A17).
+func (c *Client) ListGames(ctx context.Context) ([]Game, error) {
+	var v struct {
+		Games []Game `json:"games"`
+	}
+	err := c.do(ctx, http.MethodGet, "/games", nil, &v)
+	return v.Games, err
 }
 
 // GetFlag reads one flag's effective state with its rendered flagd JSON.
