@@ -54,14 +54,16 @@ const LOOKBACK_SECONDS = 10 * 60; // 10 minutes
 const MAX_FEED_ROWS = 80;
 
 /**
- * VictoriaMetrics instant-query for the count of applied interventions, by result.
+ * VictoriaMetrics query for the interventions written in the window, by result.
  *
  * `agent_intervention_writes_total{result="ok"|"error"}` is the ActionSink's
  * flag-file write counter (services/agent/actions/writer.go). VM receives the
  * metric under the namespaced job, so we sum across jobs rather than pinning one.
+ * Same window as BLOCKED_QUERY (#2288), not the counter's lifetime. Grouped by
+ * game_kind so real and shadow writes are counted apart (#2294).
  * Best effort: when VM is unreachable the overlay shows `n/a`.
  */
-const APPLIED_QUERY = 'sum(agent_intervention_writes_total) by (result, game_kind)';
+const APPLIED_QUERY = `sum by (result, game_kind) (increase(agent_intervention_writes_total[${LOOKBACK_SECONDS}s]))`;
 
 /**
  * The agent counters carry `game_kind` in the telemetry vocabulary (#2294,
@@ -76,10 +78,11 @@ export function isShadowKind(gameKind: string | undefined): boolean {
 /**
  * VictoriaMetrics query for the blocked decisions of the window, by action and
  * reason (UC-040 A21, #1326): `agent_decisions_total{blocked="true"}` counts every
- * refusal, including the repeats that emit no agent.decision span.
+ * refusal, including the repeats that emit no agent.decision span. `already_applied`
+ * is left out: the value was already in place, not a refusal (#2046, #2288).
  */
 const BLOCKED_QUERY =
-  `sum by (action, block_reason, game_kind) (increase(agent_decisions_total{blocked="true"}[${LOOKBACK_SECONDS}s]))`;
+  `sum by (action, block_reason, game_kind) (increase(agent_decisions_total{blocked="true",block_reason!="already_applied"}[${LOOKBACK_SECONDS}s]))`;
 
 /** Jaeger operation of the effective flag set per game partition (#2059). */
 export const FLAG_STATE_OPERATION = "agent.flag_state";
@@ -173,7 +176,7 @@ export interface InterventionOverlay {
   totalBlocked: number | null;
   /** Total blocked decisions of shadow games in the window; null when VictoriaMetrics is unreachable. */
   shadowBlocked: number | null;
-  /** Applied writes (result="ok"), null when VM was unreachable / had no samples. */
+  /** Applied writes (result="ok"), null when VM was unreachable (0 when it had no samples). */
   appliedOk: number | null;
   /** Failed flag-file writes (result="error"), or null when unavailable. */
   appliedError: number | null;
@@ -218,19 +221,19 @@ export const APPLIED_UNAVAILABLE: AppliedCounts = {
 
 /**
  * Parse a VictoriaMetrics instant-query response into the applied/error counts.
- * Sums across all `result` series. Returns nulls when the response is empty or
- * malformed so the overlay can show "n/a" without throwing.
+ * Sums across all `result` series. A successful empty answer is zero (no writes in
+ * the window), not unavailable; only a malformed body returns nulls ("n/a").
  */
 export function parseAppliedCounts(body: VmQueryResponse): AppliedCounts {
   const results = body.data?.result;
-  if (!results || results.length === 0) {
+  if (body.status !== "success" || !results) {
     return APPLIED_UNAVAILABLE;
   }
-  // The query answered, so a missing outcome is zero, not n/a.
+  // The query answered, so a missing outcome (or an empty answer) is zero, not n/a.
   const out = { appliedOk: 0, appliedError: 0, shadowAppliedOk: 0, shadowAppliedError: 0 };
   for (const series of results) {
     const result = series.metric["result"];
-    const v = Number.parseFloat(series.value?.[1] ?? "");
+    const v = Math.round(Number.parseFloat(series.value?.[1] ?? ""));
     if (!Number.isFinite(v)) continue;
     const shadow = isShadowKind(series.metric["game_kind"]);
     if (result === "ok") out[shadow ? "shadowAppliedOk" : "appliedOk"] += v;

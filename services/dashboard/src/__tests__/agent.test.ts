@@ -356,9 +356,37 @@ describe("UC-035: main step 3, parseAppliedCounts", () => {
     expect(q).toContain("game_kind");
   });
 
-  it("returns nulls when VM has no samples or a malformed body", () => {
-    expect(parseAppliedCounts(vm([]))).toEqual(APPLIED_UNAVAILABLE);
+  it("UC-035/A3 an empty answer is zero applied, not n/a; a malformed body is n/a", () => {
+    expect(parseAppliedCounts(vm([]))).toEqual({ appliedOk: 0, appliedError: 0, shadowAppliedOk: 0, shadowAppliedError: 0 });
     expect(parseAppliedCounts({ status: "error" })).toEqual(APPLIED_UNAVAILABLE);
+  });
+});
+
+describe("UC-035: A3/#2288 interventions panel windows and fetch results", () => {
+  it("UC-035/A3 VM up but empty for both queries: zero applied, zero blocked", async () => {
+    stubFetch(() => json(vm([])));
+    const overlay = await fetchInterventionCounts();
+    expect(overlay.appliedOk).toBe(0);
+    expect(overlay.totalBlocked).toBe(0);
+  });
+
+  it("UC-035/A3 an HTTP error from VM is unreachable (n/a)", async () => {
+    stubFetch(() => json({}, 502));
+    const overlay = await fetchInterventionCounts();
+    expect(overlay.appliedOk).toBeNull();
+    expect(overlay.totalBlocked).toBeNull();
+  });
+
+  it("UC-035/A3 applied and blocked use the same 600 s window; blocked leaves out already_applied", async () => {
+    const urls = stubFetch(() => json(vm([])));
+    await fetchInterventionCounts();
+    const queries = urls.map((u) => new URL(u, "http://x").searchParams.get("query") ?? "");
+    const applied = queries.find((q) => q.includes("agent_intervention_writes_total")) ?? "";
+    const blocked = queries.find((q) => q.includes("agent_decisions_total")) ?? "";
+    expect(applied).toContain("increase(");
+    expect(applied).toContain("[600s]");
+    expect(blocked).toContain("[600s]");
+    expect(blocked).toContain('block_reason!="already_applied"');
   });
 });
 
@@ -404,7 +432,7 @@ describe("UC-040: A21 blocked tallies from agent_decisions_total", () => {
     });
     const overlay = await fetchInterventionCounts();
     const query = new URL(urls.find((u) => u.includes("agent_decisions_total"))!, "http://x").searchParams.get("query") ?? "";
-    expect(query).toContain('agent_decisions_total{blocked="true"}');
+    expect(query).toContain('agent_decisions_total{blocked="true",block_reason!="already_applied"}');
     expect(query).toContain("[600s]");
     expect(overlay).toEqual({ ...BLOCKED_UNAVAILABLE, ...APPLIED_UNAVAILABLE });
     expect(overlay.totalBlocked).toBeNull();
