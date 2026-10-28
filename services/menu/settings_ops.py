@@ -30,16 +30,20 @@ from lib.setting_ladders import (
     AGENT_POLICY_LEVELS,
     AGENT_RESUME_FALLBACK_LEVEL,
     AGENT_SAVED_LEVELS,
+    AUTOMATIC,
+    AUTOMATIC_OPTIONS,
     BACKENDS,
+    KNOB_LADDERS,
     SENSITIVITY_LADDER,
-    SHIELD_AUTOMATIC,
     SHIELD_KNOB_LADDER,
     clamp_step,
+    knob_start,
 )
 from lib.types import Sound
 from lib.voice_prompts import (  # re-exported: admin mode imports the voice tables from here
     AGENT_LEVEL_VOICES,
     AGENT_SWITCH_VOICES,
+    AUTOMATIC_VOICE,
     FORCE_ALL_START_VOICES,
     INSTRUCTIONS_VOICES,
     NUM_TEAMS_VOICES,
@@ -137,10 +141,10 @@ MODE_PULSE_MS = 600
 MODE_PULSE_SPEED = 6
 # UC-015 BR-018 (#2215): `automatic` (the operator value cleared) shows as a double white flash, a pattern
 # no mode or shield mode uses (they pulse once).
-SHIELD_AUTOMATIC_FLASH_MS = 150
-SHIELD_AUTOMATIC_FLASH_GAP_SECONDS = 0.3
-# The menu re-reads whether the operator set the shield mode at most this often (GetMenuStatus, BR-018).
-SHIELD_OPERATOR_REFRESH_SECONDS = 2.0
+AUTOMATIC_FLASH_MS = 150
+AUTOMATIC_FLASH_GAP_SECONDS = 0.3
+# The menu re-reads which settings the operator set at most this often (GetMenuStatus, BR-018, #2222).
+OPERATOR_REFRESH_SECONDS = 2.0
 # UC-015 BR-018 (#2215): the colour of each shield mode's pulse on the lobby controllers (the BR-015 pulse).
 SHIELD_MODE_COLORS: dict[str, tuple[int, int, int]] = {
     "instant": Colors.White.value,
@@ -161,14 +165,15 @@ class _Option:
 
 STEP_OPTIONS: dict[str, _Option] = {
     "current_game": _Option(None, lobby_only=True),
-    "sensitivity": _Option("game_settings_writer", lobby_only=True),
-    "num_teams": _Option("game_settings_writer", lobby_only=True),
+    # UC-015 BR-018 (#2222): sensitivity and num_teams have the knob ladder with `automatic` first.
+    "sensitivity": _Option("game_settings_writer", order=KNOB_LADDERS["sensitivity"], lobby_only=True),
+    "num_teams": _Option("game_settings_writer", order=KNOB_LADDERS["num_teams"], lobby_only=True),
     "force_all_start": _Option("game_settings_writer", order=["off", "on"], lobby_only=True),
     "game_instructions": _Option("user_prefs_writer", order=["off", "on"], lobby_only=True),
     "audio_volume.master": _Option("user_prefs_writer"),
     "agent_level": _Option(None),
-    # UC-015 BR-018: the knob ladder automatic, instant, trigger, hold (`_step_shield_mode`); persisted.
-    SHIELD_ACTIVATION_FLAG: _Option(None, order=SHIELD_KNOB_LADDER, lobby_only=True),
+    # UC-015 BR-018: the knob ladder automatic, instant, trigger, hold (`_step_knob_setting`); persisted.
+    SHIELD_ACTIVATION_FLAG: _Option("game_settings_writer", order=SHIELD_KNOB_LADDER, lobby_only=True),
 }
 # UC-015 A1: refused with game_active while the game lifecycle is live.
 LOBBY_ONLY_OPTIONS = frozenset(name for name, opt in STEP_OPTIONS.items() if opt.lobby_only)
@@ -208,13 +213,14 @@ class SettingsOps:
         self.saved_agent_level: str | None = None
         # Serializes the kill, the resume and the ladder, so a saved level is never read half-written.
         self._agent_lock = asyncio.Lock()
-        # UC-015 BR-018: the operator's persisted shield mode as last read from the flag service
-        # (`automatic` when none, None when unknown), for GetMenuStatus, which never calls HTTP itself.
-        self.shield_operator: str | None = None
-        self._shield_read_at = -SHIELD_OPERATOR_REFRESH_SECONDS
+        # UC-015 BR-018 (#2222): the operator's persisted value of each setting with an `automatic` rung as
+        # last read from the flag service (`automatic` when none; a missing key = unknown), for
+        # GetMenuStatus, which never calls HTTP itself.
+        self.operator_settings: dict[str, str] = {}
+        self._operator_read_at = -OPERATOR_REFRESH_SECONDS
         # Goes up on every commit: a background read that started before it is dropped (stale).
-        self._shield_generation = 0
-        self.shield_refresh_task: asyncio.Task | None = None
+        self._operator_generation = 0
+        self.operator_refresh_task: asyncio.Task | None = None
 
     @property
     def state_manager(self) -> StateManager | None:
@@ -348,8 +354,8 @@ class SettingsOps:
             return await self._step_game_mode(forward, steps)
         if option == "agent_level":
             return await self._step_agent_level(forward, steps)
-        if option == SHIELD_ACTIVATION_FLAG:
-            return await self._step_shield_mode(forward, steps)
+        if option in AUTOMATIC_OPTIONS:
+            return await self._step_knob_setting(option, spec.writer_attr, forward, steps)
 
         writer = getattr(self.state_manager, spec.writer_attr, None)
         if writer is None:
@@ -404,27 +410,38 @@ class SettingsOps:
                 self.saved_agent_level = level
             return Result(level, new)
 
-    # --- shield mode (UC-015 step 9, BR-018) -----------------------------------------------
+    # --- settings with an `automatic` rung (UC-015 step 9, BR-018, #2222) -----------------------
 
-    def _read_shield_operator(self) -> str | None:
-        """The persisted operator value of `game/shield.activation`: a variant, `automatic` (none) or None."""
-        writer = getattr(self.state_manager, "game_settings_writer", None)
-        view = writer.get_flag_view(SHIELD_ACTIVATION_FLAG) if writer is not None else None
+    def _read_knob(self, option: str) -> tuple[str | None, str | None]:
+        """One read of ``option``: (operator value, effective variant).
+
+        The operator value is a variant, `automatic` (none) or None (unreadable).
+        """
+        writer = getattr(self.state_manager, STEP_OPTIONS[option].writer_attr, None)
+        view = writer.get_flag_view(option) if writer is not None else None
         if view is None:
-            return None
+            return None, None
+        effective = view.get("effective_default")
         admin = view.get("admin_value")
         if not admin:
-            return SHIELD_AUTOMATIC
+            return AUTOMATIC, effective
         variant = admin.get("variant")
-        return variant if variant in SHIELD_KNOB_LADDER else None
+        return (variant if variant in KNOB_LADDERS[option] else None), effective
 
-    async def refresh_shield_operator(self) -> None:
-        """Re-read the operator's shield mode for GetMenuStatus (BR-018); unknown when the read fails."""
-        generation = self._shield_generation
-        self._shield_read_at = time.monotonic()
-        value = await asyncio.to_thread(self._read_shield_operator)
-        if generation == self._shield_generation:
-            self.shield_operator = value  # else a commit landed during the read: its value stands
+    def _read_operator(self, option: str) -> str | None:
+        return self._read_knob(option)[0]
+
+    def _read_all_operators(self) -> dict[str, str]:
+        values = {option: self._read_operator(option) for option in KNOB_LADDERS}
+        return {option: value for option, value in values.items() if value is not None}
+
+    async def refresh_operator_settings(self) -> None:
+        """Re-read the operator's values for GetMenuStatus (BR-018); an unreadable one is left out (unknown)."""
+        generation = self._operator_generation
+        self._operator_read_at = time.monotonic()
+        values = await asyncio.to_thread(self._read_all_operators)
+        if generation == self._operator_generation:
+            self.operator_settings = values  # else a commit landed during the read: its value stands
 
     @staticmethod
     def _clear(writer, key: str) -> bool:
@@ -435,33 +452,34 @@ class SettingsOps:
             logger.error(f"Clear {key} failed: {e}")
             return False
 
-    def schedule_shield_refresh(self) -> None:
-        """GetMenuStatus: refresh the cached operator value in the background when it is unknown or old."""
-        running = self.shield_refresh_task is not None and not self.shield_refresh_task.done()
-        fresh = time.monotonic() - self._shield_read_at < SHIELD_OPERATOR_REFRESH_SECONDS
-        if running or (fresh and self.shield_operator is not None):
+    def schedule_operator_refresh(self) -> None:
+        """GetMenuStatus: refresh the cached operator values in the background when one is unknown or old."""
+        running = self.operator_refresh_task is not None and not self.operator_refresh_task.done()
+        fresh = time.monotonic() - self._operator_read_at < OPERATOR_REFRESH_SECONDS
+        if running or (fresh and len(self.operator_settings) == len(KNOB_LADDERS)):
             return
-        self.shield_refresh_task = asyncio.create_task(self.refresh_shield_operator())
+        self.operator_refresh_task = asyncio.create_task(self.refresh_operator_settings())
 
-    async def _step_shield_mode(self, forward: bool, steps: int) -> Result:
-        """BR-018: step the operator value along automatic, instant, trigger, hold; one write or one clear."""
-        writer = getattr(self.state_manager, "game_settings_writer", None)
-        old = await asyncio.to_thread(self._read_shield_operator)
+    async def _step_knob_setting(self, option: str, writer_attr: str, forward: bool, steps: int) -> Result:
+        """BR-018: step the operator value along automatic and the value ladder; one write or one clear."""
+        writer = getattr(self.state_manager, writer_attr, None)
+        operator, effective = await asyncio.to_thread(self._read_knob, option)
+        old = knob_start(option, operator, effective)  # the operator value, else where the setting stands
         if writer is None or old is None:
             return Result(None, None, FLAG_SERVICE_UNAVAILABLE)  # fail closed: the knob's start is unknown
-        new, at_limit = clamp_step(SHIELD_KNOB_LADDER, old, steps if forward else -steps)
+        new, at_limit = clamp_step(KNOB_LADDERS[option], old, steps if forward else -steps)
         if at_limit:
             return Result(old, old, AT_LIMIT)
-        self._shield_generation += 1  # a background read already in flight must not put the old value back
-        if new == SHIELD_AUTOMATIC:
-            ok = await asyncio.to_thread(self._clear, writer, SHIELD_ACTIVATION_FLAG)
+        self._operator_generation += 1  # a background read already in flight must not put the old value back
+        if new == AUTOMATIC:
+            ok = await asyncio.to_thread(self._clear, writer, option)
         else:
-            ok = await asyncio.to_thread(self._write, writer, SHIELD_ACTIVATION_FLAG, new)
-        self._shield_generation += 1  # and a read that started during the write may predate it
+            ok = await asyncio.to_thread(self._write, writer, option, new)
+        self._operator_generation += 1  # and a read that started during the write may predate it
         if not ok:
-            self.shield_operator = None  # the outcome is unknown until the next read
+            self.operator_settings.pop(option, None)  # the outcome is unknown until the next read
             return Result(old, None, FLAG_SERVICE_UNAVAILABLE)
-        self.shield_operator, self._shield_read_at = new, time.monotonic()
+        self.operator_settings[option] = new
         return Result(old, new)
 
     # --- agent_switch (UC-015 step 6, A3, A9, BR-002, BR-003) --------------------------------
@@ -548,6 +566,10 @@ class SettingsOps:
             if option == "current_game":
                 await self.show_mode_on_lobby(variant)
                 await audio.play_game_mode_voice(variant)
+            elif variant == AUTOMATIC and option in AUTOMATIC_OPTIONS:
+                # BR-018: one voice line and one double white flash for the `automatic` rung of any setting.
+                await self.show_automatic_on_lobby()
+                await audio.play_voice(AUTOMATIC_VOICE)
             elif option == "sensitivity":
                 index = SENSITIVITY_VALUES.get(variant)
                 if index is not None:
@@ -588,18 +610,19 @@ class SettingsOps:
 
     async def show_shield_mode_on_lobby(self, shield_mode: str) -> None:
         """UC-015 BR-018: the BR-015 pulse in the shield mode's colour; `automatic` a double white flash."""
-        if shield_mode == SHIELD_AUTOMATIC:
-            await self._effect_lobby(
-                controller_manager_pb2.GAME_EFFECT_FLASH, Colors.White.value, SHIELD_AUTOMATIC_FLASH_MS
-            )
-            await asyncio.sleep(SHIELD_AUTOMATIC_FLASH_GAP_SECONDS)
-            await self._effect_lobby(
-                controller_manager_pb2.GAME_EFFECT_FLASH, Colors.White.value, SHIELD_AUTOMATIC_FLASH_MS
-            )
+        if shield_mode == AUTOMATIC:
+            await self.show_automatic_on_lobby()
             return
         color = SHIELD_MODE_COLORS.get(shield_mode)
         if color is not None:
             await self._pulse_lobby(color)
+
+    async def show_automatic_on_lobby(self) -> None:
+        """UC-015 BR-018: the `automatic` cue of every setting, two 150 ms white flashes 300 ms apart."""
+        flash = controller_manager_pb2.GAME_EFFECT_FLASH
+        await self._effect_lobby(flash, Colors.White.value, AUTOMATIC_FLASH_MS)
+        await asyncio.sleep(AUTOMATIC_FLASH_GAP_SECONDS)
+        await self._effect_lobby(flash, Colors.White.value, AUTOMATIC_FLASH_MS)
 
     async def _pulse_lobby(self, color: tuple[int, int, int]) -> None:
         """One 600 ms pulse of ``color`` on every CONNECTED or READY controller (BR-015, BR-018)."""

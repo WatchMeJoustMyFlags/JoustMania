@@ -156,7 +156,7 @@ FLAG_OPTIONS = {
 
 @pytest.mark.uc("UC-015", br=["BR-004", "BR-005"], flow="A7")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("option", sorted(FLAG_OPTIONS))
+@pytest.mark.parametrize("option", sorted(set(FLAG_OPTIONS) - setting_ladders.AUTOMATIC_OPTIONS))
 async def test_flag_ladders_preview_equals_commit(menu, flags, option):
     key = FLAG_OPTIONS[option]
     assert set(VARIANTS[key]) == set(setting_ladders.FLAG_LADDERS[option]), "ladder differs from the flag file"
@@ -220,7 +220,7 @@ async def test_shield_knob_preview_equals_commit(menu, flags):
             reset(flags, menu)
             if start != setting_ladders.SHIELD_AUTOMATIC:
                 flags.values[key] = flags.admin[key] = start
-            await menu.settings_ops.refresh_shield_operator()  # what GetMenuStatus serves (background read)
+            await menu.settings_ops.refresh_operator_settings()  # what GetMenuStatus serves (background read)
             await assert_preview_equals_commit(menu, "shield.activation", steps, committed)
 
 
@@ -235,3 +235,24 @@ def test_backend_ladder_is_the_flag_file_and_the_menu_list():
 @pytest.mark.uc("UC-015", br=["BR-004"])
 def test_every_selectable_mode_is_a_games_member():
     assert all(Games.from_name(name) is not None for name in setting_ladders.MODE_LADDER)
+
+
+@pytest.mark.uc("UC-015", br=["BR-018", "BR-005"], flow="A7")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option", ["sensitivity", "num_teams"])
+async def test_automatic_knob_preview_equals_commit(menu, flags, option):
+    """BR-018 (#2222): from every operator value (`automatic` = none) and every net step, preview == commit."""
+    key = FLAG_OPTIONS[option]
+    assert set(VARIANTS[key]) == set(setting_ladders.FLAG_LADDERS[option]), "ladder differs from the flag file"
+    assert setting_ladders.KNOB_LADDERS[option] == [setting_ladders.AUTOMATIC, *setting_ladders.FLAG_LADDERS[option]]
+
+    def committed():
+        return flags.admin.get(key, setting_ladders.AUTOMATIC)
+
+    for start in setting_ladders.KNOB_LADDERS[option]:
+        for steps in STEPS:
+            reset(flags, menu)
+            if start != setting_ladders.AUTOMATIC:
+                flags.values[key] = flags.admin[key] = start
+            await menu.settings_ops.refresh_operator_settings()  # what GetMenuStatus serves (background read)
+            await assert_preview_equals_commit(menu, option, steps, committed)

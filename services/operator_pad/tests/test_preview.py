@@ -108,7 +108,7 @@ class Rig:
 
     def step(self, net: int, status=None, key="K5", option="num_teams", lobby_only=True) -> None:
         if status is None:
-            status = menu_pb2.GetMenuStatusResponse(num_teams=2)
+            status = menu_pb2.GetMenuStatusResponse(num_teams=2, operator_settings={"num_teams": "two"})
         self.previewer.step(key, option, status, net, lobby_only)
 
 
@@ -166,7 +166,7 @@ async def test_a_value_equal_to_the_last_one_spoken_is_not_repeated():
 @pytest.mark.uc("UC-015", flow="A7", br=["BR-017", "BR-009"], steps=[5])
 async def test_pushing_past_the_end_gives_the_limit_word_at_most_once_per_second():
     rig = Rig()
-    at_max = menu_pb2.GetMenuStatusResponse(num_teams=6)
+    at_max = menu_pb2.GetMenuStatusResponse(num_teams=6, operator_settings={"num_teams": "six"})
     rig.step(1, at_max)
     await rig.time.advance(0.6)
     rig.step(2, at_max)  # its limit word would come 0.35 s after the first one
@@ -181,7 +181,7 @@ async def test_pushing_past_the_end_gives_the_limit_word_at_most_once_per_second
 @pytest.mark.uc("UC-015", flow="A7", br=["BR-017"], steps=[5])
 async def test_a_step_past_the_end_after_moving_gives_the_limit_word_not_the_value_again():
     rig = Rig()
-    five = menu_pb2.GetMenuStatusResponse(num_teams=5)
+    five = menu_pb2.GetMenuStatusResponse(num_teams=5, operator_settings={"num_teams": "five"})
     rig.step(1, five)
     await rig.time.advance(0.6)  # "6"
     rig.step(2, five)  # still 6: past the end
@@ -210,7 +210,7 @@ async def test_an_unreadable_agent_switch_is_silent():
 @pytest.mark.uc("UC-015", flow="A1", br=["BR-017"], steps=[4, 5])
 async def test_a_lobby_only_layer_while_live_says_not_possible_once_and_no_values():
     rig = Rig()
-    live = menu_pb2.GetMenuStatusResponse(num_teams=2, lifecycle_live=True)
+    live = menu_pb2.GetMenuStatusResponse(num_teams=2, operator_settings={"num_teams": "two"}, lifecycle_live=True)
     for net in (1, 2, 3):
         rig.step(net, live)
         await rig.time.advance(0.6)
@@ -282,7 +282,7 @@ async def test_no_command_is_sent_before_the_release_and_the_release_stops_the_p
     rig.config.enabled.return_value = True
     rig.config.timings.return_value = Timings(knob_events_per_step=1)
     reader = create_autospec(MenuStatusReader, instance=True)
-    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(num_teams=2)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(num_teams=2, operator_settings={"num_teams": "two"})
     pad = PadController(rig.config, reader, actions, rig.cues)
     pad.attached(KEYMAP)
 
@@ -318,7 +318,7 @@ async def test_a_chord_ends_the_preview():
     rig.config.enabled.return_value = True
     rig.config.timings.return_value = Timings(knob_events_per_step=1)
     reader = create_autospec(MenuStatusReader, instance=True)
-    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(num_teams=2)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(num_teams=2, operator_settings={"num_teams": "two"})
     pad = PadController(rig.config, reader, actions, rig.cues)
     pad.attached(KEYMAP)
 
@@ -392,7 +392,9 @@ async def test_a_refused_hold_says_not_possible_once_including_the_release():
     rig.config.enabled.return_value = True
     rig.config.timings.return_value = Timings(knob_events_per_step=1)
     reader = create_autospec(MenuStatusReader, instance=True)
-    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(num_teams=2, lifecycle_live=True)
+    reader.fetch.return_value = menu_pb2.GetMenuStatusResponse(
+        num_teams=2, operator_settings={"num_teams": "two"}, lifecycle_live=True
+    )
     pad = PadController(rig.config, reader, actions, rig.cues)
     pad.attached(KEYMAP)
 
@@ -449,8 +451,8 @@ async def test_the_mode_pulse_does_not_wait_for_the_label():
 @pytest.mark.parametrize(
     ("key", "option", "status"),
     [
-        ("K5", "num_teams", menu_pb2.GetMenuStatusResponse(num_teams=2)),
-        ("K2", "sensitivity", menu_pb2.GetMenuStatusResponse(sensitivity=1)),
+        ("K5", "num_teams", menu_pb2.GetMenuStatusResponse(num_teams=2, operator_settings={"num_teams": "two"})),
+        ("K2", "sensitivity", menu_pb2.GetMenuStatusResponse(sensitivity=1, operator_settings={"sensitivity": "slow"})),
         ("K7", "decision.backend", menu_pb2.GetMenuStatusResponse(agent_backend="rules")),
     ],
 )

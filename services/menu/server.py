@@ -97,7 +97,7 @@ async def serve(port=50054):
     await menu_servicer.start_game_event_monitor()
 
     # UC-015 BR-018: the operator's shield mode for GetMenuStatus, read once now (in the background).
-    menu_servicer.read_shield_operator_at_start()
+    menu_servicer.read_operator_settings_at_start()
 
     # Auto-start menu (so controllers light up immediately) through the same
     # lobby entry as StartMenu: current_game, lobby music, idle monitor (D-M2, #1505).

@@ -128,11 +128,19 @@ def test_shield_knob_ladder_is_automatic_then_the_flag_files_variants():
 @pytest.mark.parametrize(
     ("operator", "effective", "steps", "expected"),
     [
-        ("automatic", "trigger", 1, Preview("instant")),  # the knob starts at the operator value ...
-        ("automatic", "hold", 3, Preview("hold")),
-        ("automatic", "trigger", -1, Preview("automatic", at_limit=True)),
+        ("automatic", "trigger", 1, Preview("hold")),  # no operator value: the knob starts at the effective rung ...
+        ("automatic", "hold", 3, Preview("hold", at_limit=True)),
+        ("automatic", "trigger", -1, Preview("instant")),
+        ("automatic", "trigger", -2, Preview("automatic")),  # ... and automatic is below the lowest value
+        ("automatic", "trigger", 0, Preview("trigger")),  # a net of zero commits nothing
+        ("automatic", "", 1, Preview("instant")),  # effective unresolvable: starts at automatic
         ("instant", "instant", 1, Preview("trigger")),
-        ("instant", "hold", -1, Preview("automatic")),  # ... not at the effective one (a stage overlay)
+        (
+            "instant",
+            "hold",
+            -1,
+            Preview("automatic"),
+        ),  # an operator value wins over the effective one (a stage overlay)
         ("hold", "hold", -3, Preview("automatic")),
         ("hold", "hold", 1, Preview("hold", at_limit=True)),
         ("trigger", "trigger", 5, Preview("hold")),
@@ -140,7 +148,9 @@ def test_shield_knob_ladder_is_automatic_then_the_flag_files_variants():
     ],
 )
 def test_shield_preview_per_step(operator, effective, steps, expected):
-    status = menu_pb2.GetMenuStatusResponse(shield_activation=effective, shield_activation_operator=operator)
+    status = menu_pb2.GetMenuStatusResponse(
+        shield_activation=effective, operator_settings={"shield.activation": operator} if operator else {}
+    )
     assert preview_value("shield.activation", status, steps) == expected
 
 
@@ -148,3 +158,36 @@ def test_shield_preview_per_step(operator, effective, steps, expected):
 def test_shield_voices_cover_the_knob_ladder_and_have_a_label():
     assert set(voice_prompts.SHIELD_ACTIVATION_VOICES) == set(setting_ladders.SHIELD_KNOB_LADDER)
     assert "shield.activation" in voice_prompts.LABEL_VOICES
+
+
+@pytest.mark.uc("UC-015", br=["BR-018", "BR-017"], steps=[4, 5])
+@pytest.mark.parametrize(
+    ("option", "operator", "steps", "expected"),
+    [
+        (
+            "sensitivity",
+            "automatic",
+            1,
+            Preview("fast"),
+        ),  # no operator value: starts at the effective rung (medium) ...
+        ("sensitivity", "automatic", -3, Preview("automatic")),  # ... and automatic is reached below ultra_slow
+        ("sensitivity", "automatic", -2, Preview("ultra_slow")),
+        ("sensitivity", "slow", -2, Preview("automatic")),  # ... and automatic is the rung below the lowest value
+        ("sensitivity", "ultra_fast", 1, Preview("ultra_fast", at_limit=True)),
+        ("sensitivity", "", 1, setting_ladders.UNKNOWN),  # unreadable: silent, never a guess
+        ("num_teams", "automatic", 5, Preview("six")),  # effective two (the status default)
+        ("num_teams", "three", -9, Preview("automatic")),
+        ("num_teams", "six", 1, Preview("six", at_limit=True)),
+        ("num_teams", "", -1, setting_ladders.UNKNOWN),
+    ],
+)
+def test_automatic_knob_preview_per_step(option, operator, steps, expected):
+    status = menu_pb2.GetMenuStatusResponse(sensitivity=2, num_teams=2)  # the effective values never matter
+    if operator:
+        status.operator_settings[option] = operator
+    assert preview_value(option, status, steps) == expected
+
+
+@pytest.mark.uc("UC-015", br=["BR-018", "BR-011"], steps=[4, 5])
+def test_the_automatic_rung_has_one_shared_voice_line():
+    assert voice_prompts.SHIELD_ACTIVATION_VOICES["automatic"] == voice_prompts.AUTOMATIC_VOICE

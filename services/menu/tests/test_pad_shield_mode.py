@@ -28,10 +28,10 @@ PULSE = controller_manager_pb2.GAME_EFFECT_PULSE
 FLASH = controller_manager_pb2.GAME_EFFECT_FLASH
 WHITE = (255, 255, 255)
 AUTOMATIC_FLASHES = [
-    ("dim", FLASH, WHITE, settings_ops.SHIELD_AUTOMATIC_FLASH_MS),
-    ("dim", FLASH, WHITE, settings_ops.SHIELD_AUTOMATIC_FLASH_MS),
-    ("ready", FLASH, WHITE, settings_ops.SHIELD_AUTOMATIC_FLASH_MS),
-    ("ready", FLASH, WHITE, settings_ops.SHIELD_AUTOMATIC_FLASH_MS),
+    ("dim", FLASH, WHITE, settings_ops.AUTOMATIC_FLASH_MS),
+    ("dim", FLASH, WHITE, settings_ops.AUTOMATIC_FLASH_MS),
+    ("ready", FLASH, WHITE, settings_ops.AUTOMATIC_FLASH_MS),
+    ("ready", FLASH, WHITE, settings_ops.AUTOMATIC_FLASH_MS),
 ]
 # The real-servicer fixtures of the pad command tests (a fake flag service behind real writers).
 flags = test_pad_commands.flags
@@ -54,7 +54,7 @@ def operator_set(flags, value: str) -> None:
 
 @pytest.fixture(autouse=True)
 def no_flash_gap(monkeypatch):
-    monkeypatch.setattr(settings_ops, "SHIELD_AUTOMATIC_FLASH_GAP_SECONDS", 0)
+    monkeypatch.setattr(settings_ops, "AUTOMATIC_FLASH_GAP_SECONDS", 0)
 
 
 def lobby(menu) -> None:
@@ -71,7 +71,7 @@ def lobby(menu) -> None:
 @pytest.mark.parametrize(
     ("start", "direction", "steps", "new", "voice"),
     [
-        ("automatic", "up", 1, "instant", Sound.MENU_VOX_SHIELD_INSTANT),
+        ("automatic", "up", 1, "hold", Sound.MENU_VOX_SHIELD_HOLD),  # no operator value: from the effective trigger
         ("instant", "up", 1, "trigger", Sound.MENU_VOX_SHIELD_TRIGGER),
         ("trigger", "up", 1, "hold", Sound.MENU_VOX_SHIELD_HOLD),
         ("automatic", "up", 3, "hold", Sound.MENU_VOX_SHIELD_HOLD),
@@ -114,7 +114,7 @@ async def test_shield_step_to_automatic_clears_the_persisted_value(servicer, fla
     assert flags.puts == []  # nothing written
     assert ("game", SHIELD) not in flags.admin
     assert flags.values[("game", SHIELD)] == "trigger"  # the flag file's default applies again
-    assert servicer.settings_ops.shield_operator == "automatic"
+    assert servicer.settings_ops.operator_settings[SHIELD] == "automatic"
     servicer.state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_SHIELD_AUTOMATIC)
     assert sorted(_pulses(servicer)) == AUTOMATIC_FLASHES  # a double white flash, no mode pulse
 
@@ -158,7 +158,7 @@ async def test_shield_step_is_refused_while_a_game_is_live(servicer, flags):
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="A7", steps=[9], br=["BR-018", "BR-005"])
-@pytest.mark.parametrize(("start", "direction"), [("hold", "up"), ("automatic", "down")])
+@pytest.mark.parametrize(("start", "direction"), [("hold", "up")])
 async def test_shield_step_at_the_end_writes_nothing_and_shows_nothing(servicer, flags, start, direction):
     lobby(servicer)
     operator_set(flags, start)
@@ -246,10 +246,10 @@ async def test_menu_status_carries_the_operator_value_read_in_the_background(ser
     use_clients(servicer, dict(GAME_FLAGS))
     operator_set(flags, operator)
     first = await servicer.GetMenuStatus(menu_pb2.GetMenuStatusRequest(), None)
-    assert first.shield_activation_operator == ""  # not read yet: unknown, never a guess
-    await servicer.settings_ops.shield_refresh_task  # the background read GetMenuStatus started
+    assert SHIELD not in first.operator_settings  # not read yet: unknown, never a guess
+    await servicer.settings_ops.operator_refresh_task  # the background read GetMenuStatus started
     second = await servicer.GetMenuStatus(menu_pb2.GetMenuStatusRequest(), None)
-    assert second.shield_activation_operator == operator
+    assert second.operator_settings[SHIELD] == operator
 
 
 @pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018", "BR-005"])
@@ -263,10 +263,10 @@ def test_shield_knob_ladder_order_is_pinned():
 @pytest.mark.uc("UC-015", flow="main", steps=[9], br=["BR-018", "BR-017"])
 async def test_the_operator_value_is_read_once_at_menu_start(servicer, flags):
     operator_set(flags, "hold")
-    servicer.read_shield_operator_at_start()
-    await servicer.settings_ops.shield_refresh_task
+    servicer.read_operator_settings_at_start()
+    await servicer.settings_ops.operator_refresh_task
 
-    assert servicer.settings_ops.shield_operator == "hold"  # the first K6 hold has a start value
+    assert servicer.settings_ops.operator_settings[SHIELD] == "hold"  # the first K6 hold has a start value
 
 
 @pytest.mark.asyncio
@@ -274,24 +274,24 @@ async def test_the_operator_value_is_read_once_at_menu_start(servicer, flags):
 async def test_a_background_read_in_flight_during_a_commit_never_puts_the_old_value_back(servicer, flags):
     ops = servicer.settings_ops
     operator_set(flags, "instant")
-    real_read = ops._read_shield_operator
+    real_read = ops._read_all_operators
     started, release = threading.Event(), threading.Event()
 
     def stale_read():
         started.set()
         release.wait(5)
-        return "instant"  # what the flag service served before the commit
+        return {SHIELD: "instant"}  # what the flag service served before the commit
 
-    ops._read_shield_operator = stale_read
-    refresh = asyncio.create_task(ops.refresh_shield_operator())
+    ops._read_all_operators = stale_read
+    refresh = asyncio.create_task(ops.refresh_operator_settings())
     await asyncio.to_thread(started.wait, 5)
-    ops._read_shield_operator = real_read
+    ops._read_all_operators = real_read
     reply = await pad(servicer, "step_setting", option=SHIELD, direction="up", steps=1)
     assert (reply.success, reply.error) == (True, "")
     release.set()
     await refresh
 
-    assert ops.shield_operator == "trigger"
+    assert ops.operator_settings[SHIELD] == "trigger"
 
 
 @pytest.mark.asyncio

@@ -69,6 +69,8 @@ SHIELD_ACTIVATION_VOICES: dict[str, Sound] = {
     "trigger": Sound.MENU_VOX_SHIELD_TRIGGER,
     "hold": Sound.MENU_VOX_SHIELD_HOLD,
 }
+# UC-015 BR-018 (#2222): the one "Automatic" line every setting's knob says for the `automatic` rung.
+AUTOMATIC_VOICE = Sound.MENU_VOX_SHIELD_AUTOMATIC
 # UC-044 decision backends by name (UC-015 BR-011), not by knob position.
 BACKEND_VOICES: dict[str, Sound] = {
     "rules": Sound.MENU_VOX_BACKEND_RULES,
