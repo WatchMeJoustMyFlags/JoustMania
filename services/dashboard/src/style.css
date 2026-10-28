@@ -831,6 +831,12 @@ body {
   white-space: nowrap;
 }
 
+.experiment-recommendation {
+  font-size: 0.82rem;
+  color: var(--text-primary, inherit);
+  font-weight: 600;
+}
+
 /* ===== Agent tab (#792) ===== */
 
 .agent-header {

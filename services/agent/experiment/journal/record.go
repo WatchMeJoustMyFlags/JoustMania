@@ -136,6 +136,11 @@ type Promotion struct {
 	// no real game runs (UC-043 A17 step 3). Journaled write-ahead, so a restart
 	// re-queues the revert; a later promotion event of the experiment clears it.
 	RevertPending bool `json:"revert_pending,omitempty"`
+	// ForeignOwner is set on a discarded promotion the flag service refused because
+	// another writer owns the real overlay (412 writer_mismatch, UC-043 A19, #2276):
+	// the writer label ("unknown" when it could not be read). It marks the winning
+	// value as a recommendation to the operator instead of a promotion.
+	ForeignOwner string `json:"foreign_owner,omitempty"`
 }
 
 // PatternFacts carries the UC-046 pattern fields of game_assigned, pattern_pinned

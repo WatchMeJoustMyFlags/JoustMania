@@ -225,6 +225,16 @@ func foreignReason(err error) string {
 	return ReasonRealOverlayForeign
 }
 
+// foreignOwner is the writer label of a foreignOverlayError ("unknown" when the
+// owner could not be read before the write).
+func foreignOwner(err error) string {
+	var fe *foreignOverlayError
+	if errors.As(err, &fe) && fe.Owner != "" {
+		return fe.Owner
+	}
+	return "unknown"
+}
+
 // ErrRealOverlayOwnedByAnotherWriter is returned by SetRealDefault when the flag
 // service refused the write with 412 writer_mismatch: nothing was written.
 var ErrRealOverlayOwnedByAnotherWriter = errors.New(ReasonRealOverlayForeign + " (writer_mismatch); nothing written")

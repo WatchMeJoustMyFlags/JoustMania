@@ -6,7 +6,7 @@
  * comes from the newest experiment.progress span per experiment in Jaeger (see
  * ../experiments.ts, #2059); the view polls to update live during a shadow run.
  */
-import type { ArmAggregate, ExperimentView } from "../experiments.js";
+import type { ArmAggregate, ExperimentView, Recommendation } from "../experiments.js";
 import { EXPERIMENT_PROGRESS_NO_DATA } from "../degrade.js";
 
 /**
@@ -100,6 +100,7 @@ export class ExperimentsView {
         </div>
         <div class="experiment-footer">
           ${deltaHtml}
+          ${exp.recommendation ? `<div class="experiment-recommendation">${escapeHtml(recommendationText(exp.recommendation))}</div>` : ""}
           ${exp.reason ? `<div class="experiment-reason" title="${escapeHtml(exp.reason)}">${escapeHtml(exp.reason)}</div>` : ""}
         </div>
       </div>
@@ -133,6 +134,11 @@ export class ExperimentsView {
       delta > 0 ? "delta-positive" : delta < 0 ? "delta-negative" : "delta-neutral";
     return `<div class="experiment-delta ${cssClass}">&Delta; ${sign}${delta.toFixed(3)} <span class="delta-label">(experimental &minus; control fitness)</span></div>`;
   }
+}
+
+/** UC-035 step 4 / UC-043 A19 (#2276): the refused promotion as a recommendation. */
+export function recommendationText(rec: Recommendation): string {
+  return `would promote ${rec.flag}=${rec.value}; real value owned by ${rec.owner}`;
 }
 
 function prettyArm(arm: string): string {

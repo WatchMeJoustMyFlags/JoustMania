@@ -227,6 +227,13 @@ type entry struct {
 	// laterPromotions until then (UC-043 A17: the deferred queue may journal first).
 	promotionInFlight bool
 	laterPromotions   []PromotionResult
+	// recommendOwner is the writer owning the real overlay when the experiment's
+	// promotion was refused with 412 writer_mismatch (UC-043 A19, #2276). Non-empty
+	// = every experiment.progress snapshot carries the recommendation attributes.
+	recommendOwner string
+	// endReason is the teardown reason of a terminal experiment; a recommendation
+	// snapshot repeats it as experiment.end_reason (the dashboard reason line).
+	endReason string
 
 	// span is the long-lived experiment ROOT span (#1188, epic #1181 PR2): the
 	// agent.experiment span started when the experiment becomes RUNNING (Start /
@@ -1653,6 +1660,9 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 			Note:      res.Reason,
 			Promotion: &promotion,
 		})
+		if res.ForeignOwner != "" {
+			e.recommendOwner = res.ForeignOwner
+		}
 		r.flushLaterPromotionsLocked(e)
 	}
 	r.mu.Unlock()
@@ -1665,6 +1675,7 @@ func (r *Registry) flushLaterPromotionsLocked(e *entry) {
 	e.promotionInFlight = false
 	for _, res := range e.laterPromotions {
 		promotion := res
+		r.noteRecommendationLocked(e, res)
 		r.appendEvent(e.journal, journal.Event{
 			Kind:      journal.KindPromotion,
 			Status:    res.Outcome,
@@ -1759,6 +1770,17 @@ func (r *Registry) RecordPromotion(id string, res PromotionResult) {
 		if jrnl, err := journal.Load(r.root, id); err == nil {
 			promotion := res
 			r.appendEvent(jrnl, journal.Event{Kind: journal.KindPromotion, Status: res.Outcome, Note: res.Reason, Promotion: &promotion})
+			if res.ForeignOwner != "" {
+				// Not held in memory: build the snapshot from the journal (UC-043 A19).
+				view := jrnl.CompactView()
+				ghost := &entry{
+					id: id, journal: jrnl, status: Status(view.Status),
+					arms: append([]string(nil), view.Intent.Arms...), recommendOwner: res.ForeignOwner,
+				}
+				events, _ := jrnl.Events()
+				ghost.endReason = teardownReasonOf(events)
+				r.emitProgressLocked(ghost, ProgressTriggerRecommendation, ghost.endReason, trace.SpanContext{})
+			}
 			return
 		}
 		r.log.Warn("experiment.promotion_unrecorded", "experiment_id", id, "outcome", res.Outcome, "reason", res.Reason)
@@ -1776,6 +1798,21 @@ func (r *Registry) RecordPromotion(id string, res PromotionResult) {
 		Note:      res.Reason,
 		Promotion: &promotion,
 	})
+	r.noteRecommendationLocked(e, res)
+}
+
+// noteRecommendationLocked records a refused promotion's foreign owner (UC-043 A19,
+// #2276) and, for a later outcome of an experiment that already ended (the deferred
+// queue), emits a snapshot so the dashboard sees the recommendation. Assumes r.mu
+// is held.
+func (r *Registry) noteRecommendationLocked(e *entry, res PromotionResult) {
+	if res.ForeignOwner == "" {
+		return
+	}
+	e.recommendOwner = res.ForeignOwner
+	if e.status.IsTerminal() {
+		r.emitProgressLocked(e, ProgressTriggerRecommendation, e.endReason, e.spanCtx)
+	}
 }
 
 // Abort terminates an experiment (kill-switch / capacity reclaim / error): it
@@ -1866,6 +1903,7 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 		return
 	}
 	e.status = terminal
+	e.endReason = reason
 	// Free capacity: drop the in-flight games (reservations + bound games). Their
 	// slots return to the global cap for other experiments. gamePairs is the parallel
 	// (game_id → pair index) map; clear it too so no stale binding survives teardown.
@@ -1959,6 +1997,9 @@ func (r *Registry) Rehydrate(ids []string) error {
 			arms:      append([]string(nil), view.Intent.Arms...),
 			games:     make(map[string]string),
 			gamePairs: make(map[string]int),
+		}
+		if events, evErr := jrnl.Events(); evErr == nil {
+			e.recommendOwner = lastForeignOwner(events) // UC-043 A19
 		}
 		// #1188 RESTART DISCONTINUITY: a rehydrated experiment gets a BRAND-NEW root
 		// span with a fresh trace_id — the SpanContext is NOT persisted across the
@@ -2368,4 +2409,25 @@ func (r *Registry) appendEventErr(jrnl *journal.Journal, e journal.Event) error 
 		r.log.Warn("experiment.journal_append_failed", "kind", string(e.Kind), "error", err)
 	}
 	return err
+}
+
+// lastForeignOwner returns the writer of the latest promotion event the flag
+// service refused with 412 writer_mismatch, or "" (UC-043 A19, #2276).
+func lastForeignOwner(events []journal.Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if p := events[i].Promotion; p != nil && p.ForeignOwner != "" {
+			return p.ForeignOwner
+		}
+	}
+	return ""
+}
+
+// teardownReasonOf returns the teardown reason (the note of the last outcome event).
+func teardownReasonOf(events []journal.Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == journal.KindOutcome {
+			return events[i].Note
+		}
+	}
+	return ""
 }
