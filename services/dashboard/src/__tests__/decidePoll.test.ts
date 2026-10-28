@@ -15,6 +15,7 @@ import {
   DECIDE_TIMEOUT_CEILING_MS,
   QueryWindow,
   DECIDE_OVERLAP_MS,
+  DECIDE_SEARCH_TIMEOUT_MS,
   DecideStore,
   FLAG_STATE_FALLBACK_REPEAT_MS,
   FlagFallbackPacer,
@@ -116,8 +117,7 @@ function decidePoller(store: DecideStore, isActive: () => boolean = () => true) 
     timeoutMs: 4000,
     isActive,
     run: async (signal) => {
-      const polled = await pollDecides(store, tick, signal);
-      tick += 1;
+      const polled = await pollDecides(store, tick++, signal);
       return polled.paceMs;
     },
   });
@@ -315,5 +315,53 @@ describe("UC-035: BR-011, the flag-state fallback search is paced per game", () 
     expect(pacer.take(key)).toBe(true);
     pacer.forget();
     expect(pacer.take(key)).toBe(true);
+  });
+});
+
+describe("UC-035: BR-011, a failing shadow search does not block the primary decide feed (#2386)", () => {
+  const shadowSearch = (url: RequestInfo | URL) =>
+    (new URL(String(url), "http://pi").searchParams.get("query.attributes") ?? "").includes("shadow");
+
+  function liveStore(): DecideStore {
+    const store = new DecideStore();
+    store.setFollow({ realGameLive: true, followGameId: "", primaryGameId: REAL_GAME });
+    return store;
+  }
+
+  it("UC-035/BR-011 the shadow lane rejects: the game lane rows are returned and the poll succeeds", async () => {
+    const jaeger = vi.mocked(fakeJaeger(() => [realTrace()]));
+    void jaeger;
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) =>
+      shadowSearch(url) ? new Response("boom", { status: 503 }) : inner(url, init)));
+    const store = liveStore();
+    const polled = await pollDecides(store, 0);
+    expect(store.feed().rows.length).toBeGreaterThan(0);
+    expect(polled.laneErrors).toHaveLength(1);
+  });
+
+  it("UC-035/BR-011 the game lane failing still fails the poll", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("boom", { status: 503 })));
+    await expect(pollDecides(liveStore(), 0)).rejects.toThrow();
+  });
+
+  it("UC-035/BR-011 each search has its own timeout: a hanging shadow search ends alone, the poll's signal lives", async () => {
+    vi.useFakeTimers();
+    const inner = vi.mocked(fakeJaeger(() => [realTrace()]));
+    void inner;
+    const real = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((url: RequestInfo | URL, init?: RequestInit) =>
+      shadowSearch(url)
+        ? new Promise<Response>((_, reject) =>
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))
+        : real(url, init)));
+    const outer = new AbortController();
+    const store = liveStore();
+    const pending = pollDecides(store, 0, outer.signal);
+    await vi.advanceTimersByTimeAsync(DECIDE_SEARCH_TIMEOUT_MS + 10);
+    const polled = await pending;
+    expect(outer.signal.aborted).toBe(false);
+    expect(polled.laneErrors).toHaveLength(1);
+    expect(store.feed().rows.length).toBeGreaterThan(0);
   });
 });
