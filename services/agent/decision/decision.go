@@ -856,7 +856,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		l.recordBlockedDecision(d, reason, cost, snapshot.InterventionsAllowed, state)
 		return
 	}
-	applied = l.dispatchDecision(ctx, dCtx, snapshot, c, d, cost, state, dSpan, aSpan)
+	l.dispatchDecision(ctx, dCtx, snapshot, c, d, cost, state, dSpan, aSpan, &applied)
 }
 
 // repeatRefusalReason reports the reason of a blocked decision that repeats an
@@ -932,9 +932,10 @@ func (l *Loop) recordBlockedDecision(d Decision, reason BlockReason, cost float6
 }
 
 // dispatchDecision records and writes a decision that passed every gate, stamps
-// the outcome on both spans and schedules the effect sample. It reports whether
-// the write went out (the permission shield is kept only then).
-func (l *Loop) dispatchDecision(ctx, dCtx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, cost float64, state *LayerState, dSpan, aSpan trace.Span) bool {
+// the outcome on both spans and schedules the effect sample. It sets *applied
+// as soon as the write is known to have gone out (right after the applied span
+// stamps), so a panic in the later hooks still leaves the permission shield kept.
+func (l *Loop) dispatchDecision(ctx, dCtx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, cost float64, state *LayerState, dSpan, aSpan trace.Span, applied *bool) {
 	state.recordDispatched(d, cost)
 	// Feed the DISPATCHED outcome into this game's #916 rolling narrative timeline
 	// (#945): recorded BEFORE the action sink applies it (it passed every gate, so it
@@ -970,7 +971,7 @@ func (l *Loop) dispatchDecision(ctx, dCtx context.Context, snapshot flags.Snapsh
 		l.Log.Error("agent.apply_failed",
 			"error", err, "intervention", d.Intervention)
 		l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeWriteFailed)
-		return false
+		return
 	}
 	// Apply succeeded: count the intervention as applied (#790) — the numerator for
 	// the dashboard's applied-rate panel. Only a clean Apply that wrote something
@@ -986,10 +987,11 @@ func (l *Loop) dispatchDecision(ctx, dCtx context.Context, snapshot flags.Snapsh
 		dSpan.SetAttributes(notApplied...)
 		aSpan.SetAttributes(notApplied...)
 		l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeGatedOff)
-		return false
+		return
 	}
 	dSpan.SetAttributes(attribute.Bool(AttrDecisionApplied, true))
 	aSpan.SetAttributes(attribute.Bool(AttrDecisionApplied, true))
+	*applied = true
 	l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeApplied)
 	l.recordInterventionApplied(ctx, d.Intervention)
 	// Intervention-effect MEASUREMENT (#918): stamp a baseline of this game's
@@ -1011,7 +1013,6 @@ func (l *Loop) dispatchDecision(ctx, dCtx context.Context, snapshot flags.Snapsh
 	if id := l.scheduleEffectSample(dCtx, c, d, state.FitnessEvaluated, fitnessThresholds(snapshot.Fitness)); id != "" {
 		dSpan.SetAttributes(attribute.String(AttrDecisionInterventionID, id))
 	}
-	return true
 }
 
 // applyAction applies d through sink and reports whether anything was written. A

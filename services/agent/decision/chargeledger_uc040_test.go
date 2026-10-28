@@ -362,3 +362,22 @@ func TestChargeLedger_DecideSpanReportsAlreadyCharged(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-040 A31
+func TestChargeLedger_PanicAfterWriteKeepsShield(t *testing.T) {
+	t.Run("UC-040/A31 a panic in a post-write hook leaves the shield charge kept", func(t *testing.T) {
+		l, sink, clock, _ := ledgerLoop(t, 100, triggerMode(20*time.Second, nil))
+		l.SetApplyOutcomeRecorder(func(string, gamecontext.ApplyOutcome) { panic("hook") })
+		var state LayerState
+		func() {
+			defer func() { _ = recover() }()
+			l.runDecision(context.Background(), rulesSnapshot(), ffaRealCtx(), budgetShield("WEAK"), *clock, &state)
+		}()
+		if n := len(sink.decisions()); n != 1 {
+			t.Fatalf("writes = %d, want 1", n)
+		}
+		if e := l.charges.entries["WEAK"]; !e.chargeCommitted {
+			t.Fatal("the shield charge was released although the write went out")
+		}
+	})
+}
