@@ -1246,3 +1246,159 @@ class TestRoutingSwitchKeepsTheController:
         button_detector.publish_connection_event.assert_not_called()
         assert set(tracked) == {"AA:AA"}
         assert loop.drain_disconnects() == []
+
+
+def _specced_adapter(serials):
+    adapter = create_autospec(ControllerIOAdapter, instance=True)
+    adapter.adapter_type = "mock"
+    adapter.discover.return_value = serials
+    adapter.open.return_value = True
+    adapter.set_output.return_value = True
+    adapter.get_adapter_for_serial.return_value = None
+    return adapter
+
+
+class TestLedBatchSendsTheDesiredOutputState:
+    """#2355: the 20 Hz batch sends colour + rumble on change and retries a failed write.
+
+    Before, the batch compared only the colour (a rumble change or stop waited for
+    the 2 s keep-alive) and marked a colour as sent even when the write failed.
+    """
+
+    SERIAL = "AA:AA"
+
+    def _mux_with_colour_sent(self):
+        adapter = _specced_adapter([self.SERIAL])
+        mux = MultiplexerBackend(adapters=[adapter])
+        mux.get_connected_controllers()
+        mux._led_colors[self.SERIAL] = (255, 0, 0)
+        assert mux.update_all_leds() == 1  # colour sent, keep-alive not due
+        adapter.set_output.reset_mock()
+        return mux, adapter
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_rumble_change_skipped_by_a_busy_lock_goes_out_on_the_next_tick(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+
+        with mux._led_lock:  # a batch or discovery swap is in progress
+            assert await mux.set_rumble(self.SERIAL, 200) is True
+        adapter.set_output.assert_not_called()
+
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 255, 0, 0, 200)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_rumble_stop_skipped_by_a_busy_lock_goes_out_on_the_next_tick(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        await mux.set_rumble(self.SERIAL, 200)
+        adapter.set_output.reset_mock()
+
+        with mux._led_lock:
+            await mux.set_rumble(self.SERIAL, 0)
+
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 255, 0, 0, 0)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_failed_direct_rumble_write_is_retried_on_the_next_tick(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        await mux.set_rumble(self.SERIAL, 200)
+        adapter.set_output.return_value = False  # stream reconnecting / queue full
+
+        assert await mux.set_rumble(self.SERIAL, 0) is False
+
+        adapter.set_output.reset_mock()
+        adapter.set_output.return_value = True
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 255, 0, 0, 0)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_failed_batch_write_is_retried_on_the_next_tick(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        mux._led_colors[self.SERIAL] = (0, 0, 255)
+        adapter.set_output.return_value = False
+
+        mux.update_all_leds()
+        assert mux._last_sent_color[self.SERIAL] == (255, 0, 0)  # not marked as sent
+
+        adapter.set_output.reset_mock()
+        adapter.set_output.return_value = True
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 0, 0, 255, 0)
+        assert mux._last_sent_color[self.SERIAL] == (0, 0, 255)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_an_unchanged_state_is_not_resent_before_the_keepalive(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        await mux.set_rumble(self.SERIAL, 200)  # direct write succeeds
+        adapter.set_output.reset_mock()
+
+        assert mux.update_all_leds() == 0
+
+        adapter.set_output.assert_not_called()
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_persistent_failure_is_counted_once_per_keepalive_interval(self, _metrics):
+        """Retries run every tick; the health counter keeps the old once-per-2 s cadence."""
+        mux, adapter = self._mux_with_colour_sent()
+        mux._led_colors[self.SERIAL] = (0, 0, 255)
+        adapter.set_output.return_value = False
+
+        for _ in range(5):
+            mux.update_all_leds()
+
+        assert adapter.set_output.call_count == 5
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        mux.update_all_leds()
+        assert mux._led_failures[self.SERIAL] == 2
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_changing_output_during_an_outage_is_counted_once_per_interval(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        adapter.set_output.return_value = False
+
+        for level in range(1, 13):  # a shield swell: a new output every tick
+            mux._rumble[self.SERIAL] = level
+            mux.update_all_leds()
+
+        assert adapter.set_output.call_count == 12
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        mux._rumble[self.SERIAL] = 99
+        mux.update_all_leds()
+        assert mux._led_failures[self.SERIAL] == 2
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_raising_write_is_counted_once_per_interval(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        mux._led_colors[self.SERIAL] = (0, 0, 255)
+        adapter.set_output.side_effect = OSError("boom")
+
+        for _ in range(5):
+            mux.update_all_leds()
+
+        assert adapter.set_output.call_count == 5
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        mux.update_all_leds()
+        assert mux._led_failures[self.SERIAL] == 2
