@@ -4,7 +4,7 @@
       "source": {
         "source": "github",
         "repo": "AI-Unified-Process/marketplace",
-        "ref": "aiup-core-v2.28.0"
+        "ref": "aiup-core-v3.10.0"
       },
       "autoUpdate": false
     }
