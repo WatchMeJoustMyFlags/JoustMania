@@ -183,14 +183,15 @@ def _client_domains(tree: ast.AST) -> dict[str, str]:
     """``<receiver source> -> flag set`` from ``X = get_flag_client("set")``."""
     domains = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-            if (
-                _call_name(node.value.func) == "get_flag_client"
-                and node.value.args
-                and _literal(node.value.args[0])
-            ):
-                for target in node.targets:
-                    domains[ast.unparse(target)] = _literal(node.value.args[0])
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and _call_name(node.value.func) == "get_flag_client"
+            and node.value.args
+            and _literal(node.value.args[0])
+        ):
+            for target in node.targets:
+                domains[ast.unparse(target)] = _literal(node.value.args[0])
     return domains
 
 
@@ -825,7 +826,7 @@ HOLD_KEYS = {
 _CONTRACT_GAME_ID = "g-contract-1837"
 
 
-def _coordinator_context() -> "EvaluationContext":
+def _coordinator_context() -> EvaluationContext:
     """lib/feature_flags on the grant path of a real FFA game: API-level attributes, the
     game's transaction context and gameId (see the comment above)."""
     return EvaluationContext(
@@ -847,7 +848,7 @@ def _coordinator_context() -> "EvaluationContext":
 
 def _agent_context(
     game_kind: str = "real", experiment_id: str | None = None, arm: str | None = None
-) -> "EvaluationContext":
+) -> EvaluationContext:
     """Keep in sync with shieldChargeContext in services/agent/flags/game.go (its unit
     tests TestShieldCharge_CoordinatorContext and TestShieldCharge_ExperimentArmContext
     pin the Go side)."""
@@ -1181,7 +1182,7 @@ def test_agent_reads_the_shield_flags_like_the_coordinator(flagd, resolver):
 # 2b. Agent tuning flags migrated from env (#1788, flags.md §15)
 # --------------------------------------------------------------------------- #
 AGENT_TUNING_GO = ic.REPO_ROOT / "services" / "agent" / "flags" / "tuning.go"
-_GO_KEY_CONST = re.compile(r'^\s*(key\w+)\s*=\s*"([^"]+)"', re.M)
+_GO_KEY_CONST = re.compile(r'^\s*(key\w+)\s*=\s*"([^"]+)"', re.MULTILINE)
 # The flags.Flags helper each getter calls -> the typed OpenFeature getter behind it
 # (secondsFlag -> intFlag -> IntValue; durationFlag -> floatFlag -> FloatValue).
 _GO_HELPERS = {
@@ -1609,9 +1610,11 @@ def test_gameid_and_serial_scoped_targeting_resolves_on_both_resolvers(flagd, re
                 )
 
             assert fh.poll_until(
-                lambda: player("SER_A", "game_a").value == 1.5
-                and player("SER_B", "game_a").value == 0.7
-                and game("game_a").value == 3
+                lambda: (
+                    player("SER_A", "game_a").value == 1.5
+                    and player("SER_B", "game_a").value == 0.7
+                    and game("game_a").value == 3
+                )
             ), (
                 f"{resolver}: targeting never served: "
                 f"{player('SER_A', 'game_a')} {player('SER_B', 'game_a')}"

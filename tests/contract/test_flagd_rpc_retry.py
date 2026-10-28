@@ -22,20 +22,19 @@ import pytest
 
 openfeature = pytest.importorskip("openfeature.contrib.provider.flagd")
 
-from openfeature import api  # noqa: E402
-from openfeature.contrib.provider.flagd import FlagdProvider  # noqa: E402
-from openfeature.contrib.provider.flagd.config import (  # noqa: E402
+import flagd_rpc_retry
+from openfeature import api
+from openfeature.contrib.provider.flagd import FlagdProvider
+from openfeature.contrib.provider.flagd.config import (
     CacheType,
     ResolverType,
 )
-from openfeature.evaluation_context import EvaluationContext  # noqa: E402
-from openfeature.exception import ErrorCode  # noqa: E402
-from openfeature.provider import ProviderStatus  # noqa: E402
-from openfeature.schemas.protobuf.flagd.evaluation.v2 import (  # noqa: E402
+from openfeature.evaluation_context import EvaluationContext
+from openfeature.exception import ErrorCode
+from openfeature.provider import ProviderStatus
+from openfeature.schemas.protobuf.flagd.evaluation.v2 import (
     evaluation_pb2,
 )
-
-import flagd_rpc_retry  # noqa: E402
 
 SERVICE = "flagd.evaluation.v2.Service"
 # A varint that never ends: upb raises DecodeError, as in the CI runs.

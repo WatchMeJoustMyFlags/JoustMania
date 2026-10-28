@@ -14,7 +14,7 @@ import pytest
 import telemetry_inventory as ti
 
 sys.path.insert(0, str(ti.REPO_ROOT / "scripts"))
-import spec_refs as sr  # noqa: E402
+import spec_refs as sr
 
 
 @pytest.fixture

@@ -47,7 +47,7 @@ class FlagService:
         )
 
     @classmethod
-    def from_env(cls, use_curl: bool | None = None) -> "FlagService":
+    def from_env(cls, use_curl: bool | None = None) -> FlagService:
         """use_curl: None (default) sends requests with curl when it is installed
         and falls back to urllib otherwise; False forces urllib, True forces curl.
         curl resolves the host exactly like scripts/flags.sh (localhost may be ::1
@@ -72,7 +72,9 @@ class FlagService:
             cmd += ["-H", "Content-Type: application/json", "--data", json.dumps(body)]
         cmd += ["--", url]
         try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=self.timeout + 5)
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=self.timeout + 5, check=False
+            )
         except (OSError, subprocess.TimeoutExpired) as err:
             raise FlagServiceUnreachable(
                 f"flag service unreachable at {self.base_url}: {err}"
