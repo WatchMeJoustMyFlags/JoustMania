@@ -4,9 +4,12 @@
 //! command channel. The polling loop continuously reads input reports from all
 //! open devices and pushes SensorData through a registered stream sender.
 //! Output reports (LED, rumble) never run here: each open device has a writer
-//! thread in `output` (UC-002 BR-005, #2125). The device sits behind a mutex
-//! the writer holds only during one write; the poll uses `try_lock`, so a
-//! blocked write skips that device's reads instead of stalling the loop.
+//! thread in `output` (UC-002 BR-005, #2125). The writer gets its own handle
+//! on the device (a second hidraw open, `HidBackend::open_writer`), so a write
+//! stuck in the kernel never delays this loop's reads of that device (#2313).
+//! When that second open fails, the writer shares the input handle behind its
+//! mutex; the poll uses `try_lock`, so a blocked write then skips that device's
+//! reads instead of stalling the loop.
 
 use hidapi::HidApi;
 use std::collections::HashMap;
@@ -82,6 +85,12 @@ pub trait HidBackend {
         &self,
         serial: &str,
     ) -> Option<(Self::Device, u16, Option<String>)>;
+    /// Open a second handle on an open device for its output writer, so a
+    /// write never holds the handle the device loop reads (#2313). `None`
+    /// (the default) makes the writer share the input handle.
+    fn open_writer(&self, _device: &Self::Device) -> Option<Self::Device> {
+        None
+    }
 }
 
 impl HidBackend for HidApi {
@@ -100,6 +109,13 @@ impl HidBackend for HidApi {
         serial: &str,
     ) -> Option<(Self::Device, u16, Option<String>)> {
         hid::open_controller_by_serial(self, serial)
+    }
+
+    fn open_writer(&self, device: &Self::Device) -> Option<Self::Device> {
+        // hidraw allows several opens of one device; each open file has its
+        // own input queue, and a write on one never blocks a read on another.
+        let info = device.get_device_info().ok()?;
+        self.open_path(info.path()).ok()
     }
 }
 
@@ -138,8 +154,22 @@ pub struct DeviceOutputs {
 }
 
 impl DeviceOutputs {
-    fn open<D: HidDeviceIo + Send + 'static>(&self, serial: &str, device: &Arc<Mutex<D>>) {
-        self.router.open(serial, device.clone(), self.rate.clone());
+    /// Start the output writer of a newly opened device, on its own handle
+    /// when the backend can open one (#2313); else on the input handle, as
+    /// before: a blocked write then skips that device's reads.
+    fn open<B: HidBackend>(&self, api: &B, serial: &str, device: &Arc<Mutex<B::Device>>) {
+        let writer = {
+            let input = device.lock().unwrap_or_else(|e| e.into_inner());
+            api.open_writer(&input)
+        };
+        let writer = match writer {
+            Some(handle) => Arc::new(Mutex::new(handle)),
+            None => {
+                warn!(serial = %serial, "No separate output handle; LED / rumble writes share the input handle");
+                device.clone()
+            }
+        };
+        self.router.open(serial, writer, self.rate.clone());
     }
 }
 
@@ -291,7 +321,7 @@ fn handle_discover<B: HidBackend>(
             devices.entry(serial.clone()).or_insert_with(|| {
                 info!(serial = %serial, "New controller discovered");
                 let device = Arc::new(Mutex::new(device));
-                outputs.open(&serial, &device);
+                outputs.open(&*api, &serial, &device);
                 DeviceEntry {
                     device,
                     product_id,
@@ -330,7 +360,7 @@ fn handle_open<B: HidBackend>(
         Some((device, product_id, adapter_name)) => {
             info!(serial = %serial, adapter = ?adapter_name, "Opened controller");
             let device = Arc::new(Mutex::new(device));
-            outputs.open(serial, &device);
+            outputs.open(&*api, serial, &device);
             devices.insert(
                 serial.to_string(),
                 DeviceEntry {
@@ -822,6 +852,8 @@ mod tests {
 
     struct LoadBackend {
         devices: Vec<(String, LoadDevice)>,
+        /// Fail to open a writer handle: the writer shares the input handle.
+        no_writer_handle: bool,
     }
 
     impl HidBackend for LoadBackend {
@@ -851,6 +883,11 @@ mod tests {
         ) -> Option<(LoadDevice, u16, Option<String>)> {
             None
         }
+
+        /// A second handle on the same controller, like a second hidraw open.
+        fn open_writer(&self, device: &LoadDevice) -> Option<LoadDevice> {
+            (!self.no_writer_handle).then(|| device.clone())
+        }
     }
 
     // UC: UC-002 BR-005
@@ -878,6 +915,7 @@ mod tests {
         let handle = {
             let backend = LoadBackend {
                 devices: devices.clone(),
+                no_writer_handle: false,
             };
             let (outputs, heartbeat) = (outputs.clone(), heartbeat.clone());
             std::thread::spawn(move || run_device_loop(backend, cmd_rx, &heartbeat, &outputs))
@@ -990,6 +1028,129 @@ mod tests {
             let n = samples.get(serial).copied().unwrap_or(0);
             assert!(n >= 50, "{serial}: only {n} sensor samples in {RUN:?}");
         }
+    }
+
+    /// Discover the load backend's controllers, register a sensor stream and
+    /// return the stream receiver (the loop runs on its own thread).
+    fn start_load_loop(
+        backend: LoadBackend,
+        outputs: &DeviceOutputs,
+    ) -> (
+        mpsc::Sender<DeviceCmd>,
+        JoinHandle<()>,
+        tokio::sync::mpsc::Receiver<StreamSensorData>,
+    ) {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let handle = {
+            let outputs = outputs.clone();
+            std::thread::spawn(move || {
+                run_device_loop(backend, cmd_rx, &Heartbeat::new(), &outputs)
+            })
+        };
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Discover {
+                force: false,
+                verify_only: false,
+                exclude_serials: vec![],
+                reply: reply_tx,
+            })
+            .unwrap();
+        assert_eq!(reply_rx.blocking_recv().unwrap().len(), 1);
+        let (sensor_tx, sensor_rx) = tokio::sync::mpsc::channel(1024);
+        cmd_tx
+            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .unwrap();
+        (cmd_tx, handle, sensor_rx)
+    }
+
+    /// Wait until the controller's writer has a write in flight.
+    fn wait_for_write_in_flight(router: &OutputRouter) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while router
+            .writes_in_flight()
+            .iter()
+            .all(|w| w.started.is_none())
+        {
+            assert!(Instant::now() < deadline, "the write never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Samples received within `window`.
+    fn samples_within(
+        rx: &mut tokio::sync::mpsc::Receiver<StreamSensorData>,
+        window: Duration,
+    ) -> usize {
+        let deadline = Instant::now() + window;
+        let mut n = 0;
+        while Instant::now() < deadline {
+            while rx.try_recv().is_ok() {
+                n += 1;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        n
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    #[test]
+    fn test_a_blocked_write_does_not_stall_that_controllers_input() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let device = LoadDevice::default();
+        device.0.block.store(true, Relaxed);
+        let outputs = DeviceOutputs::default();
+        let (cmd_tx, handle, mut sensor_rx) = start_load_loop(
+            LoadBackend {
+                devices: vec![(SERIAL.to_string(), device.clone())],
+                no_writer_handle: false,
+            },
+            &outputs,
+        );
+
+        // An LED write that hangs in the kernel (the stage's "Output queue is full").
+        assert!(outputs.router.submit(SERIAL, 255, 0, 0, 0));
+        wait_for_write_in_flight(&outputs.router);
+        while sensor_rx.try_recv().is_ok() {}
+        let during_write = samples_within(&mut sensor_rx, Duration::from_millis(300));
+
+        device.0.release.store(true, Relaxed);
+        shutdown(&cmd_tx, handle);
+
+        // The device reports at 100 Hz: about 30 samples in 300 ms.
+        assert!(
+            during_write >= 15,
+            "only {during_write} input samples in 300 ms while an output write was blocked"
+        );
+    }
+
+    // UC: UC-002 BR-005
+    #[test]
+    fn test_without_a_writer_handle_the_led_still_goes_out_on_the_input_handle() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let device = LoadDevice::default();
+        let outputs = DeviceOutputs::default();
+        let (cmd_tx, handle, mut sensor_rx) = start_load_loop(
+            LoadBackend {
+                devices: vec![(SERIAL.to_string(), device.clone())],
+                no_writer_handle: true,
+            },
+            &outputs,
+        );
+
+        assert!(outputs.router.submit(SERIAL, 0, 255, 0, 0));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while device.0.writes.load(Relaxed) == 0 {
+            assert!(Instant::now() < deadline, "the LED was never written");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let samples = samples_within(&mut sensor_rx, Duration::from_millis(100));
+        shutdown(&cmd_tx, handle);
+
+        assert!(samples > 0, "no input on the shared handle");
     }
 
     /// Backend that counts every enumeration and open (#2140).

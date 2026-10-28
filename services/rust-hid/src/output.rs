@@ -16,9 +16,11 @@
 //!   a quiet one (rumble 0, so also the off of a close) until it lands, so a
 //!   controller never keeps rumbling because its "stop" was dropped.
 //!
-//! A write stuck in the kernel holds that controller's device mutex, so the
-//! device loop skips its reads and its input freezes while the heartbeat and
-//! the health check stay fine (#2142). Each slot records when its in-flight
+//! The writer writes on its own handle of the device (#2313), so a write stuck
+//! in the kernel freezes only that controller's output; its input keeps
+//! flowing. Only when the second handle could not be opened does the writer
+//! share the input handle, and then a stuck write also skips that controller's
+//! reads while the heartbeat and the health check stay fine (#2142). Each slot records when its in-flight
 //! write started; the gauge `rust_hid_output_write_in_flight_seconds` reads it,
 //! and `StuckWriterMonitor` (driven by the watchdog tick, off the hot path)
 //! logs a write in flight longer than `STUCK_WRITE_THRESHOLD` once per
