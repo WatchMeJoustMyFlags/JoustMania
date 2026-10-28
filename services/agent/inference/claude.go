@@ -19,28 +19,22 @@ package inference
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/joustmania/agent/internal/anthropichttp"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -156,14 +150,11 @@ func NewClaude(cfg Config) *Claude {
 	if cfg.HTTPClient == nil {
 		// No client-wide timeout: the timeout is resolved per call (Tuning) and every
 		// Infer bounds its request with a ctx deadline, which is the real budget.
-		cfg.HTTPClient = &http.Client{
-			// Never follow a redirect: net/http strips only Authorization and
-			// Cookie across hosts, so x-api-key would reach the redirect target.
-			// The Anthropic API does not redirect; a 3xx surfaces as an error.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		}
+		// The redirect guard lives in anthropichttp.NewClient, so it covers an
+		// injected client too.
+		cfg.HTTPClient = &http.Client{}
 	}
-	host, port := serverAddress(cfg.BaseURL)
+	host, port := anthropichttp.ServerAddress(cfg.BaseURL)
 	return &Claude{cfg: cfg, host: host, port: port, client: newClient(cfg)}
 }
 
@@ -230,7 +221,7 @@ func (c *Claude) Infer(ctx context.Context, prompt llm.Prompt) (string, error) {
 	if err != nil {
 		// Only the low-cardinality error.type reaches the span: vendor error bodies
 		// can echo request details, so the error text never does (#1242).
-		errType := errorType(ctx, err)
+		errType := anthropichttp.ErrorType(ctx, err)
 		fail(span, errType)
 		return "", &Error{Type: errType, Err: err}
 	}
@@ -254,25 +245,13 @@ func (c *Claude) Infer(ctx context.Context, prompt llm.Prompt) (string, error) {
 	return text, nil
 }
 
-// newClient builds the SDK client. Like the decide claude backend: credentials
-// and base URL come from Config only (no ANTHROPIC_* env defaults), retries are
-// off (the callers degrade on error), the SDK's own OTel is off (Infer owns the
-// single chat span) and W3C traceparent is injected by middleware.
+// newClient builds the SDK client, shared with the decide claude backend:
+// credentials and base URL come from Config only (no ANTHROPIC_* env defaults),
+// retries are off (the callers degrade on error), the SDK's own OTel is off
+// (Infer owns the single chat span), W3C traceparent is injected and no
+// redirect is ever followed.
 func newClient(cfg Config) anthropic.Client {
-	return anthropic.NewClient(
-		option.WithoutEnvironmentDefaults(),
-		option.WithAPIKey(cfg.APIKey),
-		option.WithBaseURL(cfg.BaseURL),
-		option.WithHTTPClient(cfg.HTTPClient),
-		option.WithMaxRetries(0),
-		option.WithoutOpenTelemetry(),
-		option.WithMiddleware(traceContextMiddleware),
-	)
-}
-
-func traceContextMiddleware(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
-	otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-	return next(req)
+	return anthropichttp.NewClient(cfg.APIKey, cfg.BaseURL, cfg.HTTPClient)
 }
 
 // fallbackModels accept the server-side refusal fallback in its "default" form on
@@ -293,10 +272,10 @@ var noEffortModels = map[string]bool{
 	"claude-sonnet-4-5": true,
 }
 
-func usesFallback(s Settings) bool { return fallbackModels[stripDateSuffix(s.Model)] }
+func usesFallback(s Settings) bool { return fallbackModels[anthropichttp.StripDateSuffix(s.Model)] }
 
 func effort(s Settings) string {
-	if noEffortModels[stripDateSuffix(s.Model)] {
+	if noEffortModels[anthropichttp.StripDateSuffix(s.Model)] {
 		return ""
 	}
 	return s.Effort
@@ -323,19 +302,6 @@ func params(p llm.Prompt, s Settings) anthropic.BetaMessageNewParams {
 	return params
 }
 
-// attrRequestReasoningLevel is gen_ai.request.reasoning.level (newer than the
-// vendored semconv), the name anthropic-sdk-go uses for output_config.effort.
-const attrRequestReasoningLevel = attribute.Key("gen_ai.request.reasoning.level")
-
-// attrSystemSHA256 fingerprints the system prompt (first 16 hex chars of its
-// sha256), the same key the decide backends use. The full text stays off the span.
-const attrSystemSHA256 = attribute.Key("llm.prompt.system_sha256")
-
-func systemSHA(system string) string {
-	sum := sha256.Sum256([]byte(system))
-	return hex.EncodeToString(sum[:])[:16]
-}
-
 func (c *Claude) requestAttributes(system string, s Settings) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		semconv.GenAIOperationNameChat,
@@ -344,10 +310,10 @@ func (c *Claude) requestAttributes(system string, s Settings) []attribute.KeyVal
 		semconv.GenAIRequestMaxTokens(MaxTokens),
 		semconv.ServerAddress(c.host),
 		semconv.ServerPort(c.port),
-		attrSystemSHA256.String(systemSHA(system)),
+		anthropichttp.AttrSystemSHA256.String(anthropichttp.SystemSHA(system)),
 	}
 	if e := effort(s); e != "" {
-		attrs = append(attrs, attrRequestReasoningLevel.String(e))
+		attrs = append(attrs, anthropichttp.AttrRequestReasoningLevel.String(e))
 	}
 	return attrs
 }
@@ -389,54 +355,4 @@ func textOf(m *anthropic.BetaMessage) string {
 		}
 	}
 	return b.String()
-}
-
-// errorType is the low-cardinality error.type of a failed call: the HTTP status
-// code for API errors, "timeout", "canceled", or "_OTHER".
-func errorType(ctx context.Context, err error) string {
-	var apiErr *anthropic.Error
-	switch {
-	case errors.As(err, &apiErr):
-		return strconv.Itoa(apiErr.StatusCode)
-	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return "timeout"
-	}
-	return semconv.ErrorTypeOther.Value.AsString()
-}
-
-// stripDateSuffix removes a trailing "-YYYYMMDD" snapshot date.
-func stripDateSuffix(model string) string {
-	i := strings.LastIndexByte(model, '-')
-	if i < 0 || len(model)-i-1 != 8 {
-		return model
-	}
-	for _, ch := range model[i+1:] {
-		if ch < '0' || ch > '9' {
-			return model
-		}
-	}
-	return model[:i]
-}
-
-// serverAddress splits a base URL into server.address / server.port.
-func serverAddress(base string) (string, int) {
-	u, err := url.Parse(base)
-	if err != nil || u.Hostname() == "" {
-		return "", 0
-	}
-	if p := u.Port(); p != "" {
-		if n, err := strconv.Atoi(p); err == nil {
-			return u.Hostname(), n
-		}
-	}
-	if u.Scheme == "http" {
-		return u.Hostname(), 80
-	}
-	return u.Hostname(), 443
 }
