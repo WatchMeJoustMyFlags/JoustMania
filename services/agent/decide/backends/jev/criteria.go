@@ -61,40 +61,16 @@ const gatedInterventionInstructions = "If the agent intervenes now, which interv
 // interventionDescriptions describe each ffa.intervention option (the levers'
 // effect, from the retired FFA impact model of llm/prompt.go, #1102). An
 // option without an entry is sent with a null description.
-var interventionDescriptions = map[string]string{
-	decide.OptionNoop: "Do nothing and leave the game as it is. Right when the game is already close and " +
-		"lively, or when nothing clearly calls for an intervention.",
-	"adjust_music_tempo": "Change the music tempo for everyone. Faster music raises everyone's death " +
-		"threshold (more movement tolerated, fewer eliminations); slower music lowers it (eliminations come faster).",
-	"ramp_tempo": "Ramp the music tempo smoothly over several seconds instead of one step, gradually " +
-		"making the game more forgiving or more dangerous for everyone.",
-	"set_pacing_profile": "Switch the session's pacing profile (how the music tempo evolves over the round), " +
-		"speeding up or slowing down eliminations for everyone.",
-	"adjust_volume": "Change the music volume. Atmosphere only: no effect on who gets eliminated.",
-	"adjust_global_sensitivity": "Change the sensitivity level for all players at once. A higher level makes " +
-		"everyone much harder to eliminate, a lower level much easier; one step is a sizable jump.",
-	"adjust_global_difficulty": "Scale the difficulty for all players at once, making eliminations come " +
-		"faster (harder) or slower (easier) for everyone.",
-	"adjust_player_sensitivity": "Change one player's sensitivity, protecting them (harder to eliminate) " +
-		"or handicapping them (easier to eliminate).",
-	"set_player_handicap": "Help one player (harder to eliminate) or rein in one player (easier to " +
-		"eliminate), to balance a lopsided game.",
-	"grant_shield": "Make one player immune to elimination for a few seconds. Saves a player who is about " +
-		"to be eliminated unfairly.",
-	"toughness_boost": "Make one player much harder, but not impossible, to eliminate for a few seconds; " +
-		"weaker than grant_shield.",
-	"soft_penalty": "Put pressure on one player: a warning cue, or briefly making them easier to " +
-		"eliminate. Recoverable, never an instant elimination.",
-	"auto_rubberband": "Automatically help the trailing players (harder to eliminate) to keep a lopsided " +
-		"game close, without ever inverting the standings.",
-	"play_audio_cue": "Play an audio cue or announcement to build tension or excitement. No effect on who " +
-		"gets eliminated.",
-	"send_controller_effect": "Flash or rumble one player's controller as feedback. No effect on who gets " +
-		"eliminated.",
-	"eliminate_player": "Immediately and permanently eliminate one player. Maximal and irreversible.",
-	"revive_player":    "Bring an eliminated player back into the game.",
-	"end_game":         "End the round now. Maximal and irreversible; the last player alive wins.",
-}
+var interventionDescriptions = func() map[string]string {
+	out := map[string]string{
+		decide.OptionNoop: "Do nothing and leave the game as it is. Right when the game is already close and " +
+			"lively, or when nothing clearly calls for an intervention.",
+	}
+	for _, iv := range decide.Catalog {
+		out[iv.Name] = iv.JevDescription
+	}
+	return out
+}()
 
 // targetNoneDescription describes the ffa.target "none" option.
 const targetNoneDescription = "No specific player: the intervention is session-wide (music tempo, volume, " +

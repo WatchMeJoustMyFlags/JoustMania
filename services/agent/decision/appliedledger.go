@@ -2,7 +2,6 @@ package decision
 
 import (
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,27 +34,12 @@ const appliedLedgerTTL = 30 * time.Second
 // state or level (flags.md §13.1, services/flag-service/registry.yaml): writing the
 // same value again changes nothing at the coordinator. Grants and events are never
 // in it. actions/idempotent_uc040_test.go pins it against the registry.
-var idempotentInterventions = map[string]bool{
-	InterventionAdjustMusicTempo:        true,
-	InterventionAdjustVolume:            true,
-	InterventionAdjustGlobalSensitivity: true,
-	InterventionAdjustGlobalDifficulty:  true,
-	InterventionSetPacingProfile:        true,
-	InterventionRampTempo:               true,
-	InterventionAutoRubberband:          true,
-	InterventionAdjustPlayerSensitivity: true,
-	InterventionSetPlayerHandicap:       true,
-}
+var idempotentInterventions = decide.Set(func(iv decide.Intervention) bool { return iv.Idempotent })
 
 // IdempotentInterventions returns the interventions the already-applied check may
 // suppress (state and level kinds), sorted.
 func IdempotentInterventions() []string {
-	out := make([]string, 0, len(idempotentInterventions))
-	for i := range idempotentInterventions {
-		out = append(out, i)
-	}
-	sort.Strings(out)
-	return out
+	return decide.Names(func(iv decide.Intervention) bool { return iv.Idempotent })
 }
 
 // normalisedValue is the comparison form of a decision value: a finite number in its
