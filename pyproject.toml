@@ -82,3 +82,7 @@ exclude = [
     "tests/integration", # Integration tests (separate package)
     "scripts/aiup",      # Vendored AI Unified Process linter (upstream style, Apache-2.0)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff 0.17 enables RUF022 by default; services/ behaviour files stay untouched by the bump (#2277)
+"services/__init__.py" = ["RUF022"]

@@ -1,0 +1,6 @@
+# These files also run under the system python3 / ubuntu runner (3.12), so keep
+# the parenthesised `except (A, B):` form: ruff 0.17 at target py314 rewrites it
+# to PEP 758 `except A, B:`, a SyntaxError before 3.14.
+extend = "../pyproject.toml"
+target-version = "py312"
+src = [".."]
