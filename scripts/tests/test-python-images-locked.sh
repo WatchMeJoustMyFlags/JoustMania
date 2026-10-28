@@ -51,6 +51,8 @@ for svc in services:
     name = svc.name
     text = (svc / "Dockerfile").read_text()
     # Join continuation lines so a RUN reads as one command.
+    # Comment lines are not commands: drop them before matching.
+    text = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
     joined = re.sub(r"\\\n", " ", text)
     check(re.search(r"^COPY\s+(\S+\s+)*uv\.lock\s", joined, re.M) is not None, f"{name}: Dockerfile does not COPY uv.lock")
     check("uv export --frozen" in joined, f"{name}: Dockerfile does not run `uv export --frozen`")

@@ -621,6 +621,11 @@ jobs:
         if: matrix.service == 'audio'
         run: make voice-check
 
+      # C-046 (#2266): images install from uv.lock, so a pyproject range change
+      # without a relock must fail here instead of testing a fresh resolve.
+      - name: Lock is current
+        run: uv lock --check
+
       - name: Typecheck
         continue-on-error: true  # ty is immature, don't block CI
         run: |
