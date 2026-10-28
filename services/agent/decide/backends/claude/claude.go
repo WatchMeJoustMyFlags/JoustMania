@@ -43,16 +43,15 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/decide/llmio"
+	"github.com/joustmania/agent/internal/anthropichttp"
 )
 
 // Name is the backend name (the decision.backend flag value).
@@ -113,7 +112,7 @@ type Backend struct {
 // defaultHTTPClient is shared by every Backend without a Config.HTTPClient so
 // connections are pooled across the per-decision New calls. Its own timeout is
 // a backstop; Decide's ctx deadline is the real budget.
-var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var defaultHTTPClient = anthropichttp.NewHTTPClient(30 * time.Second)
 
 // New builds a Backend. It never fails; an incomplete Config makes Available
 // false and Decide return an error.
@@ -224,30 +223,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 // newClient builds the SDK client once per Backend. The pooled connections
 // live in the (shared) http.Client.
 func newClient(cfg Config) anthropic.Client {
-	return anthropic.NewClient(
-		// Credentials and base URL come from Config only: no ANTHROPIC_* env
-		// variables, profile files, env auth token or federation middleware.
-		option.WithoutEnvironmentDefaults(),
-		option.WithAPIKey(cfg.APIKey),
-		option.WithBaseURL(cfg.BaseURL),
-		option.WithHTTPClient(cfg.HTTPClient),
-		option.WithMaxRetries(0),
-		// The SDK has built-in GenAI instrumentation. It is off here: Decide owns
-		// the single chat span (one GenAI span per call, not two), because the
-		// outcome that matters (parse/validation, rationale as a reasoning part)
-		// is only known after the SDK returns. Turning SDK traces off also turns
-		// off its traceparent header, which the middleware below sends instead.
-		option.WithoutOpenTelemetry(),
-		option.WithMiddleware(traceContextMiddleware),
-	)
-}
-
-// traceContextMiddleware injects W3C traceparent from the request ctx (the
-// chat span), as inference/claude.go does, so a proxy configured as BaseURL can
-// nest its spans under ours. The Anthropic API ignores it.
-func traceContextMiddleware(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
-	otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-	return next(req)
+	return anthropichttp.NewClient(cfg.APIKey, cfg.BaseURL, cfg.HTTPClient)
 }
 
 // attrRequestReasoningLevel is gen_ai.request.reasoning.level, which postdates

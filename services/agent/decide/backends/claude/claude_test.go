@@ -585,3 +585,31 @@ func TestDecide_NoulUnsupported(t *testing.T) {
 		t.Errorf("err = %v, calls = %d", err, api.calls.Load())
 	}
 }
+
+// The default client (no Config.HTTPClient) must not follow a redirect: the SDK
+// sends x-api-key, which net/http would forward to another host.
+// UC: UC-044 BR-003
+// UC: C-016
+func TestDefaultHTTPClient_RefusesCrossHostRedirect(t *testing.T) {
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { targetHits++ }))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	req, err := http.NewRequest(http.MethodPost, redirector.URL+"/v1/messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Api-Key", "sk-secret")
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusTemporaryRedirect || targetHits != 0 {
+		t.Errorf("status=%d targetHits=%d, want 307 and 0", resp.StatusCode, targetHits)
+	}
+}

@@ -32,15 +32,14 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/joustmania/agent/internal/anthropichttp"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -156,12 +155,7 @@ func NewClaude(cfg Config) *Claude {
 	if cfg.HTTPClient == nil {
 		// No client-wide timeout: the timeout is resolved per call (Tuning) and every
 		// Infer bounds its request with a ctx deadline, which is the real budget.
-		cfg.HTTPClient = &http.Client{
-			// Never follow a redirect: net/http strips only Authorization and
-			// Cookie across hosts, so x-api-key would reach the redirect target.
-			// The Anthropic API does not redirect; a 3xx surfaces as an error.
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		}
+		cfg.HTTPClient = anthropichttp.NewHTTPClient(0)
 	}
 	host, port := serverAddress(cfg.BaseURL)
 	return &Claude{cfg: cfg, host: host, port: port, client: newClient(cfg)}
@@ -259,20 +253,7 @@ func (c *Claude) Infer(ctx context.Context, prompt llm.Prompt) (string, error) {
 // off (the callers degrade on error), the SDK's own OTel is off (Infer owns the
 // single chat span) and W3C traceparent is injected by middleware.
 func newClient(cfg Config) anthropic.Client {
-	return anthropic.NewClient(
-		option.WithoutEnvironmentDefaults(),
-		option.WithAPIKey(cfg.APIKey),
-		option.WithBaseURL(cfg.BaseURL),
-		option.WithHTTPClient(cfg.HTTPClient),
-		option.WithMaxRetries(0),
-		option.WithoutOpenTelemetry(),
-		option.WithMiddleware(traceContextMiddleware),
-	)
-}
-
-func traceContextMiddleware(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
-	otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-	return next(req)
+	return anthropichttp.NewClient(cfg.APIKey, cfg.BaseURL, cfg.HTTPClient)
 }
 
 // fallbackModels accept the server-side refusal fallback in its "default" form on
