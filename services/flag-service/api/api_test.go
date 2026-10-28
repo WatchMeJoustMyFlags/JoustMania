@@ -606,3 +606,58 @@ func TestReadEndpointsServeDescription(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-042 main
+func TestStrictBooleanQueryParams(t *testing.T) {
+	const path = "/game/invincibility_seconds"
+	put := map[string]any{"value": 4, "scope": map[string]any{"experiment_id": "exp_1", "arm": "experimental"}}
+	bad := []string{"yes", "True", "TRUE", "", "2", "on"}
+	cases := []struct{ method, param, rest string }{
+		{"PUT", "dry_run", ""},
+		{"DELETE", "persist", ""},
+		{"DELETE", "fraction", ""},
+		{"DELETE", "unless_real_game", "game_kind=real&"},
+	}
+	for _, c := range cases {
+		for _, v := range bad {
+			t.Run(fmt.Sprintf("UC-042/main %s ?%s=%q is 400 naming the parameter", c.method, c.param, v), func(t *testing.T) {
+				e := newEnv(t, true)
+				var body any
+				if c.method == "PUT" {
+					body = put
+				}
+				s, b := e.do(c.method, path+"?"+c.rest+c.param+"="+v, body)
+				if s != 400 || b["error"] != "malformed" || !strings.Contains(b["detail"].(string), c.param) {
+					t.Fatalf("%d %v, want 400 malformed naming %s", s, b, c.param)
+				}
+			})
+		}
+	}
+	t.Run("UC-042/main dry_run=1 validates and does not write; dry_run=0 writes", func(t *testing.T) {
+		e := newEnv(t, true)
+		_, before := e.do("GET", path, nil)
+		s, res := e.do("PUT", path+"?dry_run=1", put)
+		if s != 200 || res["dry_run"] != true {
+			t.Fatalf("%d %v", s, res)
+		}
+		_, after := e.do("GET", path, nil)
+		if fmt.Sprint(before["rendered"]) != fmt.Sprint(after["rendered"]) {
+			t.Fatalf("dry_run=1 wrote:\n%v\n%v", before["rendered"], after["rendered"])
+		}
+		if s, res := e.do("PUT", path+"?dry_run=0", put); s != 200 || res["dry_run"] == true {
+			t.Fatalf("dry_run=0: %d %v", s, res)
+		}
+		_, applied := e.do("GET", path, nil)
+		if fmt.Sprint(before["rendered"]) == fmt.Sprint(applied["rendered"]) {
+			t.Fatal("dry_run=0 did not write")
+		}
+	})
+	t.Run("UC-042/main 1, 0, true and false are accepted on DELETE", func(t *testing.T) {
+		for _, q := range []string{"persist=1", "persist=0", "persist=true", "persist=false", "fraction=false", "fraction=0"} {
+			e := newEnv(t, true)
+			if s, b := e.do("DELETE", "/game/shield.activation?"+q, nil); s != 204 {
+				t.Fatalf("?%s: %d %v, want 204", q, s, b)
+			}
+		}
+	})
+}
