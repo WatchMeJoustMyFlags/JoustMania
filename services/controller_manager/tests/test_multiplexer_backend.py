@@ -1364,6 +1364,41 @@ class TestLedBatchSendsTheDesiredOutputState:
         assert adapter.set_output.call_count == 5
         assert mux._led_failures[self.SERIAL] == 1
 
-        mux._led_failures_counted[self.SERIAL] = (mux._led_failures_counted[self.SERIAL][0], 0.0)
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        mux.update_all_leds()
+        assert mux._led_failures[self.SERIAL] == 2
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_changing_output_during_an_outage_is_counted_once_per_interval(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        adapter.set_output.return_value = False
+
+        for level in range(1, 13):  # a shield swell: a new output every tick
+            mux._rumble[self.SERIAL] = level
+            mux.update_all_leds()
+
+        assert adapter.set_output.call_count == 12
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        mux._rumble[self.SERIAL] = 99
+        mux.update_all_leds()
+        assert mux._led_failures[self.SERIAL] == 2
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_raising_write_is_counted_once_per_interval(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        mux._led_colors[self.SERIAL] = (0, 0, 255)
+        adapter.set_output.side_effect = OSError("boom")
+
+        for _ in range(5):
+            mux.update_all_leds()
+
+        assert adapter.set_output.call_count == 5
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
         mux.update_all_leds()
         assert mux._led_failures[self.SERIAL] == 2

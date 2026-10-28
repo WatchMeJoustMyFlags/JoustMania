@@ -94,10 +94,10 @@ class MultiplexerBackend(ControllerBackend):
         self._last_sent_color: dict[str, tuple[int, int, int]] = {}
         self._last_sent_rumble: dict[str, int] = {}
         self._last_led_update: dict[str, float] = {}
-        # Output and time of the last failure counted in _led_failures: a
-        # failing output is retried every tick but counted once per change
-        # or keep-alive interval, as before the retry existed.
-        self._led_failures_counted: dict[str, tuple[tuple[tuple[int, int, int], int], float]] = {}
+        # Time of the last failure counted in _led_failures: a failing
+        # controller is retried every tick but counted once per keep-alive
+        # interval, whatever its output does meanwhile.
+        self._led_failures_counted: dict[str, float] = {}
         self._effect_active: set[str] = set()
         self._led_lock = threading.Lock()
 
@@ -540,13 +540,13 @@ class MultiplexerBackend(ControllerBackend):
         self._last_led_update[serial] = now
         self._led_failures_counted.pop(serial, None)
 
-    def _count_led_failure(self, serial: str, output: tuple[tuple[int, int, int], int] | None, now: float) -> None:
-        """Count a failed write once per output change or keep-alive interval. Caller holds _led_lock."""
+    def _count_led_failure(self, serial: str, now: float) -> None:
+        """Count a failed write at most once per keep-alive interval per serial. Caller holds _led_lock."""
         counted = self._led_failures_counted.get(serial)
-        if counted is not None and counted[0] == output and now - counted[1] < LED_KEEPALIVE_S:
+        if counted is not None and now - counted < LED_KEEPALIVE_S:
             return
         self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
-        self._led_failures_counted[serial] = (output, now)
+        self._led_failures_counted[serial] = now
 
     def update_all_leds(self) -> int:
         """Send each controller's desired output (colour + rumble) on change or keep-alive.
@@ -588,7 +588,7 @@ class MultiplexerBackend(ControllerBackend):
                     if adapter.set_output(serial, r, g, b, rumble):
                         self._mark_output_sent(serial, stored_color, rumble, current_time)
                     else:
-                        self._count_led_failure(serial, output, current_time)
+                        self._count_led_failure(serial, current_time)
                 updated_count += 1
 
                 if output_changed:
@@ -598,7 +598,7 @@ class MultiplexerBackend(ControllerBackend):
                 logger.debug(f"Error updating LED for {serial}: {e}")
                 with self._led_lock:
                     if serial in self._led_colors:
-                        self._count_led_failure(serial, output, current_time)
+                        self._count_led_failure(serial, current_time)
 
         return updated_count
 

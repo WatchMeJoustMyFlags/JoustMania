@@ -235,7 +235,7 @@ class TestLedFailureTracking:
         assert mux._led_failures.get(serial, 0) == 0
 
     def test_led_failures_accumulate(self):
-        """Failures of different outputs accumulate (one count per failing output, #2355)."""
+        """Failures accumulate, one count per keep-alive interval (#2355)."""
         adapter = _make_adapter()
         adapter.set_output = MagicMock(return_value=False)
         mux = MultiplexerBackend(adapters=[adapter])
@@ -243,9 +243,9 @@ class TestLedFailureTracking:
         serial = "S1"
         mux._serial_to_adapter[serial] = adapter
 
-        # A new desired colour each time: each failing output is counted
         for i in range(3):
             mux._led_colors[serial] = (i, i, i)
+            mux._led_failures_counted[serial] = 0.0  # the interval has elapsed
             mux.update_all_leds()
 
         assert mux._led_failures.get(serial, 0) == 3
