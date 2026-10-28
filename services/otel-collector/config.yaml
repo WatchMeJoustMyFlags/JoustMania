@@ -318,6 +318,17 @@ processors:
     trace_conditions:
       - span.name != "agent.decide" or resource.attributes["service.name"] != "agent"
 
+  # Drop gRPC health-check spans (#2286): docker healthchecks and watchdog
+  # probes call grpc.health.v1.Health/Check every few seconds, and on the Pi
+  # they were 1362 of 1500 Jaeger spans. The probes only need the RPC to
+  # answer; no service records its own span for it, so one drop here covers
+  # the Python, Go and Rust instrumentation alike. Only the main traces
+  # pipeline uses it (the span_metrics pipeline keeps agent.decide only).
+  filter/grpc_health:
+    error_mode: ignore
+    trace_conditions:
+      - span.attributes["rpc.service"] == "grpc.health.v1.Health"
+
   # Resource processor to add common attributes for OTLP-pushed metrics
   resource:
     attributes:
@@ -406,7 +417,7 @@ service:
     # Traces pipeline
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch/traces, resource]
+      processors: [memory_limiter, filter/grpc_health, batch/traces, resource]
       exporters: [otlp/jaeger, otlp/agent, debug]
 
     # agent.decide spans -> span_metrics connector (#1427). Same receiver as

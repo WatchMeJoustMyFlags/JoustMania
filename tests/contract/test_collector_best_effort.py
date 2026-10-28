@@ -152,3 +152,14 @@ def test_full_stack_has_every_observability_service_the_lite_stack_lacks():
     assert not observability & lite, (
         f"lite must not carry {sorted(observability & lite)}"
     )
+
+
+@pytest.mark.uc("UC-035", flow="A3")
+def test_grpc_health_spans_are_dropped_before_the_traces_exporters(collector):
+    """#2286: health-check spans (rpc.service grpc.health.v1.Health) never reach Jaeger or the agent."""
+    flt = collector["processors"]["filter/grpc_health"]
+    conditions = flt["trace_conditions"]
+    assert conditions == ['span.attributes["rpc.service"] == "grpc.health.v1.Health"']
+    processors = collector["service"]["pipelines"]["traces"]["processors"]
+    assert "filter/grpc_health" in processors
+    assert processors.index("memory_limiter") == 0
