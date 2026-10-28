@@ -2981,7 +2981,10 @@ class TestForceStartHoldTimerAndRefusal:
         mock_state_manager.ready_controllers = {"s1", "s2"}
         handler._publish_event = AsyncMock()
         handler.exit = AsyncMock()
-        handler.callbacks.get_menu_state = MagicMock(return_value=menu_pb2.MenuState.RUNNING)
+        # Captured as RUNNING, then still GAME_STARTING when the refusal comes back.
+        handler.callbacks.get_menu_state = MagicMock(
+            side_effect=[menu_pb2.MenuState.RUNNING, menu_pb2.MenuState.GAME_STARTING]
+        )
         handler.callbacks.start_game = AsyncMock(return_value=False)
 
         with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
@@ -2989,3 +2992,71 @@ class TestForceStartHoldTimerAndRefusal:
 
         states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
         assert states[-1] == menu_pb2.MenuState.RUNNING
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_refusal_does_not_overwrite_a_newer_menu_state(self, handler, mock_state_manager):
+        """The state moved on during the awaits (not GAME_STARTING any more): leave it alone."""
+        from proto import menu_pb2
+
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+        handler.callbacks.get_menu_state = MagicMock(
+            side_effect=[menu_pb2.MenuState.RUNNING, menu_pb2.MenuState.STOPPED]
+        )
+        handler.callbacks.start_game = AsyncMock(return_value=False)
+
+        with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
+            await handler.handle_force_start("test_serial")
+
+        states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
+        assert states == [menu_pb2.MenuState.GAME_STARTING]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_start_game_raising_restores_menu_state(self, handler, mock_state_manager):
+        from proto import menu_pb2
+
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+        handler.callbacks.get_menu_state = MagicMock(
+            side_effect=[menu_pb2.MenuState.RUNNING, menu_pb2.MenuState.GAME_STARTING]
+        )
+        handler.callbacks.start_game = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
+            await handler.handle_force_start("test_serial")
+
+        states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
+        assert states[-1] == menu_pb2.MenuState.RUNNING
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
+    async def test_exit_from_another_path_does_not_kill_a_force_start_past_its_hold(self, handler, mock_state_manager):
+        """An idle-timeout exit() landing while the start is in flight must not cancel the hold timer."""
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        in_start = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_roster(*_a, **_k):
+            in_start.set()
+            await release.wait()
+            return ["s1", "s2"]
+
+        handler.settings_ops.force_start_roster = slow_roster
+        with patch.object(handler, "_force_start_threshold", return_value=0.01):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+        await in_start.wait()
+
+        await handler.exit()  # e.g. the idle timeout, a different task
+        release.set()
+        await timer
+
+        handler.callbacks.start_game.assert_awaited_once()

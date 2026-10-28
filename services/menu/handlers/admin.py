@@ -183,6 +183,8 @@ class AdminModeHandler:
         # Trigger hold tracking for force start
         self._trigger_press_time: float | None = None
         self._trigger_hold_task: asyncio.Task | None = None
+        # True while handle_force_start runs past its hold: exit/abandon from another path must not kill it.
+        self._force_starting = False
 
     # ControllerHandler protocol methods
 
@@ -473,7 +475,7 @@ class AdminModeHandler:
         """
         task = self._trigger_hold_task
         self._trigger_hold_task = None
-        if task is None or task.done():
+        if task is None or task.done() or self._force_starting:
             return
         try:
             current = asyncio.current_task()
@@ -805,6 +807,21 @@ class AdminModeHandler:
         return await self.settings_ops.prune_ghosts(controllers, admin_serial, span)
 
     async def handle_force_start(self, serial: str) -> None:
+        """Force start the game; a start already past its hold is not cancelled by exit/abandon (#2377)."""
+        self._force_starting = True
+        try:
+            await self._handle_force_start_impl(serial)
+        finally:
+            self._force_starting = False
+
+    def _restore_menu_state_if_starting(self, previous_state: int) -> None:
+        """Undo our GAME_STARTING, but only while it is still the state (a newer state stays)."""
+        from proto import menu_pb2
+
+        if self.callbacks.get_menu_state() == menu_pb2.MenuState.GAME_STARTING:
+            self.callbacks.set_menu_state(previous_state)
+
+    async def _handle_force_start_impl(self, serial: str) -> None:
         """
         Force start the game from admin mode.
 
@@ -879,11 +896,15 @@ class AdminModeHandler:
                 # (#1029) with the force_all_start-aware roster — previously this
                 # only lit up the menu but no game began. _start_game resets the
                 # menu state if the roster is too small, so we don't get stuck.
-                started = await self.callbacks.start_game(serial, "admin_force_start", controllers)
+                started = False
+                try:
+                    started = await self.callbacks.start_game(serial, "admin_force_start", controllers)
+                finally:
+                    if not started:
+                        # Refused or raised (a game lifecycle is still live, e.g. the lobby restore):
+                        # GAME_STARTING would drop every button event until reset_menu (#2377).
+                        self._restore_menu_state_if_starting(previous_state)
                 if not started:
-                    # Refused (a game lifecycle is still live, e.g. the lobby restore): GAME_STARTING
-                    # would drop every button event until reset_menu (#2377).
-                    self.callbacks.set_menu_state(previous_state)
                     logger.warning(f"Force start from {serial} refused, menu state restored")
                     return
 

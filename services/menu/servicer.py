@@ -800,6 +800,7 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         if self._generation_stale(expected):
             # A game started and ended during the roster lookup: the lobby is back but not the one held.
             return Result(None, None, STALE)
+        previous_state = self.state
         self.set_menu_state(menu_pb2.MenuState.GAME_STARTING)
         await self.event_publisher.publish(
             "game_requested",
@@ -809,7 +810,10 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 "controllers": json.dumps(controllers),
             },
         )
-        await self._start_game(serial="", source="operator_pad", controllers=controllers)
+        if not await self._start_game(serial="", source="operator_pad", controllers=controllers):
+            if self.state == menu_pb2.MenuState.GAME_STARTING:
+                self.set_menu_state(previous_state)
+            return Result(None, None, GAME_ACTIVE)
         return Result(None, self.current_selection.name)
 
     def _generation_stale(self, expected: str) -> bool:

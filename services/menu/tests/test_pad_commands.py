@@ -222,6 +222,17 @@ async def test_force_start_starts_with_the_ready_roster_and_no_host_serial(servi
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A1", br=["BR-008"])
+async def test_force_start_reports_a_refused_start(servicer):
+    servicer.state_manager.controller_states = {"a": ControllerState.READY, "b": ControllerState.READY}
+    with live_roster({"a", "b"}), patch.object(servicer, "_start_game", autospec=True, return_value=False):
+        reply = await pad(servicer, "force_start")
+
+    assert not reply.success
+    assert servicer.state != menu_pb2.MenuState.GAME_STARTING
+
+
+@pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="main", br=["BR-008"])
 async def test_force_start_prunes_ghosts_and_keeps_no_serial(servicer):
     servicer.state_manager.controller_states = {"a": ControllerState.READY, "ghost": ControllerState.READY}
