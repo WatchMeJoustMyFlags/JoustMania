@@ -218,6 +218,10 @@ type StartGameConfig struct {
 	// (attribution #975) carry them from the start. Empty (the default) means
 	// "not in any experiment" — a real game or an unbound shadow game.
 	//
+	// Shadow-only (experiment_id, arm, rng_seed, pattern_trigger_policy): the
+	// browser proxy clears them, see stripShadowOnlyFields in
+	// services/connect-proxy/main.go (#2214). Add new shadow-only fields there.
+	//
 	// HARD INVARIANT (#982): these only SUBDIVIDE a shadow game; they NEVER make
 	// a real game part of an experiment. A real (menu-origin/primary) start
 	// ignores them — see game_coordinator's spawn binding, which only applies
