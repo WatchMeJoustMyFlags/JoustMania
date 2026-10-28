@@ -538,6 +538,9 @@ type overlayReverter struct {
 
 func (o *overlayReverter) RevertRealDefault(_ context.Context, flag string) error {
 	o.reverted = append(o.reverted, flag)
+	if o.values != nil {
+		o.values[flag] = "" // the overlay is gone
+	}
 	return nil
 }
 
@@ -650,4 +653,32 @@ func TestDeferredReview2235Round2(t *testing.T) {
 			t.Fatalf("WARNs = %d, want 2 (t=0 and t=61 s)", h.n)
 		}
 	})
+}
+
+// UC: UC-043 A15
+func TestDeferredRestoredRevertsShareAFlag(t *testing.T) {
+	ctx := context.Background()
+	a := experiment.RestoredRevert{ExperimentID: "exp-a", FlagKey: holdKey, Value: 20.0}
+	b := experiment.RestoredRevert{ExperimentID: "exp-b", FlagKey: holdKey, Value: 25.0}
+	for name, order := range map[string][]experiment.RestoredRevert{"A then B": {a, b}, "B then A": {b, a}} {
+		t.Run("UC-043/A15 two restored reverts on one flag, "+name+": only the one whose value the overlay holds runs", func(t *testing.T) {
+			rev := &overlayReverter{values: map[string]string{holdKey: "25"}} // exp-b's promotion is live
+			p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, fakeWatcher{}, rev)
+			p.SetRealGameProbe(func(context.Context) (bool, error) { return false, nil })
+			j := &journalRecorder{}
+			p.SetRewatchJournal(j.sink)
+			p.RestoreDeferredReverts(ctx, order)
+			if got := j.all(); len(got) != 0 {
+				t.Fatalf("restore journaled %v; the drain decides", got)
+			}
+			p.DrainDeferred(ctx, fixed(autoOn))
+			got := strings.Join(j.all(), "\n")
+			// exp-a is cleared either way: by the mismatch (A first) or because exp-b's
+			// revert already removed the overlay (B first).
+			if len(rev.reverted) != 1 || !strings.Contains(got, "exp-b|reverted|") ||
+				!strings.Contains(got, "exp-a|applied|revert not run: ") || strings.Contains(got, "exp-a|reverted") {
+				t.Fatalf("reverted %v journal %q", rev.reverted, got)
+			}
+		})
+	}
 }

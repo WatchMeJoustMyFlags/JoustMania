@@ -211,6 +211,14 @@ func (pr *Promoter) queueRevertLocked(p experiment.Proposal, entry *appliedPromo
 	if pr.closed {
 		return // shutting down: the write-ahead journal event re-queues it next run
 	}
+	if entry == nil {
+		// A restored revert (RestoreDeferredReverts): kept beside any other restored
+		// revert of the flag; the drain's value check decides which one runs.
+		pr.restoredReverts = append(pr.restoredReverts, &deferredRevert{
+			proposal: p, rewatch: rewatch, queuedAt: pr.clock(), restored: true,
+		})
+		return
+	}
 	if pr.pendingReverts == nil {
 		pr.pendingReverts = map[string]*deferredRevert{}
 	}
@@ -268,6 +276,9 @@ func (pr *Promoter) DeferredStats() (pending int, oldest time.Duration) {
 		note(w.queuedAt)
 	}
 	for _, r := range pr.pendingReverts {
+		note(r.queuedAt)
+	}
+	for _, r := range pr.restoredReverts {
 		note(r.queuedAt)
 	}
 	return pending, oldest
@@ -335,7 +346,11 @@ func (pr *Promoter) DropDeferred(ctx context.Context, reason string) {
 	}
 	pr.mu.Lock()
 	left := sortedKeys(pr.pendingReverts)
+	for _, r := range pr.restoredReverts {
+		left = append(left, r.proposal.FlagKey)
+	}
 	pr.pendingReverts = nil
+	pr.restoredReverts = nil
 	pr.mu.Unlock()
 	pr.log.Warn("code_improvement: deferred reverts left for the next run (a real game is live at shutdown, UC-043 A17)", "flags", left)
 }
@@ -349,17 +364,11 @@ func (pr *Promoter) RestoreDeferredReverts(ctx context.Context, restored []exper
 	if len(restored) == 0 {
 		return
 	}
-	defer pr.flushReplacedReverts() // after killMu is released
 	pr.killMu.Lock()
 	defer pr.killMu.Unlock()
 	for _, r := range restored {
 		p := experiment.Proposal{FlagKey: r.FlagKey, ExperimentID: r.ExperimentID, ExperimentalValue: r.Value}
 		pr.queueRevertLocked(p, nil, nil, r.Rewatch)
-		pr.mu.Lock()
-		if q := pr.pendingReverts[r.FlagKey]; q != nil {
-			q.restored = true
-		}
-		pr.mu.Unlock()
 	}
 }
 
@@ -428,13 +437,14 @@ func (pr *Promoter) takeKillSwitchedLocked() []KillSwitchRevert {
 	}
 	pr.pending = nil
 	pr.pendingReverts = nil
+	pr.restoredReverts = nil
 	return out
 }
 
 func (pr *Promoter) hasDeferred() bool {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
-	return len(pr.pending) > 0 || len(pr.pendingReverts) > 0
+	return len(pr.pending) > 0 || len(pr.pendingReverts) > 0 || len(pr.restoredReverts) > 0
 }
 
 // drainReverts runs the waiting reverts. revertReal checks the probe again and
@@ -442,11 +452,17 @@ func (pr *Promoter) hasDeferred() bool {
 // switch or a newer promotion took over is dropped silently (they journal it).
 func (pr *Promoter) drainReverts(ctx context.Context) {
 	pr.mu.Lock()
-	reverts := pr.pendingReverts
+	keyed := pr.pendingReverts
 	pr.pendingReverts = nil
+	reverts := make([]*deferredRevert, 0, len(keyed)+len(pr.restoredReverts))
+	for _, flag := range sortedKeys(keyed) {
+		reverts = append(reverts, keyed[flag])
+	}
+	reverts = append(reverts, pr.restoredReverts...)
+	pr.restoredReverts = nil
 	pr.mu.Unlock()
-	for _, flag := range sortedKeys(reverts) {
-		r := reverts[flag]
+	for _, r := range reverts {
+		flag := r.proposal.FlagKey
 		res := Result{Outcome: OutcomeApplied}
 		if r.entry == nil && pr.trackedPromotion(flag) {
 			// A restored revert (no entry): a newer promotion of this run owns the
@@ -458,12 +474,7 @@ func (pr *Promoter) drainReverts(ctx context.Context) {
 			why, keep := pr.restoredRevertStale(ctx, r)
 			if keep {
 				pr.mu.Lock()
-				if pr.pendingReverts == nil {
-					pr.pendingReverts = map[string]*deferredRevert{}
-				}
-				if pr.pendingReverts[flag] == nil {
-					pr.pendingReverts[flag] = r
-				}
+				pr.restoredReverts = append(pr.restoredReverts, r)
 				pr.mu.Unlock()
 				continue
 			}

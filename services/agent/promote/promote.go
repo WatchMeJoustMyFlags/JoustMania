@@ -339,6 +339,9 @@ type Promoter struct {
 	probe          RealGameProbe
 	pending        map[string]*deferredWrite
 	pendingReverts map[string]*deferredRevert
+	// restoredReverts are the reverts a previous run left waiting (no entry). Several
+	// may wait on one flag: the drain's value check decides which one runs.
+	restoredReverts []*deferredRevert
 	// offPasses counts consecutive drain passes that saw a mode other than
 	// autonomous (or the agent disabled); waiting writes drop at the second, so a
 	// one-pass flagd sync flap does not drop them (fail closed: they wait).
