@@ -124,7 +124,7 @@ classify() {  # map one changed path to gates; each case mirrors a ci.yml filter
   local f="$1"
   # shared_python: every Python service job.
   case "$f" in
-    pyproject.toml|proto/*|lib/*)
+    pyproject.toml|uv.lock|proto/*|lib/*)
       for s in "${PY_SERVICES[@]}"; do selected[py:$s]=1; done ;;
   esac
   # controller_manager / game_coordinator / menu / audio / pairing_daemon / python_hid / operator_pad

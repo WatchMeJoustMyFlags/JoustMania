@@ -13,7 +13,7 @@ dependencies = [
     # Prometheus metrics
 
     # gRPC utilities
-    "grpcio>=1.70.0",
+    "grpcio>=1.85.0",
 
     # System metrics
     "psutil>=5.9.0",
