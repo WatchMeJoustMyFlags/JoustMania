@@ -612,7 +612,7 @@ variants with headroom; "same shape" accepts an object with exactly the default 
 |---|---|
 | `sensitivity` | movement a player survives: 0 ultra_slow (strictest) to 4 ultra_fast (most lenient) |
 | `nonstop.time_limit_seconds` | Non-Stop Joust game length in seconds; 0 means no time limit |
-| `invincibility_seconds` | seconds Tournament and Fight Club fighters cannot lose at the start of a match or round |
+| `invincibility_seconds` | seconds Tournament and Fight Club fighters cannot lose at the start of a match or round; 0 = default 4 s |
 | `fight_club.min_rounds` | Fight Club rounds played before the game can end with one leader |
 | `werewolf.reveal_time_seconds` | seconds into a Werewolf game until the werewolves are revealed |
 | `death_grace_period_seconds` | seconds a player cannot die after swapping team, turning zombie or respawning |

@@ -114,7 +114,7 @@ flags:
   # lobby, team-structure and presentation flags are not in it.
   - {set: game, key: sensitivity, kind: overlay, scope: [stack, experiment+arm, real], persist: true, description: "movement a player survives: 0 ultra_slow (strictest) to 4 ultra_fast (most lenient)"}
   - {set: game, key: nonstop.time_limit_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 600], integer: true}, description: "Non-Stop Joust game length in seconds; 0 means no time limit"}
-  - {set: game, key: invincibility_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 10]}, description: "seconds Tournament and Fight Club fighters cannot lose at the start of a match or round"}
+  - {set: game, key: invincibility_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 10]}, description: "seconds Tournament and Fight Club fighters cannot lose at the start of a match or round; 0 = default 4 s"}
   - {set: game, key: fight_club.min_rounds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 30], integer: true}, description: "Fight Club rounds played before the game can end with one leader"}
   - {set: game, key: werewolf.reveal_time_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [10, 90]}, description: "seconds into a Werewolf game until the werewolves are revealed"}
   - {set: game, key: death_grace_period_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 5]}, description: "seconds a player cannot die after swapping team, turning zombie or respawning"}
