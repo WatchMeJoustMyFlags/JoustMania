@@ -6,8 +6,15 @@
  * the next game's events still show. The delay is fixed (2 s by default), the
  * same as the controller stream's loss handling.
  */
+import type { VisibilityGate } from "./visibilityGate.js";
+
 export interface KeepStreamOpenOptions<T> {
-  open: () => AsyncIterable<T>;
+  open: (signal?: AbortSignal) => AsyncIterable<T>;
+  /**
+   * Pauses the stream while the page is hidden (UC-035 BR-012): the open call is
+   * aborted, no loss is reported and nothing is reopened until the page shows.
+   */
+  gate?: VisibilityGate;
   onEvent: (event: T) => void;
   /** Called with the failure, or null for a clean end, before the retry is scheduled. */
   onLost?: (error: unknown | null) => void;
@@ -18,13 +25,19 @@ export interface KeepStreamOpenOptions<T> {
 
 export async function keepStreamOpen<T>(opts: KeepStreamOpenOptions<T>): Promise<void> {
   const schedule = opts.schedule ?? ((fn, ms) => void setTimeout(fn, ms));
+  if (opts.gate) await opts.gate.whenVisible();
   let lost: unknown | null = null;
   try {
-    for await (const event of opts.open()) {
+    for await (const event of opts.open(opts.gate?.signal)) {
       opts.onEvent(event);
     }
   } catch (error) {
     lost = error ?? new Error("stream failed");
+  }
+  if (opts.gate?.hidden) {
+    // Paused, not lost: wait for the page, then open again at once.
+    void keepStreamOpen(opts);
+    return;
   }
   opts.onLost?.(lost);
   schedule(() => void keepStreamOpen(opts), opts.retryMs ?? 2000);

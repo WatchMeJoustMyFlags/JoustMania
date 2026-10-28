@@ -29,6 +29,7 @@ import type { FlagPanel, InterventionOverlay } from "./agent.js";
 import { fetchAdapters } from "./adapters.js";
 import { createPoller } from "./poller.js";
 import { PageGate } from "./pageGate.js";
+import { EmbedGate, VisibilityGate } from "./visibilityGate.js";
 import { ShieldStore } from "./shield.js";
 import { reduceGameEvent } from "./gameEvents.js";
 import {
@@ -190,8 +191,40 @@ const pageGate = new PageGate(
   document,
   globalThis,
   (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
-  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller],
+  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller, followPoller],
 );
+
+// Background load (UC-035 BR-012, #2290): the gameplay stream pauses on a hidden
+// page; the Grafana iframe loads on first open of its tab and is blanked when the
+// tab is left or the page hidden; the Jaeger search loads once, on first open.
+const streamGate = new VisibilityGate(document);
+const embedGate = new EmbedGate([
+  {
+    frame: document.getElementById("grafana-embed") as HTMLIFrameElement,
+    tab: "metrics",
+    src: document.getElementById("grafana-embed")?.dataset.src ?? "",
+    unloadWhenAway: true,
+  },
+  {
+    frame: document.getElementById("jaeger-embed") as HTMLIFrameElement,
+    tab: "traces",
+    src: document.getElementById("jaeger-embed")?.dataset.src ?? "",
+    unloadWhenAway: false,
+  },
+]);
+// The follow poll feeds the Controllers tab (banner, tiles) and the Agent tab (followed game).
+const FOLLOW_TABS = new Set(["controllers", "agent"]);
+let followPoller: Poller | null = null;
+function followActive(): boolean {
+  return FOLLOW_TABS.has(pageGate.activeTab) && pageGate.isActive(pageGate.activeTab);
+}
+function syncBackground() {
+  embedGate.sync(pageGate.activeTab, document.hidden);
+  if (followActive()) followPoller?.poke();
+  else followPoller?.stop();
+}
+document.addEventListener("visibilitychange", syncBackground);
+syncBackground();
 
 function tabActive(tab: string): boolean {
   return pageGate.isActive(tab);
@@ -220,6 +253,7 @@ function setupTabs() {
       });
 
       pageGate.activeTab = tabId;
+      syncBackground();
       if (tabId === "agent") {
         decidePoller?.poke();
         agentPoller?.poke();
@@ -237,7 +271,8 @@ function setupTabs() {
 function startControllerStream() {
   if (state.isStreaming) return;
   void keepControllerStreamOpen({
-    open: () => controllerClient.watchGameplayData({ updateFrequencyHz: 30 }),
+    gate: streamGate,
+    open: (signal) => controllerClient.watchGameplayData({ updateFrequencyHz: 30 }, signal),
     onUpdate: (update) => {
       // Update controller state
       state.controllers.clear();
@@ -472,11 +507,11 @@ function updatePlayerCount(visible: number) {
 // every 2 s, and a transient error keeps the followed game (FollowTracker).
 function startFollowPolling() {
   let failing = false;
-  const poller = createPoller({
+  const poller = (followPoller = createPoller({
     baseMs: FOLLOW_POLL_MS,
     maxMs: FOLLOW_MAX_BACKOFF_MS,
     timeoutMs: FOLLOW_TIMEOUT_MS,
-    isActive: () => !document.hidden,
+    isActive: followActive,
     run: async (signal) => {
       const [primary, list] = await Promise.all([
         gameClient.getGameState({}, signal),
@@ -493,11 +528,8 @@ function startFollowPolling() {
       followTracker.fail();
       applyFollow();
     },
-  });
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) poller.stop();
-    else poller.poke();
-  });
+  }));
+  // Visibility and tab changes stop / poke it through syncBackground().
   poller.poke();
 }
 
