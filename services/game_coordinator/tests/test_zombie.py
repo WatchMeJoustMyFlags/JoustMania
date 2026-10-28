@@ -28,6 +28,7 @@ from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from lib.types import Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.zombie import (
     HUMAN_COLOR,
     INITIAL_ZOMBIES,
@@ -1642,7 +1643,7 @@ class TestZombieRespawnSpanAndGrace:
         assert game.REVIVE_SPAWN_GRACE == 2.0
         zombie = game.zombie_serials[0]
         await game._kill_player(zombie, 5.0)
-        monkeypatch.setattr(time, "time", lambda: 1000.0)
+        monkeypatch.setattr(game_clock, "now", lambda: 1000.0)
 
         assert await game.revive_player(zombie) is True
 

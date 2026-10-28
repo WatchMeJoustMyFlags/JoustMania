@@ -25,6 +25,7 @@ from conftest import EventCollector, MockControllerManagerService
 
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.game_factory import _GAME_CLASSES
 from services.game_coordinator.games import base as base_module
 from services.game_coordinator.games.base import (
@@ -89,7 +90,11 @@ class Flags:
 @pytest.fixture
 def clock():
     c = Clock()
-    with patch.object(base_module.time, "time", side_effect=lambda: c.t):
+    # The game clock drives the deadlines (UC-030 BR-010); the wall clock the wire timestamps.
+    with (
+        patch.object(base_module.time, "time", side_effect=lambda: c.t),
+        patch.object(game_clock, "now", side_effect=lambda: c.t),
+    ):
         yield c
 
 

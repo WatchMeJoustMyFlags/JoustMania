@@ -9,7 +9,6 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 
 from opentelemetry import trace
@@ -19,6 +18,7 @@ from lib.colors import Colors
 from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
     BaseGameMode,
@@ -550,7 +550,7 @@ class WerewolfGame(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winner": winner,
             "revealed": self.revealed,
             "outcome": self.game_outcome(),
@@ -618,7 +618,7 @@ class WerewolfGame(BaseGameMode):
 
                 # Start gameplay
                 self.state = GameState.RUNNING
-                self.start_time = time.time()
+                self.start_time = game_clock.now()
 
                 # Werewolf publishes game_started after the countdown (UC-022 A1).
                 await self.event_publisher(

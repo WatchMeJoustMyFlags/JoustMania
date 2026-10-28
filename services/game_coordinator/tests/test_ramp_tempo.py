@@ -200,7 +200,7 @@ def test_ease_interpolation_is_smoothstep():
 async def test_handler_arms_descriptor_anchored_to_live_state():
     game = make_game()
     game.music_speed = 1.05
-    with patch("services.game_coordinator.difficulty_handlers.time.time", return_value=500.0):
+    with patch("services.game_coordinator.game_clock.now", return_value=500.0):
         await handle_ramp_tempo(make_ctx("1.3:8:linear", game))
     assert game.tempo_ramp is not None
     assert game.tempo_ramp.start_tempo == pytest.approx(1.05)  # anchored to live tempo
@@ -249,7 +249,7 @@ async def test_check_music_speed_drives_ramp_toward_target_and_holds():
     )
 
     # The loop adopts the curve at its first tick; midway the tempo is interpolated.
-    with patch("services.game_coordinator.games.base.time.time", return_value=base) as clock:
+    with patch("services.game_coordinator.game_clock.now", return_value=base) as clock:
         await game._check_music_speed()
         clock.return_value = base + 5.0
         await game._check_music_speed()
@@ -264,14 +264,14 @@ async def test_check_music_speed_drives_ramp_toward_target_and_holds():
 
     # Past the end it holds exactly at target, without another glide...
     game.audio_client.ChangeTempo.reset_mock()
-    with patch("services.game_coordinator.games.base.time.time", return_value=base + 50.0):
+    with patch("services.game_coordinator.game_clock.now", return_value=base + 50.0):
         await game._check_music_speed()
     assert game.music_speed == pytest.approx(1.3)
     game.audio_client.ChangeTempo.assert_not_called()
 
     # ...and a further tick at target is a no-op (already there, no churn).
     game.audio_client.ChangeTempo.reset_mock()
-    with patch("services.game_coordinator.games.base.time.time", return_value=base + 60.0):
+    with patch("services.game_coordinator.game_clock.now", return_value=base + 60.0):
         await game._check_music_speed()
     game.audio_client.ChangeTempo.assert_not_called()
 
@@ -285,7 +285,7 @@ async def test_active_ramp_suspends_natural_schedule():
     base = 2000.0
     game.tempo_ramp = RampDescriptor(1.0, 1.3, base, 5.0, RAMP_CURVE_LINEAR)
     game.change_time = base  # would normally trigger a scheduled change
-    with patch("services.game_coordinator.games.base.time.time", return_value=base + 100.0):
+    with patch("services.game_coordinator.game_clock.now", return_value=base + 100.0):
         await game._check_music_speed()
     # Held at target; the scheduled slow/fast hop did NOT run (no speed_up flip). The
     # only ChangeTempo is the ramp's own (already finished) target, sent once (#1833).
@@ -304,7 +304,7 @@ async def test_override_wins_over_ramp():
     game.music_speed = 1.0
     game.tempo_override = 1.2
     game.tempo_ramp = RampDescriptor(1.0, 1.3, 0.0, 5.0, RAMP_CURVE_LINEAR)
-    with patch("services.game_coordinator.games.base.time.time", return_value=4_000.0) as clock:
+    with patch("services.game_coordinator.game_clock.now", return_value=4_000.0) as clock:
         game.music_speed = 1.0
         await game._check_music_speed()
         clock.return_value = 4_100.0  # after the bounded override ramp (#1833)
@@ -323,9 +323,9 @@ async def test_ramp_drives_pacing_in_agent_mode():
     game.tempo_schedule_mode = TEMPO_MODE_AGENT
     game.music_speed = 1.0
     base = 3000.0
-    with patch("services.game_coordinator.difficulty_handlers.time.time", return_value=base):
+    with patch("services.game_coordinator.game_clock.now", return_value=base):
         await handle_ramp_tempo(make_ctx("1.3:8:linear", game))
-    with patch("services.game_coordinator.games.base.time.time", return_value=base) as clock:
+    with patch("services.game_coordinator.game_clock.now", return_value=base) as clock:
         await game._check_music_speed()  # the loop's next tick adopts the curve
         clock.return_value = base + 4.0
         await game._check_music_speed()

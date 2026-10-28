@@ -256,7 +256,7 @@ class TestUC040ShieldFeedbackEnds:
         """UC-040 A17: a short toughness boost grant after a long full one must not drop the full one from the clear."""
         clock = [1000.0]
         with (
-            patch("services.game_coordinator.games.base.time.time", side_effect=lambda: clock[0]),
+            patch("services.game_coordinator.game_clock.now", side_effect=lambda: clock[0]),
             patch.object(game, "_play_sound", new_callable=AsyncMock),
         ):
             await game.grant_shield("p1", 10.0)

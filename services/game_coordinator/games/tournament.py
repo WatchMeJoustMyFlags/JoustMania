@@ -11,7 +11,6 @@ Original JoustMania behavior preserved.
 import asyncio
 import logging
 import math
-import time
 from dataclasses import dataclass
 from enum import Enum
 
@@ -21,6 +20,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.feature_flags import read_float_flag
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
     BaseGameMode,
@@ -134,7 +134,7 @@ class TournamentGame(BaseGameMode):
         self.total_rounds = 0
         self.match_span: trace.Span | None = None
         # The bracket is a state machine stepped on every gameplay frame of the base
-        # game loop (UC-025 steps 2-4, D-G33): deadlines are time.monotonic().
+        # game loop (UC-025 steps 2-4, D-G33): deadlines are on the game clock (UC-030 BR-010).
         self._match_deadline: float = 0.0  # the match time limit (A1)
         self._next_action_at: float = 0.0  # the end of the round pause or the pause between matches
         self._bracket_finished: bool = False  # no match left to play: the win condition
@@ -458,7 +458,7 @@ class TournamentGame(BaseGameMode):
         # Invincible from the seating on, before the first await below: a kill or an
         # eliminate_player the loop runs during match_start or the colour writes is
         # declined (UC-025 step 2, BR-006; #2025 S3). Duration: invincibility_seconds.
-        invincible_until = time.time() + self._invincibility_duration
+        invincible_until = game_clock.now() + self._invincibility_duration
         p1.invincible_until = invincible_until
         p2.invincible_until = invincible_until
 
@@ -493,7 +493,7 @@ class TournamentGame(BaseGameMode):
         await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)
 
         # The match time limit (A1) runs from here
-        self._match_deadline = time.monotonic() + self._match_duration
+        self._match_deadline = game_clock.now() + self._match_duration
 
     async def _finalize_match(self, match: Match) -> None:
         """End a decided match: winner effect, loser off, ``match_end``, advance (UC-025 steps 3-4).
@@ -504,7 +504,7 @@ class TournamentGame(BaseGameMode):
         """
         match.is_complete = True
         self.current_match = None
-        self._next_action_at = time.monotonic() + self._time_between_matches
+        self._next_action_at = game_clock.now() + self._time_between_matches
 
         # Determine loser
         loser_serial = match.player2_serial if match.winner_serial == match.player1_serial else match.player1_serial
@@ -643,7 +643,7 @@ class TournamentGame(BaseGameMode):
         match = self.current_match
         if match is not None:
             if not match.is_complete:
-                if time.monotonic() < self._match_deadline:
+                if game_clock.now() < self._match_deadline:
                     return
                 # Time's up - both survive, random winner (A1)
                 match.winner_serial = self._rng.choice([match.player1_serial, match.player2_serial])
@@ -655,7 +655,7 @@ class TournamentGame(BaseGameMode):
             await self._announce_champion()
             return
 
-        if time.monotonic() < self._next_action_at:
+        if game_clock.now() < self._next_action_at:
             return
 
         self._resolve_walkovers()
@@ -690,7 +690,7 @@ class TournamentGame(BaseGameMode):
             )
             # Play round start sound (use start - no dedicated round sound exists)
             await self._play_sound(Sound.SFX_START, priority=2)
-            self._next_action_at = time.monotonic() + ROUND_PAUSE_S
+            self._next_action_at = game_clock.now() + ROUND_PAUSE_S
             return
 
         await self._start_match(next_match)
@@ -1014,7 +1014,7 @@ class TournamentGame(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "champion": champion_serial or "none",
             "total_matches": len([m for m in self.bracket if m.is_complete and not m.is_bye]),
             "outcome": self.game_outcome(),
@@ -1075,7 +1075,7 @@ class TournamentGame(BaseGameMode):
 
                 # Start gameplay
                 self.state = GameState.RUNNING
-                self.start_time = time.time()
+                self.start_time = game_clock.now()
 
                 # Emit game_started event (required for integration tests)
                 await self.event_publisher(

@@ -1330,7 +1330,7 @@ class TestStartIntensityRamp:
 
     @pytest.fixture
     def clock(self):
-        with patch("services.game_coordinator.games.base.time.time", return_value=TEMPO_T0) as fake:
+        with patch("services.game_coordinator.game_clock.now", return_value=TEMPO_T0) as fake:
             yield fake
 
     @pytest.fixture

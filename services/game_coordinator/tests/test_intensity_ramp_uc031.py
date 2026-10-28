@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from proto import audio_pb2, controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.difficulty_handlers import handle_music_tempo_override
 from services.game_coordinator.games import base as base_module
 from services.game_coordinator.games.base import (
@@ -42,7 +43,7 @@ DOWN_KEY = "tempo.ramp_down_seconds"
 
 
 class FakeClock:
-    """Patches ``games.base.time.time``; ``now`` is moved by hand."""
+    """Patches ``game_clock.now``; ``now`` is moved by hand."""
 
     def __init__(self, now: float = T0):
         self.now = now
@@ -112,7 +113,7 @@ def make_game(audio=None, track_id="track-1"):
 @pytest.fixture
 def clock():
     fake = FakeClock()
-    with patch.object(base_module.time, "time", fake):
+    with patch.object(game_clock, "now", fake):
         yield fake
 
 

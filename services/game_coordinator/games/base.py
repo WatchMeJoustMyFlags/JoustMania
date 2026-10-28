@@ -43,7 +43,7 @@ from lib.feature_flags import (
 )
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
-from services.game_coordinator import metrics
+from services.game_coordinator import game_clock, metrics
 from services.game_coordinator.runtime_config import get_config_manager
 from services.game_coordinator.stream_writes import serialized_write
 
@@ -368,7 +368,7 @@ class RampDescriptor:
     Attributes:
         start_tempo: Music speed when the ramp began (the interpolation origin).
         target_tempo: Clamped destination tempo, held once reached.
-        start_time: ``time.time()`` when the ramp began.
+        start_time: ``game_clock.now()`` when the ramp began.
         duration: Ramp length in seconds (> 0, capped at RAMP_TEMPO_MAX_SECONDS).
         curve: Interpolation shape — ``linear`` or ``ease`` (smoothstep).
     """
@@ -437,7 +437,7 @@ def parse_ramp_tempo_value(value: object) -> RampDescriptor | None:
     return RampDescriptor(
         start_tempo=0.0,  # filled by the handler from the live music_speed
         target_tempo=target,
-        start_time=0.0,  # filled by the handler from time.time()
+        start_time=0.0,  # filled by the handler from game_clock.now()
         duration=seconds,
         curve=curve,
     )
@@ -1144,7 +1144,7 @@ class BaseGameMode(ABC):
         # SCOPE (#1090): this is the post-respawn/conversion invincibility window for
         # RESPAWN modes only (zombie conversion + respawn, swapper team-swap). It is
         # CONSUMED by those modes (zombie.py / swapper.py set ``player.grace_until =
-        # time.time() + self.death_grace_period``). FFA has no respawn, so this flag
+        # game_clock.now() + self.death_grace_period``). FFA has no respawn, so this flag
         # has NO effect on FFA — it is NOT an FFA difficulty/pacing lever. The real
         # FFA difficulty/pacing levers are ``game.thresholds`` (death thresholds) and
         # ``game.windows`` (tempo cadence), both consumed per-frame in
@@ -1312,17 +1312,17 @@ class BaseGameMode(ABC):
     @property
     def music_speed(self) -> float:
         """Music ratio derived from the tempo intensity now (#1833, UC-031 BR-005)."""
-        return tempo_from_intensity(self._intensity.value_at(time.time()))
+        return tempo_from_intensity(self._intensity.value_at(game_clock.now()))
 
     @music_speed.setter
     def music_speed(self, tempo: float) -> None:
         """Pin the intensity at the given tempo's value (no ramp); used by fixtures and resets."""
-        self._intensity = IntensityRamp.hold(intensity_from_tempo(tempo), time.time())
+        self._intensity = IntensityRamp.hold(intensity_from_tempo(tempo), game_clock.now())
 
     @property
     def tempo_intensity(self) -> float:
         """The tempo intensity in [0, 1] now (0 = slow table, 1 = fast table)."""
-        return self._intensity.value_at(time.time())
+        return self._intensity.value_at(game_clock.now())
 
     def set_baseline_sensitivity(self, value: Sensitivity) -> None:
         """Update the admin baseline; invalidate any active agent override (#816).
@@ -2130,7 +2130,7 @@ class BaseGameMode(ABC):
             metrics.game_loop_frames_dropped_total.labels(mode=self.get_game_name()).inc()
 
         if loop_iterations % 10 == 0:
-            elapsed = time.time() - loop_start_time
+            elapsed = game_clock.now() - loop_start_time
             actual_hz = loop_iterations / elapsed if elapsed > 0 else 0
             metrics.actual_update_frequency_hz.labels(**self._game_state_labels()).set(actual_hz)
 
@@ -2212,13 +2212,13 @@ class BaseGameMode(ABC):
             # EMA filters were primed and buffered data drained by _warmup_ema().
             # UC-030 BR-003: startup grace period so any residual spikes can't cause instant death.
             # It never shortens a longer grace (an agent shield) granted before the loop.
-            grace_until = time.time() + 0.3
+            grace_until = game_clock.now() + 0.3
             for player in self.players.values():
                 if player.alive:
                     player.grace_until = max(player.grace_until, grace_until)
             # UC-040 BR-027: hold is latched here at the latest; the recharge starts now.
             self._latch_shield_hold()
-            self._start_shield_hold_clock(time.time())
+            self._start_shield_hold_clock(game_clock.now())
             self._queue_hold_feedback_all()  # UC-040 BR-026: every player's energy layer
 
             # Track current alive set for detecting changes
@@ -2233,7 +2233,7 @@ class BaseGameMode(ABC):
             last_alive_serials = await self._send_alive_filter_update(last_alive_serials)
 
             # Track loop timing for actual Hz calculation (Phase 43)
-            loop_start_time = time.time()
+            loop_start_time = game_clock.now()
             loop_iterations = 0
             last_iteration_time = loop_start_time
 
@@ -2254,7 +2254,7 @@ class BaseGameMode(ABC):
                     async for gameplay_update in self.gameplay_stream:
                         if loop_iterations == 0:
                             logger.info("Received first gameplay update from stream!")
-                            self.start_time = time.time()
+                            self.start_time = game_clock.now()
 
                         # The count starts again only after a healthy run, not after
                         # one frame (UC-030 BR-006, #1931).
@@ -2288,7 +2288,7 @@ class BaseGameMode(ABC):
 
                         # Track loop timing for metrics
                         loop_iterations += 1
-                        iteration_end = time.time()
+                        iteration_end = game_clock.now()
                         iteration_latency_ms = (iteration_end - last_iteration_time) * 1000
 
                         frames_on_target = self._update_frame_metrics(
@@ -2393,7 +2393,7 @@ class BaseGameMode(ABC):
             Tuple of (effective_warning_threshold, effective_death_threshold)
         """
         sens_idx = self.sensitivity.value
-        now = time.time()
+        now = game_clock.now()
 
         # Tempo intensity now (0.0 = slow table, 1.0 = fast table), clamped to [0, 1].
         speed_percent = self._intensity.value_at(now)
@@ -2640,7 +2640,7 @@ class BaseGameMode(ABC):
 
         accel = controller_state.accel
         accel_mag = self._compute_accel_magnitude(accel)
-        current_time = time.time()
+        current_time = game_clock.now()
 
         # UC-030 BR-005: the trigger is evaluated BEFORE the grace and death checks,
         # so an activation in this frame makes this frame a grace frame (A6 step 3).
@@ -2678,7 +2678,7 @@ class BaseGameMode(ABC):
                 await self._process_shield_charge(player, edge, current_time)
 
         # Check grace period first - no death or warning during grace period
-        # Matches original JoustMania: if time.time() > no_rumble. Uses the unified
+        # Matches original JoustMania: if game_clock.now() > no_rumble. Uses the unified
         # effective-grace rule (#817): max(agent shield grace_until, admin
         # invincible_until) so the agent shield and admin baseline compose here too.
         if current_time < self.effective_grace_until(player):
@@ -2738,7 +2738,7 @@ class BaseGameMode(ABC):
 
         # Set warning feedback duration (prevents repeated warnings during flash)
         # This is NOT protection - player can still die during this time!
-        player.warning_until = time.time() + WARNING_DURATION
+        player.warning_until = game_clock.now() + WARNING_DURATION
 
         # Analytics: Record warning event
         if player.analytics is not None:
@@ -2825,7 +2825,7 @@ class BaseGameMode(ABC):
     def is_in_grace(self, player: "Player", now: float | None = None) -> bool:
         """True while the player's effective grace (admin ∪ agent) is still open (#817)."""
         if now is None:
-            now = time.time()
+            now = game_clock.now()
         return now < self.effective_grace_until(player)
 
     async def grant_shield(self, serial: str, seconds: float) -> bool:
@@ -2834,7 +2834,7 @@ class BaseGameMode(ABC):
 
         A shield extends the player's ``grace_until`` timestamp: the per-frame
         check in ``_process_controller_state`` already skips all death/warning
-        checks while ``time.time() < grace_until``, so this is the natural,
+        checks while ``game_clock.now() < grace_until``, so this is the natural,
         mode-agnostic shield primitive (Tournament/Fight Club ``invincible_until``
         and Nonstop ``spawn_protected`` are the same idea). FFA-first per
         docs/research/722-intervention-surface.md §3, but the primitive lives on
@@ -2897,7 +2897,7 @@ class BaseGameMode(ABC):
             logger.info(f"Shield charge for {serial} refused: a charge is already held")
             raise InterventionNotApplied("already_charged")
 
-        now = time.time()
+        now = game_clock.now()
         self._check_shield_limits(player, now)
 
         if trigger:
@@ -2923,7 +2923,7 @@ class BaseGameMode(ABC):
 
         # Sound only on the unprotected -> protected transition (#1301, UC-040
         # BR-010); an extension restarts the LED fade silently.
-        was_protected = self._shield_protected(player, time.time())
+        was_protected = self._shield_protected(player, game_clock.now())
         player.grace_until = new_grace
         self._record_agent_shield(serial, now, seconds)
         logger.info(f"Shield granted to {serial} for {seconds:.1f}s (grace_until={new_grace:.2f})")
@@ -2935,7 +2935,7 @@ class BaseGameMode(ABC):
             )
 
         # Perceptible feedback for the remaining protection (#1301, UC-040 A16).
-        await self._send_shield_feedback(player, new_grace - time.time(), kind="full", sound=not was_protected)
+        await self._send_shield_feedback(player, new_grace - game_clock.now(), kind="full", sound=not was_protected)
 
         return True
 
@@ -3049,13 +3049,13 @@ class BaseGameMode(ABC):
             boost = self.TOUGHNESS_BOOST_DEFAULT_FACTOR
         boost = max(self.TOUGHNESS_BOOST_FACTOR_MIN, min(self.TOUGHNESS_BOOST_FACTOR_MAX, boost))
 
-        new_until = time.time() + seconds
+        new_until = game_clock.now() + seconds
         # Extend-not-shorten / strengthen-not-weaken: keep whichever active window
         # is longer and whichever active boost is higher, so repeated arming never
         # reduces in-flight protection.
         changed = True
-        was_protected = self._shield_protected(player, time.time())
-        if time.time() < player.toughness_boost_until:
+        was_protected = self._shield_protected(player, game_clock.now())
+        if game_clock.now() < player.toughness_boost_until:
             changed = new_until > player.toughness_boost_until or boost > player.toughness_boost_factor
             new_until = max(new_until, player.toughness_boost_until)
             boost = max(boost, player.toughness_boost_factor)
@@ -3077,7 +3077,7 @@ class BaseGameMode(ABC):
         # the boost (#1301, UC-040 A16, BR-009/BR-010).
         if changed:
             await self._send_shield_feedback(
-                player, new_until - time.time(), kind="toughness_boost", sound=not was_protected
+                player, new_until - game_clock.now(), kind="toughness_boost", sound=not was_protected
             )
 
         return True
@@ -3112,7 +3112,7 @@ class BaseGameMode(ABC):
             return
         serial = player.serial
         duration_ms = int(round(remaining_s * 1000))
-        until = time.time() + remaining_s
+        until = game_clock.now() + remaining_s
         # Keep the latest end of any running shield: a shorter toughness boost after
         # a longer full one must not hide the full one from _end_shield_feedback.
         self._shield_feedback_until[serial] = max(self._shield_feedback_until.get(serial, 0.0), until)
@@ -3168,7 +3168,7 @@ class BaseGameMode(ABC):
                     "serial": serial,
                     "kind": kind,
                     "seconds": f"{remaining_s:.1f}",
-                    "until_ms": str(int(until * 1000)),
+                    "until_ms": str(int(game_clock.to_wall(until) * 1000)),  # wall clock: the browser compares it
                     **(
                         {"activation": SHIELD_ACTIVATION_TRIGGER, "charge_delay_ms": str(charge_delay_ms)}
                         if activated
@@ -3191,7 +3191,7 @@ class BaseGameMode(ABC):
         for player in self.players.values():
             if player.shield_charge_seconds > 0:
                 await self._discard_shield_charge(player, CHARGE_OUTCOME_GAME_END)
-        now = time.time()
+        now = game_clock.now()
         # UC-040 A39: a hold game drops every pool; an open activation ends game_end.
         if self._shield_hold is not None:
             for player in self.players.values():
@@ -3295,7 +3295,7 @@ class BaseGameMode(ABC):
         A31); the intervention manager records it as blocked and refunds the
         backstop reservation.
         """
-        now = time.time()
+        now = game_clock.now()
         expiry = self._read_charge_expiry()
         player.shield_charge_seconds = seconds
         player.shield_charge_granted_at = now
@@ -3328,7 +3328,11 @@ class BaseGameMode(ABC):
                 {
                     "serial": player.serial,
                     "seconds": f"{seconds:.1f}",
-                    "expires_ms": str(int(player.shield_charge_expires_at * 1000)),
+                    "expires_ms": str(
+                        int(game_clock.to_wall(player.shield_charge_expires_at) * 1000)
+                        if player.shield_charge_expires_at
+                        else 0
+                    ),  # wall clock ("0" = never): the browser compares it
                 },
             )
         except Exception as e:
@@ -3447,7 +3451,7 @@ class BaseGameMode(ABC):
         after a mid-game reconnect, on every attempt. A running full shield or
         toughness boost is re-sent with the time left; a charge with its layer.
         """
-        now = time.time()
+        now = game_clock.now()
         self._queue_hold_feedback_all()  # UC-040 BR-026: the hold state of every living player
         for serial, player in self.players.items():
             if not player.alive:
@@ -3467,7 +3471,7 @@ class BaseGameMode(ABC):
 
     def _close_shield_charge_spans(self) -> None:
         """End every open ``game.shield_charge`` and ``game.shield_hold`` span (error teardown path); no I/O."""
-        now = time.time()
+        now = game_clock.now()
         self._cancel_hold_feedback()
         for player in self.players.values():
             if player._shield_charge_span is not None:
@@ -3944,12 +3948,12 @@ class BaseGameMode(ABC):
         if player is None or not player.alive or self._shield_hold is None or self._hold_feedback_stopped:
             return
         self._hold_energy_published_at[serial] = asyncio.get_running_loop().time()
-        self._set_hold_gauges(player, time.time())  # the agent's view, with every event and keyframe
+        self._set_hold_gauges(player, game_clock.now())  # the agent's view, with every event and keyframe
         if self._is_shadow_game():
             return  # UC-035 BR-008: no player_shield_energy from a shadow game (no dashboard bar, bus queues)
         try:
             await self.event_publisher(
-                GameEvent.PLAYER_SHIELD_ENERGY, self._hold_energy_event(player, time.time(), granted)
+                GameEvent.PLAYER_SHIELD_ENERGY, self._hold_energy_event(player, game_clock.now(), granted)
             )
         except Exception as e:
             logger.warning(f"player_shield_energy event for {serial} failed (hold state unaffected): {e}")
@@ -3996,7 +4000,7 @@ class BaseGameMode(ABC):
             or not self.gameplay_stream
         ):
             return
-        now = time.time()
+        now = game_clock.now()
         if player.hold_started_at and now < player.hold_until:
             # Keyed by the activation's start: an end and a new start between two sends coalesce.
             new_activation = self._hold_layer_sent.get(serial) != player.hold_started_at
@@ -4065,7 +4069,7 @@ class BaseGameMode(ABC):
         refusal raises ``InterventionNotApplied``, so the backstop is refunded and
         nothing counts. During a held activation the deadline moves out.
         """
-        now = time.time()
+        now = game_clock.now()
         used = self._agent_shield_grants.get(player.serial, 0)
         budget_left = self._shield_hold_budget_left(player, now)
         if budget_left < hold.min_burst:
@@ -4188,11 +4192,11 @@ class BaseGameMode(ABC):
             factor = self.SOFT_PENALTY_DEFAULT_FACTOR
         factor = max(self.SOFT_PENALTY_FACTOR_MIN, min(self.SOFT_PENALTY_FACTOR_MAX, factor))
 
-        new_until = time.time() + seconds
+        new_until = game_clock.now() + seconds
         # Extend-not-shorten / tighten-not-loosen: keep whichever active window is
         # longer and whichever active factor is LOWER (stronger pressure), so
         # repeated arming never reduces in-flight pressure.
-        if time.time() < player.soft_penalty_until:
+        if game_clock.now() < player.soft_penalty_until:
             new_until = max(new_until, player.soft_penalty_until)
             factor = min(factor, player.soft_penalty_factor)
         player.soft_penalty_until = new_until
@@ -4303,7 +4307,7 @@ class BaseGameMode(ABC):
         if gap <= 1e-9:
             return 0
 
-        now = time.time()
+        now = game_clock.now()
         boosted = 0
         for p in alive:
             headroom, death = headrooms[p.serial]
@@ -4399,7 +4403,7 @@ class BaseGameMode(ABC):
             if await native(serial) is False:
                 return False
             # Ensure spawn grace even if the native path uses its own scheme.
-            player.grace_until = max(player.grace_until, time.time() + grace)
+            player.grace_until = max(player.grace_until, game_clock.now() + grace)
             logger.info(f"revive_player: {serial} revived via native respawn")
             return True
 
@@ -4407,7 +4411,7 @@ class BaseGameMode(ABC):
         player.alive = True
         player.warning_until = 0.0
         player.smoothed_accel = 0.0
-        player.grace_until = time.time() + grace
+        player.grace_until = game_clock.now() + grace
 
         metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
         alive_count = len([p for p in self.players.values() if p.alive])
@@ -4559,7 +4563,7 @@ class BaseGameMode(ABC):
             await self._discard_shield_charge(player, CHARGE_OUTCOME_DEATH)
         # UC-040 A39: the death drops a hold pool; eliminate_player ignores the hold.
         if self._shield_hold is not None:
-            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, time.time())
+            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, game_clock.now())
 
         # Play death explosion sound under the player's span
         player_ctx = trace.set_span_in_context(player.span) if player.span else None
@@ -4572,7 +4576,7 @@ class BaseGameMode(ABC):
             return False
         # Again after the awaits: energy granted while the kill awaited is dropped too.
         if self._shield_hold is not None:
-            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, time.time())
+            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, game_clock.now())
 
         alive_count_before = len([p for p in self.players.values() if p.alive])
         logger.info(f"Player died: {serial}, {alive_count_before - 1} players remaining")
@@ -5001,7 +5005,13 @@ class BaseGameMode(ABC):
         3. teardown_phase
 
         Phase spans are automatically children of the current game span.
+
+        A run that raises or is cancelled before the teardown step still stops
+        the game music and ends the shield feedback in ``finally`` (UC-020
+        failure postcondition, #2357), as the modes with their own ``run()`` do.
         """
+        music_stopped = False
+        shield_feedback_ended = False
         try:
             # State transitions
             self.state = GameState.STARTING
@@ -5088,9 +5098,11 @@ class BaseGameMode(ABC):
                 )
                 # Stop game music first (inside teardown_phase so StopMusic span is a child)
                 await self._stop_game_music()
+                music_stopped = True
 
                 # Shield LEDs end with the game, before the winner effects (#1301).
                 await self._end_shield_feedback()
+                shield_feedback_ended = True
 
                 await self._end_game_impl()
                 self._record_game_outcome(teardown_span)
@@ -5132,8 +5144,26 @@ class BaseGameMode(ABC):
             # Call force-end hook if game was externally stopped
             if force_ended:
                 await self.on_force_end()
+            await self._stop_run_feedback(music_stopped, shield_feedback_ended)
             await self._cleanup_after_run()
             logger.info(f"{self.get_game_name()} game finished: {self.game_id}")
+
+    async def _stop_run_feedback(self, music_stopped: bool, shield_feedback_ended: bool) -> None:
+        """Stop the music and end the shield feedback the teardown step did not reach (#2357).
+
+        Best-effort and guarded, so a failure here neither masks the run's own
+        error nor skips ``_cleanup_after_run``.
+        """
+        if not music_stopped:
+            try:
+                await self._stop_game_music()
+            except Exception:
+                logger.exception(f"Stopping the game music after a failed run failed: {self.game_id}")
+        if not shield_feedback_ended:
+            try:
+                await self._end_shield_feedback()
+            except Exception:
+                logger.exception(f"Ending the shield feedback after a failed run failed: {self.game_id}")
 
     # ========================================================================
     # Helper Methods - Span creation utilities
@@ -5231,7 +5261,7 @@ class BaseGameMode(ABC):
                         "game_ended",
                         attributes={
                             "survived": True,
-                            "game_duration": time.time() - self.start_time if self.start_time else 0,
+                            "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
                         },
                     )
                 player.span.set_status(Status(StatusCode.OK))
@@ -5272,7 +5302,7 @@ class BaseGameMode(ABC):
                     attributes={
                         "winner": False,
                         **outcome,
-                        "game_duration": time.time() - self.start_time if self.start_time else 0,
+                        "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
                     },
                 )
                 if self._run_failed:
@@ -5351,7 +5381,7 @@ class BaseGameMode(ABC):
     def _emit_threshold_metrics(self):
         """Emit effective threshold metrics for the current tempo intensity (Phase 80, #1833)."""
         sens_idx = self.sensitivity.value
-        speed_percent = self._intensity.value_at(time.time())
+        speed_percent = self._intensity.value_at(game_clock.now())
 
         effective_warn = self._lerp(self.slow_warning[sens_idx], self.fast_warning[sens_idx], speed_percent)
         effective_death = self._lerp(self.slow_max[sens_idx], self.fast_max[sens_idx], speed_percent)
@@ -5435,7 +5465,7 @@ class BaseGameMode(ABC):
 
     def _next_change_in(self) -> float:
         """Seconds until the next scheduled tempo change (for logs)."""
-        return self.change_time - time.time()
+        return self.change_time - game_clock.now()
 
     async def _stop_game_music(self):
         """Stop game music (Phase 70). A shadow game never started any (#1835)."""
@@ -5457,7 +5487,7 @@ class BaseGameMode(ABC):
         Calculate time of next tempo change based on game progression.
 
         As more players die, tempo changes become more frequent.
-        Returns absolute time (time.time() + delay).
+        Returns absolute time (game_clock.now() + delay).
 
         #1109: this is the SINGLE pacing pathway. The delay is produced by the
         pacing-policy seam (:meth:`_decide_next_change_delay`), which dispatches
@@ -5465,7 +5495,7 @@ class BaseGameMode(ABC):
         branch beside the seam — the historical random-window timing is folded in
         as the rule engine's default rule (:meth:`_default_rule_delay`).
         """
-        return time.time() + self._decide_next_change_delay()
+        return game_clock.now() + self._decide_next_change_delay()
 
     def _decide_next_change_delay(self) -> float:
         """Pacing-policy seam: produce the delay (seconds) until the next change.
@@ -5569,7 +5599,7 @@ class BaseGameMode(ABC):
         the next change ``window`` after the ramp END (as the original JoustMania
         did); an override leaves the schedule state alone.
         """
-        now = time.time()
+        now = game_clock.now()
         old_intensity = self._intensity.value_at(now)
         target = max(0.0, min(1.0, target))
         delta = target - old_intensity
@@ -5648,7 +5678,7 @@ class BaseGameMode(ABC):
                 # First failure of a streak, then once per maximum back-off: no log flood.
                 logger.warning(f"Failed to change music tempo (intensity continues, resending): {e!r}")
             self._audio_synced = False
-            self._audio_retry_at = time.time() + self._audio_retry_backoff
+            self._audio_retry_at = game_clock.now() + self._audio_retry_backoff
             self._audio_retry_backoff = min(self._audio_retry_backoff * 2, AUDIO_TEMPO_RETRY_MAX_SECONDS)
             return
 
@@ -5671,7 +5701,7 @@ class BaseGameMode(ABC):
         the held intensity once the ramp is reverted.
         """
         old_tempo = self.music_speed
-        self._intensity = IntensityRamp.hold(intensity_from_tempo(target_tempo), time.time())
+        self._intensity = IntensityRamp.hold(intensity_from_tempo(target_tempo), game_clock.now())
         with tracer.start_as_current_span("music_tempo_ramp") as span:
             span.set_attribute("old_tempo", old_tempo)
             span.set_attribute("new_tempo", target_tempo)
@@ -5691,7 +5721,7 @@ class BaseGameMode(ABC):
         end is already near or past, the segment takes |delta i| x the flag for
         its direction instead.
         """
-        now = time.time()
+        now = game_clock.now()
         old_intensity = self._intensity.value_at(now)
         target = intensity_from_tempo(ramp.target_tempo)
         delta = target - old_intensity
@@ -5709,7 +5739,7 @@ class BaseGameMode(ABC):
     async def _hold_intensity_now(self) -> None:
         """End an agent-owned segment: hold the intensity reached now and stop the glide there."""
         self._agent_tempo_owned = False
-        now = time.time()
+        now = game_clock.now()
         held = self._intensity.value_at(now)
         if not self._intensity.is_complete(now):
             logger.info(f"Agent tempo control ended mid-ramp: holding intensity {held:.2f}")
@@ -5727,7 +5757,7 @@ class BaseGameMode(ABC):
         Every audio failure is handled in :meth:`_push_audio`; this never raises
         for an audio error.
         """
-        now = time.time()
+        now = game_clock.now()
 
         if self.tempo_override is not None:
             # Agent tempo override (#730 PR C): ramp to the override at the bounded
@@ -5767,7 +5797,7 @@ class BaseGameMode(ABC):
                 await self._start_intensity_ramp(1.0 if self.speed_up else 0.0, scheduled=True)
 
         # Resend the remaining glide after a failed send (back-off in _push_audio).
-        now = time.time()
+        now = game_clock.now()
         if not self._audio_synced and now >= self._audio_retry_at:
             await self._push_audio(self._intensity.target, self._intensity.end_time - now)
 
@@ -5781,7 +5811,7 @@ class BaseGameMode(ABC):
     def _log_tick_failure(self, error: Exception) -> None:
         """Warn about a failed tempo tick: first, on a new error text, then every interval."""
         text = repr(error)
-        now = time.time()
+        now = game_clock.now()
         if text != self._tick_error_text:
             self._tick_error_suppressed = 0  # a stale count must not leak into a new error
         if text == self._tick_error_text and now - self._tick_error_logged_at < MUSIC_TICK_LOG_INTERVAL_SECONDS:

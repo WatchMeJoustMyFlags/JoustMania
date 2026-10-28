@@ -11,7 +11,6 @@ Subclasses:
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 
 from opentelemetry import trace
@@ -19,6 +18,7 @@ from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
 from lib.types import GameEvent, Sound
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import BaseGameMode
 from services.game_coordinator.stream_writes import serialized_write
 
@@ -514,7 +514,7 @@ class TeamsGameBase(BaseGameMode):
             Dict of span attributes
         """
         survived_attrs = {
-            "game_duration": time.time() - self.start_time if self.start_time else 0,
+            "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winner": is_winner,
             "team": player.team,
         }
@@ -597,7 +597,7 @@ class TeamsGameBase(BaseGameMode):
             team.span.add_event(
                 "team_victory" if is_winning_team else "team_survived",
                 attributes={
-                    "game_duration": time.time() - self.start_time if self.start_time else 0,
+                    "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
                     "winner": is_winning_team,
                 },
             )
@@ -628,7 +628,7 @@ class TeamsGameBase(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winning_team": winning_team_num if winning_team_num is not None else "none",
             "outcome": self.game_outcome(),
         }

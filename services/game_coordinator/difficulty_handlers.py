@@ -39,11 +39,11 @@ not conflict structurally.
 """
 
 import logging
-import time
 from dataclasses import replace
 
 from lib.feature_flags import GAME_KIND_REAL, GAME_KIND_VAR, read_object_flag_variant
 from lib.types import Sensitivity
+from services.game_coordinator import game_clock
 
 from .games.base import (
     FAST_MUSIC_SPEED,
@@ -455,7 +455,7 @@ async def handle_ramp_tempo(ctx: InterventionContext) -> None:
 
     # Anchor the curve's origin to the live tempo + clock so it ramps from where
     # the music actually is right now.
-    armed = replace(descriptor, start_tempo=game.music_speed, start_time=time.time())
+    armed = replace(descriptor, start_tempo=game.music_speed, start_time=game_clock.now())
     game.tempo_ramp = armed
     logger.info(
         f"ramp_tempo: armed {armed.start_tempo:.2f}x -> {armed.target_tempo:.2f}x "

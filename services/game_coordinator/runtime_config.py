@@ -16,7 +16,7 @@ setting countdown_phase_duration_ms=0 (the "skip" variant).
 import logging
 import math
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from openfeature.evaluation_context import EvaluationContext
 from openfeature.provider import ProviderEvent
@@ -24,9 +24,9 @@ from openfeature.provider import ProviderEvent
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class AnalyticsConfig:
-    """Configuration for controller analytics during gameplay."""
+    """Configuration for controller analytics during gameplay (immutable; #2357)."""
 
     # Master toggle
     enabled: bool = True
@@ -54,9 +54,13 @@ class AnalyticsConfig:
     metrics_emit_interval_frames: int = 6  # ~100ms at 60Hz (10Hz updates)
 
 
-@dataclass
+@dataclass(frozen=True)
 class GamePerformanceConfig:
-    """Runtime configuration for game performance parameters."""
+    """Runtime configuration for game performance parameters.
+
+    Immutable (#2357): a flag refresh builds a new instance and swaps it in, so
+    a reader of ``get_config()`` holds a consistent snapshot.
+    """
 
     # Core performance
     # Phase 72: Increased from 30Hz to 60Hz for better responsiveness
@@ -242,6 +246,10 @@ class RuntimeConfigManager:
         if not self.system_client:
             return
 
+        # Collected here and swapped in as one new snapshot (#2357); a read that
+        # fails part-way keeps the values read before it, as before.
+        changes: dict = {}
+        analytics_changes: dict = {}
         try:
             # Import metrics (lazy to avoid circular dependency)
             from services.game_coordinator import metrics
@@ -257,7 +265,7 @@ class RuntimeConfigManager:
                 new_hz = self._sanitize_update_frequency(new_hz)
                 if new_hz != old_hz:
                     logger.info(f"Config updated: update_frequency_hz {old_hz} -> {new_hz} Hz")
-                    self.config.update_frequency_hz = new_hz
+                    changes["update_frequency_hz"] = new_hz
                     metrics.config_changes_total.labels(parameter="update_frequency_hz").inc()
 
                 # === Controller domain flags ===
@@ -270,11 +278,13 @@ class RuntimeConfigManager:
                     )
                     if new_threshold != old_threshold:
                         logger.info(f"Config updated: poll_drop_threshold {old_threshold} -> {new_threshold}")
-                        self.config.poll_drop_threshold = new_threshold
+                        changes["poll_drop_threshold"] = new_threshold
                         metrics.config_changes_total.labels(parameter="poll_drop_threshold").inc()
 
                 # Update current config gauges
-                metrics.current_update_frequency_hz.set(self.config.update_frequency_hz)
+                metrics.current_update_frequency_hz.set(
+                    changes.get("update_frequency_hz", self.config.update_frequency_hz)
+                )
 
                 # === Game domain flags ===
 
@@ -286,7 +296,7 @@ class RuntimeConfigManager:
                     )
                     if new_phase != old_phase:
                         logger.info(f"Config updated: countdown_phase_duration_ms {old_phase} -> {new_phase} ms")
-                        self.config.countdown_phase_duration_ms = new_phase
+                        changes["countdown_phase_duration_ms"] = new_phase
                         metrics.config_changes_total.labels(parameter="countdown_phase_duration_ms").inc()
 
                     # Winner rainbow duration
@@ -296,7 +306,7 @@ class RuntimeConfigManager:
                     )
                     if new_rainbow != old_rainbow:
                         logger.info(f"Config updated: winner_rainbow_duration_ms {old_rainbow} -> {new_rainbow} ms")
-                        self.config.winner_rainbow_duration_ms = new_rainbow
+                        changes["winner_rainbow_duration_ms"] = new_rainbow
                         metrics.config_changes_total.labels(parameter="winner_rainbow_duration_ms").inc()
 
                 # === Agent domain flags (#766 F4: perception.*) ===
@@ -310,20 +320,28 @@ class RuntimeConfigManager:
                 # read once at game init (see _read_ema_weight_at_init) and frozen
                 # for the life of the game (#722 §5 variance-baseline caveat).
                 if self.agent_client:
-                    self._refresh_perception_flags(metrics)
+                    analytics_changes = self._refresh_perception_flags(metrics)
 
         except Exception as e:
             # Don't crash on flag evaluation failure, just log and keep defaults
             logger.warning(f"Failed to evaluate flags: {e}")
+        finally:
+            if changes or analytics_changes:
+                with self._config_lock:
+                    if analytics_changes:
+                        changes["analytics"] = replace(self.config.analytics, **analytics_changes)
+                    self.config = replace(self.config, **changes)
 
-    def _refresh_perception_flags(self, metrics) -> None:
-        """Refresh zone-boundary and playstyle thresholds from the agent domain.
+    def _refresh_perception_flags(self, metrics) -> dict:
+        """Read zone-boundary and playstyle thresholds from the agent domain.
 
         Each value validates to a positive number; on malformed/invalid values
         the current config value (ultimately the hardcoded default) is kept, so
         the promotion is behavior-neutral. Caller holds ``self._config_lock``.
+        Returns the changed ``AnalyticsConfig`` fields; the caller swaps them in.
         """
         analytics = self.config.analytics
+        changes: dict = {}
 
         # Zone boundaries (g-force). Must be strictly increasing and positive.
         zone_specs = [
@@ -344,7 +362,7 @@ class RuntimeConfigManager:
             for attr, value in new_zones.items():
                 if value != getattr(analytics, attr):
                     logger.info(f"Config updated: analytics.{attr} -> {value}")
-                    setattr(analytics, attr, value)
+                    changes[attr] = value
                     metrics.config_changes_total.labels(parameter=attr).inc()
         else:
             logger.warning(f"Ignoring perception zone flags (not strictly increasing): {new_zones}; keeping defaults")
@@ -364,8 +382,9 @@ class RuntimeConfigManager:
                 value = current
             if value != current:
                 logger.info(f"Config updated: analytics.{attr} -> {value}")
-                setattr(analytics, attr, value)
+                changes[attr] = value
                 metrics.config_changes_total.labels(parameter=attr).inc()
+        return changes
 
     @staticmethod
     def _valid_positive(value) -> bool:
@@ -403,7 +422,8 @@ class RuntimeConfigManager:
         Get current configuration.
 
         Configuration is kept up-to-date automatically via event-driven updates,
-        so no polling is needed. Thread-safe access via lock.
+        so no polling is needed. Returns an immutable snapshot (#2357): a later
+        refresh swaps in a new object and never changes this one.
         """
         with self._config_lock:
             return self.config

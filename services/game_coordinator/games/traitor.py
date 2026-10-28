@@ -10,7 +10,6 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 
 from opentelemetry import trace
@@ -19,6 +18,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.feature_flags import read_object_flag
 from lib.types import Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.teams_base import TeamsGameBase
 from services.game_coordinator.stream_writes import serialized_write
@@ -539,7 +539,7 @@ class TraitorGame(TeamsGameBase):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winning_team": winning_team if winning_team is not None else "none",
             "traitor_count": len(self.traitor_serials),
             "outcome": self.game_outcome(),

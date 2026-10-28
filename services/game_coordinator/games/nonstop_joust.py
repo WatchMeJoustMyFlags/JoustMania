@@ -13,14 +13,13 @@ Phase 36b: Refactored to extend BaseGameMode, eliminating ~450 lines of duplicat
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 
 from opentelemetry import trace
 
 from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import GameEvent, Sound
-from services.game_coordinator import metrics
+from services.game_coordinator import game_clock, metrics
 from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import (
     BaseGameMode,
@@ -150,7 +149,7 @@ class NonstopJoustGame(BaseGameMode):
         # end that declares a winner.
         self._time_limit_reached = False
         # Monotonic clock for the respawn deadline (UC-026 step 2, #1963); tests inject a fake.
-        self._clock = time.monotonic
+        self._clock = game_clock.now
 
         # #766 F2: respawn/spawn-protection durations and scoring weights promoted
         # to game flags. Read ONCE here (init-frozen); malformed values fall back
@@ -183,7 +182,7 @@ class NonstopJoustGame(BaseGameMode):
             controllers: List of controller protobuf messages from GetReadyControllers
         """
         config = get_config_manager().get_config()
-        game_start_time = time.time()
+        game_start_time = game_clock.now()
 
         for controller in controllers:
             # Initialize analytics if enabled
@@ -231,7 +230,7 @@ class NonstopJoustGame(BaseGameMode):
         if not self.start_time:
             return False
 
-        elapsed = time.time() - self.start_time
+        elapsed = game_clock.now() - self.start_time
         if elapsed >= self.time_limit:
             logger.info(f"Time limit reached: {elapsed:.1f}s / {self.time_limit}s")
             return True
@@ -404,7 +403,7 @@ class NonstopJoustGame(BaseGameMode):
 
             # Startup grace: residual spikes in the first frames cannot kill (UC-030 BR-003, #1591)
             # It never shortens a longer grace (an agent shield) granted before the loop.
-            grace_until = time.time() + 0.3
+            grace_until = game_clock.now() + 0.3
             for player in self.players.values():
                 if player.alive:
                     player.grace_until = max(player.grace_until, grace_until)
@@ -421,7 +420,7 @@ class NonstopJoustGame(BaseGameMode):
 
             # Frame metrics as in the base loop (#1963): game_loop_frames_dropped_total,
             # actual Hz, consistency, jitter
-            loop_start_time = time.time()
+            loop_start_time = game_clock.now()
             last_iteration_time = loop_start_time
             loop_iterations = 0
             target_frame_time_ms = 1000.0 / update_frequency_hz
@@ -434,7 +433,7 @@ class NonstopJoustGame(BaseGameMode):
             async for gameplay_update in self.gameplay_stream:
                 # The time limit runs from the first frame after the warm-up (UC-026 step 3)
                 if self.start_time is None:
-                    self.start_time = time.time()
+                    self.start_time = game_clock.now()
 
                 if not self.running:
                     break
@@ -479,7 +478,7 @@ class NonstopJoustGame(BaseGameMode):
                     last_alive_serials = current_alive_serials
 
                 loop_iterations += 1
-                iteration_end = time.time()
+                iteration_end = game_clock.now()
                 frames_on_target = self._update_frame_metrics(
                     (iteration_end - last_iteration_time) * 1000,
                     target_frame_time_ms,
@@ -507,7 +506,7 @@ class NonstopJoustGame(BaseGameMode):
         """Update respawn timers and respawn players (Nonstop-specific)."""
         from proto import controller_manager_pb2
 
-        current_time = time.time()
+        current_time = game_clock.now()
         now = self._clock()
 
         for serial, player in self.players.items():
@@ -600,7 +599,7 @@ class NonstopJoustGame(BaseGameMode):
         player.respawn_timer = 0.0
         player._last_respawn_color = None  # the next death shows its countdown colour again
         player.spawn_protected = True
-        player.spawn_protection_end = time.time() + self.spawn_protection_duration
+        player.spawn_protection_end = game_clock.now() + self.spawn_protection_duration
         # Reset warning state for clean respawn
         player.warning_until = 0.0
         player.smoothed_accel = 0.0
@@ -688,7 +687,7 @@ class NonstopJoustGame(BaseGameMode):
                     "score": self._final_score(player),
                     "kills": player.kills,
                     "deaths": player.deaths,
-                    "game_duration": time.time() - self.start_time if self.start_time else 0,
+                    "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
                 }
                 if player.analytics is not None:
                     for key, value in player.analytics.get_summary().items():
@@ -782,7 +781,7 @@ class NonstopJoustGame(BaseGameMode):
         self.state = GameState.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "outcome": self.game_outcome(),
             "winner": winner_serial or "none",
         }
