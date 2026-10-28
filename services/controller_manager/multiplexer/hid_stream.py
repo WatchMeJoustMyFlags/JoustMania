@@ -23,6 +23,14 @@ opens no stream after it. A command that an exiting iterator took from the queue
 but never handed to gRPC goes to ``_unsent_commands``, which the next iterator
 sends first, so a rumble taken in the last ``get()`` window is not lost; a
 command already yielded counts as sent and is never handed back (no duplicate).
+
+Commands still queued when a stream ends are stale by the time the next stream
+opens (#2304). Before it opens its call, the next stream coalesces them per
+serial (``coalesce_commands``): the LED colour is the latest one asked for, so
+only the last command per serial and the commands that change the rumble level
+stay, in order, all carrying that latest colour. This runs once per stream
+start under the queue's own mutex (never with ``_stream_lock`` or
+``_data_lock``), so ``set_output()`` and the per-frame path stay unchanged.
 """
 
 from __future__ import annotations
@@ -142,6 +150,7 @@ class HidStreamMixin:
                 opening = self._stream_is_current(generation)
             if not opening:
                 return  # stopped or closed (close bumps the generation) before the open: open nothing (#2275)
+            self._coalesce_pending_commands()
             call = self._stub.StreamIO(command_iterator())
             with self._stream_lock:
                 current = self._stream_is_current(generation)
@@ -179,6 +188,25 @@ class HidStreamMixin:
                         self._stream_call = None
             logger.info("Bidir stream ended")
 
+    def _coalesce_pending_commands(self) -> None:
+        """Drop the stale LED states a previous stream left queued (#2304); hand-backs stay first."""
+        unsent = []
+        while True:
+            try:
+                unsent.append(self._unsent_commands.popleft())
+            except IndexError:
+                break
+        commands = self._command_queue
+        with commands.mutex:
+            queued = list(commands.queue)
+            result = coalesce_commands(unsent + queued)
+            kept_queued = [cmd for cmd in result[len(unsent) :] if cmd is not None]
+            commands.queue.clear()
+            commands.queue.extend(kept_queued)
+            if len(kept_queued) < len(queued):
+                commands.not_full.notify_all()
+        self._unsent_commands.extendleft(reversed([cmd for cmd in result[: len(unsent)] if cmd is not None]))
+
     def _take_command(self):
         """The next command to send: a handed-back one first, else the queue (None after a quiet wait)."""
         try:
@@ -189,6 +217,33 @@ class HidStreamMixin:
             return self._command_queue.get(timeout=COMMAND_POLL_S)
         except queue.Empty:
             return None
+
+
+def coalesce_commands(commands: list) -> list:
+    """Coalesce queued ``IOCommand``s per serial; the result lines up with ``commands`` (None = dropped).
+
+    The LED colour is state, latest wins: a command stays only when it is the
+    last one for its serial or changes its serial's rumble level (a rumble and
+    the stop after it are effects, kept in order), and every kept command
+    carries its serial's latest colour (#2304).
+    """
+    latest: dict[str, tuple[int, tuple[int, int, int]]] = {}
+    for index, cmd in enumerate(commands):
+        latest[cmd.serial] = (index, (cmd.r, cmd.g, cmd.b))
+    rumble_before: dict[str, int] = {}
+    result: list = []
+    for index, cmd in enumerate(commands):
+        last_index, colour = latest[cmd.serial]
+        rumble_changed = cmd.rumble != rumble_before.get(cmd.serial, 0)
+        rumble_before[cmd.serial] = cmd.rumble
+        if index != last_index and not rumble_changed:
+            result.append(None)
+        elif (cmd.r, cmd.g, cmd.b) == colour:
+            result.append(cmd)
+        else:
+            r, g, b = colour
+            result.append(type(cmd)(serial=cmd.serial, r=r, g=g, b=b, rumble=cmd.rumble))
+    return result
 
 
 def sensor_data_to_dict(data) -> dict:
