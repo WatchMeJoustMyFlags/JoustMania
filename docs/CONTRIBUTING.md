@@ -226,6 +226,7 @@ Adding or removing `no-spec-change` or `spec-baseline-growth` re-runs the Spec G
 - prefer `path:Symbol`: it survives edits. New `path:line` refs are allowed but a growth in their total versus the base branch raises a `::warning` with suggestions.
 - every Go `Span*` / `Attr*` constant value must appear in `telemetry.md` as its exact key. Undocumented ones sit in `docs/specs/notes/spec-refs-baseline.json`; the baseline may only grow with the `spec-baseline-growth` label, and a stale entry (now documented or gone) fails: run `make spec-refs` to prune it.
 - an example that is not a real reference: put `<!-- spec-refs: ignore -->` on its line.
+- drift (#1918): `make spec-refs-report` (`scripts/spec_refs.py --report`) lists broken refs and line refs whose cited lines changed after the spec line was last edited. The weekly `spec-refs-drift.yml` workflow runs it and opens or updates ONE issue titled `Spec reference drift report` (label `documentation`); it never gates a PR.
 
 A reference fix is not a spec change: it satisfies the "spec touched" check mechanically, but does not replace the `no-spec-change` reasoning for a behaviour change.
 

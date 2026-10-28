@@ -3,6 +3,7 @@
     make spec-refs-check             # CI: fail on a broken reference
     make spec-refs                   # rewrite the ATTR baseline (needs a label to grow)
     scripts/spec_refs.py --suggest   # print path:Symbol for every path:line ref
+    scripts/spec_refs.py --report    # markdown drift report (weekly workflow, #1918); exit 0
 
 Checks (docs/specs/*.md; generated/ and notes/ are skipped):
   REF_NOT_FULL_PATH  a `path:ref` whose path is not a repo-relative file path
@@ -21,7 +22,7 @@ Ignore an example with `<!-- spec-refs: ignore -->` on its line; fenced code
 blocks are skipped. A ref fix is not a spec change (docs/CONTRIBUTING.md).
 
 Runs with the standard library only:
-    python3 scripts/spec_refs.py [--check|--update-baseline|--suggest] [--base REV]
+    python3 scripts/spec_refs.py [--check|--update-baseline|--suggest|--report] [--base REV]
 """
 
 from __future__ import annotations
@@ -439,6 +440,70 @@ def run_suggest() -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# Drift report (#1918)
+# --------------------------------------------------------------------------- #
+REPORT_MARK = "spec-refs-drift"
+
+
+def _spec_line_commit(spec: str, lineno: int) -> str | None:
+    out = _git("blame", "-L", f"{lineno},{lineno}", "--porcelain", "--", spec)
+    return out.split(None, 1)[0] if out else None
+
+
+def _code_changed_since(commit: str, ref: Ref) -> bool | None:
+    """True when the cited line range changed after the spec line was last edited."""
+    out = _git(
+        "log", f"{commit}..HEAD", f"-L{ref.first_line},{ref.max_line}:{ref.path}",
+        "--format=%h", "--no-patch",
+    )  # fmt: skip
+    return None if out is None else bool(out.strip())
+
+
+def drift_findings(refs: list[Ref]) -> list[str]:
+    """Line refs whose cited lines changed since the spec line was last edited."""
+    out, seen = [], set()
+    for r in refs:
+        key = (r.spec, r.lineno, r.text)
+        target = REPO_ROOT / r.path
+        if not r.lines or key in seen or not target.is_file():
+            continue
+        seen.add(key)
+        if r.max_line > len(_read(target).splitlines()):
+            continue  # reported as REF_LINE_OOB
+        commit = _spec_line_commit(r.spec, r.lineno)
+        if commit and _code_changed_since(commit, r):
+            hint = suggest_for(r)
+            out.append(
+                f"- `{r.spec}:{r.lineno}` cites `{r.text}`, changed since the spec line "
+                f"was edited ({commit[:8]})" + (f"; {hint}" if hint else "")
+            )
+    return out
+
+
+def render_report(broken: list[str], drift: list[str]) -> str:
+    total = len(broken) + len(drift)
+    lines = [f"<!-- {REPORT_MARK}: {total} -->", "# Spec reference drift", ""]
+    if not total:
+        return "\n".join(lines + ["No broken or drifted references."]) + "\n"
+    lines.append(
+        "Weekly report of `scripts/spec_refs.py --report` (#1918). "
+        "It never gates a PR; fix the spec (prefer `path:Symbol`) and the next run updates this issue."
+    )
+    if broken:
+        lines += ["", f"## Broken references ({len(broken)})", ""] + broken
+    if drift:
+        lines += ["", f"## Possibly drifted line references ({len(drift)})", ""] + drift
+    return "\n".join(lines) + "\n"
+
+
+def run_report() -> int:
+    refs = scan_specs()
+    broken = [f"- `{f.render()}`" for f in check_refs(refs)]
+    print(render_report(broken, drift_findings(refs)), end="")
+    return 0
+
+
 def run_update() -> int:
     BASELINE.parent.mkdir(parents=True, exist_ok=True)
     BASELINE.write_text(render_baseline(check_attrs()))
@@ -452,10 +517,13 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--update-baseline", action="store_true")
     mode.add_argument("--suggest", action="store_true")
+    mode.add_argument("--report", action="store_true")
     ap.add_argument("--base", help="git rev to compare line refs and baseline with")
     args = ap.parse_args(argv)
     if args.suggest:
         return run_suggest()
+    if args.report:
+        return run_report()
     if args.update_baseline:
         return run_update()
     return run_check(args.base)

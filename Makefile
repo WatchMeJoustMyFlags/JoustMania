@@ -45,6 +45,7 @@ help:
 	@echo "  make specs-check     - Fail if docs/specs/generated/ is stale (CI)"
 	@echo "  make specs-counts    - Print the flag, RPC and metric totals (not committed)"
 	@echo "  make spec-refs-check - Fail on a broken path:line / path:Symbol ref in docs/specs (CI)"
+	@echo "  make spec-refs-report - Markdown drift report of stale path:line refs (weekly workflow, never fails)"
 	@echo "  make spec-refs       - Rewrite the undocumented-attribute baseline (growth needs a label)"
 	@echo ""
 	@echo "Voice catalog (#2107):"
@@ -234,6 +235,10 @@ spec-refs:
 .PHONY: spec-refs-check
 spec-refs-check:
 	@$(SPEC_REFS) --check $(SPEC_REFS_ARGS)
+
+.PHONY: spec-refs-report
+spec-refs-report:
+	@$(SPEC_REFS) --report
 
 # ============================================================================
 # Protobuf Generation
