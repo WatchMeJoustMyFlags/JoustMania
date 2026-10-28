@@ -695,7 +695,18 @@ class GameSession:
                 # game_duration_seconds live while RUNNING (#1305); it is stopped
                 # before the final value is set below so a late tick cannot
                 # overwrite it.
-                self.current_game = game
+                # Publish the game atomically with force_end's check (#2025 S1): a
+                # force-end that already ran found no game to stop and reported
+                # ENDED, so this game must not run; one that runs later finds it.
+                with self._state_lock:
+                    force_ended_while_building = self._force_ending
+                    if not force_ended_while_building:
+                        self.current_game = game
+                if force_ended_while_building:
+                    logger.info(f"Game {self.game_id} was force-ended while it was being created")
+                    session_outcome = OUTCOME_FORCE_ENDED
+                    await self.clients.close()
+                    return
                 self.publish_game_mode(game.get_game_name())
                 duration_ticker = asyncio.create_task(self._publish_duration_while_running())
                 try:
@@ -716,7 +727,9 @@ class GameSession:
                 with self._state_lock:
                     self.game_state = game_coordinator_pb2.GameState.ENDED
                 session_outcome = OUTCOME_ERROR
-                await self.event_bus.publish("game_error", {"error": str(e)})
+                # A base-run mode already published it before re-raising (#2025 S2).
+                if getattr(game, "game_error_published", False) is not True:
+                    await self.event_bus.publish("game_error", {"error": str(e)})
             finally:
                 # Thread-safe state cleanup
                 with self._state_lock:

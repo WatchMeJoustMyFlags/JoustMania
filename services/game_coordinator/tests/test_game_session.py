@@ -198,7 +198,7 @@ class TestGameSessionLoop:
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         swapper = SwapperGame(
             controller_manager_client=MagicMock(),
-            event_publisher=AsyncMock(),
+            event_publisher=session.event_bus.publish,  # as GameFactory wires it (#2025 S2)
             audio_client=None,
             game_id="game_abc123",
             initial_players=[game_coordinator_pb2.Player(serial="p1")],
@@ -338,7 +338,7 @@ class TestGameSessionLoop:
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         nonstop = NonstopJoustGame(
             controller_manager_client=MagicMock(),
-            event_publisher=AsyncMock(),
+            event_publisher=session.event_bus.publish,  # as GameFactory wires it (#2025 S2)
             audio_client=None,
             game_id="game_abc123",
             initial_players=[game_coordinator_pb2.Player(serial="p1")],

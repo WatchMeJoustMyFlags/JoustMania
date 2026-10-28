@@ -1048,6 +1048,9 @@ class BaseGameMode(ABC):
         # Set when run() exits by an exception: the run-end cleanup labels the
         # player spans it ends ``error`` (UC-030 BR-007, #1997).
         self._run_failed = False
+        # Set once the base run() published game_error, so its session does not
+        # publish it a second time (#2025 S2).
+        self.game_error_published = False
         # The game root span (current when run() starts); the outcome lands on it.
         self._game_root_span: trace.Span | None = None
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
@@ -5120,6 +5123,7 @@ class BaseGameMode(ABC):
                 },
             )
             await self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(e)})
+            self.game_error_published = True
             raise
 
         finally:
