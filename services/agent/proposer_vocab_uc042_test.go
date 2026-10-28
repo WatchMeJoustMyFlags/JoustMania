@@ -37,3 +37,21 @@ func TestGameFlagVocab_ExperimentCatalogOnly(t *testing.T) {
 		t.Fatalf("vocab on read error = %v, want empty (fail closed)", got)
 	}
 }
+
+// A protected key on the built-in dynamic denylist never enters the proposer
+// vocabulary, even when a catalog row offers it with experiment+arm scope: the
+// vocabulary applies the same floor as the declarer (UC-070 BR-008, C-034, #1961).
+// UC: UC-070 BR-008
+func TestGameFlagVocab_BuiltinDenylistFloor(t *testing.T) {
+	got := gameFlagVocab(protectedCatalog{}, nil)()
+	for _, k := range []string{"shadow_policy", "max_shadow_games"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("vocab offers denylisted key %q: %v", k, got)
+		}
+	}
+	for _, k := range []string{"sensitivity", "foo"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("vocab misses game flag %q: %v", k, got)
+		}
+	}
+}
