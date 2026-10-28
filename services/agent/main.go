@@ -853,6 +853,9 @@ func main() {
 	objResolver := &promote.LateObjectiveResolver{}
 
 	promoter := buildPromoter(ctx, fitnessStore, objResolver, tuning, logger)
+	// UC-043 A17 step 3: the real-game probe of the deferred hold-key writes reads the
+	// telemetry multiplexer, which is assigned below, at call time.
+	wireDeferredPromotions(promoter, func() *gamecontext.Multiplexer { return mux }, globalMeterProvider(), logger)
 	slog.Info("Code-improvement promotion surface enabled (#936, M7-8)",
 		"code_improvement_enabled", getEnv("AGENT_CODE_IMPROVEMENT_ENABLED", "false"),
 		"target", getEnv("AGENT_CODE_IMPROVEMENT_TARGET", string(promote.TargetLocal)),

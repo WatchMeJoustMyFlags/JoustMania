@@ -238,6 +238,11 @@ type experimentLoop struct {
 	// promotions reverts the autonomous promotions this agent run applied when the
 	// kill switch is off (UC-043 A1, UC-045 step 5, #1704). nil: nothing to revert.
 	promotions promotionKillSwitch
+	// deferred drains the promoter's queue of hold-key real writes and reverts
+	// every promote.DeferredDrainInterval with the live promotionConfig (UC-043 A17
+	// step 3); nil = no queue (test wiring).
+	deferred        deferredPromotions
+	promotionConfig promote.ConfigResolver
 
 	// ceilings are the operator's env ceilings on the widening experiment settings
 	// (#1810, C-034): read once at startup (the process env does not change); 0 =
@@ -398,6 +403,8 @@ func buildExperimentLoop(
 		Promoter:  promo,
 		Targeting: targeting,
 		Log:       logger,
+		// UC-043 A17 step 3: a flag whose deferred promotion waits counts as under test.
+		PendingPromotions: pendingPromotionFlags(promoter),
 		// UC-046: pin experiment.mock_archetypes at each experiment's first spawn;
 		// the kill switch force-ends in-flight pattern games through the tracker.
 		Patterns: pinner,
@@ -446,6 +453,12 @@ func buildExperimentLoop(
 		loop.promotions = promoter
 		// A re-watch revert journals on its experiment (UC-043 step 7, #1883).
 		promoter.SetRewatchJournal(loop.journalRewatchRevert)
+		// UC-043 A17 step 3: the deferred real writes and reverts of hold keys.
+		loop.deferred = promoter
+		loop.promotionConfig = promotionConfigResolver(flagsClient)
+		if !promoter.HasRealGameProbe() {
+			logger.Warn("code_improvement: no real-game probe wired; every autonomous promotion of a hold key waits forever (UC-043 A17, fail closed)")
+		}
 	}
 	loop.dynamic.hold = hold
 	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled; settings are the experiment_dynamic_* flags, read per tick (#1907)")
@@ -527,11 +540,24 @@ func (e *experimentLoop) run(ctx context.Context) {
 	}
 	heartbeat := newHeartbeat(experiment.ProgressHeartbeatInterval)
 	defer heartbeat.Stop()
+	// UC-043 A17 step 3: drain the deferred hold-key writes and reverts.
+	var drain <-chan time.Time
+	if e.deferred != nil {
+		drainTicker := time.NewTicker(promote.DeferredDrainInterval)
+		defer drainTicker.Stop()
+		drain = drainTicker.C
+	}
 	for {
 		select {
 		case <-heartbeat.Chan():
 			e.registry.ProgressHeartbeat()
+		case <-drain:
+			e.drainDeferred(ctx)
 		case <-ctx.Done():
+			// UC-043 A17: journal the dropped deferred writes before the journal closes.
+			if e.deferred != nil {
+				e.deferred.DropDeferred(promote.ReasonShutdown)
+			}
 			// Shutdown / kill-switch teardown: abort every live experiment so its
 			// targeting branch is stripped and capacity released. Cancel any pending
 			// completed-grace timers first so none fires after the loop returns (#1020).
@@ -682,6 +708,32 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 // promotion still applied, stops its re-watch and returns what it reverted.
 type promotionKillSwitch interface {
 	RevertOnKillSwitch(ctx context.Context) []promote.KillSwitchRevert
+}
+
+// deferredPromotions is the Promoter half that owns the deferred real writes of
+// hold keys (UC-043 A17 step 3).
+type deferredPromotions interface {
+	DrainDeferred(ctx context.Context, cfg promote.Config)
+	DropDeferred(reason string)
+}
+
+// pendingPromotionFlags is the registry's view of the promoter's waiting writes;
+// nil without a promoter.
+func pendingPromotionFlags(p *promote.Promoter) func() []string {
+	if p == nil {
+		return nil
+	}
+	return p.PendingFlags
+}
+
+// drainDeferred runs one pass of the deferred queue under the live promotion
+// config, so a mode other than autonomous or the kill switch drops waiting writes
+// at the next pass (opposer m2). The promoter journals each outcome.
+func (e *experimentLoop) drainDeferred(ctx context.Context) {
+	if e.deferred == nil || e.promotionConfig == nil {
+		return
+	}
+	e.deferred.DrainDeferred(ctx, e.promotionConfig(ctx))
 }
 
 // revertPromotionsOnKillSwitch reverts the applied autonomous promotions and

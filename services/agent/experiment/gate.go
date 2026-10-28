@@ -67,9 +67,6 @@ const (
 	ReasonNoExperimentLoop Reason = "no_experiment_loop"
 	// ReasonFlagUnderTest — another live experiment already tests this flag.
 	ReasonFlagUnderTest Reason = "flag_under_test"
-	// ReasonHoldCooldown — a hold key is parked after a promotion of it that did
-	// not act (UC-043 A17 step 3 interim, #2096 PR-7b-2b replaces it).
-	ReasonHoldCooldown Reason = "hold_cooldown"
 	// ReasonNoCapacity — the live-experiment budget is full.
 	ReasonNoCapacity Reason = "no_capacity"
 )

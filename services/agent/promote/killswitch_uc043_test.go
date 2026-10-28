@@ -187,7 +187,7 @@ func TestUC043_A1_LostClaimJournalsOnce(t *testing.T) {
 
 		var res Result
 		entryOld := &appliedPromotion{proposal: promoteProposal}
-		p.revertReal(context.Background(), promoteProposal, entryOld, &res, nil)
+		p.revertReal(context.Background(), promoteProposal, entryOld, &res, nil, false)
 		oldRevert(context.Background())
 
 		if res.Reason == KillSwitchReason || res.Outcome == OutcomeReverted {

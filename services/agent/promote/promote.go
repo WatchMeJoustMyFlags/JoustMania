@@ -103,11 +103,11 @@ const (
 	// OutcomeReverted — autonomous applied to the real default but a degradation was
 	// observed, so the real-default change was rolled back (per M7-7's Reverter seam).
 	OutcomeReverted Outcome = "reverted"
+	// OutcomeDeferred — autonomous promotion of a hold key while a real game runs:
+	// the real write waits in the deferred queue until no real game runs (UC-043 A17
+	// step 3, deferred.go). Its later outcome is journaled separately.
+	OutcomeDeferred Outcome = "deferred"
 )
-
-// HoldPromotionDeferredReason is the Reason of an autonomous promotion of a hold
-// key, which writes nothing until the deferred real write lands (UC-043 A17 step 3).
-const HoldPromotionDeferredReason = "real write of a hold key waits for game end (UC-043 A17, #2096 PR-7b-2b)"
 
 // Config is the live, per-promotion flag configuration the Promoter acts under
 // (#936 flags), resolved fresh each promotion so flipping the mode flag takes
@@ -327,6 +327,14 @@ type Promoter struct {
 	// rewatchJournal receives a re-watch revert's outcome for its experiment
 	// (UC-043 step 7, #1883); nil leaves it logged only. Guarded by mu.
 	rewatchJournal RewatchJournal
+
+	// --- deferred real writes of hold keys (UC-043 A17 step 3, deferred.go) ---
+	// probe reports whether a real game is live (nil = always live, fail closed);
+	// pending holds the waiting promotion writes and pendingReverts the waiting watch
+	// and re-watch reverts, by flag. Guarded by mu.
+	probe          RealGameProbe
+	pending        map[string]*deferredWrite
+	pendingReverts map[string]*deferredRevert
 }
 
 // appliedPromotion is one autonomous real default this agent run wrote and has not

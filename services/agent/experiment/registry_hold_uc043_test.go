@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/patterngame"
@@ -208,17 +207,15 @@ func TestRegistryHoldStaleDiscard(t *testing.T) {
 }
 
 // UC: UC-043 A17
-func TestRegistryHoldRedeclareCooldown(t *testing.T) {
+func TestRegistryDeferredPromotion(t *testing.T) {
 	ctx := context.Background()
-	run := func(t *testing.T, flagKey string, value any, res PromotionResult) (*Registry, *time.Time) {
+	run := func(t *testing.T, flagKey string, value any, promo *fakePromoter, pending func() []string) (*Registry, string) {
 		t.Helper()
-		now := time.Unix(50_000, 0)
 		spawner := &fakeSpawner{}
 		r := newTestRegistry(t, RegistryConfig{
 			Root: t.TempDir(), MaxShadowGames: 4, Spawner: spawner,
 			Verdict:  fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 2, alwaysReport: true},
-			Promoter: &fakePromoter{result: res}, Targeting: &fakeTargeting{},
-			Clock: func() time.Time { return now },
+			Promoter: promo, Targeting: &fakeTargeting{}, PendingPromotions: pending,
 		})
 		id := startHold(t, r, flagKey, value)
 		if r.AllocateAndSpawn(ctx) == 0 {
@@ -229,44 +226,76 @@ func TestRegistryHoldRedeclareCooldown(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if st, _ := r.Status(id); !st.IsTerminal() {
-			t.Fatalf("status = %s, want terminal", st)
-		}
-		return r, &now
+		return r, id
 	}
-	discarded := PromotionResult{Outcome: PromotionDiscarded, Reason: "real write of a hold key waits for game end"}
-	t.Run("UC-043/A17 a hold key whose promotion did not act is parked for the cooldown", func(t *testing.T) {
-		r, now := run(t, "shield.energy_budget_seconds", 20.0, discarded)
+	deferred := PromotionResult{Outcome: PromotionDeferred, Reason: "real game running"}
+	t.Run("UC-043/A17 a deferred promotion ends the experiment done", func(t *testing.T) {
+		r, id := run(t, HoldActivationKey, HoldValue, &fakePromoter{result: deferred}, nil)
+		if st, _ := r.Status(id); st != StatusDone {
+			t.Fatalf("status = %s, want done", st)
+		}
+	})
+	t.Run("UC-043/A17 a later outcome journaled during the promotion follows its deferred event", func(t *testing.T) {
+		promo := &fakePromoter{result: deferred}
+		var r *Registry
+		var id string
+		promo.during = func() {
+			// The deferred queue or the kill switch journals before the promotion returned.
+			r.RecordPromotion(id, PromotionResult{Outcome: PromotionDiscarded, Reason: "kill_switch"})
+		}
+		spawner := &fakeSpawner{}
+		r = newTestRegistry(t, RegistryConfig{
+			Root: t.TempDir(), MaxShadowGames: 4, Spawner: spawner,
+			Verdict:  fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 2, alwaysReport: true},
+			Promoter: promo, Targeting: &fakeTargeting{},
+		})
+		id = startHold(t, r, HoldActivationKey, HoldValue)
+		r.AllocateAndSpawn(ctx)
+		for _, g := range append([]spawnCall(nil), spawner.calls...)[:2] {
+			if _, err := r.ConcludeGame(ctx, g.gameID, 0.7, 120); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var got []string
+		for _, e := range eventsOfKind(journalEvents(t, r, id), journal.KindPromotion) {
+			got = append(got, e.Promotion.Outcome)
+		}
+		if strings.Join(got, ",") != "deferred,discarded" {
+			t.Fatalf("promotion events = %v, want [deferred discarded]", got)
+		}
+	})
+	t.Run("UC-043/A17 a flag with a waiting deferred write counts as under test", func(t *testing.T) {
+		var mu sync.Mutex
+		var waiting []string
+		pending := func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), waiting...) }
+		// The promotion queues the write (the promoter's queue now lists the flag).
+		promo := &fakePromoter{result: deferred, during: func() {
+			mu.Lock()
+			waiting = []string{"shield.energy_budget_seconds"}
+			mu.Unlock()
+		}}
+		r, _ := run(t, "shield.energy_budget_seconds", 20.0, promo, pending)
 		if _, busy := r.ActiveFlags()["shield.energy_budget_seconds"]; !busy {
-			t.Fatal("the key is not busy during its cooldown")
+			t.Fatal("the key is not busy while its write waits")
 		}
 		in := sampleIntent()
 		in.FlagKey, in.ExperimentalValue = "shield.energy_budget_seconds", 20.0
 		if _, err := r.Declare(in); err == nil {
-			t.Fatal("re-declared during the cooldown")
+			t.Fatal("declared while the deferred write waits")
 		}
 		sink := &RegistrySink{Registry: r}
 		var rej *RejectError
-		if err := sink.Review(ctx, Proposal{FlagKey: in.FlagKey, ExperimentalValue: 20.0}); !errors.As(err, &rej) || rej.Reason != ReasonHoldCooldown {
-			t.Fatalf("proposer sink err = %v, want reason %s", err, ReasonHoldCooldown)
+		if err := sink.Review(ctx, Proposal{FlagKey: in.FlagKey, ExperimentalValue: 20.0}); !errors.As(err, &rej) || rej.Reason != ReasonFlagUnderTest {
+			t.Fatalf("proposer sink err = %v, want reason %s", err, ReasonFlagUnderTest)
 		}
-		*now = now.Add(HoldRedeclareCooldown + time.Second)
+		mu.Lock()
+		waiting = nil
+		mu.Unlock()
 		if _, busy := r.ActiveFlags()["shield.energy_budget_seconds"]; busy {
-			t.Fatal("still busy after the cooldown")
+			t.Fatal("still busy after the write left the queue")
 		}
 		if _, err := r.Declare(in); err != nil {
-			t.Fatalf("declare after the cooldown: %v", err)
-		}
-	})
-	t.Run("UC-043/A17 a non-hold key and an acted promotion are not parked", func(t *testing.T) {
-		in := sampleIntent()
-		r, _ := run(t, in.FlagKey, in.ExperimentalValue, discarded)
-		if _, busy := r.ActiveFlags()[in.FlagKey]; busy {
-			t.Fatal("a non-hold key was parked")
-		}
-		r, _ = run(t, HoldActivationKey, HoldValue, PromotionResult{Outcome: PromotionApplied})
-		if _, busy := r.ActiveFlags()[HoldActivationKey]; busy {
-			t.Fatal("an acted hold promotion was parked")
+			t.Fatalf("declare after the queue emptied: %v", err)
 		}
 	})
 }

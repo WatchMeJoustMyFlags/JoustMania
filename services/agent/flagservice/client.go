@@ -36,6 +36,9 @@ const (
 const (
 	ReasonGameNotLive  = "game_not_live"
 	ReasonNoSyncStream = "no_sync_stream"
+	// ReasonRealGameLive refuses a real write of a hold key while a real game is
+	// registered (409, flags.md §13, UC-043 A17); the promoter defers the write.
+	ReasonRealGameLive = "real_game_live"
 )
 
 // Scope is a write's scope properties.

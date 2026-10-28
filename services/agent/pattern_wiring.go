@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,9 @@ import (
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/patterngame"
+	"github.com/joustmania/agent/promote"
+
+	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
 // pattern_wiring.go connects the UC-046 pattern-game pieces (#1258) to the agent:
@@ -199,4 +203,48 @@ func nonNilStrings(v []string) []string {
 		return []string{}
 	}
 	return v
+}
+
+// realGameLiveAt is the promoter's real-game probe (UC-043 A17 step 3): true when
+// any telemetry partition reports an active game of kind `real` or without a kind
+// (fail closed) that was updated in the last liveStaleness. A shadow game does not
+// count. It is a prefilter: the flag service's 409 real_game_live is authoritative.
+// mux is read at call time (main assigns it after the promoter is built); without
+// one the probe errors, which the promoter treats as live.
+func realGameLiveAt(mux func() *gamecontext.Multiplexer, now func() time.Time) promote.RealGameProbe {
+	return func(context.Context) (bool, error) {
+		m := mux()
+		if m == nil {
+			return true, errNoMultiplexer
+		}
+		for _, id := range m.Partitions() {
+			snap, ok := m.Snapshot(id)
+			if !ok || snap.Session.GameActive == nil || !*snap.Session.GameActive {
+				continue
+			}
+			if now().Sub(snap.UpdatedAt) > liveStaleness || snap.GameKind == "shadow" {
+				continue
+			}
+			return true, nil
+		}
+		return false, nil
+	}
+}
+
+var errNoMultiplexer = errors.New("real-game probe: no telemetry multiplexer yet")
+
+// wireDeferredPromotions wires the promoter's real-game probe and the deferred
+// queue's gauges (UC-043 A17 step 3, opposer M4). main calls it before the
+// experiment loop is built, which warns when the probe is missing.
+func wireDeferredPromotions(p *promote.Promoter, mux func() *gamecontext.Multiplexer, mp otelmetric.MeterProvider, logger *slog.Logger) {
+	if p == nil {
+		return
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	p.SetRealGameProbe(realGameLiveAt(mux, time.Now))
+	if err := p.RegisterDeferredMetrics(mp); err != nil {
+		logger.Warn("code_improvement: deferred promotion gauges not registered", "error", err)
+	}
 }
