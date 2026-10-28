@@ -321,7 +321,7 @@ Runtime cadences: gameplay stream / game loop rate, lobby idle and sentinel anim
 
 | Key | Type | Variants | Default | Targeting | Read by (file:line) | Written by | Reload |
 |---|---|---|---|---|---|---|---|
-| `game_loop.update_frequency_hz` | int | low=15, medium=30, high=60 | `high` = 60; a non-positive, non-finite or non-numeric value falls back to 60 with one warning (#2356) | N | game-coordinator: services/game_coordinator/runtime_config.py:216; controller-manager: services/controller_manager/servicer.py:752 | manual edit only | event-refreshed (both) |
+| `game_loop.update_frequency_hz` | int | low=15, medium=30, high=60 | `high` = 60; a non-positive, non-finite or non-numeric value keeps the previous value (initially 60), clamped to 1..100, with one warning (#2356) | N | game-coordinator: services/game_coordinator/runtime_config.py (`_refresh_from_flags`); controller-manager: services/controller_manager/servicer.py:752 | manual edit only | event-refreshed (both) |
 | `idle.enabled` | bool | on=true, off=false | `on` = true | N | menu: services/menu/servicer.py:166 (lambda) <- services/menu/idle_monitor.py:266 | manual edit only | live |
 | `idle.timeout_minutes` | int | 5min=5, 10min=10, 15min=15, 30min=30 | `15min` = 15 | N | menu: services/menu/servicer.py:167 <- services/menu/idle_monitor.py:274 | manual edit only | live |
 | `sentinel.count` | int | none=0, one=1, two=2 | `two` = 2 | N | menu: services/menu/servicer.py:168 <- services/menu/idle_monitor.py:300/369 | manual edit only | live |
