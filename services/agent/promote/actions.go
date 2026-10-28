@@ -2,6 +2,7 @@ package promote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -307,10 +308,16 @@ func (pr *Promoter) clock() time.Time {
 // real game is registered; otherwise the plain revert. The kill switch does not
 // come here.
 func (pr *Promoter) watchRevert(ctx context.Context, flagKey string) error {
+	var err error
 	if g, ok := pr.reverter.(GuardedRealDefaultReverter); ok && deferUntilIdle(flagKey) {
-		return g.RevertRealDefaultUnlessRealGame(ctx, flagKey)
+		err = g.RevertRealDefaultUnlessRealGame(ctx, flagKey)
+	} else {
+		err = pr.reverter.RevertRealDefault(ctx, flagKey)
 	}
-	return pr.reverter.RevertRealDefault(ctx, flagKey)
+	if errors.Is(err, ErrSupersededByAnotherWriter) {
+		return nil // dropped: the other writer owns the overlay, the revert is done
+	}
+	return err
 }
 
 // revertReal rolls the autonomous real-default change back on a degradation (or an

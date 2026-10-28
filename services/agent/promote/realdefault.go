@@ -3,6 +3,7 @@ package promote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -172,6 +173,17 @@ func (w *serviceRealDefaultWriter) RevertRealDefaultUnlessRealGame(ctx context.C
 	return w.revert(ctx, flagKey, true)
 }
 
+// ErrSupersededByAnotherWriter is returned by a revert whose DELETE the flag service
+// refused with 412 writer_mismatch (#1877): nothing was cleared, the cooldown is
+// stamped, and the revert counts as done. Callers treat it as success; the kill
+// switch adds SupersededReasonSuffix to the journaled reason so "the agent cleared
+// it" and "another writer owns it" can be told apart.
+var ErrSupersededByAnotherWriter = errors.New("real overlay superseded by another writer (writer_mismatch); nothing removed")
+
+// SupersededReasonSuffix is appended to the kill-switch journal reason when the
+// revert was dropped on a writer_mismatch.
+const SupersededReasonSuffix = "; superseded by another writer"
+
 func (w *serviceRealDefaultWriter) revert(ctx context.Context, flagKey string, unlessRealGame bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -200,7 +212,7 @@ func (w *serviceRealDefaultWriter) revert(ctx context.Context, flagKey string, u
 			w.log.Warn("code_improvement revert dropped: another writer owns the real overlay now (writer_mismatch); nothing removed",
 				"flag", flagKey)
 			w.stampRevert(flagKey)
-			return nil
+			return ErrSupersededByAnotherWriter
 		}
 		return fmt.Errorf("revert %s/%s: %w", gameFlagSet, flagKey, err)
 	}

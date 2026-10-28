@@ -2,6 +2,7 @@ package promote
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -91,8 +92,8 @@ func TestUC043_A18_CompareAndDeleteRevert(t *testing.T) {
 			} else {
 				err = w.RevertRealDefault(ctx, promotedFlag)
 			}
-			if err != nil {
-				t.Fatalf("a writer_mismatch must drop the revert, not fail it: %v", err)
+			if !errors.Is(err, ErrSupersededByAnotherWriter) {
+				t.Fatalf("a writer_mismatch must drop the revert as superseded, not fail it: %v", err)
 			}
 			if got := realOverlayWriterOf(t, svc); got != "operator" {
 				t.Fatalf("real overlay writer = %q after the revert, want operator (left in place)", got)
@@ -113,8 +114,8 @@ func TestUC043_A18_CompareAndDeleteRevert(t *testing.T) {
 
 		got := p.RevertOnKillSwitch(ctx)
 
-		if len(got) != 1 || got[0].Outcome != OutcomeReverted || got[0].Reason != KillSwitchReason {
-			t.Fatalf("kill switch = %+v, want one reverted / kill_switch (the promotion's overlay is gone)", got)
+		if len(got) != 1 || got[0].Outcome != OutcomeReverted || got[0].Reason != KillSwitchReason+SupersededReasonSuffix {
+			t.Fatalf("kill switch = %+v, want one reverted / kill_switch; superseded by another writer (the promotion's overlay is gone)", got)
 		}
 		if w := realOverlayWriterOf(t, svc); w != "admin" {
 			t.Fatalf("real overlay writer = %q after the kill switch, want admin", w)
