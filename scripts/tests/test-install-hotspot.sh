@@ -50,9 +50,12 @@ cat >"${STUBS}/nmcli" <<'EOF'
 printf '%s\n' "$*" >>"${CASE}/nmcli.argv"
 S="${CASE}/s"
 get() { cat "${S}/$1" 2>/dev/null || true; }
+# put <file> <content>: atomic (tmp in the same dir + mv), so a reader never sees a truncated file
+# (the content is written with printf's format $3, default a trailing newline like echo)
+put() { local tmp; tmp="$(mktemp "${S}/.put.XXXXXX")" && printf "${3:-%s\n}" "$2" >"$tmp" && mv -f "$tmp" "${S}/$1"; }
 case "$*" in
   "radio wifi") get radio ;;
-  "radio wifi on") echo enabled >"${S}/radio" ;;
+  "radio wifi on") put radio enabled ;;
   "connection load "*)
     [[ -f "${S}/load-ignored" ]] || { touch "${S}/profile"; echo "$3" >"${S}/keyfile-path"; } ;;
   "-g connection.uuid connection show uuid $UUID")
@@ -74,18 +77,18 @@ case "$*" in
       esac
     done ;;
   "--wait 30 connection up uuid $UUID")
-    echo "100 (connected)" >"${S}/wlan0-state"; echo "$UUID" >"${S}/wlan0-uuid"; printf '10.42.0.1/24' >"${S}/wlan0-ip4" ;;
+    put wlan0-state "100 (connected)"; put wlan0-uuid "$UUID"; put wlan0-ip4 '10.42.0.1/24' %s ;;
   "connection down uuid $UUID")
     [[ "$(get wlan0-uuid)" == "$UUID" ]] || exit 10
-    echo "30 (disconnected)" >"${S}/wlan0-state"; : >"${S}/wlan0-uuid"; : >"${S}/wlan0-ip4" ;;
+    put wlan0-state "30 (disconnected)"; put wlan0-uuid "" %s; put wlan0-ip4 "" %s ;;
   "device disconnect wlan0")
     echo disconnect >>"${CASE}/pause.log"
-    echo "30 (disconnected)" >"${S}/wlan0-state"; : >"${S}/wlan0-uuid"; : >"${S}/wlan0-ip4" ;;
+    put wlan0-state "30 (disconnected)"; put wlan0-uuid "" %s; put wlan0-ip4 "" %s ;;
   "--wait 30 connection up uuid 11111111-2222-3333-4444-555555555555")
     echo reconnect >>"${CASE}/pause.log"
     [[ ! -f "${S}/reconnect-fails" ]] || exit 4
-    echo "100 (connected)" >"${S}/wlan0-state"; echo 11111111-2222-3333-4444-555555555555 >"${S}/wlan0-uuid"
-    printf '192.168.7.20/24' >"${S}/wlan0-ip4" ;;
+    put wlan0-state "100 (connected)"; put wlan0-uuid 11111111-2222-3333-4444-555555555555
+    put wlan0-ip4 '192.168.7.20/24' %s ;;
   "connection delete uuid $UUID") rm -f "${S}/profile" ;;
   *) echo "nmcli stub: unexpected: $*" >&2; exit 99 ;;
 esac
@@ -475,6 +478,21 @@ while time.time() < deadline:
 time.sleep(0.5)  # into the hold
 os.killpg(p.pid, sig)
 p.wait(timeout=20)
+# the leader is gone, its stubs (nmcli) may still be exiting: wait until no live process is left in the group
+def group_alive():
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            st = open("/proc/%s/stat" % d).read().rsplit(")", 1)[1].split()
+        except OSError:
+            continue
+        if int(st[2]) == p.pid and st[0] != "Z":
+            return True
+    return False
+end = time.time() + 20
+while group_alive() and time.time() < end:
+    time.sleep(0.05)
 PY
   grep -q "connection up uuid ${UUID}" "${CASE}/nmcli.argv" || fail "signal-${sg}: the self-test never started"
   grep -q "connection down uuid ${UUID}" "${CASE}/nmcli.argv" || fail "signal-${sg}: the hotspot was left up"
