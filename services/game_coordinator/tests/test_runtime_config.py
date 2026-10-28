@@ -318,3 +318,24 @@ def test_runtime_config_flag_keys_match_the_keys_read():
     source = inspect.getsource(RuntimeConfigManager._refresh_from_flags)
     read_keys = set(re.findall(r'get_\w+_value\(\s*"([^"]+)"', source))
     assert read_keys == set(RUNTIME_CONFIG_FLAG_KEYS)
+
+
+@pytest.mark.nfr("NFR-003")
+@pytest.mark.parametrize("bad", [0, -5, float("nan"), float("inf"), "fast", None])
+@patch("openfeature.api.add_handler")
+@patch("lib.feature_flags.get_flag_client")
+def test_invalid_update_frequency_falls_back_to_60(mock_get_client, _mock_add_handler, bad, caplog):
+    """#2356: a non-positive, non-finite or non-numeric rate falls back to 60 Hz (no division by zero)."""
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_client.get_integer_value.side_effect = lambda key, default, _ctx: (
+        bad if key == "game_loop.update_frequency_hz" else default
+    )
+
+    with caplog.at_level(logging.WARNING):
+        manager = RuntimeConfigManager()
+        manager._refresh_from_flags()
+
+    assert manager.get_config().update_frequency_hz == 60
+    warnings = [r for r in caplog.records if "update_frequency_hz" in r.getMessage() and r.levelno == logging.WARNING]
+    assert len(warnings) == 1
