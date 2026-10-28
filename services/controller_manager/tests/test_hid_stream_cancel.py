@@ -384,3 +384,58 @@ def test_a_sent_command_is_not_handed_back(adapter):
     resend.join(timeout=0.3)  # nothing to send: the iterator keeps waiting
     assert "value" not in resend_result
     assert not adapter._unsent_commands
+
+
+class StallAfterGetQueue(queue.Queue):
+    """The command queue; the first ``len(gates)`` ``get()`` calls take a command, then wait for their gate."""
+
+    def __init__(self, gates):
+        super().__init__(maxsize=256)
+        self.gates = gates
+        self.taken = [threading.Event() for _ in gates]
+        self._calls = 0
+
+    def get(self, block=True, timeout=None):
+        index = self._calls
+        self._calls += 1
+        command = super().get(block, timeout)
+        if index < len(self.gates):
+            self.taken[index].set()
+            assert self.gates[index].wait(timeout=GATE_TIMEOUT_S)
+        return command
+
+
+@pytest.mark.uc("UC-002", flow="A7")
+@pytest.mark.usefixtures("short_joins")
+def test_several_handed_back_commands_keep_their_queue_order(adapter):
+    """#2275: two stale iterators hand back A (taken first) and B; the next stream sends A, then B."""
+    calls = [GatedCall(), GatedCall(), GatedCall()]
+    adapter._stub = GatedStub(*calls)
+    gates = [threading.Event(), threading.Event()]
+    adapter._command_queue = commands = StallAfterGetQueue(gates)
+    first, second = _rumble(), _rumble()
+
+    commands.put_nowait(first)
+    old_iterator = _open_stream(adapter, calls[0])
+    old_pull, _ = _next_command(old_iterator)
+    assert commands.taken[0].wait(timeout=GATE_TIMEOUT_S)
+    adapter._stop_stream()
+
+    commands.put_nowait(second)
+    newer_iterator = _open_stream(adapter, calls[1])
+    newer_pull, _ = _next_command(newer_iterator)
+    assert commands.taken[1].wait(timeout=GATE_TIMEOUT_S)
+    adapter._stop_stream()
+
+    gates[1].set()  # the newer iterator hands back B first ...
+    newer_pull.join(timeout=GATE_TIMEOUT_S)
+    gates[0].set()  # ... then the older one hands back A
+    old_pull.join(timeout=GATE_TIMEOUT_S)
+
+    new_iterator = _open_stream(adapter, calls[2])
+    sent = []
+    for _ in range(2):
+        pull, result = _next_command(new_iterator)
+        pull.join(timeout=GATE_TIMEOUT_S)
+        sent.append(result.get("value"))
+    assert sent[0] is first and sent[1] is second, "handed-back commands were sent out of order"

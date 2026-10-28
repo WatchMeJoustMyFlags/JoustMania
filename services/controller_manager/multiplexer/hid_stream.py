@@ -139,9 +139,9 @@ class HidStreamMixin:
         call = None
         try:
             with self._stream_lock:
-                opening = self._stream_is_current(generation) and not self._stream_closed
+                opening = self._stream_is_current(generation)
             if not opening:
-                return  # stopped or closed before the call was opened: open nothing (#2275)
+                return  # stopped or closed (close bumps the generation) before the open: open nothing (#2275)
             call = self._stub.StreamIO(command_iterator())
             with self._stream_lock:
                 current = self._stream_is_current(generation)
