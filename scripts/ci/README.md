@@ -189,3 +189,12 @@ make format
 # Run pre-commit checks
 make lint
 ```
+
+### `prune-collector-tags.sh`
+
+Weekly GHCR retention (#1787, workflow `prune-collector-tags.yml`) for the
+`otel-collector:<16-hex hash>` tags: deletes hash-only versions beyond the newest
+`KEEP` (default 5), except the hash HEAD produces and hashes referenced by the
+latest release's `.env` / compose files. Never touches X.Y.Z, `latest`, `main`,
+`<sha>` or untagged versions. `DRY_RUN=1` (workflow_dispatch default) only lists.
+Test: `scripts/tests/test-prune-collector-tags.sh` (fake `gh`).

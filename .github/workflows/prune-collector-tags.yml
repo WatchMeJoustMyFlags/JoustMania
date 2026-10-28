@@ -1,0 +1,45 @@
+# Weekly retention for otel-collector content-hash tags in GHCR (#1787).
+# Logic and the never-touch rules live in scripts/ci/prune-collector-tags.sh
+# (test: scripts/tests/test-prune-collector-tags.sh). Scheduled runs delete;
+# workflow_dispatch defaults to a dry run that only lists.
+name: Prune collector tags
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List only, delete nothing'
+        type: boolean
+        default: true
+      keep:
+        description: 'Newest hash versions to keep'
+        type: string
+        default: '5'
+
+permissions: {}
+
+concurrency:
+  group: prune-collector-tags
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Prune old content-hash versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KEEP: ${{ inputs.keep || '5' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || (github.event_name == 'workflow_dispatch' && '0' || '0') }}
+        run: bash scripts/ci/prune-collector-tags.sh
