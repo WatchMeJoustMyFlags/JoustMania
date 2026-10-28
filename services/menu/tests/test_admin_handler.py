@@ -3060,3 +3060,45 @@ class TestForceStartHoldTimerAndRefusal:
         await timer
 
         handler.callbacks.start_game.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
+    async def test_trigger_release_after_hold_does_not_abort_force_start(self, handler, mock_state_manager):
+        """Players release right after the 3 s hold: the in-flight start must still finish (#2377)."""
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        in_start = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_roster(*_a, **_k):
+            in_start.set()
+            await release.wait()
+            return ["s1", "s2"]
+
+        handler.settings_ops.force_start_roster = slow_roster
+        with patch.object(handler, "_force_start_threshold", return_value=0.01):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+        await in_start.wait()
+
+        await handler.handle_trigger_release("test_serial")
+        release.set()
+        await timer
+
+        handler.callbacks.start_game.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A1")
+    async def test_trigger_release_before_threshold_cancels_hold(self, handler):
+        """A release before the hold elapses still cancels the pending force start."""
+        handler.handle_force_start = AsyncMock()
+        with patch.object(handler, "_force_start_threshold", return_value=0.05):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+
+        await handler.handle_trigger_release("test_serial")
+        await asyncio.sleep(0.1)
+
+        assert timer.done()
+        handler.handle_force_start.assert_not_awaited()

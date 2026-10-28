@@ -654,7 +654,8 @@ class AdminModeHandler:
             return
 
         # Cancel hold task if running
-        if self._trigger_hold_task and not self._trigger_hold_task.done():
+        # A hold that already fired is running handle_force_start; releasing must not abort it (#2377)
+        if self._trigger_hold_task and not self._trigger_hold_task.done() and not self._force_starting:
             self._trigger_hold_task.cancel()
             self._trigger_hold_task = None
             logger.debug(f"Trigger released early, cancelled force start for {serial}")
