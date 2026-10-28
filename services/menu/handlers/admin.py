@@ -79,8 +79,12 @@ class AdminModeCallbacks(Protocol):
         """Select a game mode by name (updates menu selection + persists)."""
         ...
 
-    async def start_game(self, serial: str, source: str, controllers: list[str] | None = None) -> None:
-        """Start a coordinator game with an optional explicit controller roster."""
+    def get_menu_state(self) -> int:
+        """Get the current menu state."""
+        ...
+
+    async def start_game(self, serial: str, source: str, controllers: list[str] | None = None) -> bool:
+        """Start a coordinator game with an optional explicit roster; False when the start is refused."""
         ...
 
 
@@ -180,6 +184,8 @@ class AdminModeHandler:
         # Trigger hold tracking for force start
         self._trigger_press_time: float | None = None
         self._trigger_hold_task: asyncio.Task | None = None
+        # True while handle_force_start runs past its hold: exit/abandon from another path must not kill it.
+        self._force_starting = False
 
     # ControllerHandler protocol methods
 
@@ -453,6 +459,24 @@ class AdminModeHandler:
 
         self._timeout_task = asyncio.create_task(timeout_exit())
 
+    def _cancel_trigger_hold_task(self) -> None:
+        """Cancel the force-start hold timer, unless it is the task running this code.
+
+        The timer reaches exit() through handle_force_start; cancelling itself there
+        would abort the start at the next await. A timer that outlives the session
+        would force-start a game after a quick leave and re-entry (#2377).
+        """
+        task = self._trigger_hold_task
+        self._trigger_hold_task = None
+        if task is None or task.done() or self._force_starting:
+            return
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:  # no running event loop (sync caller)
+            current = None
+        if task is not current:
+            task.cancel()
+
     async def exit(self) -> None:
         """
         Exit admin mode and restore lobby color.
@@ -463,6 +487,7 @@ class AdminModeHandler:
             return
 
         self._cancel_timeout_task()
+        self._cancel_trigger_hold_task()
 
         from proto import controller_manager_pb2
 
@@ -622,7 +647,8 @@ class AdminModeHandler:
             return
 
         # Cancel hold task if running
-        if self._trigger_hold_task and not self._trigger_hold_task.done():
+        # A hold that already fired is running handle_force_start; releasing must not abort it (#2377)
+        if self._trigger_hold_task and not self._trigger_hold_task.done() and not self._force_starting:
             self._trigger_hold_task.cancel()
             self._trigger_hold_task = None
             logger.debug(f"Trigger released early, cancelled force start for {serial}")
@@ -775,6 +801,21 @@ class AdminModeHandler:
         return await self.settings_ops.prune_ghosts(controllers, admin_serial, span)
 
     async def handle_force_start(self, serial: str) -> None:
+        """Force start the game; a start already past its hold is not cancelled by exit/abandon (#2377)."""
+        self._force_starting = True
+        try:
+            await self._handle_force_start_impl(serial)
+        finally:
+            self._force_starting = False
+
+    def _restore_menu_state_if_starting(self, previous_state: int) -> None:
+        """Undo our GAME_STARTING, but only while it is still the state (a newer state stays)."""
+        from proto import menu_pb2
+
+        if self.callbacks.get_menu_state() == menu_pb2.MenuState.GAME_STARTING:
+            self.callbacks.set_menu_state(previous_state)
+
+    async def _handle_force_start_impl(self, serial: str) -> None:
         """
         Force start the game from admin mode.
 
@@ -833,6 +874,7 @@ class AdminModeHandler:
                 # the dashboard / integration tests).
                 from proto import menu_pb2
 
+                previous_state = self.callbacks.get_menu_state()
                 self.callbacks.set_menu_state(menu_pb2.MenuState.GAME_STARTING)
                 await self._publish_event(
                     "game_requested",
@@ -848,7 +890,17 @@ class AdminModeHandler:
                 # (#1029) with the force_all_start-aware roster — previously this
                 # only lit up the menu but no game began. _start_game resets the
                 # menu state if the roster is too small, so we don't get stuck.
-                await self.callbacks.start_game(serial, "admin_force_start", controllers)
+                started = False
+                try:
+                    started = await self.callbacks.start_game(serial, "admin_force_start", controllers)
+                finally:
+                    if not started:
+                        # Refused or raised (a game lifecycle is still live, e.g. the lobby restore):
+                        # GAME_STARTING would drop every button event until reset_menu (#2377).
+                        self._restore_menu_state_if_starting(previous_state)
+                if not started:
+                    logger.warning(f"Force start from {serial} refused, menu state restored")
+                    return
 
                 logger.info(
                     f"Force starting game '{game_name}' via admin controller {serial} with {len(controllers)} players"
@@ -1545,6 +1597,7 @@ class AdminModeHandler:
             return
 
         self._cancel_timeout_task()
+        self._cancel_trigger_hold_task()
 
         self.active = False
         self.controller_serial = None

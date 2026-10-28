@@ -31,7 +31,7 @@ def mock_callbacks():
     callbacks = MagicMock()
     callbacks.get_game_options = MagicMock(return_value=["JoustFFA", "JoustTeams"])
     callbacks.select_game_mode = AsyncMock()
-    callbacks.start_game = AsyncMock()
+    callbacks.start_game = AsyncMock(return_value=True)
     return callbacks
 
 
@@ -2930,3 +2930,175 @@ class TestWriteFailedVoice:
         await handler.handle_increase_value("test_serial")
 
         mock_state_manager.led.send_game_effect.assert_called_once()
+
+
+class TestForceStartHoldTimerAndRefusal:
+    """#2377: the hold timer dies with the session; a refused start restores the menu state."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A1")
+    @pytest.mark.parametrize("leave", ["exit", "abandon"])
+    async def test_leaving_admin_cancels_trigger_hold_timer(self, handler, leave):
+        """B1: trigger press, leave admin, re-enter within the threshold: no force start."""
+        handler.handle_force_start = AsyncMock()
+        with patch.object(handler, "_force_start_threshold", return_value=0.05):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+
+        if leave == "exit":
+            await handler.exit()
+        else:
+            handler.abandon_session()
+        # Re-enter as the same admin before the threshold elapses.
+        handler.active = True
+        handler.controller_serial = "test_serial"
+        await asyncio.sleep(0.15)
+
+        assert timer.done()
+        assert handler._trigger_hold_task is None
+        handler.handle_force_start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
+    async def test_force_start_exit_does_not_cancel_its_own_timer(self, handler, mock_state_manager):
+        """The hold timer calls exit() through handle_force_start: it must finish the start."""
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        with patch.object(handler, "_force_start_threshold", return_value=0.01):
+            await handler._start_trigger_hold_tracking("test_serial")
+            await handler._trigger_hold_task
+
+        handler.callbacks.start_game.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_refused_force_start_restores_menu_state(self, handler, mock_state_manager):
+        """B3: a refused start (live lifecycle) must not leave the menu in GAME_STARTING."""
+        from proto import menu_pb2
+
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+        # Captured as RUNNING, then still GAME_STARTING when the refusal comes back.
+        handler.callbacks.get_menu_state = MagicMock(
+            side_effect=[menu_pb2.MenuState.RUNNING, menu_pb2.MenuState.GAME_STARTING]
+        )
+        handler.callbacks.start_game = AsyncMock(return_value=False)
+
+        with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
+            await handler.handle_force_start("test_serial")
+
+        states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
+        assert states[-1] == menu_pb2.MenuState.RUNNING
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_refusal_does_not_overwrite_a_newer_menu_state(self, handler, mock_state_manager):
+        """The state moved on during the awaits (not GAME_STARTING any more): leave it alone."""
+        from proto import menu_pb2
+
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+        handler.callbacks.get_menu_state = MagicMock(
+            side_effect=[menu_pb2.MenuState.RUNNING, menu_pb2.MenuState.STOPPED]
+        )
+        handler.callbacks.start_game = AsyncMock(return_value=False)
+
+        with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
+            await handler.handle_force_start("test_serial")
+
+        states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
+        assert states == [menu_pb2.MenuState.GAME_STARTING]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_start_game_raising_restores_menu_state(self, handler, mock_state_manager):
+        from proto import menu_pb2
+
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+        handler.callbacks.get_menu_state = MagicMock(
+            side_effect=[menu_pb2.MenuState.RUNNING, menu_pb2.MenuState.GAME_STARTING]
+        )
+        handler.callbacks.start_game = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
+            await handler.handle_force_start("test_serial")
+
+        states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
+        assert states[-1] == menu_pb2.MenuState.RUNNING
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
+    async def test_exit_from_another_path_does_not_kill_a_force_start_past_its_hold(self, handler, mock_state_manager):
+        """An idle-timeout exit() landing while the start is in flight must not cancel the hold timer."""
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        in_start = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_roster(*_a, **_k):
+            in_start.set()
+            await release.wait()
+            return ["s1", "s2"]
+
+        handler.settings_ops.force_start_roster = slow_roster
+        with patch.object(handler, "_force_start_threshold", return_value=0.01):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+        await in_start.wait()
+
+        await handler.exit()  # e.g. the idle timeout, a different task
+        release.set()
+        await timer
+
+        handler.callbacks.start_game.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
+    async def test_trigger_release_after_hold_does_not_abort_force_start(self, handler, mock_state_manager):
+        """Players release right after the 3 s hold: the in-flight start must still finish (#2377)."""
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        in_start = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_roster(*_a, **_k):
+            in_start.set()
+            await release.wait()
+            return ["s1", "s2"]
+
+        handler.settings_ops.force_start_roster = slow_roster
+        with patch.object(handler, "_force_start_threshold", return_value=0.01):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+        await in_start.wait()
+
+        await handler.handle_trigger_release("test_serial")
+        release.set()
+        await timer
+
+        handler.callbacks.start_game.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A1")
+    async def test_trigger_release_before_threshold_cancels_hold(self, handler):
+        """A release before the hold elapses still cancels the pending force start."""
+        handler.handle_force_start = AsyncMock()
+        with patch.object(handler, "_force_start_threshold", return_value=0.05):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+
+        await handler.handle_trigger_release("test_serial")
+        await asyncio.sleep(0.1)
+
+        assert timer.done()
+        handler.handle_force_start.assert_not_awaited()
