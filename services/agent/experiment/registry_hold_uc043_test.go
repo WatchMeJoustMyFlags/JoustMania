@@ -299,3 +299,60 @@ func TestRegistryDeferredPromotion(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-043 A17
+// UC: UC-043 A15
+func TestRegistryDeferredRestartSweep(t *testing.T) {
+	ctx := context.Background()
+	finish := func(t *testing.T, root, flagKey string, value any, res PromotionResult) string {
+		t.Helper()
+		spawner := &fakeSpawner{}
+		r := newTestRegistry(t, RegistryConfig{
+			Root: root, MaxShadowGames: 4, Spawner: spawner,
+			Verdict:  fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 2, alwaysReport: true},
+			Promoter: &fakePromoter{result: res}, Targeting: &fakeTargeting{},
+		})
+		id := startHold(t, r, flagKey, value)
+		r.AllocateAndSpawn(ctx)
+		for _, g := range append([]spawnCall(nil), spawner.calls...)[:2] {
+			if _, err := r.ConcludeGame(ctx, g.gameID, 0.7, 120); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if st, _ := r.Status(id); st != StatusDone {
+			t.Fatalf("status = %s, want done", st)
+		}
+		return id
+	}
+	t.Run("UC-043/A15 a lost deferred write is journaled lost_at_restart; a waiting revert is restored", func(t *testing.T) {
+		root := t.TempDir()
+		lost := finish(t, root, HoldActivationKey, HoldValue, PromotionResult{Outcome: PromotionDeferred})
+		waiting := finish(t, root, "shield.energy_budget_seconds", 20.0,
+			PromotionResult{Outcome: PromotionApplied, Reason: "revert deferred", RevertPending: true})
+		r := newTestRegistry(t, RegistryConfig{Root: root, MaxShadowGames: 4, Spawner: &fakeSpawner{}})
+		ids, err := journal.List(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Rehydrate(ids); err != nil {
+			t.Fatal(err)
+		}
+		proms := eventsOfKind(journalEvents(t, r, lost), journal.KindPromotion)
+		if last := proms[len(proms)-1].Promotion; last.Outcome != PromotionDiscarded || last.Reason != DeferredLostAtRestart {
+			t.Fatalf("last promotion = %+v, want discarded lost_at_restart", last)
+		}
+		got := r.TakeRestoredReverts()
+		if len(got) != 1 || got[0].ExperimentID != waiting || got[0].FlagKey != "shield.energy_budget_seconds" || got[0].Rewatch {
+			t.Fatalf("restored = %+v", got)
+		}
+		if again := r.TakeRestoredReverts(); len(again) != 0 {
+			t.Fatal("restored reverts handed out twice")
+		}
+		// The drain journals the restored revert on the done experiment, not held in memory.
+		r.RecordPromotion(waiting, PromotionResult{Outcome: PromotionReverted, Reason: "deferred"})
+		proms = eventsOfKind(journalEvents(t, r, waiting), journal.KindPromotion)
+		if last := proms[len(proms)-1].Promotion; last.Outcome != PromotionReverted {
+			t.Fatalf("last promotion = %+v, want reverted", last)
+		}
+	})
+}

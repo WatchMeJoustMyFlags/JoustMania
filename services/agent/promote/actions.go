@@ -239,9 +239,16 @@ func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, 
 		claim := pr.revertReal(rctx, p, entry, &rres, nil, true)
 		// Log and journal after revertReal released killMu: the journal sink takes
 		// the registry lock and must never run under killMu (#1893).
-		pr.log.Warn("autonomous re-watch confirmed degradation; reverted real default (#1065)",
-			"flag", p.FlagKey, "outcome", string(rres.Outcome), "reason", rres.Reason)
-		if claim == claimOwned {
+		switch claim {
+		case claimOwned:
+			pr.log.Warn("autonomous re-watch confirmed degradation; reverted real default (#1065)",
+				"flag", p.FlagKey, "outcome", string(rres.Outcome), "reason", rres.Reason)
+			pr.journalRewatch(p.ExperimentID, rres)
+		case claimDeferred:
+			// UC-043 A17: the revert waits for the end of the real game; journal it
+			// write-ahead so a restart re-queues it.
+			pr.log.Warn("autonomous re-watch confirmed degradation; revert deferred until no real game runs (UC-043 A17)",
+				"flag", p.FlagKey)
 			pr.journalRewatch(p.ExperimentID, rres)
 		}
 	}
@@ -321,8 +328,11 @@ func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry
 	pr.killMu.Lock()
 	defer pr.killMu.Unlock()
 	if deferUntilIdle(p.FlagKey) && pr.appliedState(entry) == claimOwned && pr.realGameLive(ctx) {
+		// Journaled write-ahead by the caller (RevertPending), so a restart re-queues
+		// it; after a shutdown started it is not queued here (DropDeferred ran).
 		pr.queueRevertLocked(p, entry, watchErr, rewatch)
 		res.Reason = DeferredRevertReason
+		res.RevertPending = true
 		return claimDeferred
 	}
 	claim := pr.claimApplied(entry)

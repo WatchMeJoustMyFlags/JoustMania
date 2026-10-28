@@ -66,6 +66,8 @@ var (
 	autoOn = Config{Mode: ModeAutonomous, Target: TargetLocal, Enabled: true}
 )
 
+func fixed(cfg Config) ConfigResolver { return func(context.Context) Config { return cfg } }
+
 func holdProposal(id string) experiment.Proposal {
 	return experiment.Proposal{FlagKey: holdKey, ExperimentID: id, ExperimentalValue: 20.0}
 }
@@ -120,12 +122,12 @@ func TestDeferredRealWrite_NoWriteWhileRealGameRuns(t *testing.T) {
 		if got := rig.p.PendingFlags(); len(got) != 1 || got[0] != holdKey {
 			t.Fatalf("pending = %v", got)
 		}
-		rig.p.DrainDeferred(context.Background(), autoOn) // still live
+		rig.p.DrainDeferred(context.Background(), fixed(autoOn)) // still live
 		if len(rig.realDef.calls) != 0 {
 			t.Fatal("drained while the real game still runs")
 		}
 		rig.probe.set(false) // the game ended
-		rig.p.DrainDeferred(context.Background(), autoOn)
+		rig.p.DrainDeferred(context.Background(), fixed(autoOn))
 		if len(rig.realDef.calls) != 1 || rig.realDef.calls[0].flag != holdKey || rig.realDef.calls[0].value != 20.0 {
 			t.Fatalf("calls = %+v, want one write of 20", rig.realDef.calls)
 		}
@@ -141,7 +143,7 @@ func TestDeferredRealWrite_NoWriteWhileRealGameRuns(t *testing.T) {
 		rig.promote(t, holdProposal("exp-b"))
 		rig.probe.set(false)
 		rig.probe.set(true)
-		rig.p.DrainDeferred(context.Background(), autoOn)
+		rig.p.DrainDeferred(context.Background(), fixed(autoOn))
 		if len(rig.realDef.calls) != 0 {
 			t.Fatal("written while a new real game runs")
 		}
@@ -156,7 +158,7 @@ func TestDeferredRealWrite_NoWriteWhileRealGameRuns(t *testing.T) {
 			if res := rig.promote(t, holdProposal("exp-c")); res.Outcome != OutcomeDeferred {
 				t.Fatalf("outcome = %q, want deferred", res.Outcome)
 			}
-			rig.p.DrainDeferred(context.Background(), autoOn)
+			rig.p.DrainDeferred(context.Background(), fixed(autoOn))
 			if len(rig.realDef.calls) != 0 {
 				t.Fatal("written without a working probe")
 			}
@@ -183,12 +185,12 @@ func TestDeferredRealWrite_FlagServiceGuard(t *testing.T) {
 			t.Fatalf("outcome = %q (%s), want deferred", res.Outcome, res.Reason)
 		}
 		// The drain hits the guard again: the entry keeps waiting.
-		rig.p.DrainDeferred(context.Background(), autoOn)
+		rig.p.DrainDeferred(context.Background(), fixed(autoOn))
 		if len(rig.p.PendingFlags()) != 1 || len(rig.journal.all()) != 0 {
 			t.Fatalf("pending %v journal %v, want still waiting", rig.p.PendingFlags(), rig.journal.all())
 		}
 		rig.realDef.err = nil
-		rig.p.DrainDeferred(context.Background(), autoOn)
+		rig.p.DrainDeferred(context.Background(), fixed(autoOn))
 		if got := rig.journal.all(); len(got) != 1 || !strings.HasPrefix(got[0], "exp-d|applied|") {
 			t.Fatalf("journal = %v", got)
 		}
@@ -208,7 +210,7 @@ func TestDeferredRealWrite_Dropped(t *testing.T) {
 			t.Fatalf("journal = %v", got)
 		}
 		rig.probe.set(false)
-		rig.p.DrainDeferred(ctx, autoOn)
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
 		if got := rig.journal.all(); len(got) != 2 || !strings.HasPrefix(got[1], "exp-new|applied|") || len(rig.realDef.calls) != 1 {
 			t.Fatalf("journal = %v calls %d", got, len(rig.realDef.calls))
 		}
@@ -217,7 +219,7 @@ func TestDeferredRealWrite_Dropped(t *testing.T) {
 		rig := newDeferredRig(t, nil)
 		rig.promote(t, holdProposal("exp-e"))
 		*rig.now = rig.now.Add(DeferredTTL)
-		rig.p.DrainDeferred(ctx, autoOn)
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
 		if got := rig.journal.all(); len(got) != 1 || got[0] != "exp-e|discarded|"+ReasonDeferredExpired {
 			t.Fatalf("journal = %v", got)
 		}
@@ -230,7 +232,7 @@ func TestDeferredRealWrite_Dropped(t *testing.T) {
 			t.Fatalf("kill switch items = %+v", items)
 		}
 		rig.probe.set(false)
-		rig.p.DrainDeferred(ctx, autoOn)
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
 		if len(rig.realDef.calls) != 0 {
 			t.Fatal("written after the kill switch")
 		}
@@ -249,11 +251,15 @@ func TestDeferredRealWrite_Dropped(t *testing.T) {
 		ReasonModeChanged: {Mode: ModeIssue, Target: TargetLocal, Enabled: true},
 		KillSwitchReason:  {Mode: ModeAutonomous, Target: TargetLocal, Enabled: false},
 	} {
-		t.Run("UC-043/A17 a drain that sees "+name+" drops the waiting write", func(t *testing.T) {
+		t.Run("UC-043/A17 two drain passes that see "+name+" drop the waiting write", func(t *testing.T) {
 			rig := newDeferredRig(t, nil)
 			rig.promote(t, holdProposal("exp-m"))
 			rig.probe.set(false)
-			rig.p.DrainDeferred(ctx, cfg)
+			rig.p.DrainDeferred(ctx, fixed(cfg)) // one pass may be a flagd sync flap: kept
+			if got := rig.journal.all(); len(got) != 0 || len(rig.p.PendingFlags()) != 1 || len(rig.realDef.calls) != 0 {
+				t.Fatalf("one pass dropped or wrote: journal %v calls %d", got, len(rig.realDef.calls))
+			}
+			rig.p.DrainDeferred(ctx, fixed(cfg))
 			if got := rig.journal.all(); len(got) != 1 || got[0] != "exp-m|discarded|"+name || len(rig.realDef.calls) != 0 {
 				t.Fatalf("journal = %v calls %d", got, len(rig.realDef.calls))
 			}
@@ -262,7 +268,7 @@ func TestDeferredRealWrite_Dropped(t *testing.T) {
 	t.Run("UC-043/A17 a graceful shutdown journals the dropped write", func(t *testing.T) {
 		rig := newDeferredRig(t, nil)
 		rig.promote(t, holdProposal("exp-s"))
-		rig.p.DropDeferred(ReasonShutdown)
+		rig.p.DropDeferred(ctx, ReasonShutdown)
 		if got := rig.journal.all(); len(got) != 1 || got[0] != "exp-s|discarded|"+ReasonShutdown {
 			t.Fatalf("journal = %v", got)
 		}
@@ -297,12 +303,12 @@ func TestDeferredRevert_WatchRevertsWaitForGameEnd(t *testing.T) {
 			t.Fatalf("waiting = %d, want the revert", n)
 		}
 		rig.probe.set(false)
-		rig.p.DrainDeferred(ctx, autoOn)
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
 		if rig.rev.calls != 1 {
 			t.Fatalf("revert calls = %d after the game, want 1", rig.rev.calls)
 		}
 		got := rig.journal.all()
-		if len(got) != 1 || !strings.HasPrefix(got[0], "exp-r|reverted|"+RewatchReasonPrefix) {
+		if len(got) != 2 || !strings.HasPrefix(got[0], "exp-r|applied|"+RewatchReasonPrefix+DeferredRevertReason) || !strings.HasPrefix(got[1], "exp-r|reverted|"+RewatchReasonPrefix) {
 			t.Fatalf("journal = %v", got)
 		}
 	})
@@ -314,7 +320,7 @@ func TestDeferredRevert_WatchRevertsWaitForGameEnd(t *testing.T) {
 			t.Fatalf("outcome = %q (%s) reverts %d", res.Outcome, res.Reason, rig.rev.calls)
 		}
 		rig.probe.set(false)
-		rig.p.DrainDeferred(ctx, autoOn)
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
 		if got := rig.journal.all(); rig.rev.calls != 1 || len(got) != 1 || !strings.HasPrefix(got[0], "exp-w|reverted|") {
 			t.Fatalf("reverts %d journal %v", rig.rev.calls, got)
 		}
@@ -328,9 +334,114 @@ func TestDeferredRevert_WatchRevertsWaitForGameEnd(t *testing.T) {
 			t.Fatalf("kill switch reverts %d items %+v", rig.rev.calls, items)
 		}
 		rig.probe.set(false)
-		rig.p.DrainDeferred(ctx, autoOn)
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
 		if rig.rev.calls != 1 || len(rig.journal.all()) != 0 {
 			t.Fatalf("reverts %d journal %v: the drain must not revert or journal again", rig.rev.calls, rig.journal.all())
+		}
+	})
+}
+
+// UC: UC-043 A17
+// UC: UC-043 A15
+func TestDeferredReview2235(t *testing.T) {
+	ctx := context.Background()
+	t.Run("UC-043/A17 a mode flip read before a write keeps the entry waiting", func(t *testing.T) {
+		rig := newDeferredRig(t, nil)
+		rig.promote(t, holdProposal("exp-f"))
+		rig.probe.set(false)
+		calls := 0
+		resolve := func(context.Context) Config {
+			calls++
+			if calls == 1 {
+				return autoOn // the pass's read
+			}
+			return Config{Mode: ModeIssue, Enabled: true} // the read right before the write
+		}
+		rig.p.DrainDeferred(ctx, resolve)
+		if len(rig.realDef.calls) != 0 || len(rig.p.PendingFlags()) != 1 || len(rig.journal.all()) != 0 {
+			t.Fatalf("calls %d pending %v journal %v", len(rig.realDef.calls), rig.p.PendingFlags(), rig.journal.all())
+		}
+	})
+	t.Run("UC-043/A17 a post-revert cooldown drops the waiting write", func(t *testing.T) {
+		rig := newDeferredRig(t, nil)
+		rig.promote(t, holdProposal("exp-c"))
+		rig.p.markReverted(holdKey)
+		rig.probe.set(false)
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
+		got := rig.journal.all()
+		if len(rig.realDef.calls) != 0 || len(got) != 1 || !strings.Contains(got[0], "exp-c|discarded|deferred re-promotion") {
+			t.Fatalf("calls %d journal %v", len(rig.realDef.calls), got)
+		}
+	})
+	t.Run("UC-043/A17 a waiting re-watch revert is journaled write-ahead", func(t *testing.T) {
+		rig := newDeferredRig(t, &stepWatcher{verdicts: []WatchVerdict{VerdictInsufficient}})
+		rw := &capturingRewatcher{}
+		rig.p.SetRewatcher(rw)
+		var pending []experiment.PromotionResult
+		rig.p.SetRewatchJournal(func(_ string, res experiment.PromotionResult) { pending = append(pending, res) })
+		rig.probe.set(false)
+		rig.promote(t, holdProposal("exp-wa"))
+		rig.probe.set(true)
+		rw.revert(rw.ctx)
+		if len(pending) != 1 || !pending[0].RevertPending || pending[0].Outcome != string(OutcomeApplied) {
+			t.Fatalf("journal = %+v, want one applied event with RevertPending", pending)
+		}
+	})
+	t.Run("UC-043/A17 shutdown runs a waiting revert when no real game is live", func(t *testing.T) {
+		rig := newDeferredRig(t, fakeWatcher{degraded: true})
+		rig.probe.seq = []bool{false, true} // idle at the write, live at the watch revert
+		rig.promote(t, holdProposal("exp-sd"))
+		rig.probe.set(false)
+		rig.p.DropDeferred(ctx, ReasonShutdown)
+		if got := rig.journal.all(); rig.rev.calls != 1 || len(got) != 1 || !strings.HasPrefix(got[0], "exp-sd|reverted|") {
+			t.Fatalf("reverts %d journal %v", rig.rev.calls, got)
+		}
+	})
+	t.Run("UC-043/A17 shutdown during a real game leaves the revert unrun and journals nothing", func(t *testing.T) {
+		rig := newDeferredRig(t, fakeWatcher{degraded: true})
+		rig.probe.seq = []bool{false}
+		rig.promote(t, holdProposal("exp-sl"))
+		rig.p.DropDeferred(ctx, ReasonShutdown) // probe live
+		if rig.rev.calls != 0 || len(rig.journal.all()) != 0 {
+			t.Fatalf("reverts %d journal %v, want neither (the write-ahead event stays last)", rig.rev.calls, rig.journal.all())
+		}
+		if n, _ := rig.p.DeferredStats(); n != 0 {
+			t.Fatalf("waiting = %d after shutdown", n)
+		}
+	})
+	t.Run("UC-043/A17 a revert after shutdown is not queued", func(t *testing.T) {
+		rig := newDeferredRig(t, &stepWatcher{verdicts: []WatchVerdict{VerdictInsufficient}})
+		rw := &capturingRewatcher{}
+		rig.p.SetRewatcher(rw)
+		rig.probe.set(false)
+		rig.promote(t, holdProposal("exp-late"))
+		rig.probe.set(true)
+		rig.p.DropDeferred(ctx, ReasonShutdown)
+		rw.revert(rw.ctx)
+		if n, _ := rig.p.DeferredStats(); n != 0 || rig.rev.calls != 0 {
+			t.Fatalf("waiting %d reverts %d after shutdown", n, rig.rev.calls)
+		}
+	})
+	t.Run("UC-043/A15 a restored waiting revert runs at the first idle check while the overlay is still promoted", func(t *testing.T) {
+		rev := &listingReverter{flags: []string{holdKey}}
+		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, fakeWatcher{}, rev)
+		probe := &fakeProbe{live: true}
+		p.SetRealGameProbe(probe.probe)
+		j := &journalRecorder{}
+		p.SetRewatchJournal(j.sink)
+		p.RestoreDeferredReverts(ctx, []experiment.RestoredRevert{
+			{ExperimentID: "exp-old", FlagKey: holdKey, Rewatch: true},
+			{ExperimentID: "exp-gone", FlagKey: "shield.min_burst_seconds"}, // overlay already gone
+		})
+		p.DrainDeferred(ctx, fixed(autoOn))
+		if rev.calls != 0 {
+			t.Fatal("restored revert ran during a real game")
+		}
+		probe.set(false)
+		p.DrainDeferred(ctx, fixed(autoOn))
+		got := j.all()
+		if rev.calls != 1 || len(got) != 1 || !strings.HasPrefix(got[0], "exp-old|reverted|"+RewatchReasonPrefix) {
+			t.Fatalf("reverts %d journal %v", rev.calls, got)
 		}
 	})
 }

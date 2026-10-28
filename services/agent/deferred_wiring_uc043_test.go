@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,9 +10,75 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/flagservice"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/promote"
 )
+
+type fakeGames struct {
+	games []flagservice.Game
+	err   error
+}
+
+func (f fakeGames) ListGames(context.Context) ([]flagservice.Game, error) { return f.games, f.err }
+
+// UC: UC-043 A17
+func TestRealGameProbe_FlagServiceRegistry(t *testing.T) {
+	idle := func(context.Context) (bool, error) { return false, nil }
+	cases := []struct {
+		name  string
+		games gameLister
+		want  bool
+	}{
+		{"telemetry idle but the flag service lists a real game: live", fakeGames{games: []flagservice.Game{{GameID: "g1", GameKind: "real"}}}, true},
+		{"a game without a kind counts as live", fakeGames{games: []flagservice.Game{{GameID: "g1"}}}, true},
+		{"only shadow games: not live", fakeGames{games: []flagservice.Game{{GameID: "s1", GameKind: "shadow"}}}, false},
+		{"a flag-service error counts as live", fakeGames{err: errors.New("down")}, true},
+		{"no registry counts as live", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run("UC-043/A17 "+tc.name, func(t *testing.T) {
+			live, _ := realGameProbe(idle, tc.games)(context.Background())
+			if live != tc.want {
+				t.Fatalf("live = %v, want %v", live, tc.want)
+			}
+		})
+	}
+	t.Run("UC-043/A17 a live telemetry game needs no flag-service call", func(t *testing.T) {
+		live, err := realGameProbe(func(context.Context) (bool, error) { return true, nil }, fakeGames{err: errors.New("must not be called")})(context.Background())
+		if !live || err != nil {
+			t.Fatalf("live = %v err %v", live, err)
+		}
+	})
+}
+
+// recordingDeferred records the loop's calls into the deferred queue.
+type recordingDeferred struct{ dropped []string }
+
+func (r *recordingDeferred) DrainDeferred(context.Context, promote.ConfigResolver) {}
+func (r *recordingDeferred) DropDeferred(_ context.Context, reason string) {
+	r.dropped = append(r.dropped, reason)
+}
+func (r *recordingDeferred) RestoreDeferredReverts(context.Context, []experiment.RestoredRevert) {}
+
+// UC: UC-043 A17
+func TestExperimentLoop_ShutdownDropsDeferred(t *testing.T) {
+	t.Run("UC-043/A17 the loop's shutdown hands the queue a shutdown drop", func(t *testing.T) {
+		loop, _, _ := loopForConfigTest(t, 2)
+		rec := &recordingDeferred{}
+		loop.deferred = rec
+		loop.promotionConfig = func(context.Context) promote.Config { return promote.Config{} }
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { loop.run(ctx); close(done) }()
+		cancel()
+		<-done
+		if len(rec.dropped) != 1 || rec.dropped[0] != promote.ReasonShutdown {
+			t.Fatalf("drops = %v, want [shutdown]", rec.dropped)
+		}
+	})
+}
 
 func gameActiveKindMetric(gameID, kind string, value float64) pmetric.Metrics {
 	md := gameActiveMetric(gameID)
@@ -71,7 +138,7 @@ func TestWireDeferredPromotions(t *testing.T) {
 		p := promote.NewPromoter(nil, nil, nil, nil, nil, promote.RepoRef{}, nil, nil)
 		reader := sdkmetric.NewManualReader()
 		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-		wireDeferredPromotions(p, func() *gamecontext.Multiplexer { return nil }, mp, nil)
+		wireDeferredPromotions(p, func() *gamecontext.Multiplexer { return nil }, fakeGames{}, mp, nil)
 		if !p.HasRealGameProbe() {
 			t.Fatal("no real-game probe wired: every hold-key promotion would wait forever")
 		}

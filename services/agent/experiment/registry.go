@@ -364,6 +364,10 @@ type Registry struct {
 	// promoter's deferred queue (UC-043 A17 step 3); they count as under test. nil =
 	// none. Called without mu held.
 	pendingPromotions func() []string
+	// restoredReverts are the waiting hold-key reverts Rehydrate found in done
+	// journals (UC-043 A17); TakeRestoredReverts hands them to the promoter.
+	// Guarded by mu.
+	restoredReverts []RestoredRevert
 	// flagDigest computes UC-046 BR-011's digest for an arm before it spawns.
 	flagDigest func(ctx context.Context, experimentID, arm string) string
 	// patternTracker force-ends in-flight pattern games on the kill switch (A12).
@@ -1671,6 +1675,57 @@ func (r *Registry) flushLaterPromotionsLocked(e *entry) {
 	e.laterPromotions = nil
 }
 
+// RestoredRevert is a hold-key watch or re-watch revert that waited when the agent
+// stopped (its experiment's last promotion event has RevertPending, UC-043 A17).
+type RestoredRevert struct {
+	ExperimentID string
+	FlagKey      string
+	// Rewatch: the re-watch queued it (its journal reason prefix).
+	Rewatch bool
+}
+
+// DeferredLostAtRestart is the reason journaled for a deferred hold-key write a
+// restart lost (UC-043 A17 step 3, A15).
+const DeferredLostAtRestart = "lost_at_restart"
+
+// sweepDeferredLocked handles a done journal whose last promotion event a restart
+// interrupted (UC-043 A17 step 3): a write still `deferred` was lost with the
+// in-memory queue and is journaled `discarded: lost_at_restart`; a revert still
+// pending is kept for TakeRestoredReverts. Assumes r.mu is held.
+func (r *Registry) sweepDeferredLocked(id string, jrnl *journal.Journal) {
+	events, err := jrnl.Events()
+	if err != nil {
+		return
+	}
+	var last *journal.Promotion
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == journal.KindPromotion && events[i].Promotion != nil {
+			last = events[i].Promotion
+			break
+		}
+	}
+	switch {
+	case last == nil:
+	case last.Outcome == PromotionDeferred:
+		promotion := PromotionResult{Outcome: PromotionDiscarded, Reason: DeferredLostAtRestart}
+		r.appendEvent(jrnl, journal.Event{Kind: journal.KindPromotion, Status: promotion.Outcome, Note: promotion.Reason, Promotion: &promotion})
+		r.log.Warn("experiment: a deferred hold-key promotion was lost at restart (UC-043 A17)", "experiment_id", id)
+	case last.RevertPending:
+		r.restoredReverts = append(r.restoredReverts, RestoredRevert{
+			ExperimentID: id, FlagKey: jrnl.Intent().FlagKey, Rewatch: strings.HasPrefix(last.Reason, "re-watch: "),
+		})
+	}
+}
+
+// TakeRestoredReverts returns, once, the waiting reverts Rehydrate found.
+func (r *Registry) TakeRestoredReverts() []RestoredRevert {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.restoredReverts
+	r.restoredReverts = nil
+	return out
+}
+
 // pendingPromotionSet returns the flags with a waiting deferred promotion write.
 // It must be called without r.mu held.
 func (r *Registry) pendingPromotionSet() map[string]struct{} {
@@ -1693,6 +1748,13 @@ func (r *Registry) RecordPromotion(id string, res PromotionResult) {
 	defer r.mu.Unlock()
 	e := r.entries[id]
 	if e == nil {
+		// A done experiment is not held in memory after a restart (Rehydrate skips
+		// it), yet the deferred queue and the kill switch journal on it (UC-043 A17).
+		if jrnl, err := journal.Load(r.root, id); err == nil {
+			promotion := res
+			r.appendEvent(jrnl, journal.Event{Kind: journal.KindPromotion, Status: res.Outcome, Note: res.Reason, Promotion: &promotion})
+			return
+		}
 		r.log.Warn("experiment.promotion_unrecorded", "experiment_id", id, "outcome", res.Outcome, "reason", res.Reason)
 		return
 	}
@@ -1878,7 +1940,10 @@ func (r *Registry) Rehydrate(ids []string) error {
 			st = StatusRunning
 		}
 		if st.IsTerminal() {
-			continue // done experiment — nothing to manage.
+			// Done experiment: nothing to manage, except a deferred hold-key promotion
+			// the restart interrupted (UC-043 A17 step 3).
+			r.sweepDeferredLocked(id, jrnl)
+			continue
 		}
 		e := &entry{
 			id:        id,

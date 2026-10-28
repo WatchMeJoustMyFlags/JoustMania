@@ -211,6 +211,9 @@ type Result struct {
 	// presence on a github-target Result is the SAFETY RAIL's visible proof that the
 	// real path was unreachable and the promotion degraded to an inert recorded no-op.
 	Reason string
+	// RevertPending: the watch's revert of a hold key waits until no real game runs
+	// (UC-043 A17); journaled write-ahead (journal.Promotion.RevertPending).
+	RevertPending bool
 }
 
 // GitHubClient is the GitHub API wire boundary (the SAFETY RAIL's network seam).
@@ -335,6 +338,13 @@ type Promoter struct {
 	probe          RealGameProbe
 	pending        map[string]*deferredWrite
 	pendingReverts map[string]*deferredRevert
+	// offPasses counts consecutive drain passes that saw a mode other than
+	// autonomous (or the agent disabled); waiting writes drop at the second, so a
+	// one-pass flagd sync flap does not drop them (fail closed: they wait).
+	offPasses int
+	// closed is set by DropDeferred (shutdown): a revert that would wait after it is
+	// not queued; its write-ahead journal event lets the next run re-queue it.
+	closed bool
 }
 
 // appliedPromotion is one autonomous real default this agent run wrote and has not

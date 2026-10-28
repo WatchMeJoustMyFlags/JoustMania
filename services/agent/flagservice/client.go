@@ -306,6 +306,22 @@ func (c *Client) Epoch(ctx context.Context) (string, error) {
 	return h.Epoch, nil
 }
 
+// Game is one registered game scope (GET /games).
+type Game struct {
+	GameID   string `json:"game_id"`
+	GameKind string `json:"game_kind"`
+}
+
+// ListGames reads the registered game scopes (GET /games): the flag service's
+// authoritative live-game set (UC-043 A17).
+func (c *Client) ListGames(ctx context.Context) ([]Game, error) {
+	var v struct {
+		Games []Game `json:"games"`
+	}
+	err := c.do(ctx, http.MethodGet, "/games", nil, &v)
+	return v.Games, err
+}
+
 // GetFlag reads one flag's effective state with its rendered flagd JSON.
 func (c *Client) GetFlag(ctx context.Context, set, flag string) (FlagView, error) {
 	var v FlagView

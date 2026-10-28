@@ -555,8 +555,11 @@ func (e *experimentLoop) run(ctx context.Context) {
 			e.drainDeferred(ctx)
 		case <-ctx.Done():
 			// UC-043 A17: journal the dropped deferred writes before the journal closes.
+			// A waiting revert runs now if no real game is live, else it stays journaled.
 			if e.deferred != nil {
-				e.deferred.DropDeferred(promote.ReasonShutdown)
+				dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+				e.deferred.DropDeferred(dctx, promote.ReasonShutdown)
+				dcancel()
 			}
 			// Shutdown / kill-switch teardown: abort every live experiment so its
 			// targeting branch is stripped and capacity released. Cancel any pending
@@ -713,8 +716,9 @@ type promotionKillSwitch interface {
 // deferredPromotions is the Promoter half that owns the deferred real writes of
 // hold keys (UC-043 A17 step 3).
 type deferredPromotions interface {
-	DrainDeferred(ctx context.Context, cfg promote.Config)
-	DropDeferred(reason string)
+	DrainDeferred(ctx context.Context, resolve promote.ConfigResolver)
+	DropDeferred(ctx context.Context, reason string)
+	RestoreDeferredReverts(ctx context.Context, restored []experiment.RestoredRevert)
 }
 
 // pendingPromotionFlags is the registry's view of the promoter's waiting writes;
@@ -726,14 +730,14 @@ func pendingPromotionFlags(p *promote.Promoter) func() []string {
 	return p.PendingFlags
 }
 
-// drainDeferred runs one pass of the deferred queue under the live promotion
-// config, so a mode other than autonomous or the kill switch drops waiting writes
-// at the next pass (opposer m2). The promoter journals each outcome.
+// drainDeferred runs one pass of the deferred queue with the live promotion
+// config resolver (read per pass and per write, opposer m2). The promoter journals
+// each outcome.
 func (e *experimentLoop) drainDeferred(ctx context.Context) {
 	if e.deferred == nil || e.promotionConfig == nil {
 		return
 	}
-	e.deferred.DrainDeferred(ctx, e.promotionConfig(ctx))
+	e.deferred.DrainDeferred(ctx, e.promotionConfig)
 }
 
 // revertPromotionsOnKillSwitch reverts the applied autonomous promotions and
@@ -937,6 +941,12 @@ func (e *experimentLoop) ensureStarted() {
 	e.startedOnce = true
 	if err := e.rehydrate(); err != nil {
 		e.log.Error("experiment: rehydrate from journal failed (continuing without prior experiments)", "error", err)
+	}
+	// UC-043 A17 step 3: re-queue the hold-key reverts a previous run left waiting.
+	if e.deferred != nil && e.registry != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		e.deferred.RestoreDeferredReverts(ctx, e.registry.TakeRestoredReverts())
+		cancel()
 	}
 }
 

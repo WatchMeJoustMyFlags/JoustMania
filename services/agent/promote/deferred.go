@@ -152,6 +152,9 @@ func (pr *Promoter) deferPromotion(p experiment.Proposal, ev Evidence, cfg Confi
 func (pr *Promoter) queueRevertLocked(p experiment.Proposal, entry *appliedPromotion, watchErr error, rewatch bool) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
+	if pr.closed {
+		return // shutting down: the write-ahead journal event re-queues it next run
+	}
 	if pr.pendingReverts == nil {
 		pr.pendingReverts = map[string]*deferredRevert{}
 	}
@@ -193,17 +196,30 @@ func (pr *Promoter) DeferredStats() (pending int, oldest time.Duration) {
 }
 
 // DrainDeferred runs one pass over the queue (the experiment loop calls it every
-// DeferredDrainInterval with the live promotion config). It drops expired writes
-// whatever the probe says, drops every write when the mode is not autonomous or the
-// agent is disabled, and otherwise, with no real game live, runs the waiting
-// reverts and then the waiting writes. It journals each outcome through the
-// promotion journal; it must not be called under killMu.
-func (pr *Promoter) DrainDeferred(ctx context.Context, cfg Config) {
+// DeferredDrainInterval). resolve reads the live promotion config. Expired writes
+// drop whatever the probe says. A mode other than autonomous (or the agent
+// disabled) on two consecutive passes drops every waiting write; a single such pass
+// only skips the writes, so a flagd sync flap (which reads the fail-closed `issue`)
+// does not drop them. With no real game live it runs the waiting reverts (whatever
+// the mode: a revert only restores) and then the waiting writes, re-reading the
+// mode before each write. It journals each outcome through the promotion journal;
+// it must not be called under killMu.
+func (pr *Promoter) DrainDeferred(ctx context.Context, resolve ConfigResolver) {
 	now := pr.clock()
+	cfg := resolve(ctx)
+	off := !promotionOn(cfg)
+	pr.mu.Lock()
+	if off {
+		pr.offPasses++
+	} else {
+		pr.offPasses = 0
+	}
+	dropAll := off && pr.offPasses >= 2
+	pr.mu.Unlock()
 	switch {
-	case !cfg.Enabled:
+	case dropAll && !cfg.Enabled:
 		pr.dropWrites(KillSwitchReason, nil)
-	case normalizeMode(cfg.Mode) != ModeAutonomous:
+	case dropAll:
 		pr.dropWrites(ReasonModeChanged, nil)
 	default:
 		pr.dropWrites(ReasonDeferredExpired, func(w *deferredWrite) bool { return now.Sub(w.queuedAt) >= DeferredTTL })
@@ -212,23 +228,67 @@ func (pr *Promoter) DrainDeferred(ctx context.Context, cfg Config) {
 		return
 	}
 	pr.drainReverts(ctx)
-	pr.drainWrites(ctx)
+	if !off {
+		pr.drainWrites(ctx, resolve)
+	}
 }
 
-// DropDeferred drops every waiting write (journaled discarded with reason) and
-// every waiting revert (journaled applied: the real default stays until the kill
-// switch or an operator removes it). A graceful shutdown calls it before the
-// journal closes.
-func (pr *Promoter) DropDeferred(reason string) {
-	pr.dropWrites(reason, nil)
+// promotionOn reports whether cfg allows an autonomous real write.
+func promotionOn(cfg Config) bool {
+	return cfg.Enabled && normalizeMode(cfg.Mode) == ModeAutonomous
+}
+
+// DropDeferred is the graceful shutdown of the queue (UC-043 A17 step 3). Every
+// waiting write is dropped, journaled discarded with reason. A waiting revert runs
+// now when no real game is live (allowed between games); otherwise it stays
+// unrun, and its write-ahead journal event (RevertPending) lets the next agent run
+// re-queue it. Reverts queued after this call are not kept (closed).
+func (pr *Promoter) DropDeferred(ctx context.Context, reason string) {
 	pr.mu.Lock()
-	reverts := pr.pendingReverts
+	pr.closed = true
+	pr.mu.Unlock()
+	pr.dropWrites(reason, nil)
+	if !pr.hasDeferred() {
+		return
+	}
+	if !pr.realGameLive(ctx) {
+		pr.drainReverts(ctx)
+		return
+	}
+	pr.mu.Lock()
+	left := sortedKeys(pr.pendingReverts)
 	pr.pendingReverts = nil
 	pr.mu.Unlock()
-	for _, flag := range sortedKeys(reverts) {
-		r := reverts[flag]
-		pr.journalDeferred(r.proposal, OutcomeApplied,
-			reason+": deferred revert not run; the real default stays until the kill switch removes it")
+	pr.log.Warn("code_improvement: deferred reverts left for the next run (a real game is live at shutdown, UC-043 A17)", "flags", left)
+}
+
+// RestoreDeferredReverts re-queues the waiting reverts a previous run journaled
+// (experiment.Registry.TakeRestoredReverts, UC-043 A17 step 3), but only for a flag
+// whose real overlay is still a promotion's (an unreadable overlay list keeps it:
+// a revert of an absent overlay deletes nothing). The drain runs them at the first
+// check with no real game live.
+func (pr *Promoter) RestoreDeferredReverts(ctx context.Context, restored []experiment.RestoredRevert) {
+	if len(restored) == 0 {
+		return
+	}
+	var promoted map[string]bool
+	if lister, ok := pr.reverter.(PromotionOverlayLister); ok {
+		if flags, err := lister.PromotedFlags(ctx); err == nil {
+			promoted = map[string]bool{}
+			for _, f := range flags {
+				promoted[f] = true
+			}
+		}
+	}
+	pr.killMu.Lock()
+	defer pr.killMu.Unlock()
+	for _, r := range restored {
+		p := experiment.Proposal{FlagKey: r.FlagKey, ExperimentID: r.ExperimentID}
+		if promoted != nil && !promoted[r.FlagKey] {
+			pr.log.Info("code_improvement: restored deferred revert dropped; no promotion overlay left (UC-043 A17)", "flag", r.FlagKey, "experiment_id", r.ExperimentID)
+			continue
+		}
+		pr.queueRevertLocked(p, nil, nil, r.Rewatch)
 	}
 }
 
@@ -283,6 +343,11 @@ func (pr *Promoter) drainReverts(ctx context.Context) {
 	for _, flag := range sortedKeys(reverts) {
 		r := reverts[flag]
 		res := Result{Outcome: OutcomeApplied}
+		if r.entry == nil && pr.trackedPromotion(flag) {
+			// A restored revert (no entry): a newer promotion of this run owns the overlay.
+			pr.journalDeferred(r.proposal, OutcomeApplied, "superseded by a newer promotion of the flag; not reverted")
+			continue
+		}
 		if pr.revertReal(ctx, r.proposal, r.entry, &res, r.watchErr, r.rewatch) != claimOwned {
 			continue
 		}
@@ -294,10 +359,23 @@ func (pr *Promoter) drainReverts(ctx context.Context) {
 	}
 }
 
-// drainWrites writes the waiting promotions, oldest flag order first by key. A
-// 409 real_game_live (a real game registered after the probe) puts the entry back
-// and ends the pass.
-func (pr *Promoter) drainWrites(ctx context.Context) {
+// trackedPromotion reports whether this run tracks an applied promotion of flag.
+func (pr *Promoter) trackedPromotion(flag string) bool {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	return pr.applied[flag] != nil
+}
+
+// drainWrites writes the waiting promotions in flag order. The mode is re-read
+// before each write; a mode other than autonomous puts the entry back and ends the
+// pass (the remaining gap is a flip and back between that read and the write). A
+// 409 real_game_live (a real game registered after the probe) puts it back too.
+//
+// The write uses the promotion's original kill-switch epoch, so a kill-switch tick
+// since the promotion refuses it. The kill switch also empties the queue, and in
+// production it runs on the same experiment-loop goroutine as this drain, so the
+// two checks agree.
+func (pr *Promoter) drainWrites(ctx context.Context, resolve ConfigResolver) {
 	pr.mu.Lock()
 	flags := sortedKeys(pr.pending)
 	pr.mu.Unlock()
@@ -313,6 +391,10 @@ func (pr *Promoter) drainWrites(ctx context.Context) {
 			pr.journalDeferred(w.proposal, OutcomeDiscarded, fmt.Sprintf(
 				"deferred re-promotion of %q suppressed: %s remaining in post-revert cooldown (#1065)", flag, remaining.Round(time.Second)))
 			continue
+		}
+		if !promotionOn(resolve(ctx)) {
+			pr.requeue(w)
+			return
 		}
 		cfg := Config{Mode: ModeAutonomous, Enabled: true, killEpoch: w.killEpoch, epochKnown: true}
 		entry, err := pr.writeTracked(ctx, w.proposal, w.evidence.RealDefaultValue, cfg)
@@ -355,15 +437,21 @@ func (pr *Promoter) requeue(w *deferredWrite) {
 // journalDeferred logs a later outcome of a deferred promotion and journals it on
 // its experiment through the promotion journal (Registry.RecordPromotion).
 func (pr *Promoter) journalDeferred(p experiment.Proposal, outcome Outcome, reason string) {
+	pr.journalDeferredResult(p, experiment.PromotionResult{Outcome: string(outcome), Reason: reason})
+}
+
+// journalDeferredResult is journalDeferred with the full promotion result.
+func (pr *Promoter) journalDeferredResult(p experiment.Proposal, res experiment.PromotionResult) {
+	outcome, reason := res.Outcome, res.Reason
 	pr.log.Warn("code_improvement.deferred_outcome (UC-043 A17)", "flag", p.FlagKey,
-		"experiment_id", p.ExperimentID, "outcome", string(outcome), "reason", reason)
+		"experiment_id", p.ExperimentID, "outcome", outcome, "reason", reason)
 	pr.mu.Lock()
 	sink := pr.rewatchJournal
 	pr.mu.Unlock()
 	if sink == nil || p.ExperimentID == "" {
 		return
 	}
-	sink(p.ExperimentID, experiment.PromotionResult{Outcome: string(outcome), Reason: reason})
+	sink(p.ExperimentID, res)
 }
 
 func sortedKeys[V any](m map[string]V) []string {
