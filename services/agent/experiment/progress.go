@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -65,6 +66,10 @@ const (
 	AttrExperimentRecommendationValue = "experiment.recommendation.value"
 	AttrExperimentRecommendationOwner = "experiment.recommendation.owner"
 
+	// maxRecommendationValueLen caps the recommendation value attribute (an object
+	// flag can be large); a longer value is cut and ends with "...".
+	maxRecommendationValueLen = 512
+
 	// ProgressHeartbeatInterval is how often every live experiment re-emits its
 	// snapshot, so an idle experiment stays visible.
 	ProgressHeartbeatInterval = 60 * time.Second
@@ -96,7 +101,7 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 			attribute.Bool(decision.AttrVerdictSignificant, v.Significant),
 		)
 	}
-	if trigger == ProgressTriggerTerminal {
+	if trigger == ProgressTriggerTerminal || (trigger == ProgressTriggerRecommendation && endReason != "") {
 		attrs = append(attrs, attribute.String(AttrExperimentEndReason, endReason))
 	}
 	if e.recommendOwner != "" {
@@ -104,6 +109,7 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 		if err != nil {
 			value = []byte(fmt.Sprint(intent.ExperimentalValue))
 		}
+		value = truncateRecommendationValue(value)
 		attrs = append(attrs,
 			attribute.String(AttrExperimentRecommendationFlag, intent.FlagKey),
 			attribute.String(AttrExperimentRecommendationValue, string(value)),
@@ -161,4 +167,17 @@ func (r *Registry) ProgressHeartbeat() {
 		e := r.entries[id]
 		r.emitProgressLocked(e, ProgressTriggerHeartbeat, "", e.spanCtx)
 	}
+}
+
+// truncateRecommendationValue cuts a JSON value to maxRecommendationValueLen bytes
+// on a rune boundary and marks the cut with "...".
+func truncateRecommendationValue(value []byte) []byte {
+	if len(value) <= maxRecommendationValueLen {
+		return value
+	}
+	cut := maxRecommendationValueLen
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return append(append([]byte(nil), value[:cut]...), "..."...)
 }
