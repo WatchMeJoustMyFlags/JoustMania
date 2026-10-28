@@ -170,13 +170,10 @@ def _drops(conditions: list[str], attributes: dict[str, str]) -> bool:
 @pytest.mark.uc("UC-035", flow="A3")
 def test_grpc_health_spans_are_dropped_before_the_traces_exporters(collector):
     """#2286: health-check spans never reach Jaeger or the agent, in the Python and Go forms."""
-    from lib.grpc_tracing import _parse_method
-
     conditions = collector["processors"]["filter/grpc_health"]["trace_conditions"]
-    # What the Python lib really records for the health RPC (package stripped).
-    py_service, _ = _parse_method("/grpc.health.v1.Health/Check")
-    assert py_service == "Health"
-    assert _drops(conditions, {"rpc.service": py_service, "rpc.method": "Check"})
+    # What the Python lib records for the health RPC (package stripped). The contract
+    # job has no lib deps; lib/tests/test_grpc_tracing.py pins _parse_method to this form.
+    assert _drops(conditions, {"rpc.service": "Health", "rpc.method": "Check"})
     # Go otelgrpc keeps the full service name.
     assert _drops(
         conditions, {"rpc.service": "grpc.health.v1.Health", "rpc.method": "Check"}
