@@ -205,3 +205,135 @@ func TestRealWriteGuard_LongReconciledGame(t *testing.T) {
 		}
 	})
 }
+
+func guardedClear(flag string) ClearRequest {
+	return ClearRequest{Set: "game", Flag: flag, Scope: realScope, Writer: "promotion", UnlessRealGame: true}
+}
+
+// UC: UC-043 A17
+func TestGuardedRealClear(t *testing.T) {
+	t.Run("UC-043/A17 a guarded DELETE of a hold key's real overlay is refused 409 real_game_live while a real game is registered", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+		f.put(budgetReal("20"))
+		f.registerKind("g-real", "real")
+		res, err := f.state.Clear(guardedClear("shield.energy_budget_seconds"))
+		wantReason(t, err, http.StatusConflict, fserr.RealGameLive)
+		if res.Cleared != 0 {
+			t.Fatalf("the refused DELETE cleared %d values", res.Cleared)
+		}
+		if _, val := f.resolve("shield.energy_budget_seconds", map[string]any{"game_kind": "real"}); val != float64(20) {
+			t.Fatalf("real default = %v after a refused DELETE, want 20 (still overridden)", val)
+		}
+	})
+
+	for _, kind := range []string{"", "primary", "Shadow"} {
+		t.Run("UC-043/A17 the guarded DELETE fails closed: a game of kind "+strconv.Quote(kind)+" blocks it", func(t *testing.T) {
+			f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+			f.put(budgetReal("20"))
+			f.registerKind("g-shadow", "shadow")
+			f.registerKind("g-other", kind)
+			_, err := f.state.Clear(guardedClear("shield.energy_budget_seconds"))
+			wantReason(t, err, http.StatusConflict, fserr.RealGameLive)
+		})
+	}
+
+	accepted := []struct {
+		name     string
+		register func(f *fixture)
+	}{
+		{"no game is registered", func(*fixture) {}},
+		{"only shadow games are registered", func(f *fixture) { f.registerKind("g-shadow", "shadow") }},
+		{"the real game ended", func(f *fixture) {
+			f.registerKind("g-real", "real")
+			f.state.EndGame("g-real", EndReasonEnded)
+		}},
+	}
+	for _, a := range accepted {
+		t.Run("UC-043/A17 the guarded DELETE is accepted when "+a.name, func(t *testing.T) {
+			f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+			f.put(budgetReal("20"))
+			a.register(f)
+			res, err := f.state.Clear(guardedClear("shield.energy_budget_seconds"))
+			if err != nil {
+				t.Fatalf("guarded DELETE refused: %v", err)
+			}
+			if res.Cleared != 1 {
+				t.Fatalf("cleared %d values, want 1", res.Cleared)
+			}
+		})
+	}
+
+	t.Run("UC-043/A17 the guard covers only keys carrying the attribute: a guarded DELETE of sensitivity is accepted", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+		f.put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "fast", Scope: realScope})
+		f.registerKind("g-real", "real")
+		res, err := f.state.Clear(guardedClear("sensitivity"))
+		if err != nil || res.Cleared != 1 {
+			t.Fatalf("guarded DELETE of a key without the attribute: cleared %d, err %v", res.Cleared, err)
+		}
+	})
+
+	t.Run("UC-043/A17 a plain DELETE (the kill switch) is accepted while the guarded one is refused", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+		f.put(budgetReal("20"))
+		f.registerKind("g-real", "real")
+		_, err := f.state.Clear(guardedClear("shield.energy_budget_seconds"))
+		wantReason(t, err, http.StatusConflict, fserr.RealGameLive)
+		plain := guardedClear("shield.energy_budget_seconds")
+		plain.UnlessRealGame = false
+		res, err := f.state.Clear(plain)
+		if err != nil || res.Cleared != 1 {
+			t.Fatalf("plain DELETE while a real game runs: cleared %d, err %v", res.Cleared, err)
+		}
+	})
+}
+
+// UC: UC-043 A17
+func TestGuardedRealClearConcurrency(t *testing.T) {
+	t.Run("UC-043/A17 a game registered while a guarded DELETE waits for the lock blocks it", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+		f.put(budgetReal("20"))
+		f.state.mu.Lock()
+		done := make(chan *fserr.Error, 1)
+		go func() {
+			_, err := f.state.Clear(guardedClear("shield.energy_budget_seconds"))
+			done <- err
+		}()
+		time.Sleep(20 * time.Millisecond)
+		f.state.registerLocked(Game{ID: "g-real", CoordinatorInstance: "c1", Kind: "real"})
+		f.state.mu.Unlock()
+		wantReason(t, <-done, http.StatusConflict, fserr.RealGameLive)
+	})
+
+	t.Run("UC-043/A17 concurrent RegisterGame, EndGame and guarded DELETE: a refusal is always real_game_live and leaves the overlay (run with -race)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{registryYAML: guardRegistry})
+		const rounds = 300
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				if _, err := f.state.RegisterGame(Game{ID: "g-real", CoordinatorInstance: "c1", Kind: "real"}); err != nil {
+					t.Errorf("register: %v", err)
+					return
+				}
+				f.state.EndGame("g-real", EndReasonEnded)
+			}
+		}()
+		errs := make(chan string, rounds)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				_, err := f.state.Clear(guardedClear("shield.energy_budget_seconds"))
+				if err != nil && err.Reason != fserr.RealGameLive {
+					errs <- err.Error()
+				}
+			}
+		}()
+		wg.Wait()
+		close(errs)
+		for e := range errs {
+			t.Errorf("unexpected rejection: %s", e)
+		}
+	})
+}

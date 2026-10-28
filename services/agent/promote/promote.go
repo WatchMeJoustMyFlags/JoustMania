@@ -279,6 +279,15 @@ type RealDefaultReverter interface {
 	RevertRealDefault(ctx context.Context, flagKey string) error
 }
 
+// GuardedRealDefaultReverter is the optional guarded revert of a watch or re-watch
+// (#2236, UC-043 A17 step 3): the flag service refuses it with 409 real_game_live
+// under its registration lock while a non-shadow game is registered, for a flag
+// marked real_write: no_live_real_game. The production writer implements it. The
+// kill switch never uses it: its revert (RevertRealDefault) is never refused.
+type GuardedRealDefaultReverter interface {
+	RevertRealDefaultUnlessRealGame(ctx context.Context, flagKey string) error
+}
+
 // Promoter orchestrates a promotion per the live mode/target. It owns ONLY the
 // dispatch + outcome logic; every consequential effect (open issue/PR, commit,
 // write real default, watch, revert) is an injected seam, so the whole flow is
