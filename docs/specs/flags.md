@@ -470,6 +470,8 @@ Windows in which a running real game is not registered, so the guard does not se
 
 The attribute is on the eight hold keys of §13.3 (`shield.activation`, `shield.energy_max_seconds`, `shield.energy_budget_seconds`, `shield.energy_initial_seconds`, `shield.recharge_per_second`, `shield.min_burst_seconds`, `shield.hold_rumble_intensity`, `shield.empty_pulse_ms`); their scope is `stack or experiment+arm or real` since FR-162 (#2096 PR-7b-2a), so the guard is in force.
 
+**Description (`description`, #2345):** an optional one-line text, in game terms, of what the flag does: at most 120 characters, no line break (the cap bounds a later consumer's prompt). The flag service refuses to start on a longer, multi-line or blank description and names the row (`registry: <set>/<key>: ...`); it is not required on any row yet. It is served in the row's `policy` by the read endpoints and omitted when empty; it is informational, no write is checked against it. Registry fields are strict, so `registry.yaml` may carry it only once the released flag service parses it.
+
 **Bounds** are the declared variants of the baseline file unless a range, a payload schema or `free string` is
 given. Ranges are inclusive and pinned to the reader's own clamp (`difficulty_handlers.py` factors 0.5 to 2.0, `lifecycle_handlers.py` toughness boost and soft penalty, `games/base.py` ramp_tempo 15 s and tempo ramp 0.1 to 10 s), so the registry never rejects a value the game would apply.
 `free string` accepts any string value up to 512 characters (a declared variant name still selects that
