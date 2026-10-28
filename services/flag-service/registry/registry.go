@@ -56,7 +56,7 @@ var validScopes = map[string]bool{
 }
 
 // MaxDescription is the longest description a registry row may carry (in
-// characters): it bounds the experiment proposer's prompt (#2345).
+// characters) (#2345).
 const MaxDescription = 120
 
 // MaxFreeString is the longest value a `free string` bound accepts.

@@ -41,6 +41,7 @@ import (
 	"github.com/joustmania/agent/llm"
 	"github.com/joustmania/agent/patterngame"
 	"github.com/joustmania/agent/promote"
+	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
 // probeInterval rate-limits the decision.probe_decisions demo probe.
@@ -409,7 +410,19 @@ func inferenceBaseURL(logger *slog.Logger) (string, bool) {
 	return raw, true
 }
 
+// main runs the agent and exits non-zero only after run() has returned, so every
+// deferred shutdown in run() (flagd, metrics, tracer, signal handler) has run (#2318).
 func main() {
+	if err := run(); err != nil {
+		os.Exit(1)
+	}
+}
+
+// run wires the agent and serves until SIGTERM / SIGINT. Wiring lives in the build*
+// methods of components (main.go), called in the fixed construction order; run owns
+// the process-level setup and every deferred shutdown. A fatal error is logged here
+// and returned, never os.Exit-ed, so the defers still run (#2318).
+func run() error {
 	listenAddr := getEnv("AGENT_LISTEN_ADDR", ":4317")
 	healthAddr := getEnv("AGENT_HEALTH_ADDR", ":13134")
 	// Bootstrap level from the deprecated LOG_LEVEL env; the log_level flag takes over at
@@ -439,7 +452,7 @@ func main() {
 	agentFlags, lifecycleHolder, shutdownFlags, err := flags.SetupFlagd(ctx, flagCfg, logger)
 	if err != nil {
 		slog.Error("Failed to set up flagd provider", "error", err)
-		os.Exit(1)
+		return err
 	}
 	defer shutdownFlags()
 	slog.Info("OpenFeature flagd provider registered", "host", flagCfg.Host, "port", flagCfg.Port)
@@ -452,9 +465,9 @@ func main() {
 	// configuration change and, as the safety net (#1709), every 1 s, so the store TTLs, eviction ticker, and decision-loop throttle
 	// read the CURRENT values from the holder on their hot path and a flag change
 	// takes effect with no restart. The initial snapshot below is only for the
-	// startup log; the consumers wired further down read the holder's live source
-	// funcs, never this captured value. If flagd is not yet ready every value falls
-	// back to its safe default (the former hardcoded constants).
+	// startup log and the stores' static fallback; the consumers read the holder's
+	// live source funcs. If flagd is not yet ready every value falls back to its safe
+	// default (the former hardcoded constants).
 	lifecycle := lifecycleHolder.Load()
 	slog.Info("Agent lifecycle flags primed (hot-reloaded live, re-read every 1 s, #927 #1709)",
 		"player_ttl", lifecycle.PlayerTTL,
@@ -463,87 +476,176 @@ func main() {
 		"decision_throttle", lifecycle.DecisionThrottle,
 	)
 
-	ownService := resolveServiceName()
+	// Construction order matters: each stage reads parts the earlier ones built, and
+	// the late-bound parts (the multiplexer, the experiment registry) are installed
+	// before any OTLP signal arrives.
+	// The flag-service clients (C-034): the shared one, and the deferred promotion's
+	// game lister.
+	gameFlags := flagservice.NewFromEnv()
+	c := newComponents(ctx, logger, agentFlags, lifecycleHolder, lifecycle, gameFlags)
+	c.buildTextBackends()
+	c.buildDecisionLoops()
+	c.buildGameEnd()
+	c.buildPromotion(flagservice.NewFromEnv())
+	c.buildExperimentStack()
+	server := c.buildPipeline(listenAddr, healthAddr)
 
-	// Per-game decision Loop factory (#845 PR C). Each game partition gets its OWN
-	// Loop — own weighted rate-limit budget, own log/span throttle, own per-cycle
-	// LayerState — so concurrent games never share a budget or contend on throttle.
-	// The LoopSet below invokes this once per game_id, lazily on first evaluation.
-	//
-	// Shared vs per-game wiring:
-	//   - FRESH rules engine PER LOOP: NewObjectiveRulesLive builds a new engine with
-	//     its own LiveObjectives / LiveFitness sources. The loop drives these every
-	//     cycle (SetObjectives/SetFitness before Evaluate, LastFitness after), so a
-	//     shared engine would let two games race each other's objective weights and
-	//     fitness reads — the spans would carry the wrong game's agent.objectives.
-	//     A fresh engine removes the shared mutable state entirely.
-	//   - SHARED action sink: actions.Writer holds no per-game state (it serializes a
-	//     read-modify-write of the flagd interventions file under its own mutex,
-	//     keyed by the decision's target), so one Writer is closed over by every loop.
-	//   - SHARED flag source (agentFlags) and tracer: stateless / concurrency-safe.
+	if err := server.run(ctx); err != nil {
+		slog.Error("gRPC server failed", "error", err)
+		return err
+	}
+	return nil
+}
+
+// components holds the agent's wired parts while run() assembles them (#2318). The
+// build* methods fill it in a fixed order (the construction order main() had before
+// the split, so logs, flag reads and late bindings happen in the same sequence), and
+// buildPipeline hands the goroutine-owning part to serverComponents.
+//
+// Several parts are late-bound: the per-game loop factory and the deferred promotion
+// probe read c.mux at call time, after buildPipeline has assigned it and before any
+// signal arrives, so they never see nil.
+type components struct {
+	ctx             context.Context
+	logger          *slog.Logger
+	agentFlags      *flags.Flags
+	lifecycleHolder *flags.LifecycleHolder
+	lifecycle       flags.Lifecycle
+	ownService      string
+
+	gameFlags  *flagservice.Client
+	sharedSink decision.ActionSink
+	llmBudget  llmBudgetShare
+	tuning     *agentTuning
+	text       *textBackends
+	window     *gamewindow.Store
+
+	decideBackends  *decision.DecideRegistry
+	experimentFlags *experimentFlagLookup
+	loops           *decision.LoopSet
+	infraStore      *infracontext.Store
+	infraLoop       *decision.InfraLoop
+
+	retro            *decision.RetroCoordinator
+	summaries        *gamesummary.Coordinator
+	proposalSink     *experiment.LateSink
+	proposerHold     *holdGate
+	proposals        *backgroundGroup
+	proposeOnGameEnd func(gamecontext.GameContext)
+
+	fitnessStore *experiment.FitnessStore
+	objResolver  *promote.LateObjectiveResolver
+	promoter     *promote.Promoter
+	expLoop      *experimentLoop
+
+	mux *gamecontext.Multiplexer
+}
+
+// llmBudgetShare hands the ONE shared global LLM request budget (#847) to every
+// consumer: the per-game loops, the retro and the proposer's admission. The budget's
+// type is unexported in package decision, so it travels as closures over the single
+// instance. ceiling is the AGENT_LLM_MAX_REQUESTS_PER_MINUTE env cap (#1788).
+type llmBudgetShare struct {
+	ceiling   int
+	loop      func(*decision.Loop)
+	retro     func(*decision.RetroCoordinator)
+	admission func(source string) *decision.LLMAdmission
+}
+
+// newComponents builds the seams every later stage shares: the flag-service client,
+// the gated action sink, the global LLM budget and the agent tuning.
+//
+// gameFlags is the one flag-service client (FLAG_SERVICE_URL, epic #1407): every
+// agent write (interventions, rollout, experiments, promotion) and every read of the
+// game flag set goes through it; nothing in the agent opens a flag file. The
+// flag-service clients are built in run(), the one known construction site (C-034).
+func newComponents(ctx context.Context, logger *slog.Logger, agentFlags *flags.Flags, lifecycleHolder *flags.LifecycleHolder, lifecycle flags.Lifecycle, gameFlags *flagservice.Client) *components {
+	c := &components{
+		ctx:             ctx,
+		logger:          logger,
+		agentFlags:      agentFlags,
+		lifecycleHolder: lifecycleHolder,
+		lifecycle:       lifecycle,
+		ownService:      resolveServiceName(),
+		gameFlags:       gameFlags,
+	}
 	// SHARED gated action sink (#1213): one GatedActionSink wrapping the real Writer,
 	// closed over by every per-game loop. The interventions_enabled gate is re-read
 	// per Apply against the live agentFlags, so the gate is hot-reloadable and
 	// fail-closed on a flagd outage (the old AGENT_INTERVENTIONS_ENABLED env master,
-	// migrated). The Writer holds no per-game state, so sharing is safe.
-	// The one flag-service client (FLAG_SERVICE_URL, epic #1407): every agent write
-	// (interventions, rollout, experiments, promotion) and every read of the game
-	// flag set goes through it; nothing in the agent opens a flag file.
-	gameFlags := flagservice.NewFromEnv()
-	sharedWriter := actions.NewWriter(gameFlags, logger)
-	sharedSink := actionSink(agentFlags, sharedWriter, logger)
+	// migrated). actions.Writer holds no per-game state (it serializes its writes
+	// under its own mutex, keyed by the decision's target), so sharing is safe.
 	// No per-player prune any more (#1323 is closed by construction, #1416): every
 	// intervention is written for one registered game and the flag service drops
 	// it when the coordinator ends that game (UC-053 BR-003).
-	// Shared GLOBAL LLM request budget (#847). Constructed ONCE here and injected
-	// into every per-game Loop and the retro below, so all remote decide calls and
-	// retros draw down a SINGLE per-minute request cap (llm.max_requests_per_minute).
-	// The per-game cadence (decision.min_interval_ms) and eligibility
-	// (llm.eligible_game_kinds) live on each Loop; only the budget is shared.
-	sharedLLMBudget := decision.NewLLMBudget()
-	// LLM budget ceiling (#1788, NFR-011, FR-152, C-034): AGENT_LLM_MAX_REQUESTS_PER_MINUTE
-	// is the operator's env ceiling; the enforced cap is min(ceiling, the live
-	// llm.max_requests_per_minute flag), so a flag write can only tighten it. 0 = no
-	// ceiling (the flag governs). Read once at startup, applied to every loop below.
-	llmBudgetCap := llmBudgetCeiling()
-	if llmBudgetCap > 0 {
-		slog.Info("LLM request budget ceiling set (#1788)", "max_per_minute", llmBudgetCap)
-	}
+	sharedWriter := actions.NewWriter(c.gameFlags, logger)
+	c.sharedSink = actionSink(agentFlags, sharedWriter, logger)
+	c.llmBudget = newLLMBudgetShare(agentFlags, logger)
 	// Agent tuning (#1788, FR-150, C-035): model, effort, timeout, effect window and
 	// promotion timers resolve at use time from the agent flags; the compiled defaults
 	// (equal to the flag defaults) apply while a flag cannot be resolved (#1907).
-	tuning := newAgentTuning(agentFlags, compiledTuningDefaults())
-	// Proposer/retro text backend (#1234): the direct Claude client, or nil for the
-	// stub default (the proposer proposes nothing, the retro is capture-only). It is
-	// NOT an in-game decision path: in-game LLM decisions go through the
-	// decision.backend registry below.
-	// The backend choice is the inference.backend flag, resolved per use (#1810,
-	// C-035); with flagd unresolved it is the stub (#1907).
-	textBackends := newTextBackends(logger, tuning, agentFlags)
-	_, inferBackendName := textBackends.Select(ctx)
+	c.tuning = newAgentTuning(agentFlags, compiledTuningDefaults())
+	return c
+}
+
+// newLLMBudgetShare constructs the shared GLOBAL LLM request budget (#847) ONCE, so
+// all remote decide calls, retros and real proposer calls draw down a SINGLE
+// per-minute request cap (llm.max_requests_per_minute). The per-game cadence
+// (decision.min_interval_ms) and eligibility (llm.eligible_game_kinds) live on each
+// Loop; only the budget is shared.
+//
+// LLM budget ceiling (#1788, NFR-011, FR-152, C-034): AGENT_LLM_MAX_REQUESTS_PER_MINUTE
+// is the operator's env ceiling; the enforced cap is min(ceiling, the live
+// llm.max_requests_per_minute flag), so a flag write can only tighten it. 0 = no
+// ceiling (the flag governs). Read once at startup, applied to every consumer.
+func newLLMBudgetShare(agentFlags *flags.Flags, logger *slog.Logger) llmBudgetShare {
+	budget := decision.NewLLMBudget()
+	ceiling := llmBudgetCeiling()
+	if ceiling > 0 {
+		slog.Info("LLM request budget ceiling set (#1788)", "max_per_minute", ceiling)
+	}
+	return llmBudgetShare{
+		ceiling: ceiling,
+		loop: func(l *decision.Loop) {
+			l.SetLLMBudget(budget)
+			l.SetLLMBudgetCeiling(ceiling)
+		},
+		retro: func(r *decision.RetroCoordinator) {
+			r.SetLLMBudget(budget)
+			r.SetLLMBudgetCeiling(ceiling)
+		},
+		admission: func(source string) *decision.LLMAdmission {
+			return decision.NewLLMAdmission(agentFlags, budget, ceiling, source, logger)
+		},
+	}
+}
+
+// buildTextBackends selects the proposer/retro text backend (#1234): the direct
+// Claude client, or nil for the stub default (the proposer proposes nothing, the
+// retro is capture-only). It is NOT an in-game decision path: in-game LLM decisions
+// go through the decision.backend registry (buildDecisionLoops). The backend choice
+// is the inference.backend flag, resolved per use (#1810, C-035); with flagd
+// unresolved it is the stub (#1907).
+func (c *components) buildTextBackends() {
+	c.text = newTextBackends(c.logger, c.tuning, c.agentFlags)
+	_, inferBackendName := c.text.Select(c.ctx)
 	slog.Info("Proposer/retro inference backend selected (#1234, #1810)",
 		"backend", inferBackendName,
-		"model", tuning.Inference(ctx).Model,
+		"model", c.tuning.Inference(c.ctx).Model,
 		"api_key_set", os.Getenv("ANTHROPIC_API_KEY") != "",
 	)
 	// Shared rolling cross-game context window (#929, M7-2; #1368). Constructed ONCE
 	// here, in agent-process memory only: the last 20 REAL games as game-level
 	// aggregates (no serials, C-009 / UC-042 BR-004, BR-005) plus the last 20 pattern
 	// games' per-slot rows keyed by archetype (UC-042 BR-006). The gamesummary
-	// coordinator (below) feeds real games, the pattern-game callbacks feed pattern
-	// games, and the shadow-experiment proposer renders it as its narrative.
-	sharedContextWindow := gamewindow.NewStore()
-	// Intervention-effect follow-up window (#918): how long after a dispatched
-	// intervention the loop re-samples the game's fitness signals to measure the
-	// effect. Resolved at use time, per dispatched intervention, from the
-	// effect.window_seconds flag (#1788; the compiled default while unresolved).
-	// Probe decisions (demo/verification, decision.probe_decisions, #1810): the flag
-	// is read per decision cycle through the snapshot; off while flagd cannot resolve it.
-	// Forward-declared so the per-game loop factory can close over it to wire the
-	// async re-validation source: each loop re-fetches its game's CURRENT context
-	// from this Multiplexer when a remote decide answer lands. It is
-	// assigned below (mux = ...) before any signal arrives, so the closure never sees nil.
-	var mux *gamecontext.Multiplexer
+	// coordinator feeds real games, the pattern-game callbacks feed pattern games, and
+	// the shadow-experiment proposer renders it as its narrative.
+	c.window = gamewindow.NewStore()
+}
+
+// buildDecisionLoops builds the per-game decision LoopSet (#845 PR C) and the
+// infrastructure observe + rollout loop (#733/#734).
+func (c *components) buildDecisionLoops() {
 	// Decision-backend registry (#1226, #1244): maps the decision.backend flag to a
 	// factory that builds the remote decide.Backend (claude / openai / jev) from the
 	// CURRENT flag snapshot (model, base URL, timeout, reasoning effort) on every
@@ -556,121 +658,11 @@ func main() {
 		"claude_key", decideEnv.AnthropicAPIKey != "",
 		"openai_key", decideEnv.OpenAIAPIKey != "",
 		"jev_key", decideEnv.JevAPIKey != "")
-	decideBackends := newDecideRegistry(decideEnv, newDecideHTTPClient())
-	// experimentFlags is installed once the experiment registry exists (below).
-	experimentFlags := &experimentFlagLookup{}
-	loopFactory := func(gameID string) *decision.Loop {
-		// The decision loop is driven by the OpenFeature/flagd control layer (#727):
-		// flags are evaluated every cycle, the kill switch / objectives / permission
-		// gate are applied, and decisions flow through the #724 audit spans.
-		loop := decision.NewLoop(agentFlags, logger)
-		// Throttle for the evaluate log line / agent.disabled span reads
-		// decision.throttle_seconds LIVE from the shared LifecycleHolder (#927): a
-		// config-change to the throttle flag is honored on the next cycle with no
-		// restart (the holder is a lock-free atomic load, so the hot path never
-		// evaluates flagd). Every per-game loop shares the one holder source.
-		loop.SetThrottleSource(lifecycleHolder.DecisionThrottle)
-		// Inject the SHARED global LLM request budget (#847) so every per-game loop
-		// references the same instance: eligibility + cadence are per-loop, the
-		// budget is one global cap across all games and the retro.
-		loop.SetLLMBudget(sharedLLMBudget)
-		// Apply the env ceiling (#1788): the cap is min(AGENT_LLM_MAX_REQUESTS_PER_MINUTE,
-		// llm.max_requests_per_minute). 0 (unset) = no ceiling, the flag governs.
-		loop.SetLLMBudgetCeiling(llmBudgetCap)
-		// Async wiring for the remote decide path (#1226) and the effect sampler
-		// (#918): a remote decide call runs in its own goroutine and, when the answer
-		// lands, re-validates against this game's CURRENT context (fetched from the
-		// Multiplexer by game_id). SetGameID tells it which partition to re-read;
-		// SetContextProvider is the re-validation source; SetRootContext bounds every
-		// goroutine to the agent's lifetime so shutdown cancels in-flight calls.
-		loop.SetGameID(gameID)
-		loop.SetContextProvider(decision.MuxContextProvider{Mux: mux})
-		loop.SetRootContext(ctx)
-		// Intervention-effect MEASUREMENT window (#918): after a dispatched intervention,
-		// the loop samples THIS game's fitness/objective signals again after this window
-		// and emits the before/after delta (agent.intervention.effect span +
-		// agent_intervention_effect_delta metric), reusing the SetContextProvider source
-		// above to re-read the game's CURRENT signals. The follow-up goroutine is bounded
-		// by SetRootContext so shutdown cancels it cleanly (no leak). Resolved per
-		// intervention from effect.window_seconds (#1788); non-positive = the default.
-		loop.SetEffectWindowSource(tuning.EffectWindow)
-		// Intervention timeline wiring (#945): feed each decision's dispatched/blocked
-		// outcome into the #916 rolling narrative of the SAME game this loop serves.
-		// The closure captures THIS partition's game_id and routes through the
-		// Multiplexer (mux.AppendInterventionEvent), so the event lands in the timeline
-		// of the game it targeted and nowhere else — the per-game isolation (#845) the
-		// multiplexer already enforces for signals, extended to interventions. This
-		// mirrors SetContextProvider's #917 wiring (a per-game closure over the same
-		// mux+gameID). runDecision calls it for BOTH dispatched and blocked decisions,
-		// covering the sync path AND the async apply path (which also runs runDecision).
-		// The timeline (and thus the #916/#928/#929 narratives + the #960 proposer
-		// prompt) now includes the agent's own intervention history.
-		loop.SetInterventionRecorder(func(intervention, serial string, blocked bool) {
-			mux.AppendInterventionEvent(gameID, intervention, serial, blocked)
-		})
-		// How each dispatched decision's write ended (applied / gated_off /
-		// write_failed) feeds the same game's tally, so the game summary splits
-		// applied from blocked (#1771).
-		loop.SetApplyOutcomeRecorder(func(intervention string, outcome gamecontext.ApplyOutcome) {
-			mux.RecordInterventionApply(gameID, intervention, outcome)
-		})
-		// Targeted-player display names (#1295): player.name on agent.decision /
-		// agent.action comes from the Multiplexer's controller_info view.
-		loop.SetPlayerNameResolver(mux.PlayerName)
-		// UC-040 A35, BR-023 (#2046): a state or level decision that repeats the value
-		// this loop last wrote is not written again (already_applied); the narrative
-		// records its first suppression as "already in place".
-		loop.SetSuppressReapplied(true)
-		loop.SetAlreadyAppliedRecorder(func(intervention, serial string) {
-			mux.AppendInterventionInPlace(gameID, intervention, serial)
-		})
-		// UC-040 A31 step 1 (#1837): the per-loop shield-charge ledger reads the game's
-		// shield.activation / shield.charge_expiry_seconds from the read-only game domain.
-		loop.SetShieldChargeMode(agentFlags.ShieldCharge)
-		// UC-040 A31 step 1, BR-027 (#2096): the game's first shield.activation is latched
-		// when the agent first sees the game, so a later flip to `hold` keeps a trigger game trigger.
-		agentFlags.LatchShieldMode(context.Background(), gameID)
-		// Shared decision-backend registry (#1226): decision.backend selects who decides.
-		loop.SetDecideRegistry(decideBackends)
-		// The objective-weighted rules engine (#726) is the active default, built
-		// FRESH per loop (see the factory doc above). Its objective weights are driven
-		// live from the `objectives` flag each cycle; policy/fitness run on
-		// flagd-schema defaults.
-		rules := decision.NewObjectiveRulesLive(nil)
-		// Pattern games (UC-046): the loop marks remote-backend decisions non-exact and
-		// records the decision sequence; the rules engine switches to a per-game chaos
-		// RNG seeded from the game's rng_seed once the runner registers the game
-		// (BR-007). For every other game both stay inert (rules golden unchanged).
-		patternObs := patterngame.LoopObserver{Tracker: patterngame.Default, GameID: gameID}
-		loop.SetPatternObserver(patternObs)
-		rules.SetChaosSeedSource(patternObs.SeedSource())
-		rules.SetLateSeedHook(patternObs.LateSeed)
-		// The rules engine reads the loop's shield ledger once per ranking and skips a
-		// grant_shield to a charged, capped or cooling-down player (UC-040 A31, A33).
-		rules.SetShieldSource(loop.ShieldSerials)
-		// The rules engine skips a state or level candidate whose value the loop
-		// already applied (UC-040 A35 step 4), so it does not take a slot every second.
-		rules.SetAppliedSource(loop.AppliedValues)
-		// UC-040 A40, BR-028 (#1975): in a game of an experiment, either arm, a lever
-		// of the flag under test is not written.
-		loop.SetExperimentFlagSource(experimentFlags.FlagFor)
-		loop.Rules = rules
-		// Demo/verification probe (decision.probe_decisions): built once per loop so
-		// its rate-limit clock survives flag flips; Loop.rulesFor swaps it in per
-		// cycle while the flag is on (never in pattern games).
-		loop.ProbeRules = decision.NewProbeRules(probeInterval, nil)
-		// Action sink (#730/#1213): the shared GatedActionSink applies decisions as
-		// game-scoped writes to the flag service (#1411) ONLY when the
-		// LIVE interventions_enabled flag is on; otherwise it discards them (the loop's
-		// discardActions default behavior) — gate read per Apply, fail-closed on a flagd outage. The one sink is
-		// safe to share across loops (no per-game state). The nil guard is defensive: a
-		// nil sink would leave the loop's default discardActions in place.
-		if sharedSink != nil {
-			loop.Actions = sharedSink
-		}
-		return loop
-	}
-	loops := decision.NewLoopSet(loopFactory)
+	c.decideBackends = newDecideRegistry(decideEnv, newDecideHTTPClient())
+	// experimentFlags is installed once the experiment registry exists (buildExperimentStack).
+	c.experimentFlags = &experimentFlagLookup{}
+	c.loops = decision.NewLoopSet(c.newDecisionLoop)
+
 	// Infrastructure observe + rollout path (#733/#734, M3): a parallel store fed
 	// by the controller.bluetooth_health span on the same OTLP trace receiver. It
 	// honors the same self-ingestion skip as the game store. The InfraLoop runs the
@@ -678,35 +670,164 @@ func main() {
 	// and the per-stage dwell has elapsed it advances current_controller_count one
 	// stage up the ladder, emitting an agent.infrastructure.decision span every
 	// active-rollout cycle.
-	infraStore := infracontext.NewStore(infraControllerTTL, nil)
-	infraStore.SetOwnService(resolveServiceName())
+	c.infraStore = infracontext.NewStore(infraControllerTTL, nil)
+	c.infraStore.SetOwnService(resolveServiceName())
 	// Bluetooth fitness source (#735): backed DIRECTLY by the flags client, so the
 	// infra loop re-reads the live fitness.bluetooth.* thresholds on every observe
 	// cycle (~1Hz) — tunable live on stage with no restart, and in the lobby too
 	// (the game loop only publishes thresholds while a session is active, so it
 	// cannot keep the infra loop live on its own). On any evaluation error the
 	// accessor falls back to the flagd-schema defaults.
-	bluetoothFitness := decision.NewFlagBluetoothFitness(agentFlags)
+	bluetoothFitness := decision.NewFlagBluetoothFitness(c.agentFlags)
 	// Rollout actuator (#734/#1213): a GatedRolloutActuator wrapping the real
 	// RolloutWriter — it flips current_controller_count on the flag service ONLY when the
 	// LIVE rollout_enabled flag is on, else it dry-runs (decides+spans but does not
 	// write). Gate read per SetControllerCount/DryRun against agentFlags, fail-closed
 	// (dry-run) on a flagd outage. ctx is the agent's long-lived context.
-	infraLoop := decision.NewInfraLoop(logger, rolloutDwell(), bluetoothFitness, rolloutActuator(ctx, agentFlags, logger))
+	c.infraLoop = decision.NewInfraLoop(c.logger, rolloutDwell(), bluetoothFitness, rolloutActuator(c.ctx, c.agentFlags, c.logger))
 	// Auto-remediation gate (#736): remediation_allowed (rollout set) is evaluated
 	// through flagd like every other flag (#1411, R1). When false, fitness failures
 	// are RECOMMENDED only (span, no write). Default on any error is false
 	// (fail-closed). The dry-run actuator above also applies to rollback, so a
 	// disabled rollout records the rollback decision without writing.
-	infraLoop.SetRemediationSource(actions.NewRemediationReader(agentFlags))
+	c.infraLoop.SetRemediationSource(actions.NewRemediationReader(c.agentFlags))
 	// Post-rollback cooldown (#736): suppress re-expansion for this long after a
 	// rollback so fitness can recover before the loop climbs again.
-	infraLoop.SetCooldown(rolloutCooldown())
+	c.infraLoop.SetCooldown(rolloutCooldown())
 	// Freshness gate (#734): evaluate the rollout only when ≥1 controller is
 	// reporting fresh Bluetooth health. Game-state-independent (lobby connects).
-	infraLoop.SetGate(func(snap infracontext.InfraContext, now time.Time) bool {
+	c.infraLoop.SetGate(func(snap infracontext.InfraContext, now time.Time) bool {
 		return gate.ShouldEvaluateInfra(snap, now, infraControllerTTL)
 	})
+}
+
+// newDecisionLoop is the per-game decision Loop factory (#845 PR C). Each game
+// partition gets its OWN Loop — own weighted rate-limit budget, own log/span
+// throttle, own per-cycle LayerState — so concurrent games never share a budget or
+// contend on throttle. The LoopSet invokes it once per game_id, lazily on first
+// evaluation, which is after buildPipeline has assigned c.mux.
+//
+// Shared vs per-game wiring:
+//   - FRESH rules engine PER LOOP: NewObjectiveRulesLive builds a new engine with
+//     its own LiveObjectives / LiveFitness sources. The loop drives these every
+//     cycle (SetObjectives/SetFitness before Evaluate, LastFitness after), so a
+//     shared engine would let two games race each other's objective weights and
+//     fitness reads — the spans would carry the wrong game's agent.objectives.
+//     A fresh engine removes the shared mutable state entirely.
+//   - SHARED gated action sink and LLM budget (newComponents).
+//   - SHARED flag source (agentFlags) and tracer: stateless / concurrency-safe.
+func (c *components) newDecisionLoop(gameID string) *decision.Loop {
+	mux := c.mux
+	// The decision loop is driven by the OpenFeature/flagd control layer (#727):
+	// flags are evaluated every cycle, the kill switch / objectives / permission
+	// gate are applied, and decisions flow through the #724 audit spans.
+	loop := decision.NewLoop(c.agentFlags, c.logger)
+	// Throttle for the evaluate log line / agent.disabled span reads
+	// decision.throttle_seconds LIVE from the shared LifecycleHolder (#927): a
+	// config-change to the throttle flag is honored on the next cycle with no
+	// restart (the holder is a lock-free atomic load, so the hot path never
+	// evaluates flagd). Every per-game loop shares the one holder source.
+	loop.SetThrottleSource(c.lifecycleHolder.DecisionThrottle)
+	// Inject the SHARED global LLM request budget (#847) so every per-game loop
+	// references the same instance, plus the env ceiling (#1788): the cap is
+	// min(AGENT_LLM_MAX_REQUESTS_PER_MINUTE, llm.max_requests_per_minute). 0 (unset)
+	// = no ceiling, the flag governs.
+	c.llmBudget.loop(loop)
+	// Async wiring for the remote decide path (#1226) and the effect sampler
+	// (#918): a remote decide call runs in its own goroutine and, when the answer
+	// lands, re-validates against this game's CURRENT context (fetched from the
+	// Multiplexer by game_id). SetGameID tells it which partition to re-read;
+	// SetContextProvider is the re-validation source; SetRootContext bounds every
+	// goroutine to the agent's lifetime so shutdown cancels in-flight calls.
+	loop.SetGameID(gameID)
+	loop.SetContextProvider(decision.MuxContextProvider{Mux: mux})
+	loop.SetRootContext(c.ctx)
+	// Intervention-effect MEASUREMENT window (#918): after a dispatched intervention,
+	// the loop samples THIS game's fitness/objective signals again after this window
+	// and emits the before/after delta (agent.intervention.effect span +
+	// agent_intervention_effect_delta metric), reusing the SetContextProvider source
+	// above to re-read the game's CURRENT signals. The follow-up goroutine is bounded
+	// by SetRootContext so shutdown cancels it cleanly (no leak). Resolved per
+	// intervention from effect.window_seconds (#1788); non-positive = the default.
+	loop.SetEffectWindowSource(c.tuning.EffectWindow)
+	// Intervention timeline wiring (#945): feed each decision's dispatched/blocked
+	// outcome into the #916 rolling narrative of the SAME game this loop serves.
+	// The closure captures THIS partition's game_id and routes through the
+	// Multiplexer (mux.AppendInterventionEvent), so the event lands in the timeline
+	// of the game it targeted and nowhere else — the per-game isolation (#845) the
+	// multiplexer already enforces for signals, extended to interventions.
+	// runDecision calls it for BOTH dispatched and blocked decisions, covering the
+	// sync path AND the async apply path (which also runs runDecision).
+	loop.SetInterventionRecorder(func(intervention, serial string, blocked bool) {
+		mux.AppendInterventionEvent(gameID, intervention, serial, blocked)
+	})
+	// How each dispatched decision's write ended (applied / gated_off /
+	// write_failed) feeds the same game's tally, so the game summary splits
+	// applied from blocked (#1771).
+	loop.SetApplyOutcomeRecorder(func(intervention string, outcome gamecontext.ApplyOutcome) {
+		mux.RecordInterventionApply(gameID, intervention, outcome)
+	})
+	// Targeted-player display names (#1295): player.name on agent.decision /
+	// agent.action comes from the Multiplexer's controller_info view.
+	loop.SetPlayerNameResolver(mux.PlayerName)
+	// UC-040 A35, BR-023 (#2046): a state or level decision that repeats the value
+	// this loop last wrote is not written again (already_applied); the narrative
+	// records its first suppression as "already in place".
+	loop.SetSuppressReapplied(true)
+	loop.SetAlreadyAppliedRecorder(func(intervention, serial string) {
+		mux.AppendInterventionInPlace(gameID, intervention, serial)
+	})
+	// UC-040 A31 step 1 (#1837): the per-loop shield-charge ledger reads the game's
+	// shield.activation / shield.charge_expiry_seconds from the read-only game domain.
+	loop.SetShieldChargeMode(c.agentFlags.ShieldCharge)
+	// UC-040 A31 step 1, BR-027 (#2096): the game's first shield.activation is latched
+	// when the agent first sees the game, so a later flip to `hold` keeps a trigger game trigger.
+	c.agentFlags.LatchShieldMode(context.Background(), gameID)
+	// Shared decision-backend registry (#1226): decision.backend selects who decides.
+	loop.SetDecideRegistry(c.decideBackends)
+	// The objective-weighted rules engine (#726) is the active default, built
+	// FRESH per loop (see the factory doc above). Its objective weights are driven
+	// live from the `objectives` flag each cycle; policy/fitness run on
+	// flagd-schema defaults.
+	rules := decision.NewObjectiveRulesLive(nil)
+	// Pattern games (UC-046): the loop marks remote-backend decisions non-exact and
+	// records the decision sequence; the rules engine switches to a per-game chaos
+	// RNG seeded from the game's rng_seed once the runner registers the game
+	// (BR-007). For every other game both stay inert (rules golden unchanged).
+	patternObs := patterngame.LoopObserver{Tracker: patterngame.Default, GameID: gameID}
+	loop.SetPatternObserver(patternObs)
+	rules.SetChaosSeedSource(patternObs.SeedSource())
+	rules.SetLateSeedHook(patternObs.LateSeed)
+	// The rules engine reads the loop's shield ledger once per ranking and skips a
+	// grant_shield to a charged, capped or cooling-down player (UC-040 A31, A33).
+	rules.SetShieldSource(loop.ShieldSerials)
+	// The rules engine skips a state or level candidate whose value the loop
+	// already applied (UC-040 A35 step 4), so it does not take a slot every second.
+	rules.SetAppliedSource(loop.AppliedValues)
+	// UC-040 A40, BR-028 (#1975): in a game of an experiment, either arm, a lever
+	// of the flag under test is not written.
+	loop.SetExperimentFlagSource(c.experimentFlags.FlagFor)
+	loop.Rules = rules
+	// Demo/verification probe (decision.probe_decisions): built once per loop so
+	// its rate-limit clock survives flag flips; Loop.rulesFor swaps it in per
+	// cycle while the flag is on (never in pattern games).
+	loop.ProbeRules = decision.NewProbeRules(probeInterval, nil)
+	// Action sink (#730/#1213): the shared GatedActionSink applies decisions as
+	// game-scoped writes to the flag service (#1411) ONLY when the
+	// LIVE interventions_enabled flag is on; otherwise it discards them (the loop's
+	// discardActions default behavior) — gate read per Apply, fail-closed on a flagd outage. The one sink is
+	// safe to share across loops (no per-game state). The nil guard is defensive: a
+	// nil sink would leave the loop's default discardActions in place.
+	if c.sharedSink != nil {
+		loop.Actions = c.sharedSink
+	}
+	return loop
+}
+
+// buildGameEnd builds the once-per-game consumers that buildPipeline chains onto
+// each partition's OnGameEnd hook: the post-game retrospective, the game narrative
+// builder and the shadow-experiment proposer.
+func (c *components) buildGameEnd() {
 	// Post-game retrospective (#844): on the GameActive true->false transition each
 	// partition's store fires OnGameEnd with a pre-reset snapshot, and the
 	// RetroCoordinator captures the prompt the agent would send to an offline
@@ -716,25 +837,22 @@ func main() {
 	// per-game partitions (#845 PR B) every partition's Store shares this one
 	// coordinator; it dedupes by SessionID across all partitions, so interleaved
 	// game-ends each capture exactly once (see retro_capture.go's bounded dedupe).
-	retro := decision.NewRetroCoordinator(agentFlags, logger)
+	c.retro = decision.NewRetroCoordinator(c.agentFlags, c.logger)
 	// A retrospective is one LLM request, so it draws from the SAME shared global
-	// budget the in-game gate uses (#847 acceptance #7): inject the one instance the
-	// per-game loops also hold, so a retro at game end cannot blow the per-minute cap.
-	retro.SetLLMBudget(sharedLLMBudget)
-	// The AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling applies to the retro's budget
-	// check too, so the shared cap is the same number on both paths.
-	retro.SetLLMBudgetCeiling(llmBudgetCap)
+	// budget, and the same AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling, the in-game gate
+	// uses (#847 acceptance #7), so a retro at game end cannot blow the per-minute cap.
+	c.llmBudget.retro(c.retro)
 	// #1234: the retro calls the proposer/retro text backend directly (Claude, or
 	// nil = capture-only with used="none"/no_backend_available for the stub default),
 	// bounded by inference.timeout_seconds, resolved per retro call (#1788).
-	retro.SetBackendSource(textBackends.RetroBackend)
-	retro.SetTimeoutSource(tuning.InferenceTimeout)
+	c.retro.SetBackendSource(c.text.RetroBackend)
+	c.retro.SetTimeoutSource(c.tuning.InferenceTimeout)
 	// #1179: bound every async retro inference goroutine to the agent's root context so
 	// shutdown cancellation unblocks a well-behaved in-flight Infer (no leak), the same
 	// SetRootContext pattern the per-game loops use. The retro now actually CALLS the
 	// resolved backend at game end (async), decodes the conclusion, and stamps it on the
 	// agent.llm.retro span.
-	retro.SetRootContext(ctx)
+	c.retro.SetRootContext(c.ctx)
 
 	// Game narrative builder (#928, M7-1): on the SAME GameActive true->false
 	// transition, aggregate the partition's pre-reset snapshot (live signals + the
@@ -743,40 +861,44 @@ func main() {
 	// games their experiment's linked set, BR-005). Nothing is
 	// written to disk (#1368). It is a SEPARATE once-per-game component from
 	// the retro — the summary must run unconditionally (no LLM budget/eligibility),
-	// so it owns its own dedupe and is chained alongside retro.OnGameEnd below
+	// so it owns its own dedupe and is chained alongside retro.OnGameEnd
 	// (chainGameEnd) on the single store hook. The aggregation is itself an
 	// agent.game.summary span.
-	summaries := gamesummary.NewCoordinator(logger)
+	c.summaries = gamesummary.NewCoordinator(c.logger)
 	// Advance the M7-2 rolling window on every game end (#929): the coordinator
 	// Records each freshly-built Summary into the shared window, which reduces a game to
 	// its aggregates: a real game goes to the real-game window, a shadow game to its
 	// experiment's linked set (UC-042 BR-004, BR-005).
-	summaries.SetObserver(sharedContextWindow)
+	c.summaries.SetObserver(c.window)
 	slog.Info("Game narrative builder enabled (#928, M7-1)")
 	slog.Info("Rolling game context window enabled (#929, M7-2)", "retention_cap", gamewindow.RetentionCap)
 
-	// M7-4 shadow-experiment proposer (#931). The agent turns its rolling game
-	// narrative (#929 window) + fitness signals into a structured {flag, value}
-	// experiment and submits it through the experiment Gate — shadow-scoped, safe
-	// by construction (#932). The Gate writes experiment-arm values to the
-	// game flag set through the flag service; the Proposer NEVER writes directly.
-	//
-	// The Backend is the inference seam (Backend.Infer): the Claude text backend when
-	// the inference.backend flag is claude (#1234), else the proposeBackend stub, so every
-	// propose cycle degrades to NO proposal, NO error. (code_improvement.engine,
-	// once recorded on the span, was retired in #1810, D-A10.)
-	// The vocab provider reads the experiment catalog from the flag service so the
-	// model is constrained to (and the decoder validates against) the flags the
-	// registry lets an experiment write (flags.md §13.3).
+	c.buildProposer()
+}
+
+// buildProposer builds the M7-4 shadow-experiment proposer (#931). The agent turns
+// its rolling game narrative (#929 window) + fitness signals into a structured
+// {flag, value} experiment and submits it through the experiment Gate —
+// shadow-scoped, safe by construction (#932). The Gate writes experiment-arm values
+// to the game flag set through the flag service; the Proposer NEVER writes directly.
+//
+// The Backend is the inference seam (Backend.Infer): the Claude text backend when
+// the inference.backend flag is claude (#1234), else the proposeBackend stub, so every
+// propose cycle degrades to NO proposal, NO error. (code_improvement.engine,
+// once recorded on the span, was retired in #1810, D-A10.)
+// The vocab provider reads the experiment catalog from the flag service so the
+// model is constrained to (and the decoder validates against) the flags the
+// registry lets an experiment write (flags.md §13.3).
+func (c *components) buildProposer() {
 	// The proposer's sink is bound to the experiment registry once the experiment
-	// loop exists (below): a proposal becomes a declared experiment that runs in real
-	// shadow games. Without the loop every proposal is refused (no_experiment_loop)
-	// and nothing is written (PR #1417 review B2).
-	proposalSink := &experiment.LateSink{}
+	// loop exists (buildExperimentStack): a proposal becomes a declared experiment that
+	// runs in real shadow games. Without the loop every proposal is refused
+	// (no_experiment_loop) and nothing is written (PR #1417 review B2).
+	c.proposalSink = &experiment.LateSink{}
 	// Feed the SAME text backend the retro uses (#1234): with inference.backend=claude
 	// (#1810) the Claude client wrapped as an experiment.Backend, else the inert
 	// proposeBackend{} so the propose path proposes nothing. The choice is resolved
-	// once per ProposeOnce through the backend source; the fixed backend below is only
+	// once per ProposeOnce through the backend source; the fixed backend is only
 	// the stub the source never overrides.
 	// #1270: a REAL proposer model call is one LLM request, so it draws from the SAME
 	// shared global budget (and the same AGENT_LLM_MAX_REQUESTS_PER_MINUTE ceiling)
@@ -786,9 +908,9 @@ func main() {
 	// so a stub cycle never charges the budget.
 	// UC-043 A17 step 1: the proposer's vocabulary offers a hold key under the same
 	// gate as the dynamic declarer; its policy is set once the experiment loop is built.
-	proposerHold := &holdGate{}
-	proposer := newWiredProposer(textBackends.ProposerBackend, proposalSink, gameFlagVocab(gameFlags, proposerHold),
-		decision.NewLLMAdmission(agentFlags, sharedLLMBudget, llmBudgetCap, "proposer", logger), logger)
+	c.proposerHold = &holdGate{}
+	proposer := newWiredProposer(c.text.ProposerBackend, c.proposalSink, gameFlagVocab(c.gameFlags, c.proposerHold),
+		c.llmBudget.admission("proposer"), c.logger)
 	// #1270: the kill-switch gate, read at USE time on every game end (never cached
 	// at startup: flagd may be down then). Both `enabled` and `experiments_enabled`
 	// must be on, the same two gates the experiment loop obeys (FR-066), and the
@@ -796,7 +918,7 @@ func main() {
 	// ceiling AND the live experiment_proposer_enabled flag, the same gate the
 	// retro-seeded thesis proposer obeys. A closed gate skips before any model call,
 	// so it spends no budget.
-	permitPropose := proposerPermit(agentFlags, proposerEnabled())
+	permitPropose := proposerPermit(c.agentFlags, proposerEnabled())
 	// Propose on each GAME END, behind the kill switch + experiments_enabled, the
 	// cadence floor (code_improvement.min_interval_seconds, read live) and, for a
 	// real backend, the shared LLM call gate: proposing is an expensive LLM call, so
@@ -804,50 +926,54 @@ func main() {
 	// cross-game window as the narrative and fires ProposeOnce in a ctx-bounded
 	// goroutine so a slow inference never blocks the game-end path. ProposeOnce
 	// never returns an error (a failed/gated cycle is a recorded no-op).
-	// #2323: the proposer goroutines are tracked so run() joins them on shutdown,
-	// before main's deferred tracer / metrics shutdown.
-	proposals := &backgroundGroup{}
-	proposeOnGameEnd := func(c gamecontext.GameContext) {
+	// #2323: the proposer goroutines are tracked so the server's shutdown joins them,
+	// before run()'s deferred tracer / metrics shutdown.
+	ctx, agentFlags, window := c.ctx, c.agentFlags, c.window
+	c.proposals = &backgroundGroup{}
+	proposals := c.proposals
+	c.proposeOnGameEnd = func(gc gamecontext.GameContext) {
 		proposals.Go(func() {
 			cfg := agentFlags.CodeImprovement(ctx)
 			n := experiment.Narrative{
-				ContextBlock: gamewindow.Render(sharedContextWindow.SnapshotFor(c.GameKind, c.ExperimentID)),
+				ContextBlock: gamewindow.Render(window.SnapshotFor(gc.GameKind, gc.ExperimentID)),
 			}
-			if c.Session.GameMode != nil {
-				n.GameMode = *c.Session.GameMode
+			if gc.Session.GameMode != nil {
+				n.GameMode = *gc.Session.GameMode
 			}
 			proposer.ProposeOnce(ctx, n, experiment.ProposerConfig{
 				MinInterval: cfg.MinInterval,
 				Permit:      permitPropose,
-				GameKind:    c.GameKind,
+				GameKind:    gc.GameKind,
 			})
 		})
 	}
-	slog.Info("Shadow-experiment proposer enabled (#931, M7-4)", "flag_service", gameFlags.BaseURL())
+	slog.Info("Shadow-experiment proposer enabled (#931, M7-4)", "flag_service", c.gameFlags.BaseURL())
+}
 
-	// M7-8 code-improvement promotion surface (#936): build the Promoter with the
-	// env-gated real clients (or the inert recording no-ops when not gated — the
-	// SAFETY RAIL). The promotion mode/target are read LIVE per promotion, so an
-	// operator can flip code_improvement.mode (issue→pr→autonomous) at runtime with
-	// no restart. The live propose→validate→PROMOTE trigger that calls
-	// promoter.Promote on a validated experiment is the documented follow-up (the
-	// proposer is #931; the live validation stage is #964); here the
-	// gated promotion surface is constructed and held so the wiring + the env gate
-	// are in place and observable.
+// buildPromotion builds the M7-8 code-improvement promotion surface (#936): the
+// Promoter with the env-gated real clients (or the inert recording no-ops when not
+// gated — the SAFETY RAIL). The promotion mode/target are read LIVE per promotion, so
+// an operator can flip code_improvement.mode (issue→pr→autonomous) at runtime with
+// no restart.
+//
+// promotionGames is the deferred hold-key promotion's own flag-service client (its
+// game lister), built in run() like gameFlags.
+func (c *components) buildPromotion(promotionGames *flagservice.Client) {
 	// FitnessStore (#965/#1017): the finalized-per-game fitness store. It is built HERE
 	// (hoisted out of buildExperimentLoop) so it can back BOTH the experiment loop's
 	// validation/anchor seams AND the autonomous Watcher's real-game fitness source
 	// (#1057). The experiment loop's onGameEnd Records into it; the Watcher reads
 	// recent REAL samples out of it.
-	fitnessStore := newFitnessStore()
+	c.fitnessStore = newFitnessStore()
 	// #1100: give the retro span access to a finished experiment game's RECORDED
 	// fitness, keyed by game_id, so an agent.llm.retro span carries experiment.fitness
 	// alongside experiment.id / experiment.arm — making a retro joinable to the fitness
-	// its arm scored. The experiment loop's onGameEnd (chained BEFORE retro.OnGameEnd
-	// below) Records the settled sample into THIS store first, so the lookup sees it at
-	// retro time. A non-experiment game has no sample (and carries no ExperimentID), so
-	// the lookup is never even consulted for it — default-safe.
-	retro.SetFitnessLookup(func(gameID string) (float64, bool) {
+	// its arm scored. The experiment loop's onGameEnd (chained BEFORE retro.OnGameEnd in
+	// buildPipeline) Records the settled sample into THIS store first, so the lookup sees
+	// it at retro time. A non-experiment game has no sample (and carries no ExperimentID),
+	// so the lookup is never even consulted for it — default-safe.
+	fitnessStore := c.fitnessStore
+	c.retro.SetFitnessLookup(func(gameID string) (float64, bool) {
 		s, ok := fitnessStore.Get(gameID)
 		if !ok {
 			return 0, false
@@ -855,96 +981,161 @@ func main() {
 		return s.Fitness, true
 	})
 	// objResolver maps a promoted flag → its experiment's objective for the Watcher's
-	// store reads. It is late-bound: the registry that knows the mapping is built inside
-	// buildExperimentLoop (below), so the resolver is SET there once the registry exists.
+	// store reads. It is late-bound: the registry that knows the mapping is built in
+	// buildExperimentStack, so the resolver is SET there once the registry exists.
 	// Until then it resolves to "" (any-objective) — safe, just unfiltered.
-	objResolver := &promote.LateObjectiveResolver{}
+	c.objResolver = &promote.LateObjectiveResolver{}
 
-	promoter := buildPromoter(ctx, fitnessStore, objResolver, tuning, logger)
+	c.promoter = buildPromoter(c.ctx, c.fitnessStore, c.objResolver, c.tuning, c.logger)
 	// UC-043 A17 step 3: the real-game probe of the deferred hold-key writes reads the
-	// telemetry multiplexer, which is assigned below, at call time.
-	wireDeferredPromotions(promoter, func() *gamecontext.Multiplexer { return mux }, flagservice.NewFromEnv(), globalMeterProvider(), logger)
+	// telemetry multiplexer, which buildPipeline assigns, at call time.
+	wireDeferredPromotions(c.promoter, func() *gamecontext.Multiplexer { return c.mux }, promotionGames, globalMeterProvider(), c.logger)
 	slog.Info("Code-improvement promotion surface enabled (#936, M7-8)",
 		"code_improvement_enabled", getEnv("AGENT_CODE_IMPROVEMENT_ENABLED", "false"),
 		"target", getEnv("AGENT_CODE_IMPROVEMENT_TARGET", string(promote.TargetLocal)),
 		"autonomous_enabled", getEnv("AGENT_AUTONOMOUS_ENABLED", "false"),
 	)
+}
 
-	// M7 / #991 experiment cohort loop — FINAL ASSEMBLY (epic #982). buildExperimentLoop
-	// constructs the experiment.Registry with the REAL seams (#976 spawner, #977
-	// targeting Gate/Writer, #979 verdict, #980/#961 promoter). #1044 startup-gate
-	// inversion: the loop is ALWAYS built + run now, and SELF-GATES each tick on the
-	// LIVE agent.json experiments_enabled flag (default off, and off while unresolved;
-	// no env fallback since #1907). When disabled — the default — the loop is BEHAVIORALLY
-	// INERT: no rehydrate, no seed, no shadow spawn, no targeting write, no promotion —
-	// the only residual work is one ~30s no-op tick goroutine. An off→on flip at runtime
-	// starts it with no restart. The real-default promotion path stays
-	// behind ALL of #961's gates (the promoter built above + the kill-switch via the
-	// ConfigResolver).
-	expLoop := buildExperimentLoop(agentFlags, promoter, fitnessStore, gameFlags, sharedContextWindow, logger)
-	if expLoop != nil {
-		proposerHold.setPolicy(expLoop.hold.policyOK)
-		// Bind the spawner's background game-drive goroutines to the agent's root
-		// context so shutdown cancels in-flight shadow games (no goroutine leak).
-		expLoop.spawner.SetRootContext(ctx)
-		// Now the registry exists: install the flag→objective resolver the autonomous
-		// Watcher uses to read the right per-objective recent-real fitness (#1057). Until
-		// this point it resolved to "" (any-objective); from here it is precise.
-		if expLoop.registry != nil {
-			reg := expLoop.registry
-			objResolver.Set(func(flagKey string) string {
-				return objectiveForFlag(reg, flagKey)
-			})
-			// #1188: give the per-game retro + summary spans access to the experiment's
-			// long-lived agent.experiment ROOT span by experiment_id, so an
-			// EXPERIMENT-bound game's agent.llm.retro / agent.game.summary re-parent under
-			// the experiment (joining its trace) instead of standing as own-root spans. The
-			// registry's ExperimentSpanContext is a clean read accessor; a non-experiment
-			// game (empty experiment_id) or a torn-down experiment yields ok=false, so those
-			// spans keep their pre-#1188 game-linked own-root behavior — graceful.
-			retro.SetExperimentParent(reg.ExperimentSpanContext)
-			summaries.SetExperimentParent(reg.ExperimentSpanContext)
-			proposalSink.Set(expLoop.proposalSink())
-			installExperimentFlags(experimentFlags, reg)
-		}
-		// #1184: close the game→retro→thesis→experiment loop. Forward each decoded
-		// post-game retro suggestion (#1179) into the experiment loop's retro-seeded
-		// THESIS proposer, so the next experiment's thesis is seeded from the retro's
-		// reasoning. This wiring is purely additive — the suggestion is still recorded
-		// on the retro span — and the proposer only ACTS on the backlog when its
-		// opt-in (AGENT_EXPERIMENT_PROPOSER_ENABLED, default OFF) is on, so feeding it
-		// here changes autonomous behavior for nobody who has not opted in.
-		if expLoop.proposer != nil {
-			proposer := expLoop.proposer
-			retro.SetSuggestionSink(func(s llm.RetroSuggestion) {
-				proposer.Record(experiment.RetroSuggestion{
-					InterventionType: s.InterventionType,
-					Emphasis:         s.Emphasis,
-					Reason:           s.Reason,
-				})
-			})
-		}
+// buildExperimentStack assembles the M7 / #991 experiment cohort loop (epic #982).
+// buildExperimentLoop constructs the experiment.Registry with the REAL seams (#976
+// spawner, #977 targeting Gate/Writer, #979 verdict, #980/#961 promoter). #1044
+// startup-gate inversion: the loop is ALWAYS built + run now, and SELF-GATES each
+// tick on the LIVE agent.json experiments_enabled flag (default off, and off while
+// unresolved; no env fallback since #1907). When disabled — the default — the loop is
+// BEHAVIORALLY INERT: no rehydrate, no seed, no shadow spawn, no targeting write, no
+// promotion — the only residual work is one ~30s no-op tick goroutine. An off→on flip
+// at runtime starts it with no restart. The real-default promotion path stays behind
+// ALL of #961's gates (the promoter from buildPromotion + the kill-switch via the
+// ConfigResolver).
+func (c *components) buildExperimentStack() {
+	c.expLoop = buildExperimentLoop(c.agentFlags, c.promoter, c.fitnessStore, c.gameFlags, c.window, c.logger)
+	expLoop := c.expLoop
+	if expLoop == nil {
+		return
 	}
+	c.proposerHold.setPolicy(expLoop.hold.policyOK)
+	// Bind the spawner's background game-drive goroutines to the agent's root
+	// context so shutdown cancels in-flight shadow games (no goroutine leak).
+	expLoop.spawner.SetRootContext(c.ctx)
+	// Now the registry exists: install the flag→objective resolver the autonomous
+	// Watcher uses to read the right per-objective recent-real fitness (#1057). Until
+	// this point it resolved to "" (any-objective); from here it is precise.
+	if expLoop.registry != nil {
+		reg := expLoop.registry
+		c.objResolver.Set(func(flagKey string) string {
+			return objectiveForFlag(reg, flagKey)
+		})
+		// #1188: give the per-game retro + summary spans access to the experiment's
+		// long-lived agent.experiment ROOT span by experiment_id, so an
+		// EXPERIMENT-bound game's agent.llm.retro / agent.game.summary re-parent under
+		// the experiment (joining its trace) instead of standing as own-root spans. The
+		// registry's ExperimentSpanContext is a clean read accessor; a non-experiment
+		// game (empty experiment_id) or a torn-down experiment yields ok=false, so those
+		// spans keep their pre-#1188 game-linked own-root behavior — graceful.
+		c.retro.SetExperimentParent(reg.ExperimentSpanContext)
+		c.summaries.SetExperimentParent(reg.ExperimentSpanContext)
+		c.proposalSink.Set(expLoop.proposalSink())
+		installExperimentFlags(c.experimentFlags, reg)
+	}
+	// #1184: close the game→retro→thesis→experiment loop. Forward each decoded
+	// post-game retro suggestion (#1179) into the experiment loop's retro-seeded
+	// THESIS proposer, so the next experiment's thesis is seeded from the retro's
+	// reasoning. This wiring is purely additive — the suggestion is still recorded
+	// on the retro span — and the proposer only ACTS on the backlog when its
+	// opt-in (AGENT_EXPERIMENT_PROPOSER_ENABLED, default OFF) is on, so feeding it
+	// here changes autonomous behavior for nobody who has not opted in.
+	if expLoop.proposer != nil {
+		proposer := expLoop.proposer
+		c.retro.SetSuggestionSink(func(s llm.RetroSuggestion) {
+			proposer.Record(experiment.RetroSuggestion{
+				InterventionType: s.InterventionType,
+				Emphasis:         s.Emphasis,
+				Reason:           s.Reason,
+			})
+		})
+	}
+}
 
+// buildPipeline builds the GameContext multiplexer and the OTLP pipeline and returns
+// the goroutine-owning runtime core (#923): the OTLP gRPC receiver, health server,
+// eviction ticker, and the graceful-shutdown path all live in serverComponents.run so
+// the start -> cancel -> drain sequence is testable for goroutine leaks.
+func (c *components) buildPipeline(listenAddr, healthAddr string) *serverComponents {
 	// GameContext multiplexer (#845 PR B): one Store partition per game_id, plus the
 	// fallback partition "" for unlabeled signals (zero-regression — single-game
 	// mode collapses to exactly today's single-store behavior). The factory applies
 	// the lifecycle TTLs/clock, skips the agent's own telemetry (otlp/agent
 	// self-ingestion loop), and wires OnGameEnd per partition so the retrospective
-	// fires per game on the right partition's state.
-	// `var mux` is declared earlier so the per-game loop factory's ContextProvider can
-	// close over it (the remote decide path re-fetches the current context via the
-	// multiplexer); assign it here.
+	// fires per game on the right partition's state. The per-game loop factory and
+	// the deferred promotion probe read c.mux at call time.
 	staleEnds := newGameEndStaleCounter(globalMeterProvider())
-	mux = gamecontext.NewMultiplexer(func(gameID string) *gamecontext.Store {
+	c.mux = gamecontext.NewMultiplexer(c.newStore(staleEnds))
+	c.mux.SetOwnService(c.ownService)
+	// #2096 (UC-043 A17): the shield reads of a shadow arm game resolve its arm.
+	c.agentFlags.SetGameAttrs(gameAttrsFrom(c.mux))
+	// UC-046 A8: a pattern game is non-exact when any other game is live.
+	patterngame.Default.SetConcurrencyProbe(otherGameLive(c.mux))
+
+	pipe := newPipeline(c.mux, c.loops, c.lifecycle.PlayerTTL).
+		// Hot-reload the evaluate gate's freshness window in lockstep with the store
+		// eviction TTL (#927): both read lifecycle.player_ttl_seconds from the holder.
+		withPlayerTTLSource(c.lifecycleHolder.PlayerTTL).
+		withInfra(c.infraStore, c.infraLoop)
+
+	// Shadow-game runner (#778): when AGENT_SHADOW_GAME=true, sweep any orphaned
+	// reserved controllers from a prior crashed run, then run ONE mock-only game
+	// to completion in the background. The OTLP receiver keeps serving; the run does
+	// not block startup. The default (unset) leaves the agent inert.
+	var shadow func(context.Context)
+	if gamerunner.Enabled() {
+		logger, agentFlags := c.logger, c.agentFlags
+		shadow = func(ctx context.Context) { runShadowGame(ctx, logger, agentFlags) }
+	}
+
+	// The #991 experiment cohort loop's goroutine, owned by serverComponents.run so it
+	// is torn down (AbortAll) and joined on shutdown. Nil when the opt-in is off.
+	var experiments func(context.Context)
+	if c.expLoop != nil {
+		experiments = c.expLoop.run
+	}
+
+	// The eviction cadence is HOT-RELOADED from the holder (#927) via
+	// evictIntervalSrc: after each tick run re-reads lifecycle.evict_interval_seconds
+	// and Resets the ticker only when it moved (a lock-free atomic load, so the
+	// steady-state path costs nothing).
+	return &serverComponents{
+		listenAddr:       listenAddr,
+		healthAddr:       healthAddr,
+		logger:           c.logger,
+		pipe:             pipe,
+		mux:              c.mux,
+		loops:            c.loops,
+		retro:            c.retro,
+		evictInterval:    c.lifecycleHolder.EvictInterval(),
+		evictIntervalSrc: c.lifecycleHolder.EvictInterval,
+		shadow:           shadow,
+		experiments:      experiments,
+		background:       c.proposals,
+		// Read-only experiment-dossier HTTP view (#1183): serves GET /experiments[/{id}]
+		// off the durable journal on the existing health server. Always wired — it reads
+		// the same journals the experiment loop writes, and surfaces nothing when the
+		// experiments root is empty (a first-run / experiments-disabled agent).
+		dossier: newDossierReader(),
+	}
+}
+
+// newStore returns the multiplexer's per-partition Store factory.
+func (c *components) newStore(staleEnds otelmetric.Int64Counter) func(gameID string) *gamecontext.Store {
+	return func(gameID string) *gamecontext.Store {
 		// Prime with the holder's current values as the static fallback, then wire the
 		// LIVE TTL sources (#927): EvictStale reads lifecycle.player_ttl_seconds /
 		// lifecycle.session_grace_seconds from the shared holder at eviction time, so a
 		// config-change is honored on the next tick with no restart. Every partition
 		// created later shares the same holder source funcs.
-		s := gamecontext.NewStore(lifecycle.PlayerTTL, lifecycle.SessionGrace, nil)
-		s.SetTTLSources(lifecycleHolder.PlayerTTL, lifecycleHolder.SessionGrace)
-		s.SetOwnService(ownService)
+		s := gamecontext.NewStore(c.lifecycle.PlayerTTL, c.lifecycle.SessionGrace, nil)
+		s.SetTTLSources(c.lifecycleHolder.PlayerTTL, c.lifecycleHolder.SessionGrace)
+		s.SetOwnService(c.ownService)
 		// Chain the game-end consumers onto the single store hook (#928): the #991
 		// experiment conclusion hook, the #844 retrospective, the M7-1 summary builder,
 		// and the M7-4 proposer all fire on game end with the pre-reset snapshot. Each
@@ -967,72 +1158,15 @@ func main() {
 		// NON-experiment game it is a no-op (ConcludeGame ignores an unknown game_id), so
 		// the existing retro/summary behavior is untouched.
 		var experimentOnGameEnd func(gamecontext.GameContext)
-		if expLoop != nil {
-			experimentOnGameEnd = expLoop.onGameEnd
+		if c.expLoop != nil {
+			experimentOnGameEnd = c.expLoop.onGameEnd
 		}
 		// A stale end (UC-041 A4, #1494: the game's game_active series went silent,
 		// so its telemetry broke) is counted, kept out of experiments by
 		// expLoop.onGameEnd itself, and skipped by retro, summary and proposer.
 		s.OnGameEnd = buildGameEndChain(staleEnds,
-			experimentOnGameEnd, retro.OnGameEnd, summaries.OnGameEnd, proposeOnGameEnd)
+			experimentOnGameEnd, c.retro.OnGameEnd, c.summaries.OnGameEnd, c.proposeOnGameEnd)
 		return s
-	})
-	mux.SetOwnService(ownService)
-	// #2096 (UC-043 A17): the shield reads of a shadow arm game resolve its arm.
-	agentFlags.SetGameAttrs(gameAttrsFrom(mux))
-	// UC-046 A8: a pattern game is non-exact when any other game is live.
-	patterngame.Default.SetConcurrencyProbe(otherGameLive(mux))
-
-	pipe := newPipeline(mux, loops, lifecycle.PlayerTTL).
-		// Hot-reload the evaluate gate's freshness window in lockstep with the store
-		// eviction TTL (#927): both read lifecycle.player_ttl_seconds from the holder.
-		withPlayerTTLSource(lifecycleHolder.PlayerTTL).
-		withInfra(infraStore, infraLoop)
-
-	// Shadow-game runner (#778): when AGENT_SHADOW_GAME=true, sweep any orphaned
-	// reserved controllers from a prior crashed run, then run ONE mock-only game
-	// to completion in the background. The OTLP receiver keeps serving; the run does
-	// not block startup. The default (unset) leaves the agent inert.
-	var shadow func(context.Context)
-	if gamerunner.Enabled() {
-		shadow = func(ctx context.Context) { runShadowGame(ctx, logger, agentFlags) }
-	}
-
-	// The #991 experiment cohort loop's goroutine, owned by run() so it is torn down
-	// (AbortAll) and joined on shutdown. Nil when the opt-in is off (the default).
-	var experiments func(context.Context)
-	if expLoop != nil {
-		experiments = expLoop.run
-	}
-
-	// Hand the goroutine-owning runtime core to run (#923): the OTLP gRPC receiver,
-	// health server, eviction ticker, and the graceful-shutdown path all live there so the start -> cancel -> drain sequence
-	// is testable for goroutine leaks. The eviction cadence is HOT-RELOADED from the
-	// holder (#927) via evictIntervalSrc: after each tick run re-reads
-	// lifecycle.evict_interval_seconds and Resets the ticker only when it moved (a
-	// lock-free atomic load, so the steady-state path costs nothing).
-	components := &serverComponents{
-		listenAddr:       listenAddr,
-		healthAddr:       healthAddr,
-		logger:           logger,
-		pipe:             pipe,
-		mux:              mux,
-		loops:            loops,
-		retro:            retro,
-		evictInterval:    lifecycleHolder.EvictInterval(),
-		evictIntervalSrc: lifecycleHolder.EvictInterval,
-		shadow:           shadow,
-		experiments:      experiments,
-		background:       proposals,
-		// Read-only experiment-dossier HTTP view (#1183): serves GET /experiments[/{id}]
-		// off the durable journal on the existing health server. Always wired — it reads
-		// the same journals the experiment loop writes, and surfaces nothing when the
-		// experiments root is empty (a first-run / experiments-disabled agent).
-		dossier: newDossierReader(),
-	}
-	if err := components.run(ctx); err != nil {
-		slog.Error("gRPC server failed", "error", err)
-		os.Exit(1)
 	}
 }
 

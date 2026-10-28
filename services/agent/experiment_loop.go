@@ -528,6 +528,10 @@ func promotionConfigResolver(f *flags.Flags) promote.ConfigResolver {
 // experiments_enabled — either being off tears the surface down.
 func (e *experimentLoop) run(ctx context.Context) {
 	e.runCtx.Store(&ctx)
+	// UC-043 A20 (#2332): once ctx is cancelled the registry declares and starts no
+	// experiment (the game-end proposer can race the AbortAll below) and a conclusion
+	// does not promote.
+	e.registry.SetShutdownContext(ctx)
 	// First action immediately so an already-enabled agent accrues games without
 	// waiting a full tick (and a disabled one tears down promptly), then refill on
 	// the live cadence. The first interval is read before flagd has synced, so it is
@@ -1251,9 +1255,8 @@ func (e *experimentLoop) experimentParentCtx(experimentID string) context.Contex
 func (e *experimentLoop) concludeWithSpan(gc gamecontext.GameContext, fitness, duration float64, gameLink []trace.SpanStartOption) (experiment.Status, error) {
 	if e.tracer == nil {
 		// context.Background on purpose (#2323): the fold journals a finished game's
-		// sample and must complete even when it lands during shutdown.
-		// Pre-existing, tracked in #2332: ConcludeGame -> conclude -> r.promote(ctx)
-		// can still promote (a real flag write) when a conclusion lands during shutdown.
+		// sample and must complete even when it lands during shutdown. The registry
+		// does not promote once shutdown began (UC-043 A20, #2332).
 		return e.registry.ConcludeGame(context.Background(), gc.SessionID, fitness, duration)
 	}
 	attrs := []attribute.KeyValue{

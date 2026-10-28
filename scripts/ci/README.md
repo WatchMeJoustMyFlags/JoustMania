@@ -156,6 +156,23 @@ the digests dir; the jobs check out a blobless partial clone with only
 `check-retag-source.sh`, which stays the guard for the retag path.
 Test: `scripts/tests/test-check-main-tag-order.sh`.
 
+### `release-retag.sh` (#2338)
+
+`release.yml` tag-images, one matrix job per image: retags `IMAGE:<sha>` (the
+release tag commit) to `IMAGE:<version>`. release-please runs from the CI
+`workflow_run` of an earlier commit, so the tag commit's own CI is often still
+queued: the script polls for `IMAGE:<sha>` with exponential backoff (20 s
+doubling, capped at 300 s) for at most `WAIT_TIMEOUT` (2700 s = 45 min), then
+copies by digest and verifies the new tag. An existing `:<version>` with another
+digest is never overwritten; any inspect error other than a registry "not
+found" fails closed at once. On timeout the error names the image and the retag
+command (`gh workflow run release.yml -f version=<v> -f sha=<sha>`).
+Test: `scripts/tests/test-release-retag.sh`.
+
+```bash
+IMAGE_PREFIX=ghcr.io/<owner>/<repo> VERSION=0.9.1 SHA=<40-hex> bash scripts/ci/release-retag.sh menu-service
+```
+
 ## Makefile Targets
 
 All CI operations are available as Make targets:

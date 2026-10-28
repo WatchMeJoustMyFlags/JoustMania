@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/telemetry/keys"
 )
 
 // experiment.progress (#2059, docs/specs/telemetry.md §4.1): a registry snapshot of
@@ -25,7 +25,7 @@ const (
 	// SpanExperimentProgress is the span name.
 	SpanExperimentProgress = "experiment.progress"
 	// EventExperimentArm is the per-arm span event; it carries
-	// decision.AttrExperimentArm plus the three AttrExperimentArm* values.
+	// keys.AttrExperimentArm plus the three AttrExperimentArm* values.
 	EventExperimentArm = "experiment.arm"
 	// AttrExperimentProgressTrigger is one of the ProgressTrigger* values.
 	AttrExperimentProgressTrigger = "experiment.progress.trigger"
@@ -85,19 +85,19 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 	intent := e.journal.Intent()
 	summary := e.journal.Summary()
 	attrs := []attribute.KeyValue{
-		attribute.String(decision.AttrExperimentID, e.id),
-		attribute.String(decision.AttrExperimentStatus, string(e.status)),
-		attribute.String(decision.AttrExperimentFlagKey, intent.FlagKey),
-		attribute.String(decision.AttrExperimentObjective, intent.Objective),
-		attribute.Int(decision.AttrExperimentTargetN, intent.TargetNPerArm),
-		attribute.String(decision.AttrExperimentArms, strings.Join(e.arms, ",")),
+		attribute.String(keys.AttrExperimentID, e.id),
+		attribute.String(keys.AttrExperimentStatus, string(e.status)),
+		attribute.String(keys.AttrExperimentFlagKey, intent.FlagKey),
+		attribute.String(keys.AttrExperimentObjective, intent.Objective),
+		attribute.Int(keys.AttrExperimentTargetN, intent.TargetNPerArm),
+		attribute.String(keys.AttrExperimentArms, strings.Join(e.arms, ",")),
 		attribute.String(AttrExperimentProgressTrigger, trigger),
 	}
 	// #2291: what is tested, for the dashboard's experiment card. The thesis and the
 	// experimental arm's value are on every snapshot (the dashboard keeps the newest
 	// span); each is omitted when empty.
 	if intent.Hypothesis != "" {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentThesis, capSpanText(intent.Hypothesis)))
+		attrs = append(attrs, attribute.String(keys.AttrExperimentThesis, capSpanText(intent.Hypothesis)))
 	}
 	if intent.ExperimentalValue != nil {
 		if raw, err := json.Marshal(intent.ExperimentalValue); err == nil {
@@ -106,9 +106,9 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 	}
 	if v := summary.Verdict; v != nil {
 		attrs = append(attrs,
-			attribute.String(decision.AttrVerdictOutcome, v.Outcome),
-			attribute.Float64(decision.AttrVerdictDelta, v.Delta),
-			attribute.Bool(decision.AttrVerdictSignificant, v.Significant),
+			attribute.String(keys.AttrVerdictOutcome, v.Outcome),
+			attribute.Float64(keys.AttrVerdictDelta, v.Delta),
+			attribute.Bool(keys.AttrVerdictSignificant, v.Significant),
 		)
 	}
 	if trigger == ProgressTriggerTerminal || (trigger == ProgressTriggerRecommendation && endReason != "") {
@@ -147,7 +147,7 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 			samples, mean = st.Count, st.Mean
 		}
 		span.AddEvent(EventExperimentArm, trace.WithAttributes(
-			attribute.String(decision.AttrExperimentArm, arm),
+			attribute.String(keys.AttrExperimentArm, arm),
 			attribute.Int(AttrExperimentArmAssigned, inFlight[arm]),
 			attribute.Int(AttrExperimentArmSamples, samples),
 			attribute.Float64(AttrExperimentArmMeanFitness, mean),

@@ -1,6 +1,8 @@
 name: Release
 
 # Normal path: CI succeeds on main -> release-please (release PR / release) -> tag-images.
+# tag-images waits (up to 45 min) for the tag commit's own CI to publish IMAGE:<sha>
+# (scripts/ci/release-retag.sh, #2338), so a release needs no manual retag.
 # Retag-only path (#2263): workflow_dispatch with `version` and `sha` re-runs ONLY the
 # image retag for an existing release (e.g. when the GitHub release step failed).
 # workflow_dispatch without inputs runs release-please as before.
@@ -191,7 +193,10 @@ jobs:
     # Explicit: the implicit success() also checks release-please, which is skipped on the
     # retag-only path (actions/runner#491).
     if: ${{ !cancelled() && needs.resolve.result == 'success' }}
+    # The retag waits up to 45 min for the tag commit's CI to publish IMAGE:<sha>.
+    timeout-minutes: 60
     permissions:
+      contents: read
       packages: write
     strategy:
       fail-fast: false
@@ -221,28 +226,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # release-please runs from the CI workflow_run of an EARLIER commit, so the tag
+      # commit's own CI is often still queued and IMAGE:<sha> does not exist yet (0.8.0,
+      # 0.9.0). The script waits for it (backoff, max 45 min), then copies by digest; it
+      # never overwrites an existing version tag and fails closed on registry errors (#2338).
+      - name: Checkout retag script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
       - name: Tag image with release version
         env:
-          IMAGE: ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}
           VERSION: ${{ needs.resolve.outputs.version }}
           SHA: ${{ needs.resolve.outputs.sha }}
-        run: |
-          set -euo pipefail
-          src=$(docker buildx imagetools inspect "${IMAGE}:${SHA}" --format '{{.Manifest.Digest}}')
-          if dst=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}' 2>inspect.err); then
-            if [ "$dst" = "$src" ]; then
-              echo "${IMAGE}:${VERSION} already is ${src}; nothing to do"
-              exit 0
-            fi
-            echo "::error::${IMAGE}:${VERSION} already exists as ${dst}, source ${IMAGE}:${SHA} is ${src}; not overwriting"
-            exit 1
-          fi
-          # Only a missing tag may be created; auth, registry or rate-limit errors fail closed.
-          if ! grep -qE ': not found$|manifest unknown' inspect.err; then
-            echo "::error::cannot inspect ${IMAGE}:${VERSION}: $(cat inspect.err)"
-            exit 1
-          fi
-          echo "Creating ${IMAGE}:${VERSION} -> ${src} (from ${IMAGE}:${SHA})"
-          docker buildx imagetools create \
-            --tag "${IMAGE}:${VERSION}" \
-            "${IMAGE}:${SHA}"
+          REPO: ${{ github.repository }}
+          WAIT_TIMEOUT: "2700"
+          IMAGE_NAME: ${{ matrix.image }}
+        run: bash scripts/ci/release-retag.sh "$IMAGE_NAME"
