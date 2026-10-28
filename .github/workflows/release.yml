@@ -39,7 +39,23 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name || steps.fallback.outputs.tag_name }}
       version: ${{ steps.release.outputs.version || steps.fallback.outputs.version }}
       sha: ${{ steps.release.outputs.sha || steps.fallback.outputs.sha }}
+    env:
+      # Secrets are not readable in `if:`; expose only whether the App is configured (#2270).
+      HAS_RELEASE_APP: ${{ vars.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
+      # Events from GITHUB_TOKEN start no workflows, so the release PR would get no CI (#2270).
+      # With a GitHub App configured, use its installation token; otherwise fall back to
+      # GITHUB_TOKEN (forks, unconfigured repos). Setup: docs/CONTRIBUTING.md "Release PR token".
+      - name: Mint release App token
+        id: app-token
+        if: env.HAS_RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       # continue-on-error: release-please tags first and then creates the GitHub release; the
       # latter fails when the notes exceed 125000 characters (#2263). The fallback step below
       # finishes the job with a bounded body.
@@ -47,6 +63,7 @@ jobs:
         id: release
         continue-on-error: true
         with:
+          token: ${{ steps.app-token.outputs.token || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -54,7 +71,7 @@ jobs:
         id: fallback
         if: steps.release.outcome == 'failure'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           REPO: ${{ github.repository }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           MAX_BYTES: "60000"
