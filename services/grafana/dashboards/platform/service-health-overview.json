@@ -1472,7 +1472,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "100 - (avg(rate(system_cpu_time_seconds_total{job=~\"(.+/)?node\",state=\"idle\"}[5m])) * 100)",
+          "expr": "100 * (1 - sum(rate(system_cpu_time_seconds_total{job=~\"(.+/)?node\",state=\"idle\"}[5m])) / sum(rate(system_cpu_time_seconds_total{job=~\"(.+/)?node\"}[5m])))",
           "refId": "A",
           "legendFormat": "Host CPU"
         }
@@ -1755,7 +1755,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (state) (rate(system_cpu_time_seconds_total{job=~\"(.+/)?node\"}[5m])) * 100",
+          "expr": "100 * sum by (state) (rate(system_cpu_time_seconds_total{job=~\"(.+/)?node\"}[5m])) / scalar(sum(rate(system_cpu_time_seconds_total{job=~\"(.+/)?node\"}[5m])))",
           "refId": "A",
           "legendFormat": "{{state}}"
         }

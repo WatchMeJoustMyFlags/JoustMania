@@ -154,6 +154,9 @@ areas:
     - {id: adminop_off, sound: MENU_VOX_ADMINOP_OFF, text: "Off."}
     - {id: adminop_True, sound: MENU_VOX_ADMINOP_TRUE, text: "True."}
     - {id: adminop_False, sound: MENU_VOX_ADMINOP_FALSE, text: "False."}
+    # Admin cues that reinforce an LED cue (#1746): UC-012 / UC-013 write failure, UC-012 BR-006 agent overlay.
+    - {id: admin_not_saved, sound: MENU_VOX_ADMIN_NOT_SAVED, text: "Not saved."}
+    - {id: admin_agent, sound: MENU_VOX_ADMIN_AGENT, text: "Agent."}
 
 
     # word ends with a full stop: without it Piper blurs it.

@@ -215,6 +215,9 @@ type Result struct {
 	// RevertPending: the watch's revert of a hold key waits until no real game runs
 	// (UC-043 A17); journaled write-ahead (journal.Promotion.RevertPending).
 	RevertPending bool
+	// ForeignOwner: the writer that owns the real overlay when the promotion was
+	// refused with 412 writer_mismatch (UC-043 A19, #2276); empty otherwise.
+	ForeignOwner string
 }
 
 // GitHubClient is the GitHub API wire boundary (the SAFETY RAIL's network seam).

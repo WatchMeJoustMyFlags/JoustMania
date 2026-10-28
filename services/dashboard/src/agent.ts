@@ -29,6 +29,7 @@ import {
   incrementalStartMs,
   searchParams,
   searchTraces,
+  searchTracesSized,
   spanStartMs,
   spanStartUs,
   spanTags,
@@ -41,7 +42,7 @@ import {
 } from "./jaeger.js";
 import { vmQuery } from "./vm.js";
 import type { VmQueryResponse } from "./vm.js";
-import type { JaegerSpan, JaegerTracesResponse } from "./jaeger.js";
+import type { JaegerSpan, JaegerTracesResponse, SearchSpec } from "./jaeger.js";
 
 export type { VmQueryResponse } from "./vm.js";
 export type { JaegerSpan, JaegerTag, JaegerTrace, JaegerTracesResponse, JaegerReference } from "./jaeger.js";
@@ -59,11 +60,21 @@ const MAX_FEED_ROWS = 80;
  * `agent_intervention_writes_total{result="ok"|"error"}` is the ActionSink's
  * flag-file write counter (services/agent/actions/writer.go). VM receives the
  * metric under the namespaced job, so we sum across jobs rather than pinning one.
- * Same window as BLOCKED_QUERY (#2288), not the counter's lifetime. The metric
- * carries no game_kind label, so real and shadow writes are not split here.
+ * Same window as BLOCKED_QUERY (#2288), not the counter's lifetime. Grouped by
+ * game_kind so real and shadow writes are counted apart (#2294).
  * Best effort: when VM is unreachable the overlay shows `n/a`.
  */
-const APPLIED_QUERY = `sum by (result) (increase(agent_intervention_writes_total[${LOOKBACK_SECONDS}s]))`;
+const APPLIED_QUERY = `sum by (result, game_kind) (increase(agent_intervention_writes_total[${LOOKBACK_SECONDS}s]))`;
+
+/**
+ * The agent counters carry `game_kind` in the telemetry vocabulary (#2294,
+ * telemetry.md): `primary` is a real, player-facing game, `shadow` a parallel
+ * evaluation game. A series without the label comes from an agent image that
+ * predates it and counts as real, as the panel did before the split.
+ */
+export function isShadowKind(gameKind: string | undefined): boolean {
+  return gameKind === "shadow";
+}
 
 /**
  * VictoriaMetrics query for the blocked decisions of the window, by action and
@@ -72,7 +83,7 @@ const APPLIED_QUERY = `sum by (result) (increase(agent_intervention_writes_total
  * is left out: the value was already in place, not a refusal (#2046, #2288).
  */
 const BLOCKED_QUERY =
-  `sum by (action, block_reason) (increase(agent_decisions_total{blocked="true",block_reason!="already_applied"}[${LOOKBACK_SECONDS}s]))`;
+  `sum by (action, block_reason, game_kind) (increase(agent_decisions_total{blocked="true",block_reason!="already_applied"}[${LOOKBACK_SECONDS}s]))`;
 
 /** Jaeger operation of the effective flag set per game partition (#2059). */
 export const FLAG_STATE_OPERATION = "agent.flag_state";
@@ -162,16 +173,22 @@ export interface InterventionTally {
 
 /** Folded intervention overlay state. */
 export interface InterventionOverlay {
-  /** Per-action blocked counts from VictoriaMetrics (descending). */
+  /** Per-action blocked counts of real games from VictoriaMetrics (descending). */
   blockedByAction: InterventionTally[];
   /** Blocked counts grouped by reason (descending). */
   blockedByReason: { reason: string; count: number }[];
-  /** Total blocked decisions in the window; null when VictoriaMetrics is unreachable. */
+  /** Total blocked decisions of real games in the window; null when VictoriaMetrics is unreachable. */
   totalBlocked: number | null;
+  /** Total blocked decisions of shadow games in the window; null when VictoriaMetrics is unreachable. */
+  shadowBlocked: number | null;
   /** Applied writes (result="ok"), null when VM was unreachable (0 when it had no samples). */
   appliedOk: number | null;
   /** Failed flag-file writes (result="error"), or null when unavailable. */
   appliedError: number | null;
+  /** Applied writes of shadow games (game_kind="shadow"), null when VM was unreachable. */
+  shadowAppliedOk: number | null;
+  /** Failed writes of shadow games, or null when unavailable. */
+  shadowAppliedError: number | null;
 }
 
 /** The full folded state the Agent tab renders. */
@@ -193,36 +210,48 @@ function toSortedReasons(m: Map<string, number>): { reason: string; count: numbe
     .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
 }
 
+/** The applied/error write counts, real and shadow games apart (#2294). */
+export type AppliedCounts = Pick<
+  InterventionOverlay,
+  "appliedOk" | "appliedError" | "shadowAppliedOk" | "shadowAppliedError"
+>;
+
+/** VictoriaMetrics down or no samples: every applied count is n/a. */
+export const APPLIED_UNAVAILABLE: AppliedCounts = {
+  appliedOk: null,
+  appliedError: null,
+  shadowAppliedOk: null,
+  shadowAppliedError: null,
+};
+
 /**
  * Parse a VictoriaMetrics instant-query response into the applied/error counts.
  * Sums across all `result` series. A successful empty answer is zero (no writes in
  * the window), not unavailable; only a malformed body returns nulls ("n/a").
  */
-export function parseAppliedCounts(body: VmQueryResponse): {
-  appliedOk: number | null;
-  appliedError: number | null;
-} {
+export function parseAppliedCounts(body: VmQueryResponse): AppliedCounts {
   const results = body.data?.result;
   if (body.status !== "success" || !results) {
-    return { appliedOk: null, appliedError: null };
+    return APPLIED_UNAVAILABLE;
   }
-  let ok = 0;
-  let err = 0;
+  // The query answered, so a missing outcome (or an empty answer) is zero, not n/a.
+  const out = { appliedOk: 0, appliedError: 0, shadowAppliedOk: 0, shadowAppliedError: 0 };
   for (const series of results) {
     const result = series.metric["result"];
     const v = Math.round(Number.parseFloat(series.value?.[1] ?? ""));
     if (!Number.isFinite(v)) continue;
-    if (result === "ok") ok += v;
-    else if (result === "error") err += v;
+    const shadow = isShadowKind(series.metric["game_kind"]);
+    if (result === "ok") out[shadow ? "shadowAppliedOk" : "appliedOk"] += v;
+    else if (result === "error") out[shadow ? "shadowAppliedError" : "appliedError"] += v;
   }
-  return { appliedOk: ok, appliedError: err };
+  return out;
 }
 
 /** The blocked tallies of the intervention overlay. */
-export type BlockedTallies = Pick<InterventionOverlay, "blockedByAction" | "blockedByReason" | "totalBlocked">;
+export type BlockedTallies = Pick<InterventionOverlay, "blockedByAction" | "blockedByReason" | "totalBlocked" | "shadowBlocked">;
 
 /** VictoriaMetrics down: every blocked tally is n/a (UC-035 A3, UC-040 A21). */
-export const BLOCKED_UNAVAILABLE: BlockedTallies = { blockedByAction: [], blockedByReason: [], totalBlocked: null };
+export const BLOCKED_UNAVAILABLE: BlockedTallies = { blockedByAction: [], blockedByReason: [], totalBlocked: null, shadowBlocked: null };
 
 /**
  * Parse the BLOCKED_QUERY response into the overlay's blocked tallies. `increase`
@@ -234,9 +263,14 @@ export function parseBlockedCounts(body: VmQueryResponse): BlockedTallies {
   const byAction = new Map<string, number>();
   const byReason = new Map<string, number>();
   let total = 0;
+  let shadowTotal = 0;
   for (const series of results) {
     const n = Math.round(Number.parseFloat(series.value?.[1] ?? ""));
     if (!Number.isFinite(n) || n <= 0) continue;
+    if (isShadowKind(series.metric["game_kind"])) {
+      shadowTotal += n;
+      continue;
+    }
     const action = series.metric["action"] ?? "";
     const reason = series.metric["block_reason"] ?? "";
     total += n;
@@ -247,6 +281,7 @@ export function parseBlockedCounts(body: VmQueryResponse): BlockedTallies {
     blockedByAction: toSortedTallies(byAction),
     blockedByReason: toSortedReasons(byReason),
     totalBlocked: total,
+    shadowBlocked: shadowTotal,
   };
 }
 
@@ -255,7 +290,7 @@ export async function fetchInterventionCounts(signal?: AbortSignal): Promise<Int
   const [applied, blocked] = await Promise.all([vmQuery(APPLIED_QUERY, signal), vmQuery(BLOCKED_QUERY, signal)]);
   return {
     ...(blocked ? parseBlockedCounts(blocked) : BLOCKED_UNAVAILABLE),
-    ...(applied ? parseAppliedCounts(applied) : { appliedOk: null, appliedError: null }),
+    ...(applied ? parseAppliedCounts(applied) : APPLIED_UNAVAILABLE),
   };
 }
 
@@ -547,22 +582,30 @@ export const DECIDE_OPERATION = "agent.decide";
 /*
  * CLOCK SKEW: the stage Pi has no RTC and venue WiFi may block NTP, so the
  * agent + Jaeger clock (same host) can be hours off the presenter's browser
- * clock. The decide query therefore NEVER uses Date.now(): it sends no `end`
- * (Jaeger defaults it to its own now) and, on a cold start, no `start` either.
- * Jaeger 2.19's /api/traces ignores a `lookback` param (it is only read by the
- * dependencies/metrics endpoints): a missing `start` means Jaeger-now minus its
- * built-in 48h trace-query lookback (default_params.go). That is bounded by
- * limit=DECIDE_TRACE_LIMIT, and Jaeger returns the most recent matching traces,
- * so a cold start costs the same 5 traces as a short window would. Once a decide
+ * clock. The decide query therefore NEVER uses Date.now(). The v3 search
+ * (#2283) requires both window bounds, so the upper one is a fixed far-future
+ * date and a cold start's lower one is the Unix epoch (jaeger.ts searchParams).
+ * That is bounded by searchDepth=DECIDE_TRACE_LIMIT, and Jaeger returns the most
+ * recent matching traces, so a cold start costs the same 5 traces as a short
+ * window would. Once a decide
  * is held, `start` is that span's own (agent-clock) timestamp minus the overlap.
  */
 
 /**
- * Overlap behind the newest decide already seen: spans are exported when they
- * END, so a decide that started a little earlier than the newest one we hold can
- * still arrive late.
+ * Longest a decide can run: the top of the configurable
+ * `decision.<backend>.timeout_ms` range (100 to 60000, docs/specs/flags.md).
  */
-export const DECIDE_OVERLAP_MS = 30 * 1000;
+export const DECIDE_TIMEOUT_CEILING_MS = 60 * 1000;
+
+/** Span export batching on top of that (the OTLP batch delay, with margin). */
+export const DECIDE_EXPORT_DELAY_MS = 2 * 1000;
+
+/**
+ * Overlap behind the newest decide already seen: spans are exported when they
+ * END, so a decide that started earlier than the newest one we hold can still
+ * arrive late, by up to the longest decide plus the export delay.
+ */
+export const DECIDE_OVERLAP_MS = DECIDE_TIMEOUT_CEILING_MS + DECIDE_EXPORT_DELAY_MS;
 
 /**
  * Max traces per Jaeger search. Both rules and remote agent.decide spans live in
@@ -574,6 +617,56 @@ const DECIDE_TRACE_LIMIT = 5;
 
 /** Max decide rows kept (newest first). */
 const MAX_DECIDE_ROWS = 30;
+
+/*
+ * PAYLOAD BUDGET (#2287): Jaeger's search returns WHOLE traces, so a live real
+ * game's trace (every phase, player and decide span of the game) is downloaded
+ * in full on every poll, and it keeps growing: 4.9 MB per poll on the stage Pi.
+ * The legacy API has no "spans since" query, so the dashboard bounds the cost in
+ * three ways:
+ * - pace: the next decide poll waits at least `bytes / DECIDE_BYTES_PER_SEC`
+ *   (capped at DECIDE_MAX_PACE_MS, or DECIDE_LIVE_MAX_PACE_MS while a real
+ *   game is live), so one browser costs Jaeger at most about
+ *   DECIDE_BYTES_PER_SEC however large the trace grows; small traces keep the
+ *   1.5 s cadence;
+ * - settle: once the newest decide held has not changed for DECIDE_OVERLAP_MS
+ *   (browser-elapsed time, never a browser timestamp), the window starts just
+ *   after it, so an ended or quiet game's trace is no longer re-fetched;
+ * - target: while a real game is live the search asks for that game's
+ *   `game.id` (shadow traces cannot crowd it out of the limit, #2255) and the
+ *   shadow games' decides come from their own `game.kind=shadow` search every
+ *   DECIDE_SHADOW_EVERY_TICKS polls.
+ */
+
+/** Jaeger answer size per second the decide poll may cause (characters of JSON). */
+export const DECIDE_BYTES_PER_SEC = 512 * 1024;
+
+/** Upper bound of the payload pace, so a huge trace still refreshes. */
+export const DECIDE_MAX_PACE_MS = 15_000;
+
+/**
+ * The same cap while a real game is live: the presenter's decision strip then
+ * refreshes at least every 5 s even though a live game's trace only grows
+ * (about 1 MB/s for a 4.9 MB trace instead of 512 KiB/s).
+ */
+export const DECIDE_LIVE_MAX_PACE_MS = 5_000;
+
+/** While a real game is live, the shadow-game decide search runs every Nth poll. */
+export const DECIDE_SHADOW_EVERY_TICKS = 4;
+
+/** Search lanes of the decide poll; each has its own query window. */
+export const DECIDE_LANE_ALL = "all";
+export const DECIDE_LANE_SHADOW = "shadow";
+const DECIDE_LANE_GAME_PREFIX = "game:";
+
+/** Query windows kept for per-game lanes (old games drop out). */
+const MAX_GAME_LANES = 4;
+
+/** The minimum wait before the next decide poll after a `bytes`-sized answer. */
+export function decidePaceMs(bytes: number, maxMs: number = DECIDE_MAX_PACE_MS): number {
+  if (!Number.isFinite(bytes) || bytes <= 0) return 0;
+  return Math.min(maxMs, Math.ceil((bytes * 1000) / DECIDE_BYTES_PER_SEC));
+}
 
 /** The rules path's per-cycle parent span (decide + decisions are its children). */
 const SIGNAL_OPERATION = "agent.signal_received";
@@ -795,7 +888,7 @@ function decideRowFrom(
 }
 
 /**
- * Fold a Jaeger /api/traces response into the decide feed.
+ * Fold a Jaeger search response (jaeger.ts fromOtlp) into the decide feed.
  *
  * Pure. Rows are deduplicated by (traceID, spanID): Jaeger can return the same
  * trace more than once when it is still being written to, and the remote path
@@ -924,19 +1017,57 @@ export function decideQueryParams(startMs: number | null): URLSearchParams {
 }
 
 /**
+ * The incremental window of one decide search (#2287), agent clock. Before any
+ * decide: null (no `start`). While the newest decide held is fresh: that span
+ * minus DECIDE_OVERLAP_MS (a decide that started earlier can still end and be
+ * exported later). Once the newest decide has stayed the newest for
+ * DECIDE_OVERLAP_MS of browser-elapsed time (`now` is only ever subtracted from
+ * itself, so clock skew does not matter), every older decide has ended: the
+ * window starts just after it and Jaeger stops returning that game's trace.
+ */
+export class QueryWindow {
+  private newestMs: number | null = null;
+  private heldSinceMs = 0;
+
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
+  observe(rows: Pick<DecideRow, "tsMs">[]): void {
+    for (const r of rows) {
+      if (this.newestMs === null || r.tsMs > this.newestMs) {
+        this.newestMs = r.tsMs;
+        this.heldSinceMs = this.now();
+      }
+    }
+  }
+
+  startMs(): number | null {
+    if (this.newestMs === null) return null;
+    if (this.now() - this.heldSinceMs >= DECIDE_OVERLAP_MS) return this.newestMs + 1;
+    return decideQueryStartMs(this.newestMs);
+  }
+}
+
+/**
  * Client-side decide rows across polls: each poll only fetches a short window,
  * so the feed is the union of what the polls returned, keyed by trace/span (a
  * re-fetched span replaces its row: its linked decisions may have arrived
- * since), bounded to the newest `max` rows.
+ * since), bounded to the newest `max` rows. Each search lane (all decides, one
+ * real game, the shadow games) keeps its own QueryWindow.
  */
 export class DecideStore {
   private readonly rows = new Map<string, DecideRow>();
   private newestMs: number | null = null;
   private follow: DecideFollow = { realGameLive: null, followGameId: "" };
+  private readonly windows = new Map<string, QueryWindow>();
 
-  constructor(private readonly max = MAX_DECIDE_ROWS) {}
+  constructor(
+    private readonly max = MAX_DECIDE_ROWS,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
 
-  merge(rows: DecideRow[]): void {
+  /** Merge rows a search of `lane` returned (its window moves with them). */
+  merge(rows: DecideRow[], lane: string = DECIDE_LANE_ALL): void {
+    this.window(lane).observe(rows);
     for (const r of rows) {
       this.rows.set(rowKey(r), r);
       if (this.newestMs === null || r.tsMs > this.newestMs) this.newestMs = r.tsMs;
@@ -948,9 +1079,9 @@ export class DecideStore {
     }
   }
 
-  /** Next query start (agent clock), null before the first decide is held. */
-  queryStartMs(): number | null {
-    return decideQueryStartMs(this.newestMs);
+  /** Next query start of `lane` (agent clock), null before its first decide. */
+  queryStartMs(lane: string = DECIDE_LANE_ALL): number | null {
+    return this.windows.get(lane)?.startMs() ?? null;
   }
 
   /** Newest decide span time held (agent clock), null before the first one. */
@@ -977,9 +1108,125 @@ export class DecideStore {
     return { rows, current: currentFrom(rows, this.follow) };
   }
 
+  private window(lane: string): QueryWindow {
+    let w = this.windows.get(lane);
+    if (!w) {
+      w = new QueryWindow(this.now);
+      this.windows.set(lane, w);
+      const gameLanes = [...this.windows.keys()].filter((k) => k.startsWith(DECIDE_LANE_GAME_PREFIX));
+      for (const old of gameLanes.slice(0, Math.max(0, gameLanes.length - MAX_GAME_LANES))) {
+        this.windows.delete(old);
+      }
+    }
+    return w;
+  }
+
   private sorted(): DecideRow[] {
     return Array.from(this.rows.values()).sort(newestFirst);
   }
+}
+
+/** One search of a decide poll and the lane whose window it uses. */
+export interface DecideSearch {
+  lane: string;
+  spec: SearchSpec;
+}
+
+/**
+ * The searches of decide poll number `tick` (#2287, UC-035 BR-011). While a real
+ * game is live (and its id known): that game's decides by `game.id`, plus every
+ * DECIDE_SHADOW_EVERY_TICKS polls the shadow games' by `game.kind=shadow`, so a
+ * burst of shadow traces never pushes the stage game out of the limit (#2255).
+ * Otherwise one search over all decides (the shadow follow of UC-070 A9 and the
+ * idle tab).
+ */
+export function decideSearches(store: DecideStore, tick: number): DecideSearch[] {
+  const follow = store.followState;
+  const primary = follow.realGameLive === true ? (follow.primaryGameId ?? "") : "";
+  const search = (lane: string, tags?: Record<string, string>): DecideSearch => ({
+    lane,
+    spec: {
+      operation: DECIDE_OPERATION,
+      limit: DECIDE_TRACE_LIMIT,
+      startMs: store.queryStartMs(lane),
+      ...(tags ? { tags } : {}),
+    },
+  });
+  if (!primary) return [search(DECIDE_LANE_ALL)];
+  const out = [search(`${DECIDE_LANE_GAME_PREFIX}${primary}`, { "game.id": primary })];
+  if (tick % DECIDE_SHADOW_EVERY_TICKS === 0) out.push(search(DECIDE_LANE_SHADOW, { "game.kind": "shadow" }));
+  return out;
+}
+
+/** What one decide poll fetched: answer size (for the pace) and its flag states. */
+export interface DecidePollResult {
+  bytes: number;
+  /** Minimum wait before the next poll (decidePaceMs, live-game cap while a game search ran). */
+  paceMs: number;
+  flagStates: FlagPanel[];
+}
+
+/**
+ * One decide poll (#2287): run decideSearches(store, tick) one after the other,
+ * merge each lane's rows into the store and return the total answer size and the
+ * agent.flag_state spans of the fetched game traces. Throws
+ * JaegerUnavailableError like fetchDecideFeed; rows of a lane that answered
+ * before the failure stay merged.
+ */
+export async function pollDecides(
+  store: DecideStore,
+  tick: number,
+  signal?: AbortSignal,
+): Promise<DecidePollResult> {
+  let bytes = 0;
+  let liveGame = false;
+  const flagStates: FlagPanel[] = [];
+  for (const { lane, spec } of decideSearches(store, tick)) {
+    if (lane.startsWith(DECIDE_LANE_GAME_PREFIX)) liveGame = true;
+    const answer = await searchTracesSized(spec, signal);
+    bytes += answer.bytes;
+    const feed = parseDecideTraces(answer.body);
+    store.merge(feed.rows, lane);
+    flagStates.push(...(feed.flagStates ?? []));
+  }
+  const paceMs = decidePaceMs(bytes, liveGame ? DECIDE_LIVE_MAX_PACE_MS : DECIDE_MAX_PACE_MS);
+  return { bytes, paceMs, flagStates };
+}
+
+/**
+ * Pacing of the flag-state fallback search (#2287): a search for the same game
+ * (the same `key`) is repeated at most every FLAG_STATE_FALLBACK_REPEAT_MS
+ * (browser-elapsed time). Each search can return whole game traces, and while a
+ * game has no agent.flag_state span the answer does not change from one 5 s
+ * agent poll to the next. A new key (another game) searches at once.
+ */
+export const FLAG_STATE_FALLBACK_REPEAT_MS = 30_000;
+
+export class FlagFallbackPacer {
+  private lastKey: string | null = null;
+  private lastMs = 0;
+
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
+  /** Whether a fallback search for `key` may run now; records it when it may. */
+  take(key: string): boolean {
+    const now = this.now();
+    if (key === this.lastKey && now - this.lastMs < FLAG_STATE_FALLBACK_REPEAT_MS) return false;
+    this.lastKey = key;
+    this.lastMs = now;
+    return true;
+  }
+
+  /** Drop the last search (it failed): the next take() searches at once. */
+  forget(): void {
+    this.lastKey = null;
+  }
+}
+
+/** The fallback pacer key: the game the flag panel needs ("" = any). */
+export function flagFallbackKey(decideGameId: string | null, follow?: DecideFollow): string {
+  if (follow?.realGameLive === true && follow.primaryGameId) return `primary:${follow.primaryGameId}`;
+  return `decide:${decideGameId ?? ""}`;
 }
 
 /** Geometry of a confidence bar against the act threshold (all percentages 0..100). */

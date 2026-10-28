@@ -187,7 +187,7 @@ describe("UC-035: A3 a telemetry backend is down (dashboard side)", () => {
   const emptyView = {
     feed: [],
     flags: null,
-    overlay: { blockedByAction: [], blockedByReason: [], totalBlocked: null, appliedOk: null, appliedError: null },
+    overlay: { blockedByAction: [], blockedByReason: [], totalBlocked: null, shadowBlocked: null, appliedOk: null, appliedError: null, shadowAppliedOk: null, shadowAppliedError: null },
   };
 
   it("UC-035/A3 an agent panel that never rendered says Jaeger is unreachable", () => {
@@ -233,16 +233,33 @@ describe("UC-035: A3 a telemetry backend is down (dashboard side)", () => {
     const el = stubDom();
     agentView().render(emptyView as never);
     const html = el("overlay").innerHTML;
-    expect(html.match(/title="VictoriaMetrics unreachable">n\/a<\/span>/g)?.length).toBe(2);
+    expect(html.match(/title="VictoriaMetrics unreachable">n\/a<\/span>/g)?.length).toBe(4);
   });
 
   const counts: InterventionOverlay = {
     blockedByAction: [{ action: "grant_shield", blocked: 3 }],
     blockedByReason: [],
     totalBlocked: 3,
+    shadowBlocked: 0,
     appliedOk: 7,
     appliedError: 0,
+    shadowAppliedOk: 0,
+    shadowAppliedError: 0,
   };
+
+  it("UC-035/A3 real counts lead and shadow counts sit on their own labelled line (#2294)", () => {
+    const el = stubDom();
+    agentView().renderOverlay({ ...counts, shadowBlocked: 12, shadowAppliedOk: 40, shadowAppliedError: 2 });
+    const html = el("overlay").innerHTML;
+    const real = html.indexOf('agent-stat-applied">7<');
+    const shadow = html.indexOf("shadow applied");
+    expect(real).toBeGreaterThan(-1);
+    expect(shadow).toBeGreaterThan(real);
+    expect(html).toContain('agent-stat-shadow">40<');
+    expect(html).toContain("(2 failed)");
+    expect(html).toContain('agent-stat-shadow">12<');
+    expect(html).toContain('agent-stat-blocked">3<');
+  });
 
   /** One Agent poll: counts fulfilled, flag-state search rejected (Jaeger down). */
   async function pollWithFlagsDown(view: AgentView, overlay: InterventionOverlay | null) {

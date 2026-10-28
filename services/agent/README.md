@@ -433,11 +433,11 @@ with Jaeger under the `/jaeger` base path:
 
 - UI: select **service `agent`**, **operation `agent.infrastructure.decision`**,
   order by time, and read the `remediation.action` timeline down the trace list.
-- Jaeger v2 API (note the `/jaeger` prefix):
-  `http://localhost/jaeger/api/traces?service=agent&operation=agent.infrastructure.decision`
-  (or `http://jaeger:16686/jaeger/api/traces?service=agent` from inside the
-  compose network). Filter for `remediation.action=rollback` to jump straight to
-  the remediation events.
+- Jaeger query API v3 (note the `/jaeger` prefix; both window bounds are required):
+  `http://localhost/jaeger/api/v3/traces?query.serviceName=agent&query.operationName=agent.infrastructure.decision&query.startTimeMin=1970-01-01T00:00:00Z&query.startTimeMax=2100-01-01T00:00:00Z`
+  (or `http://jaeger:16686/jaeger/api/v3/traces?...` from inside the compose
+  network). Add `query.attributes={"remediation.action":"rollback"}` (URL-encoded)
+  to jump straight to the remediation events.
 
 The Go narrative test (`decision/infra_narrative_test.go`,
 `TestInfraNarrative_FullIncident`) drives this exact sequence with a fake

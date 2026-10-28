@@ -128,6 +128,9 @@ class AdminModeHandler:
             callbacks=callbacks,
         )
 
+        # Detached voice lines in flight (strong refs so they are not collected mid-play)
+        self._voice_tasks: set[asyncio.Task] = set()
+
         # Admin mode state
         self.active = False
         self.controller_serial: str | None = None
@@ -310,6 +313,18 @@ class AdminModeHandler:
         if self._state_manager is None:
             return
         await self._state_manager.audio.play_voice(sound)
+
+    def _play_voice_detached(self, sound: Sound) -> None:
+        """Play a voice line without awaiting it (it may overlap later feedback); errors are logged."""
+        task = asyncio.get_running_loop().create_task(self._play_voice_logged(sound))
+        self._voice_tasks.add(task)
+        task.add_done_callback(self._voice_tasks.discard)
+
+    async def _play_voice_logged(self, sound: Sound) -> None:
+        try:
+            await self._play_voice(sound)
+        except Exception as e:
+            logger.warning(f"Voice line {sound} failed: {e}")
 
     async def _play_sound(self, sound: Sound) -> None:
         """Play sound effect via StateManager's audio helper."""
@@ -919,7 +934,7 @@ class AdminModeHandler:
 
                 if new_variant is None:
                     logger.warning("Failed to cycle sensitivity variant")
-                    await self._signal_write_failed(serial)
+                    await self._signal_write_failed(serial, voice=True)
                     return
 
                 # Map variant name to numeric value for visual feedback
@@ -1016,7 +1031,7 @@ class AdminModeHandler:
 
                 if new_variant is None:
                     logger.warning("Failed to cycle game_instructions variant")
-                    await self._signal_write_failed(serial)
+                    await self._signal_write_failed(serial, voice=True)
                     return
 
                 enabled = new_variant == "on"
@@ -1122,7 +1137,7 @@ class AdminModeHandler:
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant for {option_name}")
-                    await self._signal_write_failed(serial)
+                    await self._signal_write_failed(serial, voice=True)
                     return
 
                 # Get the actual value for visual/voice feedback
@@ -1176,7 +1191,7 @@ class AdminModeHandler:
 
                 if new_variant is None:
                     logger.warning(f"Failed to cycle variant backward for {option_name}")
-                    await self._signal_write_failed(serial)
+                    await self._signal_write_failed(serial, voice=True)
                     return
 
                 # Get the actual value for visual/voice feedback
@@ -1240,6 +1255,8 @@ class AdminModeHandler:
                 duration_ms=600,
                 speed=6,
             )
+            # Reinforces the magenta pulse (#1746); detached so a slow audio RPC never delays the value LED.
+            self._play_voice_detached(Sound.MENU_VOX_ADMIN_AGENT)
             value = self._variant_to_value(option_name, effective)
             await self._show_value_feedback(serial, option_name, value)
             await self._play_value_voice(option_name, value)
@@ -1337,7 +1354,7 @@ class AdminModeHandler:
                     written = False
                 if not written:
                     logger.warning(f"Failed to write agent policy '{new_level}'")
-                    await self._signal_agent_write_failed(serial, controller_manager_pb2)
+                    await self._signal_agent_write_failed(serial, controller_manager_pb2, voice=True)
                     return
 
                 span.set_attribute("old_level", old_level or "")
@@ -1393,20 +1410,22 @@ class AdminModeHandler:
             logger.error(f"Error writing {option_name} variant: {e}", exc_info=True)
             return None, None
 
-    async def _signal_write_failed(self, serial: str) -> None:
+    async def _signal_write_failed(self, serial: str, voice: bool = False) -> None:
         """Error cue for a failed admin step write or an unreadable flag service (UC-012 A5, A7).
 
-        The same short red pulse as the agent-level cue (UC-013 A3), no voice line. Best effort.
+        The same short red pulse as the agent-level cue (UC-013 A3). ``voice`` adds the "Not saved"
+        line (#1746) and is set only where a write failed, not where a read did. Best effort.
         """
         from proto import controller_manager_pb2
 
-        await self._signal_agent_write_failed(serial, controller_manager_pb2)
+        await self._signal_agent_write_failed(serial, controller_manager_pb2, voice=voice)
 
-    async def _signal_agent_write_failed(self, serial: str, controller_manager_pb2) -> None:
+    async def _signal_agent_write_failed(self, serial: str, controller_manager_pb2, voice: bool = False) -> None:
         """Error cue for a refused or unreachable agent-level write (UC-013 A3, #1705).
 
-        A short, fast red pulse, no sound and no level voice line, so it cannot be
-        mistaken for the "none" level (red, 800 ms, "off" voice). Best effort.
+        A short, fast red pulse, so it cannot be mistaken for the "none" level (red, 800 ms, "off"
+        voice); LED first, and the "Not saved" line (#1746) only reinforces it, never a level voice
+        line. ``voice`` is set only where a write failed. Best effort.
         """
         try:
             await self._send_game_effect(
@@ -1418,6 +1437,11 @@ class AdminModeHandler:
             )
         except Exception as e:
             logger.warning(f"Agent write error pulse failed for {serial}: {e}")
+        if voice:
+            try:
+                await self._play_voice(Sound.MENU_VOX_ADMIN_NOT_SAVED)
+            except Exception as e:
+                logger.warning(f"Not-saved voice failed for {serial}: {e}")
 
     def _current_agent_level(self) -> str | None:
         """The agent policy level the flag service serves (UC-013 BR-003), None if unreadable. Blocking: to_thread."""

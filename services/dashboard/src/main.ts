@@ -19,11 +19,13 @@ import {
   RolloutStore,
   activityFeed,
   blockedRowsFrom,
-  fetchDecideFeed,
   fetchFlagStates,
   fetchInterventionCounts,
   fetchRollouts,
   needsFlagStateFallback,
+  pollDecides,
+  FlagFallbackPacer,
+  flagFallbackKey,
 } from "./agent.js";
 import type { FlagPanel, InterventionOverlay } from "./agent.js";
 import { fetchAdapters } from "./adapters.js";
@@ -31,6 +33,7 @@ import { StageSettings } from "./components/StageSettings.js";
 import { fetchStageSettings } from "./stageSettings.js";
 import { createPoller } from "./poller.js";
 import { PageGate } from "./pageGate.js";
+import { EmbedGate, VisibilityGate } from "./visibilityGate.js";
 import { ShieldStore } from "./shield.js";
 import { reduceGameEvent } from "./gameEvents.js";
 import {
@@ -193,8 +196,43 @@ const pageGate = new PageGate(
   document,
   globalThis,
   (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
-  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller, stagePoller],
+  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller, stagePoller, followPoller],
 );
+
+// Background load (UC-035 BR-012, #2290): the gameplay stream pauses on a hidden
+// page; the Grafana iframe loads on first open of its tab and is blanked 60 s after the
+// tab is left or at once on a hidden page; the Jaeger search loads once, on first open.
+const streamGate = new VisibilityGate(document, globalThis);
+const embedGate = new EmbedGate([
+  {
+    frame: document.getElementById("grafana-embed") as HTMLIFrameElement,
+    tab: "metrics",
+    src: document.getElementById("grafana-embed")?.dataset.src ?? "",
+    unloadWhenAway: true,
+  },
+  {
+    frame: document.getElementById("jaeger-embed") as HTMLIFrameElement,
+    tab: "traces",
+    src: document.getElementById("jaeger-embed")?.dataset.src ?? "",
+    unloadWhenAway: false,
+  },
+]);
+// The follow poll feeds the Controllers tab (banner, tiles) and the Agent tab (followed game).
+const FOLLOW_TABS = new Set(["controllers", "agent"]);
+let followPoller: Poller | null = null;
+function followActive(): boolean {
+  return FOLLOW_TABS.has(pageGate.activeTab) && pageGate.isActive(pageGate.activeTab);
+}
+function syncBackground() {
+  embedGate.sync(pageGate.activeTab, !pageGate.pageVisible);
+  if (followActive()) followPoller?.poke();
+  else followPoller?.stop();
+}
+document.addEventListener("visibilitychange", syncBackground);
+// After PageGate's own listeners (registered first), so pageVisible is current.
+globalThis.addEventListener("pagehide", syncBackground);
+globalThis.addEventListener("pageshow", syncBackground);
+syncBackground();
 
 function tabActive(tab: string): boolean {
   return pageGate.isActive(tab);
@@ -223,6 +261,7 @@ function setupTabs() {
       });
 
       pageGate.activeTab = tabId;
+      syncBackground();
       if (tabId === "agent") {
         decidePoller?.poke();
         agentPoller?.poke();
@@ -243,7 +282,8 @@ function setupTabs() {
 function startControllerStream() {
   if (state.isStreaming) return;
   void keepControllerStreamOpen({
-    open: () => controllerClient.watchGameplayData({ updateFrequencyHz: 30 }),
+    gate: streamGate,
+    open: (signal) => controllerClient.watchGameplayData({ updateFrequencyHz: 30 }, signal),
     onUpdate: (update) => {
       // Update controller state
       state.controllers.clear();
@@ -309,6 +349,7 @@ function renderAgentPanels() {
 // failure keeps the last render, flagged stale).
 function startAgentPolling() {
   let tick = 0;
+  const flagFallbackPacer = new FlagFallbackPacer();
   agentPoller = createPoller({
     baseMs: AGENT_POLL_MS,
     maxMs: AGENT_MAX_BACKOFF_MS,
@@ -316,11 +357,11 @@ function startAgentPolling() {
     isActive: () => tabActive("agent"),
     run: async (signal) => {
       const rolloutDue = tick % ROLLOUT_EVERY_TICKS === 0;
-      const flagsNeeded = needsFlagStateFallback(
-        flagStore,
-        decideStore.feed().current?.gameId ?? null,
-        decideStore.followState,
-      );
+      const decideGameId = decideStore.feed().current?.gameId ?? null;
+      // Paced (#2287): the same game's fallback search repeats at most every 30 s.
+      const flagsNeeded =
+        needsFlagStateFallback(flagStore, decideGameId, decideStore.followState) &&
+        flagFallbackPacer.take(flagFallbackKey(decideGameId, decideStore.followState));
       // Settled, not all: the VictoriaMetrics counts render even when a Jaeger
       // leg fails (UC-035 A3 step 2); the Jaeger failure still marks the poll failed.
       const settled = await Promise.allSettled([
@@ -329,6 +370,8 @@ function startAgentPolling() {
         rolloutDue ? fetchRollouts(rolloutStore, signal) : Promise.resolve(),
       ]);
       tick += 1;
+      // A failed fallback search is retried on the next poll, not after the pace.
+      if (flagsNeeded && settled[1].status === "rejected") flagFallbackPacer.forget();
       const result = settleAgentPoll(settled, interventionCounts, (states) =>
         flagStore.merge(states, decideStore.followState),
         { flags: flagsNeeded, rollouts: rolloutDue },
@@ -389,21 +432,25 @@ function startStageSettingsPolling() {
 
 // Poll the agent.decide spans from Jaeger (#1233). Only while the Agent tab is
 // shown AND the page is visible; one chain at most (see poller.ts), incremental
-// query window (DecideStore), per-request timeout and backoff. Its game traces
+// query window per search lane (DecideStore), per-request timeout and backoff,
+// paced by the answer size and targeted at the live real game (#2287). Its game traces
 // also carry the blocked agent.decision and agent.flag_state spans (#2059).
 function startDecidePolling() {
   const store = decideStore;
+  let tick = 0;
   decidePoller = createPoller({
     baseMs: DECIDE_POLL_MS,
     maxMs: DECIDE_MAX_BACKOFF_MS,
     timeoutMs: DECIDE_TIMEOUT_MS,
     isActive: () => tabActive("agent"),
     run: async (signal) => {
-      const feed = await fetchDecideFeed(store.queryStartMs(), signal);
-      store.merge(feed.rows);
-      flagStore.merge(feed.flagStates ?? [], store.followState);
+      const polled = await pollDecides(store, tick, signal);
+      tick += 1;
+      flagStore.merge(polled.flagStates, store.followState);
       agentView.renderDecide(store.feed());
       renderAgentPanels();
+      // Payload pace (#2287, UC-035 BR-011): a large game trace slows the poll.
+      return polled.paceMs;
     },
     onError: (error) => {
       console.error("Decide feed poll error:", error);
@@ -497,11 +544,11 @@ function updatePlayerCount(visible: number) {
 // every 2 s, and a transient error keeps the followed game (FollowTracker).
 function startFollowPolling() {
   let failing = false;
-  const poller = createPoller({
+  const poller = (followPoller = createPoller({
     baseMs: FOLLOW_POLL_MS,
     maxMs: FOLLOW_MAX_BACKOFF_MS,
     timeoutMs: FOLLOW_TIMEOUT_MS,
-    isActive: () => !document.hidden,
+    isActive: followActive,
     run: async (signal) => {
       const [primary, list] = await Promise.all([
         gameClient.getGameState({}, signal),
@@ -518,11 +565,8 @@ function startFollowPolling() {
       followTracker.fail();
       applyFollow();
     },
-  });
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) poller.stop();
-    else poller.poke();
-  });
+  }));
+  // Visibility and tab changes stop / poke it through syncBackground().
   poller.poke();
 }
 

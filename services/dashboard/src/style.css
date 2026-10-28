@@ -831,6 +831,12 @@ body {
   white-space: nowrap;
 }
 
+.experiment-recommendation {
+  font-size: 0.82rem;
+  color: var(--text-primary, inherit);
+  font-weight: 600;
+}
+
 /* ===== Agent tab (#792) ===== */
 
 .agent-header {
@@ -1045,6 +1051,15 @@ body {
 
 .agent-stat-blocked {
   color: var(--accent-primary);
+}
+
+.agent-stat-shadow {
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+}
+
+.agent-overlay-shadow {
+  opacity: 0.85;
 }
 
 .agent-stat-na {

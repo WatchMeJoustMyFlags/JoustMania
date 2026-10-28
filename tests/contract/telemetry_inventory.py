@@ -475,7 +475,7 @@ _RUST_INSTRUMENT_RE = re.compile(
     r"\.(?:u64|i64|f64)_(?:counter|up_down_counter|histogram|gauge|observable_gauge|observable_counter|observable_up_down_counter)\(\s*\"([^\"]+)\"",
 )
 # semconv GenAI client instruments created via go.opentelemetry.io/otel/semconv genaiconv:
-# (OTel name, Prometheus name as VictoriaMetrics stores it). prometheusremotewrite
+# (OTel name, Prometheus name as VictoriaMetrics stores it). prometheus_remote_write
 # appends the unit suffix: `s` becomes `_seconds`; the `{token}` annotation adds none.
 _GO_SEMCONV_INSTRUMENTS = {
     "NewClientOperationDuration": (
