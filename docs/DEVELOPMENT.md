@@ -141,7 +141,7 @@ Cut-off runs (power loss, ssh hang-up) and manual recovery:
   `git checkout main && sudo systemctl restart joustmania` (the branch takes `IMAGE_TAG` from `.env.local`
   again), then repeat the migration.
 
-One-time migration of a Pi still on the `main` branch (once the first pinnable release, `MIN_PINNABLE`, exists):
+One-time migration of a Pi still on the `main` branch (the first pinnable release, `MIN_PINNABLE`, is 0.8.0):
 
 ```bash
 cd ~/JoustMania
