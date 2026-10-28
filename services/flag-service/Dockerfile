@@ -4,7 +4,7 @@
 # Build context is the REPO ROOT (compose uses `context: .`), so COPY paths are
 # relative to the repository root.
 
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETARCH
 
@@ -27,7 +27,7 @@ RUN mkdir -p /out/var/lib/flag-service
 
 # Runtime: distroless static, nonroot (uid 65532). No shell: the compose health
 # check runs `/flag-service healthcheck`.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 
 COPY --from=builder /flag-service /flag-service
 COPY --from=builder /app/registry.yaml /etc/flag-service/registry.yaml

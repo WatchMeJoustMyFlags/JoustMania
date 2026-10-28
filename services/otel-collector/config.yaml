@@ -20,7 +20,7 @@ receivers:
             - targets: ['victoria-metrics:8428']
         # Self-telemetry: the collector exposes its own metrics on :8888.
         # Rename otelcol_process_* to standard process_* for unified dashboards.
-        # v0.153.0 exposes them unsuffixed (otelcol_process_cpu_seconds,
+        # v0.153.0 exposed them unsuffixed (otelcol_process_cpu_seconds,
         # otelcol_process_memory_rss); the optional suffix keeps the rename
         # working if a later version adds _total / _bytes (regexes are anchored).
         - job_name: 'otel-collector'
@@ -208,7 +208,7 @@ processors:
   # thresholds are env-substituted with LEAN DEFAULTS equal to the #1161 base
   # values, using the OTel Collector confmap env provider's default-value syntax
   # `${env:VAR:-default}` (supported since collector v0.108.0; this image is
-  # built with OCB 0.153.0, well past that — see images/otel-collector/Dockerfile).
+  # built with OCB 0.164.0, well past that — see images/otel-collector/Dockerfile).
   # If the env vars are unset (base/Pi/prod + ci) the limiter stays at 600/150
   # under the lean 768 MiB ceiling.
   #

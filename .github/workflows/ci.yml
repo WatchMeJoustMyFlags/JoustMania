@@ -126,7 +126,7 @@ jobs:
       docker_extra_matrix: ${{ steps.matrices.outputs.docker_extra }}
       retag_matrix: ${{ steps.matrices.outputs.retag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The shared_python anchor is the single source of truth for inputs that
       # every Python service image COPYs (see services/*/Dockerfile). If a
@@ -135,7 +135,7 @@ jobs:
       # Merge queue (#1555): diff the queued commit against the main it was
       # built on. Empty on other events (paths-filter then picks the PR files
       # or, on a push, the commits since `before`).
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: f
         with:
           base: ${{ github.event.merge_group.base_sha }}
@@ -349,7 +349,7 @@ jobs:
       # so a new code directory runs integration by default. Separate step
       # because `predicate-quantifier: every` applies to every filter in a
       # step and would break the OR-style filters above.
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: nondocs
         with:
           base: ${{ github.event.merge_group.base_sha }}
@@ -511,9 +511,9 @@ jobs:
     if: needs.changes.outputs.lib == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       - name: Build proto package
         run: |
@@ -549,7 +549,7 @@ jobs:
           sed -i 's|filename="|filename="lib/|g' coverage.xml
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-lib
           path: lib/coverage.xml
@@ -568,9 +568,9 @@ jobs:
       matrix:
         service: ${{ fromJSON(needs.changes.outputs.python_services_matrix) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       # Install system dependencies for services with native Python packages
       - name: Install system dependencies
@@ -642,7 +642,7 @@ jobs:
           sed -i 's|filename="|filename="services/${{ matrix.service }}/|g' coverage.xml
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-${{ matrix.service }}
           path: services/${{ matrix.service }}/coverage.xml
@@ -656,7 +656,7 @@ jobs:
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -673,13 +673,13 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
           components: clippy, rustfmt
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -708,10 +708,10 @@ jobs:
     if: needs.changes.outputs.agent_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: services/agent/go.mod
           check-latest: true
@@ -733,10 +733,10 @@ jobs:
     if: needs.changes.outputs.flag_service_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.25'
           cache-dependency-path: services/flag-service/go.sum
@@ -761,7 +761,7 @@ jobs:
     if: needs.changes.outputs.script_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run scripts/tests/*.sh
         run: |
@@ -799,9 +799,9 @@ jobs:
       contents: read
       pull-requests: read  # spec-refs-gate.sh reads the PR labels live
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       - name: Generated specs are up to date (make specs-check)
         # docs/specs/generated/ must equal what scripts/gen_specs.py renders from
@@ -849,9 +849,9 @@ jobs:
     if: needs.changes.outputs.flagd_contract == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       - name: Run flagd contract tests
         run: make test-contract-flagd
@@ -870,12 +870,12 @@ jobs:
     # and the rust-hid build for its live flag test (#1713).
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26'
           cache-dependency-path: |
@@ -897,12 +897,12 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ steps.rust-version.outputs.version }}
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -946,7 +946,7 @@ jobs:
     if: needs.changes.outputs.dockerfiles == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint Dockerfiles
         run: make ci-lint-dockerfiles
@@ -976,7 +976,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Spec lint (AIUP spec_lint.py; errors always fail, new warnings fail)
         if: needs.changes.outputs.specs == 'true' || needs.changes.outputs.run_all_checks == 'true'
@@ -1021,12 +1021,12 @@ jobs:
     # success while the job itself still shows red.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # Full history for better analysis
 
       - name: Download coverage reports
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: coverage-*
           path: coverage-reports
@@ -1051,7 +1051,7 @@ jobs:
           fi
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v8
+        uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304 # v8.4.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -1068,7 +1068,7 @@ jobs:
     if: needs.changes.outputs.proto_pkg == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Validate protos and packages
         run: make ci-validate-protos ci-validate-packages
@@ -1100,9 +1100,9 @@ jobs:
       run:
         working-directory: services/dashboard
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm
@@ -1128,13 +1128,13 @@ jobs:
     if: needs.changes.outputs.connect_proxy_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: buf generate, go vet, go test (builder stage)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: services/connect-proxy/Dockerfile
@@ -1173,7 +1173,7 @@ jobs:
     outputs:
       tag: ${{ steps.result.outputs.tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Compute collector content hash
         id: hash
@@ -1187,7 +1187,7 @@ jobs:
 
       - name: Login to GHCR
         continue-on-error: true
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1210,7 +1210,7 @@ jobs:
           steps.exists.outputs.exists != 'true' &&
           (github.event_name == 'merge_group' || github.event_name == 'push')
         continue-on-error: true
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Push only from reviewed code (merge_group, push to main); PRs never push.
       # Step timeout: #1781's retries on a ~7 min OCB build must not hit the job timeout.
@@ -1220,7 +1220,7 @@ jobs:
           (github.event_name == 'merge_group' || github.event_name == 'push')
         continue-on-error: true
         timeout-minutes: 12
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: images/otel-collector
           file: images/otel-collector/Dockerfile
@@ -1272,22 +1272,22 @@ jobs:
       (github.event_name == 'merge_group' && needs.changes.outputs.non_docs != 'false'))
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set image prefix
         run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       # #925 fast-path freshness guard: BEFORE mounting current source into the
       # pulled :latest images, confirm each carries a deps-fingerprint label that
@@ -1334,7 +1334,7 @@ jobs:
 
       - name: Build otel-collector at HEAD (fast path, config mismatch)
         if: steps.collector_image.outputs.build == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: images/otel-collector
           file: images/otel-collector/Dockerfile
@@ -1380,7 +1380,7 @@ jobs:
 
       - name: Build agent at HEAD (fast path)
         if: needs.changes.outputs.e2e_full_build == 'false'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: services/agent/Dockerfile
@@ -1448,7 +1448,7 @@ jobs:
         service: ${{ fromJSON(needs.changes.outputs.docker_build_matrix) }}
         platform: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set image prefix and platform pair
         run: |
@@ -1458,10 +1458,10 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1486,7 +1486,7 @@ jobs:
 
       - name: Build and push service
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: services/${{ matrix.service }}/Dockerfile
@@ -1512,7 +1512,7 @@ jobs:
 
       - name: Upload digest
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           overwrite: true
           name: digests-${{ matrix.service }}-${{ env.PLATFORM_PAIR }}
@@ -1544,7 +1544,7 @@ jobs:
     steps:
       # Commit graph for the :main ordering guard (#1793): full history, but a
       # blobless partial clone with only scripts/ci checked out (merge-base needs commits only).
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -1557,17 +1557,17 @@ jobs:
           echo "IMAGE_NAME=${SERVICE//_/-}-service" >> "$GITHUB_ENV"
 
       - name: Download digests
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-${{ matrix.service }}-linux-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1629,7 +1629,7 @@ jobs:
         item: ${{ fromJSON(needs.changes.outputs.docker_extra_matrix) }}
         platform: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && '["linux/amd64","linux/arm64"]' || '["linux/amd64"]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set image prefix and platform pair
         run: |
@@ -1639,10 +1639,10 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1650,7 +1650,7 @@ jobs:
 
       - name: Build and push service
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.item.context }}
           file: ${{ matrix.item.dockerfile }}
@@ -1674,7 +1674,7 @@ jobs:
 
       - name: Upload digest
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           overwrite: true
           name: digests-${{ matrix.item.service }}-${{ env.PLATFORM_PAIR }}
@@ -1702,7 +1702,7 @@ jobs:
     steps:
       # Commit graph for the :main ordering guard (#1793): full history, but a
       # blobless partial clone with only scripts/ci checked out (merge-base needs commits only).
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           filter: blob:none
@@ -1714,17 +1714,17 @@ jobs:
           echo "IMAGE_NAME=${{ matrix.item.image_name }}" >> "$GITHUB_ENV"
 
       - name: Download digests
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-${{ matrix.item.service }}-linux-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1790,7 +1790,7 @@ jobs:
     steps:
       # Full history: the freshness check below finds the last commit that
       # touched this image's sources and compares it with :main's build commit.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -1798,10 +1798,10 @@ jobs:
         run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
