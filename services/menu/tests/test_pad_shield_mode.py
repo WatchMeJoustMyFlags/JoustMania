@@ -319,3 +319,9 @@ async def test_k2_k5_preview_of_automatic_double_flashes_and_a_value_is_bad_opti
 
     bad = await pad(servicer, "preview_setting", option=option, mode="2")
     assert (bad.success, bad.error) == (False, "bad_option")
+
+    _pulses_before = len(_pulses(servicer))
+    live_lifecycle(servicer)
+    live = await pad(servicer, "preview_setting", option=option, mode="automatic")
+    assert (live.success, live.error) == (False, "game_active")
+    assert len(_pulses(servicer)) == _pulses_before

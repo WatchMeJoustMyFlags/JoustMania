@@ -322,7 +322,11 @@ class Previewer:
         if leds is None or pending is None or pending.sound is None:
             return  # not a hold with the LED preview, or the limit word (the mode is unchanged)
         if leds.option in AUTOMATIC_LED_OPTIONS and pending.value != setting_ladders.AUTOMATIC:
-            return  # K2 / K5: only the `automatic` rung has an LED cue
+            # K2 / K5: only the `automatic` rung has an LED cue. A value supersedes a pulse not yet
+            # sent and lets a later return to `automatic` flash again.
+            leds.queued = pending.value
+            leds.seq += 1
+            return
         if pending.value == leds.queued:
             return  # the same as the last one shown
         leds.queued = mode = pending.value

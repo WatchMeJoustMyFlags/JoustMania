@@ -209,7 +209,7 @@ def step_knob(rig: Rig, net: int, key: str, option: str, start: str) -> None:
 
 
 @pytest.mark.parametrize(("key", "option", "start"), [("K2", "sensitivity", "ultra_slow"), ("K5", "num_teams", "two")])
-@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"], steps=[9])
+@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"], steps=[5])
 async def test_k2_k5_preview_down_to_automatic_shows_it_and_a_value_sends_nothing(key, option, start):
     rig = Rig()
     step_knob(rig, -1, key, option, start)  # the first step down from the lowest value is `automatic`
@@ -218,7 +218,7 @@ async def test_k2_k5_preview_down_to_automatic_shows_it_and_a_value_sends_nothin
 
 
 @pytest.mark.parametrize(("key", "option", "start"), [("K2", "sensitivity", "medium"), ("K5", "num_teams", "three")])
-@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"], steps=[9])
+@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"], steps=[5])
 async def test_k2_k5_preview_of_a_plain_value_sends_no_preview_setting(key, option, start):
     rig = Rig()
     step_knob(rig, 1, key, option, start)
@@ -227,3 +227,30 @@ async def test_k2_k5_preview_of_a_plain_value_sends_no_preview_setting(key, opti
     rig.previewer.end_hold()
     await settle()
     assert rig.mode_previews() == []
+
+
+@pytest.mark.parametrize(("key", "option", "start"), [("K2", "sensitivity", "ultra_slow"), ("K5", "num_teams", "two")])
+@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"], steps=[5])
+async def test_k2_k5_automatic_value_automatic_in_one_hold_flashes_each_time(key, option, start):
+    rig = Rig()
+    step_knob(rig, -1, key, option, start)  # automatic
+    await rig.time.advance(1.0)
+    step_knob(rig, 0, key, option, start)  # back on the value: no cue
+    await rig.time.advance(1.0)
+    step_knob(rig, -1, key, option, start)  # automatic again
+    await rig.time.advance(1.0)
+    await settle()
+    assert [d["mode"] for d in rig.mode_previews()] == ["automatic", "automatic"]
+
+
+@pytest.mark.parametrize(("key", "option", "start"), [("K2", "sensitivity", "ultra_slow"), ("K5", "num_teams", "two")])
+@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"], steps=[5])
+async def test_k2_k5_release_back_on_the_start_value_sends_no_restore(key, option, start):
+    rig = Rig()
+    step_knob(rig, -1, key, option, start)
+    await rig.time.advance(1.0)
+    step_knob(rig, 0, key, option, start)
+    await rig.time.advance(1.0)
+    rig.previewer.end_hold(0)
+    await settle()
+    assert len(rig.mode_previews()) == 1
