@@ -198,6 +198,9 @@ type entry struct {
 	journal *journal.Journal
 	status  Status
 	flagKey string
+	// teardownBegun is set (under r.mu) before teardown strips the targeting. A
+	// Start whose targeting write lands after that point strips it again (#2340).
+	teardownBegun bool
 	// arms is the experiment's arm list (from intent), used for round-robin.
 	arms []string
 	// games maps a live (in-flight) shadow game_id → its arm. A game is removed on
@@ -701,10 +704,24 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	// Re-fetch: a concurrent Abort may have removed/terminated it while unlocked.
 	e = r.entries[id]
+	if r.target != nil && (e == nil || e.teardownBegun || e.status.IsTerminal()) {
+		// #2340: a teardown (Abort / AbortAll: kill switch, experiments_enabled off,
+		// shutdown) began while the Apply above was in flight, so its strip may have
+		// run before the Apply wrote the branch. Strip it again: the teardown does
+		// not strip a second time, and the experiment never becomes RUNNING.
+		var jrnl *journal.Journal
+		if e != nil {
+			jrnl = e.journal
+		}
+		r.mu.Unlock()
+		return r.stripAfterAbortedStart(ctx, id, intent.FlagKey, jrnl)
+	}
+	defer r.mu.Unlock()
 	if e == nil || e.status != StatusProposed {
+		// Gone, tearing down or terminal without a targeting writer; or a concurrent
+		// Start won (RUNNING) and its targeting is the live one: keep it.
 		return nil
 	}
 	e.status = StatusRunning
@@ -716,6 +733,55 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 	r.emitProgressLocked(e, ProgressTriggerStarted, "", e.spanCtx) // #2059
 	r.log.Info("experiment.started", "experiment_id", id)
 	return nil
+}
+
+// Strip attempts and the per-attempt bound of the compensating strip (#2340).
+const (
+	abortedStartStripAttempts = 3
+	abortedStartStripTimeout  = 5 * time.Second
+	abortedStartStripBackoff  = 100 * time.Millisecond
+)
+
+// noteStartStripFailed is the journal note (a KindDecision without a status change)
+// of a compensating strip that failed after every attempt (#2340).
+const noteStartStripFailed = "start_targeting_strip_failed"
+
+// ErrStartTargetingLeaked is returned by Start when the experiment was aborted
+// while its targeting write was in flight and the compensating strip failed: the
+// shadow targeting branch may remain on the flag service (#2340).
+var ErrStartTargetingLeaked = errors.New("targeting written after abort could not be stripped")
+
+// stripAfterAbortedStart removes the targeting a Start wrote after a concurrent
+// teardown had already stripped it (#2340), so the kill switch, experiments_enabled
+// off and the shutdown leave no agent targeting behind. It runs outside r.mu (file
+// I/O) on a context detached from the caller's cancellation: the shutdown cancels
+// the Start's context, and the strip must still run. A strip that fails after
+// every attempt is logged at ERROR, journaled on the experiment and returned.
+func (r *Registry) stripAfterAbortedStart(ctx context.Context, id, flagKey string, jrnl *journal.Journal) error {
+	var err error
+	for attempt := 1; attempt <= abortedStartStripAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(time.Duration(attempt-1) * abortedStartStripBackoff)
+		}
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abortedStartStripTimeout)
+		err = r.target.Strip(sctx, flagKey, id)
+		cancel()
+		if err == nil {
+			r.log.Info("experiment.start_targeting_stripped", "experiment_id", id, "flag_key", flagKey)
+			return nil
+		}
+	}
+	r.log.Error("experiment.start_targeting_strip_failed", "experiment_id", id, "flag_key", flagKey,
+		"attempts", abortedStartStripAttempts, "error", err)
+	if jrnl != nil {
+		r.mu.Lock()
+		r.appendEvent(jrnl, journal.Event{
+			Kind: journal.KindDecision,
+			Note: noteStartStripFailed + ": " + err.Error(),
+		})
+		r.mu.Unlock()
+	}
+	return fmt.Errorf("registry: start %q: %w: %w", id, ErrStartTargetingLeaked, err)
 }
 
 // startSpanLocked starts the experiment's long-lived agent.experiment ROOT span
@@ -1914,6 +1980,13 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	if r.onTerminal != nil {
 		defer r.onTerminal(id)
 	}
+	// Mark the teardown before the strip, so a Start whose targeting write lands
+	// after the strip below removes it again (#2340).
+	r.mu.Lock()
+	if e := r.entries[id]; e != nil {
+		e.teardownBegun = true
+	}
+	r.mu.Unlock()
 	// Strip the targeting OUTSIDE the registry lock (it does file I/O). Stripping a
 	// shadow branch only ever affects shadow games, so it is invariant-safe.
 	if r.target != nil {
