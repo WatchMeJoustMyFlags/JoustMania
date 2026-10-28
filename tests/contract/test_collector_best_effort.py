@@ -60,7 +60,7 @@ def test_agent_is_never_the_only_sink_of_a_pipeline(collector, pipeline):
     """UC-035 A3: traces still reach Jaeger and metrics VictoriaMetrics when the agent is down."""
     exporters = collector["service"]["pipelines"][pipeline]["exporters"]
     assert "otlp/agent" in exporters
-    storage = {"traces": "otlp/jaeger", "metrics": "prometheusremotewrite"}[pipeline]
+    storage = {"traces": "otlp/jaeger", "metrics": "prometheus_remote_write"}[pipeline]
     assert storage in exporters
 
 
