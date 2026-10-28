@@ -2,11 +2,12 @@ package main
 
 import "sync"
 
-// backgroundGroup tracks fire-and-forget goroutines that main() starts outside
-// run() (the game-end proposer, #2323) so run()'s shutdown path can join them
-// before main's deferred tracer and metrics shutdown flushes. Without the join, a
-// proposer still running at shutdown could end its spans or record metrics after
-// the exporters were shut down.
+// backgroundGroup tracks fire-and-forget goroutines: the game-end proposer the
+// wiring starts outside serverComponents.run (#2323) and the shadow game run starts
+// (#2318), so run's shutdown path can join them before the process-level run()'s
+// deferred tracer and metrics shutdown flushes. Without the join, a goroutine still
+// running at shutdown could end its spans or record metrics after the exporters
+// were shut down.
 //
 // Close is final: Go after Close starts nothing, so a late game-end hook cannot
 // race the join (sync.WaitGroup forbids an Add that races a Wait from zero). The
