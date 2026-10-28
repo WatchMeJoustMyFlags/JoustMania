@@ -9,6 +9,7 @@ down since the previous poll now reads as pressed in that poll, and the next pol
 shows the real (released) state, so the tap yields a press and a release event.
 """
 
+import queue
 import sys
 import threading
 from pathlib import Path
@@ -45,6 +46,7 @@ def _bare_hid(adapter_cls):
     adapter._trigger_latch = set()
     adapter._data_lock = threading.Lock()
     adapter._closed = set()
+    adapter._command_queue = queue.Queue(maxsize=256)
     adapter._adapter_names = {}
     return adapter
 
