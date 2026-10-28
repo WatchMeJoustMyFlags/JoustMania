@@ -342,6 +342,9 @@ type Loop struct {
 	applied                appliedLedger
 	suppressReapplied      bool
 	alreadyAppliedRecorder func(intervention, serial string)
+	// experimentFlag looks up the flag under test in a game (UC-040 A40, BR-028;
+	// experimentflag.go). nil skips nothing.
+	experimentFlag func(c gamecontext.GameContext) string
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -1037,7 +1040,8 @@ type permission struct {
 }
 
 // evaluatePermission runs the permission chain over one decision in order:
-// allow-list gate (#727), battery threshold, the already-applied check (UC-040
+// allow-list gate (#727), battery threshold, the experiment-flag check (UC-040
+// A40), the already-applied check (UC-040
 // A35), the shield ledger (UC-040 A31, A33), then the weighted rate limit (#728). It returns the verdict. The
 // rate limit is charged ONLY when the decision passes the allow-list and
 // battery gates AND fits the budget — so the budget is spent on decisions the
@@ -1057,6 +1061,13 @@ func (l *Loop) evaluatePermission(ctx context.Context, snapshot flags.Snapshot, 
 	// not block, but is noted).
 	if l.batteryBlocks(snapshot, c, d) {
 		return permission{reason: ReasonBatteryThreshold, blocked: true}
+	}
+	// 2a. Experiment flag (UC-040 A40, BR-028): in a game of an experiment, either
+	// arm, a lever of the flag under test is blocked experiment_flag. Check-only and
+	// before the rate limit, so it charges no budget and does not end rank-order
+	// admission.
+	if l.experimentFlagBlocks(c, d) {
+		return permission{reason: ReasonExperimentFlag, blocked: true}
 	}
 	// 3. Already applied (UC-040 A35, BR-023): a state or level decision that
 	// repeats the value this loop last wrote for its key is blocked already_applied.

@@ -2308,6 +2308,23 @@ func (r *Registry) IsBound(gameID string) bool {
 	return e != nil
 }
 
+// ExperimentFlag returns the flag under test in a game (UC-040 A40, BR-028; #1975):
+// the experiment bound to gameID at spawn, else the experiment experimentID names.
+// ok=false when the registry knows neither.
+func (r *Registry) ExperimentFlag(gameID, experimentID string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if gameID != "" {
+		if _, _, e := r.findGameLocked(gameID); e != nil {
+			return e.flagKey, true
+		}
+	}
+	if e := r.entries[experimentID]; experimentID != "" && e != nil {
+		return e.flagKey, true
+	}
+	return "", false
+}
+
 // findGameLocked looks up the experiment + arm owning a coordinator game_id.
 // Assumes r.mu held.
 func (r *Registry) findGameLocked(gameID string) (id, arm string, e *entry) {

@@ -557,6 +557,8 @@ func main() {
 		"openai_key", decideEnv.OpenAIAPIKey != "",
 		"jev_key", decideEnv.JevAPIKey != "")
 	decideBackends := newDecideRegistry(decideEnv, newDecideHTTPClient())
+	// experimentFlags is installed once the experiment registry exists (below).
+	experimentFlags := &experimentFlagLookup{}
 	loopFactory := func(gameID string) *decision.Loop {
 		// The decision loop is driven by the OpenFeature/flagd control layer (#727):
 		// flags are evaluated every cycle, the kill switch / objectives / permission
@@ -649,6 +651,9 @@ func main() {
 		// The rules engine skips a state or level candidate whose value the loop
 		// already applied (UC-040 A35 step 4), so it does not take a slot every second.
 		rules.SetAppliedSource(loop.AppliedValues)
+		// UC-040 A40, BR-028 (#1975): in a game of an experiment, either arm, a lever
+		// of the flag under test is not written.
+		loop.SetExperimentFlagSource(experimentFlags.FlagFor)
 		loop.Rules = rules
 		// Demo/verification probe (decision.probe_decisions): built once per loop so
 		// its rate-limit clock survives flag flips; Loop.rulesFor swaps it in per
@@ -897,6 +902,7 @@ func main() {
 			retro.SetExperimentParent(reg.ExperimentSpanContext)
 			summaries.SetExperimentParent(reg.ExperimentSpanContext)
 			proposalSink.Set(expLoop.proposalSink())
+			experimentFlags.Set(reg.ExperimentFlag)
 		}
 		// #1184: close the game→retro→thesis→experiment loop. Forward each decoded
 		// post-game retro suggestion (#1179) into the experiment loop's retro-seeded
