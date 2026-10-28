@@ -46,7 +46,7 @@ def _matches() -> Counter:
             continue
         try:
             text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError, OSError:
             continue
         count = sum(1 for line in text.splitlines() if PATTERN.search(line))
         if count:

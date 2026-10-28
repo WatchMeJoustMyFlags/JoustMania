@@ -117,7 +117,7 @@ class PromClient:
     def _get(self, path: str, params: dict) -> dict:
         url = f"{self.base_url}{path}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 (trusted local URL)
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         if payload.get("status") != "success":
             raise PrometheusUnavailable(
@@ -146,7 +146,7 @@ class PromClient:
         try:
             self.query("vector(1)")
             return True
-        except (urllib.error.URLError, PrometheusUnavailable, OSError):
+        except urllib.error.URLError, PrometheusUnavailable, OSError:
             return False
 
 
@@ -220,7 +220,7 @@ def _eliminated_serials(client: PromClient, game_id: str) -> set[str] | None:
     promql = f'last_over_time({ELIMINATION_METRIC}{{game_id="{_escape(game_id)}"}}[6h])'
     try:
         result = client.query(promql)
-    except (urllib.error.URLError, PrometheusUnavailable, OSError):
+    except urllib.error.URLError, PrometheusUnavailable, OSError:
         return None
     if not result:
         return None
@@ -229,7 +229,7 @@ def _eliminated_serials(client: PromClient, game_id: str) -> set[str] | None:
         serial = s["metric"].get("serial")
         try:
             order = float(s["value"][1])
-        except (TypeError, ValueError, IndexError):
+        except TypeError, ValueError, IndexError:
             continue
         if serial and order > 0:
             out.add(serial)

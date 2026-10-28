@@ -540,7 +540,7 @@ async def test_shadow_experimental_interventions_apply(stack, headless_cleanup, 
 
     with flagd_probe_client(stack, "agent") as flag_client:
         assert await async_poll_until(
-            lambda: (flag_client.get_string_value("interventions_allowed", "", EvaluationContext()) == expected),
+            lambda: flag_client.get_string_value("interventions_allowed", "", EvaluationContext()) == expected,
             rewrite=_set_permission,
         ), "flagd did not serve interventions_allowed=shadow_experimental"
 
