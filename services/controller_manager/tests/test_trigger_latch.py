@@ -6,6 +6,7 @@ last frame delivered to a game stream", so a press that starts and ends between 
 frames (15/30 Hz) is not lost. Only game streams clear the latch (like the death latch).
 """
 
+import queue
 import sys
 import threading
 from pathlib import Path
@@ -140,6 +141,7 @@ def _bare_hid(adapter_cls):
     adapter._trigger_latch = set()
     adapter._data_lock = threading.Lock()
     adapter._closed = set()
+    adapter._command_queue = queue.Queue(maxsize=256)
     adapter._stream_running = True
     adapter._adapter_names = {}
     return adapter
