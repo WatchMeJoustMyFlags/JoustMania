@@ -262,7 +262,20 @@ func (c *Client) Delete(ctx context.Context, set, flag string, query url.Values)
 type Policy struct {
 	Kind    string   `json:"kind"`
 	Scopes  []string `json:"scope"`
+	Bounds  Bounds   `json:"bounds"`
 	Persist bool     `json:"persist"`
+	// Description is the row's one line in game terms (flags.md §13, #2345);
+	// every row of the experiment catalog has one, "" from an older service.
+	Description string `json:"description"`
+}
+
+// Bounds is the part of a registry row's bounds the agent shows the experiment
+// proposer: the allowed variant subset (empty = every declared variant) and a
+// numeric range.
+type Bounds struct {
+	Variants []string  `json:"variants"`
+	Range    []float64 `json:"range"`
+	Integer  bool      `json:"integer"`
 }
 
 // AllowsScope reports whether the registry allows writes in scope.

@@ -274,6 +274,7 @@ file is the source). A flag without a policy is read-only baseline. There are no
 | min_value | Inclusive lower bound of a numeric value | Decimal | 10,3 | Optional |
 | max_value | Inclusive upper bound of a numeric value | Decimal | 10,3 | Optional, >= min_value |
 | payload_schema | Format of a composite string value (e.g. `<seconds>:<factor>`), or `free string` | String | 100 | Optional |
+| description | What the flag does, in game terms, in one line; served in the policy and shown to the experiment proposer (#2345, UC-042 BR-008) | String | 120 | Not Null when scope includes experiment+arm, else Optional; one line |
 
 ### GAME_SCOPE
 

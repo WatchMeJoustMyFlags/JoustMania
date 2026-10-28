@@ -470,7 +470,7 @@ Windows in which a running real game is not registered, so the guard does not se
 
 The attribute is on the eight hold keys of §13.3 (`shield.activation`, `shield.energy_max_seconds`, `shield.energy_budget_seconds`, `shield.energy_initial_seconds`, `shield.recharge_per_second`, `shield.min_burst_seconds`, `shield.hold_rumble_intensity`, `shield.empty_pulse_ms`); their scope is `stack or experiment+arm or real` since FR-162 (#2096 PR-7b-2a), so the guard is in force.
 
-**Description (`description`, #2345):** an optional one-line text, in game terms, of what the flag does: at most 120 characters, no line break (the cap bounds a later consumer's prompt). The flag service refuses to start on a longer, multi-line or blank description and names the row (`registry: <set>/<key>: ...`); it is not required on any row yet. It is served in the row's `policy` by the read endpoints and omitted when empty; it is informational, no write is checked against it. Registry fields are strict, so `registry.yaml` may carry it only once the released flag service parses it.
+**Description (`description`, #2345):** one line, in game terms, of what the flag does, at most 120 characters (the cap bounds the experiment proposer's prompt). **Required** on every row whose scope includes `experiment+arm` (the experiment catalog, §13.3): the flag service refuses to start when such a row has none, or when a description is longer or spans lines; optional on every other row. It is served in the row's `policy` by the read endpoints and is informational: no write is checked against it.
 
 **Bounds** are the declared variants of the baseline file unless a range, a payload schema or `free string` is
 given. Ranges are inclusive and pinned to the reader's own clamp (`difficulty_handlers.py` factors 0.5 to 2.0, `lifecycle_handlers.py` toughness boost and soft penalty, `games/base.py` ramp_tempo 15 s and tempo ramp 0.1 to 10 s), so the registry never rejects a value the game would apply.
@@ -605,6 +605,35 @@ flags an experiment may change. Capacity (`max_concurrent_games`, `max_shadow_ga
 proposer and the dynamic declarer read the catalog from the flag service (`GET /game`, the `policy` of each
 flag), and a value outside the bounds is refused with `out_of_bounds`. A numeric range covers the declared
 variants with headroom; "same shape" accepts an object with exactly the default variant's keys and value kinds.
+
+**Descriptions (`description`, #2345, [UC-042](../use_cases/UC-042.md) BR-008):** every row of the experiment catalog carries a one-line `description` of what the flag does in game terms; the flag service serves it in the row's `policy` (`GET /game`) and the experiment proposer shows it to the model next to the key, the variants and the range. The registry file holds the same text as this table (`TestDescriptionsMatchFlagsMD`).
+
+| Key | Description |
+|---|---|
+| `sensitivity` | movement a player survives: 0 ultra_slow (strictest) to 4 ultra_fast (most lenient) |
+| `nonstop.time_limit_seconds` | Non-Stop Joust game length in seconds; 0 means no time limit |
+| `invincibility_seconds` | seconds Tournament and Fight Club fighters cannot lose at the start of a match or round; 0 = default 4 s |
+| `fight_club.min_rounds` | Fight Club rounds played before the game can end with one leader |
+| `werewolf.reveal_time_seconds` | seconds into a Werewolf game until the werewolves are revealed |
+| `death_grace_period_seconds` | seconds a player cannot die after swapping team, turning zombie or respawning |
+| `nonstop.respawn_seconds` | seconds a dead Non-Stop Joust player waits before respawning |
+| `nonstop.spawn_protection_seconds` | seconds a respawned Non-Stop Joust player cannot die |
+| `fight_club.round_seconds` | length of one Fight Club round in seconds |
+| `tournament.match_seconds` | seconds a Tournament match lasts before a random fighter wins |
+| `tournament.time_between_matches_seconds` | pause in seconds between two Tournament matches |
+| `werewolf.werewolf_fraction` | share of Werewolf players who are werewolves (0.44 = 44 percent) |
+| `zombie.initial_count` | players who start a Zombies game as zombies |
+| `zombie.respawn_min_seconds` | shortest wait in seconds before a killed zombie respawns |
+| `zombie.respawn_max_seconds` | longest wait in seconds before a killed zombie respawns |
+| `windows` | min and max seconds of the fast and slow music phases, in the game and in its end phase |
+| `shield.activation` | how a granted shield works: on at grant, on a trigger press, or while the trigger is held |
+| `shield.energy_max_seconds` | hold mode: most shield energy in seconds a player can store |
+| `shield.energy_budget_seconds` | hold mode: total seconds of active shield a player may use in one game |
+| `shield.energy_initial_seconds` | hold mode: shield energy in seconds each player starts the game with |
+| `shield.recharge_per_second` | hold mode: shield energy regained per second while the shield is not held |
+| `shield.min_burst_seconds` | hold mode: least shield energy in seconds one activation costs |
+| `shield.hold_rumble_intensity` | hold mode: rumble strength while a player holds the shield, 0 = none |
+| `shield.empty_pulse_ms` | hold mode: length in ms of the pulse when a held shield runs out |
 
 An `experiment+arm` value never resolves for `game_kind == "real"` (FR-062, FR-138): the service generates the
 condition, so the invariant gate (`experiment/gate.go`) becomes a second check. A promotion overlay lasts until
