@@ -804,8 +804,11 @@ func main() {
 	// cross-game window as the narrative and fires ProposeOnce in a ctx-bounded
 	// goroutine so a slow inference never blocks the game-end path. ProposeOnce
 	// never returns an error (a failed/gated cycle is a recorded no-op).
+	// #2323: the proposer goroutines are tracked so run() joins them on shutdown,
+	// before main's deferred tracer / metrics shutdown.
+	proposals := &backgroundGroup{}
 	proposeOnGameEnd := func(c gamecontext.GameContext) {
-		go func() {
+		proposals.Go(func() {
 			cfg := agentFlags.CodeImprovement(ctx)
 			n := experiment.Narrative{
 				ContextBlock: gamewindow.Render(sharedContextWindow.SnapshotFor(c.GameKind, c.ExperimentID)),
@@ -818,7 +821,7 @@ func main() {
 				Permit:      permitPropose,
 				GameKind:    c.GameKind,
 			})
-		}()
+		})
 	}
 	slog.Info("Shadow-experiment proposer enabled (#931, M7-4)", "flag_service", gameFlags.BaseURL())
 
@@ -1020,6 +1023,7 @@ func main() {
 		evictIntervalSrc: lifecycleHolder.EvictInterval,
 		shadow:           shadow,
 		experiments:      experiments,
+		background:       proposals,
 		// Read-only experiment-dossier HTTP view (#1183): serves GET /experiments[/{id}]
 		// off the durable journal on the existing health server. Always wired — it reads
 		// the same journals the experiment loop writes, and surfaces nothing when the

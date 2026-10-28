@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,7 +24,8 @@ import (
 // on ctx.Done(), or run returned before draining the shutdown goroutine), goleak
 // would find the survivor and fail the test.
 
-// leakOptions returns the goleak options each shutdown test uses. The deterministic
+// leakOptions returns the goleak options every goleak test in this package uses
+// (one list, #2323). The deterministic
 // core is goleak.IgnoreCurrent(): captured at the START of every test (the deferred
 // call's arguments are evaluated when the defer statement runs, before run() spawns
 // anything), it snapshots the goroutine set that is ALREADY running — package-init
@@ -60,8 +62,11 @@ func leakOptions() []goleak.Option {
 	return []goleak.Option{
 		// Baseline: everything already running before run() starts.
 		goleak.IgnoreCurrent(),
-		goleak.IgnoreTopFunction("github.com/open-feature/go-sdk/openfeature.(*eventExecutor).startEventListener.func1.1"),
-		goleak.IgnoreTopFunction("google.golang.org/grpc.(*ccBalancerWrapper).watcher"),
+		// The executor's creating-frame symbol differs between the plain and -race
+		// builds (newEventExecutor is inlined differently), so both variants are listed.
+		goleak.IgnoreAnyFunction("github.com/open-feature/go-sdk/openfeature.(*eventExecutor).startEventListener.func1.1"),
+		goleak.IgnoreAnyFunction("github.com/open-feature/go-sdk/openfeature.newEventExecutor.(*eventExecutor).startEventListener.func1.1"),
+		goleak.IgnoreAnyFunction("google.golang.org/grpc.(*ccBalancerWrapper).watcher"),
 		goleak.IgnoreAnyFunction("go.opencensus.io/stats/view.(*worker).start"),
 	}
 }
@@ -252,4 +257,47 @@ func waitDial(t *testing.T, addr string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("server at %s never came up", addr)
+}
+
+// TestRun_ShutdownJoinsBackgroundGoroutines (#2323): a goroutine main() starts
+// outside run() on the background group (the game-end proposer) is joined by run()'s
+// shutdown path, so run() returns, and main's deferred tracer / metrics shutdown
+// runs, only after it has ended. A goroutine offered after shutdown never starts.
+func TestRun_ShutdownJoinsBackgroundGoroutines(t *testing.T) {
+	defer goleak.VerifyNone(t, leakOptions()...)
+
+	c := newShutdownComponents(t)
+	c.background = &backgroundGroup{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var finished atomic.Bool
+	// A proposer analogue: bounded by the root ctx, but still busy for a moment
+	// after the cancellation (a span end, a metric record).
+	if !c.background.Go(func() {
+		<-ctx.Done()
+		time.Sleep(100 * time.Millisecond)
+		finished.Store(true)
+	}) {
+		t.Fatal("Go refused a goroutine before shutdown")
+	}
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.run(ctx) }()
+	waitDial(t, c.listenAddr)
+	cancel()
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("run() returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run() did not return within 10s of context cancellation")
+	}
+	if !finished.Load() {
+		t.Fatal("run() returned before the background goroutine ended")
+	}
+	if c.background.Go(func() { t.Error("a goroutine started after shutdown") }) {
+		t.Fatal("Go started a goroutine after shutdown")
+	}
 }

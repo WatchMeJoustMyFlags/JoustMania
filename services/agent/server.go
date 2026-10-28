@@ -73,6 +73,12 @@ type serverComponents struct {
 	// behaves exactly as before. run() joins this goroutine on shutdown so it is
 	// leak-safe (the loop's own AbortAll tears experiments down on ctx cancel).
 	experiments func(context.Context)
+
+	// background, when non-nil, holds the fire-and-forget goroutines main() starts
+	// outside run() (the game-end proposer, #2323). run()'s shutdown path closes and
+	// joins it after the gRPC server has stopped, so none of them outlives run() and
+	// races main's deferred tracer / metrics shutdown. Nil = nothing to join.
+	background *backgroundGroup
 }
 
 // effectiveEvictInterval returns the live eviction cadence when a source is wired
@@ -152,6 +158,9 @@ func (c *serverComponents) run(ctx context.Context) error {
 		if c.retro != nil {
 			c.retro.AwaitInflight()
 		}
+		// Join the game-end proposer goroutines (#2323). GracefulStop above ended the
+		// OTLP intake, so no new game end arrives; Close also refuses a late one.
+		c.background.Close()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = healthServer.Shutdown(shutdownCtx)
