@@ -279,7 +279,7 @@ async def test_force_start_refuses_when_a_start_wins_during_the_roster_lookup(se
     state_before = servicer.state
     started: list[asyncio.Future] = []
 
-    async def roster_lookup(_request):
+    async def roster_lookup(_request, **_kwargs):
         started.append(live_lifecycle(servicer))
         return controller_manager_pb2.GetConnectedControllersResponse(connected_serials=["a", "b"])
 

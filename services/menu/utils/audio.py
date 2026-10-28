@@ -1,14 +1,31 @@
 """Audio utilities for the Menu service."""
 
+import asyncio
 import logging
 
+import grpc
 import grpc.aio
 
 from lib.types import Sound
 from lib.voice_prompts import GAME_MODE_VOICE
+from services.menu import metrics
+from services.menu.utils.detached import run_detached
 from services.menu.utils.settings import validate_mode_keys
 
 logger = logging.getLogger(__name__)
+
+# Deadline of every audio RPC the menu sends (#2378, UC-010 BR-013). A recovery bound,
+# not a stage knob, so a code constant and no flag (C-035). PlaySound returns when the
+# clip is queued, not when it ends, so a healthy audio service answers well inside it.
+AUDIO_RPC_TIMEOUT_SECONDS = 2.0
+
+
+def _count_failure(rpc: str, error: Exception) -> None:
+    """Count a failed audio RPC: ``timeout`` when its deadline passed, else ``error``."""
+    timed_out = isinstance(error, grpc.aio.AioRpcError) and error.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+    timed_out = timed_out or isinstance(error, TimeoutError)
+    metrics.audio_rpc_failures_total.labels(rpc=rpc, reason="timeout" if timed_out else "error").inc()
+
 
 # Default per-channel volumes (F7, #766). These double as the flagd user-domain
 # defaults, so promotion is behavior-neutral.
@@ -59,6 +76,8 @@ class AudioHelper:
         """
         self.audio_channel = audio_channel
         self.lobby_music_track_id: str | None = None
+        # Detached PlaySound tasks, held until they end (run_detached, #2378).
+        self._sound_tasks: set[asyncio.Task] = set()
 
         # Per-channel volumes — read once at menu init (init-frozen).
         self.sound_volume = _read_volume(user_prefs_client, "audio_volume.menu_sound", DEFAULT_SOUND_VOLUME)
@@ -69,7 +88,12 @@ class AudioHelper:
 
     async def play_sound(self, sound: str | Sound, volume: float | None = None) -> None:
         """
-        Play a sound effect via the audio service (fire-and-forget).
+        Play a sound effect via the audio service, without waiting for the RPC (#2378).
+
+        The request is sent from a detached task (``run_detached``), so a slow or hung
+        audio service never holds back the caller: the menu's serial button loop, a
+        handler or the game start (UC-010 BR-013). The RPC has a deadline of
+        ``AUDIO_RPC_TIMEOUT_SECONDS``; a failure is logged and counted.
 
         Args:
             sound: Sound enum or relative path to audio file
@@ -77,6 +101,9 @@ class AudioHelper:
         """
         if volume is None:
             volume = self.sound_volume
+        run_detached(self._send_sound(sound, volume), tasks=self._sound_tasks, what=f"Sound {sound}")
+
+    async def _send_sound(self, sound: str | Sound, volume: float) -> None:
         try:
             from proto import audio_pb2, audio_pb2_grpc
 
@@ -89,15 +116,17 @@ class AudioHelper:
                     file_path=sound_name,
                     volume=volume,
                     priority=audio_pb2.AudioPriority.HIGH,
-                )
+                ),
+                timeout=AUDIO_RPC_TIMEOUT_SECONDS,
             )
             logger.debug(f"Played sound: {sound_name}")
         except Exception as e:
+            _count_failure("PlaySound", e)
             logger.warning(f"Could not play sound {sound}: {e}")
 
     async def play_voice(self, voice: str | Sound, volume: float | None = None) -> None:
         """
-        Play a voice announcement.
+        Play a voice announcement (detached, like ``play_sound``).
 
         Args:
             voice: Sound enum or voice file name (audio service resolves the path)
@@ -109,7 +138,7 @@ class AudioHelper:
 
     async def play_game_mode_voice(self, game_mode: str) -> None:
         """
-        Play the voice announcement for a game mode.
+        Play the voice announcement for a game mode (detached, like ``play_sound``).
 
         Args:
             game_mode: Name of the game mode
@@ -122,24 +151,31 @@ class AudioHelper:
         """
         Start quiet background music for the lobby/menu.
 
-        Uses a lower volume than game music for a relaxed atmosphere.
+        Uses a lower volume than game music for a relaxed atmosphere. Awaited (the
+        lobby restore orders it), but each RPC has the ``AUDIO_RPC_TIMEOUT_SECONDS``
+        deadline; a failure is logged and counted.
         """
+        rpc = "SetVolume"
         try:
             from proto import audio_pb2, audio_pb2_grpc
 
             stub = audio_pb2_grpc.AudioServiceStub(self.audio_channel)
 
             # Set lobby volume (quieter than game)
-            await stub.SetVolume(audio_pb2.SetVolumeRequest(volume=self.lobby_music_volume))
+            await stub.SetVolume(
+                audio_pb2.SetVolumeRequest(volume=self.lobby_music_volume), timeout=AUDIO_RPC_TIMEOUT_SECONDS
+            )
 
             # Start lobby music
+            rpc = "PlayMusic"
             response = await stub.PlayMusic(
                 audio_pb2.PlayMusicRequest(
                     file_pattern="Menu/music/*.ogg",
                     loop=True,
                     tempo=1.0,
                     priority=audio_pb2.AudioPriority.LOW,
-                )
+                ),
+                timeout=AUDIO_RPC_TIMEOUT_SECONDS,
             )
 
             if response.success:
@@ -149,19 +185,26 @@ class AudioHelper:
                 logger.warning(f"Failed to start lobby music: {response.error}")
 
         except Exception as e:
-            logger.debug(f"Could not start lobby music: {e}")
+            _count_failure(rpc, e)
+            logger.warning(f"Could not start lobby music ({rpc}): {e}")
 
     async def stop_lobby_music(self) -> None:
-        """Stop lobby music when game starts."""
+        """Stop lobby music when game starts.
+
+        Awaited, so the stop reaches the audio service before the game's own music
+        starts; the ``AUDIO_RPC_TIMEOUT_SECONDS`` deadline bounds how long a hung audio
+        service can hold the game start (UC-010 BR-013).
+        """
         try:
             from proto import audio_pb2, audio_pb2_grpc
 
             stub = audio_pb2_grpc.AudioServiceStub(self.audio_channel)
 
             # Stop music (empty track_id stops any playing music)
-            await stub.StopMusic(audio_pb2.StopMusicRequest(track_id=""))
+            await stub.StopMusic(audio_pb2.StopMusicRequest(track_id=""), timeout=AUDIO_RPC_TIMEOUT_SECONDS)
             self.lobby_music_track_id = None
             logger.info("Lobby music stopped")
 
         except Exception as e:
-            logger.debug(f"Could not stop lobby music: {e}")
+            _count_failure("StopMusic", e)
+            logger.warning(f"Could not stop lobby music: {e}")

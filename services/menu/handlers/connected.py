@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from services.menu.handlers.base import ButtonDebouncer, ControllerState
+from services.menu.utils.detached import run_detached
 from services.menu.utils.settings import get_next_game_mode
 
 if TYPE_CHECKING:
@@ -107,9 +108,7 @@ class ConnectedHandler:
 
     def _play_ready_beep_detached(self) -> None:
         """Play the ready beep without awaiting it (pattern of AdminHandler._play_voice_detached, #1746)."""
-        task = asyncio.get_running_loop().create_task(self._play_ready_beep())
-        self._sound_tasks.add(task)
-        task.add_done_callback(self._sound_tasks.discard)
+        run_detached(self._play_ready_beep(), tasks=self._sound_tasks, what="Ready beep")
 
     async def _play_ready_beep(self) -> None:
         if self._state_manager is None:
