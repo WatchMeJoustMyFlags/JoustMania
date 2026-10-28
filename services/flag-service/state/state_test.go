@@ -777,8 +777,6 @@ func TestFraction_RendersAFractionalElse(t *testing.T) {
 	})
 }
 
-// UC: UC-053 main
-// NFR: NFR-051
 // fillGameToTheBound registers a game with the given serials and writes the
 // widest realistic set of values and events into it; it returns the bytes the
 // game adds to the snapshot.
@@ -828,6 +826,8 @@ func fillGameToTheBound(t *testing.T, f *fixture, gameID string, serials []strin
 	return len(after) - len(before)
 }
 
+// UC: UC-053 main
+// NFR: NFR-051
 func TestNFR051_SnapshotBounded(t *testing.T) {
 	t.Run("UC-053/main 8 games x 16 players stay within 64 KiB per game and 1 MiB per snapshot", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
