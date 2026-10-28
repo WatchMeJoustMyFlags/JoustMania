@@ -60,7 +60,7 @@ jobs:
           MAX_BYTES: "60000"
         run: |
           set -euo pipefail
-          version=$(gh api "repos/${REPO}/contents/.release-please-manifest.json?ref=main" \
+          version=$(gh api "repos/${REPO}/contents/.release-please-manifest.json?ref=${RUN_SHA}" \
             --jq .content | base64 -d | jq -r '.["."]')
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::bad manifest version '$version'"; exit 1; }
           tag="joustmania-v${version}"
@@ -70,8 +70,19 @@ jobs:
           fi
           tag_sha=$(gh api "repos/${REPO}/commits/${tag}" --jq .sha) \
             || { echo "::error::tag $tag does not exist; release-please failed before tagging"; exit 1; }
-          if [ "$tag_sha" != "$RUN_SHA" ]; then
-            echo "::error::tag $tag is at $tag_sha, this run is for $RUN_SHA; refusing to create the release"
+          # The tag must be the merge commit of the release PR release-please is still processing
+          # (merged, labelled "autorelease: pending"). This also covers a later run on main when the
+          # run for the merge commit itself already failed.
+          release_prs=$(gh pr list --repo "$REPO" --state merged --label "autorelease: pending" \
+            --json number,title,mergeCommit \
+            --jq ".[] | select(.title | test(\"release joustmania ${version}\$\")) | \"\(.number) \(.mergeCommit.oid)\"")
+          if [ "$(printf '%s\n' "$release_prs" | grep -c .)" -ne 1 ]; then
+            echo "::error::expected exactly one merged 'autorelease: pending' PR for ${version}, found: '${release_prs}'"
+            exit 1
+          fi
+          read -r release_pr merge_sha <<< "$release_prs"
+          if [ "$tag_sha" != "$merge_sha" ]; then
+            echo "::error::tag $tag is at $tag_sha, release PR #$release_pr merged as $merge_sha; refusing to create the release"
             exit 1
           fi
 
@@ -96,10 +107,7 @@ jobs:
           gh release create "$tag" --repo "$REPO" --verify-tag --title "joustmania: v${version}" --notes-file notes.md
 
           # release-please would have swapped the label; a pending one blocks the next release PR.
-          for pr in $(gh pr list --repo "$REPO" --state merged --label "autorelease: pending" \
-              --json number,title --jq ".[] | select(.title | test(\"release joustmania ${version}\$\")) | .number"); do
-            gh pr edit "$pr" --repo "$REPO" --remove-label "autorelease: pending" --add-label "autorelease: tagged"
-          done
+          gh pr edit "$release_pr" --repo "$REPO" --remove-label "autorelease: pending" --add-label "autorelease: tagged"
 
           {
             echo "release_created=true"
@@ -113,7 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [release-please]
     if: >-
-      always() && (
+      !cancelled() && (
         needs.release-please.outputs.release_created == 'true' ||
         (github.event_name == 'workflow_dispatch' && inputs.version != '')
       )
@@ -128,23 +136,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          EVENT_NAME: ${{ github.event_name }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_SHA: ${{ inputs.sha }}
           RP_VERSION: ${{ needs.release-please.outputs.version }}
+          RP_SHA: ${{ needs.release-please.outputs.sha }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          # Retag-only when a version was given; otherwise the release release-please (or its
+          # fallback) just created, also on a dispatch without inputs.
+          if [ -n "$INPUT_VERSION" ]; then
+            retag_only=true
             version="$INPUT_VERSION"
             sha="$INPUT_SHA"
           else
+            retag_only=false
             version="$RP_VERSION"
-            sha="$RUN_SHA"
+            # The fallback reports the tag commit, which can be older than this run's commit.
+            sha="${RP_SHA:-$RUN_SHA}"
           fi
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like 0.8.0"; exit 1; }
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be 40 lowercase hex characters"; exit 1; }
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ "$retag_only" = true ]; then
             # The release tag must exist and point at the given commit.
             tag_sha=$(gh api "repos/${REPO}/commits/joustmania-v${version}" --jq .sha) \
               || { echo "::error::tag joustmania-v${version} does not exist"; exit 1; }
@@ -159,6 +172,9 @@ jobs:
     name: Tag Docker images with release version
     runs-on: ubuntu-latest
     needs: [resolve]
+    # Explicit: the implicit success() also checks release-please, which is skipped on the
+    # retag-only path (actions/runner#491).
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
     permissions:
       packages: write
     strategy:
@@ -197,12 +213,17 @@ jobs:
         run: |
           set -euo pipefail
           src=$(docker buildx imagetools inspect "${IMAGE}:${SHA}" --format '{{.Manifest.Digest}}')
-          if dst=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+          if dst=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}' 2>inspect.err); then
             if [ "$dst" = "$src" ]; then
               echo "${IMAGE}:${VERSION} already is ${src}; nothing to do"
               exit 0
             fi
             echo "::error::${IMAGE}:${VERSION} already exists as ${dst}, source ${IMAGE}:${SHA} is ${src}; not overwriting"
+            exit 1
+          fi
+          # Only a missing tag may be created; auth, registry or rate-limit errors fail closed.
+          if ! grep -qiE 'not found|manifest unknown' inspect.err; then
+            echo "::error::cannot inspect ${IMAGE}:${VERSION}: $(cat inspect.err)"
             exit 1
           fi
           echo "Creating ${IMAGE}:${VERSION} -> ${src} (from ${IMAGE}:${SHA})"
