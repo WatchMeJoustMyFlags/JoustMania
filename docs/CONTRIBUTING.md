@@ -458,6 +458,23 @@ git add proto/
 git commit -m "chore: Regenerate proto files"
 ```
 
+### Release PR token (one-time setup, #2270)
+
+`release.yml` runs release-please. Events created with the default `GITHUB_TOKEN` start no workflows, so
+the release PR would get no CI and stay blocked. When a GitHub App is configured, the workflow mints an
+installation token (`actions/create-github-app-token`) and uses it for release-please and for the
+release fallback step; without it the workflow falls back to `GITHUB_TOKEN` (forks, unconfigured repos).
+
+Maintainer setup, once:
+
+1. Create a GitHub App (Settings > Developer settings > GitHub Apps) with repository permissions
+   Contents: read and write, Pull requests: read and write. No webhook needed.
+2. Install the App on this repository only.
+3. Repository Settings > Secrets and variables > Actions: add the variable `RELEASE_APP_ID` (the App ID)
+   and the secret `RELEASE_APP_PRIVATE_KEY` (the full generated PEM private key).
+
+Both must be set; if either is missing the workflow silently uses `GITHUB_TOKEN`.
+
 ## Code Style
 
 ### Python
