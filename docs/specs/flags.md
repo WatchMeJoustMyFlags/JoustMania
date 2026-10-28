@@ -17,7 +17,7 @@ changed default or a new reader/writer updates this file in the same PR.
 
 | Item | Value | Source |
 |---|---|---|
-| flagd | `ghcr.io/open-feature/flagd:v0.18.0` with ONE source, `--uri grpc://flag-service:50064` (`flagd.sync.v1`); no flag file is mounted into flagd | `docker-compose.yml` (`flagd`) |
+| flagd | `ghcr.io/open-feature/flagd:v0.18.1` with ONE source, `--uri grpc://flag-service:50064` (`flagd.sync.v1`); no flag file is mounted into flagd | `docker-compose.yml` (`flagd`) |
 | Flag service | holds every flag set in memory over the read-only baseline files and pushes the merged configuration to flagd; every flag carries its `metadata.flagSetId`, so clients keep their selectors. Writers call `PUT` / `POST` / `DELETE /{flagSetId}/{flagName}`; runtime-mutable flags are listed in §13; admin settings persist to the service's own state file (epic #1407, UC-053, [services.md §7](services.md#7-flag-service-epic-1407)) | `services/flag-service/` |
 | Ports | `8013` gRPC evaluation (RPC resolver: no service reads it since #1713; tests and tools only), `8014` management / metrics, `8015` sync (in-process resolver, every service client; also published to the host for the host-networked pairing daemon), `8016` OFREP (the agent's pattern digest) | `docker-compose.yml` (`flagd`) |
 | Baseline files | `services/flagd/<set>.json`, mounted **read-only** into the flag service only and read once at start; a change needs a reviewed edit and `scripts/flags.sh restart` (C-033) | `docker-compose.yml` (`flag-service`) |

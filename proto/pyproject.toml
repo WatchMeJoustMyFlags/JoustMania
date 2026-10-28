@@ -4,11 +4,15 @@ version = "1.0.0"
 description = "Shared protocol buffer contracts for JoustMania microservices"
 requires-python = ">=3.11"
 dependencies = [
-    "grpcio>=1.70.0",
-    "grpcio-tools>=1.70.0",
-    # >=7.35.1: openfeature-provider-flagd 0.6.0 requires protobuf>=7.35.1,<8
+    # >=1.85.0: the checked-in proto/*_pb2_grpc.py are generated with
+    # grpcio-tools 1.85.0 and refuse an older grpcio at import (#1945). The
+    # images install without uv.lock (#2266), so this floor is what they get.
+    "grpcio>=1.85.0",
+    "grpcio-tools>=1.85.0",
+    # >=7.35.1: openfeature-provider-flagd 0.6.x requires protobuf>=7.35.1,<8
     # (#1945; was >=6.33.5 for 0.5.0, #843). The checked-in proto/*_pb2.py
-    # gencode (6.33.5) loads on the protobuf 7 runtime.
+    # gencode comes from the locked grpcio-tools (`make protos`); protobuf 7
+    # rejects only a runtime older than the gencode.
     "protobuf>=7.35.1",
 ]
 

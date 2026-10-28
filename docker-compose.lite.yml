@@ -73,7 +73,7 @@ services:
   # flagd for feature flag evaluation. Served sets come over the flag service's
   # gRPC sync source; flagd starts after it is healthy and restarts with it.
   flagd:
-    image: ghcr.io/open-feature/flagd:v0.18.0
+    image: ghcr.io/open-feature/flagd:v0.18.1
     container_name: joustmania-flagd
     command:
       - "start"
