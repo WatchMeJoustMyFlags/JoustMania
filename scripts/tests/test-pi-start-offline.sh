@@ -26,11 +26,11 @@
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-pi-start-offline.sh
 # UC: UC-060 main step 1 step 2 step 3 step 4 step 5 BR-001 BR-002 BR-004 A1 A4 A5 Pre-2 Post-S-1 Post-F-1
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 unset COMPOSE DOCKER COMPOSE_PROJECT_NAME COMPOSE_PROFILES JOUSTMANIA_UNIT_REV RUNTIME_DIRECTORY IMAGE_TAG || true
 # A test that reaches for the real docker fails instead of using it
-export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 REAL_GIT="$(command -v git)"
 fails=0
 fail() {

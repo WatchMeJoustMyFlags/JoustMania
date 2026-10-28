@@ -25,13 +25,13 @@
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-install-hotspot.sh
 # UC: UC-061 Pre-1 Pre-2 Pre-3 A8 A11 BR-001 BR-004
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INSTALL="${ROOT}/scripts/setup/install_hotspot.sh"
 UUID=e0602321-f72b-408b-983e-56ee57d519ee
 export UUID
 # A test that reaches for the real docker fails instead of using it
-export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 unset SUDO_USER SSH_CONNECTION || true
 fails=0
 fail() {

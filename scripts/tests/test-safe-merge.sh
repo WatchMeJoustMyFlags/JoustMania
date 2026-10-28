@@ -8,6 +8,7 @@
 # Runs as part of `make lint` (needs bash, jq, python3-free), or directly:
 #   ./scripts/tests/test-safe-merge.sh
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 # Hermetic: a fail-loud fake docker first on PATH, no COMPOSE / DOCKER override.
 unset COMPOSE DOCKER
 FAKE_DOCKER_DIR="$(mktemp -d)"

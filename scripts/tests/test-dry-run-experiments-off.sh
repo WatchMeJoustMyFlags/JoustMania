@@ -14,6 +14,7 @@
 #   ./scripts/tests/test-dry-run-experiments-off.sh
 # UC: UC-070 Pre-1
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 pass=0

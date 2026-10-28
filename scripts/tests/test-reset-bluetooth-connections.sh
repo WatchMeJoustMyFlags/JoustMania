@@ -9,11 +9,11 @@
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-reset-bluetooth-connections.sh
 # UC: UC-005 A9
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 unset COMPOSE DOCKER COMPOSE_PROJECT_NAME COMPOSE_PROFILES || true
 # A test that reaches for the real docker fails instead of using it
-export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT

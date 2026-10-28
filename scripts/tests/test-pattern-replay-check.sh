@@ -7,6 +7,7 @@
 #
 # UC: UC-046 main step 9 step 10 A11
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK="${SCRIPT_DIR}/../pattern-replay-check.sh"

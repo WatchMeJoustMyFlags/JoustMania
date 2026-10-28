@@ -9,6 +9,7 @@
 #
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-gate-run.sh
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 # Hermetic: a fail-loud fake docker first on PATH, no COMPOSE / DOCKER override.
 unset COMPOSE DOCKER
 # Hermetic: no detach state from a caller (e.g. this test run inside a gate-run job).

@@ -11,6 +11,7 @@
 # UC: UC-044 main A3 A4 A5 Post-F-1
 # UC: UC-070 A6
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="${SCRIPT_DIR}/../agent-backend.sh"
