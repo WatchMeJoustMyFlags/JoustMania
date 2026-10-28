@@ -77,7 +77,7 @@ EXPERIMENT_GAME_PARENT_LINK = "link"
 
 def experiment_game_parent_mode() -> str:
     """Read ``telemetry.experiment_game_parent``; anything but ``child`` is ``link``."""
-    value = read_string_flag("observability", EXPERIMENT_GAME_PARENT_FLAG, EXPERIMENT_GAME_PARENT_LINK)
+    value = read_string_flag("observability", "telemetry.experiment_game_parent", EXPERIMENT_GAME_PARENT_LINK)
     return EXPERIMENT_GAME_PARENT_CHILD if value == EXPERIMENT_GAME_PARENT_CHILD else EXPERIMENT_GAME_PARENT_LINK
 
 
