@@ -2,7 +2,7 @@
  * Background load of the dashboard (UC-035 BR-012, #2290): lazy iframes and a
  * gameplay stream that pauses on a hidden page.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { keepControllerStreamOpen } from "../controllerStream.js";
 import { EmbedGate, VisibilityGate } from "../visibilityGate.js";
 
@@ -17,6 +17,18 @@ class FakeDoc {
     for (const l of this.listeners) l();
   }
 }
+
+class FakeWin {
+  private listeners: Record<string, Array<() => void>> = {};
+  addEventListener(t: "pagehide" | "pageshow", l: () => void) {
+    (this.listeners[t] ??= []).push(l);
+  }
+  fire(t: "pagehide" | "pageshow") {
+    for (const l of this.listeners[t] ?? []) l();
+  }
+}
+
+afterEach(() => vi.useRealTimers());
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -41,16 +53,40 @@ describe("UC-035: BR-012 iframes load on first use of their tab", () => {
     expect(writes).toEqual([]);
   });
 
-  it("UC-035/BR-012 loads Grafana once on open, blanks it on leave and when the page hides", () => {
+  it("UC-035/BR-012 loads Grafana once on open and blanks it 60 s after the tab is left", () => {
+    vi.useFakeTimers();
     const { gate, writes } = setup();
     gate.sync("metrics", false);
     gate.sync("metrics", false);
     expect(writes).toEqual(["g=/grafana/x"]);
     gate.sync("controllers", false);
+    vi.advanceTimersByTime(59_999);
+    expect(writes).toEqual(["g=/grafana/x"]);
+    vi.advanceTimersByTime(1);
     expect(writes).toEqual(["g=/grafana/x", "g=about:blank"]);
     gate.sync("metrics", false);
+    expect(writes.slice(-1)).toEqual(["g=/grafana/x"]);
+  });
+
+  it("UC-035/BR-012 keeps Grafana loaded when the tab is re-opened within 60 s", () => {
+    vi.useFakeTimers();
+    const { gate, writes } = setup();
+    gate.sync("metrics", false);
+    gate.sync("controllers", false);
+    vi.advanceTimersByTime(30_000);
+    gate.sync("metrics", false);
+    vi.advanceTimersByTime(120_000);
+    expect(writes).toEqual(["g=/grafana/x"]);
+  });
+
+  it("UC-035/BR-012 blanks Grafana at once when the page is hidden", () => {
+    vi.useFakeTimers();
+    const { gate, writes } = setup();
+    gate.sync("metrics", false);
     gate.sync("metrics", true);
-    expect(writes.slice(-2)).toEqual(["g=/grafana/x", "g=about:blank"]);
+    expect(writes).toEqual(["g=/grafana/x", "g=about:blank"]);
+    vi.advanceTimersByTime(120_000);
+    expect(writes).toHaveLength(2);
   });
 
   it("UC-035/BR-012 loads the Jaeger search once and keeps it", () => {
@@ -119,5 +155,57 @@ describe("UC-035: BR-012 the gameplay stream pauses on a hidden page", () => {
     doc.setHidden(false);
     await tick();
     expect(opens).toBe(1);
+  });
+});
+
+describe("UC-035: BR-012 hide then show before the aborted stream settles", () => {
+  it("UC-035/BR-012 reports no loss and reopens at once", async () => {
+    const doc = new FakeDoc();
+    const gate = new VisibilityGate(doc);
+    const errors: string[] = [];
+    const scheduled: number[] = [];
+    let opens = 0;
+    let rejectFirst: (e: Error) => void = () => {};
+    void keepControllerStreamOpen<number>({
+      gate,
+      open: async function* () {
+        opens++;
+        if (opens === 1) await new Promise((_, reject) => (rejectFirst = reject));
+        yield opens;
+        await new Promise(() => {}); // the reopened stream stays up
+      },
+      onUpdate: () => {},
+      grid: { setLoading: () => {}, setError: (m) => errors.push(m) },
+      setStreaming: () => {},
+      schedule: (_fn, ms) => void scheduled.push(ms),
+    });
+    await tick();
+    doc.setHidden(true);
+    doc.setHidden(false); // visible again before the abort rejection is delivered
+    rejectFirst(new Error("aborted"));
+    await tick();
+    expect(errors).toEqual([]);
+    expect(scheduled).toEqual([]);
+    expect(opens).toBe(2);
+  });
+});
+
+describe("UC-035: BR-012 back/forward cache", () => {
+  it("UC-035/BR-012 pagehide pauses the stream gate and pageshow resumes it", async () => {
+    const doc = new FakeDoc();
+    const win = new FakeWin();
+    const gate = new VisibilityGate(doc, win);
+    const first = gate.signal;
+    win.fire("pagehide");
+    expect(first.aborted).toBe(true);
+    expect(gate.hidden).toBe(true);
+    let woke = false;
+    void gate.whenVisible().then(() => (woke = true));
+    await tick();
+    expect(woke).toBe(false);
+    win.fire("pageshow");
+    await tick();
+    expect(woke).toBe(true);
+    expect(gate.signal.aborted).toBe(false);
   });
 });

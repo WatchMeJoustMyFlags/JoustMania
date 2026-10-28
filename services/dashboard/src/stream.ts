@@ -27,6 +27,7 @@ export async function keepStreamOpen<T>(opts: KeepStreamOpenOptions<T>): Promise
   const schedule = opts.schedule ?? ((fn, ms) => void setTimeout(fn, ms));
   if (opts.gate) await opts.gate.whenVisible();
   let lost: unknown | null = null;
+  const generation = opts.gate?.generation;
   try {
     for await (const event of opts.open(opts.gate?.signal)) {
       opts.onEvent(event);
@@ -34,8 +35,8 @@ export async function keepStreamOpen<T>(opts: KeepStreamOpenOptions<T>): Promise
   } catch (error) {
     lost = error ?? new Error("stream failed");
   }
-  if (opts.gate?.hidden) {
-    // Paused, not lost: wait for the page, then open again at once.
+  if (opts.gate && (opts.gate.hidden || opts.gate.generation !== generation)) {
+    // Paused, not lost (even when the page is already visible again): open again at once.
     void keepStreamOpen(opts);
     return;
   }

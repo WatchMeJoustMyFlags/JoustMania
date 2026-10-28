@@ -46,6 +46,11 @@ export class PageGate {
     doc.addEventListener("visibilitychange", () => (doc.hidden ? this.pause() : this.resume()));
   }
 
+  /** Visible and not parked in the back/forward cache. */
+  get pageVisible(): boolean {
+    return !this.doc.hidden && this.pageShown;
+  }
+
   /** A tab's pollers run only while it is shown and the page is visible. */
   isActive(tab: string): boolean {
     return this.activeTab === tab && !this.doc.hidden && this.pageShown;

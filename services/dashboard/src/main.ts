@@ -195,9 +195,9 @@ const pageGate = new PageGate(
 );
 
 // Background load (UC-035 BR-012, #2290): the gameplay stream pauses on a hidden
-// page; the Grafana iframe loads on first open of its tab and is blanked when the
-// tab is left or the page hidden; the Jaeger search loads once, on first open.
-const streamGate = new VisibilityGate(document);
+// page; the Grafana iframe loads on first open of its tab and is blanked 60 s after the
+// tab is left or at once on a hidden page; the Jaeger search loads once, on first open.
+const streamGate = new VisibilityGate(document, globalThis);
 const embedGate = new EmbedGate([
   {
     frame: document.getElementById("grafana-embed") as HTMLIFrameElement,
@@ -219,11 +219,14 @@ function followActive(): boolean {
   return FOLLOW_TABS.has(pageGate.activeTab) && pageGate.isActive(pageGate.activeTab);
 }
 function syncBackground() {
-  embedGate.sync(pageGate.activeTab, document.hidden);
+  embedGate.sync(pageGate.activeTab, !pageGate.pageVisible);
   if (followActive()) followPoller?.poke();
   else followPoller?.stop();
 }
 document.addEventListener("visibilitychange", syncBackground);
+// After PageGate's own listeners (registered first), so pageVisible is current.
+globalThis.addEventListener("pagehide", syncBackground);
+globalThis.addEventListener("pageshow", syncBackground);
 syncBackground();
 
 function tabActive(tab: string): boolean {
