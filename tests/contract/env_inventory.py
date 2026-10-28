@@ -265,7 +265,10 @@ def _go_helpers(files: list[Path]) -> dict[str, tuple[int, bool]]:
             body = text[m.end() : end]
             params = _go_param_names(m.group(2))
             for index, param in enumerate(params):
-                if re.search(rf"os\.(?:Getenv|LookupEnv)\({param}\)", body):
+                # An unnamed parameter ("[]*http.Request") is no identifier.
+                if param.isidentifier() and re.search(
+                    rf"os\.(?:Getenv|LookupEnv)\({re.escape(param)}\)", body
+                ):
                     name, shape = m.group(1), (index, len(params) > 1)
                     if helpers.get(name, shape) != shape:
                         raise ValueError(

@@ -13,6 +13,7 @@ import (
 	"github.com/joustmania/agent/decide/backends/openai"
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flags"
+	"github.com/joustmania/agent/internal/anthropichttp"
 	"github.com/joustmania/agent/keysafe"
 )
 
@@ -69,12 +70,7 @@ const decideHTTPTimeout = 30 * time.Second
 // It never follows a redirect: the key-bearing request goes only to the
 // key-safe base URL (UC-044 BR-003).
 func newDecideHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: decideHTTPTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	return anthropichttp.NewHTTPClient(decideHTTPTimeout)
 }
 
 // newDecideRegistry builds the decision-backend registry main.go hands to every

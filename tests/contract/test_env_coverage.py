@@ -345,3 +345,13 @@ def test_go_scanner_follows_a_helper_key_in_any_position(tmp_path):
     assert [(r.var, r.line, r.has_default) for r in reads] == [
         ("PLANTED_CEILING", 7, True)
     ]
+
+
+def test_go_scanner_tolerates_unnamed_func_parameters(tmp_path):
+    """An unnamed parameter like ``[]*http.Request`` is not an identifier (#2330)."""
+    (tmp_path / "main.go").write_text(
+        "package main\n"
+        "func NoRedirect(*http.Request, []*http.Request) error { return nil }\n"
+        'func f() { _ = os.Getenv("REAL") }\n'
+    )
+    assert [r.var for r in inv.go_reads(tmp_path)] == ["REAL"]
