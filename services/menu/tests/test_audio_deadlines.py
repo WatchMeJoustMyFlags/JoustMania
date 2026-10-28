@@ -27,12 +27,20 @@ class _HungAudioStub:
     """An audio service that never answers: a call returns only when its gRPC deadline passes."""
 
     calls: list[tuple[str, float | None]] = []
+    # RPCs that answer at once instead of hanging, and an optional gate a PlaySound waits on.
+    answering: set[str] = set()
+    sound_gate: asyncio.Event | None = None
 
     def __init__(self, _channel):
         pass
 
     async def _hang(self, rpc: str, deadline: float | None):
         type(self).calls.append((rpc, deadline))
+        if rpc in type(self).answering:
+            return MagicMock(success=True, track_id="t1")
+        if rpc == "PlaySound" and type(self).sound_gate is not None:
+            await type(self).sound_gate.wait()  # held until the test releases it
+            return None
         if deadline is None:
             await asyncio.Event().wait()  # no deadline: hangs for good
         await asyncio.sleep(deadline)
@@ -41,22 +49,24 @@ class _HungAudioStub:
         )
 
     async def PlaySound(self, _request, **kwargs):  # noqa: N802 - gRPC stub name
-        await self._hang("PlaySound", kwargs.get("timeout"))
+        return await self._hang("PlaySound", kwargs.get("timeout"))
 
     async def StopMusic(self, _request, **kwargs):  # noqa: N802 - gRPC stub name
         await self._hang("StopMusic", kwargs.get("timeout"))
 
     async def SetVolume(self, _request, **kwargs):  # noqa: N802 - gRPC stub name
-        await self._hang("SetVolume", kwargs.get("timeout"))
+        return await self._hang("SetVolume", kwargs.get("timeout"))
 
     async def PlayMusic(self, _request, **kwargs):  # noqa: N802 - gRPC stub name
-        await self._hang("PlayMusic", kwargs.get("timeout"))
+        return await self._hang("PlayMusic", kwargs.get("timeout"))
 
 
 @pytest.fixture
 def hung_audio(monkeypatch):
     """A real AudioHelper whose audio service never answers; deadlines shortened for the test."""
     _HungAudioStub.calls = []
+    _HungAudioStub.answering = set()
+    _HungAudioStub.sound_gate = None
     monkeypatch.setattr(audio_module, "AUDIO_RPC_TIMEOUT_SECONDS", FAST_DEADLINE, raising=False)
     with patch("proto.audio_pb2_grpc.AudioServiceStub", _HungAudioStub):
         helper = AudioHelper(MagicMock())
@@ -75,6 +85,7 @@ def failures():
 @pytest.mark.uc("UC-010", flow="main", br=["BR-013"])
 async def test_a_hung_voice_line_does_not_hold_the_next_button_event(hung_audio, failures):
     """SELECT plays the mode's voice line; with audio wedged the next controller's trigger still readies."""
+    gate = _HungAudioStub.sound_gate = asyncio.Event()
     manager = StateManager(
         led=create_autospec(LedController, instance=True, spec_set=True),
         audio=hung_audio,
@@ -87,11 +98,27 @@ async def test_a_hung_voice_line_does_not_hold_the_next_button_event(hung_audio,
     handler._debouncer.should_process = MagicMock(return_value=True)
 
     await asyncio.wait_for(handler.handle_button("s1", "select"), timeout=1.0)
-    await asyncio.wait_for(handler.handle_button("s2", "trigger"), timeout=1.0)
+    # The voice line is never awaited by the caller (BR-013): its RPC is still in flight.
+    in_flight = list(hung_audio._sound_tasks)
+    assert in_flight
+    assert not any(task.done() for task in in_flight)
 
+    await asyncio.wait_for(handler.handle_button("s2", "trigger"), timeout=1.0)
     assert manager.get_controller_state("s2") == ControllerState.READY
-    # The voice line was still sent, with a deadline, and its timeout is counted.
+
+    # Released, the RPC ends and is sent with a deadline; here it answers, so nothing is counted.
+    gate.set()
+    await asyncio.wait_for(asyncio.gather(*in_flight), timeout=1.0)
+    assert ("PlaySound", FAST_DEADLINE) in _HungAudioStub.calls
+    failures.labels.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="main", br=["BR-013"])
+async def test_a_voice_line_that_hits_its_deadline_is_counted_as_timeout(hung_audio, failures):
+    await hung_audio.play_voice(Sound.MENU_VOX_ADMIN_NOT_SAVED)
     await asyncio.wait_for(asyncio.gather(*hung_audio._sound_tasks), timeout=1.0)
+
     assert ("PlaySound", FAST_DEADLINE) in _HungAudioStub.calls
     failures.labels.assert_any_call(rpc="PlaySound", reason="timeout")
 
@@ -123,6 +150,18 @@ async def test_a_hung_lobby_music_start_ends_at_its_deadline(hung_audio, failure
 
     assert _HungAudioStub.calls == [("SetVolume", FAST_DEADLINE)]
     failures.labels.assert_called_once_with(rpc="SetVolume", reason="timeout")
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-010", flow="main", steps=[8], br=["BR-013"])
+async def test_a_hung_lobby_music_play_ends_at_its_deadline(hung_audio, failures):
+    """SetVolume answers, PlayMusic hangs: the PlayMusic RPC has its own deadline."""
+    _HungAudioStub.answering = {"SetVolume"}
+
+    await asyncio.wait_for(hung_audio.start_lobby_music(), timeout=1.0)
+
+    assert _HungAudioStub.calls == [("SetVolume", FAST_DEADLINE), ("PlayMusic", FAST_DEADLINE)]
+    failures.labels.assert_called_once_with(rpc="PlayMusic", reason="timeout")
 
 
 @pytest.mark.asyncio
