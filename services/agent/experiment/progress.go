@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -85,11 +86,11 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 	// experimental arm's value are on every snapshot (the dashboard keeps the newest
 	// span); each is omitted when empty.
 	if intent.Hypothesis != "" {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentThesis, intent.Hypothesis))
+		attrs = append(attrs, attribute.String(decision.AttrExperimentThesis, capSpanText(intent.Hypothesis)))
 	}
 	if intent.ExperimentalValue != nil {
 		if raw, err := json.Marshal(intent.ExperimentalValue); err == nil {
-			attrs = append(attrs, attribute.String(AttrExperimentValue, string(raw)))
+			attrs = append(attrs, attribute.String(AttrExperimentValue, capSpanText(string(raw))))
 		}
 	}
 	if v := summary.Verdict; v != nil {
@@ -153,4 +154,22 @@ func (r *Registry) ProgressHeartbeat() {
 		e := r.entries[id]
 		r.emitProgressLocked(e, ProgressTriggerHeartbeat, "", e.spanCtx)
 	}
+}
+
+// maxSpanTextLen caps free-text span attributes (experiment.thesis,
+// experiment.experimental_value) at 512 bytes. #2303 caps recommendation.value the same
+// way with its own helper; unify the two on merge.
+const maxSpanTextLen = 512
+
+// capSpanText cuts s to maxSpanTextLen bytes on a rune boundary and appends "..." when
+// it cut, so the result stays valid UTF-8 and at most maxSpanTextLen bytes.
+func capSpanText(s string) string {
+	if len(s) <= maxSpanTextLen {
+		return s
+	}
+	cut := maxSpanTextLen - len("...")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }

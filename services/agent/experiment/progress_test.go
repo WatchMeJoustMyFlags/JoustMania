@@ -3,7 +3,9 @@ package experiment
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -529,5 +531,55 @@ func TestProgress_ConcludedSnapshotCarriesFinalVerdict(t *testing.T) {
 	}
 	if v, ok := rootSpanAttr(spans[concluded], decision.AttrVerdictOutcome); !ok || v != OutcomeInconclusive {
 		t.Fatalf("concluded verdict.outcome = %q (set %v), want final %q", v, ok, OutcomeInconclusive)
+	}
+}
+
+func TestCapSpanText(t *testing.T) {
+	if got := capSpanText("short"); got != "short" {
+		t.Fatalf("short text changed: %q", got)
+	}
+	long := strings.Repeat("a", 600)
+	got := capSpanText(long)
+	if len(got) != maxSpanTextLen || !strings.HasSuffix(got, "...") {
+		t.Fatalf("ascii cap: len=%d", len(got))
+	}
+	// multi-byte runes straddling the cut stay valid UTF-8
+	multi := capSpanText(strings.Repeat("\u00e4", 400))
+	if len(multi) > maxSpanTextLen || !utf8.ValidString(multi) || !strings.HasSuffix(multi, "...") {
+		t.Fatalf("utf8 cap: len=%d valid=%v", len(multi), utf8.ValidString(multi))
+	}
+}
+
+func TestProgress_ThesisAndValueCapped(t *testing.T) {
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: &fakeSpawner{}, Verdict: fakeVerdict{concludeAtN: 1000}, Targeting: &fakeTargeting{},
+		MaxShadowGames: 2,
+	})
+	in := sampleIntent()
+	in.Hypothesis = strings.Repeat("h", 2000)
+	in.ExperimentalValue = strings.Repeat("v", 2000)
+	id, err := r.Declare(in)
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if err := r.Start(context.Background(), id); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	spans := progressSpans(sr)
+	if len(spans) == 0 {
+		t.Fatal("no experiment.progress span")
+	}
+	seen := 0
+	for _, kv := range spans[0].Attributes() {
+		k := string(kv.Key)
+		if k == decision.AttrExperimentThesis || k == AttrExperimentValue {
+			seen++
+			if v := kv.Value.AsString(); len(v) != maxSpanTextLen || !strings.HasSuffix(v, "...") {
+				t.Errorf("%s: len=%d, want %d ending in ...", k, len(v), maxSpanTextLen)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d capped attrs, want 2", seen)
 	}
 }
