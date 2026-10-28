@@ -277,6 +277,31 @@ class TestTournamentBracket:
         bye_count = sum(1 for m in bracket if m.is_bye)
         assert bye_count == 2  # 8 - 6 = 2 byes
 
+    @pytest.mark.uc("UC-025", flow="main", steps=[1])
+    @pytest.mark.parametrize("n", range(2, 33))
+    def test_byes_seeded_to_meet_round_one_winners(self, tournament_game, n):
+        """UC-025 step 1 (#1994): no bye-vs-bye in round 2 where avoidable, every player seated once."""
+        game, _ = tournament_game
+        game.players = {f"p{i:02d}": TournamentPlayer(serial=f"p{i:02d}") for i in range(n)}
+
+        bracket = game._generate_bracket(n)
+
+        slots = 1
+        while slots < n:
+            slots *= 2
+        first_round = [m for m in bracket if m.round_number == 1]
+        round_two = [m for m in bracket if m.round_number == 2]
+        # shape unchanged: power-of-two slots, slots - n byes
+        assert len(first_round) == slots // 2
+        assert sum(m.is_bye for m in first_round) == slots - n
+        seated = [s for m in first_round for s in (m.player1_serial, m.player2_serial) if s]
+        assert sorted(seated) == sorted(game.players)
+        # bye-vs-bye matches in round 2: both slots already filled before any match is played
+        bye_vs_bye = sum(1 for m in round_two if m.player1_serial and m.player2_serial)
+        byes = slots - n
+        round_two_count = slots // 4
+        assert bye_vs_bye == max(0, byes - round_two_count)
+
     def test_generate_bracket_2_players(self, tournament_game):
         """Test bracket for minimum 2 players."""
         game, _ = tournament_game
