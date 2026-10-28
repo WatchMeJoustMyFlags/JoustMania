@@ -96,8 +96,31 @@ def test_talk_dashboard_is_a_single_stage_view():
     assert talk["refresh"] in {"5s", "10s", "30s"}
     panels = [p for p in talk["panels"] if p["type"] != "row"]
     assert len(panels) <= 8, "keep the stage view to a few large panels"
-    # Grafana 13 cannot search Jaeger 2.21+ (jaeger#7594, #2311): no stage panel uses the Jaeger search.
-    assert not any(p["datasource"]["type"] == "jaeger" for p in panels)
+
+
+def _datasource_types(node) -> set[str]:
+    """Every datasource type named anywhere under a dashboard node (panels, nested rows, targets)."""
+    found: set[str] = set()
+    if isinstance(node, dict):
+        ds = node.get("datasource")
+        if isinstance(ds, dict) and "type" in ds:
+            found.add(ds["type"])
+        for value in node.values():
+            found |= _datasource_types(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _datasource_types(item)
+    return found
+
+
+def test_no_dashboard_uses_the_jaeger_search():
+    """Grafana 13 sends trace search to /api/traces, removed in Jaeger 2.21 (jaeger#7594, #2311)."""
+    offenders = sorted(
+        d["uid"]
+        for d in _dashboards().values()
+        if "jaeger" in _datasource_types(d["panels"])
+    )
+    assert not offenders, f"dashboards with a Jaeger panel: {offenders}"
 
 
 @pytest.mark.uc("UC-035", flow="main", steps=[6])
