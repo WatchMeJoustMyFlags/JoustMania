@@ -14,7 +14,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, trace, warn};
 
-use crate::device_manager::{DeviceCmd, StreamSensorData};
+use crate::device_manager::{DeviceCmd, StreamSensorData, next_stream_id};
 use crate::output::OutputRouter;
 use crate::service::proto;
 
@@ -141,8 +141,13 @@ impl ControllerIoService for ControllerIoServiceImpl {
         // Create channel for sensor data (device manager -> gRPC stream)
         let (sensor_tx, sensor_rx) = mpsc::channel::<StreamSensorData>(1024);
 
-        // Register the sender with the device manager
-        self.send_cmd(DeviceCmd::RegisterStream { sender: sensor_tx })?;
+        // Register the sender with the device manager. The id lets this call's
+        // unregister leave a newer stream alone (#2371).
+        let stream_id = next_stream_id();
+        self.send_cmd(DeviceCmd::RegisterStream {
+            id: stream_id,
+            sender: sensor_tx,
+        })?;
 
         // Spawn task to read IOCommands from the client into the output slots
         // (never blocks: coalesced per controller, written by its writer thread)
@@ -167,8 +172,8 @@ impl ControllerIoService for ControllerIoServiceImpl {
                 }
             }
             // Client disconnected — unregister stream
-            let _ = cmd_tx_clone.send(DeviceCmd::UnregisterStream);
-            info!("StreamIO client disconnected");
+            let _ = cmd_tx_clone.send(DeviceCmd::UnregisterStream { id: stream_id });
+            info!(stream_id, "StreamIO client disconnected");
         });
 
         // Convert sensor data channel to a gRPC response stream
@@ -198,7 +203,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
             })
         });
 
-        info!("StreamIO started");
+        info!(stream_id, "StreamIO started");
         Ok(Response::new(Box::pin(output_stream)))
     }
 }
