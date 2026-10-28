@@ -14,12 +14,12 @@
 | Collector receivers | `otlp` (4317 / 4318), `prometheus/observability`, `prometheus/infrastructure` (flagd 8014, envoy 9901), `filelog/docker` (all container logs), `hostmetrics`, `docker_stats` | `services/otel-collector/config.yaml:2-149` |
 | Processors | `memory_limiter` (600 MiB, spike 150 MiB, env-overridable), batch (traces 2 s, metrics 100 ms, logs 5 s), resource attributes, `filter/agent_decide` (only in the span-metrics traces pipeline: keeps the `agent.decide` spans of service `agent`); **no sampling** | `config.yaml` |
 | Connectors | `span_metrics` (#1427): `traces_span_metrics_calls_total` and `traces_span_metrics_duration_seconds` (explicit buckets 5 ms to 32 s; a series stops being exported 10 min after its last span, because the agent's `instance` changes on every recreate) from the `agent.decide` spans, by `decide_backend` and `decide_outcome` (§6) | `config.yaml` (`connectors`), `images/otel-collector/builder-config.yaml` |
-| Exporters | Jaeger (OTLP), VictoriaMetrics (`prometheusremotewrite`), Loki (OTLP HTTP), **agent** (`otlp/agent`, 2 s timeout, no retries, queue 1000) | `services/otel-collector/config.yaml:exporters` |
+| Exporters | Jaeger (OTLP), VictoriaMetrics (`prometheus_remote_write`), Loki (OTLP HTTP), **agent** (`otlp/agent`, 2 s timeout, no retries, queue 1000) | `services/otel-collector/config.yaml:exporters` |
 | Pipelines | traces → Jaeger + agent; traces → `filter/agent_decide` → `span_metrics` → VictoriaMetrics (`traces/span_metrics`, `metrics/span_metrics`; the agent does not get these metrics); OTLP metrics → VictoriaMetrics + agent; other metrics → VictoriaMetrics; logs → Loki (agent gets no logs) | `config.yaml` (`service.pipelines`) |
 | Metrics store | VictoriaMetrics only: it receives remote write from the collector and serves the Prometheus query API (`/victoria-metrics/` via envoy, `victoria-metrics:8428` in the compose network). The Prometheus container, its `prometheus-data` volume, the `/prometheus/` route and the collector's :8889 Prometheus exporter were removed in #1449; Prometheus alerting had already been removed in #1425 (FR-083 Rejected). The controller-manager `prometheus_client` endpoint `:8000` and its duplicate `controller_accel_magnitude` gauge were removed in #1447 (nothing scraped them after #1449); flagd and envoy are scraped by the collector | `docker-compose.yml`, `services/otel-collector/config.yaml` |
 | Retention | VictoriaMetrics 7 d, Loki 24 h, Jaeger bounded badger TTL (memory: 1 GiB limit, `GOMEMLIMIT=850MiB`, NFR-021, #2223) | `docker-compose.yml` (`-retentionPeriod`); `services/loki/config.yaml` (`retention_period`); `services/jaeger/config.yaml` |
 
-Label mapping: `prometheusremotewrite` maps `service.name` to `job` prefixed with `service.namespace`
+Label mapping: `prometheus_remote_write` maps `service.name` to `job` prefixed with `service.namespace`
 (VictoriaMetrics: `job="joustmania/game-coordinator-service"`). The removed Prometheus container
 stripped the prefix (`job="game-coordinator-service"`); a dashboard query that filters on `job` must
 match the prefixed form, e.g. `job=~"(.+/)?agent"`.
@@ -190,7 +190,7 @@ Content capture: `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.
 Metrics `gen_ai.client.operation.duration` (s) and `gen_ai.client.token.usage` come from the decide backends
 (claude, openai, jev; semconv advisory buckets). VictoriaMetrics stores them as
 `gen_ai_client_operation_duration_seconds_{bucket,sum,count}` and `gen_ai_client_token_usage_{bucket,sum,count}`
-(prometheusremotewrite adds `_seconds` for the unit `s`, nothing for `{token}`), with labels
+(prometheus_remote_write adds `_seconds` for the unit `s`, nothing for `{token}`), with labels
 `gen_ai_operation_name`, `gen_ai_provider_name`, `gen_ai_request_model`, `gen_ai_response_model`,
 `server_address`, `server_port`, `gen_ai_token_type` (token usage) and `error_type` (failed calls only). The Agent
 Decisions & Interventions dashboard shows latency, calls and tokens by `gen_ai_request_model` (§6.1).
