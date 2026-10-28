@@ -452,11 +452,16 @@ def _as_tuple(cmd):
     return (cmd.serial, cmd.r, cmd.g, cmd.b, cmd.rumble)
 
 
-def _reopen_with_queued(adapter, *commands):
-    """Queue ``commands`` on a stream nobody reads, stop it, open the next one; return that one's iterator."""
+def _reopen_with_queued(adapter, *commands, unsent=()):
+    """Queue ``commands`` on a stream nobody reads, stop it, open the next one; return that one's iterator.
+
+    ``unsent`` are handed back after the old stream opened (as a stopping stream does), so only the
+    new stream's coalescing step sees them.
+    """
     old_call, new_call = GatedCall(), GatedCall()
     adapter._stub = GatedStub(old_call, new_call)
     _open_stream(adapter, old_call)
+    adapter._unsent_commands.extend(unsent)
     for cmd in commands:
         adapter._command_queue.put_nowait(cmd)
     adapter._stop_stream()  # the HID stream ends with the commands still queued
@@ -514,8 +519,12 @@ def test_after_a_reconnect_rumbles_stay_in_order_with_the_latest_colour(adapter)
 @pytest.mark.usefixtures("short_joins")
 def test_a_handed_back_command_is_coalesced_and_still_sent_first(adapter):
     """#2304 with #2275: a handed-back rumble is sent before the queue; a handed-back LED state loses to a newer one."""
-    adapter._unsent_commands.extend([_command(1, 1, 1, rumble=50), _command(2, 2, 2, serial=OTHER_SERIAL)])
-    new_iterator = _reopen_with_queued(adapter, _command(3, 3, 3), _command(4, 4, 4, serial=OTHER_SERIAL))
+    new_iterator = _reopen_with_queued(
+        adapter,
+        _command(3, 3, 3),
+        _command(4, 4, 4, serial=OTHER_SERIAL),
+        unsent=[_command(1, 1, 1, rumble=50), _command(2, 2, 2, serial=OTHER_SERIAL)],
+    )
 
     assert _sent_by(new_iterator, 3) == [
         (HID_SERIAL, 3, 3, 3, 50),
