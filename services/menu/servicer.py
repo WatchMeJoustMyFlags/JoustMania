@@ -326,14 +326,14 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         logger.info(f"Game selected via {source}: {game_mode.name}")
         return True
 
-    async def start_game(self, serial: str, source: str, controllers: list[str] | None = None) -> None:
-        """Start a coordinator game (AdminModeCallbacks).
+    async def start_game(self, serial: str, source: str, controllers: list[str] | None = None) -> bool:
+        """Start a coordinator game (AdminModeCallbacks); False when the start is refused.
 
         Lets the admin force-start path launch the selected mode through the same
         coordinator start path the ready/web flow uses (#1029), optionally with an
         explicit controller roster (admin force-start honors force_all_start).
         """
-        await self._start_game(serial, source=source, controllers=controllers)
+        return await self._start_game(serial, source=source, controllers=controllers)
 
     # ControllerEventCallbacks protocol implementation
 

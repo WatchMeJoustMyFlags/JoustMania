@@ -31,7 +31,7 @@ def mock_callbacks():
     callbacks = MagicMock()
     callbacks.get_game_options = MagicMock(return_value=["JoustFFA", "JoustTeams"])
     callbacks.select_game_mode = AsyncMock()
-    callbacks.start_game = AsyncMock()
+    callbacks.start_game = AsyncMock(return_value=True)
     return callbacks
 
 
@@ -2930,3 +2930,62 @@ class TestWriteFailedVoice:
         await handler.handle_increase_value("test_serial")
 
         mock_state_manager.led.send_game_effect.assert_called_once()
+
+
+class TestForceStartHoldTimerAndRefusal:
+    """#2377: the hold timer dies with the session; a refused start restores the menu state."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A1")
+    @pytest.mark.parametrize("leave", ["exit", "abandon"])
+    async def test_leaving_admin_cancels_trigger_hold_timer(self, handler, leave):
+        """B1: trigger press, leave admin, re-enter within the threshold: no force start."""
+        handler.handle_force_start = AsyncMock()
+        with patch.object(handler, "_force_start_threshold", return_value=0.05):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+
+        if leave == "exit":
+            await handler.exit()
+        else:
+            handler.abandon_session()
+        # Re-enter as the same admin before the threshold elapses.
+        handler.active = True
+        handler.controller_serial = "test_serial"
+        await asyncio.sleep(0.15)
+
+        assert timer.done()
+        assert handler._trigger_hold_task is None
+        handler.handle_force_start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
+    async def test_force_start_exit_does_not_cancel_its_own_timer(self, handler, mock_state_manager):
+        """The hold timer calls exit() through handle_force_start: it must finish the start."""
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        with patch.object(handler, "_force_start_threshold", return_value=0.01):
+            await handler._start_trigger_hold_tracking("test_serial")
+            await handler._trigger_hold_task
+
+        handler.callbacks.start_game.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_refused_force_start_restores_menu_state(self, handler, mock_state_manager):
+        """B3: a refused start (live lifecycle) must not leave the menu in GAME_STARTING."""
+        from proto import menu_pb2
+
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+        handler.callbacks.get_menu_state = MagicMock(return_value=menu_pb2.MenuState.RUNNING)
+        handler.callbacks.start_game = AsyncMock(return_value=False)
+
+        with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
+            await handler.handle_force_start("test_serial")
+
+        states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
+        assert states[-1] == menu_pb2.MenuState.RUNNING
