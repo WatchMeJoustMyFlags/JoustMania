@@ -574,36 +574,46 @@
     },
     {
       "datasource": {
-        "type": "jaeger",
-        "uid": "jaeger"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "description": "The most recent agent.decide traces (service agent). Open one for decide.rationale, decide.confidence, the chat {model} child span and the feature_flag.evaluation events of the flags the decision read. The dashboard refreshes every 10 s, not 5 s, because this panel searches Jaeger on every refresh (Jaeger OOM history, #1191).",
+      "description": "Agent decisions per minute by action and game kind (agent_decisions_total). Replaces the Jaeger trace-search table, which Grafana 13 cannot run against Jaeger 2.21+ (jaeger#7594); open traces from the Jaeger UI at /jaeger/.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (action, game_kind) (rate(agent_decisions_total[1m])) * 60 or vector(0)",
+          "legendFormat": "{{action}} / {{game_kind}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Agent decisions / min by action and game kind",
+      "type": "timeseries",
+      "id": 8,
       "gridPos": {
         "h": 9,
         "w": 12,
         "x": 12,
         "y": 17
-      },
-      "id": 8,
-      "options": {
-        "cellHeight": "md",
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "jaeger",
-            "uid": "jaeger"
-          },
-          "queryType": "search",
-          "service": "agent",
-          "operation": "agent.decide",
-          "limit": 15,
-          "refId": "A"
-        }
-      ],
-      "title": "Recent agent.decide traces (Jaeger)",
-      "type": "table"
+      }
     }
   ],
   "refresh": "10s",
