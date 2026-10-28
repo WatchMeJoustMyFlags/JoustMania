@@ -93,18 +93,26 @@ class TestLateSessionKeepsNextGameCount:
 
 @pytest.mark.uc("UC-027", flow="main", br=["BR-002"])
 class TestResetIfOwner:
-    def test_b_claims_between_check_and_zero_gets_its_value_back(self, gauge):
+    def test_b_claims_between_check_and_zero_gets_its_value_back(self, monkeypatch):
+        """B writes after A's owner check but before A's zero lands."""
+
+        class RacingGauge:
+            value = None
+            raced = False
+
+            def set(self, value):
+                if value == 0 and not self.raced:
+                    self.raced = True
+                    metrics.set_players_alive(GAME_B, 4)  # lands first
+                self.value = value
+
+        racing = RacingGauge()
+        monkeypatch.setattr(metrics, "players_alive", racing)
         metrics.set_players_alive(GAME_A, 3)
 
-        def b_claims_on_zero(value):
-            if value == 0:
-                gauge.set.side_effect = None
-                metrics.set_players_alive(GAME_B, 4)
-
-        gauge.set.side_effect = b_claims_on_zero
-
         assert metrics.reset_players_alive_if_owner(GAME_A) is True
-        assert _last_value(gauge) == 4
+        assert racing.raced
+        assert racing.value == 4
 
     def test_not_owner_does_not_touch_gauge(self, gauge):
         metrics.set_players_alive(GAME_B, 4)
