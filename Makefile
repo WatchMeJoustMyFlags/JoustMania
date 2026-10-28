@@ -326,16 +326,17 @@ test-service:
 # config checks, and the flagd contract (one real flagd, no game stack).
 # promtool, envoy and flagd run via docker when available (CI: required).
 # openfeature versions pinned to uv.lock (bump together with it).
-CONTRACT_DEPS = --with pytest --with pyyaml --with pytest-rerunfailures --with 'openfeature-sdk==0.10.0' --with 'openfeature-provider-flagd==0.5.0'
+CONTRACT_DEPS = --with pytest --with pyyaml --with pytest-rerunfailures --with 'openfeature-sdk==0.10.0' --with 'openfeature-provider-flagd==0.6.0'
 .PHONY: test-contract
 test-contract:
 	uv run --no-project $(CONTRACT_DEPS) pytest tests/contract -v -p no:cacheprovider
 
 # Only the flagd contract (tests/contract/test_flagd_resolution.py, ~1 min), plus
-# the #2184 RPC retry test (needs grpc + the provider from CONTRACT_DEPS).
+# the #2184 RPC retry test and the #1945 pinned fractional buckets (need grpc +
+# the provider from CONTRACT_DEPS).
 .PHONY: test-contract-flagd
 test-contract-flagd:
-	uv run --no-project $(CONTRACT_DEPS) pytest tests/contract/test_flagd_resolution.py tests/contract/test_flagd_rpc_retry.py -v --tb=short -p no:cacheprovider
+	uv run --no-project $(CONTRACT_DEPS) pytest tests/contract/test_flagd_resolution.py tests/contract/test_flagd_rpc_retry.py tests/contract/test_fractional_bucketing.py -v --tb=short -p no:cacheprovider
 
 # Integration tests with pre-built images + volume-mounted source (no rebuild)
 # Requires images: run `docker compose pull` or `make dev` first

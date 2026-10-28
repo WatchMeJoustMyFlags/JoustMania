@@ -3,7 +3,7 @@
 The Go agent's unit tests and the Python services' unit tests evaluate jsonlogic
 in-process or mock the provider. What only the real flagd server shows is
 checked here, against ONE flagd container (the image docker-compose.yml runs,
-v0.16.0) serving a temporary copy of ``services/flagd/ci`` (see flagd_harness):
+v0.18.0) serving a temporary copy of ``services/flagd/ci`` (see flagd_harness):
 
 - typed resolution: every flag the game coordinator reads resolves, through the
   RPC and the in-process resolver, with the SAME typed getter the coordinator
