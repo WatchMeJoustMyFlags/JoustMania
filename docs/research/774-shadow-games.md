@@ -88,7 +88,7 @@ global `EventBus` (:58), and a hard gate:
 
 ```python
 if self.game_state in [STARTING, RUNNING]:
-    return False, "Game already in progress"   # servicer.py:101-105
+    return False, "Game already in progress"  # servicer.py:101-105
 ```
 
 Two latent bugs become **load-bearing** under parallelism:

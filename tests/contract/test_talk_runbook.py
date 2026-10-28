@@ -47,7 +47,7 @@ def _section(title_part: str) -> str:
     match = re.search(
         rf"^## \d+\. {re.escape(title_part)}.*?$(.*?)(?=^## |\Z)",
         _text(),
-        re.S | re.M,
+        re.DOTALL | re.MULTILINE,
     )
     assert match, f"runbook has no section '{title_part}'"
     return match.group(1)
@@ -102,7 +102,7 @@ def test_timing_table_lists_every_live_beat_with_a_clock_time():
 
 
 def test_fallbacks_cover_bluetooth_down():
-    assert re.search(r"^### Fallback: Bluetooth down", _text(), re.M)
+    assert re.search(r"^### Fallback: Bluetooth down", _text(), re.MULTILINE)
 
 
 def test_reset_section_runs_the_stage_reset():
@@ -125,7 +125,9 @@ def test_every_named_make_target_exists():
     assert "dry-run" in targets
     makefile = (REPO_ROOT / "Makefile").read_text()
     missing = sorted(
-        t for t in targets if not re.search(rf"^{re.escape(t)}:", makefile, re.M)
+        t
+        for t in targets
+        if not re.search(rf"^{re.escape(t)}:", makefile, re.MULTILINE)
     )
     assert not missing, f"runbook names make targets that do not exist: {missing}"
 

@@ -283,10 +283,10 @@ async def test_teardown_removes_targeting_and_spawns_nothing(promotion_stack, fl
     with flagd_probe_client(stack, "game") as probe:
         real = {}
         assert await async_poll_until(
-            lambda: real.update(
-                probe.get_object_value(SEED_FLAG, {}, EvaluationContext(attributes={"game_kind": "real"}))
-            )
-            or real,
+            lambda: (
+                real.update(probe.get_object_value(SEED_FLAG, {}, EvaluationContext(attributes={"game_kind": "real"})))
+                or real
+            ),
             10.0,
         ), "flagd serves no baseline windows"
         assert real != SEED_VALUE

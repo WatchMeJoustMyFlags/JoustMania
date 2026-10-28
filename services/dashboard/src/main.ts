@@ -19,14 +19,18 @@ import {
   RolloutStore,
   activityFeed,
   blockedRowsFrom,
-  fetchDecideFeed,
   fetchFlagStates,
   fetchInterventionCounts,
   fetchRollouts,
   needsFlagStateFallback,
+  pollDecides,
+  FlagFallbackPacer,
+  flagFallbackKey,
 } from "./agent.js";
 import type { FlagPanel, InterventionOverlay } from "./agent.js";
 import { fetchAdapters } from "./adapters.js";
+import { StageSettings } from "./components/StageSettings.js";
+import { fetchStageSettings } from "./stageSettings.js";
 import { createPoller } from "./poller.js";
 import { PageGate } from "./pageGate.js";
 import { EmbedGate, VisibilityGate } from "./visibilityGate.js";
@@ -164,6 +168,7 @@ async function init() {
 
   // Start polling the controllers' HCI adapters (VictoriaMetrics, UC-035 BR-009)
   startAdapterPolling();
+  startStageSettingsPolling();
 
   // Start polling the experiment.progress spans (Jaeger)
   startExperimentsPolling();
@@ -184,6 +189,7 @@ let decidePoller: Poller | null = null;
 let agentPoller: Poller | null = null;
 let experimentsPoller: Poller | null = null;
 let adapterPoller: Poller | null = null;
+let stagePoller: Poller | null = null;
 // Pollers that only feed one tab run while it is shown and the page is visible
 // (pageGate.ts): a hidden tab, a hidden page or a page in the back/forward cache
 // costs no queries; coming back resumes them.
@@ -191,7 +197,7 @@ const pageGate = new PageGate(
   document,
   globalThis,
   (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
-  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller, followPoller],
+  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller, stagePoller, followPoller],
 );
 
 // Background load (UC-035 BR-012, #2290): the gameplay stream pauses on a hidden
@@ -262,7 +268,10 @@ function setupTabs() {
         agentPoller?.poke();
       }
       if (tabId === "experiments") experimentsPoller?.poke();
-      if (tabId === "controllers") adapterPoller?.poke();
+      if (tabId === "controllers") {
+        adapterPoller?.poke();
+        stagePoller?.poke();
+      }
 
       console.log(`Switched to tab: ${tabId}`);
     });
@@ -341,6 +350,7 @@ function renderAgentPanels() {
 // failure keeps the last render, flagged stale).
 function startAgentPolling() {
   let tick = 0;
+  const flagFallbackPacer = new FlagFallbackPacer();
   agentPoller = createPoller({
     baseMs: AGENT_POLL_MS,
     maxMs: AGENT_MAX_BACKOFF_MS,
@@ -348,11 +358,11 @@ function startAgentPolling() {
     isActive: () => tabActive("agent"),
     run: async (signal) => {
       const rolloutDue = tick % ROLLOUT_EVERY_TICKS === 0;
-      const flagsNeeded = needsFlagStateFallback(
-        flagStore,
-        decideStore.feed().current?.gameId ?? null,
-        decideStore.followState,
-      );
+      const decideGameId = decideStore.feed().current?.gameId ?? null;
+      // Paced (#2287): the same game's fallback search repeats at most every 30 s.
+      const flagsNeeded =
+        needsFlagStateFallback(flagStore, decideGameId, decideStore.followState) &&
+        flagFallbackPacer.take(flagFallbackKey(decideGameId, decideStore.followState));
       // Settled, not all: the VictoriaMetrics counts render even when a Jaeger
       // leg fails (UC-035 A3 step 2); the Jaeger failure still marks the poll failed.
       const settled = await Promise.allSettled([
@@ -361,6 +371,8 @@ function startAgentPolling() {
         rolloutDue ? fetchRollouts(rolloutStore, signal) : Promise.resolve(),
       ]);
       tick += 1;
+      // A failed fallback search is retried on the next poll, not after the pace.
+      if (flagsNeeded && settled[1].status === "rejected") flagFallbackPacer.forget();
       const result = settleAgentPoll(settled, interventionCounts, (states) =>
         flagStore.merge(states, decideStore.followState),
         { flags: flagsNeeded, rollouts: rolloutDue },
@@ -400,23 +412,46 @@ function startAdapterPolling() {
   adapterPoller.poke();
 }
 
+// The live stage settings strip (UC-035 BR-010, #2289): VictoriaMetrics gauges plus the
+// menu's GetMenuStatus, every 5 s while the Controllers tab is shown and the page visible.
+const STAGE_POLL_MS = 5000;
+
+function startStageSettingsPolling() {
+  const stageSettings = new StageSettings();
+  stagePoller = createPoller({
+    baseMs: STAGE_POLL_MS,
+    maxMs: 30_000,
+    timeoutMs: 5000,
+    isActive: () => tabActive("controllers"),
+    run: async (signal) => {
+      stageSettings.update(await fetchStageSettings((s) => menuClient.getMenuStatus(s), signal));
+    },
+    onError: () => stageSettings.markStale(),
+  });
+  stagePoller.poke();
+}
+
 // Poll the agent.decide spans from Jaeger (#1233). Only while the Agent tab is
 // shown AND the page is visible; one chain at most (see poller.ts), incremental
-// query window (DecideStore), per-request timeout and backoff. Its game traces
+// query window per search lane (DecideStore), per-request timeout and backoff,
+// paced by the answer size and targeted at the live real game (#2287). Its game traces
 // also carry the blocked agent.decision and agent.flag_state spans (#2059).
 function startDecidePolling() {
   const store = decideStore;
+  let tick = 0;
   decidePoller = createPoller({
     baseMs: DECIDE_POLL_MS,
     maxMs: DECIDE_MAX_BACKOFF_MS,
     timeoutMs: DECIDE_TIMEOUT_MS,
     isActive: () => tabActive("agent"),
     run: async (signal) => {
-      const feed = await fetchDecideFeed(store.queryStartMs(), signal);
-      store.merge(feed.rows);
-      flagStore.merge(feed.flagStates ?? [], store.followState);
+      const polled = await pollDecides(store, tick, signal);
+      tick += 1;
+      flagStore.merge(polled.flagStates, store.followState);
       agentView.renderDecide(store.feed());
       renderAgentPanels();
+      // Payload pace (#2287, UC-035 BR-011): a large game trace slows the poll.
+      return polled.paceMs;
     },
     onError: (error) => {
       console.error("Decide feed poll error:", error);

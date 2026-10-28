@@ -178,12 +178,18 @@ export function searchParams(spec: SearchSpec): URLSearchParams {
   return params;
 }
 
+/** A Jaeger search answer plus its size (characters of the JSON body, #2287). */
+export interface SizedSearch {
+  body: JaegerTracesResponse;
+  bytes: number;
+}
+
 /**
- * Run one Jaeger search. Throws JaegerUnavailableError when Jaeger cannot answer
- * (fetch rejected, aborted by the poller's timeout, non-2xx such as envoy's 503,
- * or a non-empty `errors` array). A 200 with no traces is data, not an error.
+ * Run one Jaeger search and report the size of its answer (#2287): Jaeger
+ * returns whole traces, so the size is what the poll cost Jaeger to decode and
+ * send, and the decide poll paces itself on it. Errors as searchTraces.
  */
-export async function searchTraces(spec: SearchSpec, signal?: AbortSignal): Promise<JaegerTracesResponse> {
+export async function searchTracesSized(spec: SearchSpec, signal?: AbortSignal): Promise<SizedSearch> {
   const url = `${BASE_URL}/jaeger/api/traces?${searchParams(spec).toString()}`;
   let response: Response;
   try {
@@ -194,14 +200,25 @@ export async function searchTraces(spec: SearchSpec, signal?: AbortSignal): Prom
   if (!response.ok) {
     throw new JaegerUnavailableError(`Jaeger query failed: ${response.status} ${response.statusText}`);
   }
+  let text: string;
   let body: JaegerTracesResponse;
   try {
-    body = (await response.json()) as JaegerTracesResponse;
+    text = await response.text();
+    body = JSON.parse(text) as JaegerTracesResponse;
   } catch (error) {
     throw new JaegerUnavailableError(`Jaeger answered no JSON: ${String(error)}`);
   }
   if (body.errors && body.errors.length > 0) {
     throw new JaegerUnavailableError(`Jaeger error: ${body.errors.map((e) => e.msg ?? e.code).join("; ")}`);
   }
-  return body;
+  return { body, bytes: text.length };
+}
+
+/**
+ * Run one Jaeger search. Throws JaegerUnavailableError when Jaeger cannot answer
+ * (fetch rejected, aborted by the poller's timeout, non-2xx such as envoy's 503,
+ * or a non-empty `errors` array). A 200 with no traces is data, not an error.
+ */
+export async function searchTraces(spec: SearchSpec, signal?: AbortSignal): Promise<JaegerTracesResponse> {
+  return (await searchTracesSized(spec, signal)).body;
 }
