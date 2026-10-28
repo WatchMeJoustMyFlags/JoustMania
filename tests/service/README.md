@@ -71,11 +71,12 @@ Connection faults: `TcpProxy` (`harness/fakes/tcp_proxy.py`) forwards one servic
 
 ```python
 import pytest
-from tests.integration.helpers import get_game_client          # reused unchanged
+from tests.integration.helpers import get_game_client  # reused unchanged
 from tests.service.harness import LOBBY
 
-pytestmark = pytest.mark.tier("service")   # required: collection fails without it
-SERVICE_COMPOSITION = LOBBY                # optional, default GAME
+pytestmark = pytest.mark.tier("service")  # required: collection fails without it
+SERVICE_COMPOSITION = LOBBY  # optional, default GAME
+
 
 @pytest.mark.uc("UC-053", flow="main", tc="TC-0xx")
 async def test_x(service_stack, flag_service):

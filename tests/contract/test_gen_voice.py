@@ -16,7 +16,7 @@ import pytest
 import telemetry_inventory as ti
 
 sys.path.insert(0, str(ti.REPO_ROOT / "scripts" / "tools"))
-import gen_voice as gv  # noqa: E402
+import gen_voice as gv
 
 pytestmark = pytest.mark.uc("UC-031", br=["BR-007"])
 

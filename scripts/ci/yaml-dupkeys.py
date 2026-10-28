@@ -58,7 +58,7 @@ def main(paths: list[str]) -> int:
     for path in paths:
         try:
             with open(path, encoding="utf-8") as fh:
-                list(yaml.load_all(fh, Loader=DupKeyLoader))  # noqa: S506 - SafeLoader subclass
+                list(yaml.load_all(fh, Loader=DupKeyLoader))
         except yaml.YAMLError as exc:
             print(f"{path}: {exc}")
             status = 1

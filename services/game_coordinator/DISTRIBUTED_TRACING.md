@@ -132,8 +132,9 @@ The game mode code (ffa.py, teams.py, random_teams.py) does **not** need to manu
 ```python
 from opentelemetry.instrumentation.grpc import (
     GrpcInstrumentorServer,
-    GrpcInstrumentorClient  # Added for client calls
+    GrpcInstrumentorClient,  # Added for client calls
 )
+
 
 def init_telemetry():
     """Initialize OpenTelemetry with OTLP exporter."""
@@ -385,7 +386,7 @@ from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
 
 provider = TracerProvider(
     sampler=TraceIdRatioBased(0.1),  # Sample 10% of traces
-    resource=resource
+    resource=resource,
 )
 ```
 

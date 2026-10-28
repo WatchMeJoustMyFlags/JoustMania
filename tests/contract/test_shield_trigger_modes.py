@@ -23,7 +23,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GAMES_DIR = REPO_ROOT / "services" / "game_coordinator" / "games"
 LEDGER_GO = REPO_ROOT / "services" / "agent" / "decision" / "chargeledger.go"
-_GO_MODE_CONST = re.compile(r'^\s*const\s+shieldTriggerGameMode\s*=\s*"([^"]+)"', re.M)
+_GO_MODE_CONST = re.compile(
+    r'^\s*const\s+shieldTriggerGameMode\s*=\s*"([^"]+)"', re.MULTILINE
+)
 
 
 def _classes() -> dict[str, dict]:

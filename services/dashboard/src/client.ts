@@ -19,6 +19,7 @@ import type {
 import type {
   ListGameModesRequest,
   ListGameModesResponse,
+  GetMenuStatusResponseLike,
   ProcessInputRequest,
   ProcessInputResponse,
 } from "./gen/menu_pb.js";
@@ -137,5 +138,8 @@ export const menuClient = {
       "ListGameModes",
       {}
     );
+  },
+  getMenuStatus(signal?: AbortSignal): Promise<GetMenuStatusResponseLike> {
+    return unaryCall("joustmania.menu.MenuService", "GetMenuStatus", {}, signal);
   },
 };

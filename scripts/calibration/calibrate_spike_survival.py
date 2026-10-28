@@ -107,7 +107,7 @@ def _pct(values: list[float], q: float) -> float:
 
 
 def _describe(values: list[float]) -> dict:
-    vals = [v for v in values if v == v]  # drop NaN
+    vals = [v for v in values if v == v]  # noqa: PLR0124 (drop NaN)
     if not vals:
         return {"n": 0}
     return {

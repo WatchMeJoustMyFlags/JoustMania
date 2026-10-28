@@ -29,6 +29,8 @@ import {
 } from "./agent.js";
 import type { FlagPanel, InterventionOverlay } from "./agent.js";
 import { fetchAdapters } from "./adapters.js";
+import { StageSettings } from "./components/StageSettings.js";
+import { fetchStageSettings } from "./stageSettings.js";
 import { createPoller } from "./poller.js";
 import { PageGate } from "./pageGate.js";
 import { ShieldStore } from "./shield.js";
@@ -165,6 +167,7 @@ async function init() {
 
   // Start polling the controllers' HCI adapters (VictoriaMetrics, UC-035 BR-009)
   startAdapterPolling();
+  startStageSettingsPolling();
 
   // Start polling the experiment.progress spans (Jaeger)
   startExperimentsPolling();
@@ -185,6 +188,7 @@ let decidePoller: Poller | null = null;
 let agentPoller: Poller | null = null;
 let experimentsPoller: Poller | null = null;
 let adapterPoller: Poller | null = null;
+let stagePoller: Poller | null = null;
 // Pollers that only feed one tab run while it is shown and the page is visible
 // (pageGate.ts): a hidden tab, a hidden page or a page in the back/forward cache
 // costs no queries; coming back resumes them.
@@ -192,7 +196,7 @@ const pageGate = new PageGate(
   document,
   globalThis,
   (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
-  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller],
+  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller, stagePoller],
 );
 
 function tabActive(tab: string): boolean {
@@ -227,7 +231,10 @@ function setupTabs() {
         agentPoller?.poke();
       }
       if (tabId === "experiments") experimentsPoller?.poke();
-      if (tabId === "controllers") adapterPoller?.poke();
+      if (tabId === "controllers") {
+        adapterPoller?.poke();
+        stagePoller?.poke();
+      }
 
       console.log(`Switched to tab: ${tabId}`);
     });
@@ -365,6 +372,25 @@ function startAdapterPolling() {
     },
   });
   adapterPoller.poke();
+}
+
+// The live stage settings strip (UC-035 BR-010, #2289): VictoriaMetrics gauges plus the
+// menu's GetMenuStatus, every 5 s while the Controllers tab is shown and the page visible.
+const STAGE_POLL_MS = 5000;
+
+function startStageSettingsPolling() {
+  const stageSettings = new StageSettings();
+  stagePoller = createPoller({
+    baseMs: STAGE_POLL_MS,
+    maxMs: 30_000,
+    timeoutMs: 5000,
+    isActive: () => tabActive("controllers"),
+    run: async (signal) => {
+      stageSettings.update(await fetchStageSettings((s) => menuClient.getMenuStatus(s), signal));
+    },
+    onError: () => stageSettings.markStale(),
+  });
+  stagePoller.poke();
 }
 
 // Poll the agent.decide spans from Jaeger (#1233). Only while the Agent tab is
