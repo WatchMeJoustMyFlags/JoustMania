@@ -699,7 +699,26 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 			Rationale:         intent.Hypothesis,
 		}
 		if err := r.target.Apply(ctx, p); err != nil {
-			return fmt.Errorf("registry: start: write targeting for %q: %w", id, err)
+			applyErr := fmt.Errorf("registry: start: write targeting for %q: %w", id, err)
+			// #2340: an Apply error (the client's request cap, the shutdown-cancelled
+			// ctx) does not prove the write missed the flag service: it may land after
+			// a concurrent teardown's strip. Strip again, best effort, when a teardown
+			// began; an experiment still PROPOSED is aborted by the caller, which strips.
+			r.mu.Lock()
+			e = r.entries[id]
+			if e != nil && !e.teardownBegun && !e.status.IsTerminal() {
+				r.mu.Unlock()
+				return applyErr
+			}
+			var jrnl *journal.Journal
+			if e != nil {
+				jrnl = e.journal
+			}
+			r.mu.Unlock()
+			if stripErr := r.stripAfterAbortedStart(ctx, id, intent.FlagKey, jrnl); stripErr != nil {
+				return errors.Join(applyErr, stripErr)
+			}
+			return applyErr
 		}
 	}
 

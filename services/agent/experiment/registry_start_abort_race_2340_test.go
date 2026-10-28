@@ -234,6 +234,71 @@ func TestUC043_A20_StartRacingShutdownLeavesNoTargeting_2340(t *testing.T) {
 	})
 }
 
+// UC: UC-045 main
+func TestUC045_StartApplyErrorAfterWriteLeavesNoTargeting_2340(t *testing.T) {
+	t.Run("UC-045/main an Apply that wrote the branch and then failed is still stripped after a teardown", func(t *testing.T) {
+		target := newLiveTargeting()
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 4, Targeting: target})
+		id, err := r.Declare(sampleIntent())
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		startCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		target.onApply = func(int) { abortAllConcurrently(r, context.Background(), "agent shutdown") }
+		r.target = &writeThenFail{liveTargeting: target, cancel: cancel}
+
+		err = r.Start(startCtx, id)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start err = %v, want the Apply error (context.Canceled)", err)
+		}
+		if target.isLive(id) {
+			t.Fatal("the branch an erroring Apply wrote after the teardown's strip survived")
+		}
+		if st, _ := r.Status(id); st != StatusAborted {
+			t.Fatalf("status = %s, want %s", st, StatusAborted)
+		}
+	})
+
+	t.Run("UC-045/main an Apply error with no teardown strips nothing and leaves the experiment PROPOSED", func(t *testing.T) {
+		target := newLiveTargeting()
+		r := newTestRegistry(t, RegistryConfig{MaxShadowGames: 4, Targeting: target})
+		id, err := r.Declare(sampleIntent())
+		if err != nil {
+			t.Fatalf("Declare: %v", err)
+		}
+		startCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		r.target = &writeThenFail{liveTargeting: target, cancel: cancel}
+
+		if err := r.Start(startCtx, id); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start err = %v, want context.Canceled", err)
+		}
+		if got := target.stripCount(); got != 0 {
+			t.Fatalf("strips = %d, want 0 (the caller's abort owns the strip)", got)
+		}
+		if st, _ := r.Status(id); st != StatusProposed {
+			t.Fatalf("status = %s, want %s", st, StatusProposed)
+		}
+	})
+}
+
+// writeThenFail writes the branch on the flag service, then the caller's context is
+// cancelled and Apply returns ctx.Err(): the request reached the server, the client
+// saw an error (the 500 ms cap or the shutdown).
+type writeThenFail struct {
+	*liveTargeting
+	cancel context.CancelFunc
+}
+
+func (w *writeThenFail) Apply(ctx context.Context, p Proposal) error {
+	if err := w.liveTargeting.Apply(context.WithoutCancel(ctx), p); err != nil {
+		return err
+	}
+	w.cancel()
+	return ctx.Err()
+}
+
 // cancelAfterApply cancels the Start's context once its write has landed, as the
 // graceful stop does while the Start is between its write and its re-fetch.
 type cancelAfterApply struct {
