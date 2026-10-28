@@ -16,9 +16,12 @@
 #    the fallback disarmed; the radio is switched on; the ip_forward drop-in
 #  - A8: over the hotspot the self-test is skipped and the reactivation is
 #    detached, with the "you will be disconnected" line
+#  - A11: --pause-wifi-client disconnects the wlan0 client for the self-test and
+#    reconnects the same connection afterwards (also when the self-test fails);
+#    refused when the session runs over wlan0; without it the refusal names it
 #  - --remove uses the installed remover; the upgrade's stale-files hint
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-install-hotspot.sh
-# UC: UC-061 Pre-1 Pre-2 Pre-3 A8 BR-001 BR-004
+# UC: UC-061 Pre-1 Pre-2 Pre-3 A8 A11 BR-001 BR-004
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -73,6 +76,13 @@ case "$*" in
   "connection down uuid $UUID")
     [[ "$(get wlan0-uuid)" == "$UUID" ]] || exit 10
     echo "30 (disconnected)" >"${S}/wlan0-state"; : >"${S}/wlan0-uuid"; : >"${S}/wlan0-ip4" ;;
+  "device disconnect wlan0")
+    echo disconnect >>"${CASE}/pause.log"
+    echo "30 (disconnected)" >"${S}/wlan0-state"; : >"${S}/wlan0-uuid"; : >"${S}/wlan0-ip4" ;;
+  "--wait 30 connection up uuid 11111111-2222-3333-4444-555555555555")
+    echo reconnect >>"${CASE}/pause.log"
+    echo "100 (connected)" >"${S}/wlan0-state"; echo 11111111-2222-3333-4444-555555555555 >"${S}/wlan0-uuid"
+    printf '192.168.7.20/24' >"${S}/wlan0-ip4" ;;
   "connection delete uuid $UUID") rm -f "${S}/profile" ;;
   *) echo "nmcli stub: unexpected: $*" >&2; exit 99 ;;
 esac
@@ -542,6 +552,44 @@ grep -q -- "--no-block --collect --unit=joustmania-hotspot-reapply --on-active=5
   "${CASE}/systemd-run.argv" || fail "a8: no detached reactivation"
 grep -qx "enable --now joustmania-hotspot.timer" "${CASE}/systemctl.argv" || fail "a8: timer not armed"
 no_psk_leak
+
+# --- A11: pause the Wi-Fi client for the self-test ---------------------------------
+CLIENT=11111111-2222-3333-4444-555555555555
+wifi_client_up() {
+  echo "100 (connected)" >"${S}/wlan0-state"; echo "$CLIENT" >"${S}/wlan0-uuid"; printf '192.168.7.20/24' >"${S}/wlan0-ip4"
+}
+make_case a11-pause
+wifi_client_up
+run_install --hold 0 --pause-wifi-client || fail "a11-pause: exit $? ($(tail -n 5 "${CASE}/out"))"
+[[ "$(cat "${CASE}/pause.log" 2>/dev/null | tr '\n' ' ')" == "disconnect reconnect " ]] ||
+  fail "a11-pause: not disconnected then reconnected: $(cat "${CASE}/pause.log" 2>/dev/null)"
+[[ "$(cat "${S}/wlan0-uuid")" == "$CLIENT" ]] || fail "a11-pause: the same connection is not back on wlan0"
+grep -qx 'enabled=yes' "${R}/etc/joustmania/hotspot.conf" || fail "a11-pause: not armed after a passing self-test"
+no_psk_leak
+
+make_case a11-nopause
+wifi_client_up
+if run_install --hold 0; then fail "a11-nopause: finished over a Wi-Fi client"; fi
+grep -q -- "--pause-wifi-client" "${CASE}/out" || fail "a11-nopause: the refusal does not name --pause-wifi-client"
+[[ ! -f "${CASE}/pause.log" ]] || fail "a11-nopause: touched the client without the option"
+not_armed a11-nopause
+
+make_case a11-failed
+wifi_client_up; echo 40 >"${S}/ap-channel"
+if run_install --hold 0 --pause-wifi-client; then fail "a11-failed: a failing self-test passed"; fi
+[[ "$(cat "${CASE}/pause.log" 2>/dev/null | tr '\n' ' ')" == "disconnect reconnect " ]] ||
+  fail "a11-failed: the client is not reconnected after a failed self-test: $(cat "${CASE}/pause.log" 2>/dev/null)"
+[[ "$(cat "${S}/wlan0-uuid")" == "$CLIENT" ]] || fail "a11-failed: the same connection is not back on wlan0"
+not_armed a11-failed
+
+make_case a11-over-wlan
+wifi_client_up
+SSH_CONNECTION="192.168.7.5 50000 192.168.7.20 22" refused a11-over-wlan "this session runs over wlan0" --hold 0 --pause-wifi-client
+[[ ! -f "${CASE}/pause.log" ]] || fail "a11-over-wlan: disconnected the client under the session"
+
+make_case a11-no-client
+run_install --hold 0 --pause-wifi-client || fail "a11-no-client: exit $?"
+[[ ! -f "${CASE}/pause.log" ]] || fail "a11-no-client: disconnected something with no client up"
 
 # --- --remove uses the installed remover ---------------------------------------------
 make_case remove

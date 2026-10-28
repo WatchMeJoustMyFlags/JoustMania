@@ -7,7 +7,7 @@
 #
 #   sudo scripts/setup/install_hotspot.sh [--ssid NAME] [--channel 36|40|44|48]
 #        [--uplink IFACE] [--psk-file FILE | --psk-stdin] [--hold SECONDS]
-#        [--firewall-rules-added]
+#        [--firewall-rules-added] [--pause-wifi-client]
 #   sudo scripts/setup/install_hotspot.sh --remove
 #
 # The password (UC-061 BR-004): prompted twice on the terminal (`IFS= read -rs`),
@@ -15,6 +15,11 @@
 # it afterwards), or one line on stdin with --psk-stdin (automation; never
 # `echo pw | sudo ...`, which lands in the shell history). It is never an
 # argument, never logged, never printed; the script refuses to run under `bash -x`.
+#
+# A Wi-Fi client up on wlan0 blocks the self-test (the hotspot needs the radio).
+# --pause-wifi-client (or answering the prompt on a terminal) disconnects it for
+# the self-test and reconnects the same connection afterwards, also on failure
+# (A11). It refuses when this SSH session itself runs over wlan0.
 #
 # Re-running it changes the password, SSID or channel (A8): all file work is done
 # first, the reactivation last and detached, so a session over the hotspot that
@@ -55,7 +60,7 @@ die() {
     exit 1
 }
 
-SSID=JoustMania CHANNEL=36 UPLINK=eth0 PSK_FILE="" PSK_STDIN=0 HOLD=20 FIREWALL_OK=0 REMOVE=0
+SSID=JoustMania CHANNEL=36 UPLINK=eth0 PSK_FILE="" PSK_STDIN=0 HOLD=20 FIREWALL_OK=0 REMOVE=0 PAUSE=0
 while (($#)); do
     case "$1" in
         --ssid) SSID="${2:-}" && shift ;;
@@ -65,9 +70,10 @@ while (($#)); do
         --psk-stdin) PSK_STDIN=1 ;;
         --hold) HOLD="${2:-}" && shift ;;
         --firewall-rules-added) FIREWALL_OK=1 ;;
+        --pause-wifi-client) PAUSE=1 ;;
         --remove) REMOVE=1 ;;
         -h | --help)
-            sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) die "unknown argument '${1:0:40}' (see --help)" ;;
@@ -143,6 +149,35 @@ session_over_hotspot() {
     [[ "$server_ip" == 10.42.0.* ]] && return 0
     from="$(who -m 2>/dev/null | sed -n 's/.*(\([^)]*\)).*/\1/p' | head -n 1)"
     [[ "$from" == 10.42.0.* ]]
+}
+
+# A11: the uuid of a Wi-Fi client connection up or connecting on wlan0 (empty
+# when none), decided once before any change
+wifi_client_uuid() {
+    local out state uuid
+    out="$(nmcli -g GENERAL.STATE,GENERAL.CON-UUID device show "$WLAN" 2>/dev/null)" || return 0
+    state="${out%%$'\n'*}"
+    state="${state%% *}"
+    uuid="$(sed -n 2p <<<"$out")"
+    [[ "$state" =~ ^[0-9]+$ ]] && ((state >= 40 && state <= 100)) || return 0
+    [[ -n "$uuid" && "$uuid" != "$UUID" ]] && echo "$uuid"
+    return 0
+}
+CLIENT_UUID="$(wifi_client_uuid)"
+CLIENT_PAUSED=0
+
+# A11: is this session carried by wlan0 (cutting it would cut the operator off)?
+# SSH_CONNECTION's local address (when sudo kept it) or the route to the login host
+session_over_wlan() {
+    local server_ip from addrs
+    addrs="$(nmcli -g IP4.ADDRESS device show "$WLAN" 2>/dev/null | tr '|' '\n' | sed -n 's|^ *\(\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}\)/.*|\1|p')"
+    server_ip="$(awk '{ print $3 }' <<<"${SSH_CONNECTION:-}")"
+    if [[ -n "$server_ip" ]] && grep -qxF -- "$server_ip" <<<"$addrs"; then
+        return 0
+    fi
+    from="$(who -m 2>/dev/null | sed -n 's/.*(\([0-9.]*\)).*/\1/p' | head -n 1)"
+    [[ -n "$from" ]] && command -v ip >/dev/null 2>&1 &&
+        [[ "$(ip -o route get "$from" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n 1)" == "$WLAN" ]]
 }
 
 country=""
@@ -233,6 +268,20 @@ if ((${#problems[@]})); then
     die "${#problems[@]} problem(s); nothing changed"
 fi
 
+# A11: offer the pause on a terminal; refuse when this session runs over wlan0
+if [[ -n "$CLIENT_UUID" && "$PAUSE" == 0 && -z "$PSK_FILE" && "$PSK_STDIN" == 0 && -t 0 && -r /dev/tty ]]; then
+    reply=""
+    read -r -p "A Wi-Fi client is up on $WLAN; the self-test needs the radio. Disconnect it for the self-test and reconnect it afterwards? [y/N] " reply </dev/tty || true
+    [[ "$reply" =~ ^[Yy] ]] && PAUSE=1
+fi
+if ((PAUSE)) && [[ -n "$CLIENT_UUID" ]]; then
+    if session_over_wlan; then
+        die "REFUSED: this session runs over $WLAN; pausing the Wi-Fi client would cut you off. Re-run over the cable LAN; nothing changed"
+    fi
+elif ((PAUSE)); then
+    say "--pause-wifi-client: no Wi-Fi client is up on $WLAN; nothing to pause"
+fi
+
 # The radio on (after the country check: unblocking without a country is not allowed)
 rfkill unblock wifi >/dev/null 2>&1 || true
 if [[ "$(nmcli radio wifi 2>/dev/null)" != enabled ]]; then
@@ -259,8 +308,19 @@ write_conf() {
         echo "uplink_iface=$UPLINK"
     } >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$CONF"
 }
+# A11: reconnect the paused Wi-Fi client (the same connection); safe to repeat
+resume_wifi_client() {
+    ((CLIENT_PAUSED)) || return 0
+    CLIENT_PAUSED=0
+    if nmcli --wait 30 connection up uuid "$CLIENT_UUID" >/dev/null 2>&1; then
+        echo "install_hotspot: the Wi-Fi client on $WLAN is reconnected" >&2
+    else
+        echo "install_hotspot: could not reconnect the Wi-Fi client on $WLAN: run nmcli connection up uuid $CLIENT_UUID" >&2
+    fi
+}
 cleanup() {
     PSK=""
+    resume_wifi_client
     [[ -n "$TMP_KEYFILE" ]] && rm -f "$TMP_KEYFILE"
     # A8: put the previous keyfile back when this run did not finish, so the next
     # activation never uses a half-checked profile
@@ -382,9 +442,20 @@ else
         say "the uplink is connected: taking the hotspot down for the self-test (UC-061 A1)"
         nmcli connection down uuid "$UUID" >/dev/null 2>&1 || true
     fi
+    if ((PAUSE)) && [[ -n "$CLIENT_UUID" ]]; then
+        say "disconnecting the Wi-Fi client on $WLAN for the self-test; it is reconnected afterwards (UC-061 A11)"
+        # device disconnect also blocks NM's autoconnect from taking the radio back
+        CLIENT_PAUSED=1
+        nmcli device disconnect "$WLAN" >/dev/null 2>&1 || true
+    fi
     say "self-test: the hotspot comes up for ${HOLD}s while $UPLINK stays connected (UC-061 BR-001)"
-    if ! JOUSTMANIA_HOTSPOT_CONF="$CONF" "$HELPER" selftest "$HOLD"; then
+    selftest_ok=1
+    JOUSTMANIA_HOTSPOT_CONF="$CONF" "$HELPER" selftest "$HOLD" || selftest_ok=0
+    resume_wifi_client
+    if ((!selftest_ok)); then
         systemctl disable --now joustmania-hotspot.timer >/dev/null 2>&1 || true
+        [[ -z "$CLIENT_UUID" || "$PAUSE" == 1 ]] ||
+            say "a Wi-Fi client is up on $WLAN: re-run with --pause-wifi-client to disconnect it for the self-test"
         die "the self-test failed: the fallback is NOT armed. Fix the FAIL lines above and re-run this script"
     fi
 fi
