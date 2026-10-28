@@ -750,8 +750,10 @@ class GameSession:
                 self._set_gauges_unless_retired(self._zero_lifecycle_gauges)
                 if self.is_primary:
                     # players_alive is a single global gauge (not yet per-kind);
-                    # only the primary session resets it.
-                    metrics.players_alive.set(0)
+                    # only the primary session resets it, and only while its own
+                    # game wrote it last: a force-ended session ending after the
+                    # next game started leaves that game's count alone (#2244).
+                    metrics.reset_players_alive_if_owner(self.game_id)
                 if self.game_name:
                     # games_completed_total is a CUMULATIVE counter: it deliberately
                     # does NOT carry experiment_id/arm (a label on a cumulative

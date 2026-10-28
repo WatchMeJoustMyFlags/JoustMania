@@ -174,6 +174,39 @@ active_players = Gauge(
 
 players_alive = Gauge("game_players_alive", "Number of players currently alive")
 
+# Last writer of the unlabeled players_alive aggregate: (game_id, value). One
+# tuple, swapped in a single assignment, so a reader never sees a game id with
+# another game's value. A finishing session resets the gauge only while its own
+# game is still the last writer: a force-ended session whose thread ends after
+# the next game started must not zero that game's count (#2244).
+_players_alive_last: tuple[str, int] | None = None
+
+
+def set_players_alive(game_id: str, alive_count: int) -> None:
+    """Set the players_alive aggregate on behalf of ``game_id`` (primary games only)."""
+    global _players_alive_last
+    _players_alive_last = (game_id, alive_count)
+    players_alive.set(alive_count)
+
+
+def reset_players_alive_if_owner(game_id: str) -> bool:
+    """Zero the players_alive aggregate when ``game_id`` wrote it last (#2244).
+
+    Lock-free: game threads write the aggregate, and a lock here would sit on
+    the kill path. When another game claims the gauge between the check and
+    the zero, its last value is written back, so the zero does not stick.
+    Returns True when the gauge was reset.
+    """
+    last = _players_alive_last
+    if last is None or last[0] != game_id:
+        return False
+    players_alive.set(0)
+    after = _players_alive_last
+    if after is not None and after[0] != game_id:
+        players_alive.set(after[1])
+    return True
+
+
 # Aggregate death count (UC-030 step 9). A cumulative counter, so it carries no
 # serial / game_id: those would leave one permanent series per (serial, game) with
 # nothing to remove them. Per-game, per-player death order is

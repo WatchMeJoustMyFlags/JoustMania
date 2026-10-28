@@ -1582,7 +1582,7 @@ class BaseGameMode(ABC):
         per-serial ``player_alive`` gauge is game_id-labeled and stays isolated.
         """
         if self.game_kind != GAME_KIND_SHADOW:
-            metrics.players_alive.set(alive_count)
+            metrics.set_players_alive(self.game_id, alive_count)
 
     async def _initialize_players(self):
         """Initialize players from StartGame RPC payload."""
