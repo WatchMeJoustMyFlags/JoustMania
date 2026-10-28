@@ -38,13 +38,25 @@ type env struct {
 
 func newEnv(t *testing.T, stream bool) *env {
 	t.Helper()
+	return newEnvRegistry(t, stream, "")
+}
+
+// newEnvRegistry is newEnv with the registry document regYAML in place of
+// registry.yaml when it is not empty.
+func newEnvRegistry(t *testing.T, stream bool, regYAML string) *env {
+	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..")
 	base, err := baseline.Load(filepath.Join(root, "..", "flagd", "ci"), baseline.DefaultFiles)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := registry.LoadFile(filepath.Join(root, "registry.yaml"), base)
+	var reg *registry.Registry
+	if regYAML != "" {
+		reg, err = registry.Parse([]byte(regYAML), base)
+	} else {
+		reg, err = registry.LoadFile(filepath.Join(root, "registry.yaml"), base)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,6 +563,46 @@ func TestIfWriterInPut(t *testing.T) {
 		e.do("DELETE", "/games/g-real", nil)
 		if s, b := put(e, "?if_writer_in=promotion,", 5, "promotion"); s != 412 || b["error"] != "writer_mismatch" {
 			t.Fatalf("%d %v, want 412 writer_mismatch", s, b)
+		}
+	})
+}
+
+// The read endpoints serve a row's optional description inside its policy, for
+// one flag and for the whole set; a row without one carries no description key
+// (#2345).
+//
+// UC: UC-042 BR-008
+func TestReadEndpointsServeDescription(t *testing.T) {
+	e := newEnvRegistry(t, false, `flags:
+  - {set: game, key: invincibility_seconds, kind: overlay, scope: [stack, experiment+arm], bounds: {range: [0, 10]}, description: "seconds a fighter cannot lose at the start"}
+  - {set: game, key: sensitivity, kind: overlay, scope: [stack]}
+`)
+	t.Run("UC-042/BR-008 GET /game/{flag} and GET /game carry policy.description", func(t *testing.T) {
+		s, b := e.do("GET", "/game/invincibility_seconds", nil)
+		if s != 200 {
+			t.Fatalf("GET flag: %d", s)
+		}
+		policy, _ := b["policy"].(map[string]any)
+		if d, _ := policy["description"].(string); d != "seconds a fighter cannot lose at the start" {
+			t.Fatalf("policy.description = %q", d)
+		}
+		s, b = e.do("GET", "/game", nil)
+		if s != 200 {
+			t.Fatalf("GET set: %d", s)
+		}
+		described := 0
+		for _, f := range b["flags"].([]any) {
+			p, _ := f.(map[string]any)["policy"].(map[string]any)
+			if d, _ := p["description"].(string); d != "" {
+				described++
+			}
+		}
+		if described != 1 {
+			t.Fatalf("GET /game: %d flags with a description, want 1", described)
+		}
+		_, b = e.do("GET", "/game/sensitivity", nil)
+		if _, ok := b["policy"].(map[string]any)["description"]; ok {
+			t.Fatalf("sensitivity has no description, the key must be absent: %v", b["policy"])
 		}
 	})
 }
