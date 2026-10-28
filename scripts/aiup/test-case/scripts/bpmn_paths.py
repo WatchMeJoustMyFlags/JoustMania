@@ -5,7 +5,7 @@
 # Licensed under the Apache License, Version 2.0. See LICENSE and NOTICE.
 #
 # Vendored for JoustMania's spec-lint CI gate (#1263) from
-#   https://github.com/AI-Unified-Process/marketplace/blob/05af8163838df704620ebe1121cd6019dbce276c/aiup-core/skills/test-case/scripts/bpmn_paths.py
+#   https://github.com/AI-Unified-Process/marketplace/blob/dc1d908725e01dd7d129bc7133c6ff209437b3c1/aiup-core/skills/test-case/scripts/bpmn_paths.py
 # Derived from the AI Unified Process Marketplace by Simon Martinelli (see
 # scripts/aiup/NOTICE). Local modifications, if any, are marked "JoustMania patch".
 """Enumerate the paths through a BPMN 2.0 business process model.
