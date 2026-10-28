@@ -1,7 +1,8 @@
 /**
  * Agent tab data from spans (#2059; UC-035 step 3, UC-040 A21, UC-070 BR-005).
  *
- * Fixtures are shaped like Jaeger's /api/traces JSON:
+ * Fixtures are in the folds' input shape (the legacy /api/traces JSON); fetch stubs
+ * serve them as Jaeger v3 OTLP answers through ./otlp.ts toOtlp (#2283):
  *   jaeger-flag-state-games   two game traces (a real game, then a newer shadow
  *                             game): game_cycle -> agent.flag_state, and
  *                             agent.signal_received -> agent.decide + agent.decision
@@ -33,6 +34,8 @@ import {
 import type { JaegerTracesResponse, VmQueryResponse } from "../agent.js";
 import { WRITE_GATE_OFF_HINT, renderFlagPanel } from "../components/AgentView.js";
 import { FLAG_STATE_NO_DATA } from "../degrade.js";
+import { COLD_START_TIME_MIN, SEARCH_TIME_MAX } from "../jaeger.js";
+import { toOtlp } from "./otlp.js";
 import gamesFixture from "./fixtures/jaeger-flag-state-games.json";
 import expandFixture from "./fixtures/jaeger-rollout-expand.json";
 import rollbackFixture from "./fixtures/jaeger-rollout-rollback.json";
@@ -205,15 +208,15 @@ describe("UC-070: BR-005 the flag panel follows the stage game", () => {
   it("UC-035/main step 3 the fallback search asks for agent.flag_state, limit 2, without a browser-clock time", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2031-01-01T00:00:00Z")); // a browser clock far off the agent's
-    const urls = stubFetch(() => json(games));
+    const urls = stubFetch(() => json(toOtlp(games)));
     const states = await fetchFlagStates();
     expect(states.length).toBe(2);
     const params = new URL(urls[0], "http://x").searchParams;
-    expect(params.get("service")).toBe("agent");
-    expect(params.get("operation")).toBe("agent.flag_state");
-    expect(params.get("limit")).toBe(String(FLAG_STATE_FALLBACK_LIMIT));
-    expect(params.has("start")).toBe(false);
-    expect(params.has("end")).toBe(false);
+    expect(params.get("query.serviceName")).toBe("agent");
+    expect(params.get("query.operationName")).toBe("agent.flag_state");
+    expect(params.get("query.searchDepth")).toBe(String(FLAG_STATE_FALLBACK_LIMIT));
+    expect(params.get("query.startTimeMin")).toBe(COLD_START_TIME_MIN);
+    expect(params.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
   });
 });
 
@@ -221,13 +224,13 @@ describe("UC-070: BR-005 the flag-state search and store keep the live real game
   const live = { realGameLive: true, followGameId: "", primaryGameId: "game_real000002" };
 
   it("UC-035/main step 3 while a real game is live the fallback search filters by its game.id", async () => {
-    const urls = stubFetch(() => json(games));
+    const urls = stubFetch(() => json(toOtlp(games)));
     await fetchFlagStates(undefined, live);
     await fetchFlagStates(undefined, { realGameLive: false, followGameId: "game_shadow00001", primaryGameId: "game_real000002" });
     const [withGame, without] = urls.map((u) => new URL(u, "http://x").searchParams);
-    expect(JSON.parse(withGame.get("tags") ?? "null")).toEqual({ "game.id": "game_real000002" });
-    expect(withGame.get("operation")).toBe("agent.flag_state");
-    expect(without.has("tags")).toBe(false);
+    expect(JSON.parse(withGame.get("query.attributes") ?? "null")).toEqual({ "game.id": "game_real000002" });
+    expect(withGame.get("query.operationName")).toBe("agent.flag_state");
+    expect(without.has("query.attributes")).toBe(false);
   });
 
   it("UC-070/BR-005 newer shadow games never evict the live primary game's flag state", () => {
@@ -274,26 +277,33 @@ describe("UC-035: main step 3, activity feed (blocked decisions + rollout)", () 
     vi.setSystemTime(new Date("2031-01-01T00:00:00Z"));
     const store = new RolloutStore();
     const urls = stubFetch((url) => {
-      const tags = new URL(url, "http://x").searchParams.get("tags") ?? "";
-      if (tags.includes('"expand"')) return json(expand);
-      if (tags.includes('"rollback"')) return json(rollback);
+      const tags = new URL(url, "http://x").searchParams.get("query.attributes") ?? "";
+      if (tags.includes('"expand"')) return json(toOtlp(expand));
+      if (tags.includes('"rollback"')) return json(toOtlp(rollback));
       return json({ data: [] });
     });
 
     await fetchRollouts(store);
     const first = urls.map((u) => new URL(u, "http://x").searchParams);
-    expect(first.map((p) => JSON.parse(p.get("tags")!)["remediation.action"])).toEqual([...ROLLOUT_ACTIONS]);
-    expect(first.every((p) => p.get("operation") === "agent.infrastructure.decision" && !p.has("start") && !p.has("end"))).toBe(true);
+    expect(first.map((p) => JSON.parse(p.get("query.attributes")!)["remediation.action"])).toEqual([...ROLLOUT_ACTIONS]);
+    expect(
+      first.every(
+        (p) =>
+          p.get("query.operationName") === "agent.infrastructure.decision" &&
+          p.get("query.startTimeMin") === COLD_START_TIME_MIN &&
+          p.get("query.startTimeMax") === SEARCH_TIME_MAX,
+      ),
+    ).toBe(true);
 
     urls.length = 0;
     await fetchRollouts(store);
     const second = new Map(urls.map((u) => {
       const p = new URL(u, "http://x").searchParams;
-      return [JSON.parse(p.get("tags")!)["remediation.action"], p.get("start")];
+      return [JSON.parse(p.get("query.attributes")!)["remediation.action"], p.get("query.startTimeMin")];
     }));
-    expect(second.get("expand")).toBe(String((T0_MS + 70_000 - ROLLOUT_OVERLAP_MS) * 1000));
-    expect(second.get("rollback")).toBe(String((T0_MS + 80_000 - ROLLOUT_OVERLAP_MS) * 1000));
-    expect(second.get("recommended_only")).toBeNull();
+    expect(second.get("expand")).toBe(new Date(T0_MS + 70_000 - ROLLOUT_OVERLAP_MS).toISOString());
+    expect(second.get("rollback")).toBe(new Date(T0_MS + 80_000 - ROLLOUT_OVERLAP_MS).toISOString());
+    expect(second.get("recommended_only")).toBe(COLD_START_TIME_MIN);
     expect(store.list().map((r) => r.signal)).toEqual(["rollout rollback (dry run)", "rollout expand"]);
   });
 
@@ -311,15 +321,16 @@ describe("UC-035: main step 3, no browser clock in a Jaeger request", () => {
   it("UC-035/main step 3 the decide search sends neither the browser's now nor an end", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2031-01-01T00:00:00Z"));
-    const browserNowUs = String(Date.now() * 1000);
-    const urls = stubFetch(() => json(games));
+    const browserDay = new Date().toISOString().slice(0, 10);
+    const urls = stubFetch(() => json(toOtlp(games)));
     const store = new DecideStore();
     store.merge((await fetchDecideFeed(store.queryStartMs())).rows);
     await fetchDecideFeed(store.queryStartMs());
-    expect(new URL(urls[0], "http://x").searchParams.has("start")).toBe(false);
+    expect(new URL(urls[0], "http://x").searchParams.get("query.startTimeMin")).toBe(COLD_START_TIME_MIN);
     for (const u of urls) {
-      expect(u).not.toContain(browserNowUs.slice(0, 8));
-      expect(new URL(u, "http://x").searchParams.has("end")).toBe(false);
+      const params = new URL(u, "http://x").searchParams;
+      expect(params.get("query.startTimeMin")).not.toContain(browserDay);
+      expect(params.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
     }
   });
 });

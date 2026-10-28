@@ -5,6 +5,7 @@ datasources:
     uid: jaeger
     type: jaeger
     access: proxy
-    url: http://jaeger:16686
+    # Jaeger serves its UI and APIs under base_path /jaeger (services/jaeger/config.yaml, #2283).
+    url: http://jaeger:16686/jaeger
     isDefault: false
     editable: false

@@ -1,0 +1,1 @@
+{"services":["agent","audio-service","connect-proxy","controller-manager-service","envoy","flag-service","game-coordinator-service","jaeger","menu-service","operator-pad","pairing-daemon","rust-hid"]}
