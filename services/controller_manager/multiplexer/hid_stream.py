@@ -15,6 +15,14 @@ stream state alone, so a stream that ends late never marks the current one as
 stopped. Locks: ``_stream_lock`` guards the stream handle, thread and
 generation; it is never held together with ``_data_lock``, and ``cancel()`` and
 ``join()`` run outside it, so stopping a stream cannot block the 100 Hz poll.
+
+``close_all()`` is final (#2275): it sets ``_stream_closed`` under
+``_stream_lock``, and both ``_ensure_stream()`` and the reader check it under
+the same lock before they open a call, so a discovery pass that races shutdown
+opens no stream after it. A command that an exiting iterator took from the queue
+but never handed to gRPC goes to ``_unsent_commands``, which the next iterator
+sends first, so a rumble taken in the last ``get()`` window is not lost; a
+command already yielded counts as sent and is never handed back (no duplicate).
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from collections import deque
 from typing import Any
 
 import grpc
@@ -34,6 +43,8 @@ logger = logging.getLogger(__name__)
 STOP_JOIN_TIMEOUT_S = 2.0
 # How long a reopen waits for the previous reader thread.
 REOPEN_JOIN_TIMEOUT_S = 1.0
+# How long one command-iterator wait on the queue lasts before it re-checks its stream.
+COMMAND_POLL_S = 0.05
 
 
 class HidStreamMixin:
@@ -57,6 +68,9 @@ class HidStreamMixin:
         self._stream_call: Any = None
         self._stream_generation = 0
         self._stream_running = False
+        self._stream_closed = False  # set by _close_stream() (close_all): no stream opens again
+        # Commands an exiting iterator took but never yielded; the next iterator sends them first.
+        self._unsent_commands: deque = deque()
 
     def _stream_is_current(self, generation: int) -> bool:
         return self._stream_running and self._stream_generation == generation
@@ -64,7 +78,7 @@ class HidStreamMixin:
     def _ensure_stream(self) -> None:
         """Start the bidir stream if not already running."""
         with self._stream_lock:
-            if self._stream_running:
+            if self._stream_running or self._stream_closed:
                 return
             old_thread = self._stream_thread
             self._stream_generation += 1
@@ -84,6 +98,12 @@ class HidStreamMixin:
         thread.start()
         logger.info(f"Started bidir stream to {self._stream_peer}")
 
+    def _close_stream(self) -> None:
+        """Stop the stream for good (close_all): nothing opens a stream afterwards (#2275)."""
+        with self._stream_lock:
+            self._stream_closed = True
+        self._stop_stream()
+
     def _stop_stream(self) -> None:
         """Stop the stream: cancel the call and wait for the reader. Idempotent."""
         with self._stream_lock:
@@ -94,7 +114,9 @@ class HidStreamMixin:
 
         if call is not None:
             call.cancel()
-        if thread is not None and thread is not threading.current_thread():
+        # is_alive(): a thread _ensure_stream() created but has not started yet cannot be
+        # joined; once started it sees the stop before it opens a call.
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
             thread.join(timeout=STOP_JOIN_TIMEOUT_S)
 
     def _stream_loop(self, generation: int | None = None) -> None:
@@ -104,14 +126,22 @@ class HidStreamMixin:
 
         def command_iterator():
             while self._stream_is_current(generation):
-                try:
-                    cmd = self._command_queue.get(timeout=0.05)
-                    yield cmd
-                except queue.Empty:
+                cmd = self._take_command()
+                if cmd is None:
                     continue
+                if not self._stream_is_current(generation):
+                    # Taken while this stream stopped: gRPC would drop it, so the next
+                    # stream sends it, ahead of anything queued after it (#2275).
+                    self._unsent_commands.appendleft(cmd)
+                    return
+                yield cmd
 
         call = None
         try:
+            with self._stream_lock:
+                opening = self._stream_is_current(generation) and not self._stream_closed
+            if not opening:
+                return  # stopped or closed before the call was opened: open nothing (#2275)
             call = self._stub.StreamIO(command_iterator())
             with self._stream_lock:
                 current = self._stream_is_current(generation)
@@ -148,6 +178,17 @@ class HidStreamMixin:
                     if self._stream_call is call:
                         self._stream_call = None
             logger.info("Bidir stream ended")
+
+    def _take_command(self):
+        """The next command to send: a handed-back one first, else the queue (None after a quiet wait)."""
+        try:
+            return self._unsent_commands.popleft()
+        except IndexError:
+            pass
+        try:
+            return self._command_queue.get(timeout=COMMAND_POLL_S)
+        except queue.Empty:
+            return None
 
 
 def sensor_data_to_dict(data) -> dict:
