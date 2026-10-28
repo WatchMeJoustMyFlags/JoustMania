@@ -34,6 +34,19 @@ describe("UC-035: A4 controller grid after a stream reconnect", () => {
     expect(placeholders()).toEqual([]);
   });
 
+  it("UC-035/A4 keeps the same empty placeholder node across empty frames", () => {
+    grid.render([]);
+    const first = container.querySelector(".loading");
+    expect(first?.textContent).toBe("No controllers connected");
+    const rewrite = vi.spyOn(container, "innerHTML", "set");
+
+    grid.render([]);
+
+    expect(container.querySelector(".loading")).toBe(first);
+    expect(rewrite).not.toHaveBeenCalled();
+    expect(placeholders()).toEqual(["No controllers connected"]);
+  });
+
   it("UC-035/A4 drops the Connecting placeholder when the first frame arrives", () => {
     grid.setLoading(true);
     grid.setLoading(false);

@@ -73,7 +73,10 @@ export class ControllerGrid {
     alive: ReadonlyMap<string, boolean> | null = null,
   ) {
     // A placeholder (connecting, connection lost, no controllers) never outlives a frame.
-    for (const placeholder of this.container.querySelectorAll(":scope > .loading")) placeholder.remove();
+    // With no controllers the empty placeholder is kept as is, not rebuilt every frame.
+    if (controllers.length > 0) {
+      for (const placeholder of this.container.querySelectorAll(":scope > .loading")) placeholder.remove();
+    }
 
     // Track which controllers are still present
     const presentSerials = new Set(controllers.map((c) => c.serial));
@@ -106,6 +109,9 @@ export class ControllerGrid {
 
     // Show empty state if no controllers
     if (controllers.length === 0) {
+      const existing = this.container.querySelector(":scope > .loading");
+      if (existing?.textContent === "No controllers connected") return;
+      // Drop any other placeholder (connecting, connection lost) before the empty state.
       this.container.innerHTML = '<div class="loading">No controllers connected</div>';
     }
   }
