@@ -198,7 +198,7 @@ class TestGameSessionLoop:
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         swapper = SwapperGame(
             controller_manager_client=MagicMock(),
-            event_publisher=AsyncMock(),
+            event_publisher=session.event_bus.publish,  # as GameFactory wires it (#2025 S2)
             audio_client=None,
             game_id="game_abc123",
             initial_players=[game_coordinator_pb2.Player(serial="p1")],
@@ -338,7 +338,7 @@ class TestGameSessionLoop:
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         nonstop = NonstopJoustGame(
             controller_manager_client=MagicMock(),
-            event_publisher=AsyncMock(),
+            event_publisher=session.event_bus.publish,  # as GameFactory wires it (#2025 S2)
             audio_client=None,
             game_id="game_abc123",
             initial_players=[game_coordinator_pb2.Player(serial="p1")],
@@ -427,8 +427,9 @@ class TestGameSessionLoop:
         )
         mock_metrics.active_game.labels.return_value.set.assert_any_call(0)
         mock_metrics.active_players.labels.return_value.set.assert_any_call(0)
-        # players_alive (still a single global gauge) reset only by primary.
-        mock_metrics.players_alive.set.assert_any_call(0)
+        # players_alive (still a single global gauge) reset only by primary,
+        # and only while this game wrote it last (#2244).
+        mock_metrics.reset_players_alive_if_owner.assert_called_once_with("game_abc123")
 
     def test_eval_game_kind_maps_session_kind_to_real_or_shadow(self):
         """Session kind (primary/shadow, #775) maps to eval game_kind (real/shadow,
@@ -816,6 +817,7 @@ class TestGameSessionLoop:
         await session._run_game_loop_async()
 
         mock_metrics.players_alive.set.assert_not_called()
+        mock_metrics.reset_players_alive_if_owner.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.GameFactory")

@@ -174,6 +174,18 @@ class TournamentGame(BaseGameMode):
         """Spoken instructions before the countdown (UC-025 A5, UC-020 A5)."""
         return Sound.MENU_VOX_TOURNAMENT_INSTRUCTIONS
 
+    @staticmethod
+    def _bye_match_indices(first_round_matches: int, num_byes: int) -> set[int]:
+        """First-round match indices that are byes, spread so byes rarely meet in round 2 (#1994).
+
+        Round-2 match j takes first-round matches 2j and 2j+1, so byes packed at the front
+        pair up bye-vs-bye. Taking indices in bit-reversed order gives every round-2 match
+        one bye before any gets a second (and spreads them over later rounds too).
+        """
+        bits = max(first_round_matches.bit_length() - 1, 0)
+        order = sorted(range(first_round_matches), key=lambda i: int(format(i, f"0{bits}b")[::-1] or "0", 2))
+        return set(order[:num_byes])
+
     def _generate_bracket(self, player_count: int) -> list[Match]:
         """
         Generate tournament bracket for given player count.
@@ -215,6 +227,7 @@ class TournamentGame(BaseGameMode):
 
         # First round matches
         first_round_matches = total_slots // 2
+        bye_matches = self._bye_match_indices(first_round_matches, num_byes)
         player_idx = 0
 
         for i in range(first_round_matches):
@@ -229,7 +242,7 @@ class TournamentGame(BaseGameMode):
                 match.player1_serial = serials[player_idx]
                 player_idx += 1
 
-            if num_byes > 0 and i < num_byes:
+            if i in bye_matches:
                 # This match is a bye - player1 auto-advances
                 match.is_bye = True
                 match.winner_serial = match.player1_serial
@@ -442,6 +455,12 @@ class TournamentGame(BaseGameMode):
         p1.alive = True
         p2.alive = True
         self.current_match = match
+        # Invincible from the seating on, before the first await below: a kill or an
+        # eliminate_player the loop runs during match_start or the colour writes is
+        # declined (UC-025 step 2, BR-006; #2025 S3). Duration: invincibility_seconds.
+        invincible_until = time.time() + self._invincibility_duration
+        p1.invincible_until = invincible_until
+        p2.invincible_until = invincible_until
 
         # Create match span (inherits current active context: gameplay_phase)
         self.match_span = tracer.start_span(
@@ -469,11 +488,6 @@ class TournamentGame(BaseGameMode):
         # Set colors
         await self._set_base_color(match.player1_serial, MATCH_COLORS[0])
         await self._set_base_color(match.player2_serial, MATCH_COLORS[1])
-
-        # Set invincibility (duration configurable via tournament_invincibility setting)
-        invincible_until = time.time() + self._invincibility_duration
-        p1.invincible_until = invincible_until
-        p2.invincible_until = invincible_until
 
         # Play match start sound (use beep - no dedicated fight sound exists)
         await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)

@@ -21,7 +21,7 @@ from lib.feature_flags import (
     set_game_transaction_context,
 )
 from lib.flag_service_writer import FlagServiceWriter
-from lib.setting_ladders import SHIELD_KNOB_LADDER
+from lib.setting_ladders import AUTOMATIC, AUTOMATIC_OPTIONS, SHIELD_KNOB_LADDER
 from lib.telemetry import get_tracer
 from lib.types import Games, Sound
 from proto import menu_pb2, menu_pb2_grpc
@@ -760,6 +760,14 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
                 return Result(None, None, GAME_ACTIVE)
             await self.settings_ops.show_shield_mode_on_lobby(shield_mode)
             return Result(None, shield_mode)
+        if option in AUTOMATIC_OPTIONS:
+            # K2 / K5 (#2245): only the `automatic` rung has an LED cue; the values have none.
+            if data.get("mode", "") != AUTOMATIC:
+                return Result(None, None, BAD_OPTION)
+            if self._lifecycle_live():
+                return Result(None, None, GAME_ACTIVE)
+            await self.settings_ops.show_automatic_on_lobby()
+            return Result(None, AUTOMATIC)
         if option != "current_game":
             return Result(None, None, BAD_OPTION)
         mode = Games.from_name(data.get("mode", ""))
