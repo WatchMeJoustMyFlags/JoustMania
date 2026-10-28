@@ -28,6 +28,7 @@
 #
 #   Shared deps inputs (baked into every service image via the workspace):
 #     - root pyproject.toml          (workspace deps)
+#     - uv.lock                      (the pinned versions every image installs, #2266)
 #     - proto/pyproject.toml         (shared proto package deps)
 #     - lib/pyproject.toml           (shared lib package deps)
 #   This service's OWN deps inputs:
@@ -64,6 +65,7 @@ fi
 mapfile -d '' -t files < <(
   {
     printf '%s\0' pyproject.toml
+    printf '%s\0' uv.lock
     printf '%s\0' proto/pyproject.toml
     printf '%s\0' lib/pyproject.toml
     printf '%s\0' "services/$SERVICE/pyproject.toml"

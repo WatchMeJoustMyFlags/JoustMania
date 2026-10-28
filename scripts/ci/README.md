@@ -88,7 +88,7 @@ bash scripts/ci/validate-packages.sh
 ### `deps-fingerprint.sh` (#925)
 
 Print a stable 16-char hash of the files that determine what a given service
-image bakes — the shared baked-deps inputs (root/proto/lib `pyproject.toml`)
+image bakes — the shared baked-deps inputs (root/proto/lib `pyproject.toml`, root `uv.lock`)
 plus that service's own `pyproject.toml` + `Dockerfile`.
 CI computes this **per service** and bakes it into that Python service image as
 the OCI label `org.joustmania.deps-fingerprint` (build-arg `DEPS_FINGERPRINT`).

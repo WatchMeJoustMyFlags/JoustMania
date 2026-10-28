@@ -143,6 +143,8 @@ jobs:
           filters: |
             shared_python: &shared_python
               - 'pyproject.toml'
+              # #2266: images install their dependencies from the lock
+              - 'uv.lock'
               - 'proto/**'
               - 'lib/**'
             lib:
@@ -333,6 +335,7 @@ jobs:
               # root pyproject.toml is a deps-fingerprint input
               # (scripts/ci/deps-fingerprint.sh), so it must force fresh images
               - 'pyproject.toml'
+              - 'uv.lock'
               - 'services/*/Dockerfile'
               - 'services/*/pyproject.toml'
               - 'lib/pyproject.toml'
