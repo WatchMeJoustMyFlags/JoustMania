@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -131,5 +132,55 @@ func TestRetroCapture_ReferenceLogCarriesFullSystemOnce(t *testing.T) {
 	refHash, _ := refs[0]["system_sha256"].(string)
 	if h, ok := attrValue(span, AttrLLMRetroSystemSHA); !ok || h.AsString() != refHash {
 		t.Errorf("retro span hash %q must match reference hash %q", h.AsString(), refHash)
+	}
+}
+
+// TestSeenSet_BoundedLRU: inserting more fingerprints than the cap keeps the set at
+// the cap, evicts the least recently seen, and still dedupes recent entries (#2324).
+func TestSeenSet_BoundedLRU(t *testing.T) {
+	s := &seenSet{limit: 3}
+	for _, h := range []string{"a", "b", "c"} {
+		if s.markSeen(h) {
+			t.Fatalf("%s reported seen on first sight", h)
+		}
+	}
+	s.markSeen("a") // refresh a; b is now least recent
+	if s.markSeen("d") {
+		t.Fatal("d reported seen on first sight")
+	}
+	if got := s.len(); got != 3 {
+		t.Fatalf("len = %d, want 3", got)
+	}
+	for _, h := range []string{"a", "c", "d"} {
+		if !s.markSeen(h) {
+			t.Errorf("recent entry %s no longer deduped", h)
+		}
+	}
+	if s.markSeen("b") {
+		t.Error("evicted entry b should be treated as new")
+	}
+	for i := 0; i < 100; i++ {
+		s.markSeen(fmt.Sprintf("x%d", i))
+	}
+	if got := s.len(); got != 3 {
+		t.Fatalf("len after flood = %d, want 3", got)
+	}
+}
+
+// TestReferences_SeenSetBounded: both references stay bounded past the default cap.
+func TestReferences_SeenSetBounded(t *testing.T) {
+	sp, rr := &systemPromptReference{}, &retroResponseReference{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for i := 0; i < maxSeenFingerprints+50; i++ {
+		h := fmt.Sprintf("h%d", i)
+		sp.emit(log, h, "m", "a", "s")
+		rr.emit(log, h, "s", "r")
+	}
+	if sp.seen.len() != maxSeenFingerprints || rr.seen.len() != maxSeenFingerprints {
+		t.Fatalf("lens = %d, %d; want %d", sp.seen.len(), rr.seen.len(), maxSeenFingerprints)
+	}
+	last := fmt.Sprintf("h%d", maxSeenFingerprints+49)
+	if sp.emit(log, last, "m", "a", "s") || rr.emit(log, last, "s", "r") {
+		t.Error("most recent fingerprint should still be deduped")
 	}
 }
