@@ -18,7 +18,7 @@ tonic-health = "0.14"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 # HID device access (hidraw backend for Linux)
-hidapi = { version = "2.6", features = ["linux-static-hidraw"] }
+hidapi = { version = "2.6.7", features = ["linux-static-hidraw"] }
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
@@ -31,7 +31,7 @@ opentelemetry-appender-tracing = "0.32"
 # Process metrics via /proc/self
 procfs = "0.18"
 # Hostname for resource attributes
-gethostname = "1.0"
+gethostname = "1.1"
 # Feature flags (OpenFeature + flagd provider)
 open-feature = "0.2"
 open-feature-flagd = { version = "0.1", default-features = false, features = ["in-process"] }
