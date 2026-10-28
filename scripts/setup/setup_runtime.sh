@@ -99,7 +99,8 @@ if [[ "$DIST_REL" -ge 12 ]]; then
 else
     config_loc=/boot/config.txt
 fi
-# Path overrides exist for scripts/tests/test-setup-scripts.sh (fake files, no host)
+# JOUSTMANIA_BOOT_CONFIG and JOUSTMANIA_BT_INPUT_CONF are test seams for
+# scripts/tests/test-setup-scripts.sh (fake files, no host): unset in production, not a tunable (C-035)
 config_loc="${JOUSTMANIA_BOOT_CONFIG:-$config_loc}"
 BT_INPUT_CONF="${JOUSTMANIA_BT_INPUT_CONF:-/etc/bluetooth/input.conf}"
 
