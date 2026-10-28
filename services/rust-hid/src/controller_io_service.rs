@@ -1,20 +1,20 @@
 //! ControllerIOService gRPC implementation.
 //!
 //! Translates gRPC calls into DeviceCmd messages sent to the device manager
-//! thread. The StreamIO bidir stream registers a sender for continuous
-//! sensor data and hands IOCommands to the per-controller output slots
+//! thread. The StreamIO bidir stream registers latest-sample slots for
+//! sensor data (`input_slot`, #2372) and hands IOCommands to the per-controller output slots
 //! (`output::OutputRouter`, coalesced and rate-capped, UC-002 BR-005).
 
 use std::pin::Pin;
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, trace, warn};
 
-use crate::device_manager::{DeviceCmd, StreamSensorData, next_stream_id};
+use crate::device_manager::{DeviceCmd, next_stream_id};
+use crate::input_slot;
 use crate::output::OutputRouter;
 use crate::service::proto;
 
@@ -138,8 +138,10 @@ impl ControllerIoService for ControllerIoServiceImpl {
         let mut inbound = request.into_inner();
         let cmd_tx = self.cmd_tx.clone();
 
-        // Create channel for sensor data (device manager -> gRPC stream)
-        let (sensor_tx, sensor_rx) = mpsc::channel::<StreamSensorData>(1024);
+        // Latest-sample slots for sensor data (device manager -> gRPC stream):
+        // at most one sample per controller waits, so a lagging reader gets
+        // the newest input, not a queue of old samples (#2372)
+        let (sensor_tx, sensor_rx) = input_slot::channel();
 
         // Register the sender with the device manager. The id lets this call's
         // unregister leave a newer stream alone (#2371).
@@ -176,9 +178,9 @@ impl ControllerIoService for ControllerIoServiceImpl {
             info!(stream_id, "StreamIO client disconnected");
         });
 
-        // Convert sensor data channel to a gRPC response stream
+        // Convert the sensor slots to a gRPC response stream
         #[allow(clippy::result_large_err)] // tonic::Status is inherently large
-        let output_stream = ReceiverStream::new(sensor_rx).map(|data| {
+        let output_stream = sensor_rx.map(|data| {
             let report = &data.report;
             Ok(SensorData {
                 serial: data.serial,

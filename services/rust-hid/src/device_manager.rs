@@ -16,6 +16,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::hid::{self, HidDeviceIo};
+use crate::input_slot::InputSink;
 use crate::output::{OutputRate, OutputRouter};
 use crate::watchdog::Heartbeat;
 
@@ -50,11 +51,12 @@ pub enum DeviceCmd {
         serial: String,
     },
     CloseAll,
-    /// Register the tokio mpsc sender for streaming sensor data. `id` (from
-    /// `next_stream_id`) names this registration; the newest one wins.
+    /// Register the latest-sample sink for streaming sensor data (#2372).
+    /// `id` (from `next_stream_id`) names this registration; the newest one
+    /// wins. Every open device's input is flushed first (not forwarded).
     RegisterStream {
         id: u64,
-        sender: tokio::sync::mpsc::Sender<StreamSensorData>,
+        sender: InputSink,
     },
     /// Unregister the stream registered with `id`. A late unregister from an
     /// older stream (its id no longer registered) is ignored (#2371).
@@ -74,17 +76,10 @@ pub fn next_stream_id() -> u64 {
     NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// The registered input stream: its id and the sender to its gRPC stream.
+/// The registered input stream: its id and the sink to its gRPC stream.
 struct ActiveStream {
     id: u64,
-    sender: tokio::sync::mpsc::Sender<StreamSensorData>,
-}
-
-/// Sensor data sent from the device manager to the gRPC stream.
-#[derive(Debug, Clone)]
-pub struct StreamSensorData {
-    pub serial: String,
-    pub report: hid::ParsedInputReport,
+    sender: InputSink,
 }
 
 /// Device enumeration and opening, the seam between the device loop and
@@ -138,6 +133,10 @@ struct DeviceEntry<D> {
     /// A poll of the input stream hit a read error: the handle is gone and the
     /// next discovery pass drops it (UC-002 BR-006, #2314).
     read_failed: bool,
+    /// A stream was registered since the last poll: the next poll drains the
+    /// hidraw ring and forwards nothing, so the stream starts with fresh input
+    /// instead of the reports queued while nobody read (#2372).
+    flush_input: bool,
 }
 
 /// Run the device manager loop on the current thread (blocking).
@@ -277,6 +276,9 @@ fn handle_command<B: HidBackend>(
         DeviceCmd::RegisterStream { id, sender } => {
             let replaced = stream.as_ref().map(|old| old.id);
             info!(stream_id = id, replaced = ?replaced, "Stream registered");
+            for entry in devices.values_mut() {
+                entry.flush_input = true;
+            }
             *stream = Some(ActiveStream { id, sender });
         }
         DeviceCmd::UnregisterStream { id } => match stream {
@@ -376,6 +378,7 @@ fn handle_discover<B: HidBackend>(
                     product_id,
                     adapter_name,
                     read_failed: false,
+                    flush_input: false,
                 }
             });
         }
@@ -418,6 +421,7 @@ fn handle_open<B: HidBackend>(
                     product_id,
                     adapter_name,
                     read_failed: false,
+                    flush_input: false,
                 },
             );
             true
@@ -453,11 +457,12 @@ fn handle_close_all<D: HidDeviceIo>(
     info!("All controllers closed");
 }
 
-/// Poll all open devices and send sensor data through the stream. Returns
-/// true when the stream's receiver is gone (the pass stops there, #2371).
+/// Poll all open devices and offer their newest report to the stream's
+/// latest-sample slots (#2372). Returns true when the stream's receiver is
+/// gone (the pass stops there, #2371).
 fn poll_all_devices<D: HidDeviceIo>(
     devices: &mut HashMap<String, DeviceEntry<D>>,
-    sender: &tokio::sync::mpsc::Sender<StreamSensorData>,
+    sender: &InputSink,
 ) -> bool {
     for (serial, entry) in devices.iter_mut() {
         let zcm2 = hid::is_zcm2(entry.product_id);
@@ -473,19 +478,16 @@ fn poll_all_devices<D: HidDeviceIo>(
             info!(serial = %serial, "Read failed, dropping the controller on the next discovery");
             entry.read_failed = true;
         }
+        if entry.flush_input {
+            // Reports queued before the stream registered: stale, not forwarded.
+            entry.flush_input = false;
+            continue;
+        }
         if let Some(report) = drain.report {
-            let data = StreamSensorData {
-                serial: serial.clone(),
-                report,
-            };
-            // Non-blocking send: if the channel is full, drop the data
-            // (the stream consumer will get the next one)
-            match sender.try_send(data) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    debug!(serial = %serial, "Stream channel full, dropping sensor data");
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return true,
+            // Never blocks: a sample the stream has not taken yet is replaced,
+            // keeping its button bits (UC-010 BR-012).
+            if sender.offer(serial, report).is_err() {
+                return true;
             }
         }
     }
@@ -616,12 +618,12 @@ mod tests {
     }
 
     fn recv_within(
-        rx: &mut tokio::sync::mpsc::Receiver<StreamSensorData>,
+        rx: &mut crate::input_slot::InputReceiver,
         timeout: Duration,
-    ) -> Option<StreamSensorData> {
+    ) -> Option<crate::input_slot::StreamSensorData> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if let Ok(data) = rx.try_recv() {
+            if let Some(data) = rx.try_recv() {
                 return Some(data);
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -650,13 +652,15 @@ mod tests {
         assert_eq!(discovered[0].adapter_name, "hci0");
         assert_eq!(discovered[0].product_id, PRODUCT_ID_ZCM2 as u32);
 
-        let (sensor_tx, mut sensor_rx) = tokio::sync::mpsc::channel(16);
+        let (sensor_tx, mut sensor_rx) = crate::input_slot::channel();
         cmd_tx
             .send(DeviceCmd::RegisterStream {
                 id: next_stream_id(),
                 sender: sensor_tx,
             })
             .unwrap();
+        // The register flushes the ring first (#2372): feed after it.
+        assert!(loop_polls(&device), "the registered stream was not polled");
         device.0.lock().unwrap().pending.push_back(sample_report());
 
         let data = recv_within(&mut sensor_rx, Duration::from_secs(2))
@@ -681,10 +685,8 @@ mod tests {
         assert!(reply_rx.blocking_recv().unwrap());
     }
 
-    fn register(
-        cmd_tx: &mpsc::Sender<DeviceCmd>,
-    ) -> (u64, tokio::sync::mpsc::Receiver<StreamSensorData>) {
-        let (sender, rx) = tokio::sync::mpsc::channel(16);
+    fn register(cmd_tx: &mpsc::Sender<DeviceCmd>) -> (u64, crate::input_slot::InputReceiver) {
+        let (sender, rx) = crate::input_slot::channel();
         let id = next_stream_id();
         cmd_tx
             .send(DeviceCmd::RegisterStream { id, sender })
@@ -712,6 +714,7 @@ mod tests {
         cmd_tx
             .send(DeviceCmd::UnregisterStream { id: old_id })
             .unwrap();
+        assert!(loop_polls(&device), "the new stream was not polled");
         device.0.lock().unwrap().pending.push_back(sample_report());
 
         let data = recv_within(&mut new_rx, Duration::from_secs(2));
@@ -751,12 +754,132 @@ mod tests {
         );
 
         let (_id, mut new_rx) = register(&cmd_tx);
+        assert!(loop_polls(&device), "the new stream was not polled");
         device.0.lock().unwrap().pending.push_back(sample_report());
         let data = recv_within(&mut new_rx, Duration::from_secs(2));
         shutdown(&cmd_tx, handle);
         assert!(
             data.is_some(),
             "a new stream after a closed one got no data"
+        );
+    }
+
+    /// A ZCM2 input report with these buttons and this raw accel z.
+    fn report_with(buttons: u8, accel_z: i16) -> [u8; hid::INPUT_REPORT_SIZE] {
+        let mut data = [0u8; hid::INPUT_REPORT_SIZE];
+        data[0] = 0x01;
+        data[2] = buttons;
+        data[23..25].copy_from_slice(&accel_z.to_le_bytes());
+        data
+    }
+
+    fn accel_z(raw: i16) -> f32 {
+        hid::parse_input_report(&report_with(0, raw), true)
+            .unwrap()
+            .accel_z
+    }
+
+    /// Queue `report` and wait until the loop has read it and found the
+    /// device empty again (one full drain).
+    fn feed_and_wait_drained(device: &FakeDevice, report: [u8; hid::INPUT_REPORT_SIZE]) {
+        let before = {
+            let mut state = device.0.lock().unwrap();
+            state.pending.push_back(report);
+            state.drained_at.len()
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while device.0.lock().unwrap().drained_at.len() <= before {
+            assert!(
+                Instant::now() < deadline,
+                "the loop did not drain the device"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    // UC: UC-002 main step 2
+    #[test]
+    fn test_a_lagging_reader_gets_the_newest_sample() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+        let (_id, mut rx) = register(&cmd_tx);
+        assert!(loop_polls(&device), "the registered stream was not polled");
+
+        // The reader takes nothing while two polls deliver a sample each (#2372).
+        feed_and_wait_drained(&device, report_with(0, 100));
+        feed_and_wait_drained(&device, report_with(0, 200));
+
+        let first = recv_within(&mut rx, Duration::from_secs(2));
+        let second = rx.try_recv();
+        shutdown(&cmd_tx, handle);
+        let first = first.expect("no sample streamed");
+        assert_eq!(
+            first.report.accel_z,
+            accel_z(200),
+            "a lagging reader got an old sample, not the newest"
+        );
+        assert!(second.is_none(), "an older sample was still queued");
+    }
+
+    // UC: UC-010 BR-012
+    #[test]
+    fn test_a_press_in_a_replaced_sample_is_still_delivered() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+        let (_id, mut rx) = register(&cmd_tx);
+        assert!(loop_polls(&device), "the registered stream was not polled");
+
+        // A tap whose press and release both land before the reader reads.
+        feed_and_wait_drained(&device, report_with(hid::Button::CROSS as u8, 100));
+        feed_and_wait_drained(&device, report_with(0, 200));
+
+        let data = recv_within(&mut rx, Duration::from_secs(2));
+        shutdown(&cmd_tx, handle);
+        let data = data.expect("no sample streamed");
+        assert_eq!(data.report.accel_z, accel_z(200), "not the newest sample");
+        assert!(
+            data.report.button_cross(),
+            "the press in the replaced sample was lost"
+        );
+    }
+
+    // UC: UC-002 A7 step 2
+    #[test]
+    fn test_the_first_sample_after_register_is_fresh() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+        // Reports the hidraw ring kept while no stream was registered,
+        // including an old press.
+        {
+            let mut state = device.0.lock().unwrap();
+            state
+                .pending
+                .push_back(report_with(hid::Button::CROSS as u8, 100));
+            state.pending.push_back(report_with(0, 150));
+        }
+
+        let (_id, mut rx) = register(&cmd_tx);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !device.0.lock().unwrap().pending.is_empty() {
+            assert!(Instant::now() < deadline, "the ring was never read");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        feed_and_wait_drained(&device, report_with(0, 200));
+
+        let first = recv_within(&mut rx, Duration::from_secs(2));
+        shutdown(&cmd_tx, handle);
+        let first = first.expect("no sample streamed after register");
+        assert_eq!(
+            first.report.accel_z,
+            accel_z(200),
+            "the first sample after register was a stale ring report"
+        );
+        assert!(
+            !first.report.button_cross(),
+            "a stale press from before the register was delivered"
         );
     }
 
@@ -811,7 +934,7 @@ mod tests {
             })
             .unwrap();
         assert!(reply_rx.blocking_recv().unwrap());
-        let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
+        let (sensor_tx, _sensor_rx) = crate::input_slot::channel();
         cmd_tx
             .send(DeviceCmd::RegisterStream {
                 id: next_stream_id(),
@@ -939,7 +1062,7 @@ mod tests {
                 reply: open_tx,
             })
             .unwrap();
-        let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
+        let (sensor_tx, _sensor_rx) = crate::input_slot::channel();
         cmd_tx
             .send(DeviceCmd::RegisterStream {
                 id: next_stream_id(),
@@ -1124,7 +1247,7 @@ mod tests {
             );
 
             // Sensor stream consumer: samples per serial.
-            let (sensor_tx, mut sensor_rx) = tokio::sync::mpsc::channel(1024);
+            let (sensor_tx, mut sensor_rx) = crate::input_slot::channel();
             cmd_tx
                 .send(DeviceCmd::RegisterStream {
                     id: next_stream_id(),
@@ -1134,7 +1257,10 @@ mod tests {
             let counter = tokio::spawn(async move {
                 let mut per_serial: HashMap<String, usize> = HashMap::new();
                 let deadline = tokio::time::Instant::now() + RUN;
-                while let Ok(Some(d)) = tokio::time::timeout_at(deadline, sensor_rx.recv()).await {
+                while let Ok(Some(d)) =
+                    tokio::time::timeout_at(deadline, tokio_stream::StreamExt::next(&mut sensor_rx))
+                        .await
+                {
                     *per_serial.entry(d.serial).or_default() += 1;
                 }
                 per_serial
@@ -1508,7 +1634,7 @@ mod tests {
         let mut devices = HashMap::new();
         let mut stream = None;
         let outputs = DeviceOutputs::default();
-        let (sender, _stream_rx) = tokio::sync::mpsc::channel(16);
+        let (sender, _stream_rx) = crate::input_slot::channel();
         assert!(handle_command(
             DeviceCmd::RegisterStream {
                 id: next_stream_id(),
@@ -1579,9 +1705,10 @@ mod tests {
                 product_id: PRODUCT_ID_ZCM2,
                 adapter_name: None,
                 read_failed: false,
+                flush_input: false,
             },
         )]);
-        let (sender, _rx) = tokio::sync::mpsc::channel(16);
+        let (sender, _rx) = crate::input_slot::channel();
 
         poll_all_devices(&mut devices, &sender);
 
