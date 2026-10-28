@@ -1485,3 +1485,14 @@ body {
   margin-bottom: 8px;
   opacity: 0.85;
 }
+
+/* Live stage settings strip (UC-035 BR-010) */
+.stage-settings {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.stage-settings.stale {
+  opacity: 0.55;
+}

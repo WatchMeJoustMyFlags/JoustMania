@@ -23,3 +23,13 @@ export interface ListGameModesResponse {
   gameModes: string[];
   defaultMode: string;
 }
+
+// GetMenuStatus (read-only snapshot, UC-015 A5). Connect JSON omits zero / empty fields and
+// writes int32 as numbers; only the fields the stage-settings panel reads are typed.
+export interface GetMenuStatusResponseLike {
+  lifecycleLive?: boolean;
+  sensitivity?: number;
+  numTeams?: number;
+  shieldActivation?: string;
+  operatorSettings?: { [key: string]: string };
+}
