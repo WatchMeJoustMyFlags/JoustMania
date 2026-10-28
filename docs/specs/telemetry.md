@@ -187,7 +187,7 @@ A mode's `_kill_player_impl` never adds its own `player_death` span event. Mode-
 Content capture: `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages` only when
 `decision.capture_content` is on (default off; on in `ci/`), decide backends only, 16 KiB per part
 (`services/agent/decide/llmio/genai.go`). Not gated: the retro span always carries the capped prompt in
-`llm.retro.user`, and the system prompt is logged once per SHA (`agent.llm.system_prompt`) (D-T8).
+`llm.retro.user`, and the system prompt is logged once per SHA (`agent.llm.system_prompt`) (D-T8); the once-per-SHA seen-sets (this and `agent.llm.retro_response`) are LRU-capped at 1024 fingerprints each, so an evicted SHA is logged again if it recurs (#2324).
 
 Metrics `gen_ai.client.operation.duration` (s) and `gen_ai.client.token.usage` come from the decide backends
 (claude, openai, jev; semconv advisory buckets). VictoriaMetrics stores them as

@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
@@ -82,6 +83,54 @@ func capUserPrompt(user string) string {
 	return user[:maxUserPromptBytes] + userPromptTruncatedMarker
 }
 
+// maxSeenFingerprints caps each reference seen-set (#2324). Fingerprints are
+// bounded by prompt variants, but raw responses are free text, so without a cap
+// the set grows for the process lifetime. When full, the least recently seen
+// fingerprint is evicted; an evicted one is simply logged again if it recurs.
+const maxSeenFingerprints = 1024
+
+// seenSet is a mutex-guarded LRU set of fingerprints. The zero value is ready to
+// use. limit overrides maxSeenFingerprints when > 0 (tests).
+type seenSet struct {
+	mu    sync.Mutex
+	limit int
+	order *list.List // front = most recently seen
+	items map[string]*list.Element
+}
+
+// markSeen records hash and reports whether it was already present (and so
+// refreshes its recency). A new hash evicts the least recently seen at the cap.
+func (s *seenSet) markSeen(hash string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.items == nil {
+		s.items = map[string]*list.Element{}
+		s.order = list.New()
+	}
+	if el, ok := s.items[hash]; ok {
+		s.order.MoveToFront(el)
+		return true
+	}
+	limit := s.limit
+	if limit <= 0 {
+		limit = maxSeenFingerprints
+	}
+	for s.order.Len() >= limit {
+		oldest := s.order.Back()
+		delete(s.items, oldest.Value.(string))
+		s.order.Remove(oldest)
+	}
+	s.items[hash] = s.order.PushFront(hash)
+	return false
+}
+
+// len returns the number of tracked fingerprints.
+func (s *seenSet) len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.items)
+}
+
 // systemPromptReference emits the full System-prompt text exactly ONCE per distinct
 // fingerprint for the process lifetime (#1168). It is the recoverability half of the
 // fingerprint scheme: the span carries only the hash, this carries the text the hash
@@ -90,10 +139,9 @@ func capUserPrompt(user string) string {
 // prompt changes (new variant / mode / allow-list / context block / note) its hash
 // changes and the new text is re-emitted.
 type systemPromptReference struct {
-	// seen maps a system-prompt fingerprint -> struct{} once it has been logged.
-	// sync.Map suits the write-once-then-read-mostly access pattern across the
-	// concurrent game-end retros that share it.
-	seen sync.Map
+	// seen holds the fingerprints already logged, bounded by maxSeenFingerprints
+	// (least recently seen evicted). Safe for the concurrent game-end retros.
+	seen seenSet
 }
 
 // emit logs the full system prompt on the dedicated reference line the FIRST time it
@@ -104,7 +152,7 @@ type systemPromptReference struct {
 // full text, so a hash on any span is resolvable to its text. A nil log uses
 // slog.Default so the reference is never silently dropped.
 func (r *systemPromptReference) emit(log *slog.Logger, hash, mode, allowed, system string) bool {
-	if _, loaded := r.seen.LoadOrStore(hash, struct{}{}); loaded {
+	if r.seen.markSeen(hash) {
 		return false // already emitted this fingerprint
 	}
 	if log == nil {
@@ -137,8 +185,8 @@ func resetSystemPromptRef() { systemPromptRef = &systemPromptReference{} }
 // TRACES pipeline — keep the big recorded-only text off it). On first sight of a hash
 // the full text is logged; subsequent sights are no-ops.
 type retroResponseReference struct {
-	// seen maps a response fingerprint -> struct{} once it has been logged.
-	seen sync.Map
+	// seen holds the fingerprints already logged, bounded by maxSeenFingerprints.
+	seen seenSet
 }
 
 // emit logs the full raw response on the dedicated reference line the FIRST time it
@@ -147,7 +195,7 @@ type retroResponseReference struct {
 // semantics. The log carries the hash, the session id (so a reply is attributable),
 // and the full raw text. A nil log uses slog.Default so the reference is never dropped.
 func (r *retroResponseReference) emit(log *slog.Logger, hash, sessionID, raw string) bool {
-	if _, loaded := r.seen.LoadOrStore(hash, struct{}{}); loaded {
+	if r.seen.markSeen(hash) {
 		return false // already emitted this fingerprint
 	}
 	if log == nil {
