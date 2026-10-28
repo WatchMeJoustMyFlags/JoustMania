@@ -484,7 +484,9 @@ func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c 
 	defer l.llmGate.Unlock()
 	// Before cadence and budget: an empty allow-list charges neither
 	// (UC-040 BR-005: no paid call without a possible action).
-	if !hasAllowedInterventions(snapshot.InterventionsAllowed) {
+	// UC-040 A40 step 5: in an experiment game the levers of the flag under test
+	// are not offered, so they do not count either.
+	if !hasAllowedInterventions(l.offeredInterventions(c, snapshot.InterventionsAllowed)) {
 		l.noteNoInterventions(c, true)
 		l.recordGated(ctx, DecideGateNoInterventions)
 		return DecideGateNoInterventions
@@ -594,7 +596,7 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		requested: requested,
 		used:      backend.Name(),
 		model:     cfg.Model,
-		req:       l.buildDecideRequest(c, fired.InterventionsAllowed, false),
+		req:       l.buildDecideRequest(c, l.offeredInterventions(c, fired.InterventionsAllowed), false),
 		start:     start,
 		stateAt:   c.UpdatedAt,
 	}
