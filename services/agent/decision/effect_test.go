@@ -245,10 +245,13 @@ func TestEffect_AbortedWhenGameEvicted(t *testing.T) {
 
 func TestEffect_ShutdownCancelsSamplerNoLeak(t *testing.T) {
 	// Ignore the openfeature event-listener goroutine: it is a process-global started by
-	// the flags provider, owned by main()'s deferred shutdown — not the #918 sampler.
+	// the flags provider (go-sdk >= 1.20 runs it under sync.WaitGroup.Go, so match any frame), owned by main()'s deferred shutdown — not the #918 sampler.
 	defer goleak.VerifyNone(t,
 		goleak.IgnoreTopFunction("github.com/open-feature/go-sdk/openfeature.newEventExecutor.(*eventExecutor).startEventListener.func1.1"),
 		goleak.IgnoreTopFunction("github.com/open-feature/go-sdk/openfeature.(*eventExecutor).startEventListener.func1.1"),
+		goleak.IgnoreAnyFunction("github.com/open-feature/go-sdk/openfeature.(*eventExecutor).startEventListener.func1"),
+		goleak.IgnoreAnyFunction("github.com/open-feature/go-sdk/openfeature.(*eventExecutor).startListeningAndShutdownOld.func1"),
+		goleak.IgnoreAnyFunction("github.com/open-feature/go-sdk/openfeature.(*eventExecutor).startListeningAndShutdownOld.(*eventExecutor).startEventListener.func3.1"),
 	)
 
 	provider := newFakeContextProvider()
