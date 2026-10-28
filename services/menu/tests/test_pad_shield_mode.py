@@ -305,3 +305,17 @@ async def test_an_exception_while_clearing_fails_closed(servicer, flags):
     assert (reply.success, reply.error) == (False, "flag_service_unavailable")
     assert test_pad_commands.failure_cues(servicer) == 2
     assert _pulses(servicer) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option", ["sensitivity", "num_teams"])
+@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"])
+async def test_k2_k5_preview_of_automatic_double_flashes_and_a_value_is_bad_option(servicer, flags, option):
+    lobby(servicer)
+    reply = await pad(servicer, "preview_setting", option=option, mode="automatic")
+    assert (reply.success, reply.error) == (True, "")
+    assert sorted(_pulses(servicer)) == AUTOMATIC_FLASHES
+    assert flags.puts == [] and flags.deletes == []
+
+    bad = await pad(servicer, "preview_setting", option=option, mode="2")
+    assert (bad.success, bad.error) == (False, "bad_option")

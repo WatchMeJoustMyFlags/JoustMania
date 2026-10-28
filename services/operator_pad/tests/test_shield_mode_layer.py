@@ -196,3 +196,34 @@ async def test_preview_down_to_automatic_speaks_the_shared_automatic_line(key, o
 async def test_release_to_automatic_sends_one_step_setting(actions, menu, key, option):
     await actions.dispatch(Gesture(LAYER, key, steps=-9), status(operator_settings={option: "slow"}))
     assert sent(menu) == [{"command": "step_setting", "option": option, "direction": "down", "steps": "9"}]
+
+
+def step_knob(rig: Rig, net: int, key: str, option: str, start: str) -> None:
+    rig.step(
+        net,
+        status=menu_pb2.GetMenuStatusResponse(operator_settings={option: start}, lifecycle_live=False),
+        key=key,
+        option=option,
+        lobby_only=True,
+    )
+
+
+@pytest.mark.parametrize(("key", "option", "start"), [("K2", "sensitivity", "ultra_slow"), ("K5", "num_teams", "two")])
+@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"], steps=[9])
+async def test_k2_k5_preview_down_to_automatic_shows_it_and_a_value_sends_nothing(key, option, start):
+    rig = Rig()
+    step_knob(rig, -1, key, option, start)  # the first step down from the lowest value is `automatic`
+    await rig.time.advance(1.0)
+    assert rig.mode_previews() == [{"command": "preview_setting", "option": option, "mode": "automatic"}]
+
+
+@pytest.mark.parametrize(("key", "option", "start"), [("K2", "sensitivity", "medium"), ("K5", "num_teams", "three")])
+@pytest.mark.uc("UC-015", flow="main", br=["BR-018", "BR-017"], steps=[9])
+async def test_k2_k5_preview_of_a_plain_value_sends_no_preview_setting(key, option, start):
+    rig = Rig()
+    step_knob(rig, 1, key, option, start)
+    await rig.time.advance(1.0)
+    await settle()
+    rig.previewer.end_hold()
+    await settle()
+    assert rig.mode_previews() == []
