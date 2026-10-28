@@ -3,7 +3,7 @@
  * GetMenuStatus answers; no DOM library, so the component runs on a fake element.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { STAGE_QUERY, fetchStageSettings, parseGauges, parseMenu, stageRows } from "../stageSettings.js";
+import { STAGE_QUERY, STAGE_TS_QUERY, fetchStageSettings, parseGauges, parseMenu, stageRows } from "../stageSettings.js";
 import type { VmQueryResponse } from "../vm.js";
 
 function vm(...series: Array<[Record<string, string>, number]>): VmQueryResponse {
@@ -29,7 +29,7 @@ describe("UC-035 BR-010 stage settings", () => {
   });
 
   it("UC-035/BR-010 a live game wins over the menu; teams and origin come from the menu", () => {
-    const menu = parseMenu({ sensitivity: 1, numTeams: 3, shieldActivation: "trigger", operatorSettings: { sensitivity: "automatic", num_teams: "three", "shield.activation": "hold" } });
+    const menu = parseMenu({ lifecycleLive: true, sensitivity: 1, numTeams: 3, shieldActivation: "trigger", operatorSettings: { sensitivity: "automatic", num_teams: "three", "shield.activation": "hold" } });
     const rows = stageRows({ gauges: parseGauges(HOLD), menu });
     expect(rows).toEqual([
       { label: "Shield", value: "hold (max 6s, budget 20s)", origin: "operator" },
@@ -42,6 +42,34 @@ describe("UC-035 BR-010 stage settings", () => {
     const rows = stageRows({ gauges: parseGauges(vm()), menu: parseMenu({ numTeams: 2, shieldActivation: "instant" }) });
     expect(rows.map((r) => r.value)).toEqual(["instant", "ultra slow", "2"]);
     expect(rows.every((r) => r.origin === "")).toBe(true);
+  });
+
+  it("UC-035/BR-010 two game_ids: the game with the newest sample wins, values are never mixed", () => {
+    const values = vm(
+      [{ __name__: "game_shield_activation_mode", mode: "instant", game_id: "old" }, 1],
+      [{ __name__: "game_sensitivity", game_id: "old" }, 4],
+      [{ __name__: "game_shield_hold_setting", setting: "shield.energy_max_seconds", game_id: "old" }, 9],
+      [{ __name__: "game_shield_activation_mode", mode: "trigger", game_id: "new" }, 1],
+      [{ __name__: "game_sensitivity", game_id: "new" }, 1],
+    );
+    const ts = vm([{ game_id: "old" }, 100], [{ game_id: "new" }, 160], [{ game_id: "new" }, 150]);
+    expect(parseGauges(values, ts)).toEqual({ sensitivity: 1, shieldMode: "trigger", hold: [] });
+    // result order must not matter
+    const swapped = vm([{ game_id: "new" }, 100], [{ game_id: "old" }, 160]);
+    expect(parseGauges(values, swapped)).toEqual({ sensitivity: 4, shieldMode: "instant", hold: [["max", 9]] });
+    // two games and no timestamps: nothing is picked rather than a guess
+    expect(parseGauges(values, null)).toEqual({ sensitivity: null, shieldMode: null, hold: [] });
+    expect(STAGE_TS_QUERY).toContain("tlast_over_time");
+  });
+
+  it("UC-035/BR-010 lobby after a game: the menu wins over a lingering game gauge", () => {
+    const menu = parseMenu({ sensitivity: 2, numTeams: 2, shieldActivation: "instant" });
+    expect(menu?.lifecycleLive).toBe(false);
+    const rows = stageRows({ gauges: parseGauges(HOLD), menu });
+    expect(rows.map((r) => r.value)).toEqual(["instant", "medium", "2"]);
+    // a live lifecycle keeps the gauge
+    const live = stageRows({ gauges: parseGauges(HOLD), menu: parseMenu({ lifecycleLive: true, shieldActivation: "instant" }) });
+    expect(live[0].value).toContain("hold");
   });
 
   it("UC-035/BR-010 missing data shows a dash", () => {
