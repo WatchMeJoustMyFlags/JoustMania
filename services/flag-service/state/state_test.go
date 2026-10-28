@@ -779,6 +779,55 @@ func TestFraction_RendersAFractionalElse(t *testing.T) {
 
 // UC: UC-053 main
 // NFR: NFR-051
+// fillGameToTheBound registers a game with the given serials and writes the
+// widest realistic set of values and events into it; it returns the bytes the
+// game adds to the snapshot.
+func fillGameToTheBound(t *testing.T, f *fixture, gameID string, serials []string) int {
+	t.Helper()
+	f.register(gameID, "c/1", serials...)
+	before, _, _ := f.state.Snapshot("")
+	for _, s := range serials {
+		for _, w := range []WriteRequest{
+			{Flag: "player_sensitivity_factor", Value: raw("1.2")},
+			{Flag: "player_handicap_factor", Value: raw("1.25")},
+			{Flag: "shield_seconds", Value: raw("5")},
+			{Flag: "toughness_boost_seconds", Value: raw(`"5:2.0"`)},
+			{Flag: "soft_penalty_action", Value: raw(`"tighten:5:0.5"`)},
+		} {
+			w.Set, w.Scope = "interventions", Scope{GameID: gameID, Serial: s}
+			f.put(w)
+		}
+	}
+	for _, w := range []WriteRequest{
+		{Flag: "music_tempo_override", Value: raw("1.15")}, {Flag: "global_sensitivity_override", Value: raw("3")},
+		{Flag: "global_difficulty_factor", Value: raw("1.5")}, {Flag: "volume_override", Value: raw("0.5")},
+		{Flag: "pacing_profile", Variant: "calm"}, {Flag: "tempo_ramp", Value: raw(`"1.3:8:linear"`)},
+		{Flag: "auto_rubberband", Variant: "gentle"},
+	} {
+		w.Set, w.Scope = "interventions", Scope{GameID: gameID}
+		f.put(w)
+	}
+	for i := 0; i < 20; i++ {
+		for _, flag := range []string{"eliminate_player", "revive_player"} {
+			if _, err := f.state.Append(AppendRequest{Set: "interventions", Flag: flag, Scope: Scope{GameID: gameID}, Payload: map[string]any{"serial": serials[i%len(serials)]}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, a := range []AppendRequest{
+			{Flag: "audio_cue", Payload: map[string]any{"sound": "agent_cue"}},
+			{Flag: "controller_effect", Payload: map[string]any{"serial": serials[i%len(serials)], "effect": "rumble"}},
+			{Flag: "end_game"},
+		} {
+			a.Set, a.Scope = "interventions", Scope{GameID: gameID}
+			if _, err := f.state.Append(a); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	after, _, _ := f.state.Snapshot("")
+	return len(after) - len(before)
+}
+
 func TestNFR051_SnapshotBounded(t *testing.T) {
 	t.Run("UC-053/main 8 games x 16 players stay within 64 KiB per game and 1 MiB per snapshot", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
@@ -789,48 +838,7 @@ func TestNFR051_SnapshotBounded(t *testing.T) {
 			for p := range serials {
 				serials[p] = fmt.Sprintf("MOCK%04d", g*16+p)
 			}
-			f.register(gameID, "c/1", serials...)
-			before, _, _ := f.state.Snapshot("")
-			for _, s := range serials {
-				for _, w := range []WriteRequest{
-					{Flag: "player_sensitivity_factor", Value: raw("1.2")},
-					{Flag: "player_handicap_factor", Value: raw("1.25")},
-					{Flag: "shield_seconds", Value: raw("5")},
-					{Flag: "toughness_boost_seconds", Value: raw(`"5:2.0"`)},
-					{Flag: "soft_penalty_action", Value: raw(`"tighten:5:0.5"`)},
-				} {
-					w.Set, w.Scope = "interventions", Scope{GameID: gameID, Serial: s}
-					f.put(w)
-				}
-			}
-			for _, w := range []WriteRequest{
-				{Flag: "music_tempo_override", Value: raw("1.15")}, {Flag: "global_sensitivity_override", Value: raw("3")},
-				{Flag: "global_difficulty_factor", Value: raw("1.5")}, {Flag: "volume_override", Value: raw("0.5")},
-				{Flag: "pacing_profile", Variant: "calm"}, {Flag: "tempo_ramp", Value: raw(`"1.3:8:linear"`)},
-				{Flag: "auto_rubberband", Variant: "gentle"},
-			} {
-				w.Set, w.Scope = "interventions", Scope{GameID: gameID}
-				f.put(w)
-			}
-			for i := 0; i < 20; i++ {
-				for _, flag := range []string{"eliminate_player", "revive_player"} {
-					if _, err := f.state.Append(AppendRequest{Set: "interventions", Flag: flag, Scope: Scope{GameID: gameID}, Payload: map[string]any{"serial": serials[i%16]}}); err != nil {
-						t.Fatal(err)
-					}
-				}
-				for _, a := range []AppendRequest{
-					{Flag: "audio_cue", Payload: map[string]any{"sound": "agent_cue"}},
-					{Flag: "controller_effect", Payload: map[string]any{"serial": serials[i%16], "effect": "rumble"}},
-					{Flag: "end_game"},
-				} {
-					a.Set, a.Scope = "interventions", Scope{GameID: gameID}
-					if _, err := f.state.Append(a); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			after, _, _ := f.state.Snapshot("")
-			if perGame := len(after) - len(before); perGame > 64<<10 {
+			if perGame := fillGameToTheBound(t, f, gameID, serials); perGame > 64<<10 {
 				t.Fatalf("game %d adds %d bytes, over 64 KiB", g, perGame)
 			}
 		}
@@ -838,6 +846,18 @@ func TestNFR051_SnapshotBounded(t *testing.T) {
 		t.Logf("snapshot: %d bytes empty, %d bytes with 8 full games", len(empty), len(full))
 		if len(full) > 1<<20 {
 			t.Fatalf("snapshot %d bytes, over 1 MiB", len(full))
+		}
+	})
+	t.Run("UC-053/main one game with the 64-serial cap stays within 64 KiB (NFR-051)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		serials := make([]string, MaxSerialsPerGame)
+		for p := range serials {
+			serials[p] = fmt.Sprintf("MOCK%04d", p)
+		}
+		perGame := fillGameToTheBound(t, f, "game_000000000000", serials)
+		t.Logf("64 players add %d bytes", perGame)
+		if perGame > 64<<10 {
+			t.Fatalf("a 64-player game adds %d bytes, over 64 KiB", perGame)
 		}
 	})
 }
@@ -881,6 +901,21 @@ func TestGameScopeBounds(t *testing.T) {
 		wantReason(t, err, http.StatusConflict, fserr.GameNotLive)
 		if _, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1"}); err != nil {
 			t.Fatalf("re-registering a live game must not count against the cap: %v", err)
+		}
+	})
+	t.Run("UC-053/A6 a registration above 64 serials is 400 and registers nothing (NFR-051)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		serials := make([]string, MaxSerialsPerGame+1)
+		for p := range serials {
+			serials[p] = fmt.Sprintf("MOCK%04d", p)
+		}
+		_, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1", Serials: serials})
+		wantReason(t, err, http.StatusBadRequest, fserr.Malformed)
+		if f.state.Game("game_a") != nil {
+			t.Fatal("a rejected registration left a game scope")
+		}
+		if _, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1", Serials: serials[:MaxSerialsPerGame]}); err != nil {
+			t.Fatalf("exactly 64 serials must be accepted: %v", err)
 		}
 	})
 	t.Run("UC-053/A10 a reconcile over the cap is rejected whole (NFR-051)", func(t *testing.T) {
