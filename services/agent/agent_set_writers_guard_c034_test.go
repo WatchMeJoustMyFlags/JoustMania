@@ -62,7 +62,7 @@ var c034ClientSites = map[string]bool{
 	"actions/rollout_writer.go:NewRolloutWriterFromEnv":  true,
 	"experiment/writer.go:NewWriterFromEnv":              true,
 	"promote/realdefault.go:NewRealDefaultWriterFromEnv": true,
-	"main.go:main": true,
+	"main.go:run":  true,
 }
 
 // c034RawWriteSites send a raw HTTP write that is not to the flag service.

@@ -56,8 +56,9 @@ type serverComponents struct {
 	evictIntervalSrc func() time.Duration
 
 	// shadow, when non-nil, is invoked in its own ctx-bounded goroutine after the
-	// servers come up (the #778 shadow-game runner in production). Nil = no shadow
-	// game (tests, and the unset env default).
+	// servers come up (the #778 shadow-game runner in production), tracked on the
+	// background group so shutdown joins it (#2318). Nil = no shadow game (tests, and
+	// the unset env default).
 	shadow func(context.Context)
 
 	// dossier, when non-nil, is the read-only experiment-dossier reader (#1183). Its
@@ -74,10 +75,11 @@ type serverComponents struct {
 	// leak-safe (the loop's own AbortAll tears experiments down on ctx cancel).
 	experiments func(context.Context)
 
-	// background, when non-nil, holds the fire-and-forget goroutines main() starts
-	// outside run() (the game-end proposer, #2323). run()'s shutdown path closes and
-	// joins it after the gRPC server has stopped, so none of them outlives run() and
-	// races main's deferred tracer / metrics shutdown. Nil = nothing to join.
+	// background, when non-nil, holds the fire-and-forget goroutines the wiring
+	// starts outside run() (the game-end proposer, #2323); run() adds the shadow game
+	// (#2318). run()'s shutdown path closes and joins it after the gRPC server has
+	// stopped, so none of them outlives run() and races the deferred tracer / metrics
+	// shutdown. Nil = run() uses a group of its own for the shadow game.
 	background *backgroundGroup
 }
 
@@ -98,7 +100,7 @@ func (c *serverComponents) effectiveEvictInterval() time.Duration {
 //  1. registers the OTLP trace + metrics receivers on a fresh gRPC server,
 //  2. starts the health HTTP server,
 //  3. runs the eviction ticker loop (evict stale partitions + drop their loops),
-//  4. optionally fires the shadow game,
+//  4. optionally fires the shadow game on the background group,
 //  5. on ctx cancellation, GracefulStops the gRPC server, joins in-flight async
 //     goroutines (remote decide calls, effect samplers, retros), and shuts the
 //     health server down,
@@ -121,8 +123,15 @@ func (c *serverComponents) run(ctx context.Context) error {
 	healthServer := c.startHealthServer()
 	stopEvict := c.startEvictionLoop(ctx)
 
+	// Goroutines started outside run() (the game-end proposer, #2323) and the shadow
+	// game (#2318) share one group that the shutdown path joins. Without a group from
+	// the caller run() uses its own, so the shadow game is joined either way.
+	background := c.background
+	if background == nil {
+		background = &backgroundGroup{}
+	}
 	if c.shadow != nil {
-		go c.shadow(ctx)
+		background.Go(func() { c.shadow(ctx) })
 	}
 
 	// The #991 experiment cohort loop, when enabled (opt-in default-off). It runs
@@ -158,9 +167,10 @@ func (c *serverComponents) run(ctx context.Context) error {
 		if c.retro != nil {
 			c.retro.AwaitInflight()
 		}
-		// Join the game-end proposer goroutines (#2323). GracefulStop above ended the
-		// OTLP intake, so no new game end arrives; Close also refuses a late one.
-		c.background.Close()
+		// Join the game-end proposer goroutines (#2323) and the shadow game (#2318),
+		// which ctx bounds. GracefulStop above ended the OTLP intake, so no new game end
+		// arrives; Close also refuses a late one.
+		background.Close()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = healthServer.Shutdown(shutdownCtx)
