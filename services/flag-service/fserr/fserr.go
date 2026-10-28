@@ -19,6 +19,7 @@ const (
 	SetNotServed     = "set_not_served"
 	TooManyGames     = "too_many_games"
 	RealGameLive     = "real_game_live"
+	WriterMismatch   = "writer_mismatch"
 	FlagReadOnly     = "flag_read_only"
 	OutOfBounds      = "out_of_bounds"
 	SerialNotInGame  = "serial_not_in_game"
@@ -51,6 +52,12 @@ func NotFound(reason, format string, args ...any) *Error {
 }
 func Conflict(reason, format string, args ...any) *Error {
 	return newf(http.StatusConflict, reason, format, args...)
+}
+
+// PreconditionFailed is a 412: a compare-and-delete precondition (DELETE
+// ?if_writer=, #1877) did not hold, so nothing changed.
+func PreconditionFailed(reason, format string, args ...any) *Error {
+	return newf(http.StatusPreconditionFailed, reason, format, args...)
 }
 func Unprocessable(reason, format string, args ...any) *Error {
 	return newf(http.StatusUnprocessableEntity, reason, format, args...)

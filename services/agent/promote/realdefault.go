@@ -151,12 +151,14 @@ func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey s
 // restart dropped it) real games already resolve the pre-promotion default: the
 // revert writes nothing, stamps the cooldown and succeeds (PR #1417 review).
 //
-// ACCEPTED WINDOW (#1753): the writer check is a read followed by a delete. The
-// flag service clears the real overlay whoever wrote it (it ignores `writer` for
-// that scope), so another writer's real overlay set in the milliseconds between
-// the read and the delete would be removed. w.mu serialises this agent's own
-// writes; only promotions write real overlays, so the window is accepted
-// (UC-043 A1). The flag-service precondition that would close it is #1877.
+// COMPARE-AND-DELETE (#1877, closes the #1753 window): the DELETE carries
+// ?if_writer=promotion, so the flag service clears the real overlay only while
+// its writer is still "promotion", atomically under its lock. Another writer's
+// overlay set between the read and the delete is refused with 412
+// writer_mismatch and left in place; the revert is then dropped like the
+// "no promotion overlay" case (logged once, cooldown stamped, nil returned).
+// The kill switch uses the same path: every overlay this agent writes carries
+// writer "promotion", so the precondition never blocks clearing one of them.
 func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKey string) error {
 	return w.revert(ctx, flagKey, false)
 }
@@ -187,14 +189,24 @@ func (w *serviceRealDefaultWriter) revert(ctx context.Context, flagKey string, u
 		w.stampRevert(flagKey)
 		return nil
 	}
-	query := url.Values{"game_kind": {"real"}, "writer": {promotionWriter}}
+	query := url.Values{"game_kind": {"real"}, "writer": {promotionWriter}, "if_writer": {promotionWriter}}
 	if unlessRealGame {
 		query.Set("unless_real_game", "true")
 	}
 	if err := w.svc.Delete(ctx, gameFlagSet, flagKey, query); err != nil {
+		if flagservice.IsReason(err, flagservice.ReasonWriterMismatch) {
+			// Another writer replaced the overlay after the read (#1877): it owns
+			// the real default now, so the revert is dropped, not retried.
+			w.log.Warn("code_improvement revert dropped: another writer owns the real overlay now (writer_mismatch); nothing removed",
+				"flag", flagKey)
+			w.stampRevert(flagKey)
+			return nil
+		}
 		return fmt.Errorf("revert %s/%s: %w", gameFlagSet, flagKey, err)
 	}
-	w.log.Warn("code_improvement.autonomous REVERTED: removed the promotion's real-default overlay; real games resolve the default beneath it (#1065)", "flag", flagKey)
+	// 204 also when the overlay vanished between the read and the DELETE (a
+	// flag-service restart): the promotion's overlay is gone either way.
+	w.log.Warn("code_improvement.autonomous REVERTED: the promotion's real-default overlay is gone (cleared now, or already absent); real games resolve the default beneath it (#1065)", "flag", flagKey)
 	w.stampRevert(flagKey)
 	return nil
 }

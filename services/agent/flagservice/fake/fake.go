@@ -287,6 +287,10 @@ func (s *Service) Delete(_ context.Context, set, key string, q url.Values) error
 			}
 		}
 	case q.Get("game_kind") == "real":
+		// ?if_writer= (#1877): compare-and-delete, like the flag service.
+		if iw := q.Get("if_writer"); iw != "" && f.real != nil && f.real.writer != iw {
+			return &flagservice.Error{Status: 412, Reason: flagservice.ReasonWriterMismatch, Detail: "fake: real overlay written by " + f.real.writer}
+		}
 		f.real = nil
 	default:
 		f.stack = nil

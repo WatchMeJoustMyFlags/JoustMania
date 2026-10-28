@@ -403,3 +403,79 @@ func TestGuardedRealDelete(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-043 A18
+func TestIfWriterDelete(t *testing.T) {
+	const path = "/game/shield.energy_max_seconds"
+	setup := func(t *testing.T, writer string) *env {
+		e := newEnv(t, true)
+		if s, b := e.do("PUT", path, map[string]any{"value": 4, "scope": map[string]any{"game_kind": "real"}, "writer": writer}); s != 200 {
+			t.Fatalf("real write: %d %v", s, b)
+		}
+		return e
+	}
+	realWriter := func(e *env) any {
+		_, view := e.do("GET", path, nil)
+		ro, _ := view["real_overlay"].(map[string]any)
+		if ro == nil {
+			return nil
+		}
+		return ro["writer"]
+	}
+	t.Run("UC-043/A18 DELETE ?if_writer=promotion clears the promotion's real overlay (204)", func(t *testing.T) {
+		e := setup(t, "promotion")
+		if s, b := e.do("DELETE", path+"?game_kind=real&if_writer=promotion", nil); s != 204 {
+			t.Fatalf("%d %v, want 204", s, b)
+		}
+		if w := realWriter(e); w != nil {
+			t.Fatalf("real overlay of %v is still there", w)
+		}
+	})
+	t.Run("UC-043/A18 DELETE ?if_writer=promotion on another writer's overlay is 412 writer_mismatch and changes nothing", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion&if_writer=promotion", nil); s != 412 || b["error"] != "writer_mismatch" {
+			t.Fatalf("%d %v, want 412 writer_mismatch", s, b)
+		}
+		if w := realWriter(e); w != "operator" {
+			t.Fatalf("real overlay writer = %v after a refused DELETE, want operator", w)
+		}
+		if e.writes("rejected", "writer_mismatch") != 1 {
+			t.Fatalf("the refusal is not counted as rejected/writer_mismatch")
+		}
+	})
+	t.Run("UC-043/A18 the informational writer label alone is never compared", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion", nil); s != 204 {
+			t.Fatalf("%d %v, want 204", s, b)
+		}
+	})
+	t.Run("UC-043/A18 an empty if_writer is 400 malformed", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, b := e.do("DELETE", path+"?game_kind=real&if_writer=", nil); s != 400 || b["error"] != "malformed" {
+			t.Fatalf("%d %v, want 400 malformed", s, b)
+		}
+		if w := realWriter(e); w != "operator" {
+			t.Fatalf("real overlay writer = %v, want operator", w)
+		}
+	})
+	t.Run("UC-043/A18 if_writer outside scope real is 400 malformed", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, b := e.do("DELETE", path+"?if_writer=promotion", nil); s != 400 || b["error"] != "malformed" {
+			t.Fatalf("%d %v, want 400 malformed", s, b)
+		}
+	})
+	t.Run("UC-043/A18 with unless_real_game: 409 real_game_live first, then 412 once no real game runs", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, _ := e.do("PUT", "/games/g-real", map[string]any{"coordinator_instance": "c1", "game_kind": "real"}); s != 200 {
+			t.Fatalf("register: %d", s)
+		}
+		q := path + "?game_kind=real&unless_real_game=true&if_writer=promotion"
+		if s, b := e.do("DELETE", q, nil); s != 409 || b["error"] != "real_game_live" {
+			t.Fatalf("%d %v, want 409 real_game_live", s, b)
+		}
+		e.do("DELETE", "/games/g-real", nil)
+		if s, b := e.do("DELETE", q, nil); s != 412 || b["error"] != "writer_mismatch" {
+			t.Fatalf("%d %v, want 412 writer_mismatch", s, b)
+		}
+	})
+}

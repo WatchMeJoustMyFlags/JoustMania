@@ -287,8 +287,19 @@ func (a *API) clear(w http.ResponseWriter, r *http.Request) {
 			res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: sc.Name()}
 		}
 	}
+	// ?if_writer=<label>: the compare-and-delete precondition (#1877, flags.md
+	// §13). Strict: an empty value must not silently drop the precondition.
+	ifWriter := r.URL.Query().Get("if_writer")
+	if ferr == nil && r.URL.Query().Has("if_writer") && ifWriter == "" {
+		ferr = fserr.BadRequest("if_writer must not be empty")
+		res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: sc.Name()}
+	}
+	if ferr == nil && len(ifWriter) > state.MaxIDLength {
+		ferr = fserr.BadRequest("if_writer is longer than %d characters", state.MaxIDLength)
+		res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: sc.Name()}
+	}
 	if ferr == nil {
-		res, ferr = a.State.Clear(state.ClearRequest{Set: req.Set, Flag: req.Flag, Scope: sc, Writer: req.Writer, Persist: persist, UnlessRealGame: guarded})
+		res, ferr = a.State.Clear(state.ClearRequest{Set: req.Set, Flag: req.Flag, Scope: sc, Writer: req.Writer, Persist: persist, UnlessRealGame: guarded, IfWriter: ifWriter})
 	}
 	span.SetAttributes(attribute.Int("flagservice.cleared", res.Cleared))
 	a.finishWrite(ctx, span, telemetry.OpClear, req, res, ferr, start)

@@ -89,6 +89,12 @@ type ClearRequest struct {
 	// real_write: no_live_real_game is refused 409 real_game_live while a
 	// non-shadow game is registered. The kill switch never sets it.
 	UnlessRealGame bool
+	// IfWriter is the opt-in compare-and-delete precondition (?if_writer=,
+	// #1877), like If-Match: in scope real only, the overlay is cleared only
+	// when its writer label equals IfWriter, else 412 writer_mismatch and
+	// nothing changes. "" = no precondition. It is not the informational
+	// Writer label, which is never checked (D11).
+	IfWriter string
 }
 
 // WriteResult is the response of an accepted write, and the telemetry of a
@@ -402,6 +408,9 @@ func (s *State) Clear(req ClearRequest) (WriteResult, *fserr.Error) {
 	if req.Persist && scopeName != registry.ScopeStack {
 		return res, fserr.BadRequest("persist=true clears a stack-wide admin value only")
 	}
+	if req.IfWriter != "" && scopeName != registry.ScopeReal {
+		return res, fserr.BadRequest("if_writer applies to the real overlay only (game_kind=real)")
+	}
 	// #2236, UC-043 A17 step 3: the guarded revert. Checked under s.mu, like the
 	// Put guard, so a game registering between the agent's own read and this
 	// DELETE still blocks it. A plain DELETE (the kill switch) never comes here.
@@ -409,6 +418,15 @@ func (s *State) Clear(req ClearRequest) (WriteResult, *fserr.Error) {
 		if id := s.liveRealGameLocked(); id != "" {
 			return res, fserr.Conflict(fserr.RealGameLive, "real game %q is registered; a guarded revert of %s waits until no real game runs", id, f.key)
 		}
+	}
+	// #1877, UC-043 A18: the compare-and-delete precondition, checked last, under
+	// the same lock as the clear, so no other write can slip in between the
+	// compare and the delete. Like HTTP If-Match (RFC 9110 §13.2.2) it is
+	// evaluated only when the clear would otherwise succeed: every 4xx/5xx above
+	// (real_game_live included) takes precedence over 412. A missing overlay is
+	// not a mismatch: the clear stays an idempotent 204 with nothing cleared.
+	if req.IfWriter != "" && f.real != nil && f.real.Writer != req.IfWriter {
+		return res, fserr.PreconditionFailed(fserr.WriterMismatch, "the real overlay of %s was written by %q, not %q; nothing cleared", f.key, f.real.Writer, req.IfWriter)
 	}
 	sc := req.Scope
 	switch scopeName {

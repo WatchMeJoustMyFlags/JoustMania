@@ -39,6 +39,9 @@ const (
 	// ReasonRealGameLive refuses a real write of a hold key while a real game is
 	// registered (409, flags.md §13, UC-043 A17); the promoter defers the write.
 	ReasonRealGameLive = "real_game_live"
+	// ReasonWriterMismatch refuses a compare-and-delete (DELETE ?if_writer=,
+	// 412, #1877): the overlay belongs to another writer; nothing was cleared.
+	ReasonWriterMismatch = "writer_mismatch"
 )
 
 // Scope is a write's scope properties.
