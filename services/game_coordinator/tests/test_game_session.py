@@ -813,6 +813,35 @@ class TestGameSessionLoop:
         _, kwargs = mock_tracer_mod.start_as_current_span.call_args
         assert [link.context for link in kwargs["links"]] == [stream_ctx, parent_ctx]
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_experiment_game_parent_link_does_not_duplicate_the_stream_link(
+        self, mock_tracer_mod, mock_factory, mock_metrics
+    ):
+        """#2223: without grpc_rpc_spans the stream span context IS the injected
+        experiment context; `link` then carries exactly one Link to it, the
+        `link.kind=experiment` one, not a second plain Link to the same span."""
+        exp_ctx = MockSpanContext(trace_id=0x9999AAAABBBBCCCCDDDDEEEEFFFF0000, span_id=0x1122334455667788)
+        session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp-1", arm="control")
+        session.stream_span_context = MockSpanContext(trace_id=exp_ctx.trace_id, span_id=exp_ctx.span_id)
+        session.experiment_parent_span_context = exp_ctx
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        with patch("services.game_coordinator.game_session.read_string_flag", return_value="link"):
+            await session._run_game_loop_async()
+
+        _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+        links = kwargs["links"]
+        assert len(links) == 1, links
+        assert links[0].context is exp_ctx
+        assert dict(links[0].attributes) == {"link.kind": "experiment"}
+
     @pytest.mark.uc("UC-035", flow="main", steps=[5])
     @pytest.mark.parametrize(
         ("flag_value", "expected"),

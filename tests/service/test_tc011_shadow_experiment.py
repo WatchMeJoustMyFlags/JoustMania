@@ -283,6 +283,10 @@ def test_shadow_game_is_its_own_trace_linked_to_the_experiment(experiment_stack)
     for root in game_roots:
         assert root.trace_id != experiment_span.trace_id, "the shadow game joined the experiment trace"
         experiment_links = [link for link in root.links if link.attributes.get("link.kind") == "experiment"]
+        # The agent injects the agent.experiment span itself as the spawn traceparent;
+        # the Link names it, not the coordinator's StreamGameEvents SERVER span under it.
         assert [(link.trace_id, link.span_id) for link in experiment_links] == [
             (experiment_span.trace_id, experiment_span.span_id)
         ], root.links
+        targets = [(link.trace_id, link.span_id) for link in root.links]
+        assert len(targets) == len(set(targets)), f"duplicate Link on the game root: {root.links}"

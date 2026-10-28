@@ -1674,6 +1674,56 @@ class TestExperimentSpawnBinding:
         assert session.experiment_parent_span_context is not None
         assert session.experiment_parent_span_context.trace_id == _VALID_PARENT_TRACE_ID
 
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @pytest.mark.asyncio
+    async def test_shadow_experiment_target_is_the_injected_span_not_the_server_span(self, servicer, monkeypatch):
+        """#2223: with grpc_rpc_spans on, the current span is the interceptor's SERVER
+        span, a child of the injected agent.experiment context. The session's
+        experiment target is the injected context, while the stream Link keeps the
+        server span."""
+        from opentelemetry import trace as ot_trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)  # a recording SDK span, like the interceptor's
+
+        injected = ot_trace.SpanContext(
+            trace_id=_VALID_PARENT_TRACE_ID,
+            span_id=0x1122334455667788,
+            is_remote=True,
+            trace_flags=ot_trace.TraceFlags(ot_trace.TraceFlags.SAMPLED),
+        )
+        server_span = (
+            TracerProvider()
+            .get_tracer(__name__)
+            .start_span(
+                "GameCoordinatorService/StreamGameEvents",
+                context=ot_trace.set_span_in_context(ot_trace.NonRecordingSpan(injected)),
+                kind=ot_trace.SpanKind.SERVER,
+            )
+        )
+        with _NO_THREAD:
+            ok, gid = await servicer._start_game_from_config(
+                _experiment_config(serials=("a1", "a2"), experiment_id="exp_abc123", arm="experimental"),
+                server_span,
+            )
+        server_span.end()
+        assert ok is True
+        session = servicer.sessions[gid]
+        assert session.experiment_parent_span_context == injected
+        assert session.stream_span_context == server_span.get_span_context()
+        assert session.stream_span_context.span_id != injected.span_id
+
+    def test_injected_parent_span_context_none_for_a_server_span_without_traceparent(self, monkeypatch):
+        """#2223: a SERVER span with no remote parent (nothing injected) names no experiment target."""
+        from opentelemetry.sdk.trace import TracerProvider
+
+        from services.game_coordinator.servicer import injected_parent_span_context
+
+        monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+        span = TracerProvider().get_tracer(__name__).start_span("GameCoordinatorService/StreamGameEvents")
+        assert injected_parent_span_context(span) is None
+        assert injected_parent_span_context(None) is None
+
     @pytest.mark.asyncio
     @patch("services.game_coordinator.servicer.metrics")
     async def test_bound_experiment_labels_live_gauges(self, mock_metrics, servicer):

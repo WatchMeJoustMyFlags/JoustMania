@@ -588,7 +588,8 @@ class GameSession:
         # ``child`` makes it a CHILD of that span (#1182), nesting every shadow game
         # in the experiment trace. The gate is STRICT (shadow AND experiment_id AND
         # a valid injected parent) so the real-game own-root structure is never
-        # touched. The stream Link above is kept either way.
+        # touched. The stream Link above is kept either way, unless it names the
+        # experiment span itself (``link`` then carries one Link to it).
         parent_context = Context()
         if (
             self.game_kind == GAME_KIND_SHADOW
@@ -599,7 +600,15 @@ class GameSession:
             if experiment_game_parent_mode() == EXPERIMENT_GAME_PARENT_CHILD:
                 parent_context = trace.set_span_in_context(trace.NonRecordingSpan(self.experiment_parent_span_context))
             else:
-                links.append(trace.Link(self.experiment_parent_span_context, {"link.kind": "experiment"}))
+                # One Link per target: without grpc_rpc_spans the stream span IS the
+                # injected experiment context, so its plain Link is replaced, not doubled.
+                exp = self.experiment_parent_span_context
+                links = [
+                    link
+                    for link in links
+                    if (link.context.trace_id, link.context.span_id) != (exp.trace_id, exp.span_id)
+                ]
+                links.append(trace.Link(exp, {"link.kind": "experiment"}))
 
         with tracer.start_as_current_span(
             game_span_name,

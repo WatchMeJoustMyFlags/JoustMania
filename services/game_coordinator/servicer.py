@@ -71,6 +71,25 @@ tracer = get_tracer(__name__)
 DEFAULT_MAX_CONCURRENT_GAMES = 8
 
 
+def injected_parent_span_context(span):
+    """The span context the caller injected as traceparent (#1182, #2223), or None.
+
+    With ``grpc_rpc_spans`` on, the current span is the server interceptor's SERVER
+    span (lib/grpc_tracing.py), a CHILD of the injected context: the injected
+    context is its remote parent, and a server span with no remote parent means no
+    traceparent came in. With it off, the current span is the extracted context
+    itself (a non-recording span), so its own context is the injected one.
+    """
+    if span is None:
+        return None
+    if hasattr(span, "parent"):
+        parent = span.parent
+        if parent is not None and parent.is_valid and parent.is_remote:
+            return parent
+        return None
+    return span.get_span_context()
+
+
 def _max_concurrent_games() -> int:
     """Read the TOTAL concurrent-games ceiling from the ``game`` flagd domain.
 
@@ -574,15 +593,14 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # Spawn-traceparent propagation (#1182, epic #1181). When the agent
             # spawns a shadow game it injects its long-lived EXPERIMENT span's
             # traceparent into the StreamGameEvents call; the server interceptor
-            # extracts it (lib/grpc_tracing.py) so the current span's context here
-            # chains back to that experiment span. We capture it as the candidate
-            # PARENT for a shadow + experiment-bound game so its lifecycle span is
-            # a CHILD of the experiment span (causal parent-child, not just a
-            # Link). For a real game (or any game with no incoming traceparent)
-            # this is the same harmless SpanContext used for the Link; the strict
-            # shadow+experiment gate in GameSession keeps a real game own-rooted
-            # (#1157/#1164).
-            experiment_parent_span_context = stream_span_context
+            # extracts it (lib/grpc_tracing.py). We capture the INJECTED context
+            # itself (the agent.experiment span), not the coordinator's own SERVER
+            # span the interceptor starts under it when grpc_rpc_spans is on, as
+            # the experiment target of a shadow + experiment-bound game: its Link
+            # (``link``) or its parent (``child``), telemetry.experiment_game_parent
+            # (#2223). The strict shadow+experiment gate in GameSession keeps a
+            # real game own-rooted (#1157/#1164).
+            experiment_parent_span_context = injected_parent_span_context(parent_span)
 
             # Experiment/cohort spawn binding (#976, epic #982). The caller
             # provides (experiment_id, arm) on StartGameConfig; the registry
