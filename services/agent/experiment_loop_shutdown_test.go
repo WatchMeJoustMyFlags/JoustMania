@@ -56,6 +56,20 @@ func TestExperimentLoop_RefillAfterShutdownSpawnsNothing(t *testing.T) {
 			gc.SessionID, gc.ExperimentID = gameID, expID
 			loop.releaseStaleGame(gc, experiment.ReleaseReasonStale)
 		},
+		"conclude": func(loop *experimentLoop, expID, gameID string) {
+			var gc gamecontext.GameContext
+			gc.SessionID, gc.ExperimentID = gameID, expID
+			loop.concludeExperimentGame(gc)
+		},
+		"parked end": func(loop *experimentLoop, _, gameID string) {
+			loop.graceMu.Lock()
+			loop.parked = map[string]gamecontext.GameContext{gameID: {}}
+			loop.graceMu.Unlock()
+			loop.fireParkedEnd(gameID)
+		},
+		"completed grace": func(loop *experimentLoop, _, gameID string) {
+			loop.fireCompletedGrace(gameID)
+		},
 	}
 	for name, release := range paths {
 		t.Run(name+": cancelled run context refills nothing", func(t *testing.T) {

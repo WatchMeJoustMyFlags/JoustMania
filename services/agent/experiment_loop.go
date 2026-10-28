@@ -654,9 +654,10 @@ func (e *experimentLoop) tickInterval(ctx context.Context) time.Duration {
 // (startup-gate inversion), applies the live caps, then allocates.
 func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	// #2323: a refill that arrives after shutdown began does nothing; run()'s own
-	// teardown aborts the live experiments ("agent shutdown"). Without this a
-	// cancelled ctx could also read the gates as failed closed and take the
-	// kill-switch path instead.
+	// teardown aborts the live experiments ("agent shutdown"). The guard exists so
+	// refills, spawns and reverts stop once shutdown has begun. It does not make the
+	// flag read fail closed: the OpenFeature SDK and the flagd in-process provider
+	// ignore ctx when evaluating.
 	if ctx.Err() != nil {
 		return
 	}
@@ -1251,6 +1252,8 @@ func (e *experimentLoop) concludeWithSpan(gc gamecontext.GameContext, fitness, d
 	if e.tracer == nil {
 		// context.Background on purpose (#2323): the fold journals a finished game's
 		// sample and must complete even when it lands during shutdown.
+		// Pre-existing, tracked in #2332: ConcludeGame -> conclude -> r.promote(ctx)
+		// can still promote (a real flag write) when a conclusion lands during shutdown.
 		return e.registry.ConcludeGame(context.Background(), gc.SessionID, fitness, duration)
 	}
 	attrs := []attribute.KeyValue{
