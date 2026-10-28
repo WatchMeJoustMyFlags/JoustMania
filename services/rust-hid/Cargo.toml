@@ -22,19 +22,19 @@ hidapi = { version = "2.6.7", features = ["linux-static-hidraw"] }
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
-tracing-opentelemetry = "0.33"
+tracing-opentelemetry = "0.34"
 # OpenTelemetry
-opentelemetry = { version = "0.32", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "metrics", "logs"] }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "metrics", "logs"] }
-opentelemetry-appender-tracing = "0.32"
+opentelemetry = { version = "0.33", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio", "metrics", "logs"] }
+opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic", "metrics", "logs"] }
+opentelemetry-appender-tracing = "0.33"
 # Process metrics via /proc/self
 procfs = "0.18"
 # Hostname for resource attributes
 gethostname = "1.1"
 # Feature flags (OpenFeature + flagd provider)
-open-feature = "0.2"
-open-feature-flagd = { version = "0.1", default-features = false, features = ["in-process"] }
+open-feature = "0.3"
+open-feature-flagd = { version = "0.3", default-features = false, features = ["in-process"] }
 # Tower middleware for gRPC tracing layer
 tower = "0.5"
 # HTTP types (Request, Response, HeaderMap) used by tower tracing layer
