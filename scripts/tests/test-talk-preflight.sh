@@ -11,6 +11,9 @@
 # UC: UC-070 main A9 BR-003 BR-004 BR-006 BR-007 Pre-4
 # UC: UC-002 BR-003
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
+# curl is stubbed below; the expected messages name the default entry point
+unset TALK_BASE_URL
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFLIGHT="${SCRIPT_DIR}/../talk-preflight.sh"

@@ -23,9 +23,9 @@
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-setup.sh
 # UC: UC-060 A6 A4
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 fails=0
 fail() {
   echo "FAIL $*"

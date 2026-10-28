@@ -7,6 +7,7 @@
 #
 #   ./scripts/tests/test-prune-collector-tags.sh
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRUNE="${SCRIPT_DIR}/../ci/prune-collector-tags.sh"

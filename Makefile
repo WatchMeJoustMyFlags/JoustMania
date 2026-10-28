@@ -161,6 +161,7 @@ dry-run:
 .PHONY: lint
 lint:
 	uv run ruff check .
+	scripts/ci/check-hermetic-tests.sh
 	@for t in scripts/tests/test-*.sh; do echo "$$t"; "./$$t" >/dev/null || exit 1; done
 
 .PHONY: format

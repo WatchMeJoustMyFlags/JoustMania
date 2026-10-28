@@ -5,6 +5,7 @@
 #
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-gate-slots.sh
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 unset COMPOSE DOCKER GATE_RUN_WORKER GATE_RUN_WAIT GATE_RUN_DRY_RUN DETACH_WAIT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE_RUN="${SCRIPT_DIR}/../ci/gate-run.sh"

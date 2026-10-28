@@ -25,6 +25,7 @@
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-hotspot.sh
 # UC: UC-061 main A1 A2 A3 A4 A5 A6 A7 A9 A10 Pre-1 Post-S-2 Post-F-1 BR-001 BR-002 BR-004 BR-006 BR-008 BR-010 BR-011
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HELPER="${ROOT}/scripts/setup/joustmania-hotspot.sh"
@@ -32,7 +33,6 @@ HOOK="${ROOT}/scripts/setup/90-joustmania-hotspot"
 TEMPLATE="${ROOT}/scripts/setup/joustmania-hotspot.nmconnection.template"
 UUID=e0602321-f72b-408b-983e-56ee57d519ee
 # A test that reaches for the real docker fails instead of using it
-export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 unset CONNECTION_UUID || true
 fails=0
 fail() {

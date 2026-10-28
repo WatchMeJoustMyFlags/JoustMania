@@ -40,12 +40,12 @@
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-upgrade.sh
 # UC: UC-060 main step 2 A2 A3 A4 BR-003 BR-006
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 unset COMPOSE DOCKER COMPOSE_PROJECT_NAME COMPOSE_PROFILES OTEL_COLLECTOR_TAG IMAGE_TAG \
   JOUSTMANIA_UNIT_REV RUNTIME_DIRECTORY GIT_DIR GIT_WORK_TREE || true
 # A test that reaches for the real docker fails instead of using it
-export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 REAL_GIT="$(command -v git)"
 fails=0
 fail() {

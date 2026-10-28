@@ -5,6 +5,7 @@
 # Runs as part of `make lint`, or directly:
 #   ./scripts/tests/test-local-gates.sh
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATES="${SCRIPT_DIR}/../ci/local-gates.sh"
