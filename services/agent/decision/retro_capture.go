@@ -44,68 +44,6 @@ import (
 // too, so shadow-game retros never starve real-game remote decide calls. The
 // retro is not subject to the per-game cadence: it runs once per session.
 
-// SpanLLMRetro is the post-game retrospective capture span (#844): emitted once
-// per session at game end, carrying the prompt the agent would send to an offline
-// LLM analyst. Trivially greppable in Jaeger by name.
-const SpanLLMRetro = "agent.llm.retro"
-
-// Custom attribute keys of the agent.llm.retro span (#844), in the llm.retro.*
-// namespace.
-const (
-	// AttrLLMRetroSystemSHA is the FINGERPRINT of the retrospective System prompt
-	// (#1168): the short
-	// hex SHA-256 of the full system text, stamped INSTEAD of the text. The retro
-	// system prompt is large and effectively constant (it got the physics model in
-	// #1160), so shipping its full text per retro span was part of the #1167
-	// traces-pipeline collector OOM. The full text is emitted ONCE per distinct
-	// fingerprint on the shared agent.llm.system_prompt reference LOG line
-	// (prompt_fingerprint.go), so this hash is always resolvable to the exact text.
-	AttrLLMRetroSystemSHA = "llm.retro.system_sha256"
-	// AttrLLMRetroUser carries the User retrospective prompt text — the VARIABLE,
-	// valuable analysis input — KEPT on the span, capped at maxUserPromptBytes with a
-	// truncation marker. The Go SDK applies no attribute length limit and the
-	// collector does not truncate.
-	AttrLLMRetroUser = "llm.retro.user"
-	// AttrLLMRetroBytes is len(system)+len(user): the FULL prompt size in bytes (int),
-	// unchanged by #1168 (system TEXT no longer emitted, but still counted).
-	AttrLLMRetroBytes = "llm.retro.bytes"
-)
-
-// Structured game-outcome and experiment-correlation attribute keys (#1100). They
-// surface the game outcome (winner / final active players / elimination count /
-// duration) and the shadow-experiment attribution (id / arm / recorded fitness)
-// as DISCRETE, queryable span attributes — the outcome was previously buried only
-// in the llm.retro.user prompt TEXT, and the experiment correlation was absent
-// entirely, so a retro could not be joined to the experiment/arm that spawned it
-// or pivoted on its outcome. The outcome keys reuse the established game.* /
-// experiment.* vocabulary (game.id/game.kind on this span, experiment.id/
-// experiment.arm on the gamecontext span attrs, gamesummary's duration_seconds).
-// Every key is ADDITIVE and OMITTED when its signal is absent (a non-experiment
-// game carries no experiment.* attrs; an unobserved outcome field is dropped), so
-// the schema never emits empty or garbage tags.
-const (
-	// AttrGameWinner is the sole survivor's serial. Omitted when there is no single
-	// unambiguous winner (zero or multiple survivors).
-	AttrGameWinner = "game.winner"
-	// AttrGameFinalActivePlayers is the session's final active-player count. Omitted
-	// when never observed.
-	AttrGameFinalActivePlayers = "game.final_active_players"
-	// AttrGameEliminationCount is the number of eliminations recorded for the game.
-	AttrGameEliminationCount = "game.elimination_count"
-	// AttrGameDurationSeconds is the final observed game duration. Omitted when unknown.
-	AttrGameDurationSeconds = "game.duration_seconds"
-	// AttrExperimentID / AttrExperimentArm are the shadow-experiment attribution this
-	// game belonged to. They mirror the gamecontext span attribute keys (extract_spans.go)
-	// so a Jaeger query joins the retro to the experiment that spawned it. Omitted for a
-	// real / standalone game (no experiment id).
-	AttrExperimentID  = "experiment.id"
-	AttrExperimentArm = "experiment.arm"
-	// AttrExperimentFitness is the game's recorded objective fitness (the #965 finalized
-	// per-game sample) when it is available at retro time. Omitted when no fitness lookup
-	// is wired or the store has no settled sample for this game yet.
-	AttrExperimentFitness = "experiment.fitness"
-)
-
 // retroModeValue is the agent.mode value recorded on the retro-capture span. The
 // span only ever exists at game end on the offline-analyst path, so it is
 // constant — distinct from the in-game llmModeValue.

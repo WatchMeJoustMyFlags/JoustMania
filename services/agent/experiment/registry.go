@@ -22,6 +22,7 @@ import (
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/patterngame"
+	"github.com/joustmania/agent/telemetry/keys"
 )
 
 // registry.go is the agent-owned experiment COORDINATOR (design §7, #978). It is
@@ -730,28 +731,28 @@ func (r *Registry) startSpanLocked(e *entry, intent journal.Intent) {
 		return
 	}
 	attrs := []attribute.KeyValue{
-		attribute.String(decision.AttrExperimentID, e.id),
+		attribute.String(keys.AttrExperimentID, e.id),
 	}
 	// #1184: stamp the explicit THESIS (the immutable Intent.Hypothesis — what idea +
 	// expected effect) on the root span so the trace carries the experiment's WHY, not
 	// just the flag/value mechanics. Same string the journal persists + the dossier
 	// surfaces. Guarded so a thesis-less (legacy/test) intent adds no empty attr.
 	if intent.Hypothesis != "" {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentThesis, intent.Hypothesis))
+		attrs = append(attrs, attribute.String(keys.AttrExperimentThesis, intent.Hypothesis))
 	}
 	if intent.FlagKey != "" {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentFlagKey, intent.FlagKey))
+		attrs = append(attrs, attribute.String(keys.AttrExperimentFlagKey, intent.FlagKey))
 	}
 	if intent.Objective != "" {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentObjective, intent.Objective))
+		attrs = append(attrs, attribute.String(keys.AttrExperimentObjective, intent.Objective))
 	}
 	if intent.TargetNPerArm > 0 {
-		attrs = append(attrs, attribute.Int(decision.AttrExperimentTargetN, intent.TargetNPerArm))
+		attrs = append(attrs, attribute.Int(keys.AttrExperimentTargetN, intent.TargetNPerArm))
 	}
 	if len(intent.Arms) > 0 {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentArms, strings.Join(intent.Arms, ",")))
+		attrs = append(attrs, attribute.String(keys.AttrExperimentArms, strings.Join(intent.Arms, ",")))
 	}
-	_, span := r.tracer.Start(context.Background(), decision.SpanExperiment, trace.WithAttributes(attrs...))
+	_, span := r.tracer.Start(context.Background(), keys.SpanExperiment, trace.WithAttributes(attrs...))
 	e.span = span
 	e.spanCtx = span.SpanContext()
 }

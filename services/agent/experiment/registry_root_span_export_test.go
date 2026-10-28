@@ -8,7 +8,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/telemetry/keys"
 )
 
 // #1202: the existing root-span tests inject a recording tracer into RegistryConfig.
@@ -49,7 +49,7 @@ func globalProviderRegistry(t *testing.T, cfg RegistryConfig) (*Registry, *trace
 func exportedRootSpans(exp *tracetest.InMemoryExporter) []tracetest.SpanStub {
 	var out []tracetest.SpanStub
 	for _, s := range exp.GetSpans() {
-		if s.Name == decision.SpanExperiment {
+		if s.Name == keys.SpanExperiment {
 			out = append(out, s)
 		}
 	}
@@ -135,10 +135,10 @@ func TestRootSpan_ExportsThesisAttrFromGlobalProvider(t *testing.T) {
 	for _, kv := range spans[0].Attributes {
 		attrs[string(kv.Key)] = kv.Value.Emit()
 	}
-	if attrs[decision.AttrExperimentID] != id {
-		t.Errorf("%s = %q, want %q", decision.AttrExperimentID, attrs[decision.AttrExperimentID], id)
+	if attrs[keys.AttrExperimentID] != id {
+		t.Errorf("%s = %q, want %q", keys.AttrExperimentID, attrs[keys.AttrExperimentID], id)
 	}
-	if want := sampleIntent().Hypothesis; attrs[decision.AttrExperimentThesis] != want {
-		t.Errorf("%s = %q, want %q", decision.AttrExperimentThesis, attrs[decision.AttrExperimentThesis], want)
+	if want := sampleIntent().Hypothesis; attrs[keys.AttrExperimentThesis] != want {
+		t.Errorf("%s = %q, want %q", keys.AttrExperimentThesis, attrs[keys.AttrExperimentThesis], want)
 	}
 }
