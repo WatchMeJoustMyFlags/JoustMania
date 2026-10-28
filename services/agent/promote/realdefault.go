@@ -158,6 +158,19 @@ func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey s
 // writes; only promotions write real overlays, so the window is accepted
 // (UC-043 A1). The flag-service precondition that would close it is #1877.
 func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKey string) error {
+	return w.revert(ctx, flagKey, false)
+}
+
+// RevertRealDefaultUnlessRealGame is RevertRealDefault with the guarded DELETE
+// (?unless_real_game=true, #2236): for a flag marked real_write:
+// no_live_real_game the flag service refuses it with 409 real_game_live while a
+// non-shadow game is registered, checked under its registration lock. The watch
+// and re-watch reverts of hold keys use it; the kill switch never does.
+func (w *serviceRealDefaultWriter) RevertRealDefaultUnlessRealGame(ctx context.Context, flagKey string) error {
+	return w.revert(ctx, flagKey, true)
+}
+
+func (w *serviceRealDefaultWriter) revert(ctx context.Context, flagKey string, unlessRealGame bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -174,7 +187,11 @@ func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKe
 		w.stampRevert(flagKey)
 		return nil
 	}
-	if err := w.svc.Delete(ctx, gameFlagSet, flagKey, url.Values{"game_kind": {"real"}, "writer": {promotionWriter}}); err != nil {
+	query := url.Values{"game_kind": {"real"}, "writer": {promotionWriter}}
+	if unlessRealGame {
+		query.Set("unless_real_game", "true")
+	}
+	if err := w.svc.Delete(ctx, gameFlagSet, flagKey, query); err != nil {
 		return fmt.Errorf("revert %s/%s: %w", gameFlagSet, flagKey, err)
 	}
 	w.log.Warn("code_improvement.autonomous REVERTED: removed the promotion's real-default overlay; real games resolve the default beneath it (#1065)", "flag", flagKey)

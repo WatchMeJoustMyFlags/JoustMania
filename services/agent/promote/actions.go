@@ -302,6 +302,17 @@ func (pr *Promoter) clock() time.Time {
 	return time.Now()
 }
 
+// watchRevert is the revert of a watch or re-watch: for a hold key the guarded
+// DELETE when the reverter offers it (#2236), so the flag service refuses it while a
+// real game is registered; otherwise the plain revert. The kill switch does not
+// come here.
+func (pr *Promoter) watchRevert(ctx context.Context, flagKey string) error {
+	if g, ok := pr.reverter.(GuardedRealDefaultReverter); ok && deferUntilIdle(flagKey) {
+		return g.RevertRealDefaultUnlessRealGame(ctx, flagKey)
+	}
+	return pr.reverter.RevertRealDefault(ctx, flagKey)
+}
+
 // revertReal rolls the autonomous real-default change back on a degradation (or an
 // unconfirmable watch). A nil RealDefaultReverter (no rollback wired) records the
 // degradation but cannot undo it — logged + reasoned so it is visible, never
@@ -323,6 +334,8 @@ func (pr *Promoter) clock() time.Time {
 // A revert of a hold key while a real game is live waits in the deferred queue
 // (UC-043 A17 step 3, opposer B2): it returns claimDeferred, res keeps its outcome
 // with DeferredRevertReason, and DrainDeferred runs it once no real game is live.
+// The same holds when the guarded DELETE (watchRevert, #2236) gets 409
+// real_game_live: a game registered between the probe and the DELETE.
 // rewatch marks a re-watch revert (its journal reason prefix).
 func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry *appliedPromotion, res *Result, watchErr error, rewatch bool) claimResult {
 	defer pr.flushReplacedReverts() // after killMu is released (deferred LIFO)
@@ -359,7 +372,19 @@ func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry
 		res.Reason = reason + "; no real-default reverter wired"
 		return claim
 	}
-	if err := pr.reverter.RevertRealDefault(ctx, p.FlagKey); err != nil {
+	if err := pr.watchRevert(ctx, p.FlagKey); err != nil {
+		if deferUntilIdle(p.FlagKey) && flagservice.IsReason(err, flagservice.ReasonRealGameLive) {
+			// The flag service's guard (#2236): a real game registered after the
+			// probe looked. Nothing was cleared; the revert keeps waiting, like a
+			// probe that says live (the caller journals it write-ahead).
+			if entry != nil {
+				pr.retrack(entry)
+			}
+			pr.queueRevertLocked(p, entry, watchErr, rewatch)
+			res.Reason = DeferredRevertReason
+			res.RevertPending = true
+			return claimDeferred
+		}
 		res.Reason = fmt.Sprintf("%s; revert failed: %v", reason, err)
 		// Still applied: the kill switch may revert it later (#1704).
 		if entry != nil {

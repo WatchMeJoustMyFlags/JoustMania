@@ -84,6 +84,11 @@ type ClearRequest struct {
 	Scope   Scope
 	Writer  string
 	Persist bool
+	// UnlessRealGame is the opt-in guard of a watch or re-watch revert
+	// (?unless_real_game=true, #2236): in scope real, a flag marked
+	// real_write: no_live_real_game is refused 409 real_game_live while a
+	// non-shadow game is registered. The kill switch never sets it.
+	UnlessRealGame bool
 }
 
 // WriteResult is the response of an accepted write, and the telemetry of a
@@ -154,8 +159,8 @@ func (s *State) liveChecksLocked(f *flagState, sc Scope, scopeName string, res *
 	// #2096, UC-043 A17: a real write of a flag marked real_write:
 	// no_live_real_game waits until every registered game is a shadow game. Checked under s.mu,
 	// the lock RegisterGame and Reconcile hold, so no registration can slip in
-	// between this check and the write. Clear (the kill-switch revert) never
-	// comes here.
+	// between this check and the write. Clear has its own opt-in copy of this
+	// check (UnlessRealGame, #2236); the kill-switch revert does not opt in.
 	if scopeName == registry.ScopeReal && f.policy.RealWriteNeedsNoRealGame() {
 		if id := s.liveRealGameLocked(); id != "" {
 			return fserr.Conflict(fserr.RealGameLive, "real game %q is registered; a real write of %s waits until no real game runs", id, f.key)
@@ -396,6 +401,14 @@ func (s *State) Clear(req ClearRequest) (WriteResult, *fserr.Error) {
 	}
 	if req.Persist && scopeName != registry.ScopeStack {
 		return res, fserr.BadRequest("persist=true clears a stack-wide admin value only")
+	}
+	// #2236, UC-043 A17 step 3: the guarded revert. Checked under s.mu, like the
+	// Put guard, so a game registering between the agent's own read and this
+	// DELETE still blocks it. A plain DELETE (the kill switch) never comes here.
+	if req.UnlessRealGame && scopeName == registry.ScopeReal && f.policy.RealWriteNeedsNoRealGame() {
+		if id := s.liveRealGameLocked(); id != "" {
+			return res, fserr.Conflict(fserr.RealGameLive, "real game %q is registered; a guarded revert of %s waits until no real game runs", id, f.key)
+		}
 	}
 	sc := req.Scope
 	switch scopeName {

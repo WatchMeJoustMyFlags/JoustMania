@@ -319,7 +319,7 @@ var c034WriterRows = []c034Row{
 	},
 	{
 		name:   "promotion",
-		drives: []string{"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault", "promote/realdefault.go:serviceRealDefaultWriter.RevertRealDefault"},
+		drives: []string{"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault", "promote/realdefault.go:serviceRealDefaultWriter.revert"},
 		run: func(t *testing.T, svc *flagservice.Client) {
 			ctx := context.Background()
 			t.Setenv("FLAG_SERVICE_URL", svc.BaseURL())
@@ -337,6 +337,14 @@ var c034WriterRows = []c034Row{
 				if err := realDef.RevertRealDefault(ctx, key); err != nil {
 					t.Errorf("revert real default %q: %v", key, err)
 				}
+			}
+			// The guarded watch revert (#2236): same set, key and scope as the plain one.
+			var guarded promote.GuardedRealDefaultReverter = realDef
+			if err := realDef.SetRealDefault(ctx, "sensitivity", 3); err != nil {
+				t.Errorf("set real default: %v", err)
+			}
+			if err := guarded.RevertRealDefaultUnlessRealGame(ctx, "sensitivity"); err != nil {
+				t.Errorf("guarded revert: %v", err)
 			}
 			// The kill switch (UC-043 A1, #1704): list the promotion overlays and revert them.
 			pr := promote.NewPromoter(nil, nil, realDef, nil, realDef, promote.RepoRef{}, nil, testLogger())

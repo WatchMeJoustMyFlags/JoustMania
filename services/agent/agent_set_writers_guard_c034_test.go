@@ -48,7 +48,7 @@ var c034FlagServiceWrites = map[string]bool{
 	"experiment/writer.go:Writer.DryRun":                                true,
 	"experiment/writer.go:Writer.Strip":                                 true,
 	"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault":    true,
-	"promote/realdefault.go:serviceRealDefaultWriter.RevertRealDefault": true,
+	"promote/realdefault.go:serviceRealDefaultWriter.revert": true,
 }
 
 // c034OtherPostSites are Put/Post/Delete selectors that are not flag-service writes.

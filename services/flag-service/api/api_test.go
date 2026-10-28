@@ -360,3 +360,46 @@ func TestDryRunEndpoint(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-043 A17
+func TestGuardedRealDelete(t *testing.T) {
+	const path = "/game/shield.energy_max_seconds"
+	setup := func(t *testing.T) *env {
+		e := newEnv(t, true)
+		if s, b := e.do("PUT", path, map[string]any{"value": 4, "scope": map[string]any{"game_kind": "real"}, "writer": "promotion"}); s != 200 {
+			t.Fatalf("real write: %d %v", s, b)
+		}
+		if s, _ := e.do("PUT", "/games/g-real", map[string]any{"coordinator_instance": "c1", "game_kind": "real"}); s != 200 {
+			t.Fatalf("register: %d", s)
+		}
+		return e
+	}
+	t.Run("UC-043/A17 DELETE ?unless_real_game=true is 409 real_game_live while a real game is registered", func(t *testing.T) {
+		e := setup(t)
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion&unless_real_game=true", nil); s != 409 || b["error"] != "real_game_live" {
+			t.Fatalf("%d %v, want 409 real_game_live", s, b)
+		}
+		if e.writes("rejected", "real_game_live") != 1 {
+			t.Fatalf("the refusal is not counted as rejected/real_game_live")
+		}
+	})
+	t.Run("UC-043/A17 a plain DELETE (the kill switch) is 204 while a real game is registered", func(t *testing.T) {
+		e := setup(t)
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion", nil); s != 204 {
+			t.Fatalf("%d %v, want 204", s, b)
+		}
+	})
+	t.Run("UC-043/A17 the guarded DELETE is 204 once the real game ended", func(t *testing.T) {
+		e := setup(t)
+		e.do("DELETE", "/games/g-real", nil)
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion&unless_real_game=true", nil); s != 204 {
+			t.Fatalf("%d %v, want 204", s, b)
+		}
+	})
+	t.Run("UC-043/A17 a non-boolean unless_real_game is 400 malformed", func(t *testing.T) {
+		e := setup(t)
+		if s, b := e.do("DELETE", path+"?game_kind=real&unless_real_game=yes-please", nil); s != 400 || b["error"] != "malformed" {
+			t.Fatalf("%d %v, want 400 malformed", s, b)
+		}
+	})
+}
