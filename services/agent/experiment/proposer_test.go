@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/joustmania/agent/experiment/journal"
+	"github.com/joustmania/agent/flagservice"
 	"github.com/joustmania/agent/flagservice/fake"
 	"github.com/joustmania/agent/llm"
 )
@@ -49,16 +50,16 @@ func (b *fakeProposerBackend) Infer(context.Context, llm.Prompt) (string, error)
 
 // gameVocab returns the experiment catalog keys of the fake flag service, the
 // same surface the Gate validates against.
-func gameVocab(svc *fake.Service) func() map[string]struct{} {
-	return func() map[string]struct{} {
+func gameVocab(svc *fake.Service) func() map[string]flagservice.FlagView {
+	return func() map[string]flagservice.FlagView {
 		set, err := svc.GetSet(context.Background(), GameFlagSet)
 		if err != nil {
 			return nil
 		}
-		out := map[string]struct{}{}
+		out := map[string]flagservice.FlagView{}
 		for _, f := range set.Flags {
 			if f.Policy.AllowsScope("experiment+arm") {
-				out[f.Flag] = struct{}{}
+				out[f.Flag] = f
 			}
 		}
 		return out

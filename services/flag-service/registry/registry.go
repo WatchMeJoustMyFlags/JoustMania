@@ -107,8 +107,9 @@ type Policy struct {
 	// RealWrite restricts writes in scope real: "" (none) or
 	// RealWriteNoLiveRealGame.
 	RealWrite string `yaml:"real_write,omitempty" json:"real_write,omitempty"`
-	// Description says in one line, in game terms, what the flag does. Optional
-	// (#2345); omitted from the read API when empty.
+	// Description says in one line, in game terms, what the flag does (#2345).
+	// Required on a row that allows ScopeExperiment: the agent's experiment
+	// proposer shows it to the model next to the key, variants and range.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
@@ -259,15 +260,18 @@ func validatePolicy(p *Policy, b *baseline.Baseline) error {
 	return nil
 }
 
-// validDescription checks the optional description: one line of at most
-// MaxDescription characters.
+// validDescription checks the description: one line of at most MaxDescription
+// characters, and present on every row of the experiment catalog.
 func validDescription(p *Policy) error {
 	d := p.Description
-	if d == "" {
-		return nil
-	}
 	if strings.TrimSpace(d) == "" {
-		return fmt.Errorf("description is blank")
+		if p.AllowsScope(ScopeExperiment) {
+			return fmt.Errorf("a row with scope %s needs a description (one line, in game terms, the experiment proposer shows it)", ScopeExperiment)
+		}
+		if d != "" {
+			return fmt.Errorf("description is blank")
+		}
+		return nil
 	}
 	if strings.ContainsAny(d, "\r\n") {
 		return fmt.Errorf("description must be one line")

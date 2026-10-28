@@ -25,6 +25,10 @@ from services.controller_manager.multiplexer.rollout_router import RolloutRouter
 
 logger = logging.getLogger(__name__)
 
+# The LED batch resends an unchanged output at least this often, so the
+# controller's LED (which times out on the hardware) stays lit.
+LED_KEEPALIVE_S = 2.0
+
 # Consecutive failed discovery passes of one adapter before its controllers are
 # dropped (UC-002 A1, #2125). Until then the adapter keeps its previous routes,
 # so one slow or failed Discover mid-game disconnects nobody.
@@ -84,8 +88,16 @@ class MultiplexerBackend(ControllerBackend):
         # Centralized state
         self._led_colors: dict[str, tuple[int, int, int]] = {}
         self._rumble: dict[str, int] = {}
+        # Last output (colour + rumble) a write accepted, and when (#2355).
+        # Only a successful write updates them, so the batch resends a
+        # changed or failed output on its next tick.
         self._last_sent_color: dict[str, tuple[int, int, int]] = {}
+        self._last_sent_rumble: dict[str, int] = {}
         self._last_led_update: dict[str, float] = {}
+        # Time of the last failure counted in _led_failures: a failing
+        # controller is retried every tick but counted once per keep-alive
+        # interval, whatever its output does meanwhile.
+        self._led_failures_counted: dict[str, float] = {}
         self._effect_active: set[str] = set()
         self._led_lock = threading.Lock()
 
@@ -176,7 +188,9 @@ class MultiplexerBackend(ControllerBackend):
             self._led_colors.clear()
             self._rumble.clear()
             self._last_sent_color.clear()
+            self._last_sent_rumble.clear()
             self._last_led_update.clear()
+            self._led_failures_counted.clear()
             self._led_failures.clear()
             self._effect_active.clear()
         # Remove the controller_*_info series too, so a stopped service does not
@@ -468,8 +482,10 @@ class MultiplexerBackend(ControllerBackend):
             self._led_colors.pop(serial, None)
             self._rumble.pop(serial, None)
             self._last_sent_color.pop(serial, None)
+            self._last_sent_rumble.pop(serial, None)
             self._last_led_update.pop(serial, None)
             self._led_failures.pop(serial, None)
+            self._led_failures_counted.pop(serial, None)
             self._effect_active.discard(serial)
             # Remove the info series so disconnected controllers don't
             # appear in dashboard counts
@@ -517,8 +533,29 @@ class MultiplexerBackend(ControllerBackend):
             if prev_hci:
                 metrics.controller_adapter_info.remove(serial, prev_hci)
 
+    def _mark_output_sent(self, serial: str, color: tuple[int, int, int], rumble: int, now: float) -> None:
+        """Record a successful write. Caller holds _led_lock."""
+        self._last_sent_color[serial] = color
+        self._last_sent_rumble[serial] = rumble
+        self._last_led_update[serial] = now
+        self._led_failures_counted.pop(serial, None)
+
+    def _count_led_failure(self, serial: str, now: float) -> None:
+        """Count a failed write at most once per keep-alive interval per serial. Caller holds _led_lock."""
+        counted = self._led_failures_counted.get(serial)
+        if counted is not None and now - counted < LED_KEEPALIVE_S:
+            return
+        self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
+        self._led_failures_counted[serial] = now
+
     def update_all_leds(self) -> int:
-        """Centralized LED refresh with keep-alive and color-change detection."""
+        """Send each controller's desired output (colour + rumble) on change or keep-alive.
+
+        An output counts as sent only after the adapter accepted it, so a
+        failed write, or a direct write skipped because the lock was busy, is
+        sent on the next tick (#2355). The batch writes each controller at
+        most once per tick.
+        """
         current_time = time.time()
         updated_count = 0
 
@@ -527,9 +564,10 @@ class MultiplexerBackend(ControllerBackend):
             if serial in self._effect_active:
                 continue
 
+            output = None
             try:
-                # Re-read colour and adapter under the lock: discovery swaps the
-                # routing table and drops stale serials under the same lock
+                # Re-read the output and adapter under the lock: discovery swaps
+                # the routing table and drops stale serials under the same lock
                 # (#1447), so a serial removed mid-batch is skipped, not revived.
                 with self._led_lock:
                     stored_color = self._led_colors.get(serial)
@@ -537,30 +575,30 @@ class MultiplexerBackend(ControllerBackend):
                     if stored_color is None or adapter is None:
                         continue
 
-                    last_sent = self._last_sent_color.get(serial)
+                    rumble = self._rumble.get(serial, 0)
+                    output = (stored_color, rumble)
+                    last_sent = (self._last_sent_color.get(serial), self._last_sent_rumble.get(serial, 0))
                     last_update = self._last_led_update.get(serial, 0)
-                    color_changed = stored_color != last_sent
-                    keepalive_needed = current_time - last_update >= 2.0
-                    if not (color_changed or keepalive_needed):
+                    output_changed = output != last_sent
+                    keepalive_needed = current_time - last_update >= LED_KEEPALIVE_S
+                    if not (output_changed or keepalive_needed):
                         continue
 
                     r, g, b = stored_color
-                    rumble = self._rumble.get(serial, 0)
-                    result = adapter.set_output(serial, r, g, b, rumble)
-                    if not result:
-                        self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
-                    self._last_sent_color[serial] = stored_color
-                    self._last_led_update[serial] = current_time
+                    if adapter.set_output(serial, r, g, b, rumble):
+                        self._mark_output_sent(serial, stored_color, rumble, current_time)
+                    else:
+                        self._count_led_failure(serial, current_time)
                 updated_count += 1
 
-                if color_changed:
-                    logger.debug(f"LED color changed for {serial}: {last_sent} -> {stored_color}")
+                if output_changed:
+                    logger.debug(f"LED output changed for {serial}: {last_sent} -> {output}")
 
             except Exception as e:
                 logger.debug(f"Error updating LED for {serial}: {e}")
                 with self._led_lock:
                     if serial in self._led_colors:
-                        self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
+                        self._count_led_failure(serial, current_time)
 
         return updated_count
 
@@ -653,8 +691,7 @@ class MultiplexerBackend(ControllerBackend):
             try:
                 result = adapter.set_output(serial, r, g, b, rumble)
                 if result:
-                    self._last_sent_color[serial] = (r, g, b)
-                    self._last_led_update[serial] = time.time()
+                    self._mark_output_sent(serial, (r, g, b), rumble, time.time())
                 return result
             finally:
                 self._led_lock.release()
@@ -668,10 +705,14 @@ class MultiplexerBackend(ControllerBackend):
         r, g, b = self._led_colors.get(serial, (0, 0, 0))
         # Non-blocking lock: same pattern as set_led_color() — skip direct
         # USB write if batch is in progress. Rumble + color state is stored,
-        # next update_all_leds() cycle sends the combined output.
+        # next update_all_leds() cycle sends the combined output; a failed
+        # write is not marked as sent, so that cycle retries it (#2355).
         if self._led_lock.acquire(blocking=False):
             try:
-                return adapter.set_output(serial, r, g, b, intensity)
+                result = adapter.set_output(serial, r, g, b, intensity)
+                if result:
+                    self._mark_output_sent(serial, (r, g, b), intensity, time.time())
+                return result
             finally:
                 self._led_lock.release()
         return True

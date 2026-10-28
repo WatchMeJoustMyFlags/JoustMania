@@ -15,9 +15,9 @@ import (
 // control.
 const guardRegistry = `
 flags:
-  - {set: game, key: shield.activation, kind: overlay, scope: [stack, experiment+arm, real], bounds: {variants: [instant, trigger, hold]}, real_write: no_live_real_game}
-  - {set: game, key: shield.energy_budget_seconds, kind: overlay, scope: [stack, experiment+arm, real], bounds: {range: [3, 30]}, real_write: no_live_real_game}
-  - {set: game, key: sensitivity, kind: overlay, scope: [stack, experiment+arm, real]}
+  - {set: game, key: shield.activation, kind: overlay, scope: [stack, experiment+arm, real], bounds: {variants: [instant, trigger, hold]}, real_write: no_live_real_game, description: "test row"}
+  - {set: game, key: shield.energy_budget_seconds, kind: overlay, scope: [stack, experiment+arm, real], bounds: {range: [3, 30]}, real_write: no_live_real_game, description: "test row"}
+  - {set: game, key: sensitivity, kind: overlay, scope: [stack, experiment+arm, real], description: "test row"}
 `
 
 var realScope = Scope{GameKind: "real"}
