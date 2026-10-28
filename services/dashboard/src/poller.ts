@@ -9,11 +9,15 @@
  *
  * Backoff: the delay starts at `baseMs` and doubles (capped at `maxMs`) after an
  * error, a timeout, or a response slower than `slowMs`; it resets to `baseMs`
- * after a fast success.
+ * after a fast success. A successful `run` may resolve to a minimum wait (ms) for
+ * the next tick (the decide poll's payload pace, #2287).
  */
 export interface PollerOptions {
-  /** One poll. Must honour the signal (aborted after `timeoutMs`). */
-  run: (signal: AbortSignal) => Promise<void>;
+  /**
+   * One poll. Must honour the signal (aborted after `timeoutMs`). May resolve to
+   * the minimum wait before the next tick (ms); the backoff can still exceed it.
+   */
+  run: (signal: AbortSignal) => Promise<void | number>;
   /** Whether polling should continue (tab shown, page visible). */
   isActive: () => boolean;
   onError?: (error: unknown) => void;
@@ -40,9 +44,9 @@ export function createPoller(opts: PollerOptions): Poller {
   let inFlight = false;
   let delayMs = opts.baseMs;
 
-  const schedule = () => {
+  const schedule = (wait: number) => {
     if (timer !== null || inFlight || !opts.isActive()) return;
-    timer = setTimeout(tick, delayMs);
+    timer = setTimeout(tick, wait);
   };
 
   const tick = async () => {
@@ -53,8 +57,10 @@ export function createPoller(opts: PollerOptions): Poller {
     const abortTimer = setTimeout(() => controller.abort(), opts.timeoutMs);
     const started = Date.now();
     let ok = false;
+    let minNextMs = 0;
     try {
-      await opts.run(controller.signal);
+      const hint = await opts.run(controller.signal);
+      if (typeof hint === "number" && Number.isFinite(hint)) minNextMs = hint;
       ok = true;
     } catch (error) {
       opts.onError?.(error);
@@ -64,7 +70,8 @@ export function createPoller(opts: PollerOptions): Poller {
     }
     const fast = Date.now() - started <= slowMs;
     delayMs = ok && fast ? opts.baseMs : Math.min(delayMs * 2, opts.maxMs);
-    schedule();
+    const wait = Math.max(delayMs, minNextMs);
+    schedule(wait);
   };
 
   return {

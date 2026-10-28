@@ -1467,3 +1467,8 @@ class TestServerSpanStatus:
         span = await self._one(exporter)
         assert span.status.status_code == StatusCode.ERROR
         assert _code(span) == grpc.StatusCode.INTERNAL.value[0]
+
+
+def test_parse_method_health_short_form_matches_collector_filter():
+    """#2286: tests/contract/test_collector_best_effort.py hard-codes this form (no lib deps there)."""
+    assert grpc_tracing._parse_method("/grpc.health.v1.Health/Check") == ("Health", "Check")
