@@ -20,6 +20,7 @@ import {
   resolveVerdict,
 } from "../experiments.js";
 import type { JaegerTracesResponse } from "../jaeger.js";
+import { ExperimentsView } from "../components/ExperimentsView.js";
 import progressFixture from "./fixtures/jaeger-experiment-progress.json";
 
 const progress = progressFixture as unknown as JaegerTracesResponse;
@@ -141,5 +142,68 @@ describe("UC-035: main step 4, the search never uses the browser clock", () => {
   it("UC-035/A3 no experiment.progress span (an agent image before #2059) is an empty list, not an error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })));
     await expect(pollExperiments(new ExperimentStore())).resolves.toEqual([]);
+  });
+});
+
+describe("UC-035: main step 4, recommendation of a refused promotion (#2276)", () => {
+  function snapshot(extra: { key: string; value: string }[]): JaegerTracesResponse {
+    const tag = (key: string, value: string) => ({ key, type: "string", value });
+    return {
+      data: [
+        {
+          traceID: "rec1",
+          spans: [
+            {
+              traceID: "rec1",
+              spanID: "sprec",
+              operationName: "experiment.progress",
+              references: [],
+              startTime: 1_760_000_100_000_000,
+              duration: 10,
+              tags: [
+                tag("experiment.id", "exp_rec"),
+                tag("experiment.status", "discarded"),
+                tag("experiment.flag_key", "death_grace_period_seconds"),
+                ...extra.map((t) => tag(t.key, t.value)),
+              ],
+              logs: [],
+            },
+          ],
+        },
+      ],
+    } as unknown as JaegerTracesResponse;
+  }
+
+  it("UC-035/main step 4 the snapshot's recommendation attributes are folded", () => {
+    const [view] = parseExperimentSnapshots(
+      snapshot([
+        { key: "experiment.recommendation.flag", value: "death_grace_period_seconds" },
+        { key: "experiment.recommendation.value", value: "0.5" },
+        { key: "experiment.recommendation.owner", value: "operator" },
+      ]),
+    );
+    expect(view.recommendation).toEqual({ flag: "death_grace_period_seconds", value: "0.5", owner: "operator" });
+  });
+
+  it("UC-035/main step 4 no recommendation attributes: none", () => {
+    const [view] = parseExperimentSnapshots(snapshot([]));
+    expect(view.recommendation).toBeNull();
+  });
+
+  it("UC-035/main step 4 the card says would promote <flag>=<value>; real value owned by <writer>", () => {
+    const [view] = parseExperimentSnapshots(
+      snapshot([
+        { key: "experiment.recommendation.flag", value: "death_grace_period_seconds" },
+        { key: "experiment.recommendation.value", value: "0.5" },
+        { key: "experiment.recommendation.owner", value: "operator" },
+      ]),
+    );
+    const grid = { innerHTML: "", hidden: false, textContent: "", classList: { toggle: () => {} } };
+    vi.stubGlobal("document", { getElementById: () => grid });
+    new ExperimentsView("grid").render([view]);
+    expect(grid.innerHTML).toContain("would promote death_grace_period_seconds=0.5; real value owned by operator");
+    grid.innerHTML = "";
+    new ExperimentsView("grid").render(parseExperimentSnapshots(snapshot([])));
+    expect(grid.innerHTML).not.toContain("would promote");
   });
 });

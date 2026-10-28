@@ -227,6 +227,10 @@ type entry struct {
 	// laterPromotions until then (UC-043 A17: the deferred queue may journal first).
 	promotionInFlight bool
 	laterPromotions   []PromotionResult
+	// recommendOwner is the writer owning the real overlay when the experiment's
+	// promotion was refused with 412 writer_mismatch (UC-043 A19, #2276). Non-empty
+	// = every experiment.progress snapshot carries the recommendation attributes.
+	recommendOwner string
 
 	// span is the long-lived experiment ROOT span (#1188, epic #1181 PR2): the
 	// agent.experiment span started when the experiment becomes RUNNING (Start /
@@ -1653,6 +1657,9 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 			Note:      res.Reason,
 			Promotion: &promotion,
 		})
+		if res.ForeignOwner != "" {
+			e.recommendOwner = res.ForeignOwner
+		}
 		r.flushLaterPromotionsLocked(e)
 	}
 	r.mu.Unlock()
@@ -1665,6 +1672,7 @@ func (r *Registry) flushLaterPromotionsLocked(e *entry) {
 	e.promotionInFlight = false
 	for _, res := range e.laterPromotions {
 		promotion := res
+		r.noteRecommendationLocked(e, res)
 		r.appendEvent(e.journal, journal.Event{
 			Kind:      journal.KindPromotion,
 			Status:    res.Outcome,
@@ -1776,6 +1784,21 @@ func (r *Registry) RecordPromotion(id string, res PromotionResult) {
 		Note:      res.Reason,
 		Promotion: &promotion,
 	})
+	r.noteRecommendationLocked(e, res)
+}
+
+// noteRecommendationLocked records a refused promotion's foreign owner (UC-043 A19,
+// #2276) and, for a later outcome of an experiment that already ended (the deferred
+// queue), emits a snapshot so the dashboard sees the recommendation. Assumes r.mu
+// is held.
+func (r *Registry) noteRecommendationLocked(e *entry, res PromotionResult) {
+	if res.ForeignOwner == "" {
+		return
+	}
+	e.recommendOwner = res.ForeignOwner
+	if e.status.IsTerminal() {
+		r.emitProgressLocked(e, ProgressTriggerRecommendation, "", e.spanCtx)
+	}
 }
 
 // Abort terminates an experiment (kill-switch / capacity reclaim / error): it

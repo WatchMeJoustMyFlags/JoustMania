@@ -156,6 +156,7 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 		// is not made and not retried. No cooldown: nothing was reverted.
 		res.Outcome = OutcomeDiscarded
 		res.Reason = foreignReason(err)
+		res.ForeignOwner = foreignOwner(err)
 		return
 	}
 	if err != nil {

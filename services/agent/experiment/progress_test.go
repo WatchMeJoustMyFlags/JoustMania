@@ -529,3 +529,73 @@ func TestProgress_ConcludedSnapshotCarriesFinalVerdict(t *testing.T) {
 		t.Fatalf("concluded verdict.outcome = %q (set %v), want final %q", v, ok, OutcomeInconclusive)
 	}
 }
+
+// A promotion refused because another writer owns the real overlay (UC-043 A19,
+// #2276) puts the winning value on the experiment's snapshots as a recommendation.
+// UC: UC-043 A19
+func TestProgress_RefusedPromotionCarriesRecommendation(t *testing.T) {
+	spawner := &fakeSpawner{}
+	promoter := &fakePromoter{result: PromotionResult{
+		Outcome: PromotionDiscarded, Reason: "real_overlay_owned_by_another_writer owner=operator", ForeignOwner: "operator",
+	}}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 1},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2, Promoter: promoter,
+	})
+	startedExperiment(t, r)
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+	spans := progressSpans(sr)
+	last := spans[len(spans)-1]
+	for key, want := range map[string]string{
+		AttrExperimentRecommendationFlag:  "death_grace_period_seconds",
+		AttrExperimentRecommendationValue: "0.5",
+		AttrExperimentRecommendationOwner: "operator",
+	} {
+		if got, _ := rootSpanAttr(last, key); got != want {
+			t.Errorf("terminal snapshot %s = %q, want %q", key, got, want)
+		}
+	}
+	if _, ok := rootSpanAttr(spans[0], AttrExperimentRecommendationOwner); ok {
+		t.Error("started snapshot carries a recommendation")
+	}
+}
+
+// A deferred write refused after the experiment ended (RecordPromotion) emits a
+// fresh snapshot with the recommendation; a plain later outcome emits none.
+// UC: UC-043 A19
+func TestProgress_DeferredRefusalEmitsRecommendationSnapshot(t *testing.T) {
+	spawner := &fakeSpawner{}
+	promoter := &fakePromoter{result: PromotionResult{Outcome: PromotionDiscarded, Reason: "deferred"}}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 1},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2, Promoter: promoter,
+	})
+	id := startedExperiment(t, r)
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+	before := len(progressSpans(sr))
+	r.RecordPromotion(id, PromotionResult{Outcome: PromotionDiscarded, Reason: "other"})
+	if n := len(progressSpans(sr)); n != before {
+		t.Fatalf("a plain later outcome emitted %d snapshots", n-before)
+	}
+	r.RecordPromotion(id, PromotionResult{Outcome: PromotionDiscarded, Reason: "real_overlay_owned_by_another_writer owner=script", ForeignOwner: "script"})
+	spans := progressSpans(sr)
+	if len(spans) != before+1 {
+		t.Fatalf("snapshots = %d, want %d", len(spans), before+1)
+	}
+	last := spans[len(spans)-1]
+	if got, _ := rootSpanAttr(last, AttrExperimentProgressTrigger); got != ProgressTriggerRecommendation {
+		t.Errorf("trigger = %q", got)
+	}
+	if got, _ := rootSpanAttr(last, AttrExperimentRecommendationOwner); got != "script" {
+		t.Errorf("owner = %q, want script", got)
+	}
+	if got, _ := rootSpanAttr(last, decision.AttrExperimentStatus); got != string(StatusDiscarded) {
+		t.Errorf("status = %q, want discarded", got)
+	}
+}

@@ -85,6 +85,9 @@ func TestUC043_A19_PromotionWritePrecondition(t *testing.T) {
 		if res.Outcome != OutcomeDiscarded || res.Reason != ReasonRealOverlayForeign+" owner=operator" {
 			t.Fatalf("outcome = %q (%s), want discarded (%s owner=operator)", res.Outcome, res.Reason, ReasonRealOverlayForeign)
 		}
+		if res.ForeignOwner != "operator" {
+			t.Fatalf("ForeignOwner = %q, want operator (UC-043 A19 recommendation, #2276)", res.ForeignOwner)
+		}
 		if got := realOverlayWriterOf(t, svc); got != "operator" {
 			t.Fatalf("real overlay writer = %q, want operator", got)
 		}
@@ -107,7 +110,15 @@ func TestUC043_A19_DeferredWriteMeetsAnotherWriter(t *testing.T) {
 		}
 		rig.realDef.err = fmt.Errorf("promote game/%s: %w", holdKey, &foreignOverlayError{Owner: "operator"})
 		rig.probe.set(false)
+		var seen []experiment.PromotionResult
+		rig.p.SetRewatchJournal(func(id string, res experiment.PromotionResult) {
+			seen = append(seen, res)
+			rig.journal.sink(id, res)
+		})
 		rig.p.DrainDeferred(context.Background(), fixed(autoOn))
+		if len(seen) != 1 || seen[0].ForeignOwner != "operator" {
+			t.Fatalf("journaled results = %+v, want one with ForeignOwner operator (#2276)", seen)
+		}
 		if got := rig.journal.all(); len(got) != 1 || got[0] != "exp-w|discarded|"+ReasonRealOverlayForeign+" owner=operator" {
 			t.Fatalf("journal = %v, want one discarded %s", got, ReasonRealOverlayForeign)
 		}

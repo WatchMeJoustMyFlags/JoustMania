@@ -2,6 +2,8 @@ package experiment
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -52,6 +54,16 @@ const (
 	ProgressTriggerTerminal      = "terminal"
 	ProgressTriggerRehydrate     = "rehydrate"
 	ProgressTriggerHeartbeat     = "heartbeat"
+	// ProgressTriggerRecommendation: a deferred promotion was refused after the
+	// experiment ended (UC-043 A19, #2276); the snapshot carries the recommendation.
+	ProgressTriggerRecommendation = "recommendation"
+
+	// AttrExperimentRecommendationFlag / Value / Owner: the winning value as a
+	// recommendation when the promotion was refused because another writer owns the
+	// real overlay (UC-043 A19, #2276). Value is the JSON encoding of the value.
+	AttrExperimentRecommendationFlag  = "experiment.recommendation.flag"
+	AttrExperimentRecommendationValue = "experiment.recommendation.value"
+	AttrExperimentRecommendationOwner = "experiment.recommendation.owner"
 
 	// ProgressHeartbeatInterval is how often every live experiment re-emits its
 	// snapshot, so an idle experiment stays visible.
@@ -86,6 +98,17 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 	}
 	if trigger == ProgressTriggerTerminal {
 		attrs = append(attrs, attribute.String(AttrExperimentEndReason, endReason))
+	}
+	if e.recommendOwner != "" {
+		value, err := json.Marshal(intent.ExperimentalValue)
+		if err != nil {
+			value = []byte(fmt.Sprint(intent.ExperimentalValue))
+		}
+		attrs = append(attrs,
+			attribute.String(AttrExperimentRecommendationFlag, intent.FlagKey),
+			attribute.String(AttrExperimentRecommendationValue, string(value)),
+			attribute.String(AttrExperimentRecommendationOwner, e.recommendOwner),
+		)
 	}
 	opts := []trace.SpanStartOption{trace.WithNewRoot(), trace.WithAttributes(attrs...)}
 	if link.IsValid() {

@@ -76,6 +76,17 @@ export interface ArmAggregate {
   inFlight: number;
 }
 
+/**
+ * The winning value of an experiment whose promotion was refused because another
+ * writer owns the real overlay (UC-043 A19, #2276).
+ */
+export interface Recommendation {
+  flag: string;
+  /** JSON encoding of the value (as the agent wrote it). */
+  value: string;
+  owner: string;
+}
+
 /** One experiment, from its newest experiment.progress snapshot. */
 export interface ExperimentView {
   experimentId: string;
@@ -88,6 +99,8 @@ export interface ExperimentView {
   verdict: string;
   /** experiment.end_reason (terminal snapshot only). */
   reason: string;
+  /** Set when a promotion was refused for a foreign real-overlay owner, else null. */
+  recommendation: Recommendation | null;
   /** Span time of the snapshot (agent clock). */
   lastUpdatedMs: number;
   /** Span time in µs (agent clock): the ordering key. */
@@ -143,6 +156,16 @@ export function experimentFrom(span: JaegerSpan): ExperimentView {
       ? experimental.meanFitness - control.meanFitness
       : null;
 
+  const owner = tagString(tags, "experiment.recommendation.owner");
+  const recommendation: Recommendation | null =
+    owner === ""
+      ? null
+      : {
+          flag: tagString(tags, "experiment.recommendation.flag") || tagString(tags, "experiment.flag_key"),
+          value: tagString(tags, "experiment.recommendation.value"),
+          owner,
+        };
+
   return {
     experimentId: tagString(tags, "experiment.id"),
     status,
@@ -150,6 +173,7 @@ export function experimentFrom(span: JaegerSpan): ExperimentView {
     delta,
     verdict: resolveVerdict(tagString(tags, "verdict.outcome"), status),
     reason: tagString(tags, "experiment.end_reason"),
+    recommendation,
     lastUpdatedMs: spanStartMs(span),
     startUs: spanStartUs(span),
     live: LIVE_STATUSES.has(status),
