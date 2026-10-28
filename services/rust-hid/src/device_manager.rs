@@ -10,6 +10,7 @@
 
 use hidapi::HidApi;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, mpsc};
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -49,15 +50,34 @@ pub enum DeviceCmd {
         serial: String,
     },
     CloseAll,
-    /// Register the tokio mpsc sender for streaming sensor data.
+    /// Register the tokio mpsc sender for streaming sensor data. `id` (from
+    /// `next_stream_id`) names this registration; the newest one wins.
     RegisterStream {
+        id: u64,
         sender: tokio::sync::mpsc::Sender<StreamSensorData>,
     },
-    /// Unregister the stream sender.
-    UnregisterStream,
+    /// Unregister the stream registered with `id`. A late unregister from an
+    /// older stream (its id no longer registered) is ignored (#2371).
+    UnregisterStream {
+        id: u64,
+    },
     /// Shutdown the device manager thread.
     #[allow(dead_code)]
     Shutdown,
+}
+
+/// Source of `RegisterStream` ids: unique for the life of the process.
+static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
+
+/// A new, unique stream registration id.
+pub fn next_stream_id() -> u64 {
+    NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The registered input stream: its id and the sender to its gRPC stream.
+struct ActiveStream {
+    id: u64,
+    sender: tokio::sync::mpsc::Sender<StreamSensorData>,
 }
 
 /// Sensor data sent from the device manager to the gRPC stream.
@@ -161,7 +181,7 @@ fn run_device_loop<B: HidBackend>(
     outputs: &DeviceOutputs,
 ) {
     let mut devices: HashMap<String, DeviceEntry<B::Device>> = HashMap::new();
-    let mut stream_sender: Option<tokio::sync::mpsc::Sender<StreamSensorData>> = None;
+    let mut stream: Option<ActiveStream> = None;
 
     info!("Device manager thread started");
 
@@ -173,7 +193,7 @@ fn run_device_loop<B: HidBackend>(
         for _ in 0..MAX_CMDS_PER_PASS {
             match cmd_rx.try_recv() {
                 Ok(cmd) => {
-                    if !handle_command(cmd, &mut api, &mut devices, &mut stream_sender, outputs) {
+                    if !handle_command(cmd, &mut api, &mut devices, &mut stream, outputs) {
                         info!("Device manager shutting down");
                         // Close all devices: each writer sends off and stops
                         handle_close_all(&mut devices, outputs);
@@ -188,9 +208,18 @@ fn run_device_loop<B: HidBackend>(
             }
         }
 
-        // Poll all open devices for input reports
-        if let Some(ref sender) = stream_sender {
-            poll_all_devices(&mut devices, sender);
+        // Poll all open devices for input reports. A stream whose receiver is
+        // gone (its gRPC call ended) is unregistered instead (#2371).
+        if let Some(active) = &stream {
+            let closed =
+                active.sender.is_closed() || poll_all_devices(&mut devices, &active.sender);
+            if closed {
+                info!(
+                    stream_id = active.id,
+                    "Stream closed by its receiver, unregistered"
+                );
+                stream = None;
+            }
         }
 
         // Brief sleep to avoid busy-waiting (~1 kHz poll rate)
@@ -203,7 +232,7 @@ fn handle_command<B: HidBackend>(
     cmd: DeviceCmd,
     api: &mut B,
     devices: &mut HashMap<String, DeviceEntry<B::Device>>,
-    stream_sender: &mut Option<tokio::sync::mpsc::Sender<StreamSensorData>>,
+    stream: &mut Option<ActiveStream>,
     outputs: &DeviceOutputs,
 ) -> bool {
     match cmd {
@@ -218,7 +247,7 @@ fn handle_command<B: HidBackend>(
             exclude_serials,
             reply,
         } => {
-            let polling = stream_sender.is_some();
+            let polling = stream.is_some();
             let serials = handle_discover(
                 api,
                 devices,
@@ -245,14 +274,24 @@ fn handle_command<B: HidBackend>(
         DeviceCmd::CloseAll => {
             handle_close_all(devices, outputs);
         }
-        DeviceCmd::RegisterStream { sender } => {
-            info!("Stream registered");
-            *stream_sender = Some(sender);
+        DeviceCmd::RegisterStream { id, sender } => {
+            let replaced = stream.as_ref().map(|old| old.id);
+            info!(stream_id = id, replaced = ?replaced, "Stream registered");
+            *stream = Some(ActiveStream { id, sender });
         }
-        DeviceCmd::UnregisterStream => {
-            info!("Stream unregistered");
-            *stream_sender = None;
-        }
+        DeviceCmd::UnregisterStream { id } => match stream {
+            Some(active) if active.id == id => {
+                info!(stream_id = id, "Stream unregistered");
+                *stream = None;
+            }
+            // A late unregister from a replaced stream must not drop the new one.
+            _ => {
+                debug!(
+                    stream_id = id,
+                    "Ignored unregister of a stream no longer registered"
+                );
+            }
+        },
         DeviceCmd::Shutdown => {
             return false;
         }
@@ -414,11 +453,12 @@ fn handle_close_all<D: HidDeviceIo>(
     info!("All controllers closed");
 }
 
-/// Poll all open devices and send sensor data through the stream.
+/// Poll all open devices and send sensor data through the stream. Returns
+/// true when the stream's receiver is gone (the pass stops there, #2371).
 fn poll_all_devices<D: HidDeviceIo>(
     devices: &mut HashMap<String, DeviceEntry<D>>,
     sender: &tokio::sync::mpsc::Sender<StreamSensorData>,
-) {
+) -> bool {
     for (serial, entry) in devices.iter_mut() {
         let zcm2 = hid::is_zcm2(entry.product_id);
         let device = match entry.device.try_lock() {
@@ -440,11 +480,16 @@ fn poll_all_devices<D: HidDeviceIo>(
             };
             // Non-blocking send: if the channel is full, drop the data
             // (the stream consumer will get the next one)
-            if sender.try_send(data).is_err() {
-                debug!(serial = %serial, "Stream channel full, dropping sensor data");
+            match sender.try_send(data) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    debug!(serial = %serial, "Stream channel full, dropping sensor data");
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return true,
             }
         }
     }
+    false
 }
 
 #[cfg(test)]
@@ -607,7 +652,10 @@ mod tests {
 
         let (sensor_tx, mut sensor_rx) = tokio::sync::mpsc::channel(16);
         cmd_tx
-            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .send(DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender: sensor_tx,
+            })
             .unwrap();
         device.0.lock().unwrap().pending.push_back(sample_report());
 
@@ -620,6 +668,96 @@ mod tests {
         assert_eq!(data.report.trigger, 200);
         // ZCM2 product id: gyro decoded as signed 16-bit
         assert_eq!(data.report.gyro_x, -1234.0);
+    }
+
+    fn open_device(cmd_tx: &mpsc::Sender<DeviceCmd>) {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Open {
+                serial: SERIAL.to_string(),
+                reply: reply_tx,
+            })
+            .unwrap();
+        assert!(reply_rx.blocking_recv().unwrap());
+    }
+
+    fn register(
+        cmd_tx: &mpsc::Sender<DeviceCmd>,
+    ) -> (u64, tokio::sync::mpsc::Receiver<StreamSensorData>) {
+        let (sender, rx) = tokio::sync::mpsc::channel(16);
+        let id = next_stream_id();
+        cmd_tx
+            .send(DeviceCmd::RegisterStream { id, sender })
+            .unwrap();
+        (id, rx)
+    }
+
+    /// True when the loop polls the device: its empty-read count grows.
+    fn loop_polls(device: &FakeDevice) -> bool {
+        let before = device.0.lock().unwrap().drained_at.len();
+        std::thread::sleep(Duration::from_millis(100));
+        device.0.lock().unwrap().drained_at.len() > before
+    }
+
+    // UC: UC-002 A7 step 2
+    #[test]
+    fn test_a_late_unregister_of_an_old_stream_keeps_the_new_one() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+
+        // The client reopened its stream; the old call's end lands last (#2371).
+        let (old_id, _old_rx) = register(&cmd_tx);
+        let (new_id, mut new_rx) = register(&cmd_tx);
+        cmd_tx
+            .send(DeviceCmd::UnregisterStream { id: old_id })
+            .unwrap();
+        device.0.lock().unwrap().pending.push_back(sample_report());
+
+        let data = recv_within(&mut new_rx, Duration::from_secs(2));
+        assert!(
+            data.is_some(),
+            "a late unregister of the old stream dropped the new one"
+        );
+
+        // The new stream's own unregister still removes it: the poll stops.
+        cmd_tx
+            .send(DeviceCmd::UnregisterStream { id: new_id })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let polling = loop_polls(&device);
+        shutdown(&cmd_tx, handle);
+        assert!(
+            !polling,
+            "the stream stayed registered after its unregister"
+        );
+    }
+
+    // UC: UC-002 A7 step 2
+    #[test]
+    fn test_a_closed_stream_is_unregistered_and_a_new_one_streams() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+        let (_id, old_rx) = register(&cmd_tx);
+        assert!(loop_polls(&device), "the registered stream was not polled");
+
+        // The gRPC call ended without an unregister: its receiver is gone.
+        drop(old_rx);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !loop_polls(&device),
+            "the loop kept polling for a closed stream"
+        );
+
+        let (_id, mut new_rx) = register(&cmd_tx);
+        device.0.lock().unwrap().pending.push_back(sample_report());
+        let data = recv_within(&mut new_rx, Duration::from_secs(2));
+        shutdown(&cmd_tx, handle);
+        assert!(
+            data.is_some(),
+            "a new stream after a closed one got no data"
+        );
     }
 
     // UC: UC-002 main step 3
@@ -675,7 +813,10 @@ mod tests {
         assert!(reply_rx.blocking_recv().unwrap());
         let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
         cmd_tx
-            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .send(DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender: sensor_tx,
+            })
             .unwrap();
 
         std::thread::sleep(Duration::from_millis(300));
@@ -800,7 +941,10 @@ mod tests {
             .unwrap();
         let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
         cmd_tx
-            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .send(DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender: sensor_tx,
+            })
             .unwrap();
         let mut replies = Vec::new();
         for i in 0..FLOOD {
@@ -982,7 +1126,10 @@ mod tests {
             // Sensor stream consumer: samples per serial.
             let (sensor_tx, mut sensor_rx) = tokio::sync::mpsc::channel(1024);
             cmd_tx
-                .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+                .send(DeviceCmd::RegisterStream {
+                    id: next_stream_id(),
+                    sender: sensor_tx,
+                })
                 .unwrap();
             let counter = tokio::spawn(async move {
                 let mut per_serial: HashMap<String, usize> = HashMap::new();
@@ -1108,12 +1255,12 @@ mod tests {
         api: &mut CountingBackend,
     ) -> HashMap<String, DeviceEntry<FakeDevice>> {
         let mut devices = HashMap::new();
-        let mut stream_sender = None;
+        let mut stream = None;
         assert!(handle_command(
             cmd,
             api,
             &mut devices,
-            &mut stream_sender,
+            &mut stream,
             &DeviceOutputs::default()
         ));
         devices
@@ -1335,7 +1482,7 @@ mod tests {
     fn discover_via_command(
         api: &mut CountingBackend,
         devices: &mut HashMap<String, DeviceEntry<FakeDevice>>,
-        stream_sender: &mut Option<tokio::sync::mpsc::Sender<StreamSensorData>>,
+        stream: &mut Option<ActiveStream>,
         verify_only: bool,
     ) -> Vec<DiscoveredControllerInfo> {
         let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
@@ -1348,7 +1495,7 @@ mod tests {
             },
             api,
             devices,
-            stream_sender,
+            stream,
             &DeviceOutputs::default(),
         ));
         reply_rx.try_recv().unwrap()
@@ -1359,17 +1506,20 @@ mod tests {
     fn test_discover_command_does_not_read_while_the_stream_is_registered() {
         let mut api = CountingBackend::default();
         let mut devices = HashMap::new();
-        let mut stream_sender = None;
+        let mut stream = None;
         let outputs = DeviceOutputs::default();
         let (sender, _stream_rx) = tokio::sync::mpsc::channel(16);
         assert!(handle_command(
-            DeviceCmd::RegisterStream { sender },
+            DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender,
+            },
             &mut api,
             &mut devices,
-            &mut stream_sender,
+            &mut stream,
             &outputs,
         ));
-        discover_via_command(&mut api, &mut devices, &mut stream_sender, false);
+        discover_via_command(&mut api, &mut devices, &mut stream, false);
         api.device
             .0
             .lock()
@@ -1377,8 +1527,8 @@ mod tests {
             .pending
             .push_back(sample_report());
 
-        discover_via_command(&mut api, &mut devices, &mut stream_sender, true);
-        discover_via_command(&mut api, &mut devices, &mut stream_sender, false);
+        discover_via_command(&mut api, &mut devices, &mut stream, true);
+        discover_via_command(&mut api, &mut devices, &mut stream, false);
 
         assert_eq!(
             api.device.0.lock().unwrap().pending.len(),
@@ -1393,13 +1543,13 @@ mod tests {
     fn test_discover_command_without_a_stream_drops_a_dead_controller() {
         let mut api = CountingBackend::default();
         let mut devices = HashMap::new();
-        let mut stream_sender = None;
-        discover_via_command(&mut api, &mut devices, &mut stream_sender, false);
+        let mut stream = None;
+        discover_via_command(&mut api, &mut devices, &mut stream, false);
         assert!(devices.contains_key(SERIAL));
         api.device.0.lock().unwrap().read_fails = true;
 
         // Nothing polls without a stream: the Discover's read check finds it.
-        let found = discover_via_command(&mut api, &mut devices, &mut stream_sender, true);
+        let found = discover_via_command(&mut api, &mut devices, &mut stream, true);
 
         assert!(
             found.is_empty(),
