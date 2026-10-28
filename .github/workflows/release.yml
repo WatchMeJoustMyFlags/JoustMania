@@ -1,11 +1,25 @@
 name: Release
 
+# Normal path: CI succeeds on main -> release-please (release PR / release) -> tag-images.
+# Retag-only path (#2263): workflow_dispatch with `version` and `sha` re-runs ONLY the
+# image retag for an existing release (e.g. when the GitHub release step failed).
+# workflow_dispatch without inputs runs release-please as before.
+
 on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Retag only: release version without v, e.g. 0.8.0 (leave empty to run release-please)"
+        required: false
+        type: string
+      sha:
+        description: "Retag only: 40-hex commit the release tag points to (source image tag)"
+        required: false
+        type: string
 
 env:
   IMAGE_PREFIX: ghcr.io/watchmejoustmyflags/joustmania
@@ -15,28 +29,151 @@ jobs:
     name: Release Please
     runs-on: ubuntu-latest
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event_name == 'workflow_dispatch' && inputs.version == '') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     permissions:
       contents: write
       pull-requests: write
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
-      sha: ${{ steps.release.outputs.sha }}
+      release_created: ${{ steps.release.outputs.release_created == 'true' && 'true' || steps.fallback.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name || steps.fallback.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version || steps.fallback.outputs.version }}
+      sha: ${{ steps.release.outputs.sha || steps.fallback.outputs.sha }}
     steps:
+      # continue-on-error: release-please tags first and then creates the GitHub release; the
+      # latter fails when the notes exceed 125000 characters (#2263). The fallback step below
+      # finishes the job with a bounded body.
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
+        continue-on-error: true
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      - name: Fallback - create the GitHub release with a bounded body
+        id: fallback
+        if: steps.release.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          MAX_BYTES: "60000"
+        run: |
+          set -euo pipefail
+          version=$(gh api "repos/${REPO}/contents/.release-please-manifest.json?ref=${RUN_SHA}" \
+            --jq .content | base64 -d | jq -r '.["."]')
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::bad manifest version '$version'"; exit 1; }
+          tag="joustmania-v${version}"
+          if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::error::release $tag already exists; release-please failed for another reason (e.g. it was created by hand and the images are not tagged yet): if the :${version} images are missing, dispatch this workflow with version=${version} and sha=<tag commit>"
+            exit 1
+          fi
+          tag_sha=$(gh api "repos/${REPO}/commits/${tag}" --jq .sha) \
+            || { echo "::error::tag $tag does not exist; release-please failed before tagging"; exit 1; }
+          # The tag must be the merge commit of the release PR release-please is still processing
+          # (merged, labelled "autorelease: pending"). This also covers a later run on main when the
+          # run for the merge commit itself already failed.
+          release_prs=$(gh pr list --repo "$REPO" --state merged --label "autorelease: pending" \
+            --json number,title,mergeCommit \
+            --jq ".[] | select(.title | test(\"release joustmania ${version}\$\")) | \"\(.number) \(.mergeCommit.oid)\"")
+          if [ "$(printf '%s\n' "$release_prs" | grep -c .)" -ne 1 ]; then
+            echo "::error::expected exactly one merged 'autorelease: pending' PR for ${version}, found: '${release_prs}'"
+            exit 1
+          fi
+          read -r release_pr merge_sha <<< "$release_prs"
+          if [ "$tag_sha" != "$merge_sha" ]; then
+            echo "::error::tag $tag is at $tag_sha, release PR #$release_pr merged as $merge_sha; refusing to create the release"
+            exit 1
+          fi
+
+          gh api "repos/${REPO}/contents/CHANGELOG.md?ref=${tag}" --jq .content | base64 -d > CHANGELOG.md
+          heading=$(grep -m1 -F "## [${version}]" CHANGELOG.md || true)
+          [ -n "$heading" ] || { echo "::error::no CHANGELOG section for ${version}"; exit 1; }
+          anchor=$(printf '%s' "$heading" | sed -E 's/^## \[([^]]*)\]\([^)]*\)/\1/; s/^## //' \
+            | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9 -]//g; s/ /-/g')
+          awk -v h="$heading" '$0==h {on=1; next} on && /^## \[/ {exit} on {print}' CHANGELOG.md > section.md
+          {
+            echo "Full release notes: https://github.com/${REPO}/blob/${tag}/CHANGELOG.md#${anchor}"
+            echo
+            if [ "$(wc -c < section.md)" -gt "$MAX_BYTES" ]; then
+              echo "_The notes are long; this is the first ${MAX_BYTES} bytes. See the link above for the rest._"
+              echo
+              head -c "$MAX_BYTES" section.md | sed '$d'
+            else
+              cat section.md
+            fi
+          } > notes.md
+          echo "Release body: $(wc -c < notes.md) bytes"
+          gh release create "$tag" --repo "$REPO" --verify-tag --title "joustmania: v${version}" --notes-file notes.md
+
+          {
+            echo "release_created=true"
+            echo "tag_name=${tag}"
+            echo "version=${version}"
+            echo "sha=${tag_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+          # release-please would have swapped the label; a pending one blocks the next release PR.
+          gh pr edit "$release_pr" --repo "$REPO" --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+  resolve:
+    name: Resolve and validate retag inputs
+    runs-on: ubuntu-latest
+    needs: [release-please]
+    if: >-
+      !cancelled() && (
+        needs.release-please.outputs.release_created == 'true' ||
+        (github.event_name == 'workflow_dispatch' && inputs.version != '')
+      )
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Validate version and sha
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.sha }}
+          RP_VERSION: ${{ needs.release-please.outputs.version }}
+          RP_SHA: ${{ needs.release-please.outputs.sha }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # Retag-only when a version was given; otherwise the release release-please (or its
+          # fallback) just created, also on a dispatch without inputs.
+          if [ -n "$INPUT_VERSION" ]; then
+            retag_only=true
+            version="$INPUT_VERSION"
+            sha="$INPUT_SHA"
+          else
+            retag_only=false
+            version="$RP_VERSION"
+            # The fallback reports the tag commit, which can be older than this run's commit.
+            sha="${RP_SHA:-$RUN_SHA}"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like 0.8.0"; exit 1; }
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be 40 lowercase hex characters"; exit 1; }
+          if [ "$retag_only" = true ]; then
+            # The release tag must exist and point at the given commit.
+            tag_sha=$(gh api "repos/${REPO}/commits/joustmania-v${version}" --jq .sha) \
+              || { echo "::error::tag joustmania-v${version} does not exist"; exit 1; }
+            [ "$tag_sha" = "$sha" ] \
+              || { echo "::error::tag joustmania-v${version} is at ${tag_sha}, not ${sha}"; exit 1; }
+          fi
+          echo "Retagging ${version} from ${sha}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
   tag-images:
     name: Tag Docker images with release version
     runs-on: ubuntu-latest
-    needs: [release-please]
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: [resolve]
+    # Explicit: the implicit success() also checks release-please, which is skipped on the
+    # retag-only path (actions/runner#491).
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
     permissions:
       packages: write
     strategy:
@@ -70,9 +207,25 @@ jobs:
       - name: Tag image with release version
         env:
           IMAGE: ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}
-          VERSION: ${{ needs.release-please.outputs.version }}
-          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA: ${{ needs.resolve.outputs.sha }}
         run: |
+          set -euo pipefail
+          src=$(docker buildx imagetools inspect "${IMAGE}:${SHA}" --format '{{.Manifest.Digest}}')
+          if dst=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}' 2>inspect.err); then
+            if [ "$dst" = "$src" ]; then
+              echo "${IMAGE}:${VERSION} already is ${src}; nothing to do"
+              exit 0
+            fi
+            echo "::error::${IMAGE}:${VERSION} already exists as ${dst}, source ${IMAGE}:${SHA} is ${src}; not overwriting"
+            exit 1
+          fi
+          # Only a missing tag may be created; auth, registry or rate-limit errors fail closed.
+          if ! grep -qE ': not found$|manifest unknown' inspect.err; then
+            echo "::error::cannot inspect ${IMAGE}:${VERSION}: $(cat inspect.err)"
+            exit 1
+          fi
+          echo "Creating ${IMAGE}:${VERSION} -> ${src} (from ${IMAGE}:${SHA})"
           docker buildx imagetools create \
             --tag "${IMAGE}:${VERSION}" \
             "${IMAGE}:${SHA}"
