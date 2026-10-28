@@ -19,14 +19,16 @@
 # A Wi-Fi client up on wlan0 blocks the self-test (the hotspot needs the radio).
 # --pause-wifi-client (or answering the prompt on a terminal) disconnects it for
 # the self-test and reconnects the same connection afterwards, also on failure
-# (A11). It refuses when this SSH session itself runs over wlan0.
+# (A11). It refuses when an SSH session runs over wlan0, or when it cannot tell;
+# a reconnect that fails exits non-zero.
 #
 # Re-running it changes the password, SSID or channel (A8): all file work is done
 # first, the reactivation last and detached, so a session over the hotspot that
 # drops cannot leave a half-done setup.
 #
 # Test overrides: JOUSTMANIA_HOTSPOT_ROOT (prefix for every installed path),
-# JOUSTMANIA_HOTSPOT_DNSMASQ, and PATH stubs for nmcli, iw, rfkill, ss, ufw,
+# JOUSTMANIA_HOTSPOT_DNSMASQ, JOUSTMANIA_HOTSPOT_PROC and _SELF_PID (a fake /proc
+# for the A11 session walk), and PATH stubs for nmcli, iw, ip, rfkill, ss, ufw,
 # firewall-cmd, systemctl, systemd-run, sysctl, apt-get and id. The helper's own
 # overrides (JOUSTMANIA_HOTSPOT_STATE_DIR, ...) pass through to its selftest.
 case $- in
@@ -73,7 +75,7 @@ while (($#)); do
         --pause-wifi-client) PAUSE=1 ;;
         --remove) REMOVE=1 ;;
         -h | --help)
-            sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) die "unknown argument '${1:0:40}' (see --help)" ;;
@@ -165,19 +167,87 @@ wifi_client_uuid() {
 }
 CLIENT_UUID="$(wifi_client_uuid)"
 CLIENT_PAUSED=0
+RESUME_FAILED=0
 
-# A11: is this session carried by wlan0 (cutting it would cut the operator off)?
-# SSH_CONNECTION's local address (when sudo kept it) or the route to the login host
+# A11: is this session carried by wlan0 (pausing the client would cut the
+# Operator off)? Fails closed. Prints the reason and returns 0 when an SSH peer
+# routes over wlan0, or when it cannot tell (an SSH, mosh, tmux or screen
+# ancestor but no peer it can route, `ss` failing, an unroutable peer). Returns
+# 1 when every SSH peer routes elsewhere, or when there is no SSH at all (no
+# SSH_CONNECTION in this process's or an ancestor's environment, no sshd, mosh,
+# tmux or screen ancestor, no SSH connection: a local console). Peers: the
+# SSH_CONNECTION of this process and every ancestor (sudo strips it from its
+# child, not from itself) and every established sshd connection from `ss`.
+PROC="${JOUSTMANIA_HOTSPOT_PROC:-/proc}"
+SELF_PID="${JOUSTMANIA_HOTSPOT_SELF_PID:-$$}"
+# the address of an `ss` endpoint: no port, no brackets, no ::ffff: prefix
+endpoint_addr() {
+    local a="${1%:*}"
+    a="${a#[}" && a="${a%]}"
+    echo "${a#::ffff:}"
+}
+# the device traffic to <addr> leaves through (empty when unknown)
+route_dev() {
+    if [[ "$1" == *%* ]]; then
+        echo "${1##*%}" # link-local with its zone
+        return
+    fi
+    ip -o route get "$1" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n 1
+}
 session_over_wlan() {
-    local server_ip from addrs
-    addrs="$(nmcli -g IP4.ADDRESS device show "$WLAN" 2>/dev/null | tr '|' '\n' | sed -n 's|^ *\(\([0-9]\{1,3\}\.\)\{3\}[0-9]\{1,3\}\)/.*|\1|p')"
-    server_ip="$(awk '{ print $3 }' <<<"${SSH_CONNECTION:-}")"
-    if [[ -n "$server_ip" ]] && grep -qxF -- "$server_ip" <<<"$addrs"; then
+    local pid="$SELF_PID" depth=0 comm conn ss_out loc peer users addr dev wlan_addrs
+    local ssh_seen=0 peers=() locals=()
+    while [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1 && depth < 64)); do
+        comm="$(cat "$PROC/$pid/comm" 2>/dev/null)"
+        case "$comm" in sshd* | dropbear* | mosh* | tmux* | screen*) ssh_seen=1 ;; esac
+        conn="$(tr '\0' '\n' <"$PROC/$pid/environ" 2>/dev/null | sed -n 's/^SSH_CONNECTION=//p' | head -n 1)"
+        if [[ -n "$conn" ]]; then
+            ssh_seen=1
+            read -r peer _ loc _ <<<"$conn"
+            peers+=("$peer") && locals+=("$loc")
+        fi
+        pid="$(sed -n 's/^PPid:[[:space:]]*//p' "$PROC/$pid/status" 2>/dev/null)"
+        depth=$((depth + 1))
+    done
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+        ssh_seen=1
+        read -r peer _ loc _ <<<"$SSH_CONNECTION"
+        peers+=("$peer") && locals+=("$loc")
+    fi
+    if ss_out="$(ss -Htnp state established 2>/dev/null)"; then
+        while read -r _ _ loc peer users; do
+            [[ -n "$peer" ]] || continue
+            [[ "$loc" == *:22 || "$users" == *'"sshd'* || "$users" == *'"dropbear'* ]] || continue
+            peers+=("$(endpoint_addr "$peer")") && locals+=("$(endpoint_addr "$loc")")
+        done <<<"$ss_out"
+    elif ((ssh_seen)); then
+        echo "cannot tell which interface this session uses (ss failed)"
         return 0
     fi
-    from="$(who -m 2>/dev/null | sed -n 's/.*(\([0-9.]*\)).*/\1/p' | head -n 1)"
-    [[ -n "$from" ]] && command -v ip >/dev/null 2>&1 &&
-        [[ "$(ip -o route get "$from" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n 1)" == "$WLAN" ]]
+    if ((${#peers[@]} == 0)); then
+        ((ssh_seen)) || return 1 # a local console
+        echo "cannot tell which interface this session uses (no SSH peer found)"
+        return 0
+    fi
+    wlan_addrs="$(ip -o addr show dev "$WLAN" 2>/dev/null | awk '{ print $4 }' | sed 's|/.*||')"
+    for addr in "${locals[@]}"; do
+        if [[ "$addr" == *%"$WLAN" ]] || { [[ -n "$addr" ]] && grep -qxF -- "${addr%%\%*}" <<<"$wlan_addrs"; }; then
+            echo "an SSH session runs over $WLAN (local address $addr)"
+            return 0
+        fi
+    done
+    for addr in "${peers[@]}"; do
+        dev="$(route_dev "$addr")"
+        if [[ -z "$dev" ]]; then
+            echo "cannot tell which interface carries the SSH peer '${addr:0:60}'"
+            return 0
+        fi
+        if [[ "$dev" == "$WLAN" ]]; then
+            echo "an SSH session runs over $WLAN (peer $addr)"
+            return 0
+        fi
+    done
+    return 1
 }
 
 country=""
@@ -275,8 +345,8 @@ if [[ -n "$CLIENT_UUID" && "$PAUSE" == 0 && -z "$PSK_FILE" && "$PSK_STDIN" == 0 
     [[ "$reply" =~ ^[Yy] ]] && PAUSE=1
 fi
 if ((PAUSE)) && [[ -n "$CLIENT_UUID" ]]; then
-    if session_over_wlan; then
-        die "REFUSED: this session runs over $WLAN; pausing the Wi-Fi client would cut you off. Re-run over the cable LAN; nothing changed"
+    if why="$(session_over_wlan)"; then
+        die "REFUSED --pause-wifi-client: $why; pausing the Wi-Fi client could cut you off. Re-run over the cable LAN, or, when you are sure this session does not use $WLAN, disconnect the client by hand (sudo nmcli device disconnect $WLAN), re-run without the option and reconnect it afterwards (sudo nmcli connection up uuid $CLIENT_UUID); nothing changed"
     fi
 elif ((PAUSE)); then
     say "--pause-wifi-client: no Wi-Fi client is up on $WLAN; nothing to pause"
@@ -315,10 +385,12 @@ resume_wifi_client() {
     if nmcli --wait 30 connection up uuid "$CLIENT_UUID" >/dev/null 2>&1; then
         echo "install_hotspot: the Wi-Fi client on $WLAN is reconnected" >&2
     else
-        echo "install_hotspot: could not reconnect the Wi-Fi client on $WLAN: run nmcli connection up uuid $CLIENT_UUID" >&2
+        RESUME_FAILED=1
+        echo "install_hotspot: FAILED to reconnect the Wi-Fi client on $WLAN: run sudo nmcli connection up uuid $CLIENT_UUID" >&2
     fi
 }
 cleanup() {
+    local rc=$?
     PSK=""
     resume_wifi_client
     [[ -n "$TMP_KEYFILE" ]] && rm -f "$TMP_KEYFILE"
@@ -331,6 +403,9 @@ cleanup() {
     if ((CONF_WRITTEN && !ARMED)); then
         write_conf no && echo "install_hotspot: the fallback is NOT armed (enabled=no in $CONF)" >&2
     fi
+    # A11: a client left down is never a success
+    ((RESUME_FAILED && rc == 0)) && exit 1
+    return 0
 }
 trap cleanup EXIT
 
@@ -484,4 +559,8 @@ say "done: the hotspot '$SSID' comes up when $UPLINK has no connection (UC-061)"
 say "join it and open http://10.42.0.1/ ; phones: turn mobile data off (BR-009)"
 say "undo: sudo $SCRIPT_DIR/install_hotspot.sh --remove (or sudo /usr/local/lib/joustmania/joustmania-hotspot remove)"
 [[ -z "$PSK_FILE" ]] || say "delete the password file now: shred -u $PSK_FILE"
+if ((RESUME_FAILED)); then
+    echo "install_hotspot: FAILED: the fallback is armed, but the Wi-Fi client on $WLAN is NOT reconnected: run sudo nmcli connection up uuid $CLIENT_UUID" >&2
+    exit 1
+fi
 exit 0

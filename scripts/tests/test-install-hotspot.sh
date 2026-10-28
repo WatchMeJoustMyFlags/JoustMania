@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The stage hotspot setup (UC-061 FR-186, Pre-2, Pre-3, A8, BR-001, BR-004;
 # #2099). Runs scripts/setup/install_hotspot.sh under a fake root prefix against
-# stub nmcli, iw, rfkill, ss, ufw, firewall-cmd, systemctl, systemd-run, sysctl,
+# stub nmcli, iw, ip, rfkill, ss, ufw, firewall-cmd, systemctl, systemd-run, sysctl,
 # apt-get and id; no real network device, unit, /etc or /boot is touched:
 #  - every pre-check refuses with its fix and changes nothing: NetworkManager,
 #    wlan0, Wi-Fi country (set and persisted), 5 GHz channel present and not
@@ -18,7 +18,9 @@
 #    detached, with the "you will be disconnected" line
 #  - A11: --pause-wifi-client disconnects the wlan0 client for the self-test and
 #    reconnects the same connection afterwards (also when the self-test fails);
-#    refused when the session runs over wlan0; without it the refusal names it
+#    refused (fail closed) when an SSH session runs over wlan0 or it cannot
+#    tell (sudo-stripped env, no peer), proceeds over eth0 and on a console;
+#    a failed reconnect exits non-zero; without it the refusal names it
 #  - --remove uses the installed remover; the upgrade's stale-files hint
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-install-hotspot.sh
 # UC: UC-061 Pre-1 Pre-2 Pre-3 A8 A11 BR-001 BR-004
@@ -81,6 +83,7 @@ case "$*" in
     echo "30 (disconnected)" >"${S}/wlan0-state"; : >"${S}/wlan0-uuid"; : >"${S}/wlan0-ip4" ;;
   "--wait 30 connection up uuid 11111111-2222-3333-4444-555555555555")
     echo reconnect >>"${CASE}/pause.log"
+    [[ ! -f "${S}/reconnect-fails" ]] || exit 4
     echo "100 (connected)" >"${S}/wlan0-state"; echo 11111111-2222-3333-4444-555555555555 >"${S}/wlan0-uuid"
     printf '192.168.7.20/24' >"${S}/wlan0-ip4" ;;
   "connection delete uuid $UUID") rm -f "${S}/profile" ;;
@@ -114,8 +117,29 @@ esac
 EOF
 cat >"${STUBS}/ss" <<'EOF'
 #!/usr/bin/env bash
-case "$1" in -Hlnu) cat "${CASE}/s/ss-udp" 2>/dev/null ;; -Hlnt) cat "${CASE}/s/ss-tcp" 2>/dev/null ;; esac
+case "$1" in
+  -Hlnu) cat "${CASE}/s/ss-udp" 2>/dev/null ;;
+  -Hlnt) cat "${CASE}/s/ss-tcp" 2>/dev/null ;;
+  -Htnp) [[ ! -f "${CASE}/s/ss-fails" ]] || exit 1; cat "${CASE}/s/ss-est" 2>/dev/null ;;
+esac
 exit 0
+EOF
+# ip: routes from $S/routes ("<addr> <dev>"; an unknown address has no route),
+# wlan0's addresses from $S/wlan0-ip4 and $S/wlan0-ip6
+cat >"${STUBS}/ip" <<'EOF'
+#!/usr/bin/env bash
+S="${CASE}/s"
+case "$*" in
+  "-o route get "*)
+    dev="$(awk -v a="$4" '$1 == a { print $2 }' "${S}/routes" 2>/dev/null)"
+    [[ -n "$dev" ]] || exit 2
+    echo "$4 dev $dev src 192.0.2.1 uid 0" ;;
+  "-o addr show dev wlan0")
+    a="$(cat "${S}/wlan0-ip4" 2>/dev/null)"; [[ -z "$a" ]] || echo "3: wlan0    inet $a brd x scope global wlan0"
+    a="$(cat "${S}/wlan0-ip6" 2>/dev/null)"; [[ -z "$a" ]] || echo "3: wlan0    inet6 $a scope global"
+    ;;
+  *) exit 1 ;;
+esac
 EOF
 cat >"${STUBS}/rfkill" <<'EOF'
 #!/usr/bin/env bash
@@ -194,6 +218,7 @@ make_case() {
   echo 10000 >"${CASE}/now"
   echo "5000.0 9000.0" >"${CASE}/uptime"
   : >"${CASE}/nmcli.argv"; : >"${CASE}/systemctl.argv"
+  fake_proc "4242 bash 1" # a local console: no SSH anywhere
   export PATH="${STUBS}:${PATH#"${STUBS}:"}" \
     JOUSTMANIA_HOTSPOT_ROOT="${R}" \
     JOUSTMANIA_HOTSPOT_DNSMASQ="${CASE}/dnsmasq" \
@@ -201,6 +226,21 @@ make_case() {
     JOUSTMANIA_HOTSPOT_STATE_DIR="${CASE}/run/joustmania-hotspot" \
     JOUSTMANIA_HOTSPOT_NOW_FILE="${CASE}/now" \
     JOUSTMANIA_HOTSPOT_PROC_UPTIME="${CASE}/uptime"
+}
+# fake_proc "<pid> <comm> <ppid> [SSH_CONNECTION]"...: the A11 session walk's
+# /proc, the first entry is the setup itself
+fake_proc() {
+  local P="${CASE}/proc" spec pid comm ppid conn first=""
+  rm -rf "$P"
+  for spec; do
+    read -r pid comm ppid conn <<<"$spec"
+    mkdir -p "$P/$pid"
+    echo "$comm" >"$P/$pid/comm"
+    printf 'Name:\t%s\nPPid:\t%s\n' "$comm" "$ppid" >"$P/$pid/status"
+    if [[ -n "$conn" ]]; then printf 'HOME=/home/pi\0SSH_CONNECTION=%s\0' "$conn"; else printf 'HOME=/root\0'; fi >"$P/$pid/environ"
+    [[ -n "$first" ]] || first="$pid"
+  done
+  export JOUSTMANIA_HOTSPOT_PROC="$P" JOUSTMANIA_HOTSPOT_SELF_PID="$first"
 }
 # run_install [args...]: the password on stdin (--psk-stdin) unless --psk-file is given
 run_install() {
@@ -584,8 +624,58 @@ not_armed a11-failed
 
 make_case a11-over-wlan
 wifi_client_up
-SSH_CONNECTION="192.168.7.5 50000 192.168.7.20 22" refused a11-over-wlan "this session runs over wlan0" --hold 0 --pause-wifi-client
+SSH_CONNECTION="192.168.7.5 50000 192.168.7.20 22" refused a11-over-wlan "runs over wlan0" --hold 0 --pause-wifi-client
+grep -qF "sudo nmcli device disconnect wlan0" "${CASE}/out" || fail "a11-over-wlan: the refusal does not name the manual disconnect"
 [[ ! -f "${CASE}/pause.log" ]] || fail "a11-over-wlan: disconnected the client under the session"
+
+# F1 of the #2248 review: sudo strips SSH_CONNECTION and `who -m` is empty
+# (ssh host 'sudo ...', tmux): the setup's ancestry still has sshd. Without a
+# peer it can route it refuses (fails closed); with one over wlan0 too.
+SSHD_CHAIN=("4242 bash 4241" "4241 sudo 4100" "4100 bash 4000 192.168.7.5 50000 192.168.7.20 22" "4000 sshd-session 900" "900 sshd 1")
+EMPTY_WHO="${WORK}/empty-who"
+mkdir -p "$EMPTY_WHO" && printf '#!/usr/bin/env bash\nexit 0\n' >"$EMPTY_WHO/who" && chmod +x "$EMPTY_WHO/who"
+make_case a11-sudo-unsure
+wifi_client_up
+fake_proc "4242 bash 4241" "4241 sudo 4000" "4000 sshd 1"
+touch "${S}/ss-fails"
+PATH="${EMPTY_WHO}:${PATH}" refused a11-sudo-unsure "cannot tell" --hold 0 --pause-wifi-client
+grep -qF "sudo nmcli device disconnect wlan0" "${CASE}/out" || fail "a11-sudo-unsure: the refusal does not name the manual disconnect"
+[[ ! -f "${CASE}/pause.log" ]] || fail "a11-sudo-unsure: disconnected the client"
+
+make_case a11-sudo-wlan
+wifi_client_up
+fake_proc "${SSHD_CHAIN[@]}"
+echo "192.168.7.5 wlan0" >"${S}/routes"
+PATH="${EMPTY_WHO}:${PATH}" refused a11-sudo-wlan "runs over wlan0" --hold 0 --pause-wifi-client
+[[ ! -f "${CASE}/pause.log" ]] || fail "a11-sudo-wlan: disconnected the client under the session"
+
+make_case a11-ipv6-wlan
+wifi_client_up
+fake_proc "4242 bash 4241" "4241 sudo 4000" "4000 sshd 1"
+echo "0 0 [2001:db8:7::20]:22 [2001:db8:7::5]:51000 users:((\"sshd-session\",pid=4000,fd=4))" >"${S}/ss-est"
+printf '192.168.7.5 eth0\n2001:db8:7::5 wlan0\n' >"${S}/routes"
+PATH="${EMPTY_WHO}:${PATH}" refused a11-ipv6-wlan "peer 2001:db8:7::5" --hold 0 --pause-wifi-client
+[[ ! -f "${CASE}/pause.log" ]] || fail "a11-ipv6-wlan: disconnected the client under the session"
+
+make_case a11-eth0
+wifi_client_up
+fake_proc "4242 bash 4241" "4241 sudo 4100" "4100 bash 4000 192.168.1.20 50000 192.168.1.50 22" "4000 sshd 1"
+echo "0 0 192.168.1.50:22 192.168.1.20:50000 users:((\"sshd\",pid=4000,fd=4))" >"${S}/ss-est"
+echo "192.168.1.20 eth0" >"${S}/routes"
+PATH="${EMPTY_WHO}:${PATH}" run_install --hold 0 --pause-wifi-client || fail "a11-eth0: refused over eth0: $(tail -n 2 "${CASE}/out")"
+[[ "$(cat "${CASE}/pause.log" 2>/dev/null | tr '\n' ' ')" == "disconnect reconnect " ]] || fail "a11-eth0: not paused and resumed"
+
+make_case a11-console
+wifi_client_up
+PATH="${EMPTY_WHO}:${PATH}" run_install --hold 0 --pause-wifi-client || fail "a11-console: refused on the console: $(tail -n 2 "${CASE}/out")"
+[[ "$(cat "${CASE}/pause.log" 2>/dev/null | tr '\n' ' ')" == "disconnect reconnect " ]] || fail "a11-console: not paused and resumed"
+
+# F3: a reconnect that fails is never a success
+make_case a11-reconnect-fails
+wifi_client_up; touch "${S}/reconnect-fails"
+if run_install --hold 0 --pause-wifi-client; then fail "a11-reconnect-fails: exit 0 with the client left down"; fi
+grep -qF "NOT reconnected: run sudo nmcli connection up uuid $CLIENT" "${CASE}/out" ||
+  fail "a11-reconnect-fails: no clear message: $(tail -n 2 "${CASE}/out")"
 
 make_case a11-no-client
 run_install --hold 0 --pause-wifi-client || fail "a11-no-client: exit $?"
