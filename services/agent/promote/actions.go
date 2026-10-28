@@ -325,6 +325,7 @@ func (pr *Promoter) clock() time.Time {
 // with DeferredRevertReason, and DrainDeferred runs it once no real game is live.
 // rewatch marks a re-watch revert (its journal reason prefix).
 func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry *appliedPromotion, res *Result, watchErr error, rewatch bool) claimResult {
+	defer pr.flushReplacedReverts() // after killMu is released (deferred LIFO)
 	pr.killMu.Lock()
 	defer pr.killMu.Unlock()
 	if deferUntilIdle(p.FlagKey) && pr.appliedState(entry) == claimOwned && pr.realGameLive(ctx) {

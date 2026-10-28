@@ -342,7 +342,7 @@ func TestRegistryDeferredRestartSweep(t *testing.T) {
 			t.Fatalf("last promotion = %+v, want discarded lost_at_restart", last)
 		}
 		got := r.TakeRestoredReverts()
-		if len(got) != 1 || got[0].ExperimentID != waiting || got[0].FlagKey != "shield.energy_budget_seconds" || got[0].Rewatch {
+		if len(got) != 1 || got[0].ExperimentID != waiting || got[0].FlagKey != "shield.energy_budget_seconds" || got[0].Rewatch || got[0].Value != 20.0 {
 			t.Fatalf("restored = %+v", got)
 		}
 		if again := r.TakeRestoredReverts(); len(again) != 0 {

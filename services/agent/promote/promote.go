@@ -349,7 +349,10 @@ type Promoter struct {
 	// probeErrors counts failed real-game probe reads (nil until the gauges are
 	// registered); lastProbeWarn rate-limits their WARN. Guarded by mu.
 	probeErrors   otelmetric.Int64Counter
-	lastProbeWarn time.Time
+	lastProbeWarn map[string]time.Time
+	// replacedReverts are waiting reverts another one replaced, journaled by
+	// flushReplacedReverts outside killMu. Guarded by mu.
+	replacedReverts []experiment.Proposal
 }
 
 // appliedPromotion is one autonomous real default this agent run wrote and has not

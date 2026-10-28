@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -546,4 +547,107 @@ func (o *overlayReverter) PromotionOverlay(_ context.Context, flag string) (json
 	}
 	v := o.values[flag]
 	return json.RawMessage(v), v != "", nil
+}
+
+// warnCounter counts WARN records whose message contains match.
+type warnCounter struct {
+	mu    sync.Mutex
+	match string
+	n     int
+}
+
+func (w *warnCounter) Enabled(context.Context, slog.Level) bool { return true }
+func (w *warnCounter) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelWarn && strings.Contains(r.Message, w.match) {
+		w.mu.Lock()
+		w.n++
+		w.mu.Unlock()
+	}
+	return nil
+}
+func (w *warnCounter) WithAttrs([]slog.Attr) slog.Handler { return w }
+func (w *warnCounter) WithGroup(string) slog.Handler      { return w }
+
+func probeErrorsBySource(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if sum, ok := m.Data.(metricdata.Sum[int64]); ok && m.Name == MetricProbeErrors {
+				for _, dp := range sum.DataPoints {
+					src, _ := dp.Attributes.Value("source")
+					out[src.AsString()] += dp.Value
+				}
+			}
+		}
+	}
+	return out
+}
+
+// UC: UC-043 A17
+// UC: UC-043 A15
+func TestDeferredReview2235Round2(t *testing.T) {
+	ctx := context.Background()
+	t.Run("UC-043/A17 a waiting revert replaced by another experiment's revert is cleared in the journal", func(t *testing.T) {
+		rig := newDeferredRig(t, fakeWatcher{degraded: true})
+		rig.probe.seq = []bool{false} // exp-a: idle at the write, live at its revert
+		rig.promote(t, holdProposal("exp-a"))
+		rig.probe.seq = []bool{false} // exp-b: the same
+		rig.promote(t, holdProposal("exp-b"))
+		got := strings.Join(rig.journal.all(), "\n")
+		if !strings.Contains(got, "exp-a|applied|"+ReasonRevertSuperseded) {
+			t.Fatalf("journal %q lacks the clearing event of exp-a", got)
+		}
+		if rig.rev.calls != 0 {
+			t.Fatalf("reverts = %d during the real game", rig.rev.calls)
+		}
+	})
+	t.Run("UC-043/A17 a waiting revert whose promotion a newer one replaced is cleared at the drain", func(t *testing.T) {
+		rig := newDeferredRig(t, fakeWatcher{degraded: true})
+		rig.probe.seq = []bool{false}
+		rig.promote(t, holdProposal("exp-a")) // revert of exp-a waits
+		rig.probe.set(false)
+		rig.p.SetRewatchJournal(nil) // exp-b's own (immediate) revert is not under test
+		rig.promote(t, holdProposal("exp-b"))
+		rig.p.SetRewatchJournal(rig.journal.sink)
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
+		got := rig.journal.all()
+		if len(got) != 1 || got[0] != "exp-a|applied|"+ReasonRevertSuperseded {
+			t.Fatalf("journal = %v", got)
+		}
+	})
+	t.Run("UC-043/A15 an unreadable overlay is counted with source overlay_read", func(t *testing.T) {
+		rev := &overlayReverter{err: errors.New("flag service down")}
+		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, fakeWatcher{}, rev)
+		reader := sdkmetric.NewManualReader()
+		if err := p.RegisterDeferredMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))); err != nil {
+			t.Fatal(err)
+		}
+		p.SetRealGameProbe(func(context.Context) (bool, error) { return false, nil })
+		p.RestoreDeferredReverts(ctx, []experiment.RestoredRevert{{ExperimentID: "exp-u", FlagKey: holdKey, Value: 20.0}})
+		p.DrainDeferred(ctx, fixed(autoOn))
+		if got := probeErrorsBySource(t, reader); got[ProbeErrorSourceOverlay] != 1 || got[ProbeErrorSourceProbe] != 0 {
+			t.Fatalf("errors by source = %v", got)
+		}
+	})
+	t.Run("UC-043/A17 a failing read logs a WARN at most once a minute", func(t *testing.T) {
+		h := &warnCounter{match: "deferred promotion read failed"}
+		p := NewPromoter(nil, nil, &recordingRealDefault{}, fakeWatcher{}, &recordingReverter{}, testRepo(), nil, slog.New(h))
+		now := time.Unix(1_000, 0)
+		p.SetClock(func() time.Time { return now })
+		p.SetRealGameProbe(func(context.Context) (bool, error) { return false, errors.New("down") })
+		for _, step := range []time.Duration{0, 30 * time.Second, 31 * time.Second} { // t=0, 30 s, 61 s
+			now = now.Add(step)
+			if !p.realGameLive(ctx) {
+				t.Fatal("a failed probe must count as live")
+			}
+		}
+		if h.n != 2 {
+			t.Fatalf("WARNs = %d, want 2 (t=0 and t=61 s)", h.n)
+		}
+	})
 }

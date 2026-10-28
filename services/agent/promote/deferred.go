@@ -3,6 +3,10 @@ package promote
 import (
 	"context"
 	"encoding/json"
+
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
+
 	"errors"
 	"fmt"
 	"reflect"
@@ -129,19 +133,37 @@ const ProbeWarnEvery = time.Minute
 // ProbeWarnEvery: a probe that keeps failing makes every hold-key write and revert
 // wait (fail closed), which must be visible (UC-043 A17).
 func (pr *Promoter) noteProbeError(ctx context.Context, err error) {
+	pr.noteReadError(ctx, ProbeErrorSourceProbe, err)
+}
+
+// Sources of agent_promotion_probe_errors_total (attribute `source`).
+const (
+	ProbeErrorSourceProbe   = "probe"
+	ProbeErrorSourceOverlay = "overlay_read"
+)
+
+// noteReadError counts a failed read that makes a deferred entry wait (the
+// real-game probe, or the overlay read of a restored revert) and logs a WARN at
+// most once per ProbeWarnEvery and source.
+func (pr *Promoter) noteReadError(ctx context.Context, source string, err error) {
 	pr.mu.Lock()
 	counter := pr.probeErrors
 	now := pr.clock()
-	warn := pr.lastProbeWarn.IsZero() || now.Sub(pr.lastProbeWarn) >= ProbeWarnEvery
+	if pr.lastProbeWarn == nil {
+		pr.lastProbeWarn = map[string]time.Time{}
+	}
+	last, seen := pr.lastProbeWarn[source]
+	warn := !seen || now.Sub(last) >= ProbeWarnEvery
 	if warn {
-		pr.lastProbeWarn = now
+		pr.lastProbeWarn[source] = now
 	}
 	pr.mu.Unlock()
 	if counter != nil {
-		counter.Add(ctx, 1)
+		counter.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("source", source)))
 	}
 	if warn {
-		pr.log.Warn("real-game probe failed; hold-key writes and reverts wait (UC-043 A17, fail closed)", "error", err)
+		pr.log.Warn("deferred promotion read failed; hold-key writes and reverts wait (UC-043 A17, fail closed)",
+			"source", source, "error", err)
 	}
 }
 
@@ -192,7 +214,29 @@ func (pr *Promoter) queueRevertLocked(p experiment.Proposal, entry *appliedPromo
 	if pr.pendingReverts == nil {
 		pr.pendingReverts = map[string]*deferredRevert{}
 	}
+	if old := pr.pendingReverts[p.FlagKey]; old != nil && old.proposal.ExperimentID != p.ExperimentID {
+		// Another experiment's waiting revert of the flag is replaced: its pending
+		// state is cleared in the journal outside killMu (flushReplacedReverts).
+		pr.replacedReverts = append(pr.replacedReverts, old.proposal)
+	}
 	pr.pendingReverts[p.FlagKey] = &deferredRevert{proposal: p, entry: entry, watchErr: watchErr, rewatch: rewatch, queuedAt: pr.clock()}
+}
+
+// ReasonRevertSuperseded clears the pending state of a revert a newer promotion
+// (or another experiment's revert) of the flag took over.
+const ReasonRevertSuperseded = "superseded by a newer promotion of the flag; not reverted"
+
+// flushReplacedReverts journals a clearing event (no RevertPending) for each
+// waiting revert another one replaced, so a restart never re-queues it. It must
+// not be called under killMu.
+func (pr *Promoter) flushReplacedReverts() {
+	pr.mu.Lock()
+	replaced := pr.replacedReverts
+	pr.replacedReverts = nil
+	pr.mu.Unlock()
+	for _, p := range replaced {
+		pr.journalDeferred(p, OutcomeApplied, ReasonRevertSuperseded)
+	}
 }
 
 // PendingFlags lists the flags with a waiting promotion write. The registry counts
@@ -297,14 +341,15 @@ func (pr *Promoter) DropDeferred(ctx context.Context, reason string) {
 }
 
 // RestoreDeferredReverts re-queues the waiting reverts a previous run journaled
-// (experiment.Registry.TakeRestoredReverts, UC-043 A17 step 3), but only for a flag
-// whose real overlay is still a promotion's (an unreadable overlay list keeps it:
-// a revert of an absent overlay deletes nothing). The drain runs them at the first
-// check with no real game live.
+// (experiment.Registry.TakeRestoredReverts, UC-043 A17 step 3). The drain runs one
+// at the first check with no real game live, and only while the flag's promotion
+// overlay still holds the experiment's promoted value (restoredRevertStale); an
+// unreadable overlay keeps it waiting.
 func (pr *Promoter) RestoreDeferredReverts(ctx context.Context, restored []experiment.RestoredRevert) {
 	if len(restored) == 0 {
 		return
 	}
+	defer pr.flushReplacedReverts() // after killMu is released
 	pr.killMu.Lock()
 	defer pr.killMu.Unlock()
 	for _, r := range restored {
@@ -329,6 +374,7 @@ func (pr *Promoter) restoredRevertStale(ctx context.Context, r *deferredRevert) 
 	raw, present, err := reader.PromotionOverlay(ctx, r.proposal.FlagKey)
 	switch {
 	case err != nil:
+		pr.noteReadError(ctx, ProbeErrorSourceOverlay, err)
 		return "", true
 	case !present:
 		return "revert not run: no promotion overlay left (UC-043 A17)", false
@@ -405,7 +451,7 @@ func (pr *Promoter) drainReverts(ctx context.Context) {
 		if r.entry == nil && pr.trackedPromotion(flag) {
 			// A restored revert (no entry): a newer promotion of this run owns the
 			// overlay. Journaled without RevertPending, which clears the pending state.
-			pr.journalDeferred(r.proposal, OutcomeApplied, "superseded by a newer promotion of the flag; not reverted")
+			pr.journalDeferred(r.proposal, OutcomeApplied, ReasonRevertSuperseded)
 			continue
 		}
 		if r.restored {
@@ -426,7 +472,14 @@ func (pr *Promoter) drainReverts(ctx context.Context) {
 				continue
 			}
 		}
-		if pr.revertReal(ctx, r.proposal, r.entry, &res, r.watchErr, r.rewatch) != claimOwned {
+		switch pr.revertReal(ctx, r.proposal, r.entry, &res, r.watchErr, r.rewatch) {
+		case claimOwned:
+		case claimSuperseded:
+			// A newer promotion of the flag replaced the one this revert was for:
+			// clear the pending state so a restart does not re-queue it.
+			pr.journalDeferred(r.proposal, OutcomeApplied, ReasonRevertSuperseded)
+			continue
+		default: // killed: the kill switch journals it; deferred: still waiting
 			continue
 		}
 		reason := res.Reason + " (deferred until no real game ran)"
