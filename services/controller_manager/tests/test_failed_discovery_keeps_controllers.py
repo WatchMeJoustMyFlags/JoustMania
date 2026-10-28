@@ -30,6 +30,7 @@ SERIALS = ["AABBCCDDEE01", "AABBCCDDEE02"]
 
 def _hid_adapter(adapter_cls: type[RustServiceAdapter | PythonHidAdapter]) -> RustServiceAdapter | PythonHidAdapter:
     adapter = adapter_cls.__new__(adapter_cls)
+    adapter._init_stream_state()
     adapter._channel = MagicMock()
     adapter._stub = MagicMock(spec_set=["Discover", "Open", "Close", "CloseAll", "StreamIO"])
     adapter._command_queue = queue.Queue(maxsize=256)

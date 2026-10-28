@@ -21,18 +21,22 @@ import threading
 
 import grpc
 
-from lib.controller_constants import ButtonKey, StateKey, normalize_serial
+from lib.controller_constants import normalize_serial
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter, DiscoveryFailedError
+from services.controller_manager.multiplexer.hid_stream import HidStreamMixin
 
 # Same deadline as the rust adapter on every unary call (#2140): a failed or
 # timed-out Discover raises DiscoveryFailedError, a failed Open returns False.
-from services.controller_manager.multiplexer.rust_adapter import RPC_TIMEOUT_S, _sensor_data_to_dict
+from services.controller_manager.multiplexer.rust_adapter import RPC_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
 
-class PythonHidAdapter(ControllerIOAdapter):
+class PythonHidAdapter(HidStreamMixin, ControllerIOAdapter):
     """I/O adapter delegating to the Python HID gRPC service via bidir stream."""
+
+    _stream_thread_name = "python-adapter-stream"
+    _stream_peer = "python service"
 
     def __init__(self):
         from proto import psmove_hid_pb2_grpc
@@ -73,8 +77,7 @@ class PythonHidAdapter(ControllerIOAdapter):
         # so state writes for a closed serial are dropped until it is reopened
         # or rediscovered. Guarded by _data_lock.
         self._closed: set[str] = set()
-        self._stream_thread: threading.Thread | None = None
-        self._stream_running = False
+        self._init_stream_state()
 
         # Adapter affinity cache
         self._adapter_names: dict[str, str] = {}
@@ -82,53 +85,6 @@ class PythonHidAdapter(ControllerIOAdapter):
     @property
     def adapter_type(self) -> str:
         return "python"
-
-    def _ensure_stream(self) -> None:
-        """Start the bidir stream if not already running."""
-        if self._stream_running:
-            return
-
-        if self._stream_thread is not None:
-            self._stream_thread.join(timeout=1.0)
-
-        self._stream_running = True
-        self._stream_thread = threading.Thread(
-            target=self._stream_loop,
-            name="python-adapter-stream",
-            daemon=True,
-        )
-        self._stream_thread.start()
-        logger.info("Started bidir stream to python service")
-
-    def _stream_loop(self) -> None:
-        """Background thread: manage the bidir StreamIO stream."""
-
-        def command_iterator():
-            while self._stream_running:
-                try:
-                    cmd = self._command_queue.get(timeout=0.05)
-                    yield cmd
-                except queue.Empty:
-                    continue
-
-        try:
-            responses = self._stub.StreamIO(command_iterator())
-            for sensor_data in responses:
-                serial = normalize_serial(sensor_data.serial)
-                state = _sensor_data_to_dict(sensor_data)
-                state[StateKey.SERIAL] = serial
-                with self._data_lock:
-                    if serial not in self._closed:
-                        self._latest_data[serial] = state
-                        if state.get(ButtonKey.TRIGGER):
-                            # Latched until a game frame delivers it (#1837).
-                            self._trigger_latch.add(serial)
-        except grpc.RpcError as e:
-            if self._stream_running:
-                logger.warning(f"StreamIO error: {e}")
-        finally:
-            self._stream_running = False
-            logger.info("Bidir stream ended")
 
     def discover(
         self,
@@ -243,10 +199,8 @@ class PythonHidAdapter(ControllerIOAdapter):
     def close_all(self) -> None:
         from proto import psmove_hid_pb2
 
-        self._stream_running = False
-        if self._stream_thread:
-            self._stream_thread.join(timeout=2.0)
-            self._stream_thread = None
+        # Cancel the StreamIO call: grpcio >=1.83 does not cancel a dropped call (#2266).
+        self._stop_stream()
 
         with self._data_lock:
             self._latest_data.clear()

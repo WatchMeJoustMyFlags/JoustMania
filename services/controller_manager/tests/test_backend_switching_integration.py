@@ -37,6 +37,7 @@ def _mock_details(value, reason="STATIC", error_code=None, error_message=None):
 def _make_rust_adapter():
     """Create a RustServiceAdapter bypassing __init__ gRPC imports."""
     adapter = RustServiceAdapter.__new__(RustServiceAdapter)
+    adapter._init_stream_state()
     adapter._channel = MagicMock()
     adapter._stub = MagicMock()
     adapter._command_queue = queue.Queue(maxsize=256)
