@@ -716,6 +716,36 @@ func TestProxyStreamGameEvents(t *testing.T) {
 	})
 }
 
+// UC: UC-010 BR-011
+func TestProxyStreamGameEventsShadowFields(t *testing.T) {
+	t.Run("UC-010/BR-011 shadow-only start fields are stripped, the rest kept", func(t *testing.T) {
+		rig := newProxyRig(t)
+		req := &gamepb.StreamEventsRequest{StartConfig: &gamepb.StartGameConfig{
+			GameName:             "JoustFFA",
+			Sensitivity:          2,
+			Origin:               gamepb.GameOrigin_GAME_ORIGIN_AGENT,
+			RngSeed:              42,
+			ExperimentId:         "exp_x",
+			Arm:                  "experimental",
+			PatternTriggerPolicy: true,
+		}}
+		stream, err := rig.gameClient.StreamGameEvents(testCtx(t), connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("StreamGameEvents: %v", err)
+		}
+		defer stream.Close()
+		for stream.Receive() {
+		}
+		got := rig.game.log.only(t, "StreamGameEvents").(*gamepb.StreamEventsRequest).GetStartConfig()
+		if got.GetRngSeed() != 0 || got.GetExperimentId() != "" || got.GetArm() != "" || got.GetPatternTriggerPolicy() {
+			t.Errorf("shadow-only fields reached the coordinator: %v", got)
+		}
+		if got.GetGameName() != "JoustFFA" || got.GetSensitivity() != 2 || got.GetOrigin() != gamepb.GameOrigin_GAME_ORIGIN_AGENT {
+			t.Errorf("other start fields changed: %v", got)
+		}
+	})
+}
+
 // --- controller manager ----------------------------------------------------
 
 // UC: UC-002 A2

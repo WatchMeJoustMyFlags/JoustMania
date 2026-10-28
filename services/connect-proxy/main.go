@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	// Generated proto imports
 	controllerpb "github.com/joustmania/connect-proxy/gen/controller_manager"
@@ -288,12 +289,30 @@ func (p *GameCoordinatorProxy) ForceEndGame(
 	return connect.NewResponse(resp), nil
 }
 
+// stripShadowOnlyFields clears the experiment-binding fields of a browser-supplied
+// start_config (#2214, UC-010 BR-011): rng_seed, experiment_id, arm and
+// pattern_trigger_policy belong to the agent's shadow games, which reach the
+// coordinator over gRPC and never through this proxy. The request is cloned, the
+// caller's message is untouched.
+func stripShadowOnlyFields(req *gamepb.StreamEventsRequest) *gamepb.StreamEventsRequest {
+	if req.GetStartConfig() == nil {
+		return req
+	}
+	out := proto.Clone(req).(*gamepb.StreamEventsRequest)
+	cfg := out.StartConfig
+	cfg.RngSeed = 0
+	cfg.ExperimentId = ""
+	cfg.Arm = ""
+	cfg.PatternTriggerPolicy = false
+	return out
+}
+
 func (p *GameCoordinatorProxy) StreamGameEvents(
 	ctx context.Context,
 	req *connect.Request[gamepb.StreamEventsRequest],
 	stream *connect.ServerStream[gamepb.GameEvent],
 ) error {
-	grpcStream, err := p.client.StreamGameEvents(ctx, req.Msg)
+	grpcStream, err := p.client.StreamGameEvents(ctx, stripShadowOnlyFields(req.Msg))
 	if err != nil {
 		return toConnectError(err)
 	}

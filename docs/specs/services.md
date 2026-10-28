@@ -169,6 +169,8 @@ message, relays every
 browser stream (error in the end-stream frame); the dashboard retries after 2 s. The controller manager does not
 implement `WatchGameplayData` itself (UNIMPLEMENTED).
 
+**Start config from the browser (#2214, UC-010 BR-011):** a `StreamGameEvents` request with a `start_config` is forwarded with `rng_seed`, `experiment_id`, `arm` and `pattern_trigger_policy` cleared (the shadow-only fields, `proto/game_coordinator.proto`); everything else is unchanged. The agent starts its shadow games over gRPC directly and is not affected.
+
 **Error mapping (#1560):** a backend gRPC error reaches the browser as the Connect error with the same code (the two code sets are identical: `Unavailable` stays `unavailable`, `NotFound` stays `not_found`, `FailedPrecondition` stays `failed_precondition`, and so on), carrying the backend status message without the `rpc error: code = ...` prefix. This holds for every unary forwarder and for the `StreamGameEvents`, `StreamMenuEvents` and `WatchGameplayData` streams (the code travels in the end-stream frame). An error without a gRPC status (for example a failed local call) stays `internal`; a browser disconnect stays `canceled`. The dashboard branches on no Connect code, it only shows `code: message` (`connect.ts`), so it needs no change. Implemented by `toConnectError` in `services/connect-proxy/main.go`.
 
 **Traceability:** C-014 / UC-002, UC-003, UC-004, UC-010, UC-027, UC-031 / `proto/*.proto`, `services/connect-proxy/main.go`, `services/dashboard/src/connect.ts`, `services/dashboard/src/client.ts` / `tests/integration/`, `services/connect-proxy/forwarding_test.go`, `services/connect-proxy/watch_gameplay_test.go`, `services/dashboard/src/__tests__/connect.test.ts`.
