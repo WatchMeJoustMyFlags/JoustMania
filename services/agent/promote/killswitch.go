@@ -175,7 +175,9 @@ func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 		case pr.reverter == nil:
 			rv.Reason = KillSwitchReason + "; no real-default reverter wired"
 		default:
-			if err := pr.reverter.RevertRealDefault(ctx, flag); err != nil {
+			err := pr.reverter.RevertRealDefault(ctx, flag)
+			superseded := errors.Is(err, ErrSupersededByAnotherWriter)
+			if err != nil && !superseded {
 				rv.Reason = fmt.Sprintf("%s; revert failed: %v", KillSwitchReason, err)
 				if entry != nil {
 					pr.retrack(entry)
@@ -185,6 +187,9 @@ func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 				pr.markReverted(flag)
 				rv.Outcome = OutcomeReverted
 				rv.Reason = KillSwitchReason
+				if superseded {
+					rv.Reason += SupersededReasonSuffix
+				}
 			}
 		}
 		pr.log.Warn("autonomous promotion: kill switch", "flag", flag,
