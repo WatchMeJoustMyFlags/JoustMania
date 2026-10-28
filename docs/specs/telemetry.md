@@ -77,6 +77,8 @@ Python `{Service}/{Method}` SERVER spans record the status the RPC really ended 
 
 connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` client spans only.
 
+**gRPC health checks are not traced** (#2286): the collector's `filter/grpc_health` processor drops every span whose `rpc.service` is `grpc.health.v1.Health` (Go, Rust) or `Health` (the package-stripped form `lib/grpc_tracing.py` records for the Python services) from the `traces` pipeline (Jaeger and the agent), whatever service recorded it. Docker healthchecks and watchdog probes call the RPC as before; on the stage Pi 1362 of 1500 Jaeger spans were health checks.
+
 ### 3.2 game-coordinator
 
 Flag-provider readiness at game admission (#1329, UC-010 A5 / BR-004): the game root span carries `feature_flag.providers_wait_ms`, the time spent waiting for the coordinator's NOT_READY flag providers (`system`, `controller`, `game`, `agent`, `user`, `interventions`; STALE / ERROR are not waited on) to be READY before the game was created. When that bounded wait (5 s) runs out, the root span gets the event `feature_flag.providers_not_ready` (attrs `feature_flag.domains`, the domains still not READY; `feature_flag.wait_seconds`; `feature_flag.fallback` = `code_defaults`). Flag reads of those domains then fall back to code defaults and show as `ProviderNotReadyError` exceptions on the span where they were read.
