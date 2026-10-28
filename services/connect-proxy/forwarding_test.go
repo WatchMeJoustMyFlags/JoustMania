@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	controllerpb "github.com/joustmania/connect-proxy/gen/controller_manager"
 	"github.com/joustmania/connect-proxy/gen/controller_manager/controller_managerconnect"
@@ -714,6 +715,68 @@ func TestProxyStreamGameEvents(t *testing.T) {
 		}
 		assertBackendError(t, stream.Err(), connect.CodeUnavailable, "coordinator gone")
 	})
+}
+
+// UC: UC-010 BR-011
+func TestProxyStreamGameEventsShadowFields(t *testing.T) {
+	t.Run("UC-010/BR-011 shadow-only start fields are stripped, the rest kept", func(t *testing.T) {
+		rig := newProxyRig(t)
+		req := &gamepb.StreamEventsRequest{StartConfig: &gamepb.StartGameConfig{
+			GameName:             "JoustFFA",
+			Sensitivity:          2,
+			Origin:               gamepb.GameOrigin_GAME_ORIGIN_AGENT,
+			RngSeed:              42,
+			ExperimentId:         "exp_x",
+			Arm:                  "experimental",
+			PatternTriggerPolicy: true,
+		}}
+		stream, err := rig.gameClient.StreamGameEvents(testCtx(t), connect.NewRequest(req))
+		if err != nil {
+			t.Fatalf("StreamGameEvents: %v", err)
+		}
+		defer stream.Close()
+		for stream.Receive() {
+		}
+		got := rig.game.log.only(t, "StreamGameEvents").(*gamepb.StreamEventsRequest).GetStartConfig()
+		if got.GetRngSeed() != 0 || got.GetExperimentId() != "" || got.GetArm() != "" || got.GetPatternTriggerPolicy() {
+			t.Errorf("shadow-only fields reached the coordinator: %v", got)
+		}
+		if got.GetGameName() != "JoustFFA" || got.GetSensitivity() != 2 || got.GetOrigin() != gamepb.GameOrigin_GAME_ORIGIN_AGENT {
+			t.Errorf("other start fields changed: %v", got)
+		}
+	})
+}
+
+// UC: UC-010 BR-011
+// Guard for stripShadowOnlyFields (#2214): every StartGameConfig field must be
+// classified, so a new shadow-only field fails here until it is added to the
+// strip list in main.go (the strip is a denylist and would otherwise fail open).
+func TestStartGameConfigFieldsClassified(t *testing.T) {
+	forwarded := map[string]bool{
+		"game_name": true, "players": true, "sensitivity": true, "origin": true,
+		"ffa_config": true, "teams_config": true, "nonstop_config": true,
+		"tournament_config": true, "fight_club_config": true, "werewolf_config": true,
+		"zombie_config": true, "swapper_config": true, "traitor_config": true,
+		"random_teams_config": true,
+	}
+	stripped := map[string]bool{ // shadow-only, cleared by stripShadowOnlyFields
+		"experiment_id": true, "arm": true, "rng_seed": true, "pattern_trigger_policy": true,
+	}
+	fields := (&gamepb.StartGameConfig{}).ProtoReflect().Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		name := string(fields.Get(i).Name())
+		if forwarded[name] == stripped[name] {
+			t.Errorf("StartGameConfig.%s must be in exactly one of forwarded/stripped: if it is shadow-only, clear it in stripShadowOnlyFields (main.go) and list it as stripped", name)
+		}
+	}
+	// Every classified name must still exist (catches renames).
+	for _, set := range []map[string]bool{forwarded, stripped} {
+		for name := range set {
+			if fields.ByName(protoreflect.Name(name)) == nil {
+				t.Errorf("classified field %q no longer exists in StartGameConfig", name)
+			}
+		}
+	}
 }
 
 // --- controller manager ----------------------------------------------------
