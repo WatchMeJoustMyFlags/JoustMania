@@ -2,8 +2,10 @@ package promote
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"time"
 
@@ -74,6 +76,15 @@ type deferredRevert struct {
 	watchErr error
 	rewatch  bool
 	queuedAt time.Time
+	// restored: re-queued from the journal after a restart (no entry); it runs only
+	// while the promotion overlay still holds proposal.ExperimentalValue.
+	restored bool
+}
+
+// PromotionOverlayReader reads the value of a flag's promotion-written real
+// overlay (ok false: none). The production reverter implements it.
+type PromotionOverlayReader interface {
+	PromotionOverlay(ctx context.Context, flagKey string) (value json.RawMessage, ok bool, err error)
 }
 
 // deferUntilIdle reports whether flagKey's real value may change only while no
@@ -105,10 +116,33 @@ func (pr *Promoter) realGameLive(ctx context.Context) bool {
 	}
 	live, err := probe(ctx)
 	if err != nil {
-		pr.log.Debug("real-game probe failed; treating a real game as live (UC-043 A17)", "error", err)
+		pr.noteProbeError(ctx, err)
 		return true
 	}
 	return live
+}
+
+// ProbeWarnEvery rate-limits the WARN of a failing real-game probe.
+const ProbeWarnEvery = time.Minute
+
+// noteProbeError counts a failed probe read and logs a WARN at most once per
+// ProbeWarnEvery: a probe that keeps failing makes every hold-key write and revert
+// wait (fail closed), which must be visible (UC-043 A17).
+func (pr *Promoter) noteProbeError(ctx context.Context, err error) {
+	pr.mu.Lock()
+	counter := pr.probeErrors
+	now := pr.clock()
+	warn := pr.lastProbeWarn.IsZero() || now.Sub(pr.lastProbeWarn) >= ProbeWarnEvery
+	if warn {
+		pr.lastProbeWarn = now
+	}
+	pr.mu.Unlock()
+	if counter != nil {
+		counter.Add(ctx, 1)
+	}
+	if warn {
+		pr.log.Warn("real-game probe failed; hold-key writes and reverts wait (UC-043 A17, fail closed)", "error", err)
+	}
 }
 
 // enqueueDeferred queues a promotion write. It refuses one whose config predates a
@@ -271,25 +305,50 @@ func (pr *Promoter) RestoreDeferredReverts(ctx context.Context, restored []exper
 	if len(restored) == 0 {
 		return
 	}
-	var promoted map[string]bool
-	if lister, ok := pr.reverter.(PromotionOverlayLister); ok {
-		if flags, err := lister.PromotedFlags(ctx); err == nil {
-			promoted = map[string]bool{}
-			for _, f := range flags {
-				promoted[f] = true
-			}
-		}
-	}
 	pr.killMu.Lock()
 	defer pr.killMu.Unlock()
 	for _, r := range restored {
-		p := experiment.Proposal{FlagKey: r.FlagKey, ExperimentID: r.ExperimentID}
-		if promoted != nil && !promoted[r.FlagKey] {
-			pr.log.Info("code_improvement: restored deferred revert dropped; no promotion overlay left (UC-043 A17)", "flag", r.FlagKey, "experiment_id", r.ExperimentID)
-			continue
-		}
+		p := experiment.Proposal{FlagKey: r.FlagKey, ExperimentID: r.ExperimentID, ExperimentalValue: r.Value}
 		pr.queueRevertLocked(p, nil, nil, r.Rewatch)
+		pr.mu.Lock()
+		if q := pr.pendingReverts[r.FlagKey]; q != nil {
+			q.restored = true
+		}
+		pr.mu.Unlock()
 	}
+}
+
+// restoredRevertStale reports why a restored revert must not run (the overlay is
+// gone or holds another value), "" when it may; keep is true when the overlay
+// could not be read (the revert waits for the next pass).
+func (pr *Promoter) restoredRevertStale(ctx context.Context, r *deferredRevert) (why string, keep bool) {
+	reader, ok := pr.reverter.(PromotionOverlayReader)
+	if !ok {
+		return "", false
+	}
+	raw, present, err := reader.PromotionOverlay(ctx, r.proposal.FlagKey)
+	switch {
+	case err != nil:
+		return "", true
+	case !present:
+		return "revert not run: no promotion overlay left (UC-043 A17)", false
+	case !sameJSONValue(raw, r.proposal.ExperimentalValue):
+		return "revert not run: the overlay holds a newer promotion's value (UC-043 A17)", false
+	}
+	return "", false
+}
+
+// sameJSONValue compares a raw JSON value with a Go value by their JSON meaning.
+func sameJSONValue(raw json.RawMessage, v any) bool {
+	want, err := json.Marshal(v)
+	if err != nil {
+		return false
+	}
+	var a, b any
+	if json.Unmarshal(raw, &a) != nil || json.Unmarshal(want, &b) != nil {
+		return false
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // dropWrites removes the waiting writes that match (all when match is nil) and
@@ -344,9 +403,28 @@ func (pr *Promoter) drainReverts(ctx context.Context) {
 		r := reverts[flag]
 		res := Result{Outcome: OutcomeApplied}
 		if r.entry == nil && pr.trackedPromotion(flag) {
-			// A restored revert (no entry): a newer promotion of this run owns the overlay.
+			// A restored revert (no entry): a newer promotion of this run owns the
+			// overlay. Journaled without RevertPending, which clears the pending state.
 			pr.journalDeferred(r.proposal, OutcomeApplied, "superseded by a newer promotion of the flag; not reverted")
 			continue
+		}
+		if r.restored {
+			why, keep := pr.restoredRevertStale(ctx, r)
+			if keep {
+				pr.mu.Lock()
+				if pr.pendingReverts == nil {
+					pr.pendingReverts = map[string]*deferredRevert{}
+				}
+				if pr.pendingReverts[flag] == nil {
+					pr.pendingReverts[flag] = r
+				}
+				pr.mu.Unlock()
+				continue
+			}
+			if why != "" {
+				pr.journalDeferred(r.proposal, OutcomeApplied, why)
+				continue
+			}
 		}
 		if pr.revertReal(ctx, r.proposal, r.entry, &res, r.watchErr, r.rewatch) != claimOwned {
 			continue
@@ -413,7 +491,11 @@ func (pr *Promoter) drainWrites(ctx context.Context, resolve ConfigResolver) {
 		pr.applyAndWatch(ctx, w.proposal, w.evidence, entry, &res)
 		pr.log.Warn("code_improvement.deferred_applied (UC-043 A17)", "flag", flag,
 			"experiment_id", w.proposal.ExperimentID, "outcome", string(res.Outcome), "reason", res.Reason)
-		pr.journalDeferred(w.proposal, res.Outcome, res.Reason)
+		// A degradation verdict during a real game leaves its revert waiting:
+		// journal that write-ahead (RevertPending), so a restart re-queues it.
+		pr.journalDeferredResult(w.proposal, experiment.PromotionResult{
+			Outcome: string(res.Outcome), Reason: res.Reason, RevertPending: res.RevertPending,
+		})
 	}
 }
 

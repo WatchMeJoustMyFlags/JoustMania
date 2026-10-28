@@ -53,6 +53,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/experiment"
@@ -345,6 +346,10 @@ type Promoter struct {
 	// closed is set by DropDeferred (shutdown): a revert that would wait after it is
 	// not queued; its write-ahead journal event lets the next run re-queue it.
 	closed bool
+	// probeErrors counts failed real-game probe reads (nil until the gauges are
+	// registered); lastProbeWarn rate-limits their WARN. Guarded by mu.
+	probeErrors   otelmetric.Int64Counter
+	lastProbeWarn time.Time
 }
 
 // appliedPromotion is one autonomous real default this agent run wrote and has not

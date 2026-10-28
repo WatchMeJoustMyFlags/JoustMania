@@ -16,6 +16,8 @@ const (
 	MetricDeferredPending = "agent_promotion_deferred_pending"
 	// MetricDeferredOldest is the age of the oldest waiting entry in seconds.
 	MetricDeferredOldest = "agent_promotion_deferred_oldest_seconds"
+	// MetricProbeErrors counts failed real-game probe reads (telemetry or flag service).
+	MetricProbeErrors = "agent_promotion_probe_errors_total"
 )
 
 // RegisterDeferredMetrics registers the two observable gauges on mp.
@@ -31,6 +33,14 @@ func (pr *Promoter) RegisterDeferredMetrics(mp otelmetric.MeterProvider) error {
 	if err != nil {
 		return err
 	}
+	probeErrors, err := meter.Int64Counter(MetricProbeErrors,
+		otelmetric.WithDescription("Failed real-game probe reads; each makes hold-key writes and reverts wait (UC-043 A17)"))
+	if err != nil {
+		return err
+	}
+	pr.mu.Lock()
+	pr.probeErrors = probeErrors
+	pr.mu.Unlock()
 	_, err = meter.RegisterCallback(func(_ context.Context, o otelmetric.Observer) error {
 		n, age := pr.DeferredStats()
 		o.ObserveInt64(pending, int64(n))

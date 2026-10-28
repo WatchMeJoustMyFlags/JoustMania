@@ -54,13 +54,33 @@ func TestRealGameProbe_FlagServiceRegistry(t *testing.T) {
 }
 
 // recordingDeferred records the loop's calls into the deferred queue.
-type recordingDeferred struct{ dropped []string }
+type recordingDeferred struct {
+	dropped  []string
+	restores int
+}
 
 func (r *recordingDeferred) DrainDeferred(context.Context, promote.ConfigResolver) {}
 func (r *recordingDeferred) DropDeferred(_ context.Context, reason string) {
 	r.dropped = append(r.dropped, reason)
 }
-func (r *recordingDeferred) RestoreDeferredReverts(context.Context, []experiment.RestoredRevert) {}
+func (r *recordingDeferred) RestoreDeferredReverts(context.Context, []experiment.RestoredRevert) {
+	r.restores++
+}
+
+// UC: UC-043 A15
+func TestExperimentLoop_StartRestoresDeferredReverts(t *testing.T) {
+	t.Run("UC-043/A15 the first enabled start hands the restored reverts to the promoter once", func(t *testing.T) {
+		loop, _, _ := loopForConfigTest(t, 2)
+		t.Setenv("AGENT_EXPERIMENT_DIR", t.TempDir())
+		rec := &recordingDeferred{}
+		loop.deferred = rec
+		loop.ensureStarted()
+		loop.ensureStarted()
+		if rec.restores != 1 {
+			t.Fatalf("restores = %d, want 1", rec.restores)
+		}
+	})
+}
 
 // UC: UC-043 A17
 func TestExperimentLoop_ShutdownDropsDeferred(t *testing.T) {

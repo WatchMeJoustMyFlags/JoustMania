@@ -1682,6 +1682,11 @@ type RestoredRevert struct {
 	FlagKey      string
 	// Rewatch: the re-watch queued it (its journal reason prefix).
 	Rewatch bool
+	// Value is the value the experiment promoted (its intent's experimental value,
+	// which is what the promotion wrote). The revert runs only while the flag's
+	// promotion overlay still holds it, so a restart never deletes a newer
+	// promotion's value.
+	Value any
 }
 
 // DeferredLostAtRestart is the reason journaled for a deferred hold-key write a
@@ -1713,6 +1718,7 @@ func (r *Registry) sweepDeferredLocked(id string, jrnl *journal.Journal) {
 	case last.RevertPending:
 		r.restoredReverts = append(r.restoredReverts, RestoredRevert{
 			ExperimentID: id, FlagKey: jrnl.Intent().FlagKey, Rewatch: strings.HasPrefix(last.Reason, "re-watch: "),
+			Value: jrnl.Intent().ExperimentalValue,
 		})
 	}
 }

@@ -2,11 +2,15 @@ package promote
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flagservice"
@@ -422,26 +426,124 @@ func TestDeferredReview2235(t *testing.T) {
 			t.Fatalf("waiting %d reverts %d after shutdown", n, rig.rev.calls)
 		}
 	})
-	t.Run("UC-043/A15 a restored waiting revert runs at the first idle check while the overlay is still promoted", func(t *testing.T) {
-		rev := &listingReverter{flags: []string{holdKey}}
+	t.Run("UC-043/A15 a restored waiting revert runs at the first idle check only while the overlay holds its value", func(t *testing.T) {
+		rev := &overlayReverter{values: map[string]string{
+			holdKey:                      "20",
+			"shield.min_burst_seconds":   "0.5", // a newer promotion's value
+			"shield.recharge_per_second": "",    // overlay gone
+		}}
 		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, fakeWatcher{}, rev)
 		probe := &fakeProbe{live: true}
 		p.SetRealGameProbe(probe.probe)
 		j := &journalRecorder{}
 		p.SetRewatchJournal(j.sink)
 		p.RestoreDeferredReverts(ctx, []experiment.RestoredRevert{
-			{ExperimentID: "exp-old", FlagKey: holdKey, Rewatch: true},
-			{ExperimentID: "exp-gone", FlagKey: "shield.min_burst_seconds"}, // overlay already gone
+			{ExperimentID: "exp-old", FlagKey: holdKey, Rewatch: true, Value: 20.0},
+			{ExperimentID: "exp-newer", FlagKey: "shield.min_burst_seconds", Value: 0.3},
+			{ExperimentID: "exp-gone", FlagKey: "shield.recharge_per_second", Value: 0.1},
 		})
 		p.DrainDeferred(ctx, fixed(autoOn))
-		if rev.calls != 0 {
+		if len(rev.reverted) != 0 {
 			t.Fatal("restored revert ran during a real game")
 		}
 		probe.set(false)
 		p.DrainDeferred(ctx, fixed(autoOn))
-		got := j.all()
-		if rev.calls != 1 || len(got) != 1 || !strings.HasPrefix(got[0], "exp-old|reverted|"+RewatchReasonPrefix) {
-			t.Fatalf("reverts %d journal %v", rev.calls, got)
+		if strings.Join(rev.reverted, ",") != holdKey {
+			t.Fatalf("reverted %v, want only %s (a newer promotion's value survives the restart)", rev.reverted, holdKey)
+		}
+		got := strings.Join(j.all(), "\n")
+		for _, want := range []string{
+			"exp-old|reverted|" + RewatchReasonPrefix,
+			"exp-newer|applied|revert not run: the overlay holds a newer promotion's value",
+			"exp-gone|applied|revert not run: no promotion overlay left",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("journal %q lacks %q", got, want)
+			}
 		}
 	})
+	t.Run("UC-043/A15 an unreadable overlay keeps the restored revert waiting", func(t *testing.T) {
+		rev := &overlayReverter{err: errors.New("flag service down")}
+		p, _ := promoterWithRecorder(t, &recordingGitHub{}, &recordingGit{}, &recordingRealDefault{}, fakeWatcher{}, rev)
+		p.SetRealGameProbe(func(context.Context) (bool, error) { return false, nil })
+		j := &journalRecorder{}
+		p.SetRewatchJournal(j.sink)
+		p.RestoreDeferredReverts(ctx, []experiment.RestoredRevert{{ExperimentID: "exp-u", FlagKey: holdKey, Value: 20.0}})
+		p.DrainDeferred(ctx, fixed(autoOn))
+		if n, _ := p.DeferredStats(); n != 1 || len(rev.reverted) != 0 || len(j.all()) != 0 {
+			t.Fatalf("waiting %d reverted %v journal %v", n, rev.reverted, j.all())
+		}
+	})
+	t.Run("UC-043/A15 a newer promotion of this run supersedes a restored revert", func(t *testing.T) {
+		rig := newDeferredRig(t, nil) // the reverter cannot read overlays: only the tracking guards
+		rig.p.RestoreDeferredReverts(ctx, []experiment.RestoredRevert{{ExperimentID: "exp-old", FlagKey: holdKey, Value: 15.0}})
+		rig.probe.set(false)
+		if res := rig.promote(t, holdProposal("exp-new")); res.Outcome != OutcomeApplied {
+			t.Fatalf("outcome = %q", res.Outcome)
+		}
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
+		got := rig.journal.all()
+		if rig.rev.calls != 0 || len(got) != 1 || !strings.HasPrefix(got[0], "exp-old|applied|superseded") {
+			t.Fatalf("reverts %d journal %v", rig.rev.calls, got)
+		}
+	})
+	t.Run("UC-043/A17 a degradation of a deferred write during the next game is journaled revert_pending", func(t *testing.T) {
+		rig := newDeferredRig(t, fakeWatcher{degraded: true})
+		var events []experiment.PromotionResult
+		rig.p.SetRewatchJournal(func(_ string, res experiment.PromotionResult) { events = append(events, res) })
+		rig.promote(t, holdProposal("exp-dw")) // live: deferred
+		rig.probe.seq = []bool{false}          // idle for the pass, live again at the watch revert
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
+		if len(rig.realDef.calls) != 1 || rig.rev.calls != 0 || len(events) != 1 || !events[0].RevertPending {
+			t.Fatalf("writes %d reverts %d journal %+v", len(rig.realDef.calls), rig.rev.calls, events)
+		}
+	})
+	t.Run("UC-043/A17 probe errors are counted", func(t *testing.T) {
+		rig := newDeferredRig(t, nil)
+		reader := sdkmetric.NewManualReader()
+		if err := rig.p.RegisterDeferredMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))); err != nil {
+			t.Fatal(err)
+		}
+		rig.p.SetRealGameProbe(func(context.Context) (bool, error) { return false, errors.New("down") })
+		rig.promote(t, holdProposal("exp-pe"))
+		rig.p.DrainDeferred(ctx, fixed(autoOn))
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(ctx, &rm); err != nil {
+			t.Fatal(err)
+		}
+		var total int64
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if sum, ok := m.Data.(metricdata.Sum[int64]); ok && m.Name == MetricProbeErrors {
+					for _, dp := range sum.DataPoints {
+						total += dp.Value
+					}
+				}
+			}
+		}
+		if total != 2 {
+			t.Fatalf("%s = %d, want 2 (promotion and drain)", MetricProbeErrors, total)
+		}
+	})
+}
+
+// overlayReverter reverts and reads promotion overlays: values maps a flag to its
+// overlay JSON ("" = none).
+type overlayReverter struct {
+	values   map[string]string
+	err      error
+	reverted []string
+}
+
+func (o *overlayReverter) RevertRealDefault(_ context.Context, flag string) error {
+	o.reverted = append(o.reverted, flag)
+	return nil
+}
+
+func (o *overlayReverter) PromotionOverlay(_ context.Context, flag string) (json.RawMessage, bool, error) {
+	if o.err != nil {
+		return nil, false, o.err
+	}
+	v := o.values[flag]
+	return json.RawMessage(v), v != "", nil
 }
