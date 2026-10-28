@@ -32,9 +32,12 @@ from tests.integration.helpers import (
     list_mock_controllers_detailed,
     poll_until,
 )
+from tests.service.agent_flow import AGENT_SERVICE
 from tests.service.harness import AGENT
 
 pytestmark = pytest.mark.tier("service")
+
+COORDINATOR = "game-coordinator-service"
 
 SEED_FLAG = "windows"
 SEED_VALUE = {
@@ -259,3 +262,31 @@ async def test_no_real_game_ran_with_the_experiment(experiment_stack):
         await channel.close()
     spawned = {_field(line, "game_id") for line in _lines(stack, "experiment: shadow game spawned")}
     assert live <= spawned, f"a game the experiment did not spawn exists (a real game?): {live - spawned}"
+
+
+@pytest.mark.uc("UC-043", flow="main", steps=[4], tc="TC-011")
+def test_shadow_game_is_its_own_trace_linked_to_the_experiment(experiment_stack):
+    """#2223: with telemetry.experiment_game_parent at its default (`link`) a shadow game
+    roots its own trace and carries a Link `link.kind=experiment` to the experiment span.
+
+    The agent.experiment span is exported when the experiment ends, so this runs after
+    the teardown test above (the module's tests run in order).
+    """
+    stack = experiment_stack
+    sink = stack.otlp_sink
+    experiment_id = _field(_lines(stack, "experiment.declared")[0], "experiment_id")
+    experiment_span = sink.wait_span(
+        "agent.experiment", {"experiment.id": experiment_id}, service=AGENT_SERVICE, timeout=30
+    )
+    game_roots = sink.spans(None, {"experiment.id": experiment_id}, service=COORDINATOR, root=True)
+    assert game_roots, "no shadow game root span carries the experiment id"
+    for root in game_roots:
+        assert root.trace_id != experiment_span.trace_id, "the shadow game joined the experiment trace"
+        experiment_links = [link for link in root.links if link.attributes.get("link.kind") == "experiment"]
+        # The agent injects the agent.experiment span itself as the spawn traceparent;
+        # the Link names it, not the coordinator's StreamGameEvents SERVER span under it.
+        assert [(link.trace_id, link.span_id) for link in experiment_links] == [
+            (experiment_span.trace_id, experiment_span.span_id)
+        ], root.links
+        targets = [(link.trace_id, link.span_id) for link in root.links]
+        assert len(targets) == len(set(targets)), f"duplicate Link on the game root: {root.links}"

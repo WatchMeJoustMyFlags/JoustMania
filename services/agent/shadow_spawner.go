@@ -113,8 +113,9 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string, see
 	// Spawn-traceparent propagation (#1182, epic #1181): the registry carries the
 	// experiment's long-lived ROOT span context on the spawn ctx as a remote
 	// parent. Thread it onto the spec so StartExperimentGame injects it as the
-	// outgoing traceparent and the coordinator's game span becomes a CHILD of the
-	// experiment span. An invalid SpanContext (no root span) threads nothing, so
+	// outgoing traceparent; under telemetry.experiment_game_parent=child the
+	// coordinator's game span becomes a CHILD of the experiment span, under the
+	// default link it starts its own trace with a Link back (#2223). An invalid SpanContext (no root span) threads nothing, so
 	// the game stays own-rooted — graceful.
 	spec.ExperimentSpanContext = trace.SpanContextFromContext(ctx)
 

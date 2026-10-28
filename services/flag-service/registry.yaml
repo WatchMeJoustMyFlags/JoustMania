@@ -181,3 +181,5 @@ flags:
   # The logging group of the env-to-flag migration (flags.md §15, #1788): operator-written, read by every service.
   - {set: observability, key: log_level, kind: overlay, scope: [stack]}
   - {set: observability, key: debug, kind: overlay, scope: [stack]}
+  # The trace shape of experiment shadow games (#2223): own root + Link (link) or child of agent.experiment (child).
+  - {set: observability, key: telemetry.experiment_game_parent, kind: overlay, scope: [stack]}

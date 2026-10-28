@@ -66,6 +66,14 @@
       },
       "defaultVariant": "none"
     },
+    "telemetry.experiment_game_parent": {
+      "state": "ENABLED",
+      "variants": {
+        "child": "child",
+        "link": "link"
+      },
+      "defaultVariant": "link"
+    },
     "log_level": {
       "state": "ENABLED",
       "variants": {
