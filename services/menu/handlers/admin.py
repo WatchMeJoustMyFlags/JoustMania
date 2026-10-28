@@ -128,6 +128,9 @@ class AdminModeHandler:
             callbacks=callbacks,
         )
 
+        # Detached voice lines in flight (strong refs so they are not collected mid-play)
+        self._voice_tasks: set[asyncio.Task] = set()
+
         # Admin mode state
         self.active = False
         self.controller_serial: str | None = None
@@ -310,6 +313,18 @@ class AdminModeHandler:
         if self._state_manager is None:
             return
         await self._state_manager.audio.play_voice(sound)
+
+    def _play_voice_detached(self, sound: Sound) -> None:
+        """Play a voice line without awaiting it (it may overlap later feedback); errors are logged."""
+        task = asyncio.get_running_loop().create_task(self._play_voice_logged(sound))
+        self._voice_tasks.add(task)
+        task.add_done_callback(self._voice_tasks.discard)
+
+    async def _play_voice_logged(self, sound: Sound) -> None:
+        try:
+            await self._play_voice(sound)
+        except Exception as e:
+            logger.warning(f"Voice line {sound} failed: {e}")
 
     async def _play_sound(self, sound: Sound) -> None:
         """Play sound effect via StateManager's audio helper."""
@@ -1240,7 +1255,8 @@ class AdminModeHandler:
                 duration_ms=600,
                 speed=6,
             )
-            await self._play_voice(Sound.MENU_VOX_ADMIN_AGENT)  # reinforces the magenta pulse (#1746)
+            # Reinforces the magenta pulse (#1746); detached so a slow audio RPC never delays the value LED.
+            self._play_voice_detached(Sound.MENU_VOX_ADMIN_AGENT)
             value = self._variant_to_value(option_name, effective)
             await self._show_value_feedback(serial, option_name, value)
             await self._play_value_voice(option_name, value)
