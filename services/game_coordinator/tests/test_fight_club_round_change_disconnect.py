@@ -69,4 +69,9 @@ async def test_a_disconnect_while_the_timer_seats_the_next_round_keeps_its_round
     assert game.round_number == 3
     assert starts[-1] == 3
     assert game.round_task is not None and not game.round_task.done()
+    # Exactly one live timer: the stale task must not seat a second one (_round_still_seated).
+    live_timers = [
+        t for t in asyncio.all_tasks() if not t.done() and t.get_coro().__qualname__.endswith("_round_timer")
+    ]
+    assert live_timers == [game.round_task], "a stale round start orphaned the kill path's timer"
     _end_round_timer(game)
