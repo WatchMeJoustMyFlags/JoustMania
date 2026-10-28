@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -73,8 +74,21 @@ func noRedirect(c *http.Client) *http.Client {
 	if c != nil {
 		*out = *c
 	}
-	out.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	out.CheckRedirect = NoRedirect
 	return out
+}
+
+// NoRedirect is the one http.Client.CheckRedirect that never follows a
+// redirect: the 3xx surfaces as the response. net/http strips only
+// Authorization and Cookie across hosts, so an x-api-key header would reach a
+// redirect target (UC-044 BR-003, C-016).
+func NoRedirect(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+
+// NewHTTPClient returns a plain HTTP client that never follows a redirect, for
+// key-bearing requests that do not go through the SDK. A zero timeout means no
+// client-wide timeout.
+func NewHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, CheckRedirect: NoRedirect}
 }
 
 // TraceContextMiddleware injects W3C traceparent from the request ctx (the chat
