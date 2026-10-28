@@ -301,6 +301,15 @@ tree_fingerprint() {
 # - A killed job (no rc, its lock free) is replaced the same way.
 # The check, the removal and the start run under a flock on $JOB.lock, so two
 # concurrent callers never remove each other's fresh job.
+# Test-only seam (#2081): with GATE_RUN_TEST_PAUSE_DIR set, stop between the rc test and
+# the lock probe so scripts/tests/test-gate-run.sh can finish the job in that window.
+# Writes $DIR/reached, then waits while $DIR/hold exists. Unset: a no-op that returns 0.
+recheck_seam() {
+  [[ -n "${GATE_RUN_TEST_PAUSE_DIR:-}" ]] || return 0
+  : >"$GATE_RUN_TEST_PAUSE_DIR/reached"
+  while [[ -e "$GATE_RUN_TEST_PAUSE_DIR/hold" ]]; do sleep 0.05; done
+  return 0
+}
 if ((!WORKER)); then
   SELF="$(realpath -e -- "${BASH_SOURCE[0]}")"
   DETACH="$(dirname -- "$SELF")/detach.sh"
@@ -319,7 +328,7 @@ if ((!WORKER)); then
       "$(cat -- "$JOB/tree" 2>/dev/null)" != "$(tree_fingerprint)" ]]; then
       rm -rf -- "$JOB"
     fi
-  elif [[ -f "$JOB/lock" ]] && flock -n "$JOB/lock" true 2>/dev/null && [[ ! -f "$JOB/rc" ]]; then
+  elif [[ -f "$JOB/lock" ]] && recheck_seam && flock -n "$JOB/lock" true 2>/dev/null && [[ ! -f "$JOB/rc" ]]; then
     # killed: ended without rc and nobody holds its lock. The rc re-check matters: a job
     # that finished between the rc test above and the probe is finished, not killed (#2073).
     rm -rf -- "$JOB"
