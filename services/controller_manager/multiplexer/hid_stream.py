@@ -2,10 +2,12 @@
 
 Both adapters hold one bidirectional ``StreamIO`` call to their HID service,
 read by a background thread. Since grpcio 1.83 a call that is merely dropped
-is no longer cancelled, so the call is cancelled explicitly whenever the
-adapter stops it (``close_all()``) or replaces it (a reopen after the stream
-ended), #2266. Without that the HID service kept serving a closed adapter's
-stream until the channel closed.
+is no longer cancelled, so the call is cancelled explicitly: ``close_all()``
+cancels it, and the reader thread cancels its own call whenever it ends for
+another reason (the stream failed, a frame it could not convert), before the
+adapter can reopen, #2266. Cancelling a call that already finished is a no-op.
+Without that the HID service kept serving a dropped stream until the channel
+closed.
 
 Every started stream gets a generation number. A thread whose generation is no
 longer current stops reading, stops sending commands and leaves the adapter's
@@ -60,11 +62,10 @@ class HidStreamMixin:
         return self._stream_running and self._stream_generation == generation
 
     def _ensure_stream(self) -> None:
-        """Start the bidir stream if not already running; cancel any leftover call first."""
+        """Start the bidir stream if not already running."""
         with self._stream_lock:
             if self._stream_running:
                 return
-            stale_call, self._stream_call = self._stream_call, None
             old_thread = self._stream_thread
             self._stream_generation += 1
             generation = self._stream_generation
@@ -77,8 +78,6 @@ class HidStreamMixin:
             )
             self._stream_thread = thread
 
-        if stale_call is not None:
-            stale_call.cancel()
         # Wait for the old thread to finish before starting a new one
         if old_thread is not None:
             old_thread.join(timeout=REOPEN_JOIN_TIMEOUT_S)
@@ -138,6 +137,11 @@ class HidStreamMixin:
             if self._stream_is_current(generation):
                 logger.warning(f"StreamIO error: {e}")
         finally:
+            # Whatever ended the reader (stop, stream error, a bad frame), its call must
+            # not stay live on the HID service; a no-op when the call already finished.
+            # Cancelled before _stream_running drops, so a reopen never overlaps it.
+            if call is not None:
+                call.cancel()
             with self._stream_lock:
                 if self._stream_generation == generation:
                     self._stream_running = False

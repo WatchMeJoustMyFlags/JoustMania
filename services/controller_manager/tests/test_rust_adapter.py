@@ -13,6 +13,7 @@ from services.controller_manager.multiplexer.rust_adapter import (
     RustServiceAdapter,
     _sensor_data_to_dict,
 )
+from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 
 def _make_adapter():
@@ -409,7 +410,7 @@ class TestStreamReconnection:
             if len(stream_calls) == 1:
                 raise grpc.RpcError()  # rust-hid exited (watchdog, code 70)
             second_stream_open.set()
-            return iter(())
+            return FakeStreamCall()
 
         adapter._stub.StreamIO.side_effect = stream_io
         adapter._stub.Discover.return_value = MagicMock(controllers=[])
@@ -510,7 +511,7 @@ class TestUnaryCallsCarryADeadline:
     def test_stream_io_has_no_deadline(self):
         """The long-lived StreamIO stream must not inherit the unary deadline."""
         adapter = _make_adapter()
-        adapter._stub.StreamIO.return_value = iter([])
+        adapter._stub.StreamIO.return_value = FakeStreamCall()
         adapter._stream_running = True
 
         adapter._stream_loop()
