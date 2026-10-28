@@ -208,6 +208,15 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 	if !f.scopes[scope] {
 		return flagservice.Result{}, &flagservice.Error{Status: 400, Reason: "malformed", Detail: "scope does not fit"}
 	}
+	if w.IfWriterIn != nil {
+		// ?if_writer_in= (#2260): the write precondition, like the flag service.
+		if scope != "real" {
+			return flagservice.Result{}, &flagservice.Error{Status: 400, Reason: "malformed", Detail: "if_writer_in outside scope real"}
+		}
+		if !realWriterAllowed(f.real, w.IfWriterIn) {
+			return flagservice.Result{}, &flagservice.Error{Status: 412, Reason: flagservice.ReasonWriterMismatch, Detail: "fake: real overlay owned by another writer"}
+		}
+	}
 	var v value
 	if w.Variant != "" {
 		raw, ok := f.base.Variants[w.Variant]
@@ -296,6 +305,17 @@ func (s *Service) Delete(_ context.Context, set, key string, q url.Values) error
 		f.stack = nil
 	}
 	return nil
+}
+
+// realWriterAllowed mirrors the flag service: "" matches no overlay, a label
+// matches an overlay with that writer; an unlabeled overlay matches nothing.
+func realWriterAllowed(cur *value, allowed []string) bool {
+	for _, w := range allowed {
+		if (cur == nil && w == "") || (cur != nil && w != "" && cur.writer == w) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *flagState) inBounds(raw json.RawMessage) bool {
