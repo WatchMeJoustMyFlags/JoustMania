@@ -74,8 +74,12 @@ pub trait HidBackend {
 
     /// Re-enumerate the attached HID devices.
     fn refresh_devices(&mut self) -> hidapi::HidResult<()>;
-    /// Open every attached PS Move: (serial, device, product_id, adapter_name).
-    fn discover_controllers(&self) -> Vec<(String, Self::Device, u16, Option<String>)>;
+    /// Open every attached PS Move whose serial `skip` rejects:
+    /// (serial, device, product_id, adapter_name). A skipped serial is not opened.
+    fn discover_controllers(
+        &self,
+        skip: &dyn Fn(&str) -> bool,
+    ) -> Vec<(String, Self::Device, u16, Option<String>)>;
     /// Open the attached PS Move with this serial: (device, product_id, adapter_name).
     /// The adapter is resolved once here, the same way discovery does (#2200).
     fn open_controller_by_serial(
@@ -91,8 +95,11 @@ impl HidBackend for HidApi {
         HidApi::refresh_devices(self)
     }
 
-    fn discover_controllers(&self) -> Vec<(String, Self::Device, u16, Option<String>)> {
-        hid::discover_controllers(self)
+    fn discover_controllers(
+        &self,
+        skip: &dyn Fn(&str) -> bool,
+    ) -> Vec<(String, Self::Device, u16, Option<String>)> {
+        hid::discover_controllers(self, skip)
     }
 
     fn open_controller_by_serial(
@@ -108,6 +115,9 @@ struct DeviceEntry<D> {
     device: Arc<Mutex<D>>,
     product_id: u16,
     adapter_name: Option<String>,
+    /// A poll of the input stream hit a read error: the handle is gone and the
+    /// next discovery pass drops it (UC-002 BR-006, #2314).
+    read_failed: bool,
 }
 
 /// Run the device manager loop on the current thread (blocking).
@@ -180,7 +190,7 @@ fn run_device_loop<B: HidBackend>(
 
         // Poll all open devices for input reports
         if let Some(ref sender) = stream_sender {
-            poll_all_devices(&devices, sender);
+            poll_all_devices(&mut devices, sender);
         }
 
         // Brief sleep to avoid busy-waiting (~1 kHz poll rate)
@@ -208,8 +218,18 @@ fn handle_command<B: HidBackend>(
             exclude_serials,
             reply,
         } => {
-            let serials =
-                handle_discover(api, devices, force, verify_only, &exclude_serials, outputs);
+            let polling = stream_sender.is_some();
+            let serials = handle_discover(
+                api,
+                devices,
+                DiscoverPass {
+                    force,
+                    verify_only,
+                    polling,
+                },
+                &exclude_serials,
+                outputs,
+            );
             let _ = reply.send(serials);
         }
         DeviceCmd::Open { serial, reply } if reply.is_closed() => {
@@ -240,7 +260,25 @@ fn handle_command<B: HidBackend>(
     true
 }
 
-/// Discover controllers: enumerate HID devices, open new ones.
+/// One Discover request as the device loop sees it.
+#[derive(Debug, Clone, Copy)]
+struct DiscoverPass {
+    /// Skip the read check of open devices (a periodic forced rescan).
+    force: bool,
+    /// Skip the enumeration: only drop the devices that are gone.
+    verify_only: bool,
+    /// The input stream is registered, so the device loop reads every open
+    /// device each pass and records its read errors.
+    polling: bool,
+}
+
+/// Discover controllers: drop the ones that are gone, enumerate, open new ones.
+///
+/// A pass never reopens an open controller and never reads from one the input
+/// stream polls (UC-002 BR-006, #2314): an open device whose poll hit a read
+/// error is dropped; without a stream (nothing polls, nothing consumes the
+/// reports) a non-forced pass reads each device once to find the dead ones.
+/// The enumeration then opens only serials that are not open yet.
 ///
 /// `exclude_serials` lists controllers claimed by another adapter (e.g. hidapi).
 /// Excluded serials are skipped during enumeration — the device handle is not
@@ -248,46 +286,48 @@ fn handle_command<B: HidBackend>(
 fn handle_discover<B: HidBackend>(
     api: &mut B,
     devices: &mut HashMap<String, DeviceEntry<B::Device>>,
-    force: bool,
-    verify_only: bool,
+    pass: DiscoverPass,
     exclude_serials: &[String],
     outputs: &DeviceOutputs,
 ) -> Vec<DiscoveredControllerInfo> {
-    // Verify existing devices if not forcing
-    if !force && !devices.is_empty() {
-        let stale: Vec<String> = devices
-            .iter()
-            .filter_map(|(serial, entry)| {
-                let mut buf = [0u8; 64];
-                // Busy = its writer is in a write: the device is there.
-                let Ok(device) = entry.device.try_lock() else {
-                    return None;
-                };
-                match device.read(&mut buf) {
-                    Ok(_) => None,                  // Data or no data, device is alive
-                    Err(_) => Some(serial.clone()), // Device gone
-                }
-            })
-            .collect();
-        for serial in stale {
-            info!(serial = %serial, "Removing stale device");
-            devices.remove(&serial);
-            outputs.router.close(&serial);
-        }
+    let read_check = !pass.force && !pass.polling;
+    let stale: Vec<String> = devices
+        .iter()
+        .filter_map(|(serial, entry)| {
+            if entry.read_failed {
+                return Some(serial.clone());
+            }
+            if !read_check {
+                return None;
+            }
+            let mut buf = [0u8; 64];
+            // Busy = its writer is in a write: the device is there.
+            let Ok(device) = entry.device.try_lock() else {
+                return None;
+            };
+            match device.read(&mut buf) {
+                Ok(_) => None,                  // Data or no data, device is alive
+                Err(_) => Some(serial.clone()), // Device gone
+            }
+        })
+        .collect();
+    for serial in stale {
+        info!(serial = %serial, "Removing stale device");
+        devices.remove(&serial);
+        outputs.router.close(&serial);
     }
 
-    if !verify_only {
+    if !pass.verify_only {
         if let Err(e) = api.refresh_devices() {
             warn!(error = %e, "Failed to refresh HID device list");
         }
 
-        let discovered = api.discover_controllers();
+        // Open only what is not open yet and not claimed by another adapter.
+        let open_or_excluded = |serial: &str| {
+            devices.contains_key(serial) || exclude_serials.iter().any(|s| s == serial)
+        };
+        let discovered = api.discover_controllers(&open_or_excluded);
         for (serial, device, product_id, adapter_name) in discovered {
-            // Skip controllers claimed by another adapter
-            if exclude_serials.iter().any(|s| s == &serial) {
-                debug!(serial = %serial, "Skipping excluded controller (claimed by another adapter)");
-                continue;
-            }
             devices.entry(serial.clone()).or_insert_with(|| {
                 info!(serial = %serial, "New controller discovered");
                 let device = Arc::new(Mutex::new(device));
@@ -296,6 +336,7 @@ fn handle_discover<B: HidBackend>(
                     device,
                     product_id,
                     adapter_name,
+                    read_failed: false,
                 }
             });
         }
@@ -337,6 +378,7 @@ fn handle_open<B: HidBackend>(
                     device,
                     product_id,
                     adapter_name,
+                    read_failed: false,
                 },
             );
             true
@@ -374,10 +416,10 @@ fn handle_close_all<D: HidDeviceIo>(
 
 /// Poll all open devices and send sensor data through the stream.
 fn poll_all_devices<D: HidDeviceIo>(
-    devices: &HashMap<String, DeviceEntry<D>>,
+    devices: &mut HashMap<String, DeviceEntry<D>>,
     sender: &tokio::sync::mpsc::Sender<StreamSensorData>,
 ) {
-    for (serial, entry) in devices.iter() {
+    for (serial, entry) in devices.iter_mut() {
         let zcm2 = hid::is_zcm2(entry.product_id);
         let device = match entry.device.try_lock() {
             Ok(device) => device,
@@ -385,7 +427,13 @@ fn poll_all_devices<D: HidDeviceIo>(
             Err(TryLockError::WouldBlock) => continue,
             Err(TryLockError::Poisoned(e)) => e.into_inner(),
         };
-        if let Some(report) = hid::read_latest_input(&*device, zcm2) {
+        let drain = hid::read_latest_input(&*device, zcm2);
+        drop(device);
+        if drain.read_failed && !entry.read_failed {
+            info!(serial = %serial, "Read failed, dropping the controller on the next discovery");
+            entry.read_failed = true;
+        }
+        if let Some(report) = drain.report {
             let data = StreamSensorData {
                 serial: serial.clone(),
                 report,
@@ -453,7 +501,13 @@ mod tests {
             Ok(())
         }
 
-        fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+            if skip(SERIAL) {
+                return vec![];
+            }
             vec![(
                 SERIAL.to_string(),
                 self.device.clone(),
@@ -690,8 +744,11 @@ mod tests {
             Ok(())
         }
 
-        fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
-            self.inner.discover_controllers()
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+            self.inner.discover_controllers(skip)
         }
 
         fn open_controller_by_serial(
@@ -831,9 +888,13 @@ mod tests {
             Ok(())
         }
 
-        fn discover_controllers(&self) -> Vec<(String, LoadDevice, u16, Option<String>)> {
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, LoadDevice, u16, Option<String>)> {
             self.devices
                 .iter()
+                .filter(|(s, _)| !skip(s))
                 .map(|(s, d)| {
                     (
                         s.clone(),
@@ -992,12 +1053,14 @@ mod tests {
         }
     }
 
-    /// Backend that counts every enumeration and open (#2140).
+    /// Backend that counts every enumeration and open (#2140), and every
+    /// device a discovery pass opened (#2314).
     #[derive(Default)]
     struct CountingBackend {
         device: FakeDevice,
         refreshes: usize,
         opens: std::cell::Cell<usize>,
+        discover_opens: std::cell::Cell<usize>,
     }
 
     impl HidBackend for CountingBackend {
@@ -1008,7 +1071,14 @@ mod tests {
             Ok(())
         }
 
-        fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+            if skip(SERIAL) {
+                return vec![];
+            }
+            self.discover_opens.set(self.discover_opens.get() + 1);
             vec![(
                 SERIAL.to_string(),
                 self.device.clone(),
@@ -1116,5 +1186,149 @@ mod tests {
         assert_eq!(api.opens.get(), 1);
         assert!(reply_rx.try_recv().unwrap());
         assert!(devices.contains_key(SERIAL));
+    }
+
+    /// One Discover pass of the 1 Hz discovery check (controller manager:
+    /// full enumeration, not forced) on `devices`.
+    fn discover_pass(
+        api: &mut CountingBackend,
+        devices: &mut HashMap<String, DeviceEntry<FakeDevice>>,
+        verify_only: bool,
+        polling: bool,
+    ) -> Vec<DiscoveredControllerInfo> {
+        handle_discover(
+            api,
+            devices,
+            DiscoverPass {
+                force: false,
+                verify_only,
+                polling,
+            },
+            &[],
+            &DeviceOutputs::default(),
+        )
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_full_discovery_does_not_reopen_an_open_controller() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+
+        for _ in 0..3 {
+            let found = discover_pass(&mut api, &mut devices, false, true);
+            assert_eq!(found.len(), 1);
+        }
+
+        assert_eq!(
+            api.refreshes, 3,
+            "each full pass still enumerates (hot-plug)"
+        );
+        assert_eq!(
+            api.discover_opens.get(),
+            1,
+            "a full discovery pass reopened an open controller"
+        );
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_discovery_does_not_open_an_excluded_controller() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+
+        let found = handle_discover(
+            &mut api,
+            &mut devices,
+            DiscoverPass {
+                force: false,
+                verify_only: false,
+                polling: true,
+            },
+            &[SERIAL.to_string()],
+            &DeviceOutputs::default(),
+        );
+
+        assert!(found.is_empty());
+        assert_eq!(
+            api.discover_opens.get(),
+            0,
+            "an excluded controller was opened and dropped"
+        );
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_discovery_does_not_read_a_polled_controller() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        discover_pass(&mut api, &mut devices, false, true);
+        api.device
+            .0
+            .lock()
+            .unwrap()
+            .pending
+            .push_back(sample_report());
+
+        // Verify-only and full passes, the input stream registered.
+        discover_pass(&mut api, &mut devices, true, true);
+        discover_pass(&mut api, &mut devices, false, true);
+
+        assert_eq!(
+            api.device.0.lock().unwrap().pending.len(),
+            1,
+            "a discovery pass consumed an input report the stream needs"
+        );
+        assert!(devices.contains_key(SERIAL));
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_a_read_error_drops_the_controller_on_the_next_pass() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        discover_pass(&mut api, &mut devices, false, true);
+
+        // The poll hit a read error: the handle is gone.
+        devices.get_mut(SERIAL).unwrap().read_failed = true;
+        let found = discover_pass(&mut api, &mut devices, true, true);
+        assert!(found.is_empty(), "a controller with a failed read stayed");
+        assert!(!devices.contains_key(SERIAL));
+
+        // Still attached (it reconnected): the next full pass opens it again.
+        let found = discover_pass(&mut api, &mut devices, false, true);
+        assert_eq!(found.len(), 1);
+        assert_eq!(api.discover_opens.get(), 2);
+        assert!(!devices[SERIAL].read_failed);
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_the_poll_marks_a_failed_read() {
+        struct GoneDevice;
+        impl HidDeviceIo for GoneDevice {
+            fn read(&self, _buf: &mut [u8]) -> hidapi::HidResult<usize> {
+                Err(hidapi::HidError::HidApiError {
+                    message: "No such device".to_string(),
+                })
+            }
+            fn write(&self, _data: &[u8]) -> hidapi::HidResult<usize> {
+                Ok(0)
+            }
+        }
+        let mut devices = HashMap::from([(
+            SERIAL.to_string(),
+            DeviceEntry {
+                device: Arc::new(Mutex::new(GoneDevice)),
+                product_id: PRODUCT_ID_ZCM2,
+                adapter_name: None,
+                read_failed: false,
+            },
+        )]);
+        let (sender, _rx) = tokio::sync::mpsc::channel(16);
+
+        poll_all_devices(&mut devices, &sender);
+
+        assert!(devices[SERIAL].read_failed);
     }
 }

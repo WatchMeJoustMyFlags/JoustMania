@@ -99,7 +99,12 @@ class MultiplexerBackend(ControllerBackend):
         # Rollout routing (rollout flagd domain). Evaluated per cycle.
         self._rollout_router = RolloutRouter()
 
-        # Discovery throttle: only run full enumeration every N seconds
+        # Discovery throttle: full enumeration at most every N seconds, verify-only
+        # in between. The discovery check runs at 1 Hz (NFR-002), so every check is
+        # a full enumeration, which UC-002 step 3 needs to find a new controller on
+        # the next check. A full pass is cheap: rust-hid enumerates but opens only
+        # controllers that are not open yet and never reads a polled one (UC-002
+        # BR-006, #2314).
         self._last_full_discovery: float = 0.0
         self._full_discovery_interval: float = 0.5  # seconds
 

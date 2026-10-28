@@ -437,10 +437,16 @@ pub fn resolve_adapter_from_sysfs(hidraw_path: &str) -> Option<String> {
 
 /// Discover PS Move controllers via HID enumeration.
 ///
-/// Opens each discovered device, sets it to non-blocking mode, and
-/// returns a list of (serial, HidDevice, product_id, adapter_name) tuples.
-/// `adapter_name` is resolved from sysfs (e.g. "hci0") or None for USB.
-pub fn discover_controllers(api: &HidApi) -> Vec<(String, HidDevice, u16, Option<String>)> {
+/// Opens each discovered device whose serial `skip` rejects, sets it to
+/// non-blocking mode, and returns a list of (serial, HidDevice, product_id,
+/// adapter_name) tuples. A skipped serial (already open, or claimed by another
+/// adapter) is never opened, so a discovery pass does no I/O on it (UC-002
+/// BR-006, #2314). `adapter_name` is resolved from sysfs (e.g. "hci0") or None
+/// for USB.
+pub fn discover_controllers(
+    api: &HidApi,
+    skip: &dyn Fn(&str) -> bool,
+) -> Vec<(String, HidDevice, u16, Option<String>)> {
     let mut results = Vec::new();
 
     for &pid in &ALL_PRODUCT_IDS {
@@ -454,6 +460,9 @@ pub fn discover_controllers(api: &HidApi) -> Vec<(String, HidDevice, u16, Option
                 continue;
             }
             let serial = normalize_serial(serial_raw);
+            if skip(&serial) {
+                continue;
+            }
 
             match api.open_path(dev_info.path()) {
                 Ok(device) => {
@@ -551,10 +560,14 @@ impl HidDeviceIo for HidDevice {
 /// button bits OR'ed across every drained report (#2312, UC-010 BR-012): a
 /// press and release that both land in one drain still reports the press,
 /// and the next drain reports the release. Every other value is the latest.
-pub fn read_latest_input<D: HidDeviceIo>(device: &D, zcm2: bool) -> Option<ParsedInputReport> {
+/// `read_failed` is set when the drain ended on a read error (the device is
+/// gone; hidapi reports "no data" as `Ok(0)`), which the device loop uses
+/// instead of a discovery read to detect a lost controller (#2314).
+pub fn read_latest_input<D: HidDeviceIo>(device: &D, zcm2: bool) -> InputDrain {
     let mut latest: Option<ParsedInputReport> = None;
     let mut buttons_seen: u32 = 0;
     let mut buf = [0u8; INPUT_REPORT_SIZE];
+    let mut read_failed = false;
 
     loop {
         match device.read(&mut buf) {
@@ -565,14 +578,29 @@ pub fn read_latest_input<D: HidDeviceIo>(device: &D, zcm2: bool) -> Option<Parse
                 }
             }
             Ok(_) => break, // Short read or no data
-            Err(_) => break,
+            Err(_) => {
+                read_failed = true;
+                break;
+            }
         }
     }
 
-    latest.map(|mut report| {
-        report.buttons |= buttons_seen;
-        report
-    })
+    InputDrain {
+        report: latest.map(|mut report| {
+            report.buttons |= buttons_seen;
+            report
+        }),
+        read_failed,
+    }
+}
+
+/// Result of one `read_latest_input` drain.
+#[derive(Debug)]
+pub struct InputDrain {
+    /// The latest report with the button bits of the whole drain, if any.
+    pub report: Option<ParsedInputReport>,
+    /// The drain ended on a read error.
+    pub read_failed: bool,
 }
 
 #[cfg(test)]
@@ -1016,7 +1044,7 @@ mod tests {
             report_with(0, 0, 0x9000), // released again: the latest report
         ]);
 
-        let report = read_latest_input(&device, false).expect("a report");
+        let report = read_latest_input(&device, false).report.expect("a report");
 
         assert!(report.button_trigger(), "trigger tap lost inside the drain");
         assert!(report.button_move(), "move tap lost inside the drain");
@@ -1027,7 +1055,7 @@ mod tests {
 
         // The next drain shows the release.
         let device = queued(&[report_with(0, 0, 0x9000)]);
-        let next = read_latest_input(&device, false).expect("a report");
+        let next = read_latest_input(&device, false).report.expect("a report");
         assert!(!next.button_trigger());
         assert!(!next.button_move());
     }
@@ -1035,6 +1063,31 @@ mod tests {
     // UC: UC-010 BR-012
     #[test]
     fn test_read_latest_input_without_reports_is_none() {
-        assert!(read_latest_input(&queued(&[]), false).is_none());
+        let drain = read_latest_input(&queued(&[]), false);
+        assert!(drain.report.is_none());
+        assert!(!drain.read_failed, "no data is not a read error");
+    }
+
+    /// Device whose handle is gone: every read fails.
+    struct GoneDevice;
+
+    impl HidDeviceIo for GoneDevice {
+        fn read(&self, _buf: &mut [u8]) -> hidapi::HidResult<usize> {
+            Err(hidapi::HidError::HidApiError {
+                message: "No such device".to_string(),
+            })
+        }
+
+        fn write(&self, _data: &[u8]) -> hidapi::HidResult<usize> {
+            Ok(0)
+        }
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_read_latest_input_reports_a_read_error() {
+        let drain = read_latest_input(&GoneDevice, false);
+        assert!(drain.report.is_none());
+        assert!(drain.read_failed, "a failed read was not reported");
     }
 }
