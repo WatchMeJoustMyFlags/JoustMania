@@ -280,10 +280,18 @@ func (d *dynamicDeclarer) candidateOrder(flags map[string]candidateFlag) []strin
 // defaultDynamicDenylist, which always applies, plus the flag's additions
 // (UC-070 BR-008, C-034: the flag can only tighten, #1907).
 func (d *dynamicDeclarer) denied(key string) bool {
-	if _, ok := defaultDynamicDenylist[key]; ok {
+	if builtinDenied(key) {
 		return true
 	}
 	_, ok := d.denylist[key]
+	return ok
+}
+
+// builtinDenied reports whether key is on the built-in floor
+// defaultDynamicDenylist. The declarer and the proposer vocabulary both apply it
+// (UC-070 BR-008, C-034, #1961).
+func builtinDenied(key string) bool {
+	_, ok := defaultDynamicDenylist[key]
 	return ok
 }
 

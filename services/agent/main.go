@@ -1092,14 +1092,16 @@ func proposerPermit(src proposerGateFlags, proposerCeiling bool) func(ctx contex
 // answers), the safe reading.
 //
 // A hold key is in the set only under UC-043 A17 step 1 (the same gate as the
-// dynamic declarer; a nil gate keeps every hold key out).
+// dynamic declarer; a nil gate keeps every hold key out). A key on the built-in
+// denylist floor (defaultDynamicDenylist) is never in the set, even when its
+// catalog row allows an experiment-arm write (UC-070 BR-008, #1961).
 func gameFlagVocab(r gameFlagReader, hold *holdGate) func() map[string]struct{} {
 	return func() map[string]struct{} {
 		catalog := readGameCatalog(r)
 		offerable := hold.filter(context.Background(), catalog)
 		set := make(map[string]struct{}, len(catalog))
 		for k := range catalog {
-			if offerable(k) {
+			if offerable(k) && !builtinDenied(k) {
 				set[k] = struct{}{}
 			}
 		}
