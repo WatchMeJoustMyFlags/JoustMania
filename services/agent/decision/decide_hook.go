@@ -456,14 +456,15 @@ func hasAllowedInterventions(allowed []string) bool {
 }
 
 // noteNoInterventions records the empty-allow-list state for this game and logs
-// at debug level only when it changes, not once per 10-60 Hz cycle. The caller
-// holds llmGate.
-func (l *Loop) noteNoInterventions(c gamecontext.GameContext, skipping bool) {
+// at debug level only when it changes, not once per 10-60 Hz cycle.
+// experimentFiltered is true when the experiment-flag filter (A40 step 5) emptied
+// an allow-list that offered something. The caller holds llmGate.
+func (l *Loop) noteNoInterventions(c gamecontext.GameContext, skipping, experimentFiltered bool) {
 	if l.skippingNoInterventions == skipping {
 		return
 	}
 	l.skippingNoInterventions = skipping
-	l.Log.Debug("agent.decide.no_interventions_allowed", "session_id", c.SessionID, "skipping", skipping)
+	l.Log.Debug("agent.decide.no_interventions_allowed", "session_id", c.SessionID, "skipping", skipping, "experiment_filtered", experimentFiltered)
 }
 
 // gateRemoteDecide is the call gate for remote decide calls: eligibility
@@ -484,12 +485,14 @@ func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c 
 	defer l.llmGate.Unlock()
 	// Before cadence and budget: an empty allow-list charges neither
 	// (UC-040 BR-005: no paid call without a possible action).
-	if !hasAllowedInterventions(snapshot.InterventionsAllowed) {
-		l.noteNoInterventions(c, true)
+	// UC-040 A40 step 5: in an experiment game the levers of the flag under test
+	// are not offered, so they do not count either.
+	if !hasAllowedInterventions(l.offeredInterventions(c, snapshot.InterventionsAllowed)) {
+		l.noteNoInterventions(c, true, hasAllowedInterventions(snapshot.InterventionsAllowed))
 		l.recordGated(ctx, DecideGateNoInterventions)
 		return DecideGateNoInterventions
 	}
-	l.noteNoInterventions(c, false)
+	l.noteNoInterventions(c, false, false)
 	t := l.nowOrDefault()()
 	if iv := snapshot.Decision.MinInterval; iv > 0 && !l.lastDecideAttempt.IsZero() && t.Sub(l.lastDecideAttempt) < iv {
 		l.recordGated(ctx, DecideGateInterval)
@@ -594,7 +597,7 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		requested: requested,
 		used:      backend.Name(),
 		model:     cfg.Model,
-		req:       l.buildDecideRequest(c, fired.InterventionsAllowed, false),
+		req:       l.buildDecideRequest(c, l.offeredInterventions(c, fired.InterventionsAllowed), false),
 		start:     start,
 		stateAt:   c.UpdatedAt,
 	}

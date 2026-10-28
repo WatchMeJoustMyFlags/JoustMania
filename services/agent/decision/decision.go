@@ -345,6 +345,8 @@ type Loop struct {
 	// experimentFlag looks up the flag under test in a game (UC-040 A40, BR-028;
 	// experimentflag.go). nil skips nothing.
 	experimentFlag func(c gamecontext.GameContext) string
+	// experimentFlagSeen quiets repeated experiment_flag blocks (UC-040 A40 step 6).
+	experimentFlagSeen experimentFlagRefusals
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -765,7 +767,7 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, rules RulesE
 	// The remote call gate is not reached on rules: leave the empty-allow-list
 	// state so its "entering" debug line fires again on a later remote cycle (#1298).
 	l.llmGate.Lock()
-	l.noteNoInterventions(c, false)
+	l.noteNoInterventions(c, false, false)
 	l.noteMisconfigured(c, flags.DecisionBackendRules, "")
 	l.llmGate.Unlock()
 	return l.rulesDecide(ctx, snapshot, rules, c, flags.DecisionBackendRules, "")
@@ -805,6 +807,13 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		// UC-040 A21: the budget already refused this decision and has not
 		// changed since; count it, but emit no span, warning or timeline entry.
 		l.recordRepeatRefusal(ctx, d, cost, state, ReasonRateLimit)
+		return
+	}
+	if blocked && perm.repeatExperimentFlag {
+		// UC-040 A40 step 6 (as A21): this lever was already blocked on the same
+		// experiment flag in this game; count it, but emit no span, warning or
+		// timeline entry.
+		l.recordRepeatRefusal(ctx, d, cost, state, ReasonExperimentFlag)
 		return
 	}
 	if blocked && perm.repeatApplied {
@@ -1037,6 +1046,9 @@ type permission struct {
 	// repeatApplied marks an already_applied suppression that repeats an earlier one
 	// against the same entry (quiet, UC-040 A35).
 	repeatApplied bool
+	// repeatExperimentFlag marks an experiment_flag block of a lever already
+	// blocked on the same flag in this game (quiet, UC-040 A40 step 6).
+	repeatExperimentFlag bool
 }
 
 // evaluatePermission runs the permission chain over one decision in order:
@@ -1066,8 +1078,10 @@ func (l *Loop) evaluatePermission(ctx context.Context, snapshot flags.Snapshot, 
 	// arm, a lever of the flag under test is blocked experiment_flag. Check-only and
 	// before the rate limit, so it charges no budget and does not end rank-order
 	// admission.
-	if l.experimentFlagBlocks(c, d) {
-		return permission{reason: ReasonExperimentFlag, blocked: true}
+	// A repeat of a block already emitted in this game is quiet (A40 step 6).
+	if flag := l.experimentFlagBlocks(c, d); flag != "" {
+		return permission{reason: ReasonExperimentFlag, blocked: true,
+			repeatExperimentFlag: !l.experimentFlagSeen.first(d.Intervention, flag)}
 	}
 	// 3. Already applied (UC-040 A35, BR-023): a state or level decision that
 	// repeats the value this loop last wrote for its key is blocked already_applied.

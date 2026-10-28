@@ -1,6 +1,10 @@
 package decision
 
-import "github.com/joustmania/agent/gamecontext"
+import (
+	"sync"
+
+	"github.com/joustmania/agent/gamecontext"
+)
 
 // The experiment-flag skip (UC-040 A40, BR-028; UC-043 BR-005; decide-contract §4.5
 // step 2a; #1975). In a game that belongs to an experiment on flag X, in either arm,
@@ -42,14 +46,66 @@ func (l *Loop) SetExperimentFlagSource(src func(c gamecontext.GameContext) strin
 	l.experimentFlag = src
 }
 
-// experimentFlagBlocks reports whether d is a lever of the flag under test in c's
-// experiment (A40 step 1).
-func (l *Loop) experimentFlagBlocks(c gamecontext.GameContext, d Decision) bool {
+// experimentFlagOf returns the flag under test in c's experiment, "" when the loop
+// has no source or the game belongs to no experiment the agent knows.
+func (l *Loop) experimentFlagOf(c gamecontext.GameContext) string {
 	if l.experimentFlag == nil {
-		return false
+		return ""
 	}
+	return l.experimentFlag(c)
+}
+
+// experimentFlagBlocks returns the flag under test when d is a lever of it in c's
+// experiment (A40 step 1), "" when d is not blocked.
+func (l *Loop) experimentFlagBlocks(c gamecontext.GameContext, d Decision) string {
 	if _, lever := experimentLevers[d.Intervention]; !lever {
+		return ""
+	}
+	flag := l.experimentFlagOf(c)
+	if !movesExperimentFlag(d.Intervention, flag) {
+		return ""
+	}
+	return flag
+}
+
+// offeredInterventions is the allow-list a remote decide request offers in c's
+// game (A40 step 5, decide-contract §3.1): allowed without the levers of the flag
+// under test. Outside an experiment it returns allowed unchanged. The call gate
+// (§7.1) uses the same list, so a request left with only noop is never made.
+func (l *Loop) offeredInterventions(c gamecontext.GameContext, allowed []string) []string {
+	flag := l.experimentFlagOf(c)
+	if flag == "" {
+		return allowed
+	}
+	out := make([]string, 0, len(allowed))
+	for _, a := range allowed {
+		if !movesExperimentFlag(a, flag) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// experimentFlagRefusals remembers the experiment_flag blocks this game's loop has
+// already emitted, keyed by lever and flag (A40 step 6, as A21): a repeat only
+// counts. At most one entry per lever and flag, so it stays bounded.
+type experimentFlagRefusals struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+// first reports whether this is the first experiment_flag block of intervention on
+// flag, and records it.
+func (r *experimentFlagRefusals) first(intervention, flag string) bool {
+	key := intervention + "|" + flag
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.seen[key] {
 		return false
 	}
-	return movesExperimentFlag(d.Intervention, l.experimentFlag(c))
+	if r.seen == nil {
+		r.seen = map[string]bool{}
+	}
+	r.seen[key] = true
+	return true
 }
