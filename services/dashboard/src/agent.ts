@@ -148,6 +148,10 @@ export interface FlagPanel {
   interventionsAllowed: string;
   /** interventions.enabled, the write gate (#2093); null on an older agent image. */
   interventionsEnabled: boolean | null;
+  /** experiments.enabled (#2291): the stage fallback (UC-070 A9) turns it on; null on an older agent image. */
+  experimentsEnabled: boolean | null;
+  /** llm.eligible_game_kinds (#2291), comma joined; "" on an older agent image. */
+  eligibleGameKinds: string;
 }
 
 /** A single action's blocked tally for the intervention overlay. */
@@ -279,6 +283,8 @@ export function flagPanelFrom(span: JaegerSpan): FlagPanel {
     objectives: tagString(tags, "agent.objectives"),
     interventionsAllowed: tagString(tags, "interventions.allowed"),
     interventionsEnabled: tagBoolOrNull(tags, "interventions.enabled"),
+    experimentsEnabled: tagBoolOrNull(tags, "experiments.enabled"),
+    eligibleGameKinds: tagString(tags, "llm.eligible_game_kinds"),
   };
 }
 

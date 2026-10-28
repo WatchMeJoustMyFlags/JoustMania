@@ -2,6 +2,7 @@ package experiment
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,9 @@ const (
 	AttrExperimentProgressTrigger = "experiment.progress.trigger"
 	// AttrExperimentEndReason is the teardown reason, on the terminal snapshot only.
 	AttrExperimentEndReason = "experiment.end_reason"
+	// AttrExperimentValue is the experimental arm's flag value as JSON (#2291); the
+	// control arm resolves the flag's current value.
+	AttrExperimentValue = "experiment.experimental_value"
 	// AttrExperimentArmAssigned is a point-in-time count of the games bound to the arm
 	// and still in flight (not concluded, not released; a spawn reservation does not
 	// count). Not cumulative: 0 on the terminal snapshot, teardown clears the in-flight
@@ -76,6 +80,17 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 		attribute.Int(decision.AttrExperimentTargetN, intent.TargetNPerArm),
 		attribute.String(decision.AttrExperimentArms, strings.Join(e.arms, ",")),
 		attribute.String(AttrExperimentProgressTrigger, trigger),
+	}
+	// #2291: what is tested, for the dashboard's experiment card. The thesis and the
+	// experimental arm's value are on every snapshot (the dashboard keeps the newest
+	// span); each is omitted when empty.
+	if intent.Hypothesis != "" {
+		attrs = append(attrs, attribute.String(decision.AttrExperimentThesis, intent.Hypothesis))
+	}
+	if intent.ExperimentalValue != nil {
+		if raw, err := json.Marshal(intent.ExperimentalValue); err == nil {
+			attrs = append(attrs, attribute.String(AttrExperimentValue, string(raw)))
+		}
 	}
 	if v := summary.Verdict; v != nil {
 		attrs = append(attrs,

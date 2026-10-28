@@ -223,6 +223,11 @@ const (
 	// AttrInterventionsEnabled is the live interventions_enabled actuation gate on
 	// agent.flag_state (#2093).
 	AttrInterventionsEnabled = "interventions.enabled"
+	// AttrExperimentsEnabled is the live experiments_enabled gate on agent.flag_state
+	// (#2291); AttrLLMEligibleGameKinds the llm.eligible_game_kinds list (comma
+	// joined). Together they show the stage fallback (UC-070 A9) took effect.
+	AttrExperimentsEnabled   = "experiments.enabled"
+	AttrLLMEligibleGameKinds = "llm.eligible_game_kinds"
 	// AttrFitnessEvaluated lists the fitness values evaluated for the
 	// decision (#731). Empty until fitness functions exist.
 	AttrFitnessEvaluated = "fitness.evaluated"

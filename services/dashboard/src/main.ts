@@ -141,7 +141,6 @@ async function init() {
   controls = new Controls({
     onStartGame: handleStartGame,
     onStopGame: handleStopGame,
-    onModeChange: handleModeChange,
   });
   // The playable modes come from the menu (#1278); FFA stays preselected.
   loadModeChoices(() => menuClient.listGameModes())
@@ -587,10 +586,6 @@ async function handleStopGame() {
     console.error("Failed to stop game:", error);
     addEvent("Failed to stop game");
   }
-}
-
-function handleModeChange(mode: string) {
-  console.log("Mode changed to:", mode);
 }
 
 // Start the app

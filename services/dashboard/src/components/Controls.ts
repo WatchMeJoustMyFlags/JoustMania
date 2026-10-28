@@ -8,7 +8,8 @@ import type { ModeChoices } from "../modes.js";
 interface ControlsOptions {
   onStartGame: () => void | Promise<void>;
   onStopGame: () => void | Promise<void>;
-  onModeChange: (mode: string) => void;
+  /** Optional: the selected mode is read at start time (getSelectedMode). */
+  onModeChange?: (mode: string) => void;
 }
 
 export class Controls {
@@ -29,7 +30,7 @@ export class Controls {
 
   private setupEventListeners() {
     this.modeSelect.addEventListener("change", () => {
-      this.options.onModeChange(this.modeSelect.value);
+      this.options.onModeChange?.(this.modeSelect.value);
     });
 
     this.startBtn.addEventListener("click", () => {

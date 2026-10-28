@@ -143,6 +143,8 @@ func TestProgress_AttributeSet(t *testing.T) {
 		decision.AttrExperimentTargetN:   strconv.Itoa(r.entries[id].journal.Intent().TargetNPerArm), // reconciled up to min-N
 		decision.AttrExperimentArms:      ArmExperimental + "," + ArmControl,
 		AttrExperimentProgressTrigger:    ProgressTriggerStarted,
+		decision.AttrExperimentThesis:    in.Hypothesis,
+		AttrExperimentValue:              "0.5",
 	}
 	got := map[string]string{}
 	for _, kv := range spans[0].Attributes() {

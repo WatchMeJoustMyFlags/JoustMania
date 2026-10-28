@@ -1496,3 +1496,27 @@ body {
 .stage-settings.stale {
   opacity: 0.55;
 }
+
+/* Experiment card detail (#2291) */
+.experiment-tested {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+  font-size: 0.8rem;
+}
+.experiment-flag {
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.experiment-thesis {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.experiment-trace {
+  font-size: 0.78rem;
+}
