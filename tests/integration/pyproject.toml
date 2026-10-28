@@ -20,7 +20,7 @@ dependencies = [
     "testcontainers>=4.0.0",
 
     # gRPC client libraries for testing
-    "grpcio>=1.50.0",
+    "grpcio>=1.85.0",
 
     # OpenFeature flagd client — evaluate intervention targeting rules directly
     # against live flagd RPC (tests/integration/helpers.py, #730).

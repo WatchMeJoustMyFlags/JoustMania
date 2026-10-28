@@ -45,12 +45,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # uv: fast Python package installer
-RUN pip install --no-cache-dir uv==0.5.11
+# uv >= 0.8 reads the lockfile (revision 3); keep near the uv CI runs (#2266)
+RUN pip install --no-cache-dir uv==0.11.6
 
 WORKDIR /app
 
 # Copy workspace configuration
-COPY pyproject.toml /app/
+COPY pyproject.toml uv.lock /app/
 
 # Copy proto package (shared protocol buffer contracts)
 COPY proto/pyproject.toml /app/proto/
@@ -70,11 +71,16 @@ COPY services/audio/pyproject.toml /app/services/audio/
 # only miniaudio and pyalsaaudio need compilation here.
 # ARM64: disable auto-vectorization to prevent libmvec.so dependency (x86-only in glibc)
 WORKDIR /app
+# #2266: third-party dependencies come from uv.lock (the versions the unit tests
+# ran), never from a fresh resolve; the workspace packages then install editable
+# with --no-deps. A partial workspace is enough for `uv export --frozen`.
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
       export CFLAGS="-fno-tree-loop-vectorize -fno-tree-slp-vectorize"; \
     fi && \
-    uv pip install --system -e proto/ -e lib/ --no-binary miniaudio -e services/audio/
+    uv export --frozen --no-dev --no-emit-workspace --package joustmania-audio -o /tmp/requirements.txt && \
+    uv pip install --system --no-binary miniaudio -r /tmp/requirements.txt && \
+    uv pip install --system --no-deps -e proto/ -e lib/ -e services/audio/
 
 # =============================================================================
 # Stage 3: Runtime image - Chainguard distroless-style for minimal size

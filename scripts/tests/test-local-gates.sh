@@ -39,6 +39,8 @@ expect "services/operator_pad/gestures.py" "$ALWAYS py:operator_pad contract"
 expect "lib/feature_flags.py" "$ALWAYS py:lib $PY_ALL contract contract-flagd"
 # root pyproject.toml is shared_python only (not the lib filter)
 expect "pyproject.toml" "$ALWAYS $PY_ALL service"
+# uv.lock is shared_python too: every Python image installs from it (#2266)
+expect "uv.lock" "$ALWAYS $PY_ALL service"
 expect "proto/menu.proto" "$ALWAYS py:lib $PY_ALL connect-proxy agent-protos contract service"
 # rust filter includes the HID proto
 expect "proto/psmove_hid.proto" "$ALWAYS py:lib $PY_ALL connect-proxy agent-protos rust-hid contract service"

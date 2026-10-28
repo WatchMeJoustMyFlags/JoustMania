@@ -18,8 +18,12 @@ import threading
 
 import grpc
 
-from lib.controller_constants import AxisKey, ButtonKey, StateKey, normalize_serial
+from lib.controller_constants import normalize_serial
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter, DiscoveryFailedError
+from services.controller_manager.multiplexer.hid_stream import HidStreamMixin
+from services.controller_manager.multiplexer.hid_stream import (
+    sensor_data_to_dict as _sensor_data_to_dict,  # noqa: F401  (tests import it here)
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +34,11 @@ logger = logging.getLogger(__name__)
 RPC_TIMEOUT_S = 5.0
 
 
-class RustServiceAdapter(ControllerIOAdapter):
+class RustServiceAdapter(HidStreamMixin, ControllerIOAdapter):
     """I/O adapter delegating to the Rust HID gRPC service via bidir stream."""
+
+    _stream_thread_name = "rust-adapter-stream"
+    _stream_peer = "rust-hid service"
 
     def __init__(self):
         from proto import psmove_hid_pb2_grpc
@@ -72,8 +79,7 @@ class RustServiceAdapter(ControllerIOAdapter):
         # so state writes for a closed serial are dropped until it is reopened
         # or rediscovered. Guarded by _data_lock.
         self._closed: set[str] = set()
-        self._stream_thread: threading.Thread | None = None
-        self._stream_running = False
+        self._init_stream_state()
 
         # Adapter affinity cache (serial -> BT adapter name, e.g. "hci0")
         self._adapter_names: dict[str, str] = {}
@@ -81,54 +87,6 @@ class RustServiceAdapter(ControllerIOAdapter):
     @property
     def adapter_type(self) -> str:
         return "rust"
-
-    def _ensure_stream(self) -> None:
-        """Start the bidir stream if not already running."""
-        if self._stream_running:
-            return
-
-        # Wait for old thread to finish before starting a new one
-        if self._stream_thread is not None:
-            self._stream_thread.join(timeout=1.0)
-
-        self._stream_running = True
-        self._stream_thread = threading.Thread(
-            target=self._stream_loop,
-            name="rust-adapter-stream",
-            daemon=True,
-        )
-        self._stream_thread.start()
-        logger.info("Started bidir stream to rust-hid service")
-
-    def _stream_loop(self) -> None:
-        """Background thread: manage the bidir StreamIO stream."""
-
-        def command_iterator():
-            while self._stream_running:
-                try:
-                    cmd = self._command_queue.get(timeout=0.05)
-                    yield cmd
-                except queue.Empty:
-                    continue
-
-        try:
-            responses = self._stub.StreamIO(command_iterator())
-            for sensor_data in responses:
-                serial = normalize_serial(sensor_data.serial)
-                state = _sensor_data_to_dict(sensor_data)
-                state[StateKey.SERIAL] = serial
-                with self._data_lock:
-                    if serial not in self._closed:
-                        self._latest_data[serial] = state
-                        if state.get(ButtonKey.TRIGGER):
-                            # Latched until a game frame delivers it (#1837).
-                            self._trigger_latch.add(serial)
-        except grpc.RpcError as e:
-            if self._stream_running:
-                logger.warning(f"StreamIO error: {e}")
-        finally:
-            self._stream_running = False
-            logger.info("Bidir stream ended")
 
     def discover(
         self,
@@ -243,11 +201,8 @@ class RustServiceAdapter(ControllerIOAdapter):
     def close_all(self) -> None:
         from proto import psmove_hid_pb2
 
-        # Stop the stream
-        self._stream_running = False
-        if self._stream_thread:
-            self._stream_thread.join(timeout=2.0)
-            self._stream_thread = None
+        # Cancel the StreamIO call: grpcio >=1.83 does not cancel a dropped call (#2266).
+        self._stop_stream()
 
         with self._data_lock:
             self._latest_data.clear()
@@ -260,32 +215,3 @@ class RustServiceAdapter(ControllerIOAdapter):
             self._stub.CloseAll(psmove_hid_pb2.CloseAllRequest(), timeout=RPC_TIMEOUT_S)
         except grpc.RpcError as e:
             logger.warning(f"CloseAll RPC failed: {e}")
-
-
-def _sensor_data_to_dict(data) -> dict:
-    """Convert a SensorData proto message to the state dict expected by MultiplexerBackend."""
-    return {
-        StateKey.SERIAL: data.serial,
-        StateKey.BATTERY: data.battery,
-        StateKey.TRIGGER: data.trigger,
-        ButtonKey.MOVE: data.button_move,
-        ButtonKey.TRIGGER: data.button_trigger,
-        ButtonKey.PS: data.button_ps,
-        ButtonKey.CROSS: data.button_cross,
-        ButtonKey.CIRCLE: data.button_circle,
-        ButtonKey.SQUARE: data.button_square,
-        ButtonKey.TRIANGLE: data.button_triangle,
-        ButtonKey.SELECT: data.button_select,
-        ButtonKey.START: data.button_start,
-        StateKey.ACCEL: {
-            AxisKey.X: data.accel_x,
-            AxisKey.Y: data.accel_y,
-            AxisKey.Z: data.accel_z,
-        },
-        StateKey.GYRO: {
-            AxisKey.X: data.gyro_x,
-            AxisKey.Y: data.gyro_y,
-            AxisKey.Z: data.gyro_z,
-        },
-        StateKey.TEMPERATURE: data.temperature,
-    }

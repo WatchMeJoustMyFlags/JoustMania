@@ -177,6 +177,11 @@ docker compose pull              # fetch images from GHCR
 docker compose up -d --build     # build from your checkout instead
 ```
 
+Python service images install their dependencies from `uv.lock` (C-046, #2266): the builder stage runs
+`uv export --frozen --package <member>` and installs that list, then the workspace packages with `--no-deps`.
+To move a dependency, change the range in the member's `pyproject.toml` if needed and run `uv lock` (or
+`uv lock --upgrade-package <name>`); the lock diff is the review, and the next build of every Python image picks it up.
+
 CI builds each service image separately, tags it with the commit SHA and the branch, and pushes to GHCR
 (`.github/workflows/`). Public images pull without login; for a private fork, authenticate once:
 

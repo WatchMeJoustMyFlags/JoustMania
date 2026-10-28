@@ -10,6 +10,7 @@ import pytest
 from services.controller_manager.multiplexer.adapter import DiscoveryFailedError
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RPC_TIMEOUT_S
+from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 SERIAL = "AABBCCDDEEFF"
 
@@ -17,6 +18,7 @@ SERIAL = "AABBCCDDEEFF"
 def _make_adapter() -> PythonHidAdapter:
     """PythonHidAdapter without __init__ (no gRPC channel), stream marked running."""
     adapter = PythonHidAdapter.__new__(PythonHidAdapter)
+    adapter._init_stream_state()
     adapter._channel = MagicMock()
     adapter._stub = MagicMock(spec_set=["Discover", "Open", "Close", "CloseAll", "StreamIO"])
     adapter._command_queue = queue.Queue(maxsize=256)
@@ -67,7 +69,7 @@ class TestUnaryCallsCarryADeadline:
     def test_stream_io_has_no_deadline(self):
         """The long-lived StreamIO stream must not inherit the unary deadline."""
         adapter = _make_adapter()
-        adapter._stub.StreamIO.return_value = iter([])
+        adapter._stub.StreamIO.return_value = FakeStreamCall()
 
         adapter._stream_loop()
 

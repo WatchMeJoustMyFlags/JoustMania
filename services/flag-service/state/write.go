@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"time"
 
@@ -64,7 +65,16 @@ type WriteRequest struct {
 	// carries the flag rendered before and after, computed under one lock, and
 	// nothing changes (the agent's experiment Gate checks before it writes).
 	DryRun bool
+	// IfWriterIn is the opt-in write precondition (?if_writer_in=, #2260,
+	// UC-043 A19), like If-Match: in scope real only, the overlay is written
+	// only when the stored real overlay's writer is one of the labels, or when
+	// no real overlay is present and the list holds "". Else 412
+	// writer_mismatch and nothing changes. nil = no precondition.
+	IfWriterIn []string
 }
+
+// MaxIfWriterIn bounds the entries of ?if_writer_in=.
+const MaxIfWriterIn = 16
 
 // AppendRequest is a POST /{flagSetId}/{flagName} (an event).
 type AppendRequest struct {
@@ -236,6 +246,17 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 		}
 		ttl = time.Duration(*req.TTLSeconds * float64(time.Second))
 	}
+	if req.IfWriterIn != nil && scopeName != registry.ScopeReal {
+		return res, fserr.BadRequest("if_writer_in applies to the real overlay only (game_kind=real)")
+	}
+	if len(req.IfWriterIn) > MaxIfWriterIn {
+		return res, fserr.BadRequest("if_writer_in has more than %d entries", MaxIfWriterIn)
+	}
+	for _, w := range req.IfWriterIn {
+		if len(w) > MaxIDLength {
+			return res, fserr.BadRequest("an if_writer_in entry is longer than %d characters", MaxIDLength)
+		}
+	}
 	if req.Persist {
 		// UC-053 BR-004: only a stack-scoped admin setting the registry marks
 		// persistable goes to the state file; nothing else outlives a restart.
@@ -263,6 +284,13 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 	}
 	if err := s.streamCheckLocked(f.set); err != nil {
 		return res, err
+	}
+	// #2260, UC-043 A19: the write precondition, checked last (a dry run
+	// included), under the same lock as the write, so no other write can slip
+	// in between the compare and the write. Like the DELETE ?if_writer= (#1877)
+	// every 4xx/5xx above (real_game_live included) takes precedence over 412.
+	if req.IfWriterIn != nil && !realWriterAllowed(f.real, req.IfWriterIn) {
+		return res, fserr.PreconditionFailed(fserr.WriterMismatch, "the real overlay of %s is owned by %s, not one of %q; nothing written", f.key, describeRealWriter(f.real), req.IfWriterIn)
 	}
 
 	now := s.opts.Now()
@@ -323,6 +351,29 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 	res.SnapshotVersion = s.version
 	res.Persisted = req.Persist && s.lastPersistOK
 	return res, nil
+}
+
+// realWriterAllowed reports whether a real overlay (nil = none) passes an
+// if_writer_in list: an absent overlay matches the empty entry, a present one
+// matches a non-empty entry equal to its writer (an unlabeled overlay matches
+// nothing, so the precondition fails closed).
+func realWriterAllowed(cur *value, allowed []string) bool {
+	for _, w := range allowed {
+		if cur == nil && w == "" {
+			return true
+		}
+		if cur != nil && w != "" && cur.Writer == w {
+			return true
+		}
+	}
+	return false
+}
+
+func describeRealWriter(cur *value) string {
+	if cur == nil {
+		return "nobody (no overlay)"
+	}
+	return fmt.Sprintf("writer %q", cur.Writer)
 }
 
 // Append adds one event to a game's event list (POST /{flagSetId}/{flagName},

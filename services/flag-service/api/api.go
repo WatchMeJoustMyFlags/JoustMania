@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -213,7 +214,12 @@ func (a *API) put(w http.ResponseWriter, r *http.Request) {
 		if body.Reason != "" {
 			span.SetAttributes(attribute.String("flagservice.write_reason", body.Reason))
 		}
-		res, ferr = a.State.Put(req)
+		req.IfWriterIn, ferr = ifWriterIn(r)
+		if ferr == nil {
+			res, ferr = a.State.Put(req)
+		} else {
+			res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: req.Scope.Name()}
+		}
 	} else {
 		res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch()}
 	}
@@ -227,6 +233,21 @@ func (a *API) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// ifWriterIn parses ?if_writer_in=<label>,<label>,... (#2260, flags.md §13):
+// the PUT write precondition. nil = absent. An empty entry means "no real
+// overlay present", so "promotion," is the promotion's own overlay or none.
+// Strict: a repeated parameter is malformed, it must not silently pick one.
+func ifWriterIn(r *http.Request) ([]string, *fserr.Error) {
+	vals, ok := r.URL.Query()["if_writer_in"]
+	if !ok {
+		return nil, nil
+	}
+	if len(vals) != 1 {
+		return nil, fserr.BadRequest("if_writer_in must be given once")
+	}
+	return strings.Split(vals[0], ","), nil
 }
 
 func (a *API) post(w http.ResponseWriter, r *http.Request) {

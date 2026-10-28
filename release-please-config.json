@@ -9,6 +9,11 @@
         {
           "type": "generic",
           "path": ".env"
+        },
+        {
+          "type": "toml",
+          "path": "uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='joustmania')].version"
         }
       ]
     }
