@@ -115,6 +115,13 @@ func newServiceRealDefaultWriter(svc realDefaultService, snaps *snapStore, log *
 // on the flag service. The registry bounds the value (a declared variant's
 // value); a value whose JSON kind differs from the current default is refused
 // here first (#936 review note 2), as the last line before real players.
+//
+// WRITE PRECONDITION (#2260, UC-043 A19): the PUT carries
+// ?if_writer_in=promotion, so the flag service writes only over a previous
+// promotion's overlay or where none is present, compared and written under its
+// lock. Another writer's real overlay is refused with 412 writer_mismatch and
+// left in place; SetRealDefault then returns ErrRealOverlayOwnedByAnotherWriter
+// and the promotion is not made (no retry, no cooldown: nothing was reverted).
 func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey string, value any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -137,7 +144,18 @@ func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey s
 		Scope:  flagservice.Scope{GameKind: "real"},
 		Writer: promotionWriter,
 		Reason: "autonomous_promotion",
+		// The promotion's own overlay ("promotion") or none (""), #2260.
+		IfWriterIn: []string{promotionWriter, ""},
 	})
+	if flagservice.IsReason(err, flagservice.ReasonWriterMismatch) {
+		owner := ""
+		if view.RealOverlay != nil {
+			owner = view.RealOverlay.Writer
+		}
+		w.log.Warn("code_improvement promotion not made: another writer owns the real overlay (writer_mismatch); nothing written",
+			"flag", flagKey, "owner", owner)
+		return fmt.Errorf("promote %s/%s: %w", gameFlagSet, flagKey, &foreignOverlayError{Owner: owner})
+	}
 	if err != nil {
 		return fmt.Errorf("promote %s/%s: %w", gameFlagSet, flagKey, err)
 	}
@@ -179,6 +197,37 @@ func (w *serviceRealDefaultWriter) RevertRealDefaultUnlessRealGame(ctx context.C
 // switch adds SupersededReasonSuffix to the journaled reason so "the agent cleared
 // it" and "another writer owns it" can be told apart.
 var ErrSupersededByAnotherWriter = errors.New("real overlay superseded by another writer (writer_mismatch); nothing removed")
+
+// ReasonRealOverlayForeign is the journaled reason (outcome discarded) of a
+// promotion the flag service refused because another writer owns the real
+// overlay (PUT ?if_writer_in=, 412 writer_mismatch, #2260, UC-043 A19).
+const ReasonRealOverlayForeign = "real_overlay_owned_by_another_writer"
+
+// foreignOverlayError wraps ErrRealOverlayOwnedByAnotherWriter with the writer
+// that owns the overlay (as read before the write), for the log and the journal.
+type foreignOverlayError struct{ Owner string }
+
+func (e *foreignOverlayError) Error() string {
+	return fmt.Sprintf("%s (owner %q)", ErrRealOverlayOwnedByAnotherWriter, e.Owner)
+}
+
+func (e *foreignOverlayError) Is(target error) bool {
+	return target == ErrRealOverlayOwnedByAnotherWriter
+}
+
+// foreignReason is ReasonRealOverlayForeign, with " owner=<writer>" appended
+// when the owner is known; the fixed reason token stays the prefix.
+func foreignReason(err error) string {
+	var fe *foreignOverlayError
+	if errors.As(err, &fe) && fe.Owner != "" {
+		return ReasonRealOverlayForeign + " owner=" + fe.Owner
+	}
+	return ReasonRealOverlayForeign
+}
+
+// ErrRealOverlayOwnedByAnotherWriter is returned by SetRealDefault when the flag
+// service refused the write with 412 writer_mismatch: nothing was written.
+var ErrRealOverlayOwnedByAnotherWriter = errors.New(ReasonRealOverlayForeign + " (writer_mismatch); nothing written")
 
 // SupersededReasonSuffix is appended to the kill-switch journal reason when the
 // revert was dropped on a writer_mismatch.
