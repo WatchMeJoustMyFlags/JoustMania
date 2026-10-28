@@ -246,15 +246,17 @@ class RuntimeConfigManager:
         if not self.system_client:
             return
 
-        # Collected here and swapped in as one new snapshot (#2357); a read that
-        # fails part-way keeps the values read before it, as before.
-        changes: dict = {}
-        analytics_changes: dict = {}
-        try:
-            # Import metrics (lazy to avoid circular dependency)
-            from services.game_coordinator import metrics
+        # Read and swapped in as one new snapshot under one hold of the lock (#2357),
+        # so an older concurrent refresh (one sync thread per domain provider) cannot
+        # swap its values in over a newer one. A read that fails part-way keeps the
+        # values read before it, as before.
+        with self._config_lock:
+            changes: dict = {}
+            analytics_changes: dict = {}
+            try:
+                # Import metrics (lazy to avoid circular dependency)
+                from services.game_coordinator import metrics
 
-            with self._config_lock:
                 # === System domain flags ===
 
                 # Update frequency (15/30/60 Hz)
@@ -322,12 +324,11 @@ class RuntimeConfigManager:
                 if self.agent_client:
                     analytics_changes = self._refresh_perception_flags(metrics)
 
-        except Exception as e:
-            # Don't crash on flag evaluation failure, just log and keep defaults
-            logger.warning(f"Failed to evaluate flags: {e}")
-        finally:
-            if changes or analytics_changes:
-                with self._config_lock:
+            except Exception as e:
+                # Don't crash on flag evaluation failure, just log and keep defaults
+                logger.warning(f"Failed to evaluate flags: {e}")
+            finally:
+                if changes or analytics_changes:
                     if analytics_changes:
                         changes["analytics"] = replace(self.config.analytics, **analytics_changes)
                     self.config = replace(self.config, **changes)

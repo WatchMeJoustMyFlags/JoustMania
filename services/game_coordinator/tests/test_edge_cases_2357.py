@@ -11,6 +11,7 @@
 
 import asyncio
 import dataclasses
+import re
 import sys
 import time
 from pathlib import Path
@@ -24,11 +25,12 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService
 
-from proto import audio_pb2
+from proto import audio_pb2, controller_manager_pb2
 from services.game_coordinator import game_clock, interventions
 from services.game_coordinator.games import base as base_module
 from services.game_coordinator.games.base import BaseGameMode, GameEvent, Player
 from services.game_coordinator.games.ffa import FFAGame
+from services.game_coordinator.games.fight_club import FightClubGame
 from services.game_coordinator.runtime_config import RuntimeConfigManager
 
 
@@ -159,6 +161,72 @@ class TestGameClock:
         assert during >= before
 
 
+_LETHAL = controller_manager_pb2.Vector3(x=8.0, y=8.0, z=8.0)
+_GAMES_DIR = Path(__file__).parent.parent / "games"
+
+
+async def _feed_lethal_frames(game: FFAGame, serial: str) -> list[str]:
+    """Feed death-level frames through the per-frame path; return the serials killed."""
+    kills: list[str] = []
+
+    async def _kill(killed_serial, _accel_mag):
+        kills.append(killed_serial)
+        game.players[killed_serial].alive = False
+
+    game._kill_player = _kill
+    player = game.players[serial]
+    player.smoothed_accel = game._compute_effective_thresholds(player)[1] + 1.0
+    for _ in range(10):
+        await game._process_controller_state(controller_manager_pb2.GameplayData(serial=serial, accel=_LETHAL))
+    return kills
+
+
+@pytest.mark.uc("UC-030", flow="A1", br=["BR-010"])
+class TestGameClockFramePath:
+    """The per-frame grace gate (``_process_controller_state``) reads the game clock, not the wall clock."""
+
+    @pytest.mark.asyncio
+    async def test_wall_clock_step_forward_does_not_end_a_shield_on_the_frame_path(self):
+        game = await _ffa_with_players()
+        assert await game.grant_shield("p1", 5.0) is True
+
+        with patch.object(time, "time", return_value=time.time() + 3600.0):
+            kills = await _feed_lethal_frames(game, "p1")
+
+        assert kills == [], "a wall-clock step forward ended the shield on the frame path"
+
+    @pytest.mark.asyncio
+    async def test_wall_clock_step_back_does_not_extend_an_ended_shield_on_the_frame_path(self):
+        game = await _ffa_with_players()
+        assert await game.grant_shield("p1", 5.0) is True
+
+        later = game_clock.now() + 6.0
+        with (
+            patch.object(game_clock, "now", return_value=later),
+            patch.object(time, "time", return_value=time.time() - 3600.0),
+        ):
+            kills = await _feed_lethal_frames(game, "p1")
+
+        assert kills == ["p1"], "a wall-clock step back kept an ended shield alive on the frame path"
+
+
+@pytest.mark.uc("UC-030", br=["BR-010"])
+class TestNoWallClockDeadlines:
+    """Guard: game code compares deadlines on ``game_clock.now()``; ``time.time()`` only names the game."""
+
+    _ALLOWED = {("base.py", 'game_id = f"{mode_prefix}_{int(time.time())}"')}
+
+    def test_no_wall_clock_reads_in_game_code(self):
+        sources = sorted(_GAMES_DIR.glob("*.py")) + [_GAMES_DIR.parent / "difficulty_handlers.py"]
+        assert len(sources) > 5
+        found = []
+        for source in sources:
+            for number, line in enumerate(source.read_text().splitlines(), start=1):
+                if re.search(r"\btime\.time\(", line) and (source.name, line.strip()) not in self._ALLOWED:
+                    found.append(f"{source.name}:{number}: {line.strip()}")
+        assert found == [], "wall-clock reads in game code (use game_clock.now()):\n" + "\n".join(found)
+
+
 # --------------------------------------------------------------------------- #
 # B2: a raising or cancelled base run() stops the music and the shield feedback
 # --------------------------------------------------------------------------- #
@@ -217,6 +285,28 @@ class TestRunFailureTeardown:
             await game.run()
 
         assert audio.calls.count("StopMusic") == 1
+        end_feedback.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_raising_custom_run_ends_shield_feedback(self):
+        """A mode with its own run() (Fight Club) also ends the shield feedback on the error path."""
+        audio = _Audio()
+        game = FightClubGame(
+            controller_manager_client=MockControllerManagerService(num_controllers=2),
+            event_publisher=EventCollector().publish,
+            audio_client=audio,
+            game_id="test_2357_fc",
+        )
+        game.gameplay_stream = _Stream()
+        end_feedback = AsyncMock()
+        with (
+            patch.object(game, "_initialize_players", AsyncMock(side_effect=RuntimeError("boom"))),
+            patch.object(game, "_end_shield_feedback", end_feedback),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await game.run()
+
+        assert "StopMusic" in audio.calls
         end_feedback.assert_awaited_once()
 
 
@@ -285,6 +375,41 @@ class TestRuntimeConfigSnapshot:
         fresh = manager.get_config()
         assert fresh.update_frequency_hz == 30
         assert fresh.countdown_phase_duration_ms == 500
+
+    @patch("openfeature.api.add_handler")
+    @patch("lib.feature_flags.get_flag_client")
+    def test_an_older_refresh_does_not_swap_in_over_a_newer_one(self, mock_get_client, _mock_add_handler):
+        """A refresh that runs between another refresh's reads and its swap is not overwritten."""
+        client = MagicMock()
+        mock_get_client.return_value = client
+        client.get_integer_value.side_effect = [60, 3, 750, 3000]
+        manager = RuntimeConfigManager()
+
+        inner_lock = manager._config_lock
+        newer_ran = False
+
+        class _InterleavingLock:
+            """Runs the newer refresh the first time the older one lets the lock go."""
+
+            def __enter__(self):
+                inner_lock.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                nonlocal newer_ran
+                inner_lock.release()
+                if not newer_ran:
+                    newer_ran = True
+                    manager._refresh_from_flags()  # the newer refresh: 15 Hz
+                return False
+
+        manager._config_lock = _InterleavingLock()
+        client.get_integer_value.side_effect = [30, 3, 500, 1000, 15, 3, 250, 500]
+        manager._refresh_from_flags()  # the older refresh: 30 Hz
+
+        assert newer_ran
+        assert manager.get_config().update_frequency_hz == 15
+        assert manager.get_config().countdown_phase_duration_ms == 250
 
     def test_snapshot_is_frozen(self):
         config = RuntimeConfigManager().get_config()

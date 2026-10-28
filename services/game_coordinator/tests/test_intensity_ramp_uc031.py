@@ -1,6 +1,6 @@
 """UC-031 step 3 / BR-005 (#1833): one tempo intensity drives the thresholds; the music follows.
 
-Every test runs on a fake clock (``games.base.time.time`` patched), with no sleeps.
+Every test runs on a fake clock (``game_clock.now`` patched), with no sleeps.
 The ramp flags are patched through ``games.base.read_float_flag`` so each test
 controls ``tempo.ramp_up_seconds`` / ``tempo.ramp_down_seconds``.
 """

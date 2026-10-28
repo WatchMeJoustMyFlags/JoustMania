@@ -963,6 +963,9 @@ class FightClubGame(BaseGameMode):
         """
         from services.game_coordinator.games.base import GameState
 
+        # Set once the teardown step ended the shield feedback; otherwise the
+        # finally ends it (UC-020 failure postcondition, #2357).
+        shield_feedback_ended = False
         # The session game root span carries the outcome (#1328).
         self._capture_game_root_span()
         with tracer.start_as_current_span("fight_club_game") as game_span:
@@ -1043,6 +1046,7 @@ class FightClubGame(BaseGameMode):
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
                     # Shield LEDs end with the game, before the winner effects (#1301).
                     await self._end_shield_feedback()
+                    shield_feedback_ended = True
                     await self._end_game_impl()
                     self._record_game_outcome(teardown_span)
                     # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
@@ -1060,7 +1064,9 @@ class FightClubGame(BaseGameMode):
                 self._record_force_ended_outcome_if_unrecorded()
                 force_ended = not self.running
                 self.running = False
-                await self._stop_game_music()
+                # The music stops here on every path; the shield feedback only when
+                # the teardown step did not end it (error, cancel or early return).
+                await self._stop_run_feedback(False, shield_feedback_ended)
                 if force_ended:
                     await self.on_force_end()
                 await self._cleanup_after_run()
