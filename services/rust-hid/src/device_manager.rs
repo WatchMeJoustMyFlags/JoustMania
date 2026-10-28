@@ -867,6 +867,14 @@ mod tests {
             assert!(Instant::now() < deadline, "the ring was never read");
             std::thread::sleep(Duration::from_millis(1));
         }
+        // The ring is empty after the last pop, but the flush poll still has
+        // its final empty read to do; a report fed now would be discarded.
+        let polls_before = device.0.lock().unwrap().drained_at.len();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while device.0.lock().unwrap().drained_at.len() <= polls_before {
+            assert!(Instant::now() < deadline, "the flush never finished");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         feed_and_wait_drained(&device, report_with(0, 200));
 
         let first = recv_within(&mut rx, Duration::from_secs(2));
