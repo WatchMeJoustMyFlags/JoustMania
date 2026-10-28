@@ -7,8 +7,8 @@
 # the real docker stack or systemd.
 #  - release tag and exact sha accepted; latest, main, short sha refused; below
 #    MIN_PINNABLE (version and commit floor) refused; nothing changes on a refusal;
-#    with MIN_PINNABLE empty (as shipped) the commit floor and the script check
-#    decide
+#    the shipped MIN_PINNABLE (0.8.0) is inclusive: v0.8.0 accepted, v0.7.0 refused;
+#    with MIN_PINNABLE empty the commit floor and the script check decide
 #  - registry down (no 200/401) -> no fetch, no checkout, no restart
 #  - prepare pull missing an image -> listed, nothing changed, temp worktree removed
 #  - healthy -> switch, restart, record, prune (only superseded tags of the
@@ -75,7 +75,7 @@ add_scripts() { # $1 = floor commit
   mkdir -p "${SRC}/scripts/setup"
   cp "${ROOT}/scripts/setup/joustmania-compose.sh" "${ROOT}/scripts/setup/lib-joustmania.sh" \
     "${ROOT}/scripts/setup/joustmania-start.sh" "${ROOT}/scripts/setup/joustmania.service" "${SRC}/scripts/setup/"
-  sed -e "s/^MIN_PINNABLE_COMMIT=.*/MIN_PINNABLE_COMMIT=\"$1\"/" -e 's/^MIN_PINNABLE=""/MIN_PINNABLE="1.0.0"/' \
+  sed -e "s/^MIN_PINNABLE_COMMIT=.*/MIN_PINNABLE_COMMIT=\"$1\"/" -e 's/^MIN_PINNABLE=.*/MIN_PINNABLE="1.0.0"/' \
     "${ROOT}/scripts/setup/joustmania-upgrade.sh" >"${SRC}/scripts/setup/joustmania-upgrade.sh"
   chmod +x "${SRC}/scripts/setup/"*.sh
   printf '.env.local\n.joustmania-release\n.joustmania-release.tmp\n' >"${SRC}/.gitignore"
@@ -83,8 +83,11 @@ add_scripts() { # $1 = floor commit
 }
 C_OLD="$(commit old 0.1.0)"
 g -C "${SRC}" tag joustmania-v0.1.0
+g -C "${SRC}" tag joustmania-v0.7.0
 C_FLOOR="$(commit floor 0.1.0)"
 add_scripts "${C_FLOOR}"
+C_08="$(commit v0.8.0 0.8.0)"
+g -C "${SRC}" tag joustmania-v0.8.0
 C_09="$(commit v0.9.0 0.9.0)"
 g -C "${SRC}" tag joustmania-v0.9.0
 C_V1="$(commit v1.0.0 1.0.0)"
@@ -96,9 +99,17 @@ C_MAIN="$(commit main-later 1.1.0)"
 g -C "${SRC}" checkout -q -b side "${C_OLD}"
 add_scripts "${C_FLOOR}"
 C_SIDE="$(commit side 0.1.0)"
+# A branch off the floor commit with the scripts but without the joustmania-v0.8.0 tag
+# (the stage Pi's pre-tag pin: it contains #2040, not the tag)
+g -C "${SRC}" checkout -q -b pre08 "${C_FLOOR}"
+add_scripts "${C_FLOOR}"
+C_PRE="$(commit pre08 0.1.0)"
 g -C "${SRC}" checkout -q main
 ORIGIN="${WORK}/origin.git"
 g clone -q --bare "${SRC}" "${ORIGIN}"
+ORIGIN_NOTAG="${WORK}/origin-notag.git" # the same origin before the joustmania-v0.8.0 cut
+g clone -q --bare "${ORIGIN}" "${ORIGIN_NOTAG}"
+g -C "${ORIGIN_NOTAG}" tag -d joustmania-v0.8.0 >/dev/null
 : "${C_OLD}" "${C_09}"
 
 GC=ghcr.io/o/joustmania/game-coordinator-service
@@ -256,28 +267,62 @@ for bad in latest main "${C_V11:0:12}" feature/x joustmania-v0.1.0 0.9.0 "${C_OL
   grep -q 'compose.* pull' "${CASE}/calls.log" && fail "refuse ${bad}: images were pulled"
 done
 
-# --- 1b. the floor as shipped: MIN_PINNABLE empty -> commit floor + script check
-# The checkout's command with only the commit floor swapped in (untracked copy)
+# --- 1b. the floor as shipped: MIN_PINNABLE 0.8.0 (inclusive); blanked -> commit floor + script check
+# The checkout's command with only the commit floor swapped in (untracked copy);
+# SHIPPED_MIN="" blanks MIN_PINNABLE to exercise the commit floor alone.
+SHIPPED_MIN=0.8.0
 shipped() {
-  sed -e "s/^MIN_PINNABLE_COMMIT=.*/MIN_PINNABLE_COMMIT=\"${C_FLOOR}\"/" "${ROOT}/scripts/setup/joustmania-upgrade.sh" \
-    >"${REPO}/scripts/setup/joustmania-upgrade-shipped.sh"
-  grep -q '^MIN_PINNABLE=""$' "${REPO}/scripts/setup/joustmania-upgrade-shipped.sh" || fail "shipped: MIN_PINNABLE is not empty"
+  sed -e "s/^MIN_PINNABLE_COMMIT=.*/MIN_PINNABLE_COMMIT=\"${C_FLOOR}\"/" -e "s/^MIN_PINNABLE=.*/MIN_PINNABLE=\"${SHIPPED_MIN}\"/" \
+    "${ROOT}/scripts/setup/joustmania-upgrade.sh" >"${REPO}/scripts/setup/joustmania-upgrade-shipped.sh"
+  grep -q '^MIN_PINNABLE="0.8.0"$' "${ROOT}/scripts/setup/joustmania-upgrade.sh" || fail "shipped: MIN_PINNABLE is not 0.8.0"
   env PATH="${CASE}/bin:${PATH}" TMPDIR="${CASE}/tmp" JOUSTMANIA_HEALTH_TIMEOUT=1 JOUSTMANIA_HEALTH_POLL=1 \
     bash "${REPO}/scripts/setup/joustmania-upgrade-shipped.sh" "$@" >"${CASE}/out.log" 2>&1
 }
 for bad in "${C_FLOOR}:no scripts/setup/joustmania-upgrade.sh" "${C_SIDE}:older than the pinnable floor"; do
   make_case "floor-${bad:0:8}" "${C_V1}"
+  SHIPPED_MIN=""
   if shipped "${bad%%:*}"; then fail "floor ${bad}: accepted with MIN_PINNABLE empty"; fi
+  SHIPPED_MIN=0.8.0
   grep -q "refusing.*${bad#*:}" "${CASE}/out.log" || fail "floor ${bad}: wrong or no refusal: $(tail -1 "${CASE}/out.log")"
   grep -q 'git worktree add' "${CASE}/calls.log" && fail "floor ${bad}: prepared the target"
   nothing_changed "floor ${bad}" "${C_V1}"
 done
+make_case floor-accept-08 "${C_V1}"
+shipped joustmania-v0.8.0 || fail "floor: 0.8.0 (MIN_PINNABLE itself) refused: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_08}" ]] || fail "floor: HEAD is not 0.8.0"
+make_case floor-refuse-07 "${C_V1}"
+if shipped joustmania-v0.7.0; then fail "floor: 0.7.0 accepted below MIN_PINNABLE 0.8.0"; fi
+grep -q 'refusing.*older than MIN_PINNABLE 0.8.0' "${CASE}/out.log" || fail "floor: 0.7.0 wrong refusal: $(tail -1 "${CASE}/out.log")"
+nothing_changed "floor 0.7.0" "${C_V1}"
 make_case floor-accept-09 "${C_V1}"
-shipped joustmania-v0.9.0 || fail "floor: 0.9.0 refused with MIN_PINNABLE empty: $(tail -1 "${CASE}/out.log")"
+shipped joustmania-v0.9.0 || fail "floor: 0.9.0 refused with MIN_PINNABLE 0.8.0: $(tail -1 "${CASE}/out.log")"
 [[ "$(head_of)" == "${C_09}" ]] || fail "floor: HEAD is not 0.9.0"
 make_case floor-accept-sha "${C_V1}"
-shipped "${C_09}" || fail "floor: the 0.9.0 sha refused with MIN_PINNABLE empty: $(tail -1 "${CASE}/out.log")"
+shipped "${C_09}" || fail "floor: the 0.9.0 sha refused with MIN_PINNABLE 0.8.0: $(tail -1 "${CASE}/out.log")"
 [[ "$(head_of)" == "${C_09}" ]] || fail "floor: HEAD is not the 0.9.0 sha"
+
+# --- 1c. the tag check (BR-003), and the way back to a pre-tag commit is --rollback
+make_case floor-pre-tag "${C_08}"
+if shipped "${C_PRE}"; then fail "pre-tag: an explicit upgrade to a commit without joustmania-v0.8.0 was accepted"; fi
+grep -q 'refusing.*does not contain MIN_PINNABLE joustmania-v0.8.0' "${CASE}/out.log" || fail "pre-tag: wrong or no refusal: $(tail -1 "${CASE}/out.log")"
+nothing_changed "pre-tag" "${C_08}"
+make_case floor-pre-tag-rollback "${C_PRE}"
+printf '%s:%s\n%s:%s\n' "${GC}" "${C_PRE}" "${AG}" "${C_PRE}" >>"${CASE}/images.local" # the pre-tag pin ran from its sha tag
+shipped joustmania-v0.8.0 || fail "pre-tag: 0.8.0 from the pre-tag pin refused: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_08}" ]] || fail "pre-tag: HEAD is not 0.8.0"
+shipped --rollback || fail "pre-tag: --rollback to the pre-tag commit refused: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_PRE}" ]] || fail "pre-tag: --rollback did not land on the pre-tag commit"
+make_case floor-no-tag "${C_08}"
+g -C "${REPO}" remote set-url origin "${ORIGIN_NOTAG}"
+g -C "${REPO}" tag -d joustmania-v0.8.0 >/dev/null
+shipped "${C_PRE}" || fail "no-tag: the pre-tag sha refused while the tag is absent: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_PRE}" ]] || fail "no-tag: HEAD is not the pre-tag sha"
+make_case floor-no-tag-07 "${C_PRE}"
+g -C "${REPO}" remote set-url origin "${ORIGIN_NOTAG}"
+g -C "${REPO}" tag -d joustmania-v0.8.0 >/dev/null
+if shipped joustmania-v0.7.0; then fail "no-tag: 0.7.0 accepted"; fi
+grep -q 'refusing.*older than MIN_PINNABLE 0.8.0' "${CASE}/out.log" || fail "no-tag: 0.7.0 wrong refusal: $(tail -1 "${CASE}/out.log")"
+nothing_changed "no-tag 0.7.0" "${C_PRE}"
 
 # --- 2. registry down or a captive portal: no fetch, nothing changed ---------
 for code in 000 302 503; do

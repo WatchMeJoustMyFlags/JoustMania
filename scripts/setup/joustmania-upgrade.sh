@@ -46,11 +46,11 @@
 # the recovery joustmania-start.sh names for a missing image.
 set -euo pipefail
 
-# The floor (UC-060 BR-003). MIN_PINNABLE is the first pinnable release,
-# recorded at the release cut (maintainer step); empty until then. The commit
-# floor is #2040 (the agent image is tagged on release): a target must contain
+# The floor (UC-060 BR-003). MIN_PINNABLE is the first pinnable release (0.8.0,
+# the first that contains #2040), inclusive: joustmania-v0.8.0 is accepted,
+# 0.7.0 is refused. The commit floor is #2040 (the agent image is tagged on release): a target must contain
 # it, and it must contain this command, or a rollback from it is impossible.
-MIN_PINNABLE=""
+MIN_PINNABLE="0.8.0"
 MIN_PINNABLE_COMMIT="02e7752df741774aa0d0cc3b24bd69acdd036de8"
 
 UNIT="joustmania"
