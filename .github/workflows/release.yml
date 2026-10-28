@@ -65,7 +65,7 @@ jobs:
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::bad manifest version '$version'"; exit 1; }
           tag="joustmania-v${version}"
           if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
-            echo "::error::release $tag already exists; release-please failed for another reason"
+            echo "::error::release $tag already exists; release-please failed for another reason (e.g. it was created by hand and the images are not tagged yet): if the :${version} images are missing, dispatch this workflow with version=${version} and sha=<tag commit>"
             exit 1
           fi
           tag_sha=$(gh api "repos/${REPO}/commits/${tag}" --jq .sha) \
@@ -106,9 +106,6 @@ jobs:
           echo "Release body: $(wc -c < notes.md) bytes"
           gh release create "$tag" --repo "$REPO" --verify-tag --title "joustmania: v${version}" --notes-file notes.md
 
-          # release-please would have swapped the label; a pending one blocks the next release PR.
-          gh pr edit "$release_pr" --repo "$REPO" --remove-label "autorelease: pending" --add-label "autorelease: tagged"
-
           {
             echo "release_created=true"
             echo "tag_name=${tag}"
@@ -116,6 +113,8 @@ jobs:
             echo "sha=${tag_sha}"
           } >> "$GITHUB_OUTPUT"
 
+          # release-please would have swapped the label; a pending one blocks the next release PR.
+          gh pr edit "$release_pr" --repo "$REPO" --remove-label "autorelease: pending" --add-label "autorelease: tagged"
   resolve:
     name: Resolve and validate retag inputs
     runs-on: ubuntu-latest
@@ -222,7 +221,7 @@ jobs:
             exit 1
           fi
           # Only a missing tag may be created; auth, registry or rate-limit errors fail closed.
-          if ! grep -qiE 'not found|manifest unknown' inspect.err; then
+          if ! grep -qE ': not found$|manifest unknown' inspect.err; then
             echo "::error::cannot inspect ${IMAGE}:${VERSION}: $(cat inspect.err)"
             exit 1
           fi
