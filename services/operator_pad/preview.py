@@ -55,7 +55,9 @@ PREVIEW_GROUP = "pad_preview"
 # The options whose preview also shows on the lobby LEDs (menu `preview_setting`, BR-017, BR-018).
 MODE_OPTION = "current_game"
 SHIELD_OPTION = setting_ladders.SHIELD_OPTION
-LED_OPTIONS = frozenset({MODE_OPTION, SHIELD_OPTION})
+# K2 and K5 have no LED colour per value: only their `automatic` rung shows (the double white flash, #2245).
+AUTOMATIC_LED_OPTIONS = frozenset(setting_ladders.AUTOMATIC_OPTIONS) - {SHIELD_OPTION}
+LED_OPTIONS = frozenset({MODE_OPTION, SHIELD_OPTION}) | AUTOMATIC_LED_OPTIONS
 # A `preview_setting` is cosmetic: a short deadline, never retried (BR-010), no cue on failure.
 MODE_PREVIEW_TIMEOUT_SECONDS = 1.0
 
@@ -232,6 +234,8 @@ class Previewer:
         return commit_steps == 0 or committed == self._leds.start
 
     async def _restore(self, leds: _ModeLeds) -> None:
+        if leds.option in AUTOMATIC_LED_OPTIONS and leds.start != setting_ladders.AUTOMATIC:
+            return  # nothing to restore: a value of K2 / K5 has no LED cue
         if leds.sent != leds.start:
             await self._show_mode(leds.option, leds.start)
 
@@ -316,7 +320,13 @@ class Previewer:
         pending = self._pending
         leds = self._leds
         if leds is None or pending is None or pending.sound is None:
-            return  # not a K1 or K6 hold with the LED preview, or the limit word (the mode is unchanged)
+            return  # not a hold with the LED preview, or the limit word (the mode is unchanged)
+        if leds.option in AUTOMATIC_LED_OPTIONS and pending.value != setting_ladders.AUTOMATIC:
+            # K2 / K5: only the `automatic` rung has an LED cue. A value supersedes a pulse not yet
+            # sent and lets a later return to `automatic` flash again.
+            leds.queued = pending.value
+            leds.seq += 1
+            return
         if pending.value == leds.queued:
             return  # the same as the last one shown
         leds.queued = mode = pending.value
