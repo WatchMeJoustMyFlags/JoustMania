@@ -799,16 +799,7 @@ func stateTooOld(stateAt, landed time.Time, maxAge time.Duration) bool {
 // playerTargetedInterventions are the interventions the action sink scopes to one
 // player (services/agent/actions/writer.go uses TargetSerial for exactly these).
 // Every other intervention is session-scoped and takes target "none".
-var playerTargetedInterventions = map[string]bool{
-	InterventionSendControllerEffect:    true,
-	InterventionEliminatePlayer:         true,
-	InterventionRevivePlayer:            true,
-	InterventionAdjustPlayerSensitivity: true,
-	InterventionSetPlayerHandicap:       true,
-	InterventionGrantShield:             true,
-	InterventionToughnessBoost:          true,
-	InterventionSoftPenalty:             true,
-}
+var playerTargetedInterventions = decide.Set(func(iv decide.Intervention) bool { return iv.PlayerTargeted })
 
 // Cross-question inconsistencies (decide.invalid_reason).
 const (

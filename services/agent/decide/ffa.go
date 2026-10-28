@@ -26,18 +26,8 @@ const TargetNone = "none"
 
 // playerTargeted are the interventions applied to ONE player (their ffa.target
 // is an alive serial); every other intervention is session-scoped and takes
-// TargetNone. It mirrors decision's playerTargetedInterventions (the action
-// sink's TargetSerial users); a test in package decision keeps the two in sync.
-var playerTargeted = map[string]bool{
-	"send_controller_effect":    true,
-	"eliminate_player":          true,
-	"revive_player":             true,
-	"adjust_player_sensitivity": true,
-	"set_player_handicap":       true,
-	"grant_shield":              true,
-	"toughness_boost":           true,
-	"soft_penalty":              true,
-}
+// TargetNone. Derived from Catalog; decision derives its own set the same way.
+var playerTargeted = Set(func(iv Intervention) bool { return iv.PlayerTargeted })
 
 // PlayerTargeted reports whether intervention is applied to one player (its
 // ffa.target must be a serial) rather than to the whole session.
@@ -45,12 +35,7 @@ func PlayerTargeted(intervention string) bool { return playerTargeted[interventi
 
 // PlayerTargetedInterventions returns the player-targeted interventions, sorted.
 func PlayerTargetedInterventions() []string {
-	out := make([]string, 0, len(playerTargeted))
-	for k := range playerTargeted {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return Names(func(iv Intervention) bool { return iv.PlayerTargeted })
 }
 
 // Bounds is the numeric range of one intervention's Decision.Value.
