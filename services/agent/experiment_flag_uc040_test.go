@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"testing"
 
+	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -40,4 +42,33 @@ func TestExperimentFlagLookup(t *testing.T) {
 			t.Fatalf("FlagFor unknown = %q, want \"\"", got)
 		}
 	})
+}
+
+// The production wiring: a lookup installed from a real registry answers the flag
+// for a game id the registry bound at spawn.
+// UC: UC-040 A40 BR-028
+func TestInstallExperimentFlags_RealRegistry(t *testing.T) {
+	spawner := &recordingSpawner{}
+	reg := experiment.NewRegistry(experiment.RegistryConfig{Root: t.TempDir(), MaxShadowGames: 2, Spawner: spawner, Log: testLogger()})
+	id, err := reg.Declare(experiment.Intent{
+		Hypothesis: "h", FlagKey: "windows", ExperimentalValue: 0.5, Objective: "balanced", TargetNPerArm: 2,
+	})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	ctx := context.Background()
+	if err := reg.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if n := reg.AllocateAndSpawn(ctx); n == 0 {
+		t.Fatal("no game spawned")
+	}
+	calls := spawner.drain()
+	var l experimentFlagLookup
+	installExperimentFlags(&l, reg)
+	for _, c := range calls {
+		if got := l.FlagFor(gamecontext.GameContext{SessionID: c.gameID}); got != "windows" {
+			t.Fatalf("FlagFor(bound game %s) = %q, want windows", c.gameID, got)
+		}
+	}
 }

@@ -2310,7 +2310,7 @@ func (r *Registry) IsBound(gameID string) bool {
 
 // ExperimentFlag returns the flag under test in a game (UC-040 A40, BR-028; #1975):
 // the experiment bound to gameID at spawn, else the experiment experimentID names.
-// ok=false when the registry knows neither.
+// ok=false when the registry knows neither, or the experiment is in a terminal status.
 func (r *Registry) ExperimentFlag(gameID, experimentID string) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2319,7 +2319,9 @@ func (r *Registry) ExperimentFlag(gameID, experimentID string) (string, bool) {
 			return e.flagKey, true
 		}
 	}
-	if e := r.entries[experimentID]; experimentID != "" && e != nil {
+	// A torn-down experiment (aborted, concluded, discarded) is not known any more:
+	// its leftover games decide as before (UC-040 A40 step 4).
+	if e := r.entries[experimentID]; experimentID != "" && e != nil && !e.status.IsTerminal() {
 		return e.flagKey, true
 	}
 	return "", false

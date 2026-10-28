@@ -57,4 +57,12 @@ func TestRegistry_ExperimentFlag(t *testing.T) {
 			t.Fatalf("ExperimentFlag(\"\", \"\") = (%q, %v), want (\"\", false)", flag, ok)
 		}
 	})
+	t.Run("UC-040/A40 step 4 after Abort the experiment id answers nothing", func(t *testing.T) {
+		if err := r.Abort(ctx, id, "test"); err != nil {
+			t.Fatalf("Abort: %v", err)
+		}
+		if flag, ok := r.ExperimentFlag("game_unbound", id); ok || flag != "" {
+			t.Fatalf("ExperimentFlag after Abort = (%q, %v), want (\"\", false)", flag, ok)
+		}
+	})
 }

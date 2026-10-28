@@ -3,6 +3,7 @@ package main
 import (
 	"sync/atomic"
 
+	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -33,4 +34,10 @@ func (l *experimentFlagLookup) FlagFor(c gamecontext.GameContext) string {
 		return ""
 	}
 	return flag
+}
+
+// installExperimentFlags wires the registry's lookup into l (main.go calls it once
+// the registry exists).
+func installExperimentFlags(l *experimentFlagLookup, reg *experiment.Registry) {
+	l.Set(reg.ExperimentFlag)
 }

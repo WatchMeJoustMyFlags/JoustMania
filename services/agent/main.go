@@ -902,7 +902,7 @@ func main() {
 			retro.SetExperimentParent(reg.ExperimentSpanContext)
 			summaries.SetExperimentParent(reg.ExperimentSpanContext)
 			proposalSink.Set(expLoop.proposalSink())
-			experimentFlags.Set(reg.ExperimentFlag)
+			installExperimentFlags(experimentFlags, reg)
 		}
 		// #1184: close the game→retro→thesis→experiment loop. Forward each decoded
 		// post-game retro suggestion (#1179) into the experiment loop's retro-seeded
