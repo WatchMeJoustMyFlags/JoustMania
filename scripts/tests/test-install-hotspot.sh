@@ -642,6 +642,22 @@ PATH="${EMPTY_WHO}:${PATH}" refused a11-sudo-unsure "cannot tell" --hold 0 --pau
 grep -qF "sudo nmcli device disconnect wlan0" "${CASE}/out" || fail "a11-sudo-unsure: the refusal does not name the manual disconnect"
 [[ ! -f "${CASE}/pause.log" ]] || fail "a11-sudo-unsure: disconnected the client"
 
+make_case a11-mosh
+wifi_client_up
+fake_proc "4242 bash 4241" "4241 sudo 4100" "4100 bash 4000 192.168.1.20 50000 192.168.1.50 22" "4000 mosh-server 1"
+echo "0 0 192.168.1.50:22 192.168.1.20:50000 users:((\"sshd\",pid=4000,fd=4))" >"${S}/ss-est"
+echo "192.168.1.20 eth0" >"${S}/routes"
+PATH="${EMPTY_WHO}:${PATH}" refused a11-mosh "mosh session cannot be checked" --hold 0 --pause-wifi-client
+grep -qF "sudo nmcli device disconnect wlan0" "${CASE}/out" || fail "a11-mosh: the refusal does not name the manual disconnect"
+[[ ! -f "${CASE}/pause.log" ]] || fail "a11-mosh: disconnected the client"
+
+make_case a11-ancestor-no-peer
+wifi_client_up
+fake_proc "4242 bash 4241" "4241 tmux 4000" "4000 sshd 1"
+: >"${S}/ss-est"
+PATH="${EMPTY_WHO}:${PATH}" refused a11-ancestor-no-peer "no SSH peer found" --hold 0 --pause-wifi-client
+[[ ! -f "${CASE}/pause.log" ]] || fail "a11-ancestor-no-peer: disconnected the client"
+
 make_case a11-sudo-wlan
 wifi_client_up
 fake_proc "${SSHD_CHAIN[@]}"

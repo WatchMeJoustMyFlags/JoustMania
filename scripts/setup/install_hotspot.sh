@@ -196,9 +196,10 @@ route_dev() {
 }
 session_over_wlan() {
     local pid="$SELF_PID" depth=0 comm conn ss_out loc peer users addr dev wlan_addrs
-    local ssh_seen=0 peers=() locals=()
+    local ssh_seen=0 mosh_seen=0 peers=() locals=()
     while [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1 && depth < 64)); do
         comm="$(cat "$PROC/$pid/comm" 2>/dev/null)"
+        case "$comm" in mosh*) mosh_seen=1 ;; esac
         case "$comm" in sshd* | dropbear* | mosh* | tmux* | screen*) ssh_seen=1 ;; esac
         conn="$(tr '\0' '\n' <"$PROC/$pid/environ" 2>/dev/null | sed -n 's/^SSH_CONNECTION=//p' | head -n 1)"
         if [[ -n "$conn" ]]; then
@@ -209,6 +210,10 @@ session_over_wlan() {
         pid="$(sed -n 's/^PPid:[[:space:]]*//p' "$PROC/$pid/status" 2>/dev/null)"
         depth=$((depth + 1))
     done
+    if ((mosh_seen)); then # roams: its UDP session may run over wlan0, invisible to ss -t
+        echo "a mosh session cannot be checked (it may run over $WLAN)"
+        return 0
+    fi
     if [[ -n "${SSH_CONNECTION:-}" ]]; then
         ssh_seen=1
         read -r peer _ loc _ <<<"$SSH_CONNECTION"
