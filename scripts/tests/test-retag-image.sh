@@ -5,6 +5,7 @@
 #
 #   ./scripts/tests/test-retag-image.sh
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RETAG="${SCRIPT_DIR}/../ci/retag-image.sh"

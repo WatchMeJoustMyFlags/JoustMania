@@ -279,15 +279,7 @@ func (r *ObjectiveRules) RecordActed(d Decision) {
 // movement demand (the rule set marks its own candidates with difficulty=true;
 // this is the name-level view for decisions made elsewhere). They arm the
 // variance cooldown when dispatched.
-var difficultyInterventions = map[string]bool{
-	InterventionAdjustMusicTempo:        true,
-	InterventionRampTempo:               true,
-	InterventionAdjustPlayerSensitivity: true,
-	InterventionAdjustGlobalSensitivity: true,
-	InterventionAdjustGlobalDifficulty:  true,
-	InterventionSetPacingProfile:        true,
-	InterventionSetPlayerHandicap:       true,
-}
+var difficultyInterventions = decide.Set(func(iv decide.Intervention) bool { return iv.Difficulty })
 
 // rankLocked runs the rule set against c and returns every candidate that
 // survives the policy filters and minScore, scored and in emission order, plus

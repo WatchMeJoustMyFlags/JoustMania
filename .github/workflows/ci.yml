@@ -771,6 +771,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Hermetic lint (every script test sources lib/hermetic.sh, #2315)
+        run: scripts/ci/check-hermetic-tests.sh
+
       - name: Run scripts/tests/*.sh
         run: |
           shopt -s nullglob

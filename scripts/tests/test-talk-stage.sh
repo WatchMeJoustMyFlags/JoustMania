@@ -10,6 +10,7 @@
 # UC: UC-070 main A7 A8 A9 BR-001 BR-003 BR-007 Pre-3 Post-S-2
 # UC: UC-053 A1
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

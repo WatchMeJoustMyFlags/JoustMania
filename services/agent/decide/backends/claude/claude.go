@@ -31,14 +31,9 @@ package claude
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -112,7 +107,7 @@ type Backend struct {
 // defaultHTTPClient is shared by every Backend without a Config.HTTPClient so
 // connections are pooled across the per-decision New calls. Its own timeout is
 // a backstop; Decide's ctx deadline is the real budget.
-var defaultHTTPClient = anthropichttp.NewHTTPClient(30 * time.Second)
+var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // New builds a Backend. It never fails; an incomplete Config makes Available
 // false and Decide return an error.
@@ -128,7 +123,7 @@ func New(cfg Config) *Backend {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultHTTPClient
 	}
-	host, port := serverAddress(cfg.BaseURL)
+	host, port := anthropichttp.ServerAddress(cfg.BaseURL)
 	return &Backend{cfg: cfg, host: host, port: port, client: newClient(cfg)}
 }
 
@@ -183,7 +178,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 	call := callResult{msg: msg, start: start}
 
 	if err != nil {
-		call.errType = errorType(ctx, err)
+		call.errType = anthropichttp.ErrorType(ctx, err)
 		b.finish(ctx, span, call, nil)
 		return decide.Response{}, fmt.Errorf("claude: %s: %w", call.errType, err)
 	}
@@ -221,34 +216,19 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 }
 
 // newClient builds the SDK client once per Backend. The pooled connections
-// live in the (shared) http.Client.
+// live in the (shared) http.Client. anthropichttp.NewClient takes the key and
+// base URL from Config only, turns SDK retries and SDK OTel off (Decide owns
+// the single chat span; the outcome that matters, parse/validation and the
+// rationale as a reasoning part, is only known after the SDK returns), injects
+// traceparent and never follows a redirect.
 func newClient(cfg Config) anthropic.Client {
 	return anthropichttp.NewClient(cfg.APIKey, cfg.BaseURL, cfg.HTTPClient)
 }
-
-// attrRequestReasoningLevel is gen_ai.request.reasoning.level, which postdates
-// the vendored semconv v1.41.0 (no Go constant yet). The name matches what
-// anthropic-sdk-go's own instrumentation records for output_config.effort.
-const attrRequestReasoningLevel = attribute.Key("gen_ai.request.reasoning.level")
 
 // attrRefusalCategory is the stop_details.category of a refusal. Semconv has
 // no name for it; the anthropic.* prefix follows the provider-specific
 // attribute convention.
 const attrRefusalCategory = attribute.Key("anthropic.refusal.category")
-
-// attrSystemSHA256 fingerprints the system prompt on every span (first 16 hex
-// chars of its sha256), mirroring llm.prompt.system_sha256 in
-// decision/prompt_fingerprint.go. The full text (gen_ai.system_instructions)
-// stays behind CaptureContent: stamping multi-KB prompts on every span is what
-// pushed the collector into OOM in #1167.
-const attrSystemSHA256 = attribute.Key("llm.prompt.system_sha256")
-
-const systemSHALen = 16
-
-func systemSHA(system string) string {
-	sum := sha256.Sum256([]byte(system))
-	return hex.EncodeToString(sum[:])[:systemSHALen]
-}
 
 // requestShape is the per-model latency tuning: thinking off where the model
 // allows it cleanly, low effort elsewhere, temperature 0 where sampling
@@ -279,7 +259,7 @@ func (s requestShape) maxTokensOf() int64 {
 // to fit the in-game budget (Fable is intentionally absent).
 func shapeFor(model string) requestShape {
 	zero := 0.0
-	switch stripDateSuffix(model) {
+	switch anthropichttp.StripDateSuffix(model) {
 	case "claude-haiku-4-5":
 		// No thinking unless asked for; sampling parameters accepted; effort is not.
 		return requestShape{temperature: &zero, maxTokens: MaxTokensNoThinking}
@@ -308,20 +288,6 @@ func shapeFor(model string) requestShape {
 	default:
 		return requestShape{}
 	}
-}
-
-// stripDateSuffix removes a trailing "-YYYYMMDD" snapshot date.
-func stripDateSuffix(model string) string {
-	i := strings.LastIndexByte(model, '-')
-	if i < 0 || len(model)-i-1 != 8 {
-		return model
-	}
-	for _, c := range model[i+1:] {
-		if c < '0' || c > '9' {
-			return model
-		}
-	}
-	return model[:i]
 }
 
 func (b *Backend) params(p llmio.Prompt, shape requestShape) anthropic.MessageNewParams {
@@ -353,13 +319,13 @@ func (b *Backend) requestAttributes(shape requestShape, system string) []attribu
 		semconv.GenAIOutputTypeJSON,
 		semconv.ServerAddress(b.host),
 		semconv.ServerPort(b.port),
-		attrSystemSHA256.String(systemSHA(system)),
+		anthropichttp.AttrSystemSHA256.String(anthropichttp.SystemSHA(system)),
 	}
 	if shape.temperature != nil {
 		attrs = append(attrs, semconv.GenAIRequestTemperature(*shape.temperature))
 	}
 	if shape.effort != "" {
-		attrs = append(attrs, attrRequestReasoningLevel.String(string(shape.effort)))
+		attrs = append(attrs, anthropichttp.AttrRequestReasoningLevel.String(string(shape.effort)))
 	}
 	return attrs
 }
@@ -449,41 +415,4 @@ func finishReason(r anthropic.StopReason) string {
 		// pause_turn and any future stop reason: not in the semconv enum.
 		return llmio.FinishError
 	}
-}
-
-// errorType is the low-cardinality error.type of a failed call: "timeout",
-// "canceled", the HTTP status code for API errors (the convention for HTTP
-// clients), or "_OTHER".
-func errorType(ctx context.Context, err error) string {
-	var apiErr *anthropic.Error
-	switch {
-	case errors.As(err, &apiErr):
-		return strconv.Itoa(apiErr.StatusCode)
-	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return "timeout"
-	}
-	return semconv.ErrorTypeOther.Value.AsString()
-}
-
-// serverAddress splits a base URL into server.address / server.port.
-func serverAddress(base string) (string, int) {
-	u, err := url.Parse(base)
-	if err != nil || u.Hostname() == "" {
-		return "", 0
-	}
-	if p := u.Port(); p != "" {
-		if n, err := strconv.Atoi(p); err == nil {
-			return u.Hostname(), n
-		}
-	}
-	if u.Scheme == "http" {
-		return u.Hostname(), 80
-	}
-	return u.Hostname(), 443
 }

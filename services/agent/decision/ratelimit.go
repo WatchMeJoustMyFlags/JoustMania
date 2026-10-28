@@ -3,6 +3,8 @@ package decision
 import (
 	"sync"
 	"time"
+
+	"github.com/joustmania/agent/decide"
 )
 
 // This file is the UNIFIED weighted rate limiter for the agent (reconciliation
@@ -113,28 +115,13 @@ const (
 //
 // An intervention not in the table is treated as medium (1) — a safe middle
 // cost so an unknown action still draws down the budget.
-var interventionWeights = map[string]float64{
-	// Soft (0.5)
-	InterventionPlayAudioCue:         0.5,
-	InterventionSendControllerEffect: 0.5,
-	InterventionAdjustVolume:         0.5,
-	// Medium (1)
-	InterventionAdjustMusicTempo:        1,
-	InterventionAdjustPlayerSensitivity: 1,
-	InterventionSetPlayerHandicap:       1, // #1107 (#1103 MVP action 1)
-	InterventionGrantShield:             1,
-	InterventionToughnessBoost:          1, // #1129 (#1103 Phase 2) — MEDIUM
-	InterventionSoftPenalty:             1, // #1134 (#1103 Phase 3) — MEDIUM
-	InterventionAdjustGlobalDifficulty:  1, // #766 F6
-	InterventionSetPacingProfile:        1, // #766 F6
-	InterventionRampTempo:               1, // #1117 (#1103 MVP action 2)
-	InterventionAutoRubberband:          1, // #1143 (#1103 Phase 3) — MEDIUM
-	// Hard (2)
-	InterventionAdjustGlobalSensitivity: 2,
-	InterventionEliminatePlayer:         2,
-	InterventionRevivePlayer:            2,
-	InterventionEndGame:                 2,
-}
+var interventionWeights = func() map[string]float64 {
+	out := make(map[string]float64, len(decide.Catalog))
+	for _, iv := range decide.Catalog {
+		out[iv.Name] = iv.Weight
+	}
+	return out
+}()
 
 // defaultInterventionWeight is charged for interventions absent from the table.
 const defaultInterventionWeight = 1.0

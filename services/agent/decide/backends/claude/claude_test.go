@@ -26,6 +26,7 @@ import (
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/decide/llmio"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/internal/anthropichttp"
 )
 
 var recorder = tracetest.NewSpanRecorder()
@@ -268,7 +269,7 @@ func TestDecide_HappyPath(t *testing.T) {
 	if a["server.port"].AsInt64() == 0 {
 		t.Error("server.port missing")
 	}
-	if sha := a["llm.prompt.system_sha256"].AsString(); len(sha) != 16 || sha != systemSHA(llmio.Render(testRequest()).System) {
+	if sha := a["llm.prompt.system_sha256"].AsString(); len(sha) != 16 || sha != anthropichttp.SystemSHA(llmio.Render(testRequest()).System) {
 		t.Errorf("llm.prompt.system_sha256 = %q", sha)
 	}
 	for _, k := range []string{"gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.system_instructions",
@@ -458,10 +459,10 @@ func TestNewDefaults(t *testing.T) {
 	if b.cfg.HTTPClient != New(Config{}).cfg.HTTPClient {
 		t.Error("default http client must be shared across New calls")
 	}
-	if h, p := serverAddress("http://proxy.local/anthropic/"); h != "proxy.local" || p != 80 {
+	if h, p := anthropichttp.ServerAddress("http://proxy.local/anthropic/"); h != "proxy.local" || p != 80 {
 		t.Errorf("serverAddress = %s:%d", h, p)
 	}
-	if h, p := serverAddress("::bad"); h != "" || p != 0 {
+	if h, p := anthropichttp.ServerAddress("::bad"); h != "" || p != 0 {
 		t.Errorf("bad url = %s:%d", h, p)
 	}
 }
@@ -586,30 +587,37 @@ func TestDecide_NoulUnsupported(t *testing.T) {
 	}
 }
 
-// The default client (no Config.HTTPClient) must not follow a redirect: the SDK
-// sends x-api-key, which net/http would forward to another host.
+// TestDecide_InjectedClientNeverFollowsRedirect: the redirect guard is part of
+// the SDK client itself (anthropichttp.NewClient), not of the http.Client the
+// caller passes in. Even an injected client that follows redirects must not
+// forward x-api-key to another host: the 3xx is an error and the target sees no
+// request (#2321).
 // UC: UC-044 BR-003
-// UC: C-016
-func TestDefaultHTTPClient_RefusesCrossHostRedirect(t *testing.T) {
-	var targetHits int
-	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { targetHits++ }))
-	defer target.Close()
-	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
-	}))
-	defer redirector.Close()
+func TestDecide_InjectedClientNeverFollowsRedirect(t *testing.T) {
+	for _, status := range []int{http.StatusFound, http.StatusTemporaryRedirect} {
+		var targetHits atomic.Int32
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			targetHits.Add(1)
+			http.Error(w, "should not be reached", http.StatusTeapot)
+		}))
+		t.Cleanup(target.Close)
+		redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL+r.URL.Path, status)
+		}))
+		t.Cleanup(redirector.Close)
 
-	req, err := http.NewRequest(http.MethodPost, redirector.URL+"/v1/messages", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("X-Api-Key", "sk-secret")
-	resp, err := defaultHTTPClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusTemporaryRedirect || targetHits != 0 {
-		t.Errorf("status=%d targetHits=%d, want 307 and 0", resp.StatusCode, targetHits)
+		b := New(Config{
+			APIKey:     "sk-redirect-secret",
+			BaseURL:    redirector.URL,
+			Model:      "claude-haiku-4-5",
+			Timeout:    2 * time.Second,
+			HTTPClient: &http.Client{}, // follows redirects by default
+		})
+		if _, err := b.Decide(context.Background(), testRequest()); err == nil {
+			t.Errorf("status %d: Decide succeeded through a redirect, want an error", status)
+		}
+		if n := targetHits.Load(); n != 0 {
+			t.Errorf("status %d: redirect target received %d request(s) (x-api-key leaked)", status, n)
+		}
 	}
 }
