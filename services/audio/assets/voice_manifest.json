@@ -271,6 +271,22 @@
    "duration_s": 13.39,
    "lufs": -20.48
   },
+  "Menu/vox/gen_female/admin_agent.ogg": {
+   "line": "Menu/admin_agent",
+   "input_sha256": "a5a3e8ac88a7034137051ed5073d3d30a8d010fa24cc5241b04f505a365d2c27",
+   "text_sha256": "34aa6e1d0b406b7d72d67ad812e0d2e3f7db2137050cf522f83e02cc239bfed9",
+   "sha256": "75b0b74cecbb9d5bb161d80cddfeff9a3e3ed2b867789aa2006c655786c72a10",
+   "duration_s": 0.71,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_female/admin_not_saved.ogg": {
+   "line": "Menu/admin_not_saved",
+   "input_sha256": "0eeda157bcd654750f7025bba3e6b77a14b599ca6a55737af6f9f3eba7095ac9",
+   "text_sha256": "9b1b1f85a08918c0e0fca4c95513e77c1925f5a4ae95ebc48fdcb173850a69eb",
+   "sha256": "4c97d62eddb9a314264a117a5f68eb7c260c43186db9c430274863eb247c0f3e",
+   "duration_s": 0.91,
+   "lufs": -20.46
+  },
   "Menu/vox/gen_female/adminop_1.ogg": {
    "line": "Menu/adminop_1",
    "input_sha256": "22eefff9ea002b5abf3bcf114b8a9e27813044846ec606f4ae8dbc594cca823c",
@@ -742,6 +758,22 @@
    "sha256": "2529af6dd574f30d3d483460dbdc5608e56c538cb1622ab7cfda17e3a0d7f200",
    "duration_s": 14.667,
    "lufs": -20.5
+  },
+  "Menu/vox/gen_male/admin_agent.ogg": {
+   "line": "Menu/admin_agent",
+   "input_sha256": "2345f116567fe0cfd396430ec47a730c68735b44d99068a94ccbb9f2d86a2bf3",
+   "text_sha256": "34aa6e1d0b406b7d72d67ad812e0d2e3f7db2137050cf522f83e02cc239bfed9",
+   "sha256": "7fdf7ef77f57d2cd6574d4f5c74da688c66a5508a6c810a695e2947b5fe869cc",
+   "duration_s": 1.49,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_male/admin_not_saved.ogg": {
+   "line": "Menu/admin_not_saved",
+   "input_sha256": "cedffc261c6ff73e3bf9bf75b4289221bd17a8d552a6e130f3fee45f092f48ca",
+   "text_sha256": "9b1b1f85a08918c0e0fca4c95513e77c1925f5a4ae95ebc48fdcb173850a69eb",
+   "sha256": "b8b78ba3aa35c9ee2b6da659723b0563dd1512429a595580eabd2b5822aba28e",
+   "duration_s": 0.995,
+   "lufs": -20.55
   },
   "Menu/vox/gen_male/adminop_1.ogg": {
    "line": "Menu/adminop_1",

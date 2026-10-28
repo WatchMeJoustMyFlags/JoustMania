@@ -8,7 +8,7 @@
  *                          (agent.infrastructure.decision).
  *   2. Flag panel        — the followed game's effective flag set, from its newest
  *                          agent.flag_state span (UC-070 BR-005 anchor).
- *   3. Intervention      — applied and blocked tallies from VictoriaMetrics
+ *   3. Intervention      — applied and blocked tallies from VictoriaMetrics (real games first, shadow games on their own line, #2294)
  *      overlay             (`n/a` when it is unreachable).
  *   4. Decide feed       — (#1233) one row per agent.decide span from Jaeger:
  *                          backend/model, answer, confidence vs threshold,
@@ -250,6 +250,15 @@ export class AgentView {
         ? `<span class="agent-stat-sub" title="failed flag-file writes">(${overlay.appliedError} failed)</span>`
         : "";
 
+    const shadowCell = (n: number | null, extra = "") =>
+      n === null
+        ? '<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>'
+        : `<span class="agent-stat-val agent-stat-shadow">${n}</span>${extra}`;
+    const shadowErr =
+      overlay.shadowAppliedError && overlay.shadowAppliedError > 0
+        ? ` <span class="agent-stat-sub" title="failed flag-file writes">(${overlay.shadowAppliedError} failed)</span>`
+        : "";
+
     const blocked =
       overlay.totalBlocked === null
         ? '<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>'
@@ -292,6 +301,16 @@ export class AgentView {
         <div class="agent-stat">
           <span class="agent-stat-label">blocked (10m)</span>
           ${blocked}
+        </div>
+      </div>
+      <div class="agent-overlay-stats agent-overlay-shadow" title="Shadow (evaluation) games, not player-facing">
+        <div class="agent-stat">
+          <span class="agent-stat-label">shadow applied</span>
+          ${shadowCell(overlay.shadowAppliedOk, shadowErr)}
+        </div>
+        <div class="agent-stat">
+          <span class="agent-stat-label">shadow blocked (10m)</span>
+          ${shadowCell(overlay.shadowBlocked)}
         </div>
       </div>
       <div class="agent-overlay-cols">

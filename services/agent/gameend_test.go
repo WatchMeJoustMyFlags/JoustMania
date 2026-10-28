@@ -200,8 +200,8 @@ func TestGameEndChain_StaleEndSkippedAndCounted(t *testing.T) {
 		if consumed != 2 {
 			t.Errorf("consumer saw %d game ends, want 2 (zero and root_span, not stale)", consumed)
 		}
-		if got := staleCounterValue(t, reader, "real"); got != 1 {
-			t.Errorf("%s{game_kind=real} = %d, want 1", metricGameEndStale, got)
+		if got := staleCounterValue(t, reader, "primary"); got != 1 {
+			t.Errorf("%s{game_kind=primary} = %d, want 1", metricGameEndStale, got)
 		}
 	})
 }

@@ -9,8 +9,9 @@ the wiring that only the full stack has:
 - game coordinator -> otel-collector -> agent (``otlp/agent`` fan-out, UC-041);
 - agent -> flag service -> flagd -> coordinator (the decision takes effect);
 - agent -> otel-collector -> Jaeger, read back through envoy the way the
-  dashboard's Agent tab reads it (``GET /jaeger/api/traces?service=agent
-  &operation=agent.decide&limit=5``, ``services/dashboard/src/agent.ts``
+  dashboard's Agent tab reads it (Jaeger query API v3, ``GET /jaeger/api/v3/traces
+  ?query.serviceName=agent&query.operationName=agent.decide&query.searchDepth=5``, #2283,
+  ``services/dashboard/src/agent.ts``
   ``decideQueryParams``; UC-035 step 3, decision feed only);
 - the game's trace in Jaeger: the root span named after the mode, its phases,
   one span per player, and the agent's rules-path spans as remote children of
@@ -36,6 +37,7 @@ import pytest
 from openfeature.evaluation_context import EvaluationContext
 
 from proto import menu_pb2
+from tests.integration import jaeger_v3
 from tests.integration.flag_service import FlagService
 from tests.integration.helpers import (
     GameEventCollector,
@@ -76,7 +78,7 @@ GAME_PHASES = ("initialization_phase", "gameplay_phase", "game_cycle", "teardown
 AGENT_SPANS_WITH_GAME_ID = ("agent.signal_received", "agent.decide", "agent.decision")
 AGENT_SPANS_WITH_GAME_KIND = ("agent.decide", "agent.decision")
 # The Agent tab's decide query (agent.ts DECIDE_OPERATION, DECIDE_TRACE_LIMIT).
-DECIDE_QUERY = {"service": "agent", "operation": "agent.decide", "limit": "5"}
+DECIDE_QUERY = {"service": "agent", "operation": "agent.decide", "limit": 5}
 
 # Interventions on, rules backend, the allow-list that lets the rules engine's
 # in-game levers through on both sides (services/flagd/ci/agent.json).
@@ -188,7 +190,7 @@ def _bring_up(docker_compose, prefix, cwd, env, no_build: bool) -> None:
     )
     _envoy_jaeger_api = _envoy_base(prefix, cwd, env) + "/jaeger/api"
     assert poll_until(_jaeger_reachable, timeout=30.0), (
-        f"envoy never answered {_envoy_jaeger_api}/services"
+        f"envoy never answered {_envoy_jaeger_api}/v3/services"
     )
 
 
@@ -236,7 +238,7 @@ def _envoy_base(prefix, cwd, env) -> str:
     last = [(0, "")]
 
     def _answered() -> bool:
-        last[0] = _probe(f"{base}/jaeger/api/services")
+        last[0] = _probe(f"{base}/jaeger/api/v3/services")
         return last[0][0] != 0
 
     poll_until(_answered, timeout=15.0)
@@ -256,30 +258,24 @@ def _get_json(url: str) -> dict:
 
 def _jaeger_reachable() -> bool:
     try:
-        return "data" in _get_json(f"{_envoy_jaeger_api}/services")
+        return "services" in _get_json(f"{_envoy_jaeger_api}/v3/services")
     except (OSError, ValueError):
         return False
 
 
 def _decide_traces() -> list[dict]:
-    """The Agent tab's poll: GET /jaeger/api/traces with the tab's query string."""
+    """The Agent tab's poll: the v3 search with the tab's service, operation and depth."""
     try:
-        return (
-            _get_json(
-                f"{_envoy_jaeger_api}/traces?{urllib.parse.urlencode(DECIDE_QUERY)}"
-            ).get("data")
-            or []
-        )
+        return jaeger_v3.find_traces(_envoy_jaeger_api, **DECIDE_QUERY)
     except (OSError, ValueError):
         return []
 
 
 def _trace(trace_id: str) -> dict:
     try:
-        data = _get_json(f"{_envoy_jaeger_api}/traces/{trace_id}").get("data") or []
+        return jaeger_v3.get_trace(_envoy_jaeger_api, trace_id)
     except (OSError, ValueError):
         return {}
-    return data[0] if data else {}
 
 
 def _tags(span: dict) -> dict:

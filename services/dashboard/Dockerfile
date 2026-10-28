@@ -9,11 +9,11 @@ FROM node:24-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY services/dashboard/package.json services/dashboard/package-lock.json* ./
+# Copy package files first (layer cache); the lock is required (C-046)
+COPY services/dashboard/package.json services/dashboard/package-lock.json ./
 
-# Install dependencies
-RUN npm install
+# Install exactly the locked dependencies; fails when the lock and package.json differ
+RUN npm ci
 
 # Copy source code
 COPY services/dashboard/ ./
