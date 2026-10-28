@@ -82,7 +82,7 @@ func noRedirect(c *http.Client) *http.Client {
 // redirect: the 3xx surfaces as the response. net/http strips only
 // Authorization and Cookie across hosts, so an x-api-key header would reach a
 // redirect target (UC-044 BR-003, C-016).
-func NoRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+func NoRedirect(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 
 // NewHTTPClient returns a plain HTTP client that never follows a redirect, for
 // key-bearing requests that do not go through the SDK. A zero timeout means no
