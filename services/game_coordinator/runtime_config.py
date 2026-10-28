@@ -212,6 +212,21 @@ class RuntimeConfigManager:
         # Refresh configuration from updated flags
         self._refresh_from_flags()
 
+    def _sanitize_update_frequency(self, value) -> int:
+        """Return value clamped to 1..100 Hz; on a bad value keep the previous one (#2356).
+
+        A zero/negative/NaN rate would divide by zero in the game loop and end every game in
+        game_error. Keeping the previous value (initially 60) matches controller-manager, which
+        ignores hz <= 0. Warn once per distinct bad value, not on every flag push.
+        """
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 1:
+            return min(int(value), 100)
+        previous = self.config.update_frequency_hz
+        if getattr(self, "_warned_hz", object()) != repr(value):
+            self._warned_hz = repr(value)
+            logger.warning(f"Invalid game_loop.update_frequency_hz {value!r}; keeping previous {previous} Hz")
+        return previous
+
     def _refresh_from_flags(self):
         """
         Update configuration from feature flags.
@@ -239,6 +254,7 @@ class RuntimeConfigManager:
                 new_hz = self.system_client.get_integer_value(
                     "game_loop.update_frequency_hz", self.config.update_frequency_hz, EvaluationContext()
                 )
+                new_hz = self._sanitize_update_frequency(new_hz)
                 if new_hz != old_hz:
                     logger.info(f"Config updated: update_frequency_hz {old_hz} -> {new_hz} Hz")
                     self.config.update_frequency_hz = new_hz
