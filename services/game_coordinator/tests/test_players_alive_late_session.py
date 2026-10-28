@@ -16,10 +16,14 @@ project_root = test_dir.parent.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
+import threading
+
+from conftest import EventCollector, MockControllerManagerService, async_noop
 from test_game_session import _make_session, _tracer_mock
 
 from services.game_coordinator import metrics
 from services.game_coordinator.game_session import GAME_KIND_PRIMARY
+from services.game_coordinator.games.ffa import FFAGame
 
 GAME_A = "game_abc123"  # _make_session's game id
 GAME_B = "game_B"
@@ -93,26 +97,31 @@ class TestLateSessionKeepsNextGameCount:
 
 @pytest.mark.uc("UC-027", flow="main", br=["BR-002"])
 class TestResetIfOwner:
-    def test_b_claims_between_check_and_zero_gets_its_value_back(self, monkeypatch):
-        """B writes after A's owner check but before A's zero lands."""
+    def test_b_write_during_a_reset_waits_and_lands_after_the_zero(self, monkeypatch):
+        """B writes while A's compare-and-zero runs: the lock orders B after the zero."""
 
         class RacingGauge:
-            value = None
-            raced = False
+            def __init__(self):
+                self.values = []
+                self.writer = None
 
             def set(self, value):
-                if value == 0 and not self.raced:
-                    self.raced = True
-                    metrics.set_players_alive(GAME_B, 4)  # lands first
-                self.value = value
+                if value == 0 and self.writer is None:
+                    self.writer = threading.Thread(target=metrics.set_players_alive, args=(GAME_B, 4))
+                    self.writer.start()
+                    self.writer.join(timeout=0.2)
+                    assert self.writer.is_alive(), "B's write must wait for A's reset"
+                self.values.append(value)
 
         racing = RacingGauge()
         monkeypatch.setattr(metrics, "players_alive", racing)
         metrics.set_players_alive(GAME_A, 3)
 
         assert metrics.reset_players_alive_if_owner(GAME_A) is True
-        assert racing.raced
-        assert racing.value == 4
+        racing.writer.join(timeout=5)
+        assert not racing.writer.is_alive()
+        assert racing.values == [3, 0, 4]
+        assert metrics._players_alive_last == (GAME_B, 4)
 
     def test_not_owner_does_not_touch_gauge(self, gauge):
         metrics.set_players_alive(GAME_B, 4)
@@ -124,3 +133,33 @@ class TestResetIfOwner:
     def test_no_writer_yet_does_not_touch_gauge(self, gauge):
         assert metrics.reset_players_alive_if_owner(GAME_A) is False
         gauge.set.assert_not_called()
+
+
+class _Stream:
+    async def write(self, message):
+        pass
+
+
+@pytest.mark.uc("UC-027", flow="main", br=["BR-002"])
+class TestGameModeClaimsOwnership:
+    @pytest.mark.asyncio
+    async def test_kill_in_a_real_mode_makes_its_session_reset_zero_the_gauge(self, gauge):
+        """The mode's write must carry its own game id, or no session reset ever fires."""
+        mock_cm = MockControllerManagerService(num_controllers=4, death_schedule={}, max_duration=10.0)
+        game = FFAGame(
+            controller_manager_client=mock_cm,
+            event_publisher=EventCollector().publish,
+            audio_client=None,
+            game_id=GAME_A,
+        )
+        await game._initialize_players_impl(mock_cm.controllers)
+        game.gameplay_stream = _Stream()
+        game.running = True
+        game._play_sound = async_noop
+
+        await game._kill_player(next(iter(game.players)), accel_mag=5.0)
+
+        assert metrics._players_alive_last == (GAME_A, 3)
+        assert metrics.reset_players_alive_if_owner(GAME_A) is True
+        assert _last_value(gauge) == 0
+        await game.cleanup()
