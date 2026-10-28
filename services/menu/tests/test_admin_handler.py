@@ -311,7 +311,7 @@ class TestWriteFailure:
     """UC-012 A5: a flag write that fails persists nothing, gives no success feedback and the error cue."""
 
     @staticmethod
-    def _assert_error_cue_only(manager):
+    def _assert_error_cue_only(manager, not_saved_voice=True):
         from proto import controller_manager_pb2
 
         manager.led.send_game_effect.assert_called_once()
@@ -320,7 +320,10 @@ class TestWriteFailure:
         assert call.kwargs["color"] == Colors.Red.value
         assert call.kwargs["duration_ms"] == 400
         assert call.kwargs["speed"] == 10
-        manager.audio.play_voice.assert_not_called()
+        if not_saved_voice:  # a failed write says so (#1746); a failed read stays LED-only
+            manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
+        else:
+            manager.audio.play_voice.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="A5")
@@ -404,7 +407,7 @@ class TestWriteFailure:
 
         await handler.handle_cycle_option("test_serial")
 
-        self._assert_error_cue_only(mock_state_manager)
+        self._assert_error_cue_only(mock_state_manager, not_saved_voice=False)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="A7")
@@ -1874,8 +1877,8 @@ class TestAgentControlOption:
 
         await handler.handle_increase_value("test_serial")
 
-        # No success feedback (level colour / level voice); the error cue is covered in TestAgentWriteErrorCue.
-        mock_state_manager.audio.play_voice.assert_not_called()
+        # No success feedback (level colour / level voice); only "Not saved" (#1746), cue: TestAgentWriteErrorCue.
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     async def test_reads_agent_state_once(self, handler, mock_state_manager):
@@ -2438,8 +2441,8 @@ class TestAgentWriteErrorCue:
         assert call.kwargs["duration_ms"] == 400
         assert call.kwargs["speed"] == 10
         mock_state_manager.audio.play_sound.assert_not_called()
-        # No level voice line: it must not read as a level change.
-        mock_state_manager.audio.play_voice.assert_not_called()
+        # Only the "Not saved" line (#1746), never a level voice line: it must not read as a level change.
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="A3", steps=[2])
@@ -2452,7 +2455,7 @@ class TestAgentWriteErrorCue:
 
         mock_state_manager.led.send_game_effect.assert_called_once()
         assert mock_state_manager.led.send_game_effect.call_args.kwargs["duration_ms"] == 400
-        mock_state_manager.audio.play_voice.assert_not_called()
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="main", steps=[4])
@@ -2603,7 +2606,7 @@ class TestAgentLadderAgainstTheFlagService:
         await handler.handle_decrease_value("test_serial")
 
         assert self._error_cue_shown(mock_state_manager)
-        mock_state_manager.audio.play_voice.assert_not_called()
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="A5", steps=[1])
@@ -2650,7 +2653,7 @@ class TestAgentLadderAgainstTheFlagService:
             mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_1)
         else:
             assert self._error_cue_shown(mock_state_manager)
-            mock_state_manager.audio.play_voice.assert_not_called()
+            mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="A5", steps=[1])
@@ -2793,17 +2796,48 @@ class TestOptionAnnouncementUsesEffectiveValue:
 
         handler._show_value_feedback = show
         handler._play_value_voice = voice
+
+        async def say(sound):
+            order.append(("say", sound))
+
         handler._send_game_effect = effect
+        handler._play_voice = say
 
         await handler.handle_increase_value("test_serial")
+        await asyncio.gather(*handler._voice_tasks)  # the "Agent" line is detached (may overlap the value LED)
 
-        assert order == [
-            ("show", 3),
-            ("voice", 3),
-            ("cue", Colors.Magenta.value),
-            ("show", 4),
-            ("voice", 4),
-        ]
+        assert order[:3] == [("show", 3), ("voice", 3), ("cue", Colors.Magenta.value)]
+        # #1746: the spoken "Agent" reinforces the magenta pulse; the value LED never waits for it
+        assert order.index(("say", Sound.MENU_VOX_ADMIN_AGENT)) > 2
+        assert order.index(("show", 4)) < order.index(("voice", 4))
+        assert {("say", Sound.MENU_VOX_ADMIN_AGENT), ("show", 4), ("voice", 4)} <= set(order[3:])
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5], br=["BR-006"])
+    async def test_slow_agent_voice_does_not_delay_the_effective_value_led(self, handler, mock_state_manager):
+        """A hanging audio RPC for the "Agent" line must not hold back the effective-value LED."""
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "ultra_fast")
+        release = asyncio.Event()
+        shown = []
+
+        async def slow_voice(_sound):
+            await release.wait()
+
+        async def show(_serial, _option, value):
+            shown.append(value)
+
+        handler._play_voice = slow_voice
+        handler._show_value_feedback = show
+        handler._play_value_voice = AsyncMock()
+        handler._send_game_effect = AsyncMock()
+
+        await asyncio.wait_for(handler.handle_increase_value("test_serial"), timeout=1)
+
+        assert shown == [3, 4]  # effective-value LED sent while the Agent voice is still pending
+        release.set()
+        await asyncio.gather(*handler._voice_tasks)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[4, 5], br=["BR-006"])
@@ -2842,3 +2876,57 @@ class TestOptionAnnouncementUsesEffectiveValue:
         handler._show_value_feedback.assert_awaited_once_with("test_serial", option, values[new])
         handler._play_value_voice.assert_awaited_once_with(option, values[new])
         handler._send_game_effect.assert_not_awaited()
+
+
+class TestWriteFailedVoice:
+    """#1746: the "Not saved" line reinforces the red error pulse on a failed write, never on a failed read."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A5", steps=[2])
+    async def test_failed_value_write_pulses_red_then_says_not_saved(self, handler, mock_state_manager):
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = None
+
+        await handler.handle_increase_value("test_serial")
+
+        assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == Colors.Red.value
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A5", steps=[2])
+    @pytest.mark.parametrize(
+        ("handler_method", "writer_name"),
+        [("handle_sensitivity", "game_settings_writer"), ("handle_instructions", "user_prefs_writer")],
+    )
+    async def test_failed_circle_and_square_write_pulses_red_then_says_not_saved(
+        self, handler, mock_state_manager, handler_method, writer_name
+    ):
+        getattr(mock_state_manager, writer_name).cycle_variant.return_value = None
+
+        await getattr(handler, handler_method)("test_serial")
+
+        assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == Colors.Red.value
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A7", steps=[1])
+    async def test_unreadable_flag_service_stays_led_only(self, handler, mock_state_manager):
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = None
+
+        await handler._announce_effective_value("test_serial", "sensitivity")
+
+        assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == Colors.Red.value
+        mock_state_manager.audio.play_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A3", steps=[2])
+    async def test_voice_failure_does_not_break_the_error_cue(self, handler, mock_state_manager):
+        handler.current_option = handler.option_names.index("agent_control")
+        set_agent_level(mock_state_manager, "ambient")
+        mock_state_manager.agent_settings_writer.update_default_variant.return_value = False
+        mock_state_manager.audio.play_voice.side_effect = RuntimeError("audio down")
+
+        await handler.handle_increase_value("test_serial")
+
+        mock_state_manager.led.send_game_effect.assert_called_once()
