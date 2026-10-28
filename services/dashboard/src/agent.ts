@@ -550,11 +550,20 @@ export const DECIDE_OPERATION = "agent.decide";
  */
 
 /**
- * Overlap behind the newest decide already seen: spans are exported when they
- * END, so a decide that started a little earlier than the newest one we hold can
- * still arrive late.
+ * Longest a decide can run: the top of the configurable
+ * `decision.<backend>.timeout_ms` range (100 to 60000, docs/specs/flags.md).
  */
-export const DECIDE_OVERLAP_MS = 30 * 1000;
+export const DECIDE_TIMEOUT_CEILING_MS = 60 * 1000;
+
+/** Span export batching on top of that (the OTLP batch delay, with margin). */
+export const DECIDE_EXPORT_DELAY_MS = 2 * 1000;
+
+/**
+ * Overlap behind the newest decide already seen: spans are exported when they
+ * END, so a decide that started earlier than the newest one we hold can still
+ * arrive late, by up to the longest decide plus the export delay.
+ */
+export const DECIDE_OVERLAP_MS = DECIDE_TIMEOUT_CEILING_MS + DECIDE_EXPORT_DELAY_MS;
 
 /**
  * Max traces per Jaeger search. Both rules and remote agent.decide spans live in
@@ -574,7 +583,8 @@ const MAX_DECIDE_ROWS = 30;
  * The legacy API has no "spans since" query, so the dashboard bounds the cost in
  * three ways:
  * - pace: the next decide poll waits at least `bytes / DECIDE_BYTES_PER_SEC`
- *   (capped at DECIDE_MAX_PACE_MS), so one browser costs Jaeger at most about
+ *   (capped at DECIDE_MAX_PACE_MS, or DECIDE_LIVE_MAX_PACE_MS while a real
+ *   game is live), so one browser costs Jaeger at most about
  *   DECIDE_BYTES_PER_SEC however large the trace grows; small traces keep the
  *   1.5 s cadence;
  * - settle: once the newest decide held has not changed for DECIDE_OVERLAP_MS
@@ -592,6 +602,13 @@ export const DECIDE_BYTES_PER_SEC = 512 * 1024;
 /** Upper bound of the payload pace, so a huge trace still refreshes. */
 export const DECIDE_MAX_PACE_MS = 15_000;
 
+/**
+ * The same cap while a real game is live: the presenter's decision strip then
+ * refreshes at least every 5 s even though a live game's trace only grows
+ * (about 1 MB/s for a 4.9 MB trace instead of 512 KiB/s).
+ */
+export const DECIDE_LIVE_MAX_PACE_MS = 5_000;
+
 /** While a real game is live, the shadow-game decide search runs every Nth poll. */
 export const DECIDE_SHADOW_EVERY_TICKS = 4;
 
@@ -604,9 +621,9 @@ const DECIDE_LANE_GAME_PREFIX = "game:";
 const MAX_GAME_LANES = 4;
 
 /** The minimum wait before the next decide poll after a `bytes`-sized answer. */
-export function decidePaceMs(bytes: number): number {
+export function decidePaceMs(bytes: number, maxMs: number = DECIDE_MAX_PACE_MS): number {
   if (!Number.isFinite(bytes) || bytes <= 0) return 0;
-  return Math.min(DECIDE_MAX_PACE_MS, Math.ceil((bytes * 1000) / DECIDE_BYTES_PER_SEC));
+  return Math.min(maxMs, Math.ceil((bytes * 1000) / DECIDE_BYTES_PER_SEC));
 }
 
 /** The rules path's per-cycle parent span (decide + decisions are its children). */
@@ -1074,7 +1091,7 @@ export interface DecideSearch {
 }
 
 /**
- * The searches of decide poll number `tick` (#2287, UC-035 BR-010). While a real
+ * The searches of decide poll number `tick` (#2287, UC-035 BR-011). While a real
  * game is live (and its id known): that game's decides by `game.id`, plus every
  * DECIDE_SHADOW_EVERY_TICKS polls the shadow games' by `game.kind=shadow`, so a
  * burst of shadow traces never pushes the stage game out of the limit (#2255).
@@ -1102,6 +1119,8 @@ export function decideSearches(store: DecideStore, tick: number): DecideSearch[]
 /** What one decide poll fetched: answer size (for the pace) and its flag states. */
 export interface DecidePollResult {
   bytes: number;
+  /** Minimum wait before the next poll (decidePaceMs, live-game cap while a game search ran). */
+  paceMs: number;
   flagStates: FlagPanel[];
 }
 
@@ -1118,15 +1137,18 @@ export async function pollDecides(
   signal?: AbortSignal,
 ): Promise<DecidePollResult> {
   let bytes = 0;
+  let liveGame = false;
   const flagStates: FlagPanel[] = [];
   for (const { lane, spec } of decideSearches(store, tick)) {
+    if (lane.startsWith(DECIDE_LANE_GAME_PREFIX)) liveGame = true;
     const answer = await searchTracesSized(spec, signal);
     bytes += answer.bytes;
     const feed = parseDecideTraces(answer.body);
     store.merge(feed.rows, lane);
     flagStates.push(...(feed.flagStates ?? []));
   }
-  return { bytes, flagStates };
+  const paceMs = decidePaceMs(bytes, liveGame ? DECIDE_LIVE_MAX_PACE_MS : DECIDE_MAX_PACE_MS);
+  return { bytes, paceMs, flagStates };
 }
 
 /**

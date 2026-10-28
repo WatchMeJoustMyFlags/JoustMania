@@ -1,5 +1,5 @@
 /**
- * The decide poll's Jaeger cost (#2287, UC-035 BR-010): Jaeger's search returns
+ * The decide poll's Jaeger cost (#2287, UC-035 BR-011): Jaeger's search returns
  * whole traces, so the poll paces itself on the answer size, stops re-fetching a
  * settled game's trace, asks for the live real game by game.id (shadow traces
  * cannot crowd it out, #2255) and polls nothing while the page is hidden.
@@ -11,6 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DECIDE_BYTES_PER_SEC,
   DECIDE_MAX_PACE_MS,
+  DECIDE_LIVE_MAX_PACE_MS,
+  DECIDE_TIMEOUT_CEILING_MS,
+  QueryWindow,
   DECIDE_OVERLAP_MS,
   DecideStore,
   FLAG_STATE_FALLBACK_REPEAT_MS,
@@ -108,7 +111,7 @@ function decidePoller(store: DecideStore, isActive: () => boolean = () => true) 
     run: async (signal) => {
       const polled = await pollDecides(store, tick, signal);
       tick += 1;
-      return decidePaceMs(polled.bytes);
+      return polled.paceMs;
     },
   });
 }
@@ -118,15 +121,41 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("UC-035: BR-010, the decide poll paces itself on the Jaeger answer size", () => {
-  it("UC-035/BR-010 pace: small answers keep the cadence, large ones wait bytes / budget, capped", () => {
+describe("UC-035: BR-011, the decide poll paces itself on the Jaeger answer size", () => {
+  it("UC-035/BR-011 pace: small answers keep the cadence, large ones wait bytes / budget, capped", () => {
     expect(decidePaceMs(0)).toBe(0);
     expect(decidePaceMs(100_000)).toBeLessThan(1500);
     expect(decidePaceMs(4.9 * 1024 * 1024)).toBe(Math.ceil((4.9 * 1024 * 1024 * 1000) / DECIDE_BYTES_PER_SEC));
     expect(decidePaceMs(1e9)).toBe(DECIDE_MAX_PACE_MS);
+    expect(decidePaceMs(1e9, DECIDE_LIVE_MAX_PACE_MS)).toBe(DECIDE_LIVE_MAX_PACE_MS);
   });
 
-  it("UC-035/BR-010 a run's minimum wait delays the next tick", async () => {
+  it("UC-035/BR-011 pace: a live game's 4.9 MB trace polls again within 5 s, other searches keep the 15 s cap", async () => {
+    const big = 4.9 * 1024 * 1024;
+    fakeJaeger(() => [pad(realTrace(), big)]);
+    const live = new DecideStore();
+    live.setFollow({ realGameLive: true, followGameId: "", primaryGameId: REAL_GAME });
+    expect((await pollDecides(live, 1)).paceMs).toBe(DECIDE_LIVE_MAX_PACE_MS);
+    // No live game: one all-decides search, the old cap applies.
+    const idle = new DecideStore();
+    const polled = await pollDecides(idle, 1);
+    expect(polled.paceMs).toBe(Math.min(DECIDE_MAX_PACE_MS, decidePaceMs(polled.bytes)));
+    expect(polled.paceMs).toBeGreaterThan(DECIDE_LIVE_MAX_PACE_MS);
+  });
+
+  it("UC-035/BR-011 settle: a decide exported late by the longest decide timeout is still in the window", () => {
+    let now = 0;
+    const w = new QueryWindow(() => now);
+    w.observe([{ tsMs: 1_000_000 }]);
+    now = DECIDE_TIMEOUT_CEILING_MS - 1000;
+    // 59 s after the newest decide was seen, a decide that started earlier can still arrive.
+    expect(w.startMs()).toBe(1_000_000 - DECIDE_OVERLAP_MS);
+    expect(DECIDE_OVERLAP_MS).toBeGreaterThan(DECIDE_TIMEOUT_CEILING_MS);
+    now = DECIDE_OVERLAP_MS;
+    expect(w.startMs()).toBe(1_000_001);
+  });
+
+  it("UC-035/BR-011 a run's minimum wait delays the next tick", async () => {
     vi.useFakeTimers();
     let runs = 0;
     const poller = createPoller({
@@ -149,7 +178,7 @@ describe("UC-035: BR-010, the decide poll paces itself on the Jaeger answer size
     poller.stop();
   });
 
-  it("UC-035/BR-010 a live 2 MB game trace over 60 s: Jaeger sends at most the budget, not 40 full traces", async () => {
+  it("UC-035/BR-011 a live 2 MB game trace over 60 s: Jaeger sends at most the budget, not 40 full traces", async () => {
     vi.useFakeTimers();
     const t0 = Date.now();
     // The real game grows: one more decide every 2 s (agent clock = fixture time + elapsed).
@@ -180,7 +209,7 @@ describe("UC-035: BR-010, the decide poll paces itself on the Jaeger answer size
     expect(newest.spanId).toMatch(/^L\d+$/);
   });
 
-  it("UC-035/BR-010 settle: an ended game's trace is not re-fetched once its newest decide is 30 s old", async () => {
+  it("UC-035/BR-011 settle: an ended game's trace is not re-fetched once its newest decide is older than the decide timeout ceiling", async () => {
     vi.useFakeTimers();
     const requests = fakeJaeger(() => [pad(realTrace(), 200_000)]);
     const store = new DecideStore();
@@ -200,10 +229,10 @@ describe("UC-035: BR-010, the decide poll paces itself on the Jaeger answer size
   });
 });
 
-describe("UC-035: BR-010, the live real game's decides are searched by game.id (#2255)", () => {
+describe("UC-035: BR-011, the live real game's decides are searched by game.id (#2255)", () => {
   const traces = () => [realTrace(), ...[1, 2, 3, 4, 5].map((i) => shadowTrace(i, 10 + i))];
 
-  it("UC-035/BR-010 without a live real game, five newer shadow traces fill limit=5", async () => {
+  it("UC-035/BR-011 without a live real game, five newer shadow traces fill limit=5", async () => {
     fakeJaeger(traces);
     const store = new DecideStore();
     store.setFollow({ realGameLive: false, followGameId: "" });
@@ -211,7 +240,7 @@ describe("UC-035: BR-010, the live real game's decides are searched by game.id (
     expect(store.feed().rows.every((r) => r.gameKind === "shadow")).toBe(true);
   });
 
-  it("UC-035/BR-010 with a live real game, its decides stay on the strip and the shadow rows still come", async () => {
+  it("UC-035/BR-011 with a live real game, its decides stay on the strip and the shadow rows still come", async () => {
     const requests = fakeJaeger(traces);
     const store = new DecideStore();
     store.setFollow({ realGameLive: true, followGameId: "", primaryGameId: REAL_GAME });
@@ -230,8 +259,8 @@ describe("UC-035: BR-010, the live real game's decides are searched by game.id (
   });
 });
 
-describe("UC-035: BR-010, nothing is polled while the page is hidden", () => {
-  it("UC-035/BR-010 hidden page: no Jaeger request for a minute, one at once when shown again", async () => {
+describe("UC-035: BR-011, nothing is polled while the page is hidden", () => {
+  it("UC-035/BR-011 hidden page: no Jaeger request for a minute, one at once when shown again", async () => {
     vi.useFakeTimers();
     const requests = fakeJaeger(() => [realTrace()]);
     const listeners: Record<string, () => void> = {};
@@ -261,10 +290,10 @@ describe("UC-035: BR-010, nothing is polled while the page is hidden", () => {
   });
 });
 
-describe("UC-035: BR-010, the flag-state fallback search is paced per game", () => {
+describe("UC-035: BR-011, the flag-state fallback search is paced per game", () => {
   beforeEach(() => vi.useFakeTimers());
 
-  it("UC-035/BR-010 the same game at most every 30 s, another game at once, a failed search again at once", () => {
+  it("UC-035/BR-011 the same game at most every 30 s, another game at once, a failed search again at once", () => {
     const pacer = new FlagFallbackPacer();
     const live = { realGameLive: true, followGameId: "", primaryGameId: REAL_GAME };
     const key = flagFallbackKey(null, live);

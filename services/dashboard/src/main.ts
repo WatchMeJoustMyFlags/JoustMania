@@ -24,7 +24,6 @@ import {
   fetchRollouts,
   needsFlagStateFallback,
   pollDecides,
-  decidePaceMs,
   FlagFallbackPacer,
   flagFallbackKey,
 } from "./agent.js";
@@ -387,8 +386,8 @@ function startDecidePolling() {
       flagStore.merge(polled.flagStates, store.followState);
       agentView.renderDecide(store.feed());
       renderAgentPanels();
-      // Payload pace (#2287, UC-035 BR-010): a large game trace slows the poll.
-      return decidePaceMs(polled.bytes);
+      // Payload pace (#2287, UC-035 BR-011): a large game trace slows the poll.
+      return polled.paceMs;
     },
     onError: (error) => {
       console.error("Decide feed poll error:", error);
