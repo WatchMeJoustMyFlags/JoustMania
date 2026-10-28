@@ -422,7 +422,7 @@ async def test_force_start_is_stale_when_a_game_came_and_went_during_the_roster_
     """A start and a lobby restore inside the roster lookup leave the lifecycle idle but the generation moved."""
     menu.state_manager.controller_states = {"a": ControllerState.READY, "b": ControllerState.READY}
 
-    async def roster_lookup(_request):
+    async def roster_lookup(_request, **_kwargs):
         finished = asyncio.get_running_loop().create_future()
         finished.set_result(None)
         menu._game_lifecycle_task = finished

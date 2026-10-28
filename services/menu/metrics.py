@@ -111,6 +111,14 @@ force_start_reconcile_failed_total = Counter(
     "Total force-starts that used the stale menu roster after the live-roster RPC failed",
 )
 
+# #2378: an audio RPC (PlaySound, SetVolume, PlayMusic, StopMusic) that failed or did not
+# answer within AUDIO_RPC_TIMEOUT_SECONDS. The menu goes on without the sound.
+audio_rpc_failures_total = Counter(
+    "menu_audio_rpc_failures_total",
+    "Total menu audio RPCs that failed or hit their deadline",
+    ["rpc", "reason"],  # rpc: PlaySound / SetVolume / PlayMusic / StopMusic; reason: timeout / error
+)
+
 # #1272: a callback raised while handling one button-stream event. The event is
 # dropped and logged; the stream stays up (previously the exception tore the
 # stream down and the reconnect cleared every controller's lobby state).

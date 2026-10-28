@@ -43,6 +43,7 @@ from services.menu.settings_ops import (
     agent_level_next,
     variant_to_value,
 )
+from services.menu.utils.detached import run_detached
 
 if TYPE_CHECKING:
     from services.menu.state_manager import StateManager
@@ -316,15 +317,7 @@ class AdminModeHandler:
 
     def _play_voice_detached(self, sound: Sound) -> None:
         """Play a voice line without awaiting it (it may overlap later feedback); errors are logged."""
-        task = asyncio.get_running_loop().create_task(self._play_voice_logged(sound))
-        self._voice_tasks.add(task)
-        task.add_done_callback(self._voice_tasks.discard)
-
-    async def _play_voice_logged(self, sound: Sound) -> None:
-        try:
-            await self._play_voice(sound)
-        except Exception as e:
-            logger.warning(f"Voice line {sound} failed: {e}")
+        run_detached(self._play_voice(sound), tasks=self._voice_tasks, what=f"Voice line {sound}")
 
     async def _play_sound(self, sound: Sound) -> None:
         """Play sound effect via StateManager's audio helper."""

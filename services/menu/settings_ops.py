@@ -98,6 +98,10 @@ def is_failure(error: str | None) -> bool:
 # UC-015 BR-009: the failure cue is two loud beeps, this far apart so they do not merge.
 FAILURE_CUE_SOUND = Sound.SFX_BEEP_LOUD
 FAILURE_CUE_GAP_SECONDS = 0.3
+# Deadline of the live-roster lookup (GetConnectedControllers) of a force start (#2378,
+# UC-014 A2): a hung controller manager falls back to the menu roster instead of holding
+# the start. A recovery bound, not a stage knob, so a code constant (C-035).
+LIVE_ROSTER_RPC_TIMEOUT_SECONDS = 2.0
 # UC-015 step 8: a short sound at the new master level.
 VOLUME_STEP_SOUND = Sound.SFX_JOIN
 
@@ -243,7 +247,9 @@ class SettingsOps:
 
         try:
             stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
-            response = await stub.GetConnectedControllers(controller_manager_pb2.GetConnectedControllersRequest())
+            response = await stub.GetConnectedControllers(
+                controller_manager_pb2.GetConnectedControllersRequest(), timeout=LIVE_ROSTER_RPC_TIMEOUT_SECONDS
+            )
         except Exception as e:
             logger.warning(f"Live roster query failed, using menu roster as-is: {e}")
             span.set_attribute("force_start.roster_reconciled", False)

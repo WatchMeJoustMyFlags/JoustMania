@@ -78,6 +78,7 @@ class TestAudioHelper:
             mock_stub_class.return_value = mock_stub
 
             await audio.play_sound("test/sound.ogg")
+            await asyncio.gather(*audio._sound_tasks)  # sent from a detached task (#2378)
 
             assert mock_stub.PlaySound.call_args.args[0].volume == pytest.approx(0.55)
 
@@ -98,11 +99,11 @@ class TestAudioHelper:
             def __init__(self, _channel):
                 pass
 
-            async def SetVolume(self, request):  # noqa: N802 - gRPC stub name
+            async def SetVolume(self, request, **_kwargs):  # noqa: N802 - gRPC stub name
                 calls.append(("SetVolume", request.volume))
                 return audio_pb2.SetVolumeResponse(success=True)
 
-            async def PlayMusic(self, request):  # noqa: N802 - gRPC stub name
+            async def PlayMusic(self, request, **_kwargs):  # noqa: N802 - gRPC stub name
                 calls.append(("PlayMusic", request.file_pattern))
                 return audio_pb2.PlayMusicResponse(track_id="lobby-1", success=True)
 
@@ -126,7 +127,7 @@ class TestAudioHelper:
             def __init__(self, _channel):
                 pass
 
-            async def StopMusic(self, request):  # noqa: N802 - gRPC stub name
+            async def StopMusic(self, request, **_kwargs):  # noqa: N802 - gRPC stub name
                 calls.append(("StopMusic", request.track_id))
                 return audio_pb2.StopMusicResponse(success=True)
 
@@ -145,6 +146,7 @@ class TestAudioHelper:
             mock_stub_class.return_value = mock_stub
 
             await audio.play_sound("test/sound.ogg", volume=0.5)
+            await asyncio.gather(*audio._sound_tasks)  # sent from a detached task (#2378)
 
             mock_stub.PlaySound.assert_called_once()
 
