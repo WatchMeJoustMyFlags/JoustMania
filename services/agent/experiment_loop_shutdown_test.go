@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -103,4 +104,67 @@ func TestExperimentLoop_RefillAfterShutdownSpawnsNothing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// UC-043 A20 (#2332): a game-end proposer that races the teardown starts no
+// experiment once run() has begun its shutdown (it AbortAll's and returns), and a
+// conclusion that lands during shutdown does not write the real default.
+// UC: UC-043 A20
+func TestUC043_A20_LoopShutdown(t *testing.T) {
+	t.Run("UC-043/A20 a proposal after the shutdown AbortAll starts no experiment", func(t *testing.T) {
+		resolve := func(context.Context) promote.Config { return promote.Config{Mode: promote.ModeIssue} }
+		loop := buildLoopForTest(t, &recordingSpawner{}, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			loop.run(ctx)
+		}()
+		cancel() // the SIGTERM analogue
+		<-done   // run() has run its AbortAll
+
+		err := loop.proposalSink().Review(context.Background(), experiment.Proposal{
+			FlagKey: "death_grace_period_seconds", ExperimentalValue: 0.5, Rationale: "late proposer",
+		})
+
+		if !errors.Is(err, experiment.ErrShuttingDown) {
+			t.Fatalf("Review after shutdown = %v, want ErrShuttingDown", err)
+		}
+		if n := loop.registry.LiveCount(); n != 0 {
+			t.Fatalf("live experiments after shutdown = %d, want 0", n)
+		}
+	})
+
+	t.Run("UC-043/A20 an autonomous promote verdict during shutdown writes no real default", func(t *testing.T) {
+		spawner := &recordingSpawner{}
+		realDef := &recordingRealDefault{}
+		resolve := func(context.Context) promote.Config {
+			return promote.Config{Mode: promote.ModeAutonomous, Target: promote.TargetLocal, Enabled: true}
+		}
+		loop := buildLoopForTest(t, spawner, resolve, realDef, &recordingGitHub{}, armFitness())
+		id, err := loop.registry.Declare(experiment.Intent{
+			FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		})
+		if err != nil {
+			t.Fatalf("declare: %v", err)
+		}
+		if err := loop.registry.Start(context.Background(), id); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		loop.registry.SetShutdownContext(ctx)
+		cancel() // shutdown began; the loop's AbortAll has not run yet
+
+		concludeCohort(t, loop, spawner, 4)
+
+		if got := realDef.count(); got != 0 {
+			t.Fatalf("real-default writes during shutdown = %d, want 0", got)
+		}
+		if st, _ := loop.registry.Status(id); st != experiment.StatusDiscarded {
+			t.Fatalf("experiment status = %q, want discarded", st)
+		}
+		if experiment.PromotionReasonShutdown != promote.ReasonShutdown {
+			t.Fatalf("shutdown reasons differ: %q vs %q", experiment.PromotionReasonShutdown, promote.ReasonShutdown)
+		}
+	})
 }

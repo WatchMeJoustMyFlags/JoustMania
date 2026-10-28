@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -327,6 +328,12 @@ type Registry struct {
 	// seam.
 	minN int
 
+	// shutdown is the context whose cancellation means the agent's graceful stop has
+	// begun (UC-043 A20, #2332); the experiment loop sets it to its run context. Once
+	// it is cancelled the registry declares and starts no experiment and a conclusion
+	// does not call the promoter. Unset: never stopping (test wiring).
+	shutdown atomic.Pointer[context.Context]
+
 	mu      sync.Mutex
 	entries map[string]*entry
 	// rrCursor is the cross-experiment round-robin cursor for fair capacity
@@ -590,6 +597,12 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// UC-043 A20 (#2332): checked under r.mu, where AbortAll takes its snapshot, so
+	// an experiment declared before the stop began is in that snapshot and none is
+	// declared after it.
+	if r.shuttingDown() {
+		return "", fmt.Errorf("registry: declare experiment: %w", ErrShuttingDown)
+	}
 	// Keep this call inside the lock: TestDeclareCreatesJournalUnderRegistryLock_1731
 	// probes r.mu through r.clock().
 	now := r.clock()
@@ -664,6 +677,12 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 		st := e.status
 		r.mu.Unlock()
 		return fmt.Errorf("registry: start: experiment %q is %s, not proposed", id, st)
+	}
+	if r.shuttingDown() {
+		// UC-043 A20 (#2332): no targeting write once the stop began; the caller aborts
+		// the PROPOSED experiment (start_failed), or the shutdown AbortAll does.
+		r.mu.Unlock()
+		return fmt.Errorf("registry: start %q: %w", id, ErrShuttingDown)
 	}
 	intent := e.journal.Intent()
 	r.mu.Unlock()
@@ -1605,6 +1624,24 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 		r.mu.Unlock()
 		return PromotionResult{Outcome: PromotionDiscarded, Reason: "experiment " + string(st) + ", not concluded"}
 	}
+	if r.shuttingDown() {
+		// UC-043 A20 (#2332): a conclusion that lands after the graceful stop began
+		// keeps its sample and verdict but does not promote: no issue, PR or real
+		// default write while the agent goes down. Journaled `discarded: shutdown`, the
+		// reason a deferred write dropped at shutdown gets (A17 step 3), so the
+		// experiment ends discarded and a restart finds the outcome (A15 step 3).
+		res := PromotionResult{Outcome: PromotionDiscarded, Reason: PromotionReasonShutdown}
+		promotion := res
+		r.appendEvent(e.journal, journal.Event{
+			Kind:      journal.KindPromotion,
+			Status:    res.Outcome,
+			Note:      res.Reason,
+			Promotion: &promotion,
+		})
+		r.mu.Unlock()
+		r.log.Info("experiment.promotion_skipped_at_shutdown", "experiment_id", id)
+		return res
+	}
 	e.status = StatusPromoting
 	// A later outcome (deferred queue, kill switch) journaled before this promotion's
 	// own event waits until it, so the journal keeps their order (UC-043 A17).
@@ -1916,6 +1953,17 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	})
 	r.emitProgressLocked(e, ProgressTriggerTerminal, reason, progressLink) // #2059
 	r.log.Info("experiment.torn_down", "experiment_id", id, "status", string(terminal), "reason", reason)
+}
+
+// SetShutdownContext sets the context whose cancellation marks the start of the
+// agent's graceful stop (UC-043 A20, #2332). The experiment loop calls it with its
+// run context before any proposer or tick can reach the registry's write paths.
+func (r *Registry) SetShutdownContext(ctx context.Context) { r.shutdown.Store(&ctx) }
+
+// shuttingDown reports whether the graceful stop has begun.
+func (r *Registry) shuttingDown() bool {
+	p := r.shutdown.Load()
+	return p != nil && (*p).Err() != nil
 }
 
 // SetTerminalHook registers f to be told an experiment's id when it reaches a
