@@ -33,8 +33,9 @@ function stubBackends(down: { vm?: boolean; grafana?: boolean; jaeger?: "reject"
     if (url.includes("/jaeger/")) {
       if (down.jaeger === "reject") throw new TypeError("Failed to fetch");
       if (down.jaeger === "503") return new Response("no healthy upstream", { status: 503 });
-      if (down.jaeger === "errors") return json(200, { data: null, errors: [{ code: 500, msg: "badger: closed" }] });
-      return json(200, { data: [] });
+      if (down.jaeger === "errors") return json(500, { error: { httpCode: 500, message: "badger: closed" } });
+      // Jaeger v3 answers "nothing matched" with 404 No traces found (#2283): data, not an outage.
+      return json(404, { error: { httpCode: 404, message: "No traces found" } });
     }
     if (url.includes("/loki/")) throw new Error(`the dashboard must not read Loki: ${url}`);
     throw new Error(`unexpected URL ${url}`);
@@ -59,6 +60,9 @@ describe("UC-035: A3 VictoriaMetrics down", () => {
     expect(overlay.blockedByReason).toEqual([]);
     expect(overlay.appliedOk).toBeNull();
     expect(overlay.appliedError).toBeNull();
+    expect(overlay.shadowAppliedOk).toBeNull();
+    expect(overlay.shadowAppliedError).toBeNull();
+    expect(overlay.shadowBlocked).toBeNull();
   });
 });
 

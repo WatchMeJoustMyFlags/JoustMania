@@ -37,6 +37,7 @@ import (
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flagservice"
+	"github.com/joustmania/agent/gamecontext"
 )
 
 // FlagSetInterventions is the flag set every intervention flag lives in.
@@ -157,7 +158,7 @@ func NewWriterFromEnv(log *slog.Logger) *Writer {
 func newWritesCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
 	c, err := mp.Meter(meterName).Int64Counter(
 		"agent_intervention_writes_total",
-		otelmetric.WithDescription("Intervention writes the agent sent to the flag service, labeled by outcome"),
+		otelmetric.WithDescription("Intervention writes the agent sent to the flag service, labeled by outcome and game_kind (primary|shadow, #2294)"),
 	)
 	if err != nil {
 		c, _ = metricnoop.NewMeterProvider().Meter(meterName).Int64Counter("agent_intervention_writes_total")
@@ -183,18 +184,20 @@ func (w *Writer) Apply(ctx context.Context, d decision.Decision) error {
 	}
 	err := w.write(ctx, d)
 	if err != nil {
-		w.recordWrite(ctx, resultError)
+		w.recordWrite(ctx, d.GameKind, resultError)
 		w.log.Error("agent.action_write_failed",
 			"intervention", d.Intervention, "game_id", d.GameID, "target_serial", d.TargetSerial, "error", err)
 		return err
 	}
-	w.recordWrite(ctx, resultOK)
+	w.recordWrite(ctx, d.GameKind, resultOK)
 	w.log.Debug("agent.action_written", "intervention", d.Intervention, "game_id", d.GameID, "target_serial", d.TargetSerial)
 	return nil
 }
 
-func (w *Writer) recordWrite(ctx context.Context, result string) {
-	w.writes.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("result", result)))
+func (w *Writer) recordWrite(ctx context.Context, gameKind, result string) {
+	w.writes.Add(ctx, 1, otelmetric.WithAttributes(
+		attribute.String("game_kind", gamecontext.TelemetryGameKind(gameKind)),
+		attribute.String("result", result)))
 }
 
 func (w *Writer) write(ctx context.Context, d decision.Decision) error {

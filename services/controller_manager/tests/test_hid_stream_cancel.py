@@ -439,3 +439,96 @@ def test_several_handed_back_commands_keep_their_queue_order(adapter):
         pull.join(timeout=GATE_TIMEOUT_S)
         sent.append(result.get("value"))
     assert sent[0] is first and sent[1] is second, "handed-back commands were sent out of order"
+
+
+OTHER_SERIAL = "AA:BB:CC:DD:EE:02"
+
+
+def _command(r, g, b, rumble=0, serial=HID_SERIAL):
+    return psmove_hid_pb2.IOCommand(serial=serial, r=r, g=g, b=b, rumble=rumble)
+
+
+def _as_tuple(cmd):
+    return (cmd.serial, cmd.r, cmd.g, cmd.b, cmd.rumble)
+
+
+def _reopen_with_queued(adapter, *commands, unsent=()):
+    """Queue ``commands`` on a stream nobody reads, stop it, open the next one; return that one's iterator.
+
+    ``unsent`` are handed back after the old stream opened (as a stopping stream does), so only the
+    new stream's coalescing step sees them.
+    """
+    old_call, new_call = GatedCall(), GatedCall()
+    adapter._stub = GatedStub(old_call, new_call)
+    _open_stream(adapter, old_call)
+    adapter._unsent_commands.extend(unsent)
+    for cmd in commands:
+        adapter._command_queue.put_nowait(cmd)
+    adapter._stop_stream()  # the HID stream ends with the commands still queued
+    return _open_stream(adapter, new_call)
+
+
+def _sent_by(command_iterator, expected: int) -> list:
+    """The next ``expected`` commands the iterator sends, then checks that nothing else follows."""
+    sent = []
+    for _ in range(expected):
+        pull, result = _next_command(command_iterator)
+        pull.join(timeout=GATE_TIMEOUT_S)
+        assert "value" in result, f"only {len(sent)} of {expected} commands were sent"
+        sent.append(_as_tuple(result["value"]))
+    extra, extra_result = _next_command(command_iterator)
+    extra.join(timeout=0.3)  # nothing left: the iterator keeps waiting
+    assert "value" not in extra_result, f"a stale command was sent after the current state: {extra_result}"
+    return sent
+
+
+@pytest.mark.uc("UC-002", flow="A7")
+@pytest.mark.usefixtures("short_joins")
+def test_after_a_reconnect_only_the_latest_led_state_is_sent(adapter):
+    """#2304: LED A then B queued when the stream ends: the next stream sends B only, not A first."""
+    new_iterator = _reopen_with_queued(adapter, _command(255, 0, 0), _command(0, 0, 255))
+
+    assert _sent_by(new_iterator, 1) == [(HID_SERIAL, 0, 0, 255, 0)]
+
+
+@pytest.mark.uc("UC-002", flow="A7")
+@pytest.mark.usefixtures("short_joins")
+def test_after_a_reconnect_rumbles_stay_in_order_with_the_latest_colour(adapter):
+    """#2304: rumble changes survive in order per serial, each with that serial's latest colour."""
+    new_iterator = _reopen_with_queued(
+        adapter,
+        _command(255, 0, 0),
+        _command(255, 0, 0, rumble=200),
+        _command(9, 9, 9, serial=OTHER_SERIAL),
+        _command(0, 255, 0),
+        _command(0, 255, 0, rumble=100),
+        _command(7, 7, 7, serial=OTHER_SERIAL),
+        _command(0, 0, 255),
+    )
+
+    assert _sent_by(new_iterator, 5) == [
+        (HID_SERIAL, 0, 0, 255, 200),
+        (HID_SERIAL, 0, 0, 255, 0),
+        (HID_SERIAL, 0, 0, 255, 100),
+        (OTHER_SERIAL, 7, 7, 7, 0),
+        (HID_SERIAL, 0, 0, 255, 0),
+    ]
+
+
+@pytest.mark.uc("UC-002", flow="A7")
+@pytest.mark.usefixtures("short_joins")
+def test_a_handed_back_command_is_coalesced_and_still_sent_first(adapter):
+    """#2304 with #2275: a handed-back rumble is sent before the queue; a handed-back LED state loses to a newer one."""
+    new_iterator = _reopen_with_queued(
+        adapter,
+        _command(3, 3, 3),
+        _command(4, 4, 4, serial=OTHER_SERIAL),
+        unsent=[_command(1, 1, 1, rumble=50), _command(2, 2, 2, serial=OTHER_SERIAL)],
+    )
+
+    assert _sent_by(new_iterator, 3) == [
+        (HID_SERIAL, 3, 3, 3, 50),
+        (HID_SERIAL, 3, 3, 3, 0),
+        (OTHER_SERIAL, 4, 4, 4, 0),
+    ]
+    assert not adapter._unsent_commands and adapter._command_queue.empty()

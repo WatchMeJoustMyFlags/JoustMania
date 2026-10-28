@@ -45,3 +45,16 @@ func NormalizeGameKind(kind string) string {
 	}
 	return kind
 }
+
+// TelemetryGameKind maps the flag-evaluation vocabulary back to the telemetry
+// vocabulary for the agent's OWN metric labels (agent_decisions_total and
+// agent_intervention_writes_total, #2294): "real" -> "primary", everything else
+// -> "shadow". The label has exactly two values; an empty or unrecognised kind
+// folds into "shadow" so an unknown game can never inflate the real-game counts
+// (the same fail-safe as NormalizeGameKind). "primary" passes through.
+func TelemetryGameKind(kind string) string {
+	if kind == GameKindReal || kind == TelemetryGameKindPrimary {
+		return TelemetryGameKindPrimary
+	}
+	return GameKindShadow
+}

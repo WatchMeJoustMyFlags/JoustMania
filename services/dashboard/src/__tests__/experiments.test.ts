@@ -19,7 +19,9 @@ import {
   pollExperiments,
   resolveVerdict,
 } from "../experiments.js";
+import { COLD_START_TIME_MIN, SEARCH_TIME_MAX } from "../jaeger.js";
 import type { JaegerTracesResponse } from "../jaeger.js";
+import { toOtlp } from "./otlp.js";
 import progressFixture from "./fixtures/jaeger-experiment-progress.json";
 
 const progress = progressFixture as unknown as JaegerTracesResponse;
@@ -119,7 +121,7 @@ describe("UC-035: main step 4, the search never uses the browser clock", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         urls.push(String(input));
-        return new Response(JSON.stringify(progress), { status: 200 });
+        return new Response(JSON.stringify(toOtlp(progress)), { status: 200 });
       }),
     );
     const store = new ExperimentStore();
@@ -128,18 +130,18 @@ describe("UC-035: main step 4, the search never uses the browser clock", () => {
     await pollExperiments(store);
 
     const cold = new URL(urls[0], "http://x").searchParams;
-    expect(cold.get("operation")).toBe("experiment.progress");
-    expect(cold.get("service")).toBe("agent");
-    expect(cold.get("limit")).toBe(String(EXPERIMENT_COLD_LIMIT));
-    expect(cold.has("start")).toBe(false);
-    expect(cold.has("end")).toBe(false);
+    expect(cold.get("query.operationName")).toBe("experiment.progress");
+    expect(cold.get("query.serviceName")).toBe("agent");
+    expect(cold.get("query.searchDepth")).toBe(String(EXPERIMENT_COLD_LIMIT));
+    expect(cold.get("query.startTimeMin")).toBe(COLD_START_TIME_MIN);
+    expect(cold.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
     const next = new URL(urls[1], "http://x").searchParams;
-    expect(next.get("start")).toBe(String((T0_MS + 50_000 - EXPERIMENT_OVERLAP_MS) * 1000));
-    expect(next.has("end")).toBe(false);
+    expect(next.get("query.startTimeMin")).toBe(new Date(T0_MS + 50_000 - EXPERIMENT_OVERLAP_MS).toISOString());
+    expect(next.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
   });
 
   it("UC-035/A3 no experiment.progress span (an agent image before #2059) is an empty list, not an error", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { httpCode: 404, message: "No traces found" } }), { status: 404 })));
     await expect(pollExperiments(new ExperimentStore())).resolves.toEqual([]);
   });
 });

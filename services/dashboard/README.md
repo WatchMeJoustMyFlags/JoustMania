@@ -14,7 +14,7 @@ Built with TypeScript and Vite, served in production by [static-web-server](http
 - **Game controls** -- mode selector dropdown, start/stop buttons
 - **Game event log** -- recent events (game start, player deaths, winner) in the status bar
 - **Embedded observability** -- tabbed Grafana dashboard and Jaeger trace views via iframes
-- **Agent decisions** -- the Agent tab polls Jaeger (`/jaeger/api/traces?service=agent&operation=agent.decide`) every 1.5s and shows one row per `agent.decide` span: backend (requested vs used), model, answer, confidence against the act threshold, outcome, rationale and a trace link, plus a current-backend strip
+- **Agent decisions** -- the Agent tab polls Jaeger's query API v3 (`/jaeger/api/v3/traces?query.serviceName=agent&query.operationName=agent.decide`, #2283) every 1.5s and shows one row per `agent.decide` span: backend (requested vs used), model, answer, confidence against the act threshold, outcome, rationale and a trace link, plus a current-backend strip
 
 ## Configuration
 

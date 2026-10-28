@@ -1047,6 +1047,15 @@ body {
   color: var(--accent-primary);
 }
 
+.agent-stat-shadow {
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+}
+
+.agent-overlay-shadow {
+  opacity: 0.85;
+}
+
 .agent-stat-na {
   color: var(--text-secondary);
   font-size: 1rem;

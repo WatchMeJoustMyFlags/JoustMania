@@ -5,7 +5,7 @@
  * cannot crowd it out, #2255) and polls nothing while the page is hidden.
  *
  * The fetch mock is a small Jaeger: it filters agent.decide spans by the
- * `tags` and `start` params and returns the `limit` newest WHOLE traces.
+ * `query.attributes` and `query.startTimeMin` params (Jaeger v3, #2283) and returns the `limit` newest WHOLE traces.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -25,6 +25,7 @@ import {
 import type { JaegerSpan, JaegerTrace, JaegerTracesResponse } from "../agent.js";
 import { createPoller } from "../poller.js";
 import { PageGate } from "../pageGate.js";
+import { toOtlp } from "./otlp.js";
 import multiFixture from "./fixtures/jaeger-decide-multi.json";
 import shadowFixture from "./fixtures/jaeger-decide-shadow.json";
 
@@ -72,15 +73,16 @@ function fakeJaeger(traces: () => JaegerTrace[]) {
   const requests: Request[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const params = new URL(String(input), "http://pi").searchParams;
-    const tags = JSON.parse(params.get("tags") ?? "{}") as Record<string, string>;
-    const startUs = params.has("start") ? Number(params.get("start")) : -Infinity;
-    const limit = Number(params.get("limit"));
+    const tags = JSON.parse(params.get("query.attributes") ?? "{}") as Record<string, string>;
+    const startMin = Date.parse(params.get("query.startTimeMin") ?? "");
+    const startUs = Number.isFinite(startMin) && startMin > 0 ? startMin * 1000 : -Infinity;
+    const limit = Number(params.get("query.searchDepth"));
     const newestMatch = (t: JaegerTrace) =>
       Math.max(
         ...t.spans
           .filter(
             (s) =>
-              s.operationName === params.get("operation") &&
+              s.operationName === params.get("query.operationName") &&
               s.startTime >= startUs &&
               Object.entries(tags).every(([k, v]) => tagValue(s, k) === v),
           )
@@ -92,7 +94,12 @@ function fakeJaeger(traces: () => JaegerTrace[]) {
       .sort((a, b) => b.newest - a.newest)
       .slice(0, limit)
       .map((x) => x.t);
-    const text = JSON.stringify({ data });
+    if (data.length === 0) {
+      const text = JSON.stringify({ error: { httpCode: 404, message: "No traces found" } });
+      requests.push({ params, bytes: text.length });
+      return new Response(text, { status: 404 });
+    }
+    const text = JSON.stringify(toOtlp({ data }));
     requests.push({ params, bytes: text.length });
     return new Response(text, { status: 200 });
   });
@@ -198,7 +205,7 @@ describe("UC-035: BR-011, the decide poll paces itself on the Jaeger answer size
     await vi.advanceTimersByTimeAsync(60_000);
     poller.stop();
 
-    const gameRequests = requests.filter((r) => r.params.get("tags")?.includes(REAL_GAME));
+    const gameRequests = requests.filter((r) => r.params.get("query.attributes")?.includes(REAL_GAME));
     const totalBytes = requests.reduce((sum, r) => sum + r.bytes, 0);
     // Before #2287: one 2 MB request every 1.5 s = 40 requests, ~80 MB per minute.
     expect(gameRequests.length).toBeLessThanOrEqual(17);
@@ -220,10 +227,10 @@ describe("UC-035: BR-011, the decide poll paces itself on the Jaeger answer size
 
     const d2Ms = 1_760_000_014_000;
     const last = requests[requests.length - 1];
-    expect(last.params.get("start")).toBe(String((d2Ms + 1) * 1000));
+    expect(last.params.get("query.startTimeMin")).toBe(new Date(d2Ms + 1).toISOString());
     expect(last.bytes).toBeLessThan(100);
     // Before settling the window overlapped the newest decide and re-fetched the trace.
-    expect(requests[1].params.get("start")).toBe(String((d2Ms - DECIDE_OVERLAP_MS) * 1000));
+    expect(requests[1].params.get("query.startTimeMin")).toBe(new Date(d2Ms - DECIDE_OVERLAP_MS).toISOString());
     expect(requests[1].bytes).toBeGreaterThan(200_000);
     expect(store.feed().rows.map((r) => r.spanId)).toEqual(["D2", "D1", "R1"]);
   });
@@ -249,7 +256,7 @@ describe("UC-035: BR-011, the live real game's decides are searched by game.id (
     const ids = store.feed().rows.map((r) => r.spanId);
     expect(ids).toEqual(expect.arrayContaining(["D2", "D1", "R1", "SH1-1", "SH1-5"]));
     expect(store.feed().current?.gameId).toBe(REAL_GAME);
-    expect(requests.map((r) => r.params.get("tags"))).toEqual([
+    expect(requests.map((r) => r.params.get("query.attributes"))).toEqual([
       JSON.stringify({ "game.id": REAL_GAME }),
       JSON.stringify({ "game.kind": "shadow" }),
     ]);
