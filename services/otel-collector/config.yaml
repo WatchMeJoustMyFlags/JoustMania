@@ -327,7 +327,9 @@ processors:
   filter/grpc_health:
     error_mode: ignore
     trace_conditions:
-      - span.attributes["rpc.service"] == "grpc.health.v1.Health"
+      # Full name (Go otelgrpc, rust) or the package-stripped name that
+      # lib/grpc_tracing.py records for the Python services.
+      - span.attributes["rpc.service"] == "grpc.health.v1.Health" or span.attributes["rpc.service"] == "Health"
 
   # Resource processor to add common attributes for OTLP-pushed metrics
   resource:

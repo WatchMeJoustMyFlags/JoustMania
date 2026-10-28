@@ -77,7 +77,7 @@ Python `{Service}/{Method}` SERVER spans record the status the RPC really ended 
 
 connect-proxy: `otelhttp` server spans (`/health` filtered) and `otelgrpc` client spans only.
 
-**gRPC health checks are not traced** (#2286): the collector's `filter/grpc_health` processor drops every span whose `rpc.service` is `grpc.health.v1.Health` from the `traces` pipeline (Jaeger and the agent), whatever service recorded it. Docker healthchecks and watchdog probes call the RPC as before; on the stage Pi 1362 of 1500 Jaeger spans were health checks.
+**gRPC health checks are not traced** (#2286): the collector's `filter/grpc_health` processor drops every span whose `rpc.service` is `grpc.health.v1.Health` (Go, Rust) or `Health` (the package-stripped form `lib/grpc_tracing.py` records for the Python services) from the `traces` pipeline (Jaeger and the agent), whatever service recorded it. Docker healthchecks and watchdog probes call the RPC as before; on the stage Pi 1362 of 1500 Jaeger spans were health checks.
 
 ### 3.2 game-coordinator
 

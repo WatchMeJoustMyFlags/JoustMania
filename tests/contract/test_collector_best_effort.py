@@ -154,12 +154,39 @@ def test_full_stack_has_every_observability_service_the_lite_stack_lacks():
     )
 
 
+def _drops(conditions: list[str], attributes: dict[str, str]) -> bool:
+    """Evaluate the simple OTTL drop conditions (`span.attributes["k"] == "v"` joined by `or`)."""
+    for condition in conditions:
+        for term in condition.split(" or "):
+            match = re.fullmatch(
+                r'span\.attributes\["([^"]+)"\] == "([^"]*)"', term.strip()
+            )
+            assert match, f"unsupported OTTL term {term!r}"
+            if attributes.get(match.group(1)) == match.group(2):
+                return True
+    return False
+
+
 @pytest.mark.uc("UC-035", flow="A3")
 def test_grpc_health_spans_are_dropped_before_the_traces_exporters(collector):
-    """#2286: health-check spans (rpc.service grpc.health.v1.Health) never reach Jaeger or the agent."""
-    flt = collector["processors"]["filter/grpc_health"]
-    conditions = flt["trace_conditions"]
-    assert conditions == ['span.attributes["rpc.service"] == "grpc.health.v1.Health"']
+    """#2286: health-check spans never reach Jaeger or the agent, in the Python and Go forms."""
+    from lib.grpc_tracing import _parse_method
+
+    conditions = collector["processors"]["filter/grpc_health"]["trace_conditions"]
+    # What the Python lib really records for the health RPC (package stripped).
+    py_service, _ = _parse_method("/grpc.health.v1.Health/Check")
+    assert py_service == "Health"
+    assert _drops(conditions, {"rpc.service": py_service, "rpc.method": "Check"})
+    # Go otelgrpc keeps the full service name.
+    assert _drops(
+        conditions, {"rpc.service": "grpc.health.v1.Health", "rpc.method": "Check"}
+    )
+    # Real game RPCs and spans without rpc attributes survive.
+    assert not _drops(
+        conditions, {"rpc.service": "GameCoordinator", "rpc.method": "StartGame"}
+    )
+    assert not _drops(conditions, {"rpc.service": "joustmania.game.v1.Health2"})
+    assert not _drops(conditions, {})
     processors = collector["service"]["pipelines"]["traces"]["processors"]
     assert "filter/grpc_health" in processors
     assert processors.index("memory_limiter") == 0
