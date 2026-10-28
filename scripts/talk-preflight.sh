@@ -482,22 +482,37 @@ section "Jaeger (${BASE_URL}/jaeger/)"
 if ! have curl; then
   fail "curl not found; HTTP checks skipped"
 else
-  if curl -fs --max-time 5 -o /dev/null "${BASE_URL}/jaeger/api/services"; then
+  # Jaeger query API v3 (#2283; 2.21 removed /api/services and the /api/traces
+  # search). Both window bounds are required (RFC 3339); this host's clock is the
+  # Jaeger host's. Nothing matched answers 404 "No traces found", so no -f.
+  if curl -fs --max-time 5 -o /dev/null "${BASE_URL}/jaeger/api/v3/services"; then
     pass "Jaeger API reachable"
-    end_us="$(($(date +%s) * 1000000))"
-    start_us="$((end_us - MINUTES * 60 * 1000000))"
-    traces="$(curl -fs --max-time 15 "${BASE_URL}/jaeger/api/traces?service=agent&operation=agent.decide&start=${start_us}&end=${end_us}&limit=5" 2>/dev/null)" || traces=""
+    end_s="$(date +%s)"
+    start_s="$((end_s - MINUTES * 60))"
+    t_min="$(date -u -d "@${start_s}" +%Y-%m-%dT%H:%M:%SZ)"
+    t_max="$(date -u -d "@$((end_s + 60))" +%Y-%m-%dT%H:%M:%SZ)"
+    traces="$(curl -s --max-time 15 "${BASE_URL}/jaeger/api/v3/traces?query.serviceName=agent&query.operationName=agent.decide&query.startTimeMin=${t_min}&query.startTimeMax=${t_max}&query.searchDepth=5" 2>/dev/null)" || traces=""
     summary="$(python3 -c '
 import json, sys
 try:
-    data = json.load(sys.stdin).get("data") or []
+    body = json.load(sys.stdin)
 except ValueError:
     print("ERR"); sys.exit(0)
-spans = [s for t in data for s in t.get("spans", []) if s.get("operationName") == "agent.decide"]
+error = body.get("error") if isinstance(body, dict) else None
+if error:
+    print("0" if error.get("httpCode") == 404 else "ERR"); sys.exit(0)
+result = (body.get("result") or {}) if isinstance(body, dict) else {}
+spans = [
+    s
+    for rs in result.get("resourceSpans") or []
+    for ss in rs.get("scopeSpans") or []
+    for s in ss.get("spans") or []
+    if s.get("name") == "agent.decide"
+]
 if not spans:
     print("0"); sys.exit(0)
-last = max(spans, key=lambda s: s.get("startTime", 0))
-tags = {t["key"]: t.get("value") for t in last.get("tags", [])}
+last = max(spans, key=lambda s: int(s.get("startTimeUnixNano") or 0))
+tags = {a["key"]: next(iter((a.get("value") or {}).values()), None) for a in last.get("attributes") or []}
 print(len(spans), tags.get("decide.backend"), tags.get("decide.outcome"), tags.get("decide.fallback_reason") or "-")
 ' <<<"${traces}")"
     read -r count backend outcome reason <<<"${summary}"
@@ -509,7 +524,7 @@ print(len(spans), tags.get("decide.backend"), tags.get("decide.outcome"), tags.g
       pass "${count} agent.decide span(s) in the last ${MINUTES} min; newest: backend=${backend} outcome=${outcome} fallback_reason=${reason}"
     fi
   else
-    fail "Jaeger API not reachable at ${BASE_URL}/jaeger/api/services"
+    fail "Jaeger API not reachable at ${BASE_URL}/jaeger/api/v3/services"
   fi
 
   # --- 6. dashboard ----------------------------------------------------------

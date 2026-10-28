@@ -541,13 +541,12 @@ export const DECIDE_OPERATION = "agent.decide";
 /*
  * CLOCK SKEW: the stage Pi has no RTC and venue WiFi may block NTP, so the
  * agent + Jaeger clock (same host) can be hours off the presenter's browser
- * clock. The decide query therefore NEVER uses Date.now(): it sends no `end`
- * (Jaeger defaults it to its own now) and, on a cold start, no `start` either.
- * Jaeger 2.19's /api/traces ignores a `lookback` param (it is only read by the
- * dependencies/metrics endpoints): a missing `start` means Jaeger-now minus its
- * built-in 48h trace-query lookback (default_params.go). That is bounded by
- * limit=DECIDE_TRACE_LIMIT, and Jaeger returns the most recent matching traces,
- * so a cold start costs the same 5 traces as a short window would. Once a decide
+ * clock. The decide query therefore NEVER uses Date.now(). The v3 search
+ * (#2283) requires both window bounds, so the upper one is a fixed far-future
+ * date and a cold start's lower one is the Unix epoch (jaeger.ts searchParams).
+ * That is bounded by searchDepth=DECIDE_TRACE_LIMIT, and Jaeger returns the most
+ * recent matching traces, so a cold start costs the same 5 traces as a short
+ * window would. Once a decide
  * is held, `start` is that span's own (agent-clock) timestamp minus the overlap.
  */
 
@@ -789,7 +788,7 @@ function decideRowFrom(
 }
 
 /**
- * Fold a Jaeger /api/traces response into the decide feed.
+ * Fold a Jaeger search response (jaeger.ts fromOtlp) into the decide feed.
  *
  * Pure. Rows are deduplicated by (traceID, spanID): Jaeger can return the same
  * trace more than once when it is still being written to, and the remote path
