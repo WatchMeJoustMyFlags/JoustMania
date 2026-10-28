@@ -169,7 +169,10 @@ export function fromOtlp(body: OtlpTracesResponse | null | undefined): JaegerTra
     for (const ss of rs.scopeSpans ?? []) {
       for (const s of ss.spans ?? []) {
         const references: JaegerReference[] = [];
-        if (s.parentSpanId) references.push({ refType: "CHILD_OF", traceID: s.traceId, spanID: s.parentSpanId });
+        // A parent that is also a link is a follows-from edge only (legacy shape):
+        // the span stays a root of its own trace.
+        const linked = new Set((s.links ?? []).map((l) => l.spanId));
+        if (s.parentSpanId && !linked.has(s.parentSpanId)) references.push({ refType: "CHILD_OF", traceID: s.traceId, spanID: s.parentSpanId });
         for (const l of s.links ?? []) {
           if (l.spanId) references.push({ refType: "FOLLOWS_FROM", traceID: l.traceId ?? "", spanID: l.spanId });
         }

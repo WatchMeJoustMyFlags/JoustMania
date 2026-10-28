@@ -489,8 +489,9 @@ else
     pass "Jaeger API reachable"
     end_s="$(date +%s)"
     start_s="$((end_s - MINUTES * 60))"
-    t_min="$(date -u -d "@${start_s}" +%Y-%m-%dT%H:%M:%SZ)"
-    t_max="$(date -u -d "@$((end_s + 60))" +%Y-%m-%dT%H:%M:%SZ)"
+    # python3, not GNU `date -d` (macOS has BSD date)
+    t_min="$(python3 -c 'import sys,datetime as d; print(d.datetime.fromtimestamp(int(sys.argv[1]), d.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "${start_s}")"
+    t_max="$(python3 -c 'import sys,datetime as d; print(d.datetime.fromtimestamp(int(sys.argv[1]), d.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$((end_s + 60))")"
     traces="$(curl -s --max-time 15 "${BASE_URL}/jaeger/api/v3/traces?query.serviceName=agent&query.operationName=agent.decide&query.startTimeMin=${t_min}&query.startTimeMax=${t_max}&query.searchDepth=5" 2>/dev/null)" || traces=""
     summary="$(python3 -c '
 import json, sys

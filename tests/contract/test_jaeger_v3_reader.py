@@ -87,6 +87,10 @@ def test_recorded_answer_reads_like_the_legacy_shape():
         "CHILD_OF",
         "FOLLOWS_FROM",
     ]
+    # The game root's parent is also its link: legacy showed FOLLOWS_FROM only, so it
+    # stays a root (jaeger_root_spans keys on "no CHILD_OF").
+    root = spans["Joust Free-for-All"]
+    assert [r["refType"] for r in root["references"]] == ["FOLLOWS_FROM"]
     processes = traces[0]["processes"]
     services = {
         name: processes[s["processID"]]["serviceName"] for name, s in spans.items()

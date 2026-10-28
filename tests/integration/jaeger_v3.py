@@ -128,7 +128,10 @@ def legacy_traces(body: dict) -> list[dict]:
                 process_id = f"p{service}"
                 trace["processes"][process_id] = {"serviceName": service}
                 references = []
-                if s.get("parentSpanId"):
+                link_ids = {l.get("spanId") for l in s.get("links") or []}
+                # A parent that is also a link is a follows-from edge only (legacy
+                # shape): the span stays a root of its own trace.
+                if s.get("parentSpanId") and s["parentSpanId"] not in link_ids:
                     references.append(
                         {
                             "refType": "CHILD_OF",

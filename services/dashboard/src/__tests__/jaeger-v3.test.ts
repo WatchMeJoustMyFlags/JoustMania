@@ -108,6 +108,9 @@ describe("UC-035: main step 3, the recorded v3 answer folds like the legacy one 
   it("UC-035/main step 3 keeps links as FOLLOWS_FROM (not a parent) and span events as logs", () => {
     const [decision] = spansNamed(body, "agent.decision");
     expect(decision.references?.map((r) => r.refType)).toEqual(["CHILD_OF", "FOLLOWS_FROM"]);
+    // The game root's parent is also its link: FOLLOWS_FROM only, so it stays a root.
+    const [root] = spansNamed(body, "Joust Free-for-All");
+    expect(root.references?.map((r) => r.refType)).toEqual(["FOLLOWS_FROM"]);
     const [flagState] = spansNamed(body, "agent.flag_state");
     const evals = spanEvents(flagState, "feature_flag.evaluation");
     expect(evals.length).toBeGreaterThan(1);
