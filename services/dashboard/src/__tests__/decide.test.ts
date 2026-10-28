@@ -530,7 +530,7 @@ describe("clock skew: browser clock hours off the agent/Jaeger clock", () => {
     const urls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       urls.push(url);
-      return { ok: true, json: async () => merged(multiFixture) } as unknown as Response;
+      return new Response(JSON.stringify(merged(multiFixture)), { status: 200 });
     });
 
     const store = new DecideStore();
