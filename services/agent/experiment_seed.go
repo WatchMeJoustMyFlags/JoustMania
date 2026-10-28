@@ -162,8 +162,24 @@ func (e *experimentLoop) declarerLock() *sync.Mutex {
 	return &e.seedMu
 }
 
-// maybeDeclareSeed declares the experiment seed of this tick's config when it
-// differs from the last value acted on (see the file comment). It runs under the declarer
+// currentSeed re-reads experiment_seed now (#1966). The seed decisions call it
+// under declarerLock, so every decision acts on a value read inside its own
+// critical section: a concurrent caller holding an older config can neither
+// re-declare a seed after a newer tick observed `off`, nor clear the latch of a
+// newer seed with a stale `off`. nil = unresolved.
+func (e *experimentLoop) currentSeed(ctx context.Context) any {
+	if e.configOverride != nil {
+		return e.configOverride(ctx).Seed
+	}
+	if e.flags == nil {
+		return nil
+	}
+	return e.flags.ExperimentSeed(ctx)
+}
+
+// maybeDeclareSeed declares the experiment seed when it differs from the last
+// value acted on (see the file comment). cfg.Seed is only a pre-check: the
+// decision uses the value re-read under the lock (currentSeed, #1966). It runs under the declarer
 // lock so the latch check, the per-flag dedup, the Declare and the latch update
 // are one critical section: concurrent allocateIfEnabled callers (tick, game-end
 // nudges) and the other declarers can never stack a second experiment on the
@@ -179,11 +195,16 @@ func (e *experimentLoop) maybeDeclareSeed(ctx context.Context, cfg flags.Experim
 	mu.Lock()
 	defer mu.Unlock()
 
-	key := seedLatchKey(cfg.Seed)
+	// cfg may be stale (#1966): decide on the value read under the lock.
+	seed := e.currentSeed(ctx)
+	if seed == nil {
+		return
+	}
+	key := seedLatchKey(seed)
 	if e.seedLatched && e.seedLast == key {
 		return
 	}
-	intent, kind, reason := parseExperimentSeed(cfg.Seed)
+	intent, kind, reason := parseExperimentSeed(seed)
 	switch kind {
 	case seedOff:
 		e.clearSeedLatch() // {}: no seed; also cleared by observeSeedOff
@@ -228,16 +249,28 @@ func (e *experimentLoop) clearSeedLatch() {
 // ({}). allocateIfEnabled calls it on EVERY tick, before the gate checks, so an
 // `off` set while the gates are off (agent-dryrun-enable.sh off clears the
 // gates first) still re-arms the seed. An eval error (Seed == nil) and any other
-// value leave the latch alone.
-func (e *experimentLoop) observeSeedOff(cfg flags.ExperimentConfig) {
-	if cfg.Seed == nil {
-		return
-	}
-	if _, kind, _ := parseExperimentSeed(cfg.Seed); kind != seedOff {
+// value leave the latch alone, and so does an `off` the flag no longer resolves
+// to under the lock (#1966).
+func (e *experimentLoop) observeSeedOff(ctx context.Context, cfg flags.ExperimentConfig) {
+	if !isSeedOff(cfg.Seed) {
 		return
 	}
 	mu := e.declarerLock()
 	mu.Lock()
 	defer mu.Unlock()
+	// cfg may be stale (#1966): a newer seed read under the lock keeps its latch.
+	if !isSeedOff(e.currentSeed(ctx)) {
+		return
+	}
 	e.clearSeedLatch()
+}
+
+// isSeedOff reports whether a resolved experiment_seed value is `off` ({}); an
+// unresolved value (nil) is not.
+func isSeedOff(seed any) bool {
+	if seed == nil {
+		return false
+	}
+	_, kind, _ := parseExperimentSeed(seed)
+	return kind == seedOff
 }

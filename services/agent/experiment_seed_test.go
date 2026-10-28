@@ -446,3 +446,45 @@ func jsonEqualRaw(t *testing.T, a, b json.RawMessage) bool {
 	}
 	return reflect.DeepEqual(x, y)
 }
+
+// A caller of allocateIfEnabled holding a stale config (tick and game-end nudges
+// each read their own) never acts on an outdated experiment_seed: the seed
+// decision re-reads the flag under the declarer lock (#1966). The stale caller is
+// replayed deterministically by calling the seed steps with an old config after
+// a newer tick has run.
+// UC: UC-070 BR-007
+// UC: UC-043 A1
+func TestMaybeDeclareSeed_StaleConfigCaller(t *testing.T) {
+	ctx := context.Background()
+	seedA := testSeed("invincibility_seconds", 6.0, 50)
+	off := map[string]any{}
+
+	t.Run("UC-070/BR-007 a stale seed after off is observed is not declared again", func(t *testing.T) {
+		s := newSeedLoop(t)
+		s.set(true, seedA)
+		s.allocateIfEnabled(ctx)
+		stale := s.config(ctx) // a nudge that read seed A before the operator set off
+		s.registry.AbortAll(ctx, "test: A's experiment ended")
+		s.set(true, off)
+		s.allocateIfEnabled(ctx) // observes off, clears the latch
+		s.maybeDeclareSeed(ctx, stale)
+		if n := s.logs.count(logSeedDeclared); n != 1 || s.registry.LiveCount() != 0 {
+			t.Fatalf("declared %d times (LiveCount %d), want 1 and 0: a stale seed re-declared after off",
+				n, s.registry.LiveCount())
+		}
+	})
+
+	t.Run("UC-043/A1 a stale off does not re-arm a newer seed", func(t *testing.T) {
+		s := newSeedLoop(t)
+		s.set(true, off)
+		stale := s.config(ctx) // a nudge that read off before the operator set A
+		s.set(true, seedA)
+		s.allocateIfEnabled(ctx) // declares A, latches it
+		s.observeSeedOff(ctx, stale)
+		s.registry.AbortAll(ctx, "test: A's experiment ended")
+		s.allocateIfEnabled(ctx)
+		if n := s.logs.count(logSeedDeclared); n != 1 {
+			t.Fatalf("seed declared %d times, want 1: a stale off cleared the latch", n)
+		}
+	})
+}
