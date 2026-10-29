@@ -425,7 +425,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` | unset | yes | operator ceiling: the enforced cap is `min(env, llm.max_requests_per_minute)`; unset = no ceiling (#1788, C-034) |
 | `AGENT_ROLLOUT_DWELL_SECONDS` | `15` | no | dwell between rollout expansions |
 | `AGENT_ROLLOUT_COOLDOWN_SECONDS` | `30` | yes | re-expansion cooldown after a rollback |
-| `AGENT_SHADOW_GAME` | unset | no | `true` runs one one-shot shadow game at startup; `SHADOW_GAME_MODE` (`JoustFFA`), `SHADOW_GAME_SENSITIVITY` (`2`, 0 to 4), `SHADOW_GAME_ARCHETYPE`, `SHADOW_GAME_SEED` tune it |
+| `AGENT_SHADOW_GAME` | unset | no | `true` runs one one-shot shadow game at startup; `SHADOW_GAME_MODE` (`JoustFFA`), `SHADOW_GAME_SENSITIVITY` (`2`, 0 to 4; an experiment arm uses its own resolved `sensitivity` flag instead, #2392), `SHADOW_GAME_ARCHETYPE`, `SHADOW_GAME_SEED` tune it |
 | `GAME_COORDINATOR_ADDR`, `MOCK_CONTROLLER_ADDR` | `game-coordinator:50053`, `controller-manager:50062` | no | shadow-game runner endpoints |
 | `AGENT_EXPERIMENT_PROPOSER_ENABLED` | `false` | yes (empty = closed) | operator ceiling of the proposer gate (#1810, C-034): the retro-seeded thesis proposer and the M7-4 proposer run only when this is `true` AND the `experiment_proposer_enabled` flag is on |
 | `AGENT_EXPERIMENT_DYNAMIC_MAX_CONCURRENT` | unset | yes (empty = no ceiling) | operator ceiling (#1810, C-034): the concurrent-experiment budget is `min(env, experiment_dynamic_max_concurrent)`, clamped to the shadow capacity; unset, invalid or non-positive = no ceiling |

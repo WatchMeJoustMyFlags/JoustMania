@@ -372,8 +372,9 @@ func buildExperimentLoop(
 	// each promotion, so the real-default path stays behind every existing gate.
 	promo := promote.NewExperimentPromoter(promoter, promotionConfigResolver(flagsClient))
 
-	// ShadowSpawner (#976): the real outbound game-coordinator client.
-	spawner := newShadowSpawner(gamerunner.ConfigFromEnv(), logger)
+	// ShadowSpawner (#976): the real outbound game-coordinator client. Each experiment
+	// arm starts with its own resolved sensitivity (UC-046 BR-019, #2392).
+	spawner := newShadowSpawner(gamerunner.ConfigFromEnv(), logger, flagsClient.ShadowGameInt)
 
 	// FitnessStore (#965/#1017): the finalized-per-game fitness store onGameEnd
 	// Records into and the #992 recent-real anchor reads from. It is built

@@ -187,6 +187,9 @@ type activeFlags map[string]struct{}
 // cover different flags. It performs NO writes and consults NO clock — given the
 // same inputs (file, active set, cursor, pressure) it is fully deterministic.
 //
+// A key the shadow game's mode does not read (catalogKeyModes, #2392) is never
+// offered: an arm value on it could not change a shadow game (UC-043 BR-009).
+//
 // The caller (the loop) is responsible for the capacity check (registry caps) and
 // for actually calling Registry.Declare/Start with the returned Intent; this
 // keeps the heuristic pure and unit-testable in isolation from the registry.
@@ -204,6 +207,8 @@ func (d *dynamicDeclarer) Declare(active activeFlags) (experiment.Intent, bool) 
 	}
 
 	objective := d.selectObjective()
+	// UC-043 BR-009 (#2392): only a key the shadow game's mode reads can change it.
+	mode := shadowGameMode()
 
 	// Round-robin scan from the persisted cursor: the FIRST candidate that has no
 	// active experiment and a distinct alternate value wins. Scanning the whole
@@ -218,7 +223,7 @@ func (d *dynamicDeclarer) Declare(active activeFlags) (experiment.Intent, bool) 
 				continue
 			}
 		}
-		if !offerable(key) {
+		if !offerable(key) || !offeredInShadowMode(key, mode) {
 			continue
 		}
 		value, ok := perturbValue(flags[key])
