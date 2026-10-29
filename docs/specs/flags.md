@@ -457,7 +457,7 @@ Every value not persisted lives in memory only (architecture note §10.1).
 **Failed save, kill switches (#2368, UC-053 A12):** when the state file cannot be saved (or was unreadable at
 start), a persisted `PUT` or `DELETE ?persist=true` is refused with `500 persist_failed` and nothing changes in
 memory; with a state file unreadable at start that includes a persisted `DELETE` with no admin value in memory, because
-the file may still hold one. The exception covers the persisted kill-switch flags, a fixed set in the flag service's
+the file may still hold one (a flag whose row has no persist cannot be in the file: its `DELETE ?persist=true` stays a plain `204`, uncounted). The exception covers the persisted kill-switch flags, a fixed set in the flag service's
 code (`registry.killSwitches`), not a registry.yaml attribute (released images parse the checkout's registry.yaml
 strictly). This list is its single source of truth, kept in sync by a test: `agent/interventions_allowed`. A safety
 stop must take effect now, so a write or clear of it applies in memory and answers `persisted: false` (`PUT`) or

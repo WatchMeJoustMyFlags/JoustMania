@@ -845,6 +845,27 @@ func TestAdminPersistence(t *testing.T) {
 			t.Fatalf("got %v: the cleared kill switch value still applies", v)
 		}
 	})
+	t.Run("UC-053/A2 a later successful save marks an in-memory kill switch persisted again (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "full", Persist: true, Writer: "menu"})
+		breakStateFile(t, path)
+		if res, err := f.state.Put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "none", Persist: true, Writer: "menu"}); err != nil || res.Persisted {
+			t.Fatalf("res %+v err %v, want the kill switch applied in memory, not persisted", res, err)
+		}
+		if st := f.state.Stats(); st.PersistedValues != 0 {
+			t.Fatalf("persisted overlays %d before the repair, want 0", st.PersistedValues)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
+		if res := f.put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "slow", Persist: true, Writer: "menu"}); !res.Persisted {
+			t.Fatal("the later write was not persisted")
+		}
+		if st := f.state.Stats(); st.PersistedValues != 2 {
+			t.Fatalf("persisted overlays %d, want 2: the save wrote the kill switch too", st.PersistedValues)
+		}
+	})
 	t.Run("UC-053/A2 with persistence disabled a persisted write is not an error and reports persisted false", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
 		res := f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true})
@@ -1246,6 +1267,20 @@ func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
 		}
 		if res.Persisted || res.Cleared != 0 || f.state.PersistErrors() != 1 {
 			t.Fatalf("result %+v errors %d, want nothing persisted and 1 error", res, f.state.PersistErrors())
+		}
+	})
+	t.Run("UC-053/A12 a read error leaves a persisted clear of a flag without persist at 204 (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{stateFile: path})
+		res, err := f.state.Clear(ClearRequest{Set: "agent", Flag: "enabled", Persist: true})
+		if err != nil {
+			t.Fatalf("err = %v: a flag that takes no persisted value cannot be in the file", err)
+		}
+		if res.Persisted || res.PersistFailed || f.state.PersistErrors() != 0 {
+			t.Fatalf("result %+v errors %d, want a plain clear and no counted error", res, f.state.PersistErrors())
 		}
 	})
 	t.Run("UC-053/A12 a read error answers a kill switch's persisted clear as not persisted (#2368)", func(t *testing.T) {
