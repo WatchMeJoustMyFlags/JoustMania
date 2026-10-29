@@ -366,8 +366,7 @@ class TestPollingStateCleanup:
         # Cleanup (as done in _check_for_new_controllers for disconnects)
         loop._records.pop(serial, None)
 
-        assert loop._record(serial).last_activity_time is None
-        assert loop._record(serial).previous_accel is None
+        assert serial not in loop._records
 
     def test_cleanup_nonexistent_serial_safe(self):
         """Cleanup is safe for non-existent serials."""
@@ -376,6 +375,8 @@ class TestPollingStateCleanup:
 
         # Should not raise
         loop._records.pop(serial, None)
+
+        assert serial not in loop._records
 
 
 class TestAccelerometerMovementCalculation:

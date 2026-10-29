@@ -1,14 +1,15 @@
-"""Inert defaults for the mock-only backend / adapter features.
+"""Inert defaults for optional backend / adapter features.
 
-Only the MockAdapter implements the UC-046 motion patterns, the #926 death latch
-and the #1837 trigger latch. Every backend and adapter inherits these defaults,
-so callers (the servicer, the multiplexer) call them without probing for the
-attribute.
+The MockAdapter implements the UC-046 motion patterns and the #926 death latch;
+the #1837 trigger latch is real on hardware too (HidServiceAdapter.consume_trigger_press),
+and the MultiplexerBackend overrides every hook to route it to the owning adapter.
+Every backend and adapter inherits these defaults, so callers (the servicer, the
+multiplexer) call them without probing for the attribute.
 """
 
 
 class MockFeatureHooks:
-    """No-op defaults; the MockAdapter overrides all of them."""
+    """No-op defaults; overridden where a backend implements the feature (see the module docstring)."""
 
     def consume_death_frame(self, serial: str) -> None:  # noqa: ARG002, B027
         """Account one delivered gameplay frame against a pending death latch (#926). Default: no latch."""
