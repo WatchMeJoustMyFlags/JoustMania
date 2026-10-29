@@ -765,18 +765,51 @@ const (
 // of a compensating strip that failed after every attempt (#2340).
 const noteStartStripFailed = "start_targeting_strip_failed"
 
+// noteReassertStripFailed is the journal note of a compensating strip after an
+// arm-value re-assert (#2362) that failed after every attempt.
+const noteReassertStripFailed = "reassert_targeting_strip_failed"
+
 // ErrStartTargetingLeaked is returned by Start when the experiment was aborted
 // while its targeting write was in flight and the compensating strip failed: the
 // shadow targeting branch may remain on the flag service (#2340).
 var ErrStartTargetingLeaked = errors.New("targeting written after abort could not be stripped")
 
+// ErrReassertTargetingLeaked is returned by reassertArmValue when the experiment
+// was torn down while its arm-value re-assert was in flight and the compensating
+// strip failed (#2362).
+var ErrReassertTargetingLeaked = errors.New("targeting re-asserted after abort could not be stripped")
+
+// errReassertTornDown is returned by reassertArmValue when a teardown began
+// before or during the re-assert: the pair must not spawn (#2362).
+var errReassertTornDown = errors.New("experiment torn down during arm-value re-assert")
+
+// lateTargetingWrite names the writer whose targeting landed after a teardown
+// began: its log event, journal note and leak error.
+type lateTargetingWrite struct {
+	op     string // "start" | "reassert"
+	note   string
+	leaked error
+}
+
+var (
+	lateWriteStart    = lateTargetingWrite{op: "start", note: noteStartStripFailed, leaked: ErrStartTargetingLeaked}
+	lateWriteReassert = lateTargetingWrite{op: "reassert", note: noteReassertStripFailed, leaked: ErrReassertTargetingLeaked}
+)
+
 // stripAfterAbortedStart removes the targeting a Start wrote after a concurrent
-// teardown had already stripped it (#2340), so the kill switch, experiments_enabled
-// off and the shutdown leave no agent targeting behind. It runs outside r.mu (file
-// I/O) on a context detached from the caller's cancellation: the shutdown cancels
-// the Start's context, and the strip must still run. A strip that fails after
-// every attempt is logged at ERROR, journaled on the experiment and returned.
+// teardown had already stripped it (#2340).
 func (r *Registry) stripAfterAbortedStart(ctx context.Context, id, flagKey string, jrnl *journal.Journal) error {
+	return r.stripLateTargetingWrite(ctx, lateWriteStart, id, flagKey, jrnl)
+}
+
+// stripLateTargetingWrite removes targeting written (by a Start, #2340, or an
+// arm-value re-assert, #2362) after a concurrent teardown had already stripped
+// it, so the kill switch, experiments_enabled off and the shutdown leave no agent
+// targeting behind. It runs outside r.mu (file I/O) on a context detached from the
+// caller's cancellation: the shutdown cancels the writer's context, and the strip
+// must still run. A strip that fails after every attempt is logged at ERROR,
+// journaled on the experiment and returned.
+func (r *Registry) stripLateTargetingWrite(ctx context.Context, w lateTargetingWrite, id, flagKey string, jrnl *journal.Journal) error {
 	var err error
 	for attempt := 1; attempt <= abortedStartStripAttempts; attempt++ {
 		if attempt > 1 {
@@ -786,21 +819,21 @@ func (r *Registry) stripAfterAbortedStart(ctx context.Context, id, flagKey strin
 		err = r.target.Strip(sctx, flagKey, id)
 		cancel()
 		if err == nil {
-			r.log.Info("experiment.start_targeting_stripped", "experiment_id", id, "flag_key", flagKey)
+			r.log.Info("experiment."+w.op+"_targeting_stripped", "experiment_id", id, "flag_key", flagKey)
 			return nil
 		}
 	}
-	r.log.Error("experiment.start_targeting_strip_failed", "experiment_id", id, "flag_key", flagKey,
+	r.log.Error("experiment."+w.op+"_targeting_strip_failed", "experiment_id", id, "flag_key", flagKey,
 		"attempts", abortedStartStripAttempts, "error", err)
 	if jrnl != nil {
 		r.mu.Lock()
 		r.appendEvent(jrnl, journal.Event{
 			Kind: journal.KindDecision,
-			Note: noteStartStripFailed + ": " + err.Error(),
+			Note: w.note + ": " + err.Error(),
 		})
 		r.mu.Unlock()
 	}
-	return fmt.Errorf("registry: start %q: %w: %w", id, ErrStartTargetingLeaked, err)
+	return fmt.Errorf("registry: %s %q: %w: %w", w.op, id, w.leaked, err)
 }
 
 // startSpanLocked starts the experiment's long-lived agent.experiment ROOT span
@@ -961,6 +994,12 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 	}
 	if err := r.reassertArmValue(ctx, plan.id); err != nil {
 		r.rollbackPair(plan, 0, nil)
+		// #2362: a teardown began before or during the re-assert; it owns the
+		// experiment's end, so no discard and no retry here.
+		if errors.Is(err, errReassertTornDown) {
+			r.log.Debug("experiment.arm_value_reassert_torn_down", "experiment_id", plan.id, "error", err)
+			return 0, true
+		}
 		// UC-043 A10 step 3 (#2366): the gate refuses the flag as not experimentable
 		// (it left the experiment catalog, e.g. an experiment journaled before an
 		// upgrade and rehydrated after it). No retry can succeed, so end it discarded
@@ -1006,6 +1045,11 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 // a pair spawns: a flag-service restart drops it (the targeting writer compares
 // boot epochs and writes it again). A targeting writer without the capability,
 // or an experiment without a flag, needs nothing.
+//
+// The write runs outside r.mu. A teardown (Abort / AbortAll: kill switch,
+// experiments_enabled off, shutdown) that begins while it is in flight may strip
+// before the write lands, so after the write (success or error) a begun teardown
+// gets a compensating strip and errReassertTornDown is returned (#2362).
 func (r *Registry) reassertArmValue(ctx context.Context, id string) error {
 	ra, ok := r.target.(interface {
 		Reassert(ctx context.Context, p Proposal) error
@@ -1019,17 +1063,40 @@ func (r *Registry) reassertArmValue(ctx context.Context, id string) error {
 		r.mu.Unlock()
 		return nil
 	}
+	if e.teardownBegun || e.status.IsTerminal() {
+		r.mu.Unlock()
+		return errReassertTornDown // the teardown owns the strip; write nothing
+	}
 	intent := e.journal.Intent()
 	r.mu.Unlock()
 	if intent.FlagKey == "" {
 		return nil
 	}
-	return ra.Reassert(ctx, Proposal{
+	writeErr := ra.Reassert(ctx, Proposal{
 		FlagKey:           intent.FlagKey,
 		ExperimentID:      id,
 		ExperimentalValue: intent.ExperimentalValue,
 		Rationale:         intent.Hypothesis,
 	})
+
+	r.mu.Lock()
+	e = r.entries[id]
+	if e != nil && !e.teardownBegun && !e.status.IsTerminal() {
+		r.mu.Unlock()
+		return writeErr
+	}
+	// A teardown began while the write was in flight: an erroring write may still
+	// have reached the flag service, so strip in both cases. The teardown does not
+	// strip a second time.
+	var jrnl *journal.Journal
+	if e != nil {
+		jrnl = e.journal
+	}
+	r.mu.Unlock()
+	if stripErr := r.stripLateTargetingWrite(ctx, lateWriteReassert, id, intent.FlagKey, jrnl); stripErr != nil {
+		return errors.Join(errReassertTornDown, stripErr)
+	}
+	return errReassertTornDown
 }
 
 // rollbackPair undoes a partially-spawned CRN pair on a spawn error (#1003), keeping

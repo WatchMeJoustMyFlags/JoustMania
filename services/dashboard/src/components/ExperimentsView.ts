@@ -51,7 +51,7 @@ export class ExperimentsView {
     const el = this.freshnessEl;
     if (!el || this.lastUpdatedMs === null) return;
 
-    const ageMs = Date.now() - this.lastUpdatedMs;
+    const ageMs = performance.now() - this.lastUpdatedMs;
     const ageSec = Math.max(0, Math.round(ageMs / 1000));
     const stale = ageMs >= STALE_AFTER_MS;
 
@@ -64,7 +64,7 @@ export class ExperimentsView {
 
   render(experiments: ExperimentView[]) {
     this.hasRendered = true;
-    this.lastUpdatedMs = Date.now();
+    this.lastUpdatedMs = performance.now();
     this.updateFreshness();
 
     if (experiments.length === 0) {

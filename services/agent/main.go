@@ -1240,14 +1240,17 @@ func proposerPermit(src proposerGateFlags, proposerCeiling bool) func(ctx contex
 // A hold key is in the set only under UC-043 A17 step 1 (the same gate as the
 // dynamic declarer; a nil gate keeps every hold key out). A key on the built-in
 // denylist floor (defaultDynamicDenylist) is never in the set, even when its
-// catalog row allows an experiment-arm write (UC-070 BR-008, #1961).
+// catalog row allows an experiment-arm write (UC-070 BR-008, #1961). A key the
+// shadow game's mode does not read (catalogKeyModes) is never in the set either:
+// an arm value on it could not change a shadow game (UC-043 BR-009, #2392).
 func gameFlagVocab(r gameFlagReader, hold *holdGate) func() map[string]flagservice.FlagView {
 	return func() map[string]flagservice.FlagView {
 		catalog := readGameCatalog(r)
 		offerable := hold.filter(context.Background(), catalog)
+		mode := shadowGameMode()
 		set := make(map[string]flagservice.FlagView, len(catalog))
 		for k, view := range catalog {
-			if offerable(k) && !builtinDenied(k) {
+			if offerable(k) && !builtinDenied(k) && offeredInShadowMode(k, mode) {
 				set[k] = view
 			}
 		}

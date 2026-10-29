@@ -58,6 +58,8 @@ export class AgentView {
   private lastStripKey: string | null = null;
   /** Signature of the rendered rows; unchanged -> the DOM is left alone. */
   private lastRowsKey: string | null = null;
+  // The HTML each panel was last given: an unchanged poll leaves the DOM alone (#2387).
+  private readonly lastHtml = new WeakMap<HTMLElement, string>();
 
   constructor(
     feedId: string,
@@ -93,7 +95,7 @@ export class AgentView {
   updateDecideFreshness() {
     const el = this.decideFreshnessEl;
     if (!el || this.decideUpdatedMs === null) return;
-    const ageMs = Date.now() - this.decideUpdatedMs;
+    const ageMs = performance.now() - this.decideUpdatedMs;
     const ageSec = Math.max(0, Math.round(ageMs / 1000));
     const stale = ageMs >= STALE_AFTER_MS;
     el.textContent = stale ? `stale — last updated ${ageSec}s ago` : `updated ${ageSec}s ago`;
@@ -104,7 +106,7 @@ export class AgentView {
   renderDecide(feed: DecideFeed) {
     if (!this.decideFeedEl || !this.decideStripEl) return;
     this.decideRendered = true;
-    this.decideUpdatedMs = Date.now();
+    this.decideUpdatedMs = performance.now();
     this.updateDecideFreshness();
 
     // Leave the DOM alone when nothing changed: rebuilding it would restart the
@@ -142,11 +144,18 @@ export class AgentView {
     this.decideFeedEl.innerHTML = html;
   }
 
+  /** Write a panel only when its HTML differs: a rewrite drops an open hover tooltip. */
+  private setPanel(el: HTMLElement, html: string) {
+    if (this.lastHtml.get(el) === html) return;
+    this.lastHtml.set(el, html);
+    el.innerHTML = html;
+  }
+
   setError(message: string) {
     const html = `<div class="loading">${escapeHtml(message)}</div>`;
-    this.feedEl.innerHTML = html;
-    this.flagsEl.innerHTML = html;
-    this.overlayEl.innerHTML = html;
+    this.setPanel(this.feedEl, html);
+    this.setPanel(this.flagsEl, html);
+    this.setPanel(this.overlayEl, html);
     this.hasRendered = true;
   }
 
@@ -157,8 +166,8 @@ export class AgentView {
    */
   setJaegerError(message: string) {
     const html = `<div class="loading">${escapeHtml(message)}</div>`;
-    this.feedEl.innerHTML = html;
-    this.flagsEl.innerHTML = html;
+    this.setPanel(this.feedEl, html);
+    this.setPanel(this.flagsEl, html);
     this.hasRendered = true;
   }
 
@@ -170,7 +179,7 @@ export class AgentView {
   updateFreshness() {
     const el = this.freshnessEl;
     if (!el || this.lastUpdatedMs === null) return;
-    const ageMs = Date.now() - this.lastUpdatedMs;
+    const ageMs = performance.now() - this.lastUpdatedMs;
     const ageSec = Math.max(0, Math.round(ageMs / 1000));
     const stale = ageMs >= STALE_AFTER_MS;
     el.textContent = stale
@@ -186,7 +195,7 @@ export class AgentView {
 
   render(view: AgentViewData) {
     this.hasRendered = true;
-    this.lastUpdatedMs = Date.now();
+    this.lastUpdatedMs = performance.now();
     this.updateFreshness();
 
     this.renderFeed(view.feed);
@@ -196,13 +205,15 @@ export class AgentView {
 
   private renderFeed(feed: DecisionFeedRow[]) {
     if (feed.length === 0) {
-      this.feedEl.innerHTML =
+      this.setPanel(
+        this.feedEl,
         '<div class="loading">No blocked agent.decision or rollout spans in Jaeger yet. ' +
-        "Allowed decisions appear in the decide feed below and in the Jaeger trace (link above); this feed shows " +
-        "blocked decisions and rollout activity.</div>";
+          "Allowed decisions appear in the decide feed below and in the Jaeger trace (link above); this feed shows " +
+          "blocked decisions and rollout activity.</div>",
+      );
       return;
     }
-    this.feedEl.innerHTML = feed.map((row) => this.renderFeedRow(row)).join("");
+    this.setPanel(this.feedEl, feed.map((row) => this.renderFeedRow(row)).join(""));
   }
 
   private renderFeedRow(row: DecisionFeedRow): string {
@@ -236,7 +247,7 @@ export class AgentView {
   }
 
   private renderFlags(flags: FlagPanel | null) {
-    this.flagsEl.innerHTML = renderFlagPanel(flags);
+    this.setPanel(this.flagsEl, renderFlagPanel(flags));
   }
 
   /** The VictoriaMetrics overlay alone; leaves the Jaeger panels and their freshness. */
@@ -292,7 +303,7 @@ export class AgentView {
             .join("")
         : '<div class="agent-tally-empty">&mdash;</div>';
 
-    this.overlayEl.innerHTML = `
+    this.setPanel(this.overlayEl, `
       <div class="agent-overlay-stats">
         <div class="agent-stat">
           <span class="agent-stat-label">applied (10m)</span>
@@ -323,7 +334,7 @@ export class AgentView {
           ${byReason}
         </div>
       </div>
-    `;
+    `);
   }
 }
 

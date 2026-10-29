@@ -14,8 +14,14 @@ export type ShieldKind = "full" | "toughness_boost";
 
 export interface ShieldState {
   kind: ShieldKind;
-  /** Wall-clock end of the protection, ms since epoch (from the event). */
+  /**
+   * End of the protection on the browser's monotonic clock: receipt time plus the event's
+   * `seconds` (#2387), so a Pi/browser wall-clock skew cannot move it. Without a usable
+   * `seconds` it is the event's wall-clock `until_ms` and `wall` is true.
+   */
   untilMs: number;
+  /** untilMs is a wall-clock time (legacy event without `seconds`). */
+  wall?: boolean;
 }
 
 export interface GameEventLike {
@@ -183,13 +189,19 @@ export class ShieldStore {
       }
       case "player_shielded": {
         const serial = event.data["serial"];
-        const untilMs = Number(event.data["until_ms"]);
-        if (!serial || !Number.isFinite(untilMs)) return false;
+        const untilWallMs = Number(event.data["until_ms"]);
+        const rawSeconds = event.data["seconds"];
+        const seconds = rawSeconds === undefined || rawSeconds === "" ? NaN : Number(rawSeconds);
+        const hasSeconds = Number.isFinite(seconds) && seconds >= 0;
+        if (!serial || (!hasSeconds && !Number.isFinite(untilWallMs))) return false;
         // "partial" is the pre-#1838 name of the toughness boost kind: an older coordinator
         // must not render as an immune full shield.
         const rawKind = event.data["kind"];
         const kind: ShieldKind = rawKind === "toughness_boost" || rawKind === "partial" ? "toughness_boost" : "full";
-        this.shields.set(serial, { kind, untilMs });
+        this.shields.set(
+          serial,
+          hasSeconds ? { kind, untilMs: monoMs + seconds * 1000 } : { kind, untilMs: untilWallMs, wall: true },
+        );
         // The activation of a charge consumes it (UC-030 A6); the coordinator also sends charge_ended.
         if (event.data["activation"] === "trigger") this.charges.delete(serial);
         return true;
@@ -234,7 +246,7 @@ export class ShieldStore {
   /** What a controller holds at `nowMs` (hold energy at `monoMs`), or null (expired entries are dropped). */
   get(serial: string, nowMs: number, monoMs: number = monotonicNowMs()): ShieldView | null {
     let active: ShieldState | null = this.shields.get(serial) ?? null;
-    if (active && active.untilMs <= nowMs) {
+    if (active && active.untilMs <= (active.wall ? nowMs : monoMs)) {
       this.shields.delete(serial);
       active = null;
     }
@@ -256,8 +268,8 @@ export interface ShieldBadge {
   className: string;
 }
 
-function activeBadge(shield: ShieldState, nowMs: number): ShieldBadge | null {
-  const remainingS = Math.max(0, (shield.untilMs - nowMs) / 1000);
+function activeBadge(shield: ShieldState, nowMs: number, monoMs: number): ShieldBadge | null {
+  const remainingS = Math.max(0, (shield.untilMs - (shield.wall ? nowMs : monoMs)) / 1000);
   if (remainingS <= 0) return null;
   const label = shield.kind === "toughness_boost" ? "Boost" : "Shield";
   const classes = ["shield-badge", `shield-${shield.kind}`];
@@ -271,9 +283,9 @@ function chargeText(charge: ChargeState, nowMs: number): string {
 }
 
 /** What a tile shows for a controller's shield at `nowMs`; null when there is none. */
-export function shieldBadge(view: ShieldView | null, nowMs: number): ShieldBadge | null {
+export function shieldBadge(view: ShieldView | null, nowMs: number, monoMs: number = monotonicNowMs()): ShieldBadge | null {
   if (!view) return null;
-  const active = view.active ? activeBadge(view.active, nowMs) : null;
+  const active = view.active ? activeBadge(view.active, nowMs, monoMs) : null;
   const charge = view.charge && (view.charge.expiresMs === null || view.charge.expiresMs > nowMs) ? view.charge : null;
   if (active && charge) {
     return { text: `${active.text} · Charged`, className: `${active.className} shield-charged` };
