@@ -1,39 +1,38 @@
 """Unit tests for StateManager."""
 
 import threading
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
+from lib.flag_service_writer import FlagServiceWriter
 from services.menu.handlers.base import ControllerState
 from services.menu.state_manager import StateManager
+from services.menu.utils import AudioHelper, LedController
 
 
 @pytest.fixture
 def mock_led():
     """Create mock LedController."""
-    led = MagicMock()
-    led.set_connected_color = AsyncMock()
-    led.set_ready_color = AsyncMock()
-    return led
+    return create_autospec(LedController, instance=True)
 
 
 @pytest.fixture
 def mock_audio():
     """Create mock AudioHelper."""
-    return MagicMock()
+    return create_autospec(AudioHelper, instance=True)
 
 
 @pytest.fixture
 def mock_game_settings_writer():
     """Create mock FlagServiceWriter for game_settings."""
-    return MagicMock()
+    return create_autospec(FlagServiceWriter, instance=True)
 
 
 @pytest.fixture
 def mock_user_prefs_writer():
     """Create mock FlagServiceWriter for user_preferences."""
-    return MagicMock()
+    return create_autospec(FlagServiceWriter, instance=True)
 
 
 @pytest.fixture

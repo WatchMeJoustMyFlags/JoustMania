@@ -22,7 +22,9 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
+import grpc
 import pytest
+from openfeature.client import OpenFeatureClient
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -31,10 +33,15 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
+from lib.flag_service_writer import FlagServiceWriter
 from lib.types import Games
 from proto import controller_manager_pb2, menu_pb2
+from services.menu.controller_events import ControllerEventLoop
+from services.menu.event_publisher import EventPublisher
 from services.menu.handlers.base import ControllerState
+from services.menu.state_manager import StateManager
 from services.menu.tests.servicer_harness import default_returning_flag_client
+from services.menu.utils import AudioHelper, LedController
 from services.menu.utils.led import GAME_MODE_COLORS
 
 
@@ -69,38 +76,33 @@ class FakeMenuServicer:
         self.state = menu_pb2.MenuState.STOPPED
         self.current_selection = Games.JoustFFA
 
-        # Mocked dependencies
-        self.led = MagicMock()
-        self.audio = MagicMock()
-        self.audio.start_lobby_music = AsyncMock()
-        self.audio.stop_lobby_music = AsyncMock()
-        self.audio.play_voice = AsyncMock()
+        # Mocked dependencies (autospec'd: a misspelt method fails here, not in production, #1272)
+        self.led = create_autospec(LedController, instance=True)
+        self.audio = create_autospec(AudioHelper, instance=True)
 
         # FlagServiceWriter mocks (replacing SettingsHelper)
-        self.game_settings_writer = MagicMock()
-        self.game_settings_writer.update_default_variant = MagicMock(return_value=True)
+        self.game_settings_writer = create_autospec(FlagServiceWriter, instance=True)
+        self.game_settings_writer.update_default_variant.return_value = True
 
-        self.user_prefs_writer = MagicMock()
-        self.user_prefs_writer.update_default_variant = MagicMock(return_value=True)
+        self.user_prefs_writer = create_autospec(FlagServiceWriter, instance=True)
+        self.user_prefs_writer.update_default_variant.return_value = True
 
         # OpenFeature client mocks (for reading settings)
-        self.game_settings_client = MagicMock()
-        self.game_settings_client.get_integer_value = MagicMock(return_value=2)
-        self.game_settings_client.get_boolean_value = MagicMock(return_value=True)
-        self.game_settings_client.get_float_value = MagicMock(return_value=4.0)
-        self.game_settings_client.get_string_value = MagicMock(return_value="medium")
+        self.game_settings_client = create_autospec(OpenFeatureClient, instance=True)
+        self.game_settings_client.get_integer_value.return_value = 2
+        self.game_settings_client.get_boolean_value.return_value = True
+        self.game_settings_client.get_float_value.return_value = 4.0
+        self.game_settings_client.get_string_value.return_value = "medium"
 
-        self.user_prefs_client = MagicMock()
-        self.user_prefs_client.get_string_value = MagicMock(return_value="gen_female")
-        self.user_prefs_client.get_boolean_value = MagicMock(return_value=True)
+        self.user_prefs_client = create_autospec(OpenFeatureClient, instance=True)
+        self.user_prefs_client.get_string_value.return_value = "gen_female"
+        self.user_prefs_client.get_boolean_value.return_value = True
 
-        self.event_publisher = MagicMock()
-        self.event_publisher.publish = AsyncMock()
-        self.event_publisher.subscribe = AsyncMock(return_value=asyncio.Queue())
-        self.event_publisher.unsubscribe = AsyncMock()
+        self.event_publisher = create_autospec(EventPublisher, instance=True)
+        self.event_publisher.subscribe.return_value = asyncio.Queue()
 
-        self.state_manager = MagicMock()
-        self.state_manager.reset = AsyncMock(return_value=["serial_1", "serial_2"])
+        self.state_manager = create_autospec(StateManager, instance=True)
+        self.state_manager.reset.return_value = ["serial_1", "serial_2"]
         # controller_states is the single source of truth (starts empty)
         self.state_manager.controller_states = {}
 
@@ -111,16 +113,12 @@ class FakeMenuServicer:
         type(self.state_manager).connected_controllers = property(lambda sm: set(sm.controller_states.keys()))
 
         # _restart_lobby waits for the button stream to reconnect.
-        self.controller_events = MagicMock()
-        self.controller_events.wait_for_connection = AsyncMock()
+        self.controller_events = create_autospec(ControllerEventLoop, instance=True)
 
         # Mock channels (no settings_channel - settings moved to flagd)
-        self.controller_channel = MagicMock()
-        self.controller_channel.close = AsyncMock()
-        self.game_coordinator_channel = MagicMock()
-        self.game_coordinator_channel.close = AsyncMock()
-        self.audio_channel = MagicMock()
-        self.audio_channel.close = AsyncMock()
+        self.controller_channel = create_autospec(grpc.aio.Channel, instance=True)
+        self.game_coordinator_channel = create_autospec(grpc.aio.Channel, instance=True)
+        self.audio_channel = create_autospec(grpc.aio.Channel, instance=True)
 
     # Computed properties that delegate to state_manager (match real implementation)
     @property

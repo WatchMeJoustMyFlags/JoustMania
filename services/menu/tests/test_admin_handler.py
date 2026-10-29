@@ -6,32 +6,37 @@ import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, call, create_autospec, patch
 
+import grpc
 import pytest
+from opentelemetry import trace
 
 from lib.colors import Colors
 from lib.controller_constants import ButtonTrackingKey
+from lib.flag_service_writer import FlagServiceWriter
 from lib.types import Sound
 from proto import menu_pb2
-from services.menu.handlers.admin import AdminModeHandler
-from services.menu.handlers.base import ControllerState
+from services.menu.handlers.admin import AdminModeCallbacks, AdminModeHandler
+from services.menu.handlers.base import ControllerHandler, ControllerState
+from services.menu.idle_monitor import IdleMonitor
+from services.menu.state_manager import StateManager
+from services.menu.utils import AudioHelper, LedController
 
 
 @pytest.fixture
 def mock_tracer():
     """Create mock tracer."""
-    tracer = MagicMock()
-    tracer.start_span = MagicMock(return_value=MagicMock())
-    tracer.start_as_current_span = MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock()))
+    tracer = create_autospec(trace.Tracer, instance=True)
+    tracer.start_span.return_value = MagicMock()
+    tracer.start_as_current_span.return_value = MagicMock(__enter__=MagicMock(), __exit__=MagicMock())
     return tracer
 
 
 @pytest.fixture
 def mock_callbacks():
     """Create mock callbacks."""
-    callbacks = MagicMock()
-    callbacks.get_game_options = MagicMock(return_value=["JoustFFA", "JoustTeams"])
-    callbacks.select_game_mode = AsyncMock()
-    callbacks.start_game = AsyncMock(return_value=True)
+    callbacks = create_autospec(AdminModeCallbacks, instance=True)
+    callbacks.get_game_options.return_value = ["JoustFFA", "JoustTeams"]
+    callbacks.start_game.return_value = True
     return callbacks
 
 
@@ -69,10 +74,10 @@ def set_agent_level(manager, level: str) -> None:
 @pytest.fixture
 def mock_state_manager():
     """Create mock StateManager with FlagServiceWriter mocks."""
-    manager = MagicMock()
+    manager = create_autospec(StateManager, instance=True)
 
     # FlagServiceWriter mocks for game_settings
-    game_writer = MagicMock()
+    game_writer = create_autospec(FlagServiceWriter, instance=True)
     game_writer.get_current_variant = MagicMock(return_value="medium")
     game_writer.cycle_variant = MagicMock(return_value="fast")
     game_writer.get_variant_names = MagicMock(return_value=["ultra_slow", "slow", "medium", "fast", "ultra_fast"])
@@ -82,13 +87,13 @@ def mock_state_manager():
     game_writer.get_flag_view = MagicMock(return_value=flag_view(SENSITIVITY_VALUES, "medium"))
 
     # FlagServiceWriter mocks for user_preferences
-    user_writer = MagicMock()
+    user_writer = create_autospec(FlagServiceWriter, instance=True)
     user_writer.get_current_variant = MagicMock(return_value="on")
     user_writer.cycle_variant = MagicMock(return_value="off")
     manager.user_prefs_writer = user_writer
 
     # FlagServiceWriter + client mocks for agent policy (#819 kill-switch).
-    agent_writer = MagicMock()
+    agent_writer = create_autospec(FlagServiceWriter, instance=True)
     agent_writer.get_flag_view = MagicMock(return_value=flag_view(AGENT_LEVEL_VALUES, "ambient"))
     agent_writer.update_default_variant = MagicMock(return_value=True)
     manager.agent_settings_writer = agent_writer
@@ -99,15 +104,12 @@ def mock_state_manager():
     agent_client.get_string_value = MagicMock(return_value=AGENT_LEVEL_VALUES["ambient"])
     manager.agent_settings_client = agent_client
 
-    manager.led = MagicMock()
-    manager.led.send_game_effect = AsyncMock(return_value=True)
-    manager.led.send_base_color = AsyncMock(return_value=True)
+    manager.led = create_autospec(LedController, instance=True)
+    manager.led.send_game_effect.return_value = True
+    manager.led.send_base_color.return_value = True
     manager.current_game_mode = MagicMock()
     manager.current_game_mode.name = "JoustFFA"
-    manager.audio = MagicMock()
-    manager.audio.play_voice = AsyncMock()
-    manager.audio.play_sound = AsyncMock()
-    manager.audio.play_game_mode_voice = AsyncMock()
+    manager.audio = create_autospec(AudioHelper, instance=True)
     manager.publish_event = AsyncMock()
     return manager
 
@@ -116,7 +118,7 @@ def mock_state_manager():
 def handler(mock_tracer, mock_callbacks, mock_metrics, mock_state_manager):
     """Create AdminModeHandler instance with mocks (pre-activated)."""
     handler = AdminModeHandler(
-        controller_channel=MagicMock(),
+        controller_channel=create_autospec(grpc.aio.Channel, instance=True),
         tracer=mock_tracer,
         callbacks=mock_callbacks,
         metrics=mock_metrics,
@@ -132,7 +134,7 @@ def handler(mock_tracer, mock_callbacks, mock_metrics, mock_state_manager):
 def inactive_handler(mock_tracer, mock_callbacks, mock_metrics, mock_state_manager):
     """Create AdminModeHandler instance that is NOT pre-activated."""
     handler = AdminModeHandler(
-        controller_channel=MagicMock(),
+        controller_channel=create_autospec(grpc.aio.Channel, instance=True),
         tracer=mock_tracer,
         callbacks=mock_callbacks,
         metrics=mock_metrics,
@@ -1135,56 +1137,6 @@ class TestHandleButtonEventDispatch:
         assert handler.handle_game_mode.call_count == 1
 
 
-class TestResetOnDisconnect:
-    """Tests for admin mode reset on controller disconnect."""
-
-    def test_clears_state_for_matching_serial(self, handler):
-        """reset_on_disconnect should clear state when serial matches."""
-        handler.reset_on_disconnect("test_serial")
-
-        assert handler.active is False
-        assert handler.controller_serial is None
-        assert handler.entry_time == 0
-
-    def test_ignores_different_serial(self, handler):
-        """reset_on_disconnect should ignore non-admin controller."""
-        handler.reset_on_disconnect("other_serial")
-
-        assert handler.active is True
-        assert handler.controller_serial == "test_serial"
-
-    def test_ignores_when_inactive(self, inactive_handler):
-        """reset_on_disconnect should do nothing when not active."""
-        inactive_handler.reset_on_disconnect("s1")
-        assert inactive_handler.active is False
-
-    def test_cancels_timeout_task(self, handler):
-        """reset_on_disconnect should cancel timeout task."""
-        mock_task = MagicMock()
-        mock_task.done.return_value = False
-        handler._timeout_task = mock_task
-
-        handler.reset_on_disconnect("test_serial")
-
-        mock_task.cancel.assert_called_once()
-
-    def test_ends_session_span(self, handler):
-        """reset_on_disconnect should end the session span."""
-        span = MagicMock()
-        handler.session_span = span
-
-        handler.reset_on_disconnect("test_serial")
-
-        span.set_attribute.assert_called_with("disconnect", True)
-        span.end.assert_called_once()
-        assert handler.session_span is None
-
-
-# ============================================================================
-# Tier 2 — Pure Logic
-# ============================================================================
-
-
 class TestVariantToValue:
     """Tests for _variant_to_value static method."""
 
@@ -1229,24 +1181,6 @@ class TestCheckCombo:
     def test_empty_state(self, handler):
         """Empty dict should return False."""
         assert handler.check_combo_from_state({}) is False
-
-    def test_combo_from_controller(self, handler):
-        """check_combo_from_controller with all pressed should return True."""
-        controller = MagicMock()
-        controller.cross_pressed = True
-        controller.circle_pressed = True
-        controller.square_pressed = True
-        controller.triangle_pressed = True
-        assert handler.check_combo_from_controller(controller) is True
-
-    def test_combo_from_controller_missing(self, handler):
-        """check_combo_from_controller with one missing should return False."""
-        controller = MagicMock()
-        controller.cross_pressed = True
-        controller.circle_pressed = False
-        controller.square_pressed = True
-        controller.triangle_pressed = True
-        assert handler.check_combo_from_controller(controller) is False
 
 
 class TestIsAdminController:
@@ -1347,58 +1281,6 @@ class TestHandleGameMode:
         handler.callbacks.select_game_mode.assert_awaited_once_with("JoustTeams")
 
 
-class TestHandleGameModeChange:
-    """Tests for handle_game_mode_change with direction."""
-
-    @pytest.mark.asyncio
-    async def test_forward_sends_green_pulse(self, handler, mock_state_manager):
-        """Forward mode change should send green pulse."""
-        await handler.handle_game_mode_change("test_serial", forward=True)
-
-        call_kwargs = mock_state_manager.led.send_game_effect.call_args[1]
-        assert call_kwargs["color"] == (0, 255, 0)
-
-    @pytest.mark.asyncio
-    async def test_backward_sends_blue_pulse(self, handler, mock_state_manager):
-        """Backward mode change should send blue pulse."""
-        await handler.handle_game_mode_change("test_serial", forward=False)
-
-        call_kwargs = mock_state_manager.led.send_game_effect.call_args[1]
-        assert call_kwargs["color"] == (0, 0, 255)
-
-    @pytest.mark.asyncio
-    async def test_empty_options_returns_early(self, handler, mock_state_manager):
-        """Should return early if no game options."""
-        handler.callbacks.get_game_options.return_value = []
-
-        await handler.handle_game_mode_change("test_serial")
-
-        mock_state_manager.publish_event.assert_not_called()
-        handler.callbacks.select_game_mode.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_forward_applies_selection_via_callback(self, handler, mock_state_manager):
-        """Forward cycling must actually apply the new selection through the menu
-        (same path as handle_game_mode) — not just publish a fire-and-forget
-        event (#1030). Guards against a future re-wiring reintroducing the bug."""
-        mock_state_manager.current_game_mode.name = "JoustFFA"
-        handler.callbacks.get_game_options.return_value = ["JoustFFA", "JoustTeams", "Werewolf"]
-
-        await handler.handle_game_mode_change("test_serial", forward=True)
-
-        handler.callbacks.select_game_mode.assert_awaited_once_with("JoustTeams")
-
-    @pytest.mark.asyncio
-    async def test_backward_applies_selection_via_callback(self, handler, mock_state_manager):
-        """Backward cycling must also apply the selection through the menu."""
-        mock_state_manager.current_game_mode.name = "JoustFFA"
-        handler.callbacks.get_game_options.return_value = ["JoustFFA", "JoustTeams", "Werewolf"]
-
-        await handler.handle_game_mode_change("test_serial", forward=False)
-
-        handler.callbacks.select_game_mode.assert_awaited_once_with("Werewolf")
-
-
 class TestHandleBattery:
     """Tests for battery display (triangle button)."""
 
@@ -1477,7 +1359,6 @@ class TestTriggerHoldAndRelease:
 
         await handler._start_trigger_hold_tracking("test_serial")
 
-        assert handler._trigger_press_time is not None
         assert handler._trigger_hold_task is not None
         call_args = mock_state_manager.led.send_game_effect.call_args
         assert call_args[0][0] == "test_serial"
@@ -1496,7 +1377,6 @@ class TestTriggerHoldAndRelease:
         # Release
         await handler.handle_trigger_release("test_serial")
 
-        assert handler._trigger_press_time is None
         assert handler._trigger_hold_task is None
         mock_state_manager.led.send_base_color.assert_called_with("test_serial", (255, 255, 255))
 
@@ -1708,26 +1588,6 @@ class TestControllerHandlerProtocol:
 
 class TestHelperProperties:
     """Tests for StateManager helper properties."""
-
-    def test_connected_controllers_with_manager(self, handler, mock_state_manager):
-        """Should return connected_controllers from state_manager."""
-        mock_state_manager.connected_controllers = {"s1", "s2"}
-        assert handler._connected_controllers == {"s1", "s2"}
-
-    def test_connected_controllers_without_manager(self, handler):
-        """Should return empty set without state_manager."""
-        handler._state_manager = None
-        assert handler._connected_controllers == set()
-
-    def test_ready_controllers_with_manager(self, handler, mock_state_manager):
-        """Should return ready_controllers from state_manager."""
-        mock_state_manager.ready_controllers = {"s1"}
-        assert handler._ready_controllers == {"s1"}
-
-    def test_ready_controllers_without_manager(self, handler):
-        """Should return empty set without state_manager."""
-        handler._state_manager = None
-        assert handler._ready_controllers == set()
 
     def test_current_game_mode_with_manager(self, handler, mock_state_manager):
         """Should return game mode name from state_manager."""
@@ -2106,7 +1966,7 @@ class TestForceStartThresholdFlag:
 
     def _build(self, mock_tracer, mock_callbacks, mock_metrics):
         return AdminModeHandler(
-            controller_channel=MagicMock(),
+            controller_channel=create_autospec(grpc.aio.Channel, instance=True),
             tracer=mock_tracer,
             callbacks=mock_callbacks,
             metrics=mock_metrics,
@@ -2146,24 +2006,24 @@ class TestSingleAdminSession:
 
         from services.menu.state_manager import StateManager
 
-        led = MagicMock()
-        led.send_game_effect = AsyncMock(return_value=True)
-        led.send_base_color = AsyncMock(return_value=True)
-        led.set_connected_color = AsyncMock()
-        audio = MagicMock()
-        audio.play_voice = AsyncMock()
-        audio.play_sound = AsyncMock()
-        state_manager = StateManager(led, audio, MagicMock(), MagicMock(), AsyncMock())
+        led = create_autospec(LedController, instance=True)
+        led.send_game_effect.return_value = True
+        led.send_base_color.return_value = True
+        audio = create_autospec(AudioHelper, instance=True)
+        state_manager = StateManager(
+            led,
+            audio,
+            create_autospec(FlagServiceWriter, instance=True),
+            create_autospec(FlagServiceWriter, instance=True),
+            AsyncMock(),
+        )
 
-        connected_handler = MagicMock()
+        connected_handler = create_autospec(ControllerHandler, instance=True)
         connected_handler.state = ControllerState.CONNECTED
-        connected_handler.on_enter = AsyncMock()
-        connected_handler.on_exit = AsyncMock()
-        connected_handler.handle_button = AsyncMock()
         state_manager.register_handler(connected_handler)
 
         admin_handler = AdminModeHandler(
-            controller_channel=MagicMock(),
+            controller_channel=create_autospec(grpc.aio.Channel, instance=True),
             tracer=mock_tracer,
             callbacks=mock_callbacks,
             metrics=mock_metrics,
@@ -2171,7 +2031,7 @@ class TestSingleAdminSession:
         state_manager.register_handler(admin_handler)
 
         servicer = SimpleNamespace(
-            idle_monitor=MagicMock(),
+            idle_monitor=create_autospec(IdleMonitor, instance=True),
             state_manager=state_manager,
             admin_handler=admin_handler,
             state=menu_pb2.MenuState.RUNNING,

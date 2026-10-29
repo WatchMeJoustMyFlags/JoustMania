@@ -1,0 +1,20 @@
+# golangci-lint v2 config for the flag service (#2370). Not run in CI yet:
+# `golangci-lint run ./...` in services/flag-service.
+version: "2"
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - gocritic
+    - misspell
+    - unconvert
+    - bodyclose
+  settings:
+    staticcheck:
+      checks: ["all"]
+  exclusions:
+    presets:
+      - std-error-handling
+formatters:
+  enable:
+    - gofmt
