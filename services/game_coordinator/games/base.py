@@ -45,6 +45,50 @@ from lib.feature_flags import (
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import game_clock, metrics
+from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-exported: games/shields.py and the tests import them from base
+    CHARGE_EXPIRY_MAX_SECONDS,
+    DEFAULT_CHARGE_EXPIRY_SECONDS,
+    DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME,
+    DEFAULT_RAMP_DOWN_SECONDS,
+    DEFAULT_RAMP_UP_SECONDS,
+    DEFAULT_SHIELD_ACTIVATION,
+    DEFAULT_SHIELD_COOLDOWN_SECONDS,
+    END_MAX_MUSIC_FAST_TIME,
+    END_MAX_MUSIC_SLOW_TIME,
+    END_MIN_MUSIC_FAST_TIME,
+    END_MIN_MUSIC_SLOW_TIME,
+    FAST_MAX,
+    FAST_WARNING,
+    MAX_MUSIC_FAST_TIME,
+    MAX_MUSIC_SLOW_TIME,
+    MIN_MUSIC_FAST_TIME,
+    MIN_MUSIC_SLOW_TIME,
+    RAMP_SECONDS_MAX,
+    RAMP_SECONDS_MIN,
+    SENSITIVITY_LEVELS,
+    SHIELD_ACTIVATION_HOLD,
+    SHIELD_ACTIVATION_INSTANT,
+    SHIELD_ACTIVATION_TRIGGER,
+    SHIELD_HOLD_CUE_FLAGS,
+    SHIELD_HOLD_FLAGS,
+    SLOW_MAX,
+    SLOW_WARNING,
+    TEMPO_MODE_AGENT,
+    TEMPO_MODE_RULE,
+    TEMPO_SCHEDULE_MODE_DEFAULT,
+    MusicWindows,
+    _read_volume_flag,
+    resolve_base_thresholds,
+    resolve_charge_expiry,
+    resolve_hold_value,
+    resolve_mode_thresholds,
+    resolve_music_windows,
+    resolve_non_negative_duration,
+    resolve_ramp_seconds,
+    resolve_shield_activation,
+    resolve_shield_limit,
+    resolve_tempo_schedule_mode,
+)
 from services.game_coordinator.runtime_config import get_config_manager
 from services.game_coordinator.stream_writes import serialized_write
 
@@ -69,10 +113,6 @@ FAST_MUSIC_SPEED = 1.3  # 30% faster
 # going up and ``tempo.ramp_down_seconds`` going down (game flags, read at each
 # ramp start, never per frame). Thresholds read i every frame; the music is
 # derived from it (one ChangeTempo glide per segment), so it can only trail.
-DEFAULT_RAMP_UP_SECONDS = 3.0  # The maintainer's "slow increase"
-DEFAULT_RAMP_DOWN_SECONDS = 1.5  # The original JoustMania glide, until measured on a Pi
-RAMP_SECONDS_MIN = 0.1  # Flag clamp, matches the registry bounds (flags.md §13.3)
-RAMP_SECONDS_MAX = 10.0
 # Shortest glide sent to the audio service: a transition_duration of 0 means 1.0 s there.
 MIN_GLIDE_SECONDS = 0.05
 # Deadline for one ChangeTempo, so a wedged audio service never stalls the music loop.
@@ -84,40 +124,6 @@ AUDIO_TEMPO_RETRY_MAX_SECONDS = 5.0
 MUSIC_TICK_LOG_INTERVAL_SECONDS = 5.0
 # Track id the audio service returns for PlayMusic while play_audio is off (UC-031 A1).
 MUTED_TRACK_ID = "muted"
-
-# #1109: tempo-schedule SOURCE selector (``game.tempo_schedule_mode`` flag).
-# The tempo-change decision ALWAYS flows through the single pacing-policy seam
-# (``_decide_next_change_delay``); this flag selects which policy that seam runs:
-#   * "rule"  — the rule engine owns the decision. The DEFAULT rule reproduces
-#     the historical random-window timing (``_rng.uniform`` within the lerped
-#     ``music_windows``) byte-for-byte, so the unset/default behavior is
-#     unchanged WITHOUT a second legacy code path. A deterministic non-random
-#     rule is a follow-up policy (#1108) — the default rule simply keeps the RNG.
-#   * "agent" — the seam yields the next-change decision to agent tempo
-#     directives (#1103 ramp_tempo, a follow-up). Until that primitive lands the
-#     mode is a clean STUB: with no directive present it falls back to the
-#     default rule, so selecting "agent" early is safe (never freezes pacing).
-# There is intentionally NO "random" mode: randomness survives as the default
-# RULE, not as a separate mode (maintainer re-scope, #1109).
-TEMPO_MODE_RULE = "rule"
-TEMPO_MODE_AGENT = "agent"
-# Unset / unknown values resolve to the rule engine's default rule => back-compat.
-TEMPO_SCHEDULE_MODE_DEFAULT = TEMPO_MODE_RULE
-_VALID_TEMPO_SCHEDULE_MODES = (TEMPO_MODE_RULE, TEMPO_MODE_AGENT)
-
-
-def resolve_tempo_schedule_mode(value: object) -> str:
-    """Validate the ``game.tempo_schedule_mode`` flag value.
-
-    Any value other than the known modes (``rule``/``agent``) — including a
-    missing flag, a non-string, or a stale ``random`` left over from an older
-    config — resolves to :data:`TEMPO_SCHEDULE_MODE_DEFAULT` (``rule``), whose
-    default policy reproduces today's behavior. This keeps the seam default-safe.
-    """
-    if isinstance(value, str) and value in _VALID_TEMPO_SCHEDULE_MODES:
-        return value
-    return TEMPO_SCHEDULE_MODE_DEFAULT
-
 
 # #1117 (#1103 MVP action 2): ``ramp_tempo`` — a scheduled tempo CURVE that fills
 # the #1114 ``agent``-mode seam. The agent emits a single string directive
@@ -168,32 +174,6 @@ def intensity_from_tempo(tempo: float) -> float:
     return max(0.0, min(1.0, (tempo - SLOW_MUSIC_SPEED) / speed_range))
 
 
-def resolve_ramp_seconds(value: object, default: float) -> float:
-    """Validate a ``tempo.ramp_*_seconds`` flag value (#1833).
-
-    A non-number, a bool, NaN / infinity or a value <= 0 is malformed and gives
-    ``default``; any other value is clamped to [RAMP_SECONDS_MIN, RAMP_SECONDS_MAX].
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return default
-    seconds = float(value)
-    if not math.isfinite(seconds) or seconds <= 0.0:
-        return default
-    return max(RAMP_SECONDS_MIN, min(RAMP_SECONDS_MAX, seconds))
-
-
-# Player-activated shield charge (#1837, FR-160; UC-040 A30-A32, BR-019-BR-021;
-# UC-030 A6, BR-005). The game flag ``shield.activation`` picks how a grant_shield
-# lands: ``instant`` (today's shield) or ``trigger`` (a charge the player activates
-# with the trigger). Both flags are read per grant, never per frame.
-SHIELD_ACTIVATION_INSTANT = "instant"
-SHIELD_ACTIVATION_TRIGGER = "trigger"
-# Hold mode (#2096, FR-161; UC-030 A7, UC-040 A36-A39, BR-024-BR-027): a pool of
-# shield energy that protects while the trigger is held. Latched per game.
-SHIELD_ACTIVATION_HOLD = "hold"
-DEFAULT_SHIELD_ACTIVATION = SHIELD_ACTIVATION_INSTANT
-DEFAULT_CHARGE_EXPIRY_SECONDS = 20.0
-CHARGE_EXPIRY_MAX_SECONDS = 120.0
 # The controller manager caps a charge layer at 120 s (CHARGE_MAX_DURATION_MS);
 # the coordinator re-sends the layer this long before it runs out (BR-021).
 SHIELD_CHARGE_LAYER_MAX_SECONDS = 120.0
@@ -205,39 +185,6 @@ CHARGE_OUTCOME_DEATH = "death"
 CHARGE_OUTCOME_GAME_END = "game_end"
 
 
-def resolve_shield_activation(value: object) -> str:
-    """Validate a ``shield.activation`` flag value: ``trigger``, ``hold`` or else ``instant`` (UC-040 BR-019)."""
-    if isinstance(value, str):
-        mode = value.strip().lower()
-        if mode in (SHIELD_ACTIVATION_TRIGGER, SHIELD_ACTIVATION_HOLD):
-            return mode
-    return SHIELD_ACTIVATION_INSTANT
-
-
-def resolve_charge_expiry(value: object) -> float:
-    """Validate a ``shield.charge_expiry_seconds`` flag value (flags.md §4).
-
-    A non-number, a bool, NaN or a negative value gives the default (20 s); any
-    other value is clamped to [0, CHARGE_EXPIRY_MAX_SECONDS]. 0 means never.
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return DEFAULT_CHARGE_EXPIRY_SECONDS
-    seconds = float(value)
-    if math.isnan(seconds) or seconds < 0.0:
-        return DEFAULT_CHARGE_EXPIRY_SECONDS
-    return min(CHARGE_EXPIRY_MAX_SECONDS, seconds)
-
-
-# Hold-mode flags (flags.md §4, UC-040 BR-024): key -> (default, min, max). The
-# ranges equal the registry bounds (flags.md §13.3), so a stage overlay the
-# registry accepts is never clamped here.
-SHIELD_HOLD_FLAGS: dict[str, tuple[float, float, float]] = {
-    "shield.energy_max_seconds": (5.0, 1.0, 10.0),
-    "shield.energy_budget_seconds": (15.0, 3.0, 30.0),
-    "shield.energy_initial_seconds": (0.0, 0.0, 5.0),
-    "shield.recharge_per_second": (0.0, 0.0, 0.5),
-    "shield.min_burst_seconds": (0.3, 0.1, 1.0),
-}
 # A grant that could add less than this is refused as shield_pool_full (A37).
 SHIELD_HOLD_POOL_FULL_ROOM_SECONDS = 0.05
 # shield.hold_outcome values (telemetry.md §3.2) and game_shield_hold_activations_total{outcome}.
@@ -248,16 +195,6 @@ HOLD_OUTCOME_DEATH = "death"
 HOLD_OUTCOME_GAME_END = "game_end"
 SHIELD_REFUSED_POOL_FULL = "shield_pool_full"
 SHIELD_REFUSED_BUDGET_EXHAUSTED = "shield_budget_exhausted"
-
-
-def resolve_hold_value(value: object, default: float, low: float, high: float) -> float:
-    """Validate a hold-mode flag value (flags.md §4): malformed gives ``default``, else clamped to [low, high]."""
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return default
-    number = float(value)
-    if not math.isfinite(number):
-        return default
-    return max(low, min(high, number))
 
 
 @dataclass(frozen=True)
@@ -271,15 +208,6 @@ class ShieldHoldParams:
     min_burst: float
 
 
-# Hold feedback cue flags (flags.md §4, UC-040 BR-026): key -> (default, min, max), the
-# registry bounds. Latched with the hold values and shipped to the controller manager.
-SHIELD_HOLD_CUE_FLAGS: dict[str, tuple[float, float, float]] = {
-    "shield.charge_rumble_intensity": (255.0, 0.0, 255.0),
-    "shield.charge_rumble_pulse_ms": (150.0, 50.0, 500.0),
-    "shield.ending_rumble_seconds": (1.0, 0.0, 3.0),
-    "shield.hold_rumble_intensity": (70.0, 0.0, 150.0),
-    "shield.empty_pulse_ms": (400.0, 100.0, 800.0),
-}
 # shield_up plays on an activation at most this often per player (UC-040 BR-026).
 SHIELD_HOLD_SOUND_MIN_INTERVAL_SECONDS = 2.0
 # Cue of a hold command (proto ShieldHoldCue); a later send keeps the strongest pending one.
@@ -304,19 +232,8 @@ class ShieldHoldCues:
     empty_pulse_ms: int = 400
 
 
-# Agent shield limits per player per game (#2044, UC-040 A34, BR-022): the
-# coordinator's backstop. Operator flags in the `agent` set, read per grant.
-DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME = 3
-DEFAULT_SHIELD_COOLDOWN_SECONDS = 15
 SHIELD_REFUSED_CAP = "shield_cap_reached"
 SHIELD_REFUSED_COOLDOWN = "shield_cooldown"
-
-
-def resolve_shield_limit(value: object, default: int) -> int:
-    """Validate a shield-limit flag value (flags.md §3): a negative or non-int value gives the default."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return default
-    return value
 
 
 @dataclass(frozen=True)
@@ -463,17 +380,6 @@ _MSG_COUNTDOWN_INTERRUPTED = "Countdown interrupted - game no longer running"
 #   warning = lerp(1.6, 1.9, 0.5) = 1.75g
 #   death   = lerp(1.8, 2.8, 0.5) = 2.3g
 
-# Music timing intervals (seconds) - how long before next tempo change
-MIN_MUSIC_FAST_TIME = 4  # Minimum time at fast speed
-MAX_MUSIC_FAST_TIME = 8  # Maximum time at fast speed
-MIN_MUSIC_SLOW_TIME = 10  # Minimum time at slow speed
-MAX_MUSIC_SLOW_TIME = 23  # Maximum time at slow speed
-
-# End game timing (more frequent changes as game progresses)
-END_MIN_MUSIC_FAST_TIME = 6
-END_MAX_MUSIC_FAST_TIME = 10
-END_MIN_MUSIC_SLOW_TIME = 8
-END_MAX_MUSIC_SLOW_TIME = 12
 
 # Volume levels — module constants double as flagd defaults and as the
 # revert target for the volume_override intervention (interventions.py).
@@ -486,248 +392,6 @@ MAX_INSTRUCTIONS_WAIT_SECONDS = 60.0
 INSTRUCTIONS_POLL_SECONDS = 0.1
 # Deadline for StopSound after a force-end, so a wedged audio service cannot stall teardown (#1586).
 STOP_SOUND_TIMEOUT_SECONDS = 2.0
-
-
-def _read_volume_flag(flag_name: str, default: float) -> float:
-    """Read a per-channel volume from the flagd user domain (F7, #766).
-
-    Validates the value is a number in [0.0, 1.0]; falls back to the hardcoded
-    default on malformed values or any read error, so promotion stays
-    behavior-neutral. Read at game init only (init-frozen).
-    """
-    try:
-        from openfeature.evaluation_context import EvaluationContext
-
-        from lib.feature_flags import get_flag_client, init_flag_domain
-
-        init_flag_domain("user")
-        client = get_flag_client("user")
-        value = client.get_float_value(flag_name, default, EvaluationContext())
-        if not isinstance(value, int | float) or isinstance(value, bool) or not (0.0 <= value <= 1.0):
-            logger.warning(f"Malformed volume {flag_name}={value!r}, using default {default}")
-            return default
-        return float(value)
-    except Exception as e:
-        logger.warning(f"Failed to read volume {flag_name}, using default {default}: {e}")
-        return default
-
-
-# UC-030 BR-001: threshold tables (defaults of the `thresholds` flag, read at game start).
-# Threshold arrays from original JoustMania (in g-force units, 1.0 = 1g)
-# PSMove accelerometer returns g-force values (standing still = ~1.0 on Z axis)
-#
-# Uses LERP between slow/fast thresholds based on music speed:
-#   threshold = lerp(SLOW[sens], FAST[sens], music_speed_percent)
-#
-# Index: 0=ULTRA_SLOW, 1=SLOW, 2=MEDIUM, 3=FAST, 4=ULTRA_FAST
-SLOW_WARNING = [1.2, 1.3, 1.6, 2.0, 2.5]  # Warning thresholds when music is slow
-SLOW_MAX = [1.3, 1.5, 1.8, 2.5, 3.2]  # Death thresholds when music is slow
-FAST_WARNING = [1.4, 1.6, 1.9, 2.7, 2.8]  # Warning thresholds when music is fast
-FAST_MAX = [1.6, 1.8, 2.8, 3.2, 3.5]  # Death thresholds when music is fast
-
-# Number of sensitivity levels (0=ULTRA_SLOW .. 4=ULTRA_FAST); every threshold
-# array must carry exactly this many entries.
-SENSITIVITY_LEVELS = 5
-
-
-def _valid_threshold_row(row) -> bool:
-    """A threshold array must hold exactly SENSITIVITY_LEVELS numeric entries."""
-    if not isinstance(row, (list, tuple)) or len(row) != SENSITIVITY_LEVELS:
-        return False
-    return all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in row)
-
-
-def resolve_base_thresholds(flag_value: dict) -> dict[str, list]:
-    """
-    Validate the ``game.thresholds`` object flag and resolve the four arrays.
-
-    Each of slow_warning/slow_max/fast_warning/fast_max must be a 5-element
-    numeric array, and per sensitivity row warning < max (slow and fast). On
-    ANY malformed entry the corresponding hardcoded module constant is used as
-    the fallback source of truth, keeping the promotion behavior-neutral.
-
-    Args:
-        flag_value: Object value from the ``thresholds`` flag (may be partial/invalid)
-
-    Returns:
-        Dict with keys slow_warning, slow_max, fast_warning, fast_max -> lists.
-    """
-    defaults = {
-        "slow_warning": list(SLOW_WARNING),
-        "slow_max": list(SLOW_MAX),
-        "fast_warning": list(FAST_WARNING),
-        "fast_max": list(FAST_MAX),
-    }
-    if not isinstance(flag_value, dict):
-        return defaults
-
-    resolved = {}
-    for key in ("slow_warning", "slow_max", "fast_warning", "fast_max"):
-        candidate = flag_value.get(key)
-        resolved[key] = list(candidate) if _valid_threshold_row(candidate) else defaults[key]
-
-    # Per-row sanity: warning must be strictly below max at every sensitivity.
-    # If any row violates it, fall back to the matching default pair so we never
-    # ship an unkillable or instant-death configuration.
-    for warn_key, max_key in (("slow_warning", "slow_max"), ("fast_warning", "fast_max")):
-        if any(w >= m for w, m in zip(resolved[warn_key], resolved[max_key], strict=False)):
-            resolved[warn_key] = defaults[warn_key]
-            resolved[max_key] = defaults[max_key]
-
-    return resolved
-
-
-def resolve_mode_thresholds(flag_value: dict, default_table: dict) -> dict:
-    """
-    Validate a per-mode override flag (zombie/werewolf) -> ``{Sensitivity: (warn, max)}``.
-
-    The flag carries two 5-element arrays ``warning`` and ``max`` (indexed by
-    sensitivity 0..4). On any malformed entry or warning>=max row, the supplied
-    ``default_table`` (the mode's hardcoded dict) is returned unchanged.
-
-    Args:
-        flag_value: Object value from ``<mode>.thresholds`` flag
-        default_table: Hardcoded ``{Sensitivity: (warn, max)}`` fallback
-
-    Returns:
-        A ``{Sensitivity: (warn, max)}`` dict.
-    """
-    if not isinstance(flag_value, dict):
-        return default_table
-
-    warning = flag_value.get("warning")
-    death = flag_value.get("max")
-    if not _valid_threshold_row(warning) or not _valid_threshold_row(death):
-        return default_table
-    if any(w >= m for w, m in zip(warning, death, strict=False)):
-        return default_table
-
-    return {Sensitivity(i): (warning[i], death[i]) for i in range(SENSITIVITY_LEVELS)}
-
-
-def resolve_non_negative_duration(value, default: float) -> float:
-    """
-    Validate a promoted duration flag (#766 F2): finite, numeric, ``>= 0``.
-
-    Durations of exactly ``0`` are allowed (e.g. "no grace", "no spawn
-    protection"); negatives, non-numbers and NaN/inf fall back to ``default``
-    so the promotion stays behavior-neutral.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
-    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
-        return default
-    return float(value) if value >= 0 else default
-
-
-@dataclass
-class MusicWindows:
-    """Tempo-change scheduling windows (seconds) for the music loop.
-
-    Each field is the min/max delay before the next tempo change in a given
-    phase. The loop draws a uniform delay in ``[min, max]`` (lerping between the
-    early-game and end-game pairs as players are eliminated). #766 F3 promoted
-    these from the module constants to the ``game.windows`` object flag.
-
-    #766 F6 seam (LIVE ``pacing_profile`` intervention): the resolved windows
-    live on ``self.music_windows`` (one ``MusicWindows`` instance). F6's live
-    handler must build a new ``MusicWindows`` from the chosen preset and assign
-    it atomically — ``self.music_windows = new_windows`` — so the music loop,
-    which reads ``self.music_windows`` fresh on each ``_get_music_change_time``
-    call, picks up the swap on the next tempo change without tearing (the field
-    reference flips in a single bytecode store; never mutate the fields in
-    place). Init reads it once (init-frozen calibration); F6 owns the live path.
-    """
-
-    fast_min: float
-    fast_max: float
-    slow_min: float
-    slow_max: float
-    end_fast_min: float
-    end_fast_max: float
-    end_slow_min: float
-    end_slow_max: float
-
-    @classmethod
-    def defaults(cls) -> "MusicWindows":
-        """Build a MusicWindows from the hardcoded module constants."""
-        return cls(
-            fast_min=MIN_MUSIC_FAST_TIME,
-            fast_max=MAX_MUSIC_FAST_TIME,
-            slow_min=MIN_MUSIC_SLOW_TIME,
-            slow_max=MAX_MUSIC_SLOW_TIME,
-            end_fast_min=END_MIN_MUSIC_FAST_TIME,
-            end_fast_max=END_MAX_MUSIC_FAST_TIME,
-            end_slow_min=END_MIN_MUSIC_SLOW_TIME,
-            end_slow_max=END_MAX_MUSIC_SLOW_TIME,
-        )
-
-
-# Maps each MusicWindows field to its game.windows flag key (snake_case after
-# the module constants) and the constant used as the per-field fallback.
-_MUSIC_WINDOW_FIELDS = (
-    ("fast_min", "min_music_fast_time", MIN_MUSIC_FAST_TIME),
-    ("fast_max", "max_music_fast_time", MAX_MUSIC_FAST_TIME),
-    ("slow_min", "min_music_slow_time", MIN_MUSIC_SLOW_TIME),
-    ("slow_max", "max_music_slow_time", MAX_MUSIC_SLOW_TIME),
-    ("end_fast_min", "end_min_music_fast_time", END_MIN_MUSIC_FAST_TIME),
-    ("end_fast_max", "end_max_music_fast_time", END_MAX_MUSIC_FAST_TIME),
-    ("end_slow_min", "end_min_music_slow_time", END_MIN_MUSIC_SLOW_TIME),
-    ("end_slow_max", "end_max_music_slow_time", END_MAX_MUSIC_SLOW_TIME),
-)
-
-# (min_field, max_field) pairs that must satisfy min <= max for the windows to
-# be usable. If any pair is violated after resolution we discard the whole flag
-# value and fall back to the defaults (keeping promotion behavior-neutral).
-_MUSIC_WINDOW_PAIRS = (
-    ("fast_min", "fast_max"),
-    ("slow_min", "slow_max"),
-    ("end_fast_min", "end_fast_max"),
-    ("end_slow_min", "end_slow_max"),
-)
-
-
-def _positive_number(value) -> bool:
-    """A music window must be a finite, strictly-positive (>0) number, not bool."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
-        return False
-    return value > 0
-
-
-def resolve_music_windows(flag_value: dict) -> MusicWindows:
-    """
-    Validate the ``game.windows`` object flag and resolve a :class:`MusicWindows`.
-
-    Each of the eight window values must be a finite, strictly-positive number,
-    and every (min, max) pair must satisfy ``min <= max``. On ANY malformed
-    value or violated ordering the ENTIRE flag value is rejected in favour of
-    the module-constant defaults, keeping the promotion behavior-neutral (a
-    half-applied window set could distort the fast/slow rhythm unexpectedly).
-
-    Args:
-        flag_value: Object value from the ``windows`` flag (may be partial/invalid)
-
-    Returns:
-        A validated :class:`MusicWindows` (defaults on any failure).
-    """
-    defaults = MusicWindows.defaults()
-    if not isinstance(flag_value, dict):
-        return defaults
-
-    resolved: dict[str, float] = {}
-    for field, key, _fallback in _MUSIC_WINDOW_FIELDS:
-        candidate = flag_value.get(key)
-        if not _positive_number(candidate):
-            return defaults  # any malformed value -> whole-set fallback
-        resolved[field] = float(candidate)
-
-    for min_field, max_field in _MUSIC_WINDOW_PAIRS:
-        if resolved[min_field] > resolved[max_field]:
-            return defaults  # any inverted window -> whole-set fallback
-
-    return MusicWindows(**resolved)
 
 
 # Warning feedback duration (seconds) - flash + rumble time
