@@ -68,7 +68,7 @@ func TestPatternEndChain_KeepsRegistryAndForwardsToWindow(t *testing.T) {
 		w := &fakeWindow{}
 		loop := buildExperimentLoop(nil, nil, nil, gameServiceForDeclarer(t), w, testLogger())
 		id, err := loop.registry.Declare(experiment.Intent{
-			FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+			FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 		})
 		if err != nil {
 			t.Fatalf("declare: %v", err)

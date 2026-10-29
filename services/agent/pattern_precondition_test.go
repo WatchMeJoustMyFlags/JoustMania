@@ -81,7 +81,7 @@ func TestPatternGames_NoSpawnWhileExperimentsOff(t *testing.T) {
 		configOverride:  lc.get,
 		enabledOverride: func(context.Context) bool { return true },
 	}
-	lc.setSeed(testSeed("invincibility_seconds", 6.0, 50))
+	lc.setSeed(testSeed("nonstop.respawn_seconds", 6.0, 50))
 	ctx := context.Background()
 
 	t.Run("UC-046/Pre-1 experiments off: no pattern is pinned and no game spawns", func(t *testing.T) {

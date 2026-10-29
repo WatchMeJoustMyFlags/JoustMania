@@ -64,7 +64,7 @@ func TestProposeOnce_PromptCarriesCatalogDescriptions(t *testing.T) {
 	for _, want := range []string{
 		"  - death_grace_period_seconds: seconds a player cannot die after swapping team, turning zombie or respawning (variants ",
 		"; range 0 to 5)",
-		"  - invincibility_seconds: seconds Tournament and Fight Club fighters cannot lose",
+		"  - fight_club.round_seconds: length of one Fight Club round in seconds",
 	} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("UC-042/BR-008 proposer prompt lacks %q:\n%s", want, sys)

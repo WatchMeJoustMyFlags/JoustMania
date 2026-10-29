@@ -82,7 +82,7 @@ const (
 // UC: UC-043 A1
 func TestParseExperimentSeed(t *testing.T) {
 	valid := func(extra map[string]any) map[string]any {
-		m := map[string]any{"flag": "invincibility_seconds", "value": 4.5}
+		m := map[string]any{"flag": "nonstop.respawn_seconds", "value": 4.5}
 		for k, v := range extra {
 			m[k] = v
 		}
@@ -100,7 +100,7 @@ func TestParseExperimentSeed(t *testing.T) {
 		if kind != seedValid {
 			t.Fatalf("kind = %v (%s), want seedValid", kind, reason)
 		}
-		if in.FlagKey != "invincibility_seconds" || in.ExperimentalValue != 4.5 || in.Objective != "endurance" || in.TargetNPerArm != 8 || in.Hypothesis != "h" {
+		if in.FlagKey != "nonstop.respawn_seconds" || in.ExperimentalValue != 4.5 || in.Objective != "endurance" || in.TargetNPerArm != 8 || in.Hypothesis != "h" {
 			t.Fatalf("intent = %+v", in)
 		}
 	})
@@ -151,15 +151,15 @@ func TestParseExperimentSeed(t *testing.T) {
 // UC: UC-043 A1
 func TestMaybeDeclareSeed_Latch(t *testing.T) {
 	ctx := context.Background()
-	seedA := testSeed("invincibility_seconds", 6.0, 50)
-	seedB := testSeed("invincibility_seconds", 5.0, 50)
+	seedA := testSeed("nonstop.respawn_seconds", 6.0, 50)
+	seedB := testSeed("nonstop.respawn_seconds", 5.0, 50)
 
 	t.Run("UC-070/BR-007 a seed value is declared once, not again on the next tick", func(t *testing.T) {
 		s := newSeedLoop(t)
 		s.set(true, seedA)
 		s.allocateIfEnabled(ctx)
 		s.allocateIfEnabled(ctx)
-		if _, ok := s.registry.ActiveFlags()["invincibility_seconds"]; !ok || s.registry.LiveCount() != 1 {
+		if _, ok := s.registry.ActiveFlags()["nonstop.respawn_seconds"]; !ok || s.registry.LiveCount() != 1 {
 			t.Fatalf("active = %v, want the one seed experiment", s.registry.ActiveFlags())
 		}
 		if n := s.logs.count(logSeedDeclared); n != 1 {
@@ -297,7 +297,7 @@ func TestMaybeDeclareSeed_Latch(t *testing.T) {
 			{"objective": "chaos"}, {"objective": "fastest"}, {"target_n": -3.0},
 			{"target_n": 2.5}, {"target_n": "8"}, {"hypothesis": 1.0}, {"extra": true},
 		} {
-			v := testSeed("invincibility_seconds", 6.0, 50)
+			v := testSeed("nonstop.respawn_seconds", 6.0, 50)
 			for k, x := range extra {
 				v[k] = x
 			}
@@ -326,13 +326,13 @@ func TestMaybeDeclareSeed_WinsTheBudgetSlot(t *testing.T) {
 	cfg := dynCfg(1)
 	cfg.DynamicCandidates = "sensitivity"
 	cfg.ProposerEnabled = false
-	cfg.Seed = testSeed("invincibility_seconds", 6.0, 50)
+	cfg.Seed = testSeed("nonstop.respawn_seconds", 6.0, 50)
 	loop.configOverride = func(context.Context) flags.ExperimentConfig { return cfg }
 
 	loop.allocateIfEnabled(context.Background())
 
 	got := loop.registry.ActiveFlags()
-	want := map[string]struct{}{"invincibility_seconds": {}}
+	want := map[string]struct{}{"nonstop.respawn_seconds": {}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("UC-070/BR-007 active flags = %v, want only the seed's %v (seed first, budget 1)", got, want)
 	}
@@ -348,7 +348,7 @@ func TestMaybeDeclareSeed_ConcurrentCallersDeclareOnce(t *testing.T) {
 	logs := &lockedBuffer{}
 	loop.log = slog.New(slog.NewTextHandler(logs, nil))
 	cfg := flags.ExperimentConfig{Enabled: true, Tick: time.Hour, ShadowEffectiveConcurrency: 4,
-		Seed: testSeed("invincibility_seconds", 6.0, 50)}
+		Seed: testSeed("nonstop.respawn_seconds", 6.0, 50)}
 	loop.configOverride = func(context.Context) flags.ExperimentConfig { return cfg }
 
 	start := make(chan struct{})
@@ -456,7 +456,7 @@ func jsonEqualRaw(t *testing.T, a, b json.RawMessage) bool {
 // UC: UC-043 A1
 func TestMaybeDeclareSeed_StaleConfigCaller(t *testing.T) {
 	ctx := context.Background()
-	seedA := testSeed("invincibility_seconds", 6.0, 50)
+	seedA := testSeed("nonstop.respawn_seconds", 6.0, 50)
 	off := map[string]any{}
 
 	t.Run("UC-070/BR-007 a stale seed after off is observed is not declared again", func(t *testing.T) {

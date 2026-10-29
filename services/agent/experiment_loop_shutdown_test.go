@@ -143,7 +143,7 @@ func TestUC043_A20_LoopShutdown(t *testing.T) {
 		}
 		loop := buildLoopForTest(t, spawner, resolve, realDef, &recordingGitHub{}, armFitness())
 		id, err := loop.registry.Declare(experiment.Intent{
-			FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+			FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 		})
 		if err != nil {
 			t.Fatalf("declare: %v", err)

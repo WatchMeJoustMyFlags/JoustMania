@@ -961,7 +961,7 @@ func TestDryRunRendersWithoutApplying(t *testing.T) {
 		}
 		version := f.state.Version()
 		before, _, _ := f.state.Snapshot("")
-		res := f.put(WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"),
+		res := f.put(WriteRequest{Set: "game", Flag: "nonstop.respawn_seconds", Value: raw("4"),
 			Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, DryRun: true})
 		if !res.DryRun || len(res.RenderedBefore) == 0 || len(res.Rendered) == 0 {
 			t.Fatalf("dry run result incomplete: %+v", res)
@@ -981,9 +981,9 @@ func TestDryRunRendersWithoutApplying(t *testing.T) {
 	})
 	t.Run("UC-042/main a dry run over an existing value restores it", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
-		f.put(WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}})
+		f.put(WriteRequest{Set: "game", Flag: "nonstop.respawn_seconds", Value: raw("4"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}})
 		before, _, _ := f.state.Snapshot("")
-		f.put(WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("6"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, DryRun: true})
+		f.put(WriteRequest{Set: "game", Flag: "nonstop.respawn_seconds", Value: raw("6"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, DryRun: true})
 		after, _, _ := f.state.Snapshot("")
 		if string(before) != string(after) {
 			t.Fatal("the dry run did not restore the previous value")
@@ -1000,7 +1000,7 @@ func TestDryRunRendersWithoutApplying(t *testing.T) {
 // NFR: NFR-051
 func TestExpireExperiments(t *testing.T) {
 	arm := func(id string) WriteRequest {
-		return WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"), Scope: Scope{ExperimentID: id, Arm: "experimental"}}
+		return WriteRequest{Set: "game", Flag: "nonstop.respawn_seconds", Value: raw("4"), Scope: Scope{ExperimentID: id, Arm: "experimental"}}
 	}
 	t.Run("UC-053/A3 an experiment no game references is dropped after the idle time (NFR-051)", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})

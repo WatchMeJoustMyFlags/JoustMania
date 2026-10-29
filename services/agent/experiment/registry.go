@@ -961,6 +961,16 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 	}
 	if err := r.reassertArmValue(ctx, plan.id); err != nil {
 		r.rollbackPair(plan, 0, nil)
+		// UC-043 A10 step 3 (#2366): the gate refuses the flag as not experimentable
+		// (it left the experiment catalog, e.g. an experiment journaled before an
+		// upgrade and rehydrated after it). No retry can succeed, so end it discarded
+		// (journaled), which frees its slot and its flag; other errors retry next tick.
+		var rej *RejectError
+		if errors.As(err, &rej) && rej.Reason == ReasonNotExperimentable {
+			r.log.Warn("experiment.arm_value_not_experimentable", "experiment_id", plan.id, "error", err)
+			r.teardown(ctx, plan.id, r.flagKeyOf(plan.id), StatusDiscarded, string(ReasonNotExperimentable)+": "+rej.Detail)
+			return 0, true
+		}
 		r.log.Warn("experiment.arm_value_reassert_failed", "experiment_id", plan.id, "error", err)
 		return 0, true
 	}

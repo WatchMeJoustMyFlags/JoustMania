@@ -96,7 +96,7 @@ flags:
   - {set: agent, key: experiment_dynamic_target_n, kind: overlay, scope: [stack], bounds: {range: [0, 1000], integer: true}}
   # The experiment seed (#1907): declared variants only, so every seed is a reviewed variant
   # (TestExperimentSeedVariants checks each against its game key's bounds).
-  - {set: agent, key: experiment_seed, kind: overlay, scope: [stack], bounds: {variants: ["off", windows_frantic, invincibility_4_5]}}
+  - {set: agent, key: experiment_seed, kind: overlay, scope: [stack], bounds: {variants: ["off", windows_frantic]}}
   # Agent tuning migrated from env (#1788, flags.md §15): operator-written, never by the agent.
   - {set: agent, key: inference.backend, kind: overlay, scope: [stack], persist: true, bounds: {variants: [stub, claude]}}
   - {set: agent, key: inference.model, kind: overlay, scope: [stack], bounds: {free_string: true}}
@@ -113,10 +113,10 @@ flags:
   # may change (FR-138) and a promotion may set for real games (W5). Capacity,
   # lobby, team-structure and presentation flags are not in it.
   - {set: game, key: sensitivity, kind: overlay, scope: [stack, experiment+arm, real], persist: true, description: "movement a player survives: 0 ultra_slow (strictest) to 4 ultra_fast (most lenient)"}
-  - {set: game, key: nonstop.time_limit_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 600], integer: true}, description: "Non-Stop Joust game length in seconds; 0 means no time limit"}
-  - {set: game, key: invincibility_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 10]}, description: "seconds Tournament and Fight Club fighters cannot lose at the start of a match or round; 0 = default 4 s"}
-  - {set: game, key: fight_club.min_rounds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 30], integer: true}, description: "Fight Club rounds played before the game can end with one leader"}
-  - {set: game, key: werewolf.reveal_time_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [10, 90]}, description: "seconds into a Werewolf game until the werewolves are revealed"}
+  - {set: game, key: nonstop.time_limit_seconds, kind: overlay, scope: [real], bounds: {range: [0, 600], integer: true}}
+  - {set: game, key: invincibility_seconds, kind: overlay, scope: [real], bounds: {range: [0, 10]}}
+  - {set: game, key: fight_club.min_rounds, kind: overlay, scope: [real], bounds: {range: [1, 30], integer: true}}
+  - {set: game, key: werewolf.reveal_time_seconds, kind: overlay, scope: [real], bounds: {range: [10, 90]}}
   - {set: game, key: death_grace_period_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 5]}, description: "seconds a player cannot die after swapping team, turning zombie or respawning"}
   - {set: game, key: nonstop.respawn_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.5, 10]}, description: "seconds a dead Non-Stop Joust player waits before respawning"}
   - {set: game, key: nonstop.spawn_protection_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 6]}, description: "seconds a respawned Non-Stop Joust player cannot die"}

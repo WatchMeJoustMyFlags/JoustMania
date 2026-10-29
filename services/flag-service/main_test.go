@@ -206,7 +206,7 @@ func TestSweep_ExpiresIdleExperimentValues(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(sub.Close)
-		if _, werr := e.st.Put(state.WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: json.RawMessage("4"),
+		if _, werr := e.st.Put(state.WriteRequest{Set: "game", Flag: "nonstop.respawn_seconds", Value: json.RawMessage("4"),
 			Scope: state.Scope{ExperimentID: "exp_orphan", Arm: "experimental"}, Writer: "agent"}); werr != nil {
 			t.Fatalf("arm write: %v", werr)
 		}

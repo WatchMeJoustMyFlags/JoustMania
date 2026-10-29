@@ -318,7 +318,7 @@ func TestExperimentLoop_EndToEnd_SafeDefault_NoRealWrite(t *testing.T) {
 	loop := buildLoopForTest(t, spawner, resolve, realDef, github, armFitness())
 
 	id, err := loop.registry.Declare(experiment.Intent{
-		FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 	})
 	if err != nil {
 		t.Fatalf("declare: %v", err)
@@ -362,7 +362,7 @@ func TestExperimentLoop_EndToEnd_Autonomous_RealWriteGated(t *testing.T) {
 	loop := buildLoopForTest(t, spawner, resolve, realDef, github, armFitness())
 
 	id, err := loop.registry.Declare(experiment.Intent{
-		FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 	})
 	if err != nil {
 		t.Fatalf("declare: %v", err)
@@ -379,8 +379,8 @@ func TestExperimentLoop_EndToEnd_Autonomous_RealWriteGated(t *testing.T) {
 	if got := realDef.count(); got != 1 {
 		t.Fatalf("autonomous (kill-switch off) should perform exactly 1 real-default write, got %d", got)
 	}
-	if got := realDef.calls[0]; got.flagKey != "invincibility_seconds" || got.value != 6.0 {
-		t.Fatalf("real-default write = %+v, want invincibility_seconds=6.0", got)
+	if got := realDef.calls[0]; got.flagKey != "nonstop.respawn_seconds" || got.value != 6.0 {
+		t.Fatalf("real-default write = %+v, want nonstop.respawn_seconds=6.0", got)
 	}
 }
 
@@ -401,7 +401,7 @@ func TestExperimentLoop_EndToEnd_Autonomous_KillSwitchBlocksRealWrite(t *testing
 	loop := buildLoopForTest(t, spawner, resolve, realDef, github, armFitness())
 
 	id, _ := loop.registry.Declare(experiment.Intent{
-		FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 	})
 	if err := loop.registry.Start(context.Background(), id); err != nil {
 		t.Fatalf("start: %v", err)
@@ -1112,7 +1112,7 @@ func TestExperimentLoop_ProposalSinkDeclaresWithinTheBudget(t *testing.T) {
 	sink := loop.proposalSink()
 
 	ctx := context.Background()
-	if err := sink.Review(ctx, experiment.Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Rationale: "r"}); err != nil {
+	if err := sink.Review(ctx, experiment.Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Rationale: "r"}); err != nil {
 		t.Fatalf("first proposal: %v", err)
 	}
 	if live := loop.registry.Live(); len(live) != 1 {

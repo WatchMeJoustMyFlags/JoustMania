@@ -173,7 +173,7 @@ func TestKillSwitch_ForceEndsPatternGames(t *testing.T) {
 		})
 		lc := &liveConfig{}
 		lc.set(flags.ExperimentConfig{Enabled: true, ShadowEffectiveConcurrency: 2})
-		lc.setSeed(testSeed("invincibility_seconds", 6.0, 50))
+		lc.setSeed(testSeed("nonstop.respawn_seconds", 6.0, 50))
 		var mu sync.Mutex
 		agentEnabled := true
 		loop := &experimentLoop{
@@ -238,7 +238,7 @@ func TestKillSwitch_FlagdUnreachableStopsExperimentLoop(t *testing.T) {
 	loop, spawner, _ := loopForConfigTest(t, 8)
 	ev := &switchableEvaluator{
 		booleans: map[string]bool{"enabled": true, "experiments_enabled": true},
-		objects:  map[string]any{"experiment_seed": testSeed("invincibility_seconds", 6.0, 50)},
+		objects:  map[string]any{"experiment_seed": testSeed("nonstop.respawn_seconds", 6.0, 50)},
 	}
 	loop.flags = flags.New(ev, nil)
 	loop.configOverride = nil

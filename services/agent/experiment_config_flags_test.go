@@ -86,7 +86,7 @@ func loopForConfigTest(t *testing.T, maxShadow int) (*experimentLoop, *recording
 		// Kill-switch ON via the seam so experiments_enabled is the variable under test.
 		enabledOverride: func(context.Context) bool { return true },
 	}
-	lc.setSeed(testSeed("invincibility_seconds", 6.0, 50))
+	lc.setSeed(testSeed("nonstop.respawn_seconds", 6.0, 50))
 	return loop, spawner, lc
 }
 
@@ -168,7 +168,7 @@ func TestExperimentsEnabled_OffOnOff(t *testing.T) {
 	loop.allocateIfEnabled(ctx)
 	lc.setSeed(map[string]any{})
 	loop.allocateIfEnabled(ctx)
-	lc.setSeed(testSeed("invincibility_seconds", 6.0, 50))
+	lc.setSeed(testSeed("nonstop.respawn_seconds", 6.0, 50))
 	lc.set(flags.ExperimentConfig{Enabled: true, ShadowEffectiveConcurrency: 4})
 	loop.allocateIfEnabled(ctx)
 	if got := loop.registry.LiveCount(); got != 1 {
