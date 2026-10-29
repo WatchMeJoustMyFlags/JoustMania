@@ -294,12 +294,11 @@ histogram_quantile(0.95, rate(controller_input_lag_seconds_bucket{serial!="aa:bb
 sum by (adapter, method) (rate(controller_routing_decisions_total[5m]))
 ```
 
-**Discovery cycle split**:
+**Discovery passes** (every pass is a full enumeration, #2352):
 
 ```promql
-# Full enumerations vs verify-only cycles
+# Discovery passes per second (about 1 at the 1 s interval)
 rate(controller_discovery_full_enumerate_total[5m])
-rate(controller_discovery_verify_only_total[5m])
 ```
 
 **Controller state update frequency**:
@@ -505,9 +504,8 @@ rate(controller_routing_decisions_total{method="fallback"}[5m])
 rate(controller_poll_drops_total[5m])
 rate(controller_poll_errors_total[5m])
 
-# Discovery throttle: full vs verify-only cycles
+# Discovery passes
 rate(controller_discovery_full_enumerate_total[5m])
-rate(controller_discovery_verify_only_total[5m])
 
 # Active controller count
 active_controllers_total

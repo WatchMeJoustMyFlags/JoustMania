@@ -34,15 +34,12 @@ class ControllerIOAdapter(ABC):
     def discover(
         self,
         force: bool = False,
-        verify_only: bool = False,
         exclude_serials: list[str] | None = None,
     ) -> list[str]:
         """Scan for available controllers. Returns list of serials.
 
         Args:
             force: Force a full rescan, removing stale devices.
-            verify_only: When True, only verify existing devices are
-                accessible — skip expensive enumeration for new devices.
             exclude_serials: Serials claimed by another adapter — the adapter
                 should avoid opening HID handles for these devices.
 

@@ -90,7 +90,6 @@ class PythonHidAdapter(HidStreamMixin, ControllerIOAdapter):
     def discover(
         self,
         force: bool = False,
-        verify_only: bool = False,
         exclude_serials: list[str] | None = None,
     ) -> list[str]:
         from proto import psmove_hid_pb2
@@ -101,7 +100,6 @@ class PythonHidAdapter(HidStreamMixin, ControllerIOAdapter):
             response = self._stub.Discover(
                 psmove_hid_pb2.DiscoverRequest(
                     force=force,
-                    verify_only=verify_only,
                     exclude_serials=exclude_serials or [],
                 ),
                 timeout=RPC_TIMEOUT_S,

@@ -162,7 +162,7 @@ class TestDelegation:
         inner = _inner()
         adapter = UnstableAdapter(inner)
         assert adapter.discover(force=True, exclude_serials=["X"]) == ["AA:AA"]
-        inner.discover.assert_called_once_with(force=True, verify_only=False, exclude_serials=["X"])
+        inner.discover.assert_called_once_with(force=True, exclude_serials=["X"])
 
     def test_open_delegates(self):
         inner = _inner()

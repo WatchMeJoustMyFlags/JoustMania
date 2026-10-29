@@ -120,12 +120,10 @@ class UnstableAdapter(ControllerIOAdapter):
     def discover(
         self,
         force: bool = False,
-        verify_only: bool = False,
         exclude_serials: list[str] | None = None,
     ) -> list[str]:
         return self._inner.discover(
             force=force,
-            verify_only=verify_only,
             exclude_serials=exclude_serials,
         )
 
