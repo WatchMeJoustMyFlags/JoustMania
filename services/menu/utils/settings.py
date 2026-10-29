@@ -45,16 +45,3 @@ def get_next_game_mode(current: Games, forward: bool = True) -> Games:
 
     # Convert back to Games enum
     return Games.from_name(next_name) or DEFAULT_GAME_MODE
-
-
-def is_valid_game_mode(game_mode: Games) -> bool:
-    """
-    Check if a game mode is valid.
-
-    Args:
-        game_mode: Games enum value
-
-    Returns:
-        True if valid
-    """
-    return game_mode.name in GAME_MODES

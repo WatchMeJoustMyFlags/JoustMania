@@ -1,13 +1,15 @@
 """Unit tests for IdleMonitor and IdleHandler."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
 from services.menu.handlers.base import ControllerState
 from services.menu.handlers.idle import IdleHandler
 from services.menu.idle_monitor import IdleMonitor, _hsv_to_rgb
+from services.menu.state_manager import StateManager
+from services.menu.utils import LedController
 
 # --- Fixtures ---
 
@@ -15,22 +17,21 @@ from services.menu.idle_monitor import IdleMonitor, _hsv_to_rgb
 @pytest.fixture
 def mock_led():
     """Create mock LedController."""
-    led = MagicMock()
-    led.set_color = AsyncMock(return_value=True)
-    led.set_connected_color = AsyncMock(return_value=True)
+    led = create_autospec(LedController, instance=True)
+    led.set_color.return_value = True
+    led.set_connected_color.return_value = True
     return led
 
 
 @pytest.fixture
 def mock_state_manager(mock_led):
     """Create mock StateManager with idle-relevant attributes."""
-    sm = MagicMock()
+    sm = create_autospec(StateManager, instance=True)
     sm.led = mock_led
     sm.controller_states = {}
     sm.battery_levels = {}
     sm.current_game_mode = MagicMock()
     sm.current_game_mode.name = "JoustFFA"
-    sm.transition_to = AsyncMock()
     return sm
 
 

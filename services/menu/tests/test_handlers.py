@@ -311,14 +311,12 @@ class TestReadyHandler:
         """Create mock StateManager."""
         from lib.types import Games
 
-        manager = MagicMock()
-        manager.led = MagicMock()
-        manager.led.set_ready_color = AsyncMock()
-        manager.transition_to = AsyncMock()
+        manager = create_autospec(StateManager, instance=True)
+        manager.led = create_autospec(LedController, instance=True)
         manager.current_game_mode = Games.JoustFFA
-        manager.all_ready = MagicMock(return_value=False)
-        manager.get_ready_count = MagicMock(return_value=1)
-        manager.get_connected_count = MagicMock(return_value=2)
+        manager.all_ready.return_value = False
+        manager.get_ready_count.return_value = 1
+        manager.get_connected_count.return_value = 2
         return manager
 
     def test_state_property(self, handler):

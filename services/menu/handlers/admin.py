@@ -185,7 +185,6 @@ class AdminModeHandler:
         self._timeout_seconds = 60
 
         # Trigger hold tracking for force start
-        self._trigger_press_time: float | None = None
         self._trigger_hold_task: asyncio.Task | None = None
         # True while handle_force_start runs past its hold: exit/abandon from another path must not kill it.
         self._force_starting = False
@@ -271,20 +270,6 @@ class AdminModeHandler:
     # Helper properties for StateManager access
 
     @property
-    def _connected_controllers(self) -> set[str]:
-        """Get connected controllers from StateManager."""
-        if self._state_manager is None:
-            return set()
-        return self._state_manager.connected_controllers
-
-    @property
-    def _ready_controllers(self) -> set[str]:
-        """Get ready controllers from StateManager."""
-        if self._state_manager is None:
-            return set()
-        return self._state_manager.ready_controllers
-
-    @property
     def _current_game_mode(self) -> str:
         """Get current game mode name from StateManager."""
         if self._state_manager is None:
@@ -328,12 +313,6 @@ class AdminModeHandler:
         """Play a voice line without awaiting it (it may overlap later feedback); errors are logged."""
         run_detached(self._play_voice(sound), tasks=self._voice_tasks, what=f"Voice line {sound}")
 
-    async def _play_sound(self, sound: Sound) -> None:
-        """Play sound effect via StateManager's audio helper."""
-        if self._state_manager is None:
-            return
-        await self._state_manager.audio.play_sound(sound)
-
     # Original properties
 
     @property
@@ -365,23 +344,6 @@ class AdminModeHandler:
             and button_state.get("circle", False)
             and button_state.get("square", False)
             and button_state.get("triangle", False)
-        )
-
-    def check_combo_from_controller(self, controller) -> bool:
-        """
-        Check if admin combo is being held based on controller object.
-
-        Args:
-            controller: Controller protobuf message with button fields
-
-        Returns:
-            True if all 4 face buttons (Cross + Circle + Square + Triangle) are pressed
-        """
-        return (
-            controller.cross_pressed
-            and controller.circle_pressed
-            and controller.square_pressed
-            and controller.triangle_pressed
         )
 
     def _get_span_context(self):
@@ -612,8 +574,6 @@ class AdminModeHandler:
         if self._trigger_hold_task and not self._trigger_hold_task.done():
             self._trigger_hold_task.cancel()
 
-        self._trigger_press_time = time.time()
-
         # Start the dimming effect
         await self.start_force_start_effect(serial)
 
@@ -658,8 +618,6 @@ class AdminModeHandler:
 
             # Cancel the dimming effect and restore white
             await self.cancel_force_start_effect(serial)
-
-        self._trigger_press_time = None
 
     async def handle_game_mode(self, serial: str) -> None:
         """
@@ -732,76 +690,6 @@ class AdminModeHandler:
 
             except Exception as e:
                 logger.error(f"Error changing game mode: {e}", exc_info=True)
-
-    async def handle_game_mode_change(self, serial: str, forward: bool = True) -> None:
-        """
-        Change game mode from admin mode.
-
-        Only available in admin mode to prevent accidental game changes.
-
-        Args:
-            serial: Controller serial number
-            forward: True to go forward through modes, False to go backward
-        """
-        from proto import controller_manager_pb2
-
-        ctx = self._get_span_context()
-        with self.tracer.start_as_current_span("admin_game_mode_change", context=ctx) as span:
-            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
-            span.set_attribute("direction", "forward" if forward else "backward")
-
-            try:
-                game_options = self.callbacks.get_game_options()
-                current_selection = self._current_game_mode
-
-                if not game_options:
-                    logger.warning("No game options available for mode change")
-                    return
-
-                # Find current index
-                try:
-                    current_idx = game_options.index(current_selection)
-                except ValueError:
-                    current_idx = 0
-
-                # Calculate new index
-                new_idx = (current_idx + 1) % len(game_options) if forward else (current_idx - 1) % len(game_options)
-
-                new_selection = game_options[new_idx]
-
-                span.set_attribute("old_selection", current_selection)
-                span.set_attribute("new_selection", new_selection)
-
-                # Actually apply the selection through the menu so the coordinator
-                # start path (and the dashboard) see it — not just a fire-and-forget
-                # event nobody consumes (#1030). Route through the same working path
-                # as handle_game_mode so a future re-wiring (e.g. a backward-cycle
-                # button) can't silently reintroduce the dead-application bug.
-                await self.callbacks.select_game_mode(new_selection)
-
-                # Mirror the selection as an event for any listeners (dashboard).
-                await self._publish_event(
-                    "game_selection_changed",
-                    {"game_name": new_selection, "source": "admin_mode", "serial": serial},
-                )
-
-                # Visual feedback: brief color pulse (green for forward, blue for backward)
-                # GAME_EFFECT_PULSE restores to base color automatically
-                pulse_color = (0, 255, 0) if forward else (0, 0, 255)
-                await self._send_game_effect(
-                    serial,
-                    controller_manager_pb2.GAME_EFFECT_PULSE,
-                    color=pulse_color,
-                    duration_ms=400,
-                    speed=6,
-                )
-
-            except Exception as e:
-                logger.error(f"Error changing game mode: {e}", exc_info=True)
-
-    async def _prune_ghosts_with_live_roster(self, controllers: list[str], admin_serial: str, span) -> list[str]:
-        """Drop ghost controllers using the CM live roster (#1153); keeps the admin serial (settings_ops)."""
-        return await self.settings_ops.prune_ghosts(controllers, admin_serial, span)
 
     async def handle_force_start(self, serial: str) -> None:
         """Force start the game; a start already past its hold is not cancelled by exit/abandon (#2377)."""
@@ -1552,17 +1440,6 @@ class AdminModeHandler:
                 await self._play_voice(voice)
         except Exception as e:
             logger.error(f"Error playing value voice: {e}", exc_info=True)
-
-    def reset_on_disconnect(self, serial: str) -> None:
-        """
-        Reset admin mode state when the admin controller disconnects.
-
-        Args:
-            serial: Serial of the disconnected controller
-        """
-        if self.active and serial == self.controller_serial:
-            logger.info(f"Admin controller {serial} disconnected, resetting admin mode")
-            self.abandon_session(span_attribute="disconnect")
 
     def abandon_session(self, span_attribute: str = "abandoned") -> None:
         """
