@@ -40,6 +40,9 @@ tower = "0.5"
 # HTTP types (Request, Response, HeaderMap) used by tower tracing layer
 http = "1"
 
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.33", features = ["testing"] }
+
 [profile.release]
 strip = true
 

@@ -598,10 +598,12 @@ pub fn read_latest_input<D: HidDeviceIo>(device: &D, zcm2: bool) -> InputDrain {
     let mut buttons_seen: u32 = 0;
     let mut buf = [0u8; INPUT_REPORT_SIZE];
     let mut read_failed = false;
+    let mut reports_read: u32 = 0;
 
     loop {
         match device.read(&mut buf) {
             Ok(len) if len >= INPUT_REPORT_SIZE => {
+                reports_read += 1;
                 if let Ok(report) = parse_input_report(&buf, zcm2) {
                     buttons_seen |= report.buttons;
                     latest = Some(report);
@@ -621,6 +623,7 @@ pub fn read_latest_input<D: HidDeviceIo>(device: &D, zcm2: bool) -> InputDrain {
             report
         }),
         read_failed,
+        reports_read,
     }
 }
 
@@ -631,6 +634,8 @@ pub struct InputDrain {
     pub report: Option<ParsedInputReport>,
     /// The drain ended on a read error.
     pub read_failed: bool,
+    /// Full-size reports read in this drain (the latest one is kept, the rest dropped).
+    pub reports_read: u32,
 }
 
 #[cfg(test)]

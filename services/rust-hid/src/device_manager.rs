@@ -199,6 +199,7 @@ fn run_device_loop<B: HidBackend>(
 
     loop {
         heartbeat.beat();
+        let pass_started = std::time::Instant::now();
 
         // Process pending commands (non-blocking), at most MAX_CMDS_PER_PASS per
         // pass, so a flood of commands cannot starve the poll or the heartbeat
@@ -233,6 +234,8 @@ fn run_device_loop<B: HidBackend>(
                 stream = None;
             }
         }
+
+        crate::metrics::record_pass(pass_started.elapsed());
 
         // Brief sleep to avoid busy-waiting (~1 kHz poll rate)
         std::thread::sleep(POLL_INTERVAL);
@@ -487,6 +490,7 @@ fn poll_all_devices<D: HidDeviceIo>(
         };
         let drain = hid::read_latest_input(&*device, zcm2);
         drop(device);
+        crate::metrics::record_drain(serial, u64::from(drain.reports_read));
         if drain.read_failed && !entry.read_failed {
             info!(serial = %serial, "Read failed, dropping the controller on the next discovery");
             entry.read_failed = true;

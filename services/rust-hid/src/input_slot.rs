@@ -64,6 +64,7 @@ impl InputSink {
             match state.pending.iter_mut().find(|s| s.serial == serial) {
                 Some(waiting) => {
                     report.buttons |= waiting.report.buttons;
+                    crate::metrics::record_slot_replacement();
                     waiting.report = report;
                 }
                 None => state.pending.push(StreamSensorData {
