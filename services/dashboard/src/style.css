@@ -273,8 +273,14 @@ body {
   box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
 }
 
+.controller-name {
+  font-size: 1rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .controller-id {
-  font-size: 0.9rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-secondary);
 }

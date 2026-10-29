@@ -32,6 +32,8 @@ export function ledColorCss(color: Partial<Pick<RGB, "r" | "g" | "b">> | undefin
 export class ControllerCard {
   readonly element: HTMLElement;
   private readonly serial: string;
+  private readonly nameElement: HTMLElement;
+  private readonly idElement: HTMLElement;
   private readonly ledElement: HTMLElement;
   private readonly batteryElement: HTMLElement;
   private readonly accelDot: HTMLElement;
@@ -53,6 +55,10 @@ export class ControllerCard {
     this.serial = serial;
     this.element = this.createElement();
 
+    this.nameElement = this.element.querySelector(".controller-name")!;
+    this.idElement = this.element.querySelector(".controller-id")!;
+    this.idElement.textContent = `P${this.getShortId()}`;
+    this.setName(undefined);
     this.ledElement = this.element.querySelector(".led-color")!;
     this.batteryElement = this.element.querySelector(".battery-level")!;
     this.accelDot = this.element.querySelector(".accel-dot")!;
@@ -111,7 +117,8 @@ export class ControllerCard {
     const card = document.createElement("div");
     card.className = "controller-card connected";
     card.innerHTML = `
-      <div class="controller-id">P${this.getShortId()}</div>
+      <div class="controller-name"></div>
+      <div class="controller-id"></div>
       <div class="led-color"></div>
       <div class="battery-bar">
         <div class="battery-level high" style="width: 100%"></div>
@@ -136,6 +143,12 @@ export class ControllerCard {
     return card;
   }
 
+  /** UC-004 BR-007: the name is the title (text only, never HTML); empty falls back to P<short id>. */
+  private setName(name: string | undefined) {
+    const title = name ? name : `P${this.getShortId()}`;
+    if (this.nameElement.textContent !== title) this.nameElement.textContent = title;
+  }
+
   private getShortId(): string {
     // Use last 4 characters of serial as short ID
     return this.serial.slice(-4);
@@ -149,6 +162,7 @@ export class ControllerCard {
   ) {
     // Proto3 JSON omits zero scalars: default them so nothing renders as NaN (#1604)
     const data = normalizeGameplay(frame);
+    this.setName(frame.name);
     // Update LED color: the colour last written to the LED (shield fade included, #1301)
     this.updateLedColor(data.color);
 
