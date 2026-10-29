@@ -33,7 +33,7 @@ var (
 
 // coordinatorModeFiles returns, per game mode of the coordinator's _GAME_CLASSES
 // (game_factory.py), the games/*.py files its class hierarchy runs: the mode's own
-// module and every base class module up to and including base.py.
+// module and every base class module up to and including base.py and its mixin shields.py.
 func coordinatorModeFiles(t *testing.T) map[string]map[string]bool {
 	t.Helper()
 	gamesDir := filepath.Join("..", "game_coordinator", "games")
@@ -60,7 +60,8 @@ func coordinatorModeFiles(t *testing.T) map[string]map[string]bool {
 	modes := map[string]map[string]bool{}
 	for _, m := range factoryEntry.FindAllStringSubmatch(string(factory), -1) {
 		mode, class := m[1], m[3]
-		path := map[string]bool{"base.py": true}
+		// shields.py holds BaseGameMode's ShieldMixin (#2360): it runs in every mode, as base.py does.
+		path := map[string]bool{"base.py": true, "shields.py": true}
 		for c := class; c != ""; c = classBase[c] {
 			if f, ok := classFile[c]; ok {
 				path[f] = true

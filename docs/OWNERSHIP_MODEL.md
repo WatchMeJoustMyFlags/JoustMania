@@ -248,7 +248,7 @@ There are **three** distinct grace mechanisms, and they must not be conflated:
 |---|---|---|---|
 | Spawn / post-death grace | Game logic | `player.grace_until` (`BaseGameMode`) | Death respawn, spawn protection |
 | Round-start invincibility | Human baseline | `player.invincible_until` (Fight Club / Tournament only) | `invincibility_seconds` -> `_invincibility_duration`, applied at round/match start ([`fight_club.py`](../services/game_coordinator/games/fight_club.py), [`tournament.py`](../services/game_coordinator/games/tournament.py)) |
-| Agent shield | Agent | `player.grace_until` (`BaseGameMode`) | `shield_seconds` -> `grant_shield` ([`base.py`](../services/game_coordinator/games/base.py)) |
+| Agent shield | Agent | `player.grace_until` (`BaseGameMode`) | `shield_seconds` -> `grant_shield` ([`shields.py`](../services/game_coordinator/games/shields.py)) |
 
 Human invincibility uses a **mode-local** field (`invincible_until`), while the agent
 shield extends the **mode-agnostic** `grace_until` on the base class. They are
@@ -354,7 +354,7 @@ LED color (red = off / Turquoise / Orange / green = full) and a voice line.
 | Agent write path | [`services/agent/actions/writer.go`](../services/agent/actions/writer.go) |
 | Agent guardrails | [`services/game_coordinator/interventions.py`](../services/game_coordinator/interventions.py) |
 | Sensitivity contention | [`services/game_coordinator/difficulty_handlers.py`](../services/game_coordinator/difficulty_handlers.py), [`base.py` `_compute_effective_thresholds`](../services/game_coordinator/games/base.py) |
-| Grace / shield | [`services/game_coordinator/lifecycle_handlers.py`](../services/game_coordinator/lifecycle_handlers.py), [`base.py` `grant_shield`](../services/game_coordinator/games/base.py), [`fight_club.py`](../services/game_coordinator/games/fight_club.py), [`tournament.py`](../services/game_coordinator/games/tournament.py) |
+| Grace / shield | [`services/game_coordinator/lifecycle_handlers.py`](../services/game_coordinator/lifecycle_handlers.py), [`shields.py` `grant_shield`](../services/game_coordinator/games/shields.py), [`fight_club.py`](../services/game_coordinator/games/fight_club.py), [`tournament.py`](../services/game_coordinator/games/tournament.py) |
 | Flag domains | read-only baseline [`services/flagd/`](../services/flagd/) (`game.json`, `user.json`, `interventions.json`, `agent.json`); mutable-flag registry [`services/flag-service/registry.yaml`](../services/flag-service/registry.yaml) ([flags.md §13](specs/flags.md#13-mutable-flag-registry)) |
 
 ## See Also
