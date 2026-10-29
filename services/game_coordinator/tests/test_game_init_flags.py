@@ -3,7 +3,7 @@
 import dataclasses
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -15,6 +15,7 @@ from services.game_coordinator.games import base
 from services.game_coordinator.games.base import DEATH_GRACE_PERIOD, GAME_VOLUME, SLOW_MAX
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.flag_snapshot import GameInitFlags, MusicWindows
+from services.game_coordinator.runtime_config import RuntimeConfigManager
 
 
 def _make_ffa():
@@ -25,7 +26,7 @@ def _raw(**overrides):
     raw = {
         "thresholds": {},
         "ema_weight": 4.0,
-        "death_grace_period": DEATH_GRACE_PERIOD,
+        "death_grace_period_seconds": DEATH_GRACE_PERIOD,
         "death_grace_default": DEATH_GRACE_PERIOD,
         "windows": {},
         "tempo_schedule_mode": "rule",
@@ -47,20 +48,24 @@ def test_malformed_raw_values_give_the_defaults():
     snapshot = GameInitFlags.from_raw(
         **_raw(
             thresholds="junk",
-            death_grace_period=-1.0,
+            death_grace_period_seconds=-1.0,
             windows=[1],
             tempo_schedule_mode="random",
         )
     )
     assert snapshot.slow_max == tuple(SLOW_MAX)
-    assert snapshot.death_grace_period == DEATH_GRACE_PERIOD
+    assert snapshot.death_grace_period_seconds == DEATH_GRACE_PERIOD
     assert snapshot.music_windows == MusicWindows.defaults()
     assert snapshot.tempo_schedule_mode == "rule"
 
 
 def test_game_attributes_start_from_one_snapshot_read_once():
     """Each init flag is read exactly once through the patchable readers on base."""
+    manager = create_autospec(RuntimeConfigManager, instance=True)
+    manager.read_ema_weight.return_value = 3.0
     with (
+        patch.object(base, "get_config_manager", autospec=True, return_value=manager) as get_manager,
+        patch.object(base, "_read_volume_flag", return_value=0.5) as volumes,
         patch.object(base, "read_object_flag", return_value={}) as objects,
         patch.object(base, "read_float_flag", return_value=0.25) as floats,
         patch.object(base, "read_string_flag", return_value="agent") as strings,
@@ -69,6 +74,9 @@ def test_game_attributes_start_from_one_snapshot_read_once():
     assert [c.args[1] for c in objects.call_args_list] == ["thresholds", "windows"]
     assert [c.args[1] for c in floats.call_args_list] == ["death_grace_period_seconds"]
     assert [c.args[1] for c in strings.call_args_list] == ["tempo_schedule_mode"]
-    assert game.death_grace_period == game.init_flags.death_grace_period == 0.25
+    assert get_manager.call_count == 1
+    manager.read_ema_weight.assert_called_once_with()
+    assert [c.args[0] for c in volumes.call_args_list] == ["audio_volume.game", "audio_volume.countdown_music"]
+    assert game.death_grace_period == game.init_flags.death_grace_period_seconds == 0.25
     assert game.tempo_schedule_mode == game.init_flags.tempo_schedule_mode == "agent"
     assert game.music_windows is game.init_music_windows is game.init_flags.music_windows

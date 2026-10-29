@@ -432,7 +432,7 @@ class GameInitFlags:
     fast_warning: tuple[float, ...]
     fast_max: tuple[float, ...]
     ema_weight: float
-    death_grace_period: float
+    death_grace_period_seconds: float
     music_windows: MusicWindows
     tempo_schedule_mode: str
     game_volume: float
@@ -444,7 +444,7 @@ class GameInitFlags:
         *,
         thresholds: Any,
         ema_weight: float,
-        death_grace_period: Any,
+        death_grace_period_seconds: Any,
         death_grace_default: float,
         windows: Any,
         tempo_schedule_mode: Any,
@@ -459,7 +459,7 @@ class GameInitFlags:
             fast_warning=tuple(tables["fast_warning"]),
             fast_max=tuple(tables["fast_max"]),
             ema_weight=ema_weight,
-            death_grace_period=resolve_non_negative_duration(death_grace_period, death_grace_default),
+            death_grace_period_seconds=resolve_non_negative_duration(death_grace_period_seconds, death_grace_default),
             music_windows=resolve_music_windows(windows),
             tempo_schedule_mode=resolve_tempo_schedule_mode(tempo_schedule_mode),
             game_volume=game_volume,

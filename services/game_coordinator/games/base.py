@@ -831,7 +831,7 @@ class BaseGameMode(ShieldMixin, ABC):
         self.init_flags = GameInitFlags.from_raw(
             thresholds=read_object_flag("game", "thresholds", {}, game_id=self.game_id),
             ema_weight=get_config_manager().read_ema_weight(),
-            death_grace_period=read_float_flag(
+            death_grace_period_seconds=read_float_flag(
                 "game", "death_grace_period_seconds", DEATH_GRACE_PERIOD, game_id=self.game_id
             ),
             death_grace_default=DEATH_GRACE_PERIOD,
@@ -847,7 +847,7 @@ class BaseGameMode(ShieldMixin, ABC):
         self.fast_warning = list(self.init_flags.fast_warning)
         self.fast_max = list(self.init_flags.fast_max)
         self._ema_weight = self.init_flags.ema_weight
-        self.death_grace_period = self.init_flags.death_grace_period
+        self.death_grace_period = self.init_flags.death_grace_period_seconds
         # F6 (#766): the live ``pacing_profile`` intervention swaps ``self.music_windows``
         # atomically; ``init_music_windows`` is the restore target, never reassigned.
         self.music_windows = self.init_flags.music_windows
