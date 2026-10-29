@@ -648,6 +648,8 @@ class DiscoveryLoop:
                 # UnstableAdapter throttle window) is NOT a new movement update.
                 # A tap-latch copy (press_latch.LatchedState) is judged by the real sample it copies,
                 # so the copy is neither a fresh frame nor makes the next poll look like one (#2352 B3).
+                # id() is only safe while the previous sample stays referenced (controller_states[serial], directly or
+                # via LatchedState.sample, and the adapter's _last_state); dropping or copying them would reuse ids.
                 obj_id = id(getattr(state, "sample", state))
                 if record.hw_last_obj_id != obj_id:
                     record.hw_last_obj_id = obj_id
