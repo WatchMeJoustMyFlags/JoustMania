@@ -55,7 +55,7 @@ export function createPoller(opts: PollerOptions): Poller {
     inFlight = true;
     const controller = new AbortController();
     const abortTimer = setTimeout(() => controller.abort(), opts.timeoutMs);
-    const started = Date.now();
+    const started = performance.now();
     let ok = false;
     let minNextMs = 0;
     try {
@@ -68,7 +68,7 @@ export function createPoller(opts: PollerOptions): Poller {
       clearTimeout(abortTimer);
       inFlight = false;
     }
-    const fast = Date.now() - started <= slowMs;
+    const fast = performance.now() - started <= slowMs;
     delayMs = ok && fast ? opts.baseMs : Math.min(delayMs * 2, opts.maxMs);
     const wait = Math.max(delayMs, minNextMs);
     schedule(wait);

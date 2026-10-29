@@ -16,11 +16,11 @@ describe("UC-035: main step 2, agent-shield badge with countdown", () => {
     store.apply({
       eventType: "player_shielded",
       data: { serial: "MOCK0001", kind: "full", seconds: "5.0", until_ms: String(NOW + 5000) },
-    });
+    }, NOW, NOW);
 
-    expect(shieldBadge(store.get("MOCK0001", NOW), NOW)?.text).toBe("Shield 5.0s");
-    expect(shieldBadge(store.get("MOCK0001", NOW + 3000), NOW + 3000)?.text).toBe("Shield 2.0s");
-    expect(shieldBadge(store.get("MOCK0001", NOW + 5000), NOW + 5000)).toBeNull();
+    expect(shieldBadge(store.get("MOCK0001", NOW, NOW), NOW, NOW)?.text).toBe("Shield 5.0s");
+    expect(shieldBadge(store.get("MOCK0001", NOW + 3000, NOW + 3000), NOW + 3000, NOW + 3000)?.text).toBe("Shield 2.0s");
+    expect(shieldBadge(store.get("MOCK0001", NOW + 5000, NOW + 5000), NOW + 5000, NOW + 5000)).toBeNull();
   });
 
   it("UC-035 main step 2 a controller with no shield shows no badge", () => {

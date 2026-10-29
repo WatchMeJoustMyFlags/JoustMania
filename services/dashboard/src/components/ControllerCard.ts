@@ -211,10 +211,13 @@ export class ControllerCard {
       this.adapterElement.hidden = true;
       return;
     }
+    const title = stale ? `Bluetooth adapter ${adapter} (stale: VictoriaMetrics unreachable)` : `Bluetooth adapter ${adapter}`;
+    // Called with every controller frame (30 Hz): touch the DOM only on a change (#2387).
+    if (!this.adapterElement.hidden && this.adapterElement.textContent === adapter && this.adapterElement.title === title) return;
     this.adapterElement.hidden = false;
     this.adapterElement.textContent = adapter;
     this.adapterElement.classList.toggle("stale", stale);
-    this.adapterElement.title = stale ? `Bluetooth adapter ${adapter} (stale: VictoriaMetrics unreachable)` : `Bluetooth adapter ${adapter}`;
+    this.adapterElement.title = title;
   }
 
   private updateQuality(quality: ConnectionQuality | undefined) {

@@ -24,7 +24,7 @@ import type {
   ProcessInputResponse,
 } from "./gen/menu_pb.js";
 import type { GetGameStateResponseLike, ListGamesResponseLike } from "./follow.js";
-import { serverStream as connectServerStream } from "./connect.js";
+import { serverStream as connectServerStream, unaryRpcError } from "./connect.js";
 
 const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
 
@@ -46,7 +46,7 @@ async function unaryCall<Req, Res>(
   });
 
   if (!response.ok) {
-    throw new Error(`RPC failed: ${response.status} ${response.statusText}`);
+    throw await unaryRpcError(response);
   }
 
   return response.json();
