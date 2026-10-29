@@ -1702,6 +1702,47 @@ func TestArmValueRewriteFailureReleasesAndRetries(t *testing.T) {
 	})
 }
 
+// TestArmValueTransientRejectionsKeepRunningAndRetry: only not_experimentable
+// discards; read_error and write_simulation_error are transient and retry.
+// UC: UC-043 A10
+func TestArmValueTransientRejectionsKeepRunningAndRetry(t *testing.T) {
+	for _, reason := range []Reason{ReasonReadError, ReasonWriteSimulationError} {
+		t.Run("UC-043/A10 a "+string(reason)+" rejection is transient: stays running, retries next tick", func(t *testing.T) {
+			targeting := &reassertTargeting{reassertErr: &RejectError{Reason: reason, Detail: "transient (test)"}}
+			spawner := &fakeSpawner{}
+			r := newTestRegistry(t, RegistryConfig{
+				MaxShadowGames: 2,
+				Spawner:        spawner,
+				Targeting:      targeting,
+				Verdict:        fakeVerdict{concludeAtN: 1000},
+			})
+			ctx := context.Background()
+			id, err := r.Declare(sampleIntent())
+			if err != nil {
+				t.Fatalf("Declare: %v", err)
+			}
+			if err := r.Start(ctx, id); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			for i := 0; i < 2; i++ {
+				if n := r.AllocateAndSpawn(ctx); n != 0 {
+					t.Fatalf("tick %d spawned %d games, want 0", i, n)
+				}
+				if st, _ := r.Status(id); st != StatusRunning {
+					t.Fatalf("tick %d: status = %v, want running (not discarded)", i, st)
+				}
+				if got := r.TotalInFlight(); got != 0 {
+					t.Fatalf("tick %d: in flight = %d, want released", i, got)
+				}
+			}
+			targeting.setReassertErr(nil)
+			if n := r.AllocateAndSpawn(ctx); n != 2 {
+				t.Fatalf("tick after recovery spawned %d games, want the pair (2)", n)
+			}
+		})
+	}
+}
+
 // TestRehydratedExperimentOnRemovedCatalogKeyIsDiscarded: an experiment journaled
 // live on a flag that later left the experiment catalog (#2366 removed four keys)
 // is rehydrated after the upgrade. Its arm-value rewrite is refused as
