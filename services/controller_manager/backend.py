@@ -33,20 +33,6 @@ class ControllerBackend(ABC):
         pass
 
     @abstractmethod
-    async def scan_controllers(self) -> list[dict]:
-        """
-        Scan for available controllers.
-
-        Returns:
-            List of controller info dicts with keys:
-            - address: Bluetooth MAC address
-            - serial: Controller serial number
-            - name: Device name
-            - paired: Whether already paired (optional)
-        """
-        pass
-
-    @abstractmethod
     async def get_controller_state(self, serial: str) -> dict | None:
         """
         Get current state of a controller.

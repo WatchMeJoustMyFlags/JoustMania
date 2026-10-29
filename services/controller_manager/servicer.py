@@ -75,7 +75,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # per-frame path skips the labels() lookup (same idea as _accel_gauges, #542).
         self._input_lag_histograms: dict[str, Any] = {}
         self.paired_serials: list[str] = []
-        self.controller_processes: dict[str, Any] = {}  # serial -> process (for cleanup)
 
         # Note: state_lock removed - no longer needed with async discovery loop
         # All operations run on the same event loop, so no cross-thread coordination required
@@ -906,12 +905,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         # Stop discovery loop
         self.discovery_loop.stop()
-
-        # Stop all controller processes
-        for _serial, proc in self.controller_processes.items():
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(timeout=2.0)
 
         await self.discovery_loop.wait_stopped(timeout_seconds=5.0)
 

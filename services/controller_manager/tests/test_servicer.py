@@ -421,30 +421,6 @@ class TestServicerShutdown:
         servicer.discovery_loop.stop.assert_called_once()
         servicer.discovery_loop.wait_stopped.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_shutdown_terminates_controller_processes(self, servicer):
-        """Shutdown should terminate controller processes."""
-        # Add mock process
-        mock_proc = MagicMock()
-        mock_proc.is_alive.return_value = True
-        servicer.controller_processes["test_serial"] = mock_proc
-
-        await servicer.shutdown()
-
-        mock_proc.terminate.assert_called_once()
-        mock_proc.join.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_shutdown_skips_dead_processes(self, servicer):
-        """Shutdown should skip already-dead processes."""
-        mock_proc = MagicMock()
-        mock_proc.is_alive.return_value = False
-        servicer.controller_processes["test_serial"] = mock_proc
-
-        await servicer.shutdown()
-
-        mock_proc.terminate.assert_not_called()
-
 
 class TestExtractedHelpers:
     """Tests for extracted helper methods used by stream RPCs."""
