@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"testing"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/patterngame"
@@ -76,4 +79,43 @@ func TestUC046_BR019_ArmsStartWithTheirOwnSensitivity_2392(t *testing.T) {
 			t.Fatalf("sensitivity = %d, want SHADOW_GAME_SENSITIVITY 1", spec.Sensitivity)
 		}
 	})
+}
+
+// A spawn refused on the arm's sensitivity is counted by reason (#2392).
+func TestUC046_BR019_RefusedSpawnIsCounted_2392(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	for reason, resolve := range map[string]armIntResolver{
+		"sensitivity_unreadable": func(context.Context, string, string, string, string) (int64, error) {
+			return 0, errors.New("not ready")
+		},
+		"sensitivity_out_of_range": func(context.Context, string, string, string, string) (int64, error) { return 9, nil },
+	} {
+		s := newShadowSpawner(gamerunner.Config{}, slog.Default(), resolve)
+		s.SetSpawnFailureCounter(newSpawnFailureCounter(mp))
+		ctx := patternSpawnCtx()
+		if _, err := s.armSpec(ctx, "exp-1", "control", 1); err == nil {
+			t.Fatalf("%s: want refusal", reason)
+		}
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &rm); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name != metricSpawnFailures {
+					continue
+				}
+				for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+					if v, _ := dp.Attributes.Value("reason"); v.AsString() == reason && dp.Value == 1 {
+						found = true
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no %s{reason=%s}=1", metricSpawnFailures, reason)
+		}
+	}
 }

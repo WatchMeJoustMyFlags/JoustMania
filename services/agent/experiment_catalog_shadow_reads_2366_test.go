@@ -304,6 +304,12 @@ func TestUC043_BR009_CatalogKeysReachTheShadowGame(t *testing.T) {
 							t.Errorf("%s (set from %s) is used in %s, outside the modes %v catalogKeyModes lists",
 								attr, key, use, listed)
 						}
+						for mode, files := range modes {
+							if onModePath(use, files) && !slices.Contains(listed, mode) {
+								t.Errorf("%s (set from %s) is used in %s, which a %s game runs too: add %s to its catalogKeyModes entry",
+									attr, key, use, mode, mode)
+							}
+						}
 					}
 					continue
 				}

@@ -7,6 +7,9 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/experiment"
@@ -74,6 +77,31 @@ type shadowSpawner struct {
 	// armInt resolves the arm's start-config sensitivity (UC-046 BR-019, #2392);
 	// nil keeps the template's SHADOW_GAME_SENSITIVITY.
 	armInt armIntResolver
+
+	// spawnFailures counts a spawn refused on the arm's sensitivity (agent_experiment_spawn_failures_total{reason}).
+	spawnFailures otelmetric.Int64Counter
+}
+
+const metricSpawnFailures = "agent_experiment_spawn_failures_total"
+
+// newSpawnFailureCounter builds agent_experiment_spawn_failures_total{reason}; an
+// instrument-creation error yields a no-op counter.
+func newSpawnFailureCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
+	c, err := mp.Meter(gameEndMeterName).Int64Counter(metricSpawnFailures,
+		otelmetric.WithDescription("Experiment shadow spawns refused because the arm's sensitivity was unreadable or out of range (#2392)"))
+	if err != nil {
+		c, _ = metricnoop.NewMeterProvider().Meter(gameEndMeterName).Int64Counter(metricSpawnFailures)
+	}
+	return c
+}
+
+// SetSpawnFailureCounter registers the refused-spawn counter (nil-safe: unset counts nothing).
+func (s *shadowSpawner) SetSpawnFailureCounter(c otelmetric.Int64Counter) { s.spawnFailures = c }
+
+func (s *shadowSpawner) countSpawnFailure(ctx context.Context, reason string) {
+	if s.spawnFailures != nil {
+		s.spawnFailures.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("reason", reason)))
+	}
 }
 
 // SetPatternCallbacks registers the UC-046 start and replay-record hooks.
@@ -195,10 +223,12 @@ func (s *shadowSpawner) armSpec(ctx context.Context, experimentID, arm string, s
 	if experimentID != "" && s.armInt != nil {
 		level, err := s.armInt(ctx, shadowSensitivityKey, spec.GameName, experimentID, arm)
 		if err != nil {
+			s.countSpawnFailure(ctx, "sensitivity_unreadable")
 			return spec, fmt.Errorf("shadow spawn for experiment %s arm %s: resolve %s: %w",
 				experimentID, arm, shadowSensitivityKey, err)
 		}
 		if level < 0 || level > 4 {
+			s.countSpawnFailure(ctx, "sensitivity_out_of_range")
 			return spec, fmt.Errorf("shadow spawn for experiment %s arm %s: %s=%d outside 0..4",
 				experimentID, arm, shadowSensitivityKey, level)
 		}

@@ -375,6 +375,7 @@ func buildExperimentLoop(
 	// ShadowSpawner (#976): the real outbound game-coordinator client. Each experiment
 	// arm starts with its own resolved sensitivity (UC-046 BR-019, #2392).
 	spawner := newShadowSpawner(gamerunner.ConfigFromEnv(), logger, flagsClient.ShadowGameInt)
+	spawner.SetSpawnFailureCounter(newSpawnFailureCounter(globalMeterProvider()))
 
 	// FitnessStore (#965/#1017): the finalized-per-game fitness store onGameEnd
 	// Records into and the #992 recent-real anchor reads from. It is built
