@@ -62,6 +62,7 @@ from openfeature.evaluation_context import EvaluationContext
 from openfeature.flag_evaluation import Reason
 from openfeature.provider import ProviderEvent
 
+from lib.colors import Colors
 from lib.feature_flags import GAME_KIND_SHADOW
 from lib.flag_eval_visibility import record_flag_fallback
 from services.game_coordinator.game_loop_dispatch import (
@@ -1708,6 +1709,7 @@ class InterventionManager:
 
             from proto import controller_manager_pb2
 
+            red, green, blue = Colors.Magenta.value  # same magenta as the shield help cue (#2395)
             # Distinct magenta pulse = "agent acted" — not a game event color.
             # One write after the other: grpc.aio allows one write in flight per call
             # (#2096), and a sequential loop never queues N writes ahead of a frame's
@@ -1721,6 +1723,7 @@ class InterventionManager:
                             game_effect=controller_manager_pb2.GameEffectCommand(
                                 serial=target_serial,
                                 effect=controller_manager_pb2.GAME_EFFECT_PULSE,
+                                color=controller_manager_pb2.RGB(r=red, g=green, b=blue),
                             )
                         ),
                     )

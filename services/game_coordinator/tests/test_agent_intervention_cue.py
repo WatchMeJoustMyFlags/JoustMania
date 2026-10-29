@@ -97,6 +97,22 @@ async def test_broadcast_cue_pulses_all_alive_players():
 
 
 @pytest.mark.uc("UC-040", flow="main", steps=[13])
+@pytest.mark.uc("UC-031", flow="main", br=["BR-002"])
+@pytest.mark.asyncio
+async def test_cue_pulse_is_magenta():
+    """#2426: the #818 cue carries magenta (255,0,192), same as the shield help cue, not the default white."""
+    stream = FakeStream()
+    game = FakeGame(players={"A": FakePlayer("A")}, stream=stream)
+    mgr = _manager({"agent_intervention_cue": True})
+
+    await mgr._emit_agent_cue(_spec("end_game"), None, game)
+
+    assert len(stream.writes) == 1
+    color = stream.writes[0].game_effect.color
+    assert (color.r, color.g, color.b) == (255, 0, 192)
+
+
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
 async def test_player_targeted_cue_pulses_only_target():
     stream = FakeStream()
