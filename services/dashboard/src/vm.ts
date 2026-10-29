@@ -4,7 +4,7 @@
  * adapter labels (BR-009).
  */
 
-const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
+import { BASE_URL } from "./baseUrl.js";
 
 export interface VmQueryResponse {
   status: string;

@@ -22,7 +22,7 @@
  * seen (`incrementalStartMs`).
  */
 
-const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
+import { BASE_URL } from "./baseUrl.js";
 
 /** The agent's OTel service name in Jaeger. */
 export const AGENT_SERVICE = "agent";

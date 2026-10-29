@@ -20,6 +20,7 @@
  * updateFreshness / rendered, with the same STALE_AFTER_MS staleness model so the
  * operator is never fooled by frozen numbers when a poll is failing.
  */
+import { escapeHtml } from "../html.js";
 import type {
   AgentView as AgentViewData,
   DecideCurrent,
@@ -354,16 +355,6 @@ function formatTime(tsMs: number): string {
 /** Trim a long game/session id to a readable tail. */
 function shortId(id: string): string {
   return id.length > 12 ? `…${id.slice(-10)}` : id;
-}
-
-/** Escape text for HTML element content AND quoted attribute values. */
-export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 /** On / off / unknown for a boolean flag. */

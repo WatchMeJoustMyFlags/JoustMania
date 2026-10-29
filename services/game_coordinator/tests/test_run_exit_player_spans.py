@@ -10,6 +10,7 @@ each span ends once, by the mode's own end step.
 """
 
 import asyncio
+import inspect
 import logging
 import sys
 from contextlib import ExitStack
@@ -330,3 +331,89 @@ async def test_tournament_natural_end_closes_the_champion_span_with_tournament_e
             assert attrs["final_round"] == 2
     assert DOUBLE_END not in caplog.text
     _assert_no_span_left_open(exporter)
+
+
+def _recording(game, calls: list[str], attr: str, label: str) -> None:
+    """Wrap an async or sync method of ``game`` so each call appends ``label`` before it runs."""
+    real = getattr(game, attr)
+
+    if inspect.iscoroutinefunction(real):
+
+        async def wrapper(*args, **kwargs):
+            calls.append(label)
+            return await real(*args, **kwargs)
+
+    else:
+
+        def wrapper(*args, **kwargs):
+            calls.append(label)
+            return real(*args, **kwargs)
+
+    setattr(game, attr, wrapper)
+
+
+@pytest.mark.uc("UC-020", flow="main")
+@pytest.mark.usefixtures("exporter")
+@pytest.mark.asyncio
+async def test_a_streamed_force_end_stops_the_music_before_the_force_end_hook():
+    """The streamed finally stops the music first, then calls on_force_end (the base flow does the reverse)."""
+    game = _game(Games.FightClub)
+    calls: list[str] = []
+    _recording(game, calls, "_stop_game_music", "music_stopped")
+    _recording(game, calls, "on_force_end", "on_force_end")
+    _force_end_after(game, "countdown")
+    await asyncio.wait_for(game.run(), timeout=20)
+
+    assert calls == ["music_stopped", "on_force_end"]
+
+
+@pytest.mark.uc("UC-020", flow="main")
+@pytest.mark.asyncio
+async def test_the_mode_game_span_is_error_with_the_exception_on_a_run_error_and_ok_on_a_natural_end(exporter):
+    failing = _game(Games.FightClub)
+
+    async def broken_warmup():
+        raise RuntimeError("warm-up failed")
+
+    failing._warmup_ema = broken_warmup
+    with pytest.raises(RuntimeError, match="warm-up failed"):
+        await asyncio.wait_for(failing.run(), timeout=20)
+
+    (failed_span,) = [s for s in exporter.get_finished_spans() if s.name == "fight_club_game"]
+    assert failed_span.status.status_code == StatusCode.ERROR
+    assert "warm-up failed" in (failed_span.status.description or "")
+    exception_events = [e for e in failed_span.events if e.name == "exception"]
+    assert exception_events, "the exception is recorded on the mode span"
+    assert {e.attributes["exception.message"] for e in exception_events} == {"warm-up failed"}
+
+    exporter.clear()
+    natural = _game(Games.FightClub)
+
+    async def instant_loop():
+        await asyncio.sleep(0.05)
+
+    natural._game_loop = instant_loop
+    await asyncio.wait_for(natural.run(), timeout=20)
+
+    (ok_span,) = [s for s in exporter.get_finished_spans() if s.name == "fight_club_game"]
+    assert ok_span.status.status_code == StatusCode.OK
+    assert [e for e in ok_span.events if e.name == "exception"] == []
+
+
+@pytest.mark.uc("UC-030", flow="main")
+@pytest.mark.usefixtures("exporter")
+@pytest.mark.asyncio
+async def test_tournament_releases_the_stream_after_the_winner_effects_not_only_in_the_cleanup():
+    game = _game(Games.Tournament)
+    calls: list[str] = []
+    _recording(game, calls, "_end_game_impl", "end_game_impl")
+    _recording(game, calls, "_release_gameplay_stream", "release")
+    _recording(game, calls, "_cleanup_after_run", "cleanup")
+
+    async def instant_loop():
+        await asyncio.sleep(0.05)
+
+    game._game_loop = instant_loop
+    await asyncio.wait_for(game.run(), timeout=20)
+
+    assert calls[:3] == ["end_game_impl", "release", "cleanup"]

@@ -6,6 +6,7 @@
  * comes from the newest experiment.progress span per experiment in Jaeger (see
  * ../experiments.ts, #2059); the view polls to update live during a shadow run.
  */
+import { escapeHtml } from "../html.js";
 import type { ArmAggregate, ExperimentView, Recommendation } from "../experiments.js";
 import { EXPERIMENT_PROGRESS_NO_DATA } from "../degrade.js";
 
@@ -205,12 +206,4 @@ export function normalizeVerdict(verdict: string, live: boolean, status = ""): N
     return { label: verdict || status || "Concluded", cssClass: "verdict-inconclusive" };
   }
   return { label: "Running", cssClass: "verdict-running" };
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
