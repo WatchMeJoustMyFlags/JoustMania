@@ -20,6 +20,7 @@ copies did.
 
 import contextlib
 import logging
+import sys
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -38,8 +39,9 @@ class StreamedIntroGameMode(BaseGameMode):
     RUN_SPAN_NAME: str = ""
 
     def _run_tracer(self) -> trace.Tracer:
-        """The mode module's tracer: the spans keep the mode's instrumentation scope."""
-        return trace.get_tracer(type(self).__module__)
+        """The mode module's ``tracer``, read at call time: the spans keep the mode's instrumentation scope."""
+        module = sys.modules[type(self).__module__]
+        return getattr(module, "tracer", None) or trace.get_tracer(type(self).__module__)
 
     def _run_logger(self) -> logging.Logger:
         return logging.getLogger(type(self).__module__)
