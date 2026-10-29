@@ -90,10 +90,24 @@ func TestStateFile_FutureVersionIsKept(t *testing.T) {
 		if m, _ := filepath.Glob(path + ".corrupt-*"); len(m) != 0 {
 			t.Fatalf("the file was copied aside as corrupt: %v", m)
 		}
-		// An admin write applies in memory, reports not persisted, and leaves the file alone.
-		res, werr := f.state.Put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "fast", Persist: true, Writer: "menu"})
-		if werr == nil && res.Persisted {
-			t.Fatal("a write reported persisted over a newer-version file")
+		// The newer file's values are not loaded.
+		if v := f.snapshotFlag("sensitivity")["defaultVariant"]; v == "slow" {
+			t.Fatalf("sensitivity=slow of the newer file was loaded")
+		}
+		before := f.snapshotFlag("sensitivity")["defaultVariant"]
+		// An ordinary flag: refused with persist_failed, memory unchanged.
+		_, werr := f.state.Put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "fast", Persist: true, Writer: "menu"})
+		wantReason(t, werr, 500, fserr.ReasonPersistFailed)
+		if v := f.snapshotFlag("sensitivity")["defaultVariant"]; v != before {
+			t.Fatalf("sensitivity changed to %v although the write was refused", v)
+		}
+		// A kill switch applies in memory and reports not persisted.
+		res, werr := f.state.Put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "full", Persist: true, Writer: "menu"})
+		if werr != nil || res.Persisted {
+			t.Fatalf("kill switch write: err=%v persisted=%v, want applied with persisted:false", werr, res.Persisted)
+		}
+		if v := f.snapshotFlag("interventions_allowed")["defaultVariant"]; v != "full" {
+			t.Fatalf("the kill switch was not applied in memory: %v", v)
 		}
 		got, _ = os.ReadFile(path)
 		if string(got) != doc {

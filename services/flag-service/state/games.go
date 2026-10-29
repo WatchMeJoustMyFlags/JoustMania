@@ -57,7 +57,12 @@ func (s *State) RegisterGame(g Game) (already bool, err *fserr.Error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, already = s.games[g.ID]
+	old, already := s.games[g.ID]
+	// A game another coordinator instance holds is never re-homed (UC-053 A10,
+	// as in Reconcile).
+	if already && old.CoordinatorInstance != "" && old.CoordinatorInstance != g.CoordinatorInstance {
+		return false, fserr.Conflict(fserr.GameIDTaken, "game %q is registered by coordinator instance %q, not %q", g.ID, old.CoordinatorInstance, g.CoordinatorInstance)
+	}
 	if !already && len(s.games) >= s.opts.MaxGames {
 		return false, fserr.Conflict(fserr.TooManyGames, "%d game scopes are live (the cap, NFR-051)", len(s.games))
 	}

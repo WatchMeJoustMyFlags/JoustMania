@@ -68,7 +68,7 @@ const MaxFreeString = 512
 // decimalFloatPattern is the plain decimal form a "float lo hi" pattern segment
 // accepts. strconv.ParseFloat alone would also take hex floats (0x1p0), inf and
 // nan, which the readers of such a string do not parse.
-var decimalFloatPattern = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
+var decimalFloatPattern = regexp.MustCompile(`^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$`)
 
 var soundIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]{1,64}$`)
 

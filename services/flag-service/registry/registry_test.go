@@ -517,7 +517,7 @@ func TestCheckValueShapeCeiling(t *testing.T) {
 // UC: UC-053 A5
 func TestPatternFloatIsPlainDecimal(t *testing.T) {
 	seg := &segment{kind: "float", lo: 0, hi: 10}
-	for part, ok := range map[string]bool{"1": true, "2.5": true, "0.25": true, "0x1p0": false, "inf": false, "NaN": false, "1e1": false, "1_0": false, "": false} {
+	for part, ok := range map[string]bool{"1": true, "2.5": true, "0.25": true, "0x1p0": false, "inf": false, "NaN": false, "1e1": false, "1_0": false, "": false, ".5": true, "5.": true, "+1": true, "-2.5": false, "+.5": true, "-.": false, ".": false, "+": false, "1.5.2": false, "+0x1": false, ".5e1": false} {
 		t.Run("UC-053/A5 float segment "+part, func(t *testing.T) {
 			if got := seg.match(part); got != ok {
 				t.Fatalf("match(%q)=%v, want %v", part, got, ok)

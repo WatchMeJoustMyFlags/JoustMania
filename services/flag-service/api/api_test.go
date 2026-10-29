@@ -767,3 +767,43 @@ func TestWritesEndTheirInflightMark(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-053 A7
+func TestPanickingWriteEndsItsInflightMark(t *testing.T) {
+	t.Run("UC-053/A7 a panic after beginWrite (recovered by net/http) leaves no in-flight mark (#2369)", func(t *testing.T) {
+		e := newEnv(t, true)
+		// Zero Metrics: finishWrite's RecordWrite dereferences a nil counter.
+		a := &API{State: e.st, Metrics: &telemetry.Metrics{}, Tracer: sdktrace.NewTracerProvider().Tracer("t"), Links: e.links}
+		srv := httptest.NewServer(a.Handler())
+		t.Cleanup(srv.Close)
+		req, _ := http.NewRequest("PUT", srv.URL+"/game/nonstop.respawn_seconds", strings.NewReader(`{"value":4,"scope":{"experiment_id":"e","arm":"a"}}`))
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			t.Fatalf("the handler did not panic (status %d): the test no longer exercises the panic path", resp.StatusCode)
+		}
+		if n := e.links.Inflight(); n != 0 {
+			t.Fatalf("%d writes still marked in flight after a panic", n)
+		}
+	})
+}
+
+// UC: UC-053 A10
+func TestPutGameNeverRehomesAnotherInstancesGame(t *testing.T) {
+	t.Run("UC-053/A10 PUT /games of an id another instance holds is 409 game_id_taken (#2369)", func(t *testing.T) {
+		e := newEnv(t, true)
+		if s, _ := e.do("PUT", "/games/g1", map[string]any{"coordinator_instance": "c/1", "serials": []string{"S1"}}); s != 200 {
+			t.Fatalf("first register %d", s)
+		}
+		s, body := e.do("PUT", "/games/g1", map[string]any{"coordinator_instance": "c/2", "serials": []string{"S9"}})
+		if s != 409 || body["error"] != "game_id_taken" {
+			t.Fatalf("PUT by another instance %d %v, want 409 game_id_taken", s, body)
+		}
+		if g := e.st.Game("g1"); g == nil || g.CoordinatorInstance != "c/1" || len(g.Serials) != 1 || g.Serials[0] != "S1" {
+			t.Fatalf("g1 was re-homed or changed: %+v", g)
+		}
+		if s, _ := e.do("PUT", "/games/g1", map[string]any{"coordinator_instance": "c/1", "serials": []string{"S1"}}); s != 200 {
+			t.Fatalf("the holder's own re-register %d", s)
+		}
+	})
+}

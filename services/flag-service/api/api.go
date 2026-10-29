@@ -179,19 +179,25 @@ type postBody struct {
 	Reason     string         `json:"reason"`
 }
 
-// beginWrite marks a write in flight for the sync push's trace link; every
-// handler that calls it ends in finishWrite, which ends it.
+// beginWrite marks a write in flight for the sync push's trace link. Every
+// handler that calls it follows with `defer a.endWrite()`, so a panic in State
+// (recovered by net/http) cannot leave the mark set for good.
 func (a *API) beginWrite() {
 	if a.Links != nil {
 		a.Links.Begin()
 	}
 }
 
+// endWrite clears the in-flight mark; as a defer it runs after finishWrite has
+// remembered the version.
+func (a *API) endWrite() {
+	if a.Links != nil {
+		a.Links.End()
+	}
+}
+
 // finishWrite ends a flagservice.write span and records the write metrics.
 func (a *API) finishWrite(ctx context.Context, span trace.Span, op string, req state.WriteRequest, res state.WriteResult, ferr *fserr.Error, start time.Time) {
-	if a.Links != nil {
-		defer a.Links.End() // pairs with beginWrite, after Remember below
-	}
 	result, reason := telemetry.ResultOK, fserr.ReasonOK
 	if ferr != nil {
 		result, reason = telemetry.ResultRejected, ferr.Reason
@@ -219,6 +225,7 @@ func (a *API) put(w http.ResponseWriter, r *http.Request) {
 	start := a.now()
 	ctx, span := a.Tracer.Start(r.Context(), telemetry.SpanWrite)
 	a.beginWrite()
+	defer a.endWrite()
 	req := state.WriteRequest{Set: r.PathValue("set"), Flag: r.PathValue("flag")}
 	var body putBody
 	ferr := decode(r, w, &body)
@@ -275,6 +282,7 @@ func (a *API) post(w http.ResponseWriter, r *http.Request) {
 	start := a.now()
 	ctx, span := a.Tracer.Start(r.Context(), telemetry.SpanWrite)
 	a.beginWrite()
+	defer a.endWrite()
 	req := state.WriteRequest{Set: r.PathValue("set"), Flag: r.PathValue("flag")}
 	var body postBody
 	ferr := decode(r, w, &body)
@@ -337,6 +345,7 @@ func (a *API) clear(w http.ResponseWriter, r *http.Request) {
 	start := a.now()
 	ctx, span := a.Tracer.Start(r.Context(), telemetry.SpanWrite)
 	a.beginWrite()
+	defer a.endWrite()
 	sc, ferr := scopeFromQuery(r)
 	var persist, guarded bool
 	if ferr == nil {
@@ -385,6 +394,7 @@ func (a *API) clearWriter(w http.ResponseWriter, r *http.Request) {
 	start := a.now()
 	ctx, span := a.Tracer.Start(r.Context(), telemetry.SpanWrite)
 	a.beginWrite()
+	defer a.endWrite()
 	req := state.WriteRequest{Set: r.PathValue("set"), Writer: r.URL.Query().Get("writer")}
 	n, ferr := a.State.ClearWriter(req.Set, req.Writer)
 	span.SetAttributes(attribute.Int("flagservice.cleared", n))
