@@ -560,7 +560,9 @@ class MultiplexerBackend(ControllerBackend):
         updated_count = 0
 
         # list() is intentional: discovery or shutdown may modify the dict meanwhile
-        for serial in list(self._led_colors):  # NOSONAR(S7504)
+        # Every serial with any desired output: a rumble set before any colour
+        # is retried like a colour (#2365).
+        for serial in list({*self._led_colors, *self._rumble}):  # NOSONAR(S7504)
             if serial in self._effect_active:
                 continue
 
@@ -570,10 +572,10 @@ class MultiplexerBackend(ControllerBackend):
                 # the routing table and drops stale serials under the same lock
                 # (#1447), so a serial removed mid-batch is skipped, not revived.
                 with self._led_lock:
-                    stored_color = self._led_colors.get(serial)
                     adapter = self._serial_to_adapter.get(serial)
-                    if stored_color is None or adapter is None:
+                    if adapter is None or (serial not in self._led_colors and serial not in self._rumble):
                         continue
+                    stored_color = self._led_colors.get(serial, (0, 0, 0))
 
                     rumble = self._rumble.get(serial, 0)
                     output = (stored_color, rumble)
@@ -597,7 +599,7 @@ class MultiplexerBackend(ControllerBackend):
             except Exception as e:
                 logger.debug(f"Error updating LED for {serial}: {e}")
                 with self._led_lock:
-                    if serial in self._led_colors:
+                    if serial in self._led_colors or serial in self._rumble:
                         self._count_led_failure(serial, current_time)
 
         return updated_count
@@ -692,6 +694,8 @@ class MultiplexerBackend(ControllerBackend):
                 result = adapter.set_output(serial, r, g, b, rumble)
                 if result:
                     self._mark_output_sent(serial, (r, g, b), rumble, time.time())
+                else:
+                    self._count_led_failure(serial, time.time())
                 return result
             finally:
                 self._led_lock.release()
@@ -712,6 +716,8 @@ class MultiplexerBackend(ControllerBackend):
                 result = adapter.set_output(serial, r, g, b, intensity)
                 if result:
                     self._mark_output_sent(serial, (r, g, b), intensity, time.time())
+                else:
+                    self._count_led_failure(serial, time.time())
                 return result
             finally:
                 self._led_lock.release()

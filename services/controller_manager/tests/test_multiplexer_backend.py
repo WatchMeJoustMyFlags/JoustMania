@@ -1402,3 +1402,59 @@ class TestLedBatchSendsTheDesiredOutputState:
         mux._led_failures_counted[self.SERIAL] = 0.0
         mux.update_all_leds()
         assert mux._led_failures[self.SERIAL] == 2
+
+
+class TestRumbleWithoutAColour:
+    """#2365: rumble is a desired output of its own; direct-write failures are counted."""
+
+    SERIAL = "AA:AA"
+
+    def _mux(self):
+        adapter = _specced_adapter([self.SERIAL])
+        mux = MultiplexerBackend(adapters=[adapter])
+        mux.get_connected_controllers()
+        return mux, adapter
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_failed_rumble_on_a_serial_without_a_colour_is_retried(self, _metrics):
+        mux, adapter = self._mux()
+        adapter.set_output.return_value = False
+        assert await mux.set_rumble(self.SERIAL, 200) is False
+        adapter.set_output.reset_mock()
+        adapter.set_output.return_value = True
+
+        assert mux.update_all_leds() == 1
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 0, 0, 0, 200)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_rumble_skipped_by_a_busy_lock_without_a_colour_goes_out_next_tick(self, _metrics):
+        mux, adapter = self._mux()
+        with mux._led_lock:
+            await mux.set_rumble(self.SERIAL, 200)
+        adapter.set_output.assert_not_called()
+
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 0, 0, 0, 200)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_direct_write_failures_count_once_per_interval(self, _metrics):
+        mux, adapter = self._mux()
+        adapter.set_output.return_value = False
+
+        await mux.set_rumble(self.SERIAL, 200)
+        await mux.set_led_color(self.SERIAL, 1, 2, 3)
+        await mux.set_rumble(self.SERIAL, 100)
+
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        await mux.set_led_color(self.SERIAL, 4, 5, 6)
+        assert mux._led_failures[self.SERIAL] == 2
