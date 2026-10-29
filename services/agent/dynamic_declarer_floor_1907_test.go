@@ -141,19 +141,20 @@ func TestParseCandidates_Rules(t *testing.T) {
 // effect on the next tick with no restart (#1907, C-035).
 // UC: UC-070 BR-007
 func TestDeclareDynamic_SettingsAreReadPerTick(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(5)
 
 	cfg.DynamicCandidates = "nonstop.respawn_seconds"
 	loop.declareDynamicIfEnabled(context.Background(), cfg)
-	cfg.DynamicCandidates = "fight_club.round_seconds"
+	cfg.DynamicCandidates = "nonstop.spawn_protection_seconds"
 	loop.declareDynamicIfEnabled(context.Background(), cfg)
 
 	active := loop.registry.ActiveFlags()
 	_, first := active["nonstop.respawn_seconds"]
-	_, second := active["fight_club.round_seconds"]
+	_, second := active["nonstop.spawn_protection_seconds"]
 	if !first || !second || len(active) != 2 {
-		t.Fatalf("active = %v, want nonstop.respawn_seconds then fight_club.round_seconds", active)
+		t.Fatalf("active = %v, want nonstop.respawn_seconds then nonstop.spawn_protection_seconds", active)
 	}
 }

@@ -7,11 +7,23 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/gamerunner"
 )
+
+// shadowSensitivityKey is the game flag an experiment arm's shadow start config
+// takes its sensitivity from (UC-046 BR-019, #2392). The coordinator does not read
+// it; only the menu (real games) and this spawner (experiment arms) do.
+const shadowSensitivityKey = "sensitivity"
+
+// armIntResolver resolves an integer game flag with an experiment arm's evaluation
+// context (flags.Flags.ShadowGameInt).
+type armIntResolver func(ctx context.Context, key, mode, experimentID, arm string) (int64, error)
 
 // errSpawnNeedsArchetype: every shadow experiment game is a pattern game (UC-046).
 var errSpawnNeedsArchetype = errors.New("no motion archetype on the spawn (UC-046: experiments are archetype-only)")
@@ -61,6 +73,35 @@ type shadowSpawner struct {
 	// onPatternStart / onPatternEnd report pattern games to the registry (UC-046).
 	onPatternStart gamerunner.PatternStartCallback
 	onPatternEnd   gamerunner.PatternCallback
+
+	// armInt resolves the arm's start-config sensitivity (UC-046 BR-019, #2392);
+	// nil keeps the template's SHADOW_GAME_SENSITIVITY.
+	armInt armIntResolver
+
+	// spawnFailures counts a spawn refused on the arm's sensitivity (agent_experiment_spawn_failures_total{reason}).
+	spawnFailures otelmetric.Int64Counter
+}
+
+const metricSpawnFailures = "agent_experiment_spawn_failures_total"
+
+// newSpawnFailureCounter builds agent_experiment_spawn_failures_total{reason}; an
+// instrument-creation error yields a no-op counter.
+func newSpawnFailureCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
+	c, err := mp.Meter(gameEndMeterName).Int64Counter(metricSpawnFailures,
+		otelmetric.WithDescription("Experiment shadow spawns refused because the arm's sensitivity was unreadable or out of range (#2392)"))
+	if err != nil {
+		c, _ = metricnoop.NewMeterProvider().Meter(gameEndMeterName).Int64Counter(metricSpawnFailures)
+	}
+	return c
+}
+
+// SetSpawnFailureCounter registers the refused-spawn counter (nil-safe: unset counts nothing).
+func (s *shadowSpawner) SetSpawnFailureCounter(c otelmetric.Int64Counter) { s.spawnFailures = c }
+
+func (s *shadowSpawner) countSpawnFailure(ctx context.Context, reason string) {
+	if s.spawnFailures != nil {
+		s.spawnFailures.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("reason", reason)))
+	}
 }
 
 // SetPatternCallbacks registers the UC-046 start and replay-record hooks.
@@ -77,12 +118,14 @@ func (s *shadowSpawner) SetTerminalCallback(cb gamerunner.TerminalCallback) { s.
 // newShadowSpawner builds the spawner over the gamerunner config + a template spec
 // drawn from the SHADOW_GAME_* env (the same spec the #778 one-shot runner uses), so
 // an operator tunes the shadow game mode/players/sensitivity with the existing knobs.
-func newShadowSpawner(cfg gamerunner.Config, logger *slog.Logger) *shadowSpawner {
+// armInt resolves an experiment arm's own sensitivity (UC-046 BR-019, #2392).
+func newShadowSpawner(cfg gamerunner.Config, logger *slog.Logger, armInt armIntResolver) *shadowSpawner {
 	return &shadowSpawner{
-		cfg:  cfg,
-		log:  logger,
-		spec: gamerunner.SpecFromEnv(""), // RunID filled per spawn
-		root: context.Background(),       // replaced by SetRootContext in run()
+		cfg:    cfg,
+		log:    logger,
+		armInt: armInt,
+		spec:   gamerunner.SpecFromEnv(""), // RunID filled per spawn
+		root:   context.Background(),       // replaced by SetRootContext in run()
 	}
 }
 
@@ -101,35 +144,11 @@ func (s *shadowSpawner) SetRootContext(ctx context.Context) { s.root = ctx }
 // when the tick returns — only at agent shutdown. An error means no game started
 // and the registry releases the reserved capacity slot.
 func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string, seed uint64) (string, error) {
-	runID := uuid.NewString()
-	spec := s.spec
-	spec.RunID = runID
-	spec.ExperimentID = experimentID
-	spec.Arm = arm
-	// Paired CRN seed (#1003): thread the registry-derived per-pair seed onto the
-	// spawn spec so the game-coordinator builds the shadow session's per-instance
-	// RNG from it. Both arms of a pair receive the same seed; 0 means entropy.
-	spec.Seed = seed
-	// Spawn-traceparent propagation (#1182, epic #1181): the registry carries the
-	// experiment's long-lived ROOT span context on the spawn ctx as a remote
-	// parent. Thread it onto the spec so StartExperimentGame injects it as the
-	// outgoing traceparent; under telemetry.experiment_game_parent=child the
-	// coordinator's game span becomes a CHILD of the experiment span, under the
-	// default link it starts its own trace with a Link back (#2223). An invalid SpanContext (no root span) threads nothing, so
-	// the game stays own-rooted — graceful.
-	spec.ExperimentSpanContext = trace.SpanContextFromContext(ctx)
-
-	// UC-046 step 3: the arm carries its pinned archetype, cap and flag digest on
-	// the ctx. Shadow experiment games are archetype-only (maintainer decision on
-	// #1258): a spawn without an archetype is refused, never run on random motion.
-	p, ok := experiment.PatternSpawnFrom(ctx)
-	if !ok {
-		return "", fmt.Errorf("shadow spawn for experiment %s arm %s: %w", experimentID, arm, errSpawnNeedsArchetype)
+	spec, err := s.armSpec(ctx, experimentID, arm, seed)
+	if err != nil {
+		return "", err
 	}
-	spec.Pattern = p.Archetype
-	spec.MaxGameSeconds = p.MaxGameSeconds
-	spec.PairIndex = p.PairIndex
-	spec.FlagDigest = p.FlagDigest
+	runID := spec.RunID
 
 	runner := gamerunner.New(s.cfg, s.log)
 	if s.onTerminal != nil {
@@ -160,4 +179,60 @@ func (s *shadowSpawner) Spawn(ctx context.Context, experimentID, arm string, see
 	s.log.Debug("experiment: shadow game spawned",
 		"experiment_id", experimentID, "arm", arm, "seed", seed, "game_id", gameID, "run_id", runID)
 	return gameID, nil
+}
+
+// armSpec is the start spec of one shadow game of (experimentID, arm): the template
+// spec with the run id, the experiment binding, the paired seed, the trace parent
+// and the arm's pinned archetype. For an experiment arm the start-config sensitivity
+// is the arm's own value of the game flag `sensitivity`, resolved with the arm's
+// evaluation context (UC-046 BR-019, UC-043 BR-009, #2392), so an experiment on it
+// starts its arms with different sensitivities; SHADOW_GAME_SENSITIVITY stays the
+// value of a shadow game without an experiment. An unreadable or out-of-range value
+// refuses the spawn: the registry rolls the pair back and retries next tick, so no
+// arm starts on a value its sibling may not share.
+func (s *shadowSpawner) armSpec(ctx context.Context, experimentID, arm string, seed uint64) (gamerunner.Spec, error) {
+	spec := s.spec
+	spec.RunID = uuid.NewString()
+	spec.ExperimentID = experimentID
+	spec.Arm = arm
+	// Paired CRN seed (#1003): thread the registry-derived per-pair seed onto the
+	// spawn spec so the game-coordinator builds the shadow session's per-instance
+	// RNG from it. Both arms of a pair receive the same seed; 0 means entropy.
+	spec.Seed = seed
+	// Spawn-traceparent propagation (#1182, epic #1181): the registry carries the
+	// experiment's long-lived ROOT span context on the spawn ctx as a remote
+	// parent. Thread it onto the spec so StartExperimentGame injects it as the
+	// outgoing traceparent; under telemetry.experiment_game_parent=child the
+	// coordinator's game span becomes a CHILD of the experiment span, under the
+	// default link it starts its own trace with a Link back (#2223). An invalid SpanContext (no root span) threads nothing, so
+	// the game stays own-rooted — graceful.
+	spec.ExperimentSpanContext = trace.SpanContextFromContext(ctx)
+
+	// UC-046 step 3: the arm carries its pinned archetype, cap and flag digest on
+	// the ctx. Shadow experiment games are archetype-only (maintainer decision on
+	// #1258): a spawn without an archetype is refused, never run on random motion.
+	p, ok := experiment.PatternSpawnFrom(ctx)
+	if !ok {
+		return spec, fmt.Errorf("shadow spawn for experiment %s arm %s: %w", experimentID, arm, errSpawnNeedsArchetype)
+	}
+	spec.Pattern = p.Archetype
+	spec.MaxGameSeconds = p.MaxGameSeconds
+	spec.PairIndex = p.PairIndex
+	spec.FlagDigest = p.FlagDigest
+
+	if experimentID != "" && s.armInt != nil {
+		level, err := s.armInt(ctx, shadowSensitivityKey, spec.GameName, experimentID, arm)
+		if err != nil {
+			s.countSpawnFailure(ctx, "sensitivity_unreadable")
+			return spec, fmt.Errorf("shadow spawn for experiment %s arm %s: resolve %s: %w",
+				experimentID, arm, shadowSensitivityKey, err)
+		}
+		if level < 0 || level > 4 {
+			s.countSpawnFailure(ctx, "sensitivity_out_of_range")
+			return spec, fmt.Errorf("shadow spawn for experiment %s arm %s: %s=%d outside 0..4",
+				experimentID, arm, shadowSensitivityKey, level)
+		}
+		spec.Sensitivity = int(level)
+	}
+	return spec, nil
 }
