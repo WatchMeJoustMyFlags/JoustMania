@@ -111,10 +111,28 @@ type Policy struct {
 	// Required on a row that allows ScopeExperiment: the agent's experiment
 	// proposer shows it to the model next to the key, variants and range.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
-	// KillSwitch marks a safety flag (flags.md §13, C-034): a persisted write
-	// or clear of it whose state-file save fails still applies in memory and
-	// reports persisted false, instead of being rolled back (#2368).
-	KillSwitch bool `yaml:"kill_switch,omitempty" json:"kill_switch,omitempty"`
+}
+
+// killSwitches is the set of kill-switch flags ("set/key"): a persisted write
+// or clear of one whose state-file save fails still applies in memory and
+// reports persisted false, instead of being rolled back (#2368, C-034). It is
+// a Go set, not a registry.yaml attribute, because released flag-service images
+// parse the checkout's registry.yaml strictly and would refuse a new key.
+// flags.md §13 ("Failed save, kill switches") lists the same set; a test keeps
+// them in sync. Only a persist row can use it: a non-persist flag never takes
+// a persisted write.
+var killSwitches = map[string]bool{
+	"agent/interventions_allowed": true,
+}
+
+// KillSwitches returns the kill-switch set as sorted "set/key" names.
+func KillSwitches() []string {
+	out := make([]string, 0, len(killSwitches))
+	for k := range killSwitches {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // AppliesWhenPersistFails reports whether a persisted write or clear of this
@@ -122,7 +140,7 @@ type Policy struct {
 // switch must take effect now, a restart bringing the old value back is the
 // smaller risk (#2368). Every other flag is rolled back (500 persist_failed).
 func (p *Policy) AppliesWhenPersistFails() bool {
-	return p.KillSwitch
+	return killSwitches[p.Set+"/"+p.Key]
 }
 
 // RealWriteNeedsNoRealGame reports whether a real-scope write of this flag is

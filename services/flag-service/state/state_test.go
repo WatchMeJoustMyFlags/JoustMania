@@ -822,6 +822,9 @@ func TestAdminPersistence(t *testing.T) {
 		if v := f.snapshotFlag("interventions_allowed")["defaultVariant"]; v != "none" {
 			t.Fatalf("got %v, want the kill switch none applied in memory", v)
 		}
+		if st := f.state.Stats(); st.PersistedValues != 0 || st.OverlaysBySet["agent"] != 1 {
+			t.Fatalf("persisted overlays %d, agent in-memory overlays %d: an in-memory kill switch must not count as persisted", st.PersistedValues, st.OverlaysBySet["agent"])
+		}
 	})
 	t.Run("UC-053/A2 a kill switch's persisted clear applies despite a failing save and is flagged not persisted (#2368)", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "admin.json")
@@ -1226,6 +1229,37 @@ func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
 		}
 		if got := f.snapshotFlag("interventions_allowed")["defaultVariant"]; got != "none" {
 			t.Fatalf("defaultVariant = %v, want the kill switch none", got)
+		}
+		if st := f.state.Stats(); st.PersistedValues != 0 {
+			t.Fatalf("persisted overlays %d: the kill switch lives in memory only", st.PersistedValues)
+		}
+	})
+	t.Run("UC-053/A12 a read error refuses a persisted clear with nothing in memory (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{stateFile: path})
+		res, err := f.state.Clear(ClearRequest{Set: "game", Flag: "sensitivity", Persist: true})
+		if err == nil || err.Status != 500 || err.Reason != fserr.ReasonPersistFailed {
+			t.Fatalf("err = %v, want 500 persist_failed: the unreadable file may still hold the value", err)
+		}
+		if res.Persisted || res.Cleared != 0 || f.state.PersistErrors() != 1 {
+			t.Fatalf("result %+v errors %d, want nothing persisted and 1 error", res, f.state.PersistErrors())
+		}
+	})
+	t.Run("UC-053/A12 a read error answers a kill switch's persisted clear as not persisted (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{stateFile: path})
+		res, err := f.state.Clear(ClearRequest{Set: "agent", Flag: "interventions_allowed", Persist: true})
+		if err != nil {
+			t.Fatalf("err = %v: a kill switch clear is never refused", err)
+		}
+		if res.Persisted || !res.PersistFailed || f.state.PersistErrors() != 1 {
+			t.Fatalf("result %+v errors %d, want persist failed and 1 error", res, f.state.PersistErrors())
 		}
 	})
 }

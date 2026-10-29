@@ -156,6 +156,13 @@ func (s *State) saveAdminLocked() error {
 		s.opts.Logger.Error("flag service: could not write the state file; the admin write is not persisted", "path", path, "error", err)
 		return err
 	}
+	// Every admin value is on disk now, a kill switch applied in memory only
+	// after an earlier failed save included.
+	for _, f := range s.flags {
+		if f.admin != nil {
+			f.admin.Persisted = true
+		}
+	}
 	s.lastPersistOK = true
 	return nil
 }

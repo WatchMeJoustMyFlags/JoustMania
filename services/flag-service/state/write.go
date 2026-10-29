@@ -330,6 +330,9 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 					// A kill switch takes effect now; the answer says
 					// persisted:false (#2368, UC-053 A2/A12).
 					s.opts.Logger.Error("flag service: kill switch applied in memory only; the state file could not be written", "flag", f.key, "error", err)
+					// Not on disk: flagservice_overlays must not count it
+					// as persisted until a later save writes it.
+					v.Persisted = false
 					break
 				}
 				// Memory must match disk: undo, and tell the caller (#2368).
@@ -516,6 +519,18 @@ func (s *State) Clear(req ClearRequest) (WriteResult, *fserr.Error) {
 				return res, fserr.PersistFailed("the persisted value of %s was not cleared: the state file could not be written: %v", req.Flag, err)
 			}
 			res.Persisted = true
+		case req.Persist && s.persistBlocked:
+			// No admin value in memory, but the unreadable state file may
+			// still hold one that returns at the next start (UC-053 A12):
+			// a 204 would claim it is gone (#2368). saveAdminLocked counts
+			// the failure and returns the error.
+			err := s.saveAdminLocked()
+			if f.policy.AppliesWhenPersistFails() {
+				s.opts.Logger.Error("flag service: kill switch clear not persisted; the state file was unreadable at start", "flag", f.key, "error", err)
+				res.PersistFailed = true
+				break
+			}
+			return res, fserr.PersistFailed("the persisted value of %s was not cleared: %v", req.Flag, err)
 		case !req.Persist && f.stack != nil:
 			f.stack, res.Cleared = nil, 1
 		}

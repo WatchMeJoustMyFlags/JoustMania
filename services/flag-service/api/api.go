@@ -34,7 +34,8 @@ const MaxBodyBytes = 64 << 10
 
 // HeaderPersisted is set on the 204 of a DELETE ?persist=true that cleared a
 // value: "true" when the state file was written, "false" when a kill switch was
-// cleared in memory only because the save failed (#2368, services.md §7.2).
+// cleared in memory only because the save failed, or its clear could not reach
+// a state file unreadable at start (#2368, services.md §7.2).
 const HeaderPersisted = "X-Flag-Persisted"
 
 // API serves the HTTP/JSON endpoints.
@@ -357,9 +358,10 @@ func (a *API) clear(w http.ResponseWriter, r *http.Request) {
 		writeError(w, ferr)
 		return
 	}
-	if persist && res.Cleared > 0 {
+	if persist && (res.Cleared > 0 || res.PersistFailed) {
 		// #2368: a persisted clear says whether it reached the state file; a
-		// kill switch cleared in memory only answers "false".
+		// kill switch cleared in memory only, or whose clear could not reach
+		// an unreadable state file, answers "false".
 		w.Header().Set(HeaderPersisted, strconv.FormatBool(!res.PersistFailed))
 	}
 	w.WriteHeader(http.StatusNoContent)

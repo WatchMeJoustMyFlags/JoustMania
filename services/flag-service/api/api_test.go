@@ -721,6 +721,20 @@ func TestKillSwitchPersistedClearSignalsPersistFailure(t *testing.T) {
 			t.Fatalf("DELETE %d %s=%q, want 204 and false", code, HeaderPersisted, hdr)
 		}
 	})
+	t.Run("UC-053/A12 with the state file unreadable at start a persisted DELETE answers 500, a kill switch's 204 and X-Flag-Persisted false (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		srv := newEnvStateFile(t, path)
+		if code, _ := deleteHeader(t, srv.URL+"/game/sensitivity?persist=true"); code != http.StatusInternalServerError {
+			t.Fatalf("DELETE game/sensitivity %d, want 500 persist_failed", code)
+		}
+		code, hdr := deleteHeader(t, srv.URL+"/agent/interventions_allowed?persist=true")
+		if code != http.StatusNoContent || hdr != "false" {
+			t.Fatalf("DELETE %d %s=%q, want 204 and false with nothing in memory", code, HeaderPersisted, hdr)
+		}
+	})
 	t.Run("UC-053/A2 a persisted DELETE that reached the state file answers X-Flag-Persisted true", func(t *testing.T) {
 		srv := newEnvStateFile(t, filepath.Join(t.TempDir(), "admin.json"))
 		e := &env{t: t, srv: srv}

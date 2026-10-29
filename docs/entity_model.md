@@ -270,7 +270,6 @@ file is the source). A flag without a policy is read-only baseline. There are no
 | kind | How values are written and rendered | String | 8 | Not Null, Values: state, level, grant, event, overlay |
 | scope | Where a write applies | String | 16 | Not Null, Values: stack, game, game+serial, experiment+arm, real, fraction |
 | persist | Admin setting: a write that asks for it (`"persist": true`) is kept in the service's state file across restarts | Boolean | | Not Null, Default: false |
-| kill_switch | Safety flag (C-034): a persisted write or clear applies in memory even when the state file cannot be saved, and reports it as not persisted (#2368, UC-053 A12) | Boolean | | Not Null, Default: false |
 | allowed_variants | Declared variants a write may select | String | 400 | Optional |
 | min_value | Inclusive lower bound of a numeric value | Decimal | 10,3 | Optional |
 | max_value | Inclusive upper bound of a numeric value | Decimal | 10,3 | Optional, >= min_value |

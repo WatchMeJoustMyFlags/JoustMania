@@ -53,7 +53,6 @@ type mdRow struct {
 	scopes                 []string
 	persist                bool
 	realWrite              bool // the row names `real_write: no_live_real_game`
-	killSwitch             bool // the row names `kill_switch: true` (#2368)
 }
 
 var backticked = regexp.MustCompile("`([^`]+)`")
@@ -109,9 +108,8 @@ func parseFlagsMD(t *testing.T) []mdRow {
 		for _, k := range keys {
 			rows = append(rows, mdRow{
 				set: set, key: k[1], kind: cells[1], scopes: scopes, bounds: cells[3],
-				persist:    strings.HasPrefix(cells[4], "**yes**"),
-				realWrite:  strings.Contains(strings.Join(cells[5:], "|"), "`real_write: "+RealWriteNoLiveRealGame+"`"),
-				killSwitch: strings.Contains(strings.Join(cells[5:], "|"), "`kill_switch: true`"),
+				persist:   strings.HasPrefix(cells[4], "**yes**"),
+				realWrite: strings.Contains(strings.Join(cells[5:], "|"), "`real_write: "+RealWriteNoLiveRealGame+"`"),
 			})
 		}
 	}
@@ -196,9 +194,6 @@ func TestRegistryMatchesFlagsMD(t *testing.T) {
 			}
 			if p.RealWriteNeedsNoRealGame() != row.realWrite {
 				t.Errorf("%s: real_write %q in registry, flags.md names it: %v", row.key, p.RealWrite, row.realWrite)
-			}
-			if p.KillSwitch != row.killSwitch {
-				t.Errorf("%s: kill_switch %v in registry, flags.md names it: %v", row.key, p.KillSwitch, row.killSwitch)
 			}
 			checkBounds(t, row, p)
 		}
@@ -433,6 +428,61 @@ func TestRealWriteAttribute(t *testing.T) {
 		t.Run("UC-043/A17 the registry refuses real_write with "+c.name, func(t *testing.T) {
 			if _, err := Parse([]byte("flags:\n  - "+c.row+"\n"), b); err == nil {
 				t.Fatalf("accepted %s", c.row)
+			}
+		})
+	}
+}
+
+// The kill-switch set is a Go set (not a registry.yaml key, so released images
+// still load the checkout's registry.yaml); flags.md §13 lists the same names.
+//
+// UC: UC-053 A12
+func TestKillSwitchSetMatchesFlagsMD(t *testing.T) {
+	t.Run("UC-053/A12 flags.md §13 lists exactly the Go kill-switch set (#2368)", func(t *testing.T) {
+		raw, err := os.ReadFile(filepath.Join(root(t), "..", "..", "docs", "specs", "flags.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		const marker = "**Failed save, kill switches"
+		start := strings.Index(text, marker)
+		if start < 0 {
+			t.Fatalf("flags.md has no %q paragraph", marker)
+		}
+		para := text[start:]
+		if end := strings.Index(para, "\n\n"); end > 0 {
+			para = para[:end]
+		}
+		var got []string
+		for _, m := range backticked.FindAllStringSubmatch(para, -1) {
+			if strings.Contains(m[1], "/") && !strings.ContainsAny(m[1], " ?") {
+				got = append(got, m[1])
+			}
+		}
+		sort.Strings(got)
+		if want := KillSwitches(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("flags.md kill-switch paragraph names %v, the Go set is %v", got, want)
+		}
+	})
+	for _, dir := range []string{"", "ci"} {
+		t.Run("UC-053/A12 every kill switch is a persist row of registry.yaml against flagd/"+dir, func(t *testing.T) {
+			reg := loadReal(t, dir)
+			for _, name := range KillSwitches() {
+				found := false
+				for _, p := range reg.Policies() {
+					if id(p.Set, p.Key) == name {
+						found = true
+						if !p.Persist {
+							t.Errorf("%s: kill switch without persist: a persisted write is 400, so the exception never applies", name)
+						}
+						if !p.AppliesWhenPersistFails() {
+							t.Errorf("%s: AppliesWhenPersistFails is false", name)
+						}
+					}
+				}
+				if !found {
+					t.Errorf("%s: kill switch with no registry row", name)
+				}
 			}
 		})
 	}
