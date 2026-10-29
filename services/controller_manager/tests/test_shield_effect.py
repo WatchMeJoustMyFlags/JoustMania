@@ -208,7 +208,7 @@ class TestUC040ShieldEffect:
                 spans.append((name, span))
                 yield span
 
-        monkeypatch.setattr("services.controller_manager.feedback_manager.tracer", _Tracer())
+        monkeypatch.setattr("services.controller_manager.shield_effects.tracer", _Tracer())
         task = await _shield(manager, effect=effect, duration_ms=3000)
         await task
 

@@ -17,6 +17,7 @@ import pytest
 from lib.clock import FakeClock
 from proto import controller_manager_pb2 as pb
 from services.controller_manager import feedback_manager as fm_module
+from services.controller_manager import shield_effects as shield_module
 from services.controller_manager.effects_base import (
     HOLD_STATE_CHARGED,
     HOLD_STATE_EMPTY,
@@ -89,8 +90,8 @@ def no_flag_reads(monkeypatch):
     def _unexpected_read():
         raise AssertionError("read_hold_cues called although the command shipped every cue value")
 
-    monkeypatch.setattr(fm_module, "read_hold_cues", _unexpected_read)
-    monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
+    monkeypatch.setattr(shield_module, "read_hold_cues", _unexpected_read)
+    monkeypatch.setattr(shield_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
 
 
 @pytest.fixture
@@ -391,7 +392,7 @@ class TestUC040HoldRumble:
         assert backend.rumble[-1][1] == 110
         await _effect(cue_manager, HOLD, 0)
 
-        monkeypatch.setattr(fm_module, "read_hold_cues", lambda: HoldCues(hold_rumble=40, ending_lead_s=0))
+        monkeypatch.setattr(shield_module, "read_hold_cues", lambda: HoldCues(hold_rumble=40, ending_lead_s=0))
         partial = pb.ShieldCueParams(rumble_intensity=255, pulse_ms=150, empty_pulse_ms=400, ending_lead_ms=0)
         await _effect(cue_manager, HOLD, 5000, _state(energy=5000, cues=partial))
         assert backend.rumble[-1][1] == 40

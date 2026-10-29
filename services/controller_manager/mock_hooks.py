@@ -32,3 +32,23 @@ class MockFeatureHooks:
 
     def release_pattern_stream(self, subscriber_id: str) -> None:  # noqa: ARG002, B027
         """A stream ended: its pattern controllers may be claimed by the next one. Default: none."""
+
+    def get_adapter_type(self, serial: str) -> str:  # noqa: ARG002
+        """Adapter type name of a tracked serial (telemetry label). Default: none."""
+        return ""
+
+    def get_controller_metadata(self, serial: str) -> dict | None:  # noqa: ARG002
+        """Adapter-supplied metadata (reserved / tag) of a serial. Default: none."""
+        return None
+
+    def rollout_summary(self) -> tuple[str, int]:
+        """Window-level rollout ``(target_backend, cohort_count)``. Default: rollout off."""
+        return "", 0
+
+    def rollout_strategy(self) -> str:
+        """Active rollout strategy string for telemetry. Default: none."""
+        return ""
+
+    def take_led_failures(self, serial: str) -> int:  # noqa: ARG002
+        """Return and clear the count of failed LED writes of a serial. Default: none are counted."""
+        return 0

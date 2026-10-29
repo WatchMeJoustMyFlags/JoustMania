@@ -460,6 +460,10 @@ class MultiplexerBackend(ControllerBackend):
         adapter = self._serial_to_adapter.get(serial)
         return adapter.adapter_type if adapter else "unknown"
 
+    def take_led_failures(self, serial: str) -> int:
+        """Return and clear the failed LED writes counted for a serial (lock-free, as the dict pop was)."""
+        return self._led_failures.pop(serial, 0)
+
     def get_controller_metadata(self, serial: str) -> dict | None:
         """Return adapter-supplied metadata (e.g. reserved/tag) for a serial.
 

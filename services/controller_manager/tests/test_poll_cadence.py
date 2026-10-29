@@ -17,6 +17,8 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 
+from services.controller_manager.tests.backend_doubles import InertBackendHooks
+
 test_dir = Path(__file__).parent
 project_root = test_dir.parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -27,7 +29,7 @@ SLOW_STEP_SECONDS = 0.25
 MAX_POLL_GAP_SECONDS = 0.12
 
 
-class SlowBackend:
+class SlowBackend(InertBackendHooks):
     """Backend whose discovery and LED batch block their worker thread."""
 
     def __init__(self, discovery_delay: float = 0.0, led_delay: float = 0.0):
