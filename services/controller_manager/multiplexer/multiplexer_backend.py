@@ -29,9 +29,10 @@ logger = logging.getLogger(__name__)
 # The LED batch resends an unchanged output at least this often, so the
 # controller's LED (which times out on the hardware) stays lit.
 LED_KEEPALIVE_S = 2.0
-# Bound on one adapter's startup Discover + Open pass (#2351). Under the server's
-# 10 s startup wait, so a wedged HID service leaves the adapter with no
-# controllers (the discovery loop finds them later) instead of holding startup.
+# Bound on one adapter's startup Discover + Open pass (#2351). The adapters start
+# concurrently, so this is also the bound on the whole startup: under the server's
+# 10 s wait, a wedged HID service leaves its adapter with no controllers (the
+# discovery loop finds them later) instead of holding startup.
 INIT_ADAPTER_TIMEOUT_S = 8.0
 
 # Consecutive failed discovery passes of one adapter before its controllers are
@@ -165,26 +166,29 @@ class MultiplexerBackend(ControllerBackend):
         """
         with self._routing_lock:
             self._closed = False
-        any_success = False
-        for adapter in self._adapters:
-            try:
-                serials = await asyncio.wait_for(
-                    asyncio.to_thread(self._discover_and_open, adapter), timeout=INIT_ADAPTER_TIMEOUT_S
-                )
-                for serial in serials:
-                    self._set_route(serial, adapter)
-                any_success = True
-                logger.info(f"Initialized {adapter.adapter_type} adapter with {len(serials)} controllers")
-            except TimeoutError:
-                # Like a failed Discover: the backend is not answering yet, discovery retries.
-                logger.warning(
-                    f"{adapter.adapter_type} startup discovery took over {INIT_ADAPTER_TIMEOUT_S}s; "
-                    "starting with no controllers"
-                )
-                any_success = True
-            except Exception:
-                logger.exception(f"Failed to initialize {adapter.adapter_type} adapter")
-        return any_success
+        results = await asyncio.gather(*(self._initialize_adapter(adapter) for adapter in self._adapters))
+        return any(results)
+
+    async def _initialize_adapter(self, adapter: ControllerIOAdapter) -> bool:
+        """One adapter's bounded startup pass; True when the adapter counts as started."""
+        try:
+            serials = await asyncio.wait_for(
+                asyncio.to_thread(self._discover_and_open, adapter), timeout=INIT_ADAPTER_TIMEOUT_S
+            )
+        except TimeoutError:
+            # Like a failed Discover: the backend is not answering yet, discovery retries.
+            logger.warning(
+                f"{adapter.adapter_type} startup discovery took over {INIT_ADAPTER_TIMEOUT_S}s; "
+                "starting with no controllers"
+            )
+            return True
+        except Exception:
+            logger.exception(f"Failed to initialize {adapter.adapter_type} adapter")
+            return False
+        for serial in serials:
+            self._set_route(serial, adapter)
+        logger.info(f"Initialized {adapter.adapter_type} adapter with {len(serials)} controllers")
+        return True
 
     @staticmethod
     def _discover_and_open(adapter: ControllerIOAdapter) -> list[str]:
