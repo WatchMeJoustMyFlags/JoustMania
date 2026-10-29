@@ -119,6 +119,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         result = server => result?,
         () = shutdown_signal() => {
             info!("Stop signal received: switching controllers off");
+            // A second signal no longer kills (tokio keeps the handlers), so a
+            // stuck stop is cut short here.
+            force_exit_after(FORCE_EXIT_AFTER, || std::process::exit(0));
             let off_sent = tokio::task::spawn_blocking({
                 let router = outputs.router.clone();
                 move || device_manager::graceful_stop(&cmd_tx, &router, SHUTDOWN_OFF_BUDGET)
@@ -130,7 +133,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 warn!("Not every controller was switched off within {SHUTDOWN_OFF_BUDGET:?}");
             }
-            flusher.flush(FLUSH_BUDGET);
+            // Off the runtime workers: the OTLP export needs them while we wait.
+            let _ = tokio::task::spawn_blocking(move || flusher.flush(FLUSH_BUDGET)).await;
             std::process::exit(0);
         }
     }
@@ -144,6 +148,20 @@ const SHUTDOWN_OFF_BUDGET: std::time::Duration = std::time::Duration::from_secs(
 
 /// How long a flush of logs, traces and metrics may take before the exit.
 const FLUSH_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A stop that has not ended the process after this long is cut short.
+const FORCE_EXIT_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `exit` on a plain thread after `after`, whatever the runtime is doing.
+fn force_exit_after(after: std::time::Duration, exit: impl FnOnce() + Send + 'static) {
+    let _ = std::thread::Builder::new()
+        .name("force-exit".into())
+        .spawn(move || {
+            std::thread::sleep(after);
+            warn!("Stop did not finish in {after:?}: exiting now");
+            exit();
+        });
+}
 
 /// Resolves on SIGTERM (docker stop) or SIGINT.
 async fn shutdown_signal() {
@@ -504,6 +522,59 @@ mod tests {
         assert!(out.contains("trace exporter failed to build"), "got: {out}");
     }
 
+    /// A log exporter whose export hangs for a long time (an unreachable collector).
+    #[derive(Debug)]
+    struct HangingExporter;
+
+    impl opentelemetry_sdk::logs::LogExporter for HangingExporter {
+        async fn export(
+            &self,
+            _batch: opentelemetry_sdk::logs::LogBatch<'_>,
+        ) -> opentelemetry_sdk::error::OTelSdkResult {
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            Ok(())
+        }
+    }
+
+    // UC: UC-002 A7
+    #[test]
+    fn test_flush_gives_up_after_its_budget_when_the_exporter_hangs() {
+        use opentelemetry::logs::{LogRecord as _, Logger as _, LoggerProvider as _};
+        let provider = opentelemetry_sdk::logs::SdkLoggerProvider::builder()
+            .with_batch_exporter(HangingExporter)
+            .build();
+        let logger = provider.logger("test");
+        let mut record = logger.create_log_record();
+        record.set_body("x".into());
+        logger.emit(record);
+        let flusher = TelemetryFlusher {
+            logs: Some(provider),
+            traces: None,
+            metrics: Arc::new(Mutex::new(None)),
+        };
+
+        let start = std::time::Instant::now();
+        flusher.flush(std::time::Duration::from_secs(1));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900)
+                && elapsed < std::time::Duration::from_millis(1500),
+            "flush took {elapsed:?}, the budget is 1 s"
+        );
+    }
+
+    // UC: UC-002 A7
+    #[test]
+    fn test_force_exit_runs_after_the_delay_on_its_own_thread() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        force_exit_after(std::time::Duration::from_millis(100), move || {
+            let _ = tx.send(());
+        });
+        assert!(rx.try_recv().is_err(), "exited before the delay");
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok());
+    }
+
+    // UC: UC-002 A7
     #[test]
     fn test_flush_is_bounded_and_ok_without_providers() {
         let flusher = TelemetryFlusher {

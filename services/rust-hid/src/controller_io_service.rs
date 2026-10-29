@@ -166,13 +166,7 @@ impl ControllerIoService for ControllerIoServiceImpl {
             while let Some(result) = inbound.next().await {
                 match result {
                     Ok(io_cmd) => {
-                        outputs.submit(
-                            &normalize_serial(&io_cmd.serial),
-                            io_cmd.r.clamp(0, 255) as u8,
-                            io_cmd.g.clamp(0, 255) as u8,
-                            io_cmd.b.clamp(0, 255) as u8,
-                            io_cmd.rumble.clamp(0, 255) as u8,
-                        );
+                        route_command(&outputs, &io_cmd);
                     }
                     Err(e) => {
                         warn!(error = %e, "Error reading IOCommand from stream");
@@ -215,6 +209,17 @@ impl ControllerIoService for ControllerIoServiceImpl {
         info!(stream_id, "StreamIO started");
         Ok(Response::new(Box::pin(output_stream)))
     }
+}
+
+/// Hand one IOCommand to its controller's output slot (serial normalized, values clamped).
+fn route_command(outputs: &OutputRouter, cmd: &IoCommand) -> bool {
+    outputs.submit(
+        &normalize_serial(&cmd.serial),
+        cmd.r.clamp(0, 255) as u8,
+        cmd.g.clamp(0, 255) as u8,
+        cmd.b.clamp(0, 255) as u8,
+        cmd.rumble.clamp(0, 255) as u8,
+    )
 }
 
 #[cfg(test)]
@@ -271,5 +276,43 @@ mod tests {
             .unwrap();
 
         assert_eq!(responder.join().unwrap(), vec![NORMALIZED; 3]);
+    }
+
+    // UC: UC-002 BR-005
+    #[test]
+    fn test_a_stream_command_reaches_the_slot_opened_under_the_normalized_serial() {
+        struct Sink(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
+        impl crate::hid::HidDeviceIo for Sink {
+            fn read(&self, _buf: &mut [u8]) -> hidapi::HidResult<usize> {
+                Ok(0)
+            }
+            fn write(&self, data: &[u8]) -> hidapi::HidResult<usize> {
+                self.0.lock().unwrap().push(data.to_vec());
+                Ok(data.len())
+            }
+        }
+        let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let router = OutputRouter::default();
+        router.open(
+            NORMALIZED,
+            std::sync::Arc::new(std::sync::Mutex::new(Sink(writes.clone()))),
+            crate::output::OutputRate::new(100),
+        );
+
+        let cmd = IoCommand {
+            serial: RAW.into(),
+            r: 9,
+            g: 8,
+            b: 7,
+            rumble: 0,
+        };
+        assert!(route_command(&router, &cmd), "colon-form serial not routed");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while writes.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let first = writes.lock().unwrap().first().cloned().expect("a write");
+        assert_eq!((first[2], first[3], first[4]), (9, 8, 7));
     }
 }

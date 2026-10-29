@@ -1794,13 +1794,50 @@ mod tests {
             &outputs.router,
             Duration::from_secs(2)
         ));
+        // Read before the join: graceful_stop itself must have waited for the off.
+        let last = device.reports().pop().expect("a write");
         handle.join().unwrap();
 
-        let last = device.reports().pop().expect("a write");
         assert_eq!(
             (last[2], last[3], last[4], last[6]),
             (0, 0, 0, 0),
             "the last write must be LED off, rumble 0"
         );
+    }
+
+    // UC: UC-002 A7
+    #[test]
+    fn test_graceful_stop_waits_for_a_writer_stuck_in_a_write() {
+        use crate::output::tests::{RecordingDevice, WriteMode};
+        let device = RecordingDevice::new(WriteMode::Block);
+        let router = OutputRouter::default();
+        router.open(
+            SERIAL,
+            Arc::new(Mutex::new(device.clone())),
+            crate::output::OutputRate::new(100),
+        );
+        router.submit(SERIAL, 1, 2, 3, 0); // the writer blocks in this write
+        std::thread::sleep(Duration::from_millis(30));
+        let (cmd_tx, _cmd_rx) = mpsc::channel();
+
+        let start = std::time::Instant::now();
+        assert!(
+            !graceful_stop(&cmd_tx, &router, Duration::from_millis(300)),
+            "a writer is still stuck: the stop must report it"
+        );
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "the stop returned before its timeout: {:?}",
+            start.elapsed()
+        );
+
+        // The device loop closes the controller; the write returns, the off goes out.
+        router.close(SERIAL);
+        device
+            .release
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(graceful_stop(&cmd_tx, &router, Duration::from_secs(2)));
+        let last = device.reports().pop().expect("a write");
+        assert_eq!((last[2], last[3], last[4], last[6]), (0, 0, 0, 0));
     }
 }
