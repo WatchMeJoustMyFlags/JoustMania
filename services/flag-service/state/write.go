@@ -119,6 +119,10 @@ type WriteResult struct {
 	Epoch           string          `json:"epoch"`
 	SnapshotVersion uint64          `json:"snapshot_version"`
 	Persisted       bool            `json:"persisted"`
+	// PersistFailed: a persisted clear of a kill switch applied in memory but
+	// the state file could not be written (#2368); the DELETE answers 204 with
+	// the header X-Flag-Persisted: false.
+	PersistFailed bool `json:"-"`
 	// Dry runs only: the flagd flag before and after the write.
 	RenderedBefore json.RawMessage `json:"rendered_before,omitempty"`
 	Rendered       json.RawMessage `json:"rendered,omitempty"`
@@ -319,8 +323,22 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 		if req.Persist {
 			// The host's setting replaces any in-memory overlay, so it takes
 			// effect now, and is kept across restarts (A2).
+			prevAdmin, prevStack := f.admin, f.stack
 			f.admin, f.stack = v, nil
-			s.saveAdminLocked()
+			if err := s.saveAdminLocked(); err != nil {
+				if f.policy.AppliesWhenPersistFails() {
+					// A kill switch takes effect now; the answer says
+					// persisted:false (#2368, UC-053 A2/A12).
+					s.opts.Logger.Error("flag service: kill switch applied in memory only; the state file could not be written", "flag", f.key, "error", err)
+					// Not on disk: flagservice_overlays must not count it
+					// as persisted until a later save writes it.
+					v.Persisted = false
+					break
+				}
+				// Memory must match disk: undo, and tell the caller (#2368).
+				f.admin, f.stack = prevAdmin, prevStack
+				return res, fserr.PersistFailed("%s was not changed: the state file could not be written: %v", req.Flag, err)
+			}
 		} else {
 			f.stack = v
 		}
@@ -484,9 +502,36 @@ func (s *State) Clear(req ClearRequest) (WriteResult, *fserr.Error) {
 	case registry.ScopeStack:
 		switch {
 		case req.Persist && f.admin != nil:
-			f.admin, res.Cleared = nil, 1
+			prevAdmin := f.admin
+			f.admin = nil
+			res.Cleared = 1
+			if err := s.saveAdminLocked(); err != nil {
+				if f.policy.AppliesWhenPersistFails() {
+					// A kill switch is cleared now; the 204 carries the
+					// not-persisted header (#2368, services.md §7.2).
+					s.opts.Logger.Error("flag service: kill switch cleared in memory only; the state file could not be written", "flag", f.key, "error", err)
+					res.PersistFailed = true
+					break
+				}
+				// The old value would come back after a restart: keep it
+				// live too, and tell the caller (#2368).
+				f.admin, res.Cleared = prevAdmin, 0
+				return res, fserr.PersistFailed("the persisted value of %s was not cleared: the state file could not be written: %v", req.Flag, err)
+			}
 			res.Persisted = true
-			s.saveAdminLocked()
+		case req.Persist && s.persistBlocked && f.policy.Persist:
+			// No admin value in memory, but the unreadable state file may
+			// still hold one that returns at the next start (UC-053 A12):
+			// a 204 would claim it is gone (#2368). saveAdminLocked counts
+			// the failure and returns the error. A flag whose policy takes no
+			// persisted value cannot be in the file: it keeps the plain 204.
+			err := s.saveAdminLocked()
+			if f.policy.AppliesWhenPersistFails() {
+				s.opts.Logger.Error("flag service: kill switch clear not persisted; the state file was unreadable at start", "flag", f.key, "error", err)
+				res.PersistFailed = true
+				break
+			}
+			return res, fserr.PersistFailed("the persisted value of %s was not cleared: %v", req.Flag, err)
 		case !req.Persist && f.stack != nil:
 			f.stack, res.Cleared = nil, 1
 		}

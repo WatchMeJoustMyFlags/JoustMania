@@ -12,22 +12,23 @@ import (
 
 // Reason codes (services.md §7.2).
 const (
-	Malformed        = "malformed"
-	UnknownFlagSet   = "unknown_flag_set"
-	UnknownFlag      = "unknown_flag"
-	GameNotLive      = "game_not_live"
-	SetNotServed     = "set_not_served"
-	TooManyGames     = "too_many_games"
-	RealGameLive     = "real_game_live"
-	WriterMismatch   = "writer_mismatch"
-	FlagReadOnly     = "flag_read_only"
-	OutOfBounds      = "out_of_bounds"
-	SerialNotInGame  = "serial_not_in_game"
-	NoSyncStream     = "no_sync_stream"
-	Internal         = "internal"
-	ReasonOK         = "ok"
-	ReasonNotFound   = "not_found"
-	ReasonRegistered = "already_registered"
+	Malformed           = "malformed"
+	UnknownFlagSet      = "unknown_flag_set"
+	UnknownFlag         = "unknown_flag"
+	GameNotLive         = "game_not_live"
+	SetNotServed        = "set_not_served"
+	TooManyGames        = "too_many_games"
+	RealGameLive        = "real_game_live"
+	WriterMismatch      = "writer_mismatch"
+	FlagReadOnly        = "flag_read_only"
+	OutOfBounds         = "out_of_bounds"
+	SerialNotInGame     = "serial_not_in_game"
+	NoSyncStream        = "no_sync_stream"
+	Internal            = "internal"
+	ReasonPersistFailed = "persist_failed"
+	ReasonOK            = "ok"
+	ReasonNotFound      = "not_found"
+	ReasonRegistered    = "already_registered"
 )
 
 // Error is a rejected request.
@@ -64,6 +65,12 @@ func Unprocessable(reason, format string, args ...any) *Error {
 }
 func Unavailable(reason, format string, args ...any) *Error {
 	return newf(http.StatusServiceUnavailable, reason, format, args...)
+}
+
+// PersistFailed is a 500: the state file could not be written, so the admin
+// write was rolled back and nothing changed (#2368).
+func PersistFailed(format string, args ...any) *Error {
+	return newf(http.StatusInternalServerError, ReasonPersistFailed, format, args...)
 }
 
 // As extracts an *Error from err, wrapping any other error as 500 internal.
