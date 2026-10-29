@@ -179,6 +179,7 @@ jobs:
             flag_service_tests:
               - 'services/flag-service/**'
               - 'services/flagd/**'
+              - 'docs/specs/flags.md'
             # #2403: the checkout's registry.yaml must load with the release
             # flag-service pinned in .env (compose mounts one next to the other).
             registry_pinned:
@@ -186,7 +187,6 @@ jobs:
               - 'services/flagd/**'
               - '.env'
               - 'scripts/ci/check-registry-pinned.sh'
-              - 'docs/specs/flags.md'
             dockerfiles:
               - '**/Dockerfile'
               - '.hadolint.yaml'

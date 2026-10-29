@@ -21,8 +21,12 @@ REGISTRY="${1:-$ROOT/services/flag-service/registry.yaml}"
 BASELINE_DIR="$ROOT/services/flagd"
 
 IMAGE_TAG="$(sed -n 's/^IMAGE_TAG=\([^ #]*\).*/\1/p' "$ROOT/.env" | head -n1)"
-if [[ -z "$IMAGE_TAG" || "$IMAGE_TAG" == "latest" ]]; then
-  echo "SKIP: .env pins no release IMAGE_TAG ('${IMAGE_TAG}')" >&2
+if [[ -z "$IMAGE_TAG" ]]; then
+  echo "ERROR: .env has no IMAGE_TAG; compose would not know which flag-service release to run" >&2
+  exit 2
+fi
+if [[ "$IMAGE_TAG" == "latest" ]]; then
+  echo "SKIP: .env pins IMAGE_TAG=latest, which builds the flag-service from this checkout" >&2
   exit 0
 fi
 TAG="joustmania-v${IMAGE_TAG}"
@@ -64,8 +68,11 @@ func main() {
 }
 GO
 
+# Build first, so a compile or download problem is a setup error (2), not "does not load".
+(cd "$WORK/rel/services/flag-service" && go build -o "$WORK/registrycheck" ./zz_registrycheck) \
+  || { echo "ERROR: could not build the registry check of $TAG" >&2; exit 2; }
 set +e
-(cd "$WORK/rel/services/flag-service" && go run ./zz_registrycheck "$BASELINE_DIR" "$REGISTRY")
+"$WORK/registrycheck" "$BASELINE_DIR" "$REGISTRY"
 rc=$?
 set -e
 if [[ $rc -eq 1 ]]; then
