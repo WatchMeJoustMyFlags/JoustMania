@@ -299,14 +299,6 @@ class TestMultiplexerRouting:
         a1.consume_death_frame.assert_not_called()
         a2.consume_death_frame.assert_not_called()
 
-    def test_consume_death_frame_skips_adapter_without_hook(self):
-        """Hardware adapters lacking the hook are skipped, not errored (#926)."""
-        mux, a1, a2 = self._setup_two_adapters()
-        # Real hardware adapters don't implement consume_death_frame.
-        del a1.consume_death_frame
-
-        mux.consume_death_frame("AA:AA")  # must not raise
-
     @pytest.mark.asyncio
     async def test_set_led_stores_color_centrally(self):
         mux, a1, a2 = self._setup_two_adapters()

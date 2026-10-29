@@ -27,6 +27,7 @@ from lib.controller_constants import ButtonKey
 from proto import controller_manager_pb2
 from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.multiplexer.press_latch import latch_presses, merge_latched_presses
+from services.controller_manager.tests.backend_doubles import InertBackendHooks, autospec_backend
 
 LAG_METRIC = "services.controller_manager.metrics.controller_input_lag_seconds"
 TIME_FN = "services.controller_manager.discovery_loop.time.time"
@@ -102,7 +103,7 @@ class TestLatchedTapIsNotAFreshFrame:
         loop = _make_loop(backend)
 
         await _poll_at(loop, 100.0)  # first sample
-        fresh_before = loop._hw_fresh[SERIAL]
+        fresh_before = loop._records[SERIAL].hw_fresh
 
         # A tap landed between two polls, but the backend has no new sample: the poll returns a copy.
         latch_presses(latch, SERIAL, {ButtonKey.TRIGGER: True})
@@ -110,7 +111,7 @@ class TestLatchedTapIsNotAFreshFrame:
         assert loop.controller_states[SERIAL][ButtonKey.TRIGGER] is True  # the tap reached the loop
         await _poll_at(loop, 100.060)  # the release poll: the real sample again
 
-        assert loop._hw_fresh[SERIAL] == fresh_before
+        assert loop._records[SERIAL].hw_fresh == fresh_before
         assert loop.sample_age_seconds(SERIAL, 100.070) == pytest.approx(0.070)
 
 
@@ -121,7 +122,7 @@ class TestGameplayFrameObservesLag:
             patch("services.controller_manager.servicer.create_backend") as create_backend,
             patch("services.controller_manager.servicer.DiscoveryLoop") as discovery_cls,
         ):
-            create_backend.return_value = MagicMock(spec=[])
+            create_backend.return_value = autospec_backend()
             mock_loop = MagicMock()
             mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
             mock_loop.drain_disconnects = MagicMock(return_value=[])
@@ -176,7 +177,7 @@ class TestGameplayFrameObservesLag:
         servicer, mock_loop = servicer
         mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
 
-        class PatternBackend:
+        class PatternBackend(InertBackendHooks):
             def pattern_frame(self, _serial, _subscriber_id, _explicit):
                 return {"x": 0.0, "y": 0.0, "z": 1.0}, False
 

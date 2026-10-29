@@ -413,18 +413,17 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         """
         gameplay_data = []
         # Mock death latch is drained per DELIVERED frame, not by wall-clock
-        # (#926): hold a reference once (duck-typed — only MockAdapter has it,
-        # real hardware backends do not need it) and call it for each streamed
-        # controller below.
-        consume_death = getattr(self.backend, "consume_death_frame", None)
+        # (#926): only MockAdapter does anything, every other backend inherits
+        # the no-op, so it is called for each streamed controller below.
+        consume_death = self.backend.consume_death_frame
         # Trigger latch (#1837): a press since the previous delivered frame, drained per
         # game frame like the death latch so observer streams never steal it.
-        consume_trigger = getattr(self.backend, "consume_trigger_press", None)
+        consume_trigger = self.backend.consume_trigger_press
         # Motion patterns (UC-046, #1258): a pattern controller's DELIVERED frame k
         # carries f(k / r), evaluated here (once per delivered frame) rather than in
         # the 100 Hz poll, so game time follows delivered frames, not polls.
-        pattern_frame = getattr(self.backend, "pattern_frame", None)
-        pattern_serials = self._pattern_serials() if pattern_frame is not None else set()
+        pattern_frame = self.backend.pattern_frame
+        pattern_serials = self.backend.pattern_serials()
         now = time.time()
         # Input lag is a game-path signal: only game streams (which always send a
         # controller filter) record it, not the dashboard's unfiltered stream, so
@@ -462,13 +461,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             # mock deaths are held until they have been STREAMED to the game
             # enough times to cross the EMA threshold, rather than for a fixed
             # wall-clock window a starved send loop could skip entirely (#926).
-            if consume_death is not None and game_stream and serial in roster:
+            if game_stream and serial in roster:
                 consume_death(serial)
 
             # The trigger is the level OR a press latched since the last game frame.
             # A pattern controller presses by its trigger policy (UC-046 BR-018), owner stream only.
             trigger_pressed = full_state.trigger_pressed or pattern_trigger
-            if consume_trigger is not None and game_stream and serial in roster and consume_trigger(serial) is True:
+            if game_stream and serial in roster and consume_trigger(serial) is True:
                 trigger_pressed = True
 
             # Drain health counters accumulated since last frame (game streams only)
@@ -552,19 +551,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             self._input_lag_histograms[serial] = histogram
         histogram.observe(age)
 
-    def _pattern_serials(self) -> set:
-        """Serials with a motion pattern; empty for backends without patterns."""
-        serials = getattr(self.backend, "pattern_serials", None)
-        if serials is None:
-            return set()
-        return serials() if callable(serials) else serials
-
     def _pattern_stream_rate(self, current_filter: set | None) -> int | None:
         """Pinned rate when the stream's explicit filter names a pattern controller."""
         if not current_filter:
             return None
-        rate_of = getattr(self.backend, "pattern_stream_rate", None)
-        return rate_of(current_filter) if rate_of is not None else None
+        return self.backend.pattern_stream_rate(current_filter)
 
     async def StreamGameplayData(self, request_iterator, context):
         """
@@ -674,9 +665,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                         metrics.stream_frame_overruns_total.inc()
                         # UC-046 A10: the pattern signal stays frame-indexed, but the
                         # game is no longer exact; count it per pattern controller.
-                        record_overrun = getattr(self.backend, "record_pattern_overrun", None)
-                        if pattern_hz is not None and record_overrun is not None:
-                            record_overrun(subscriber_id)
+                        if pattern_hz is not None:
+                            self.backend.record_pattern_overrun(subscriber_id)
 
                     await asyncio.sleep(sleep_time)
 
@@ -700,9 +690,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             self._schedule_shield_cleanup(closed_roster)
 
             # A reconnecting game stream may claim this stream's pattern controllers.
-            release_patterns = getattr(self.backend, "release_pattern_stream", None)
-            if release_patterns is not None:
-                release_patterns(subscriber_id)
+            self.backend.release_pattern_stream(subscriber_id)
 
             # Update stream metrics
             metrics.active_streams.dec()
