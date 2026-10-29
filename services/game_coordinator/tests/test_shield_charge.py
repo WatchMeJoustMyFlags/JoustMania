@@ -652,6 +652,43 @@ async def test_a_grant_arriving_during_cleanup_leaves_no_charge_span_open():
     late_span.end.assert_not_called()
 
 
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A32")
+@pytest.mark.usefixtures("flags")
+async def test_a_grant_during_cleanup_of_a_cancelled_run_closes_its_charge_span():
+    """A32 (#1868 nit): a cancelled run keeps its state RUNNING and sets no outcome latch, so a
+    grant that lands while cleanup() awaits is applied; the second close ends its charge span."""
+    game = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=3, infinite=True),
+        event_publisher=EventCollector().publish,
+        audio_client=None,
+        game_id="test_a32_cancel_grant_in_cleanup",
+        initial_players=[type("P", (), {"serial": f"mock_controller_{i}"})() for i in range(3)],
+    )
+    late_span = create_autospec(Span, instance=True)
+    granted: list[bool] = []
+
+    async def cancelled_gameplay():
+        raise asyncio.CancelledError
+
+    async def cleanup_with_late_grant():
+        player_span = create_autospec(Span, instance=True)
+        player_span.get_span_context.return_value = INVALID_SPAN_CONTEXT
+        game.players["mock_controller_0"].span = player_span
+        with patch.object(base_module.tracer, "start_span", return_value=late_span):
+            granted.append(await game.grant_shield("mock_controller_0", 5.0))
+
+    game._run_gameplay_phase = cancelled_gameplay
+    game.cleanup = AsyncMock(side_effect=cleanup_with_late_grant)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(game.run(), timeout=10)
+
+    game.cleanup.assert_awaited_once()
+    assert granted == [True]
+    late_span.end.assert_called_once()
+
+
 # --------------------------------------------------------------------------- #
 # UC-040 BR-019: activation mode
 # --------------------------------------------------------------------------- #
