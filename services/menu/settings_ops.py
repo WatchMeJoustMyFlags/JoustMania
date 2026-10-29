@@ -567,7 +567,7 @@ class SettingsOps:
 
     # --- Feedback ---------------------------------------------------------------------------
 
-    async def announce(self, option: str, variant: str | None) -> None:
+    async def announce(self, option: str, variant: str | None) -> None:  # noqa: C901 - one branch per option voice; split later
         """The voice line for a new value (UC-012 voices, UC-015 step 4, 5, 8). Best effort.
 
         A new mode also pulses its colour on every lobby controller (UC-015 BR-015), and so does a

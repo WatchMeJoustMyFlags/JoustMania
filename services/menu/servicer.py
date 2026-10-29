@@ -1052,8 +1052,6 @@ class MenuServicer(menu_pb2_grpc.MenuServiceServicer):
         await asyncio.sleep(0.1)
         mode = game_mode if game_mode is not None else self.current_selection
 
-        metrics.button_presses_total.labels(button="trigger", action="press").inc()
-
         # Determine trace context for the game:
         # - Web source: inherit current context (connects to dashboard trace)
         # - Controller/button sources: fresh context (prevents chaining to previous game)

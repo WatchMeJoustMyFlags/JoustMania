@@ -9,7 +9,7 @@ the replayed connect events can register a controller again:
 
 - step 2: the menu processes one connect event per controller on the new
   stream (``menu_button_frames_processed_total`` grows by 3; the counter
-  counts connect and disconnect events only, never button presses);
+  counts every event of the stream since #2380: connect, disconnect and button);
 - steps 1 and 3: the READY controllers show the dim lobby colour again
   (CONNECTED, un-readied), and every controller does.
 """

@@ -346,8 +346,6 @@ class AdminModeHandler(AdminOptionsMixin):
         """
         from proto import controller_manager_pb2
 
-        self.metrics.button_presses_total.labels(button="admin_combo", action="hold").inc()
-
         # Create parent span for entire admin mode session (ended in exit)
         self.session_span = self.tracer.start_span("admin_mode_session")
         self.session_span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)

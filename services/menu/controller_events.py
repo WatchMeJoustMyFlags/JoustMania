@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import TYPE_CHECKING, Protocol
 
 from opentelemetry import context as otel_context
@@ -297,12 +298,17 @@ class ControllerEventLoop:
         Args:
             event: ButtonEvent from the stream
         """
+        event_type = _EVENT_TYPE_NAMES.get(event.event_type, "button")
+        # Every stream event is a frame; the histogram times the whole dispatch, handler failures included (#2380).
+        self._metrics.button_frames_processed_total.inc()
+        started = time.perf_counter()
         try:
             await self._dispatch_event(event)
         except Exception:
-            event_type = _EVENT_TYPE_NAMES.get(event.event_type, "button")
             logger.exception(f"Error handling {event_type} event from {event.serial}; event dropped, stream kept")
             self._metrics.button_event_errors_total.labels(event_type=event_type).inc()
+        finally:
+            self._metrics.button_dispatch_seconds.labels(event_type=event_type).observe(time.perf_counter() - started)
 
     async def _dispatch_event(self, event) -> None:
         """
@@ -319,24 +325,25 @@ class ControllerEventLoop:
 
         if event.event_type == controller_manager_pb2.EVENT_CONNECT:
             await self._callbacks.on_connect(serial)
-            self._metrics.button_frames_processed_total.inc()
             # Reconcile after processing the connect event
             if event.connected_serials:
                 await self._reconcile_controllers(list(event.connected_serials))
         elif event.event_type == controller_manager_pb2.EVENT_DISCONNECT:
             await self._callbacks.on_disconnect(serial)
-            self._metrics.button_frames_processed_total.inc()
             # Reconcile after processing the disconnect event
             if event.connected_serials:
                 await self._reconcile_controllers(list(event.connected_serials))
         else:
             # Regular button event (EVENT_BUTTON is default, 0)
+            is_press = event.action == controller_manager_pb2.ACTION_PRESS
+            button_name = BUTTON_TYPE_NAMES.get(event.button, "unknown")
+            # A real press, counted whether or not the menu acts on it (#2380).
+            if is_press:
+                self._metrics.button_presses_total.labels(button=button_name, action="press").inc()
+
             # Only process when menu is running
             if self._callbacks.get_menu_state() != menu_pb2.MenuState.RUNNING:
                 return
-
-            is_press = event.action == controller_manager_pb2.ACTION_PRESS
-            button_name = BUTTON_TYPE_NAMES.get(event.button, "unknown")
 
             logger.debug(f"Button event: {serial} {button_name}={'PRESS' if is_press else 'RELEASE'}")
             # Debounce on when the press happened (controller-manager stamp, ms), not when we get to it (UC-012 BR-007).

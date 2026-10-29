@@ -130,6 +130,7 @@ The totals (the number of names, of names without a consumer and of names never 
 | `grpc_request_duration_seconds` | histogram | `method` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in audio, controller-manager, game-coordinator | (none) |  |
 | `grpc_requests_total` | counter | `method`, `status` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in audio, controller-manager, game-coordinator | (none) |  |
 | `menu_audio_rpc_failures_total` | counter | `rpc`, `reason` | menu | yes | (none) |  |
+| `menu_button_dispatch_seconds` | histogram | `event_type` | menu | yes | (none) |  |
 | `menu_button_event_errors_total` | counter | `event_type` | menu | yes | (none) |  |
 | `menu_button_frames_processed_total` | counter | (none) | menu | yes | (none) |  |
 | `menu_button_presses_total` | counter | `button`, `action` | menu | yes | (none) |  |

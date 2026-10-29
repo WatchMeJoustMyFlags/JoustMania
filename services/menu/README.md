@@ -357,8 +357,9 @@ Metrics are pushed over OTLP to the collector (no `/metrics` endpoint); names ar
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `menu_button_frames_processed_total` | Counter | - | Controller state frames processed |
-| `menu_button_presses_total` | Counter | button, action | Button presses detected |
+| `menu_button_frames_processed_total` | Counter | - | Button-stream events dispatched (connect, disconnect, button) |
+| `menu_button_presses_total` | Counter | button, action | Button presses received (`action` = `press`) |
+| `menu_button_dispatch_seconds` | Histogram | event_type | Time to dispatch one button-stream event |
 
 ### Stream Metrics
 

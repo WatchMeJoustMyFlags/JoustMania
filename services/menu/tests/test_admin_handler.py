@@ -868,13 +868,6 @@ class TestEnter:
         assert inactive_handler.current_option == 0
 
     @pytest.mark.asyncio
-    async def test_enter_records_metric(self, inactive_handler, mock_metrics):
-        """enter() should increment button_presses_total for admin_combo."""
-        await inactive_handler.enter("s1")
-        mock_metrics.button_presses_total.labels.assert_called_with(button="admin_combo", action="hold")
-        mock_metrics.button_presses_total.labels().inc.assert_called_once()
-
-    @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[2])
     async def test_enter_sends_admin_enter_effect(self, inactive_handler, mock_state_manager):
         """enter() should send GAME_EFFECT_ADMIN_ENTER."""
