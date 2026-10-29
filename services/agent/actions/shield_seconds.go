@@ -3,6 +3,7 @@ package actions
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -102,7 +103,7 @@ func (r *ShieldSecondsReader) read(ctx context.Context) (float64, string) {
 		return 0, "not a number"
 	}
 	if v < shieldSecondsMin || v > shieldSecondsMax {
-		return 0, "out of bounds"
+		return 0, fmt.Sprintf("out of bounds (value %v)", v)
 	}
 	return v, ""
 }

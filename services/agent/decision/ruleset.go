@@ -132,7 +132,7 @@ func enduranceCandidates(c gamecontext.GameContext, fit FitnessThresholds) []can
 }
 
 // balancedCandidates implements R3 (handicap the skill outlier when the spread
-// exceeds the fitness gap) and R4 (shield the weakest player while the field
+// exceeds the fitness gap) and R4 (shield a struggling player while the field
 // shrinks).
 // R4 yields one candidate per player; rankLocked keeps one (pickShieldCatchUp).
 func balancedCandidates(c gamecontext.GameContext, fit FitnessThresholds) []candidate {
@@ -196,7 +196,7 @@ func balancedCandidates(c gamecontext.GameContext, fit FitnessThresholds) []cand
 					decision: Decision{
 						Intervention:    InterventionGrantShield,
 						TargetSerial:    p.Serial,
-						Reason:          fmt.Sprintf("shield the weakest player (skill %.2f) while the field shrinks", *p.SkillLevel),
+						Reason:          fmt.Sprintf("shield a struggling player (skill %.2f) while the field shrinks", *p.SkillLevel),
 						ObjectiveServed: ObjectiveBalanced,
 						Fitness: map[string]float64{
 							"target_skill":   *p.SkillLevel,

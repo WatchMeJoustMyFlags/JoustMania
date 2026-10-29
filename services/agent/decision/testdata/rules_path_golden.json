@@ -450,7 +450,7 @@
         "Intervention": "grant_shield",
         "TargetSerial": "WEAK",
         "Value": "",
-        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
+        "Reason": "shield a struggling player (skill 0.20) while the field shrinks",
         "ObjectiveServed": "balanced",
         "Fitness": {
           "active_players": 3,
@@ -509,7 +509,7 @@
         "Intervention": "grant_shield",
         "TargetSerial": "WEAK",
         "Value": "",
-        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
+        "Reason": "shield a struggling player (skill 0.20) while the field shrinks",
         "ObjectiveServed": "balanced",
         "Fitness": {
           "active_players": 3,
