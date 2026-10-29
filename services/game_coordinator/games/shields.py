@@ -85,6 +85,12 @@ SHIELD_HELP_CUE_COLOR = Colors.Magenta.value
 SHIELD_HELP_CUE_DURATION_MS = 500
 SHIELD_HELP_CUE_SPEED = 4  # pulses per second: two pulses in 500 ms
 
+# A grant_shield that lands once the game is ending (outcome latched, force-ended, or
+# state ENDING / ENDED) is refused (UC-040 A42 step 3): no shield layer and no cue may
+# appear over the winner rainbow (a PULSE takes over every effect but IDENTIFY and
+# SHOW_BATTERY in the controller manager).
+SHIELD_REFUSED_GAME_ENDING = "game_ending"
+
 
 class ShieldMixin:
     """Shield behaviour of every game mode, mixed into ``BaseGameMode`` (#2360)."""
@@ -120,7 +126,8 @@ class ShieldMixin:
         Every caller is an agent grant (``handle_shield_seconds``, the
         ``shield_seconds`` intervention), so an applied grant first pulses the
         helped controller magenta (#2395, UC-040 A42, BR-031) in all three modes;
-        a refused or kept grant sends no cue.
+        a refused or kept grant sends no cue. Once the game is ending (outcome
+        latched, force-ended, ENDING / ENDED) a grant is refused ``game_ending``.
 
         Shield feedback (#1301, UC-040 A16): the ``shield_up`` sound, a
         ``GAME_EFFECT_SHIELD`` for the remaining protection (rendered by the
@@ -142,6 +149,14 @@ class ShieldMixin:
         player = self.players.get(serial)
         if not player or not player.alive:
             return False
+
+        if self._shield_grants_closed():
+            # UC-040 A42 step 3: after the win (or a force-end) nothing is granted,
+            # so no layer and no cue cover the winner effect.
+            from services.game_coordinator.intervention_errors import InterventionNotApplied
+
+            logger.info(f"Shield for {serial} refused: the game is ending")
+            raise InterventionNotApplied(SHIELD_REFUSED_GAME_ENDING)
 
         # UC-040 BR-027: a hold game adds the grant to the player's energy (A36).
         latched_here = not self._shield_hold_latched
@@ -215,9 +230,11 @@ class ShieldMixin:
 
         Called only by an applied ``grant_shield`` (the agent's grant), after the
         protection, charge or energy is in place and before the shield's LED command.
-        Best-effort: a failed write is logged and never fails the grant.
+        Best-effort: a failed write is logged and never fails the grant. Never sent
+        once the game is ending (A42 step 3): ``grant_shield`` refuses such a grant
+        already; this re-check covers a latch that lands while the grant runs.
         """
-        if not self.gameplay_stream:
+        if not self.gameplay_stream or self._shield_grants_closed():
             return
         try:
             from proto import controller_manager_pb2
@@ -240,6 +257,14 @@ class ShieldMixin:
             )
         except Exception as e:
             logger.warning(f"Shield help cue for {player.serial} failed (shield unaffected): {e}")
+
+    def _shield_grants_closed(self) -> bool:
+        """True once the game is ending: outcome latched, force-ended, or ENDING / ENDED (UC-040 A42 step 3)."""
+        return (
+            self._latched_outcome is not None
+            or self.force_ended
+            or self.state in (_base.GameState.ENDING, _base.GameState.ENDED)
+        )
 
     def _shield_limits(self) -> tuple[int, int]:
         """``(max shields per player per game, cooldown seconds)`` for the next grant (UC-040 BR-022).

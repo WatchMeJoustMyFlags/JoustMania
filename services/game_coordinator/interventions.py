@@ -601,6 +601,9 @@ BLOCK_SHIELD_COOLDOWN = "shield_cooldown"
 # A grant_shield in a hold game that could add nothing (#2096, UC-040 A37).
 BLOCK_SHIELD_POOL_FULL = "shield_pool_full"
 BLOCK_SHIELD_BUDGET_EXHAUSTED = "shield_budget_exhausted"
+# A grant_shield that lands once the game is ending (outcome latched, force-ended,
+# ENDING / ENDED): no layer, no cue over the winner effect (#2395, UC-040 A42 step 3).
+BLOCK_GAME_ENDING = "game_ending"
 # A revive_player the mode refused (decided game, unknown or already-alive player; #1948).
 BLOCK_REVIVE_REFUSED = "revive_refused"
 # An eliminate_player that killed nobody: unknown or already-dead player, a kill of

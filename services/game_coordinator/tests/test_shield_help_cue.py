@@ -236,3 +236,91 @@ class TestUC040A42NoCueWithoutAGrant:
         game = make_game("instant")
         game.gameplay_stream = None
         assert await game.grant_shield("p1", 5.0) is True
+
+
+class TestUC040A42HoldRefusalSendsNoCue:
+    """A42 step 3 in hold mode: a grant ``_grant_shield_energy`` refuses sends no cue."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A42", br=["BR-031", "BR-024"])
+    async def test_pool_full_grant_sends_no_cue(self, make_game):
+        game = make_game("hold")
+        game._latch_shield_hold()
+        game._start_shield_hold_clock(T0)
+        assert await game.grant_shield("p1", 5.0) is True  # fills the 5 s pool
+        game._cancel_hold_feedback()
+        game.gameplay_stream.writes.clear()
+
+        with pytest.raises(InterventionNotApplied) as refused:
+            await game.grant_shield("p1", 2.0)
+        game._cancel_hold_feedback()
+
+        assert refused.value.reason == "shield_pool_full"
+        assert PULSE not in [e for _, e in game.gameplay_stream.effects()]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A42", br=["BR-031", "BR-024"])
+    async def test_budget_exhausted_grant_sends_no_cue(self, make_game):
+        game = make_game("hold")
+        game._latch_shield_hold()
+        game._start_shield_hold_clock(T0)
+        game.players["p1"].hold_budget_used = 14.8  # of the 15 s budget: below the minimum burst
+
+        with pytest.raises(InterventionNotApplied) as refused:
+            await game.grant_shield("p1", 2.0)
+        game._cancel_hold_feedback()
+
+        assert refused.value.reason == "shield_budget_exhausted"
+        assert PULSE not in [e for _, e in game.gameplay_stream.effects()]
+
+
+def _end_by_latch(game):
+    game._latch_game_outcome()
+
+
+def _end_by_force(game):
+    game.force_end("test")
+
+
+def _end_by_state(game):
+    game.state = base_module.GameState.ENDING
+
+
+class TestUC040A42GameEndingRefusesTheGrant:
+    """A42 step 3: once the game is ending a grant is refused ``game_ending``, with no layer and no cue.
+
+    A cue after the win would take over the winner rainbow (a PULSE overrides every
+    effect but IDENTIFY and SHOW_BATTERY in the controller manager).
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A42", br=["BR-031"])
+    @pytest.mark.parametrize("activation", ["instant", "trigger", "hold"])
+    @pytest.mark.parametrize("end", [_end_by_latch, _end_by_force, _end_by_state], ids=["latched", "forced", "ending"])
+    async def test_grant_after_the_end_is_refused_without_a_cue(self, make_game, activation, end):
+        game = make_game(activation)
+        if activation == "hold":
+            game._latch_shield_hold()
+            game._start_shield_hold_clock(T0)
+        end(game)
+
+        with pytest.raises(InterventionNotApplied) as refused:
+            await game.grant_shield("p1", 5.0)
+        game._cancel_hold_feedback()
+
+        assert refused.value.reason == "game_ending"
+        assert game.gameplay_stream.effects() == []
+        player = game.players["p1"]
+        assert player.grace_until <= T0
+        assert player.shield_charge_seconds == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A42", br=["BR-031"])
+    async def test_help_cue_itself_is_not_sent_after_the_latch(self, make_game):
+        """Belt and braces: a latch landing while a grant runs still sends no PULSE."""
+        game = make_game("instant")
+        game._latch_game_outcome()
+
+        await game._send_shield_help_cue(game.players["p1"])
+
+        assert game.gameplay_stream.effects() == []
