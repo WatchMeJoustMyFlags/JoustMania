@@ -39,7 +39,10 @@ class MockGrpcContext:
         return self._cancelled
 
 
-class MockBackend:
+from services.controller_manager.tests.backend_doubles import InertBackendHooks
+
+
+class MockBackend(InertBackendHooks):
     """Mock backend for testing without hardware."""
 
     def __init__(self):
@@ -734,9 +737,7 @@ class TestExtractedHelpers:
 
         servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
-        # MockBackend has no consume_death_frame — must not raise.
-        if hasattr(servicer.backend, "consume_death_frame"):
-            del servicer.backend.consume_death_frame
+        # MockBackend inherits the inert death hook — must not raise.
 
         update = servicer._build_gameplay_update(None)
 

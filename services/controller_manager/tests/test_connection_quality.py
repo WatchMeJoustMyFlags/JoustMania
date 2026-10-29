@@ -26,6 +26,7 @@ from services.controller_manager.connection_quality import (
     percentile_nearest_rank,
 )
 from services.controller_manager.discovery_loop import DiscoveryLoop
+from services.controller_manager.tests.backend_doubles import autospec_backend
 
 SERIAL = "00:06:F7:AA:BB:CC"
 TIME_FN = "services.controller_manager.discovery_loop.time.time"
@@ -328,7 +329,7 @@ class TestGameplayFrameCarriesQuality:
             patch("services.controller_manager.servicer.create_backend") as create_backend,
             patch("services.controller_manager.servicer.DiscoveryLoop") as discovery_cls,
         ):
-            create_backend.return_value = MagicMock(spec=[])
+            create_backend.return_value = autospec_backend()
             mock_loop = MagicMock()
             mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
             mock_loop.drain_disconnects = MagicMock(return_value=[])

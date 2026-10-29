@@ -83,13 +83,13 @@ def _feed(loop, serial, sequence, t0=0.0, dt=0.01):
     """
     t = t0
     for item in sequence:
-        loop._hw_polls[serial] = loop._hw_polls.get(serial, 0) + 1
+        loop._record(serial).hw_polls += 1
         if item is None:
-            loop._hw_drops[serial] = loop._hw_drops.get(serial, 0) + 1
+            loop._record(serial).hw_drops += 1
         else:
             obj_id = id(item)
-            if loop._hw_last_obj_id.get(serial) != obj_id:
-                loop._hw_last_obj_id[serial] = obj_id
+            if loop._record(serial).hw_last_obj_id != obj_id:
+                loop._record(serial).hw_last_obj_id = obj_id
                 loop._record_fresh_frame(serial, t)
         t += dt
     return t
@@ -133,15 +133,15 @@ class TestWindowComputation:
         loop = _make_loop()
         a, b, c = {"n": 1}, {"n": 2}, {"n": 3}
         # fresh @0, stale*5 (50ms), fresh @60ms, fresh @70ms
-        loop._hw_last_obj_id["AA"] = None
+        loop._record("AA").hw_last_obj_id = None
         for item, t in [(a, 0.0), (a, 0.01), (a, 0.02), (a, 0.03), (a, 0.04), (a, 0.05), (b, 0.06), (c, 0.07)]:
-            loop._hw_polls["AA"] = loop._hw_polls.get("AA", 0) + 1
+            loop._record("AA").hw_polls += 1
             oid = id(item)
-            if loop._hw_last_obj_id.get("AA") != oid:
-                loop._hw_last_obj_id["AA"] = oid
+            if loop._record("AA").hw_last_obj_id != oid:
+                loop._record("AA").hw_last_obj_id = oid
                 loop._record_fresh_frame("AA", t)
         # Gaps between fresh frames: a@0 -> b@60ms = 60ms, b@60 -> c@70 = 10ms.
-        assert abs(loop._hw_max_gap_ms["AA"] - 60.0) < 1e-6
+        assert abs(loop._record("AA").hw_max_gap_ms - 60.0) < 1e-6
 
     def test_window_aggregates_worst_case_across_serials(self):
         loop = _make_loop()
@@ -323,7 +323,7 @@ class TestSpanEmission:
         loop = _make_loop(MagicMock())
         loop._window_start = 0.0
         # One serial, two fresh frames 60ms apart -> max gap 60ms.
-        loop._hw_polls["AA"] = 2
+        loop._record("AA").hw_polls = 2
         loop._record_fresh_frame("AA", 0.0)
         loop._record_fresh_frame("AA", 0.06)
         fake = FakeTracer()
@@ -345,8 +345,7 @@ class TestSpanEmission:
         fake = FakeTracer()
         with patch("services.controller_manager.discovery_loop.tracer", fake):
             loop._emit_bluetooth_health(now=1.0)
-        assert loop._hw_polls == {}
-        assert loop._hw_fresh == {}
+        assert all(r.hw_polls == 0 and r.hw_fresh == 0 for r in loop._records.values())
         assert loop._window_start == 1.0
 
 
@@ -371,9 +370,9 @@ class TestUpdateControllerStatesWiring:
         for _ in range(4):
             await loop._update_controller_states()
 
-        assert loop._hw_polls["AA"] == 4
-        assert loop._hw_fresh["AA"] == 2  # fresh1 + fresh2 (stale replay excluded)
-        assert loop._hw_drops["AA"] == 1  # the None
+        assert loop._record("AA").hw_polls == 4
+        assert loop._record("AA").hw_fresh == 2  # fresh1 + fresh2 (stale replay excluded)
+        assert loop._record("AA").hw_drops == 1  # the None
 
 
 class TestUnstableAdapterDegradationEndToEnd:
@@ -413,13 +412,13 @@ class TestUnstableAdapterDegradationEndToEnd:
         n_polls = 300  # 3 seconds at 100Hz
         for _ in range(n_polls):
             result = adapter.poll(serial)
-            loop._hw_polls[serial] = loop._hw_polls.get(serial, 0) + 1
+            loop._record(serial).hw_polls += 1
             if result is None:
-                loop._hw_drops[serial] = loop._hw_drops.get(serial, 0) + 1
+                loop._record(serial).hw_drops += 1
             else:
                 oid = id(result)
-                if loop._hw_last_obj_id.get(serial) != oid:
-                    loop._hw_last_obj_id[serial] = oid
+                if loop._record(serial).hw_last_obj_id != oid:
+                    loop._record(serial).hw_last_obj_id = oid
                     loop._record_fresh_frame(serial, wall)
             clock.t += 0.01
             wall += 0.01

@@ -67,13 +67,13 @@ class TestActivityTracking:
         ]
 
         for button in button_keys:
-            loop._last_activity_time = {}  # Reset
+            loop._records.clear()  # Reset
             state = {button: True}
 
             loop._update_activity_tracking(serial, state, current_time)
 
-            assert serial in loop._last_activity_time, f"Button {button} should trigger activity"
-            assert loop._last_activity_time[serial] == current_time
+            assert loop._record(serial).last_activity_time is not None, f"Button {button} should trigger activity"
+            assert loop._record(serial).last_activity_time == current_time
 
     def test_no_button_no_activity(self):
         """No buttons pressed should not trigger activity (without accel)."""
@@ -89,7 +89,7 @@ class TestActivityTracking:
         loop._update_activity_tracking(serial, state, current_time)
 
         # No activity tracked without accelerometer movement
-        assert serial not in loop._last_activity_time
+        assert loop._record(serial).last_activity_time is None
 
     def test_accelerometer_movement_triggers_activity(self):
         """Significant accelerometer change should trigger activity."""
@@ -98,7 +98,7 @@ class TestActivityTracking:
         current_time = time.time()
 
         # Set previous accelerometer reading
-        loop._previous_accel[serial] = (0.0, 0.0, 1.0)
+        loop._record(serial).previous_accel = (0.0, 0.0, 1.0)
 
         # Significant movement (threshold is 0.05)
         state = {
@@ -111,8 +111,8 @@ class TestActivityTracking:
 
         loop._update_activity_tracking(serial, state, current_time)
 
-        assert serial in loop._last_activity_time
-        assert loop._last_activity_time[serial] == current_time
+        assert loop._record(serial).last_activity_time is not None
+        assert loop._record(serial).last_activity_time == current_time
 
     def test_small_accelerometer_change_no_activity(self):
         """Small accelerometer change (below threshold) should not trigger activity."""
@@ -121,7 +121,7 @@ class TestActivityTracking:
         current_time = time.time()
 
         # Set previous accelerometer reading
-        loop._previous_accel[serial] = (0.0, 0.0, 1.0)
+        loop._record(serial).previous_accel = (0.0, 0.0, 1.0)
 
         # Small movement (below 0.05 threshold)
         state = {
@@ -134,7 +134,7 @@ class TestActivityTracking:
 
         loop._update_activity_tracking(serial, state, current_time)
 
-        assert serial not in loop._last_activity_time
+        assert loop._record(serial).last_activity_time is None
 
     def test_first_accel_reading_stores_without_activity(self):
         """First accelerometer reading should be stored but not trigger activity."""
@@ -143,7 +143,7 @@ class TestActivityTracking:
         current_time = time.time()
 
         # No previous reading
-        assert serial not in loop._previous_accel
+        assert loop._record(serial).previous_accel is None
 
         state = {
             StateKey.ACCEL: {
@@ -156,8 +156,8 @@ class TestActivityTracking:
         loop._update_activity_tracking(serial, state, current_time)
 
         # Should store accel but not trigger activity (no comparison possible)
-        assert loop._previous_accel[serial] == (0.5, 0.5, 1.0)
-        assert serial not in loop._last_activity_time
+        assert loop._record(serial).previous_accel == (0.5, 0.5, 1.0)
+        assert loop._record(serial).last_activity_time is None
 
     def test_accel_stored_after_tracking(self):
         """Accelerometer values should be stored for next comparison."""
@@ -165,7 +165,7 @@ class TestActivityTracking:
         serial = "SERIAL1"
         current_time = time.time()
 
-        loop._previous_accel[serial] = (0.0, 0.0, 1.0)
+        loop._record(serial).previous_accel = (0.0, 0.0, 1.0)
 
         state = {
             StateKey.ACCEL: {
@@ -178,7 +178,7 @@ class TestActivityTracking:
         loop._update_activity_tracking(serial, state, current_time)
 
         # New values should be stored
-        assert loop._previous_accel[serial] == (0.2, 0.3, 0.9)
+        assert loop._record(serial).previous_accel == (0.2, 0.3, 0.9)
 
 
 class TestAdaptivePollingLogic:
@@ -236,9 +236,9 @@ class TestAdaptivePollingLogic:
         current_time = time.time()
 
         # Last activity was 6 seconds ago (beyond 5s threshold)
-        loop._last_activity_time[serial] = current_time - 6.0
+        loop._record(serial).last_activity_time = current_time - 6.0
 
-        is_idle = (current_time - loop._last_activity_time.get(serial, current_time)) > loop._idle_threshold_seconds
+        is_idle = (current_time - loop._record(serial).last_activity_time) > loop._idle_threshold_seconds
         assert is_idle is True
 
     def test_controller_active_within_threshold(self):
@@ -248,9 +248,9 @@ class TestAdaptivePollingLogic:
         current_time = time.time()
 
         # Last activity was 2 seconds ago (within 5s threshold)
-        loop._last_activity_time[serial] = current_time - 2.0
+        loop._record(serial).last_activity_time = current_time - 2.0
 
-        is_idle = (current_time - loop._last_activity_time.get(serial, current_time)) > loop._idle_threshold_seconds
+        is_idle = (current_time - loop._record(serial).last_activity_time) > loop._idle_threshold_seconds
         assert is_idle is False
 
     def test_new_controller_defaults_to_active(self):
@@ -259,8 +259,8 @@ class TestAdaptivePollingLogic:
         serial = "SERIAL1"
         current_time = time.time()
 
-        # No entry in _last_activity_time
-        last_activity = loop._last_activity_time.get(serial, current_time)
+        # No activity recorded yet: the poll loop treats that as "now".
+        last_activity = loop._record(serial).last_activity_time or current_time
 
         is_idle = (current_time - last_activity) > loop._idle_threshold_seconds
         assert is_idle is False  # New controllers are active
@@ -352,8 +352,7 @@ class TestPollingStateCleanup:
         """Activity tracking state dicts start empty."""
         loop = self._create_discovery_loop()
 
-        assert loop._last_activity_time == {}
-        assert loop._previous_accel == {}
+        assert loop._records == {}
 
     def test_activity_state_can_be_cleaned_up(self):
         """Activity tracking state can be removed using dict.pop()."""
@@ -361,15 +360,13 @@ class TestPollingStateCleanup:
         serial = "SERIAL1"
 
         # Set up state
-        loop._last_activity_time[serial] = time.time()
-        loop._previous_accel[serial] = (0.0, 0.0, 1.0)
+        loop._record(serial).last_activity_time = time.time()
+        loop._record(serial).previous_accel = (0.0, 0.0, 1.0)
 
         # Cleanup (as done in _check_for_new_controllers for disconnects)
-        loop._last_activity_time.pop(serial, None)
-        loop._previous_accel.pop(serial, None)
+        loop._records.pop(serial, None)
 
-        assert serial not in loop._last_activity_time
-        assert serial not in loop._previous_accel
+        assert serial not in loop._records
 
     def test_cleanup_nonexistent_serial_safe(self):
         """Cleanup is safe for non-existent serials."""
@@ -377,8 +374,9 @@ class TestPollingStateCleanup:
         serial = "NONEXISTENT"
 
         # Should not raise
-        loop._last_activity_time.pop(serial, None)
-        loop._previous_accel.pop(serial, None)
+        loop._records.pop(serial, None)
+
+        assert serial not in loop._records
 
 
 class TestAccelerometerMovementCalculation:
@@ -420,7 +418,7 @@ class TestAccelerometerMovementCalculation:
         current_time = time.time()
 
         # Previous: (0, 0, 0)
-        loop._previous_accel[serial] = (0.0, 0.0, 0.0)
+        loop._record(serial).previous_accel = (0.0, 0.0, 0.0)
 
         # Current: (0.02, 0.02, 0.02) -> total movement = 0.06 > 0.05 threshold
         state = {
@@ -434,7 +432,7 @@ class TestAccelerometerMovementCalculation:
         loop._update_activity_tracking(serial, state, current_time)
 
         # 0.02 + 0.02 + 0.02 = 0.06 > 0.05, should trigger activity
-        assert serial in loop._last_activity_time
+        assert loop._record(serial).last_activity_time is not None
 
     def test_movement_exactly_at_threshold(self):
         """Movement exactly at threshold should not trigger activity."""
@@ -442,7 +440,7 @@ class TestAccelerometerMovementCalculation:
         serial = "SERIAL1"
         current_time = time.time()
 
-        loop._previous_accel[serial] = (0.0, 0.0, 0.0)
+        loop._record(serial).previous_accel = (0.0, 0.0, 0.0)
 
         # Exactly 0.05 movement
         state = {
@@ -456,7 +454,7 @@ class TestAccelerometerMovementCalculation:
         loop._update_activity_tracking(serial, state, current_time)
 
         # 0.05 is not > 0.05, should NOT trigger activity
-        assert serial not in loop._last_activity_time
+        assert loop._record(serial).last_activity_time is None
 
     def test_movement_just_above_threshold(self):
         """Movement just above threshold should trigger activity."""
@@ -464,7 +462,7 @@ class TestAccelerometerMovementCalculation:
         serial = "SERIAL1"
         current_time = time.time()
 
-        loop._previous_accel[serial] = (0.0, 0.0, 0.0)
+        loop._record(serial).previous_accel = (0.0, 0.0, 0.0)
 
         # Just above 0.05 movement
         state = {
@@ -478,7 +476,7 @@ class TestAccelerometerMovementCalculation:
         loop._update_activity_tracking(serial, state, current_time)
 
         # 0.051 > 0.05, should trigger activity
-        assert serial in loop._last_activity_time
+        assert loop._record(serial).last_activity_time is not None
 
     def test_negative_movement_uses_absolute_value(self):
         """Negative direction movement should use absolute value."""
@@ -486,7 +484,7 @@ class TestAccelerometerMovementCalculation:
         serial = "SERIAL1"
         current_time = time.time()
 
-        loop._previous_accel[serial] = (0.1, 0.1, 0.1)
+        loop._record(serial).previous_accel = (0.1, 0.1, 0.1)
 
         # Movement in negative direction
         state = {
@@ -500,7 +498,7 @@ class TestAccelerometerMovementCalculation:
         loop._update_activity_tracking(serial, state, current_time)
 
         # |0.0 - 0.1| = 0.1 > 0.05, should trigger activity
-        assert serial in loop._last_activity_time
+        assert loop._record(serial).last_activity_time is not None
 
 
 class TestNewControllerIsTracked:

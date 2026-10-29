@@ -11,6 +11,7 @@ from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.mock_control_service import MockControllerService
 from services.controller_manager.multiplexer import motion_patterns as mp
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
+from services.controller_manager.tests.backend_doubles import AdapterAsBackend
 
 ARCHETYPE = "unit_cascade"
 PARAMS = {
@@ -152,7 +153,7 @@ class TestUC046GameplayStream:
     @pytest.fixture
     def servicer(self, adapter):
         with (
-            patch("services.controller_manager.servicer.create_backend", return_value=adapter),
+            patch("services.controller_manager.servicer.create_backend", return_value=AdapterAsBackend(adapter)),
             patch("services.controller_manager.servicer.DiscoveryLoop") as loop_cls,
         ):
             loop = create_autospec(DiscoveryLoop, instance=True)
