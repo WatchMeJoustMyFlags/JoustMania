@@ -727,6 +727,7 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 	} else {
 		decisions = rules.Evaluate(ctx, current)
 	}
+	decisions = l.stampShieldSeconds(ctx, snapshot, decisions, rec)
 	now := l.nowOrDefault()
 	before := len(state.Outcomes)
 	for _, d := range decisions {

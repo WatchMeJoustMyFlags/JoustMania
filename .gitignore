@@ -98,3 +98,6 @@ controller_names.txt
 # Git worktrees
 worktrees/
 .worktrees/
+
+# Dashboard vitest coverage report (informational)
+services/dashboard/coverage/
