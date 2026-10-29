@@ -205,7 +205,7 @@ func run(logger *slog.Logger) error {
 	}
 	recordLoadReport(ctx, metrics, report)
 
-	links := &syncserver.Links{}
+	links := &telemetry.Links{}
 	grpcServer := grpc.NewServer(syncserver.ServerOptions()...)
 	(&syncserver.Server{State: st, Metrics: metrics, Tracer: tracer, Links: links}).Register(grpcServer)
 	healthSrv := health.NewServer()

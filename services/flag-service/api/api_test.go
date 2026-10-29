@@ -25,7 +25,6 @@ import (
 	"github.com/joustmania/flag-service/baseline"
 	"github.com/joustmania/flag-service/registry"
 	"github.com/joustmania/flag-service/state"
-	"github.com/joustmania/flag-service/syncserver"
 	"github.com/joustmania/flag-service/telemetry"
 )
 
@@ -35,7 +34,7 @@ type env struct {
 	st     *state.State
 	spans  *tracetest.SpanRecorder
 	reader *sdkmetric.ManualReader
-	links  *syncserver.Links
+	links  *telemetry.Links
 }
 
 func newEnv(t *testing.T, stream bool) *env {
@@ -76,7 +75,7 @@ func newEnvRegistry(t *testing.T, stream bool, regYAML string) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	links := &syncserver.Links{}
+	links := &telemetry.Links{}
 	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("t"), Links: links}
 	srv := httptest.NewServer(a.Handler())
 	t.Cleanup(srv.Close)
@@ -688,7 +687,7 @@ func newEnvStateFile(t *testing.T, stateFile string) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider().Tracer("t"), Links: &syncserver.Links{}}
+	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider().Tracer("t"), Links: &telemetry.Links{}}
 	srv := httptest.NewServer(a.Handler())
 	t.Cleanup(srv.Close)
 	return srv
