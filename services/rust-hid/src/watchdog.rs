@@ -189,7 +189,14 @@ pub fn run(
 
 /// Start the watchdog thread; a trip exits the process with `EXIT_CODE`.
 /// `on_tick` runs every probe interval on the watchdog thread (report only).
-pub fn spawn(addr: String, device: Heartbeat, on_tick: impl FnMut() + Send + 'static) {
+/// `before_exit` runs after the trip is logged and before the exit, to flush
+/// logs; it must bound itself (B5, #2373).
+pub fn spawn(
+    addr: String,
+    device: Heartbeat,
+    on_tick: impl FnMut() + Send + 'static,
+    before_exit: impl FnOnce() + Send + 'static,
+) {
     std::thread::Builder::new()
         .name("watchdog".into())
         .spawn(move || {
@@ -199,6 +206,7 @@ pub fn spawn(addr: String, device: Heartbeat, on_tick: impl FnMut() + Send + 'st
                     exit_code = EXIT_CODE,
                     "watchdog: rust-hid is wedged, exiting so the restart policy restarts it"
                 );
+                before_exit();
                 std::process::exit(EXIT_CODE);
             })
         })

@@ -17,9 +17,10 @@ use controller_io_service::ControllerIoServiceImpl;
 use service::PairingServiceImpl;
 use service::proto::controller_io_service_server::ControllerIoServiceServer;
 use service::proto::pairing_service_server::PairingServiceServer;
+use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
 use tonic_health::server::health_reporter;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 /// The gRPC port (health, pairing, controller I/O); the watchdog probes it on loopback.
@@ -34,7 +35,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_provider = init_logs();
 
     // Initialize tracing with optional OpenTelemetry bridge
-    let _otel_guard = init_tracing(&log_provider);
+    let otel_guard = init_tracing(&log_provider);
+    let flusher = TelemetryFlusher {
+        logs: log_provider.clone(),
+        traces: otel_guard.clone(),
+        metrics: Arc::new(Mutex::new(None)),
+    };
 
     // Register W3C TraceContext propagator for incoming context extraction
     opentelemetry::global::set_text_map_propagator(
@@ -45,7 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outputs = device_manager::DeviceOutputs::default();
 
     // Initialize OTEL metrics (process metrics and the output writers' in-flight age)
-    let _meter_provider = init_metrics(outputs.router.clone());
+    let meter_provider = init_metrics(outputs.router.clone());
+    *flusher.metrics.lock().unwrap_or_else(|e| e.into_inner()) = meter_provider;
 
     // Initialize OpenFeature flagd provider for feature flags
     feature_flags::init_flagd(outputs.rate.clone()).await;
@@ -84,23 +91,114 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         move || {
             stuck_writers.check(&watched_router);
         },
+        {
+            // The trip reason must reach Loki before the exit (B5, #2373).
+            let flusher = flusher.clone();
+            move || flusher.flush(FLUSH_BUDGET)
+        },
     );
 
-    let controller_io_service = ControllerIoServiceImpl::new(cmd_tx, outputs.router.clone());
+    let controller_io_service =
+        ControllerIoServiceImpl::new(cmd_tx.clone(), outputs.router.clone());
 
     health_reporter
         .set_serving::<ControllerIoServiceServer<ControllerIoServiceImpl>>()
         .await;
 
-    Server::builder()
+    let server = Server::builder()
         .layer(grpc_tracing::GrpcTracingLayer)
         .add_service(health_service)
         .add_service(PairingServiceServer::new(pairing_service))
         .add_service(ControllerIoServiceServer::new(controller_io_service))
-        .serve(addr)
-        .await?;
+        .serve(addr);
+
+    // Not serve_with_shutdown: that waits for the open StreamIO calls, which only
+    // end when the client does. On a signal the controllers are switched off
+    // first, then the process ends (B5, #2373).
+    tokio::select! {
+        result = server => result?,
+        () = shutdown_signal() => {
+            info!("Stop signal received: switching controllers off");
+            let off_sent = tokio::task::spawn_blocking({
+                let router = outputs.router.clone();
+                move || device_manager::graceful_stop(&cmd_tx, &router, SHUTDOWN_OFF_BUDGET)
+            })
+            .await
+            .unwrap_or(false);
+            if off_sent {
+                info!("All controllers switched off");
+            } else {
+                warn!("Not every controller was switched off within {SHUTDOWN_OFF_BUDGET:?}");
+            }
+            flusher.flush(FLUSH_BUDGET);
+            std::process::exit(0);
+        }
+    }
 
     Ok(())
+}
+
+/// How long a stop waits for the writers to send LED off / rumble 0. Docker
+/// gives 10 s before SIGKILL.
+const SHUTDOWN_OFF_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long a flush of logs, traces and metrics may take before the exit.
+const FLUSH_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Resolves on SIGTERM (docker stop) or SIGINT.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut term), Ok(mut int)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        warn!("Could not install the stop signal handlers; a stop will not switch controllers off");
+        std::future::pending::<()>().await;
+        return;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = int.recv() => {}
+    }
+}
+
+/// The OTLP providers, flushed before the process exits (stop and watchdog trip).
+#[derive(Clone)]
+struct TelemetryFlusher {
+    logs: Option<opentelemetry_sdk::logs::SdkLoggerProvider>,
+    traces: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+    metrics: Arc<Mutex<Option<opentelemetry_sdk::metrics::SdkMeterProvider>>>,
+}
+
+impl TelemetryFlusher {
+    /// Flush everything, giving up after `budget` (an unreachable collector must
+    /// not hold the exit).
+    fn flush(&self, budget: std::time::Duration) {
+        let this = self.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("otel-flush".into())
+            .spawn(move || {
+                if let Some(p) = &this.logs {
+                    let _ = p.force_flush();
+                }
+                if let Some(p) = &this.traces {
+                    let _ = p.force_flush();
+                }
+                if let Some(p) = this
+                    .metrics
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                {
+                    let _ = p.force_flush();
+                }
+                let _ = done_tx.send(());
+            });
+        if spawned.is_ok() {
+            let _ = done_rx.recv_timeout(budget);
+        }
+    }
 }
 
 /// Resolve host.name from OTEL_RESOURCE_ATTRIBUTES if set, falling back to
@@ -205,11 +303,24 @@ fn init_tracing(
     if let Some(endpoint) = endpoint {
         let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "rust-hid".into());
 
-        let exporter = opentelemetry_otlp::SpanExporter::builder()
+        let exporter = match opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
             .with_endpoint(&endpoint)
             .build()
-            .ok()?;
+        {
+            Ok(exporter) => exporter,
+            Err(e) => {
+                // No trace export, but never no logs (B4, #2373).
+                fallback_subscriber(
+                    env_filter,
+                    log_provider,
+                    tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::stdout),
+                )
+                .init();
+                warn!(error = %e, "Trace exporter failed to build; logging without trace export");
+                return None;
+            }
+        };
 
         let resource = build_otel_resource();
 
@@ -240,6 +351,21 @@ fn init_tracing(
 
         None
     }
+}
+
+/// Log output without span export: stdout, plus OTLP logs when a provider exists.
+fn fallback_subscriber(
+    env_filter: EnvFilter,
+    log_provider: &Option<opentelemetry_sdk::logs::SdkLoggerProvider>,
+    writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
+) -> impl tracing::Subscriber + Send + Sync {
+    use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(writer))
+        .with(log_provider.as_ref().map(OpenTelemetryTracingBridge::new))
 }
 
 /// Initialize OTEL metrics with process metrics (CPU, memory, threads).
@@ -340,4 +466,53 @@ fn init_metrics(
 
     info!("OTEL metrics initialized (1s export interval)");
     Some(provider)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
+
+    /// Collects what the fmt layer writes.
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Buffer {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // UC: UC-002 A7
+    #[test]
+    fn test_fallback_subscriber_logs_to_the_writer_without_otlp() {
+        let buffer = Buffer::default();
+        let sink = buffer.clone();
+        let subscriber = fallback_subscriber(
+            EnvFilter::new("info"),
+            &None,
+            BoxMakeWriter::new(move || sink.clone()),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            warn!("trace exporter failed to build");
+        });
+        let out = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        assert!(out.contains("trace exporter failed to build"), "got: {out}");
+    }
+
+    #[test]
+    fn test_flush_is_bounded_and_ok_without_providers() {
+        let flusher = TelemetryFlusher {
+            logs: None,
+            traces: None,
+            metrics: Arc::new(Mutex::new(None)),
+        };
+        let start = std::time::Instant::now();
+        flusher.flush(std::time::Duration::from_secs(1));
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    }
 }

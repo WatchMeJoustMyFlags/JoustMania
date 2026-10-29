@@ -63,8 +63,8 @@ pub enum DeviceCmd {
     UnregisterStream {
         id: u64,
     },
-    /// Shutdown the device manager thread.
-    #[allow(dead_code)]
+    /// Shutdown the device manager thread: every open controller is closed,
+    /// so each writer sends LED off and rumble 0 (B5, #2373).
     Shutdown,
 }
 
@@ -157,6 +157,19 @@ pub fn run_device_manager(
         }
     };
     run_device_loop(api, cmd_rx, &heartbeat, &outputs);
+}
+
+/// Stop the device loop and wait, at most `timeout`, until every writer has sent
+/// its LED-off / rumble-off (process stop, #2373). True when all writers ended in time.
+pub fn graceful_stop(
+    cmd_tx: &mpsc::Sender<DeviceCmd>,
+    router: &OutputRouter,
+    timeout: Duration,
+) -> bool {
+    if cmd_tx.send(DeviceCmd::Shutdown).is_err() {
+        warn!("Device manager already stopped; no off command sent");
+    }
+    router.wait_writers_stopped(timeout)
 }
 
 /// The output side the device loop hands every opened device to.
@@ -1721,5 +1734,73 @@ mod tests {
         poll_all_devices(&mut devices, &sender);
 
         assert!(devices[SERIAL].read_failed);
+    }
+
+    /// Backend whose one controller records its writes.
+    struct RecordingBackend(crate::output::tests::RecordingDevice);
+
+    impl HidBackend for RecordingBackend {
+        type Device = crate::output::tests::RecordingDevice;
+
+        fn refresh_devices(&mut self) -> hidapi::HidResult<()> {
+            Ok(())
+        }
+
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, Self::Device, u16, Option<String>)> {
+            if skip(SERIAL) {
+                return vec![];
+            }
+            vec![(SERIAL.to_string(), self.0.clone(), PRODUCT_ID_ZCM2, None)]
+        }
+
+        fn open_controller_by_serial(
+            &self,
+            _serial: &str,
+        ) -> Option<(Self::Device, u16, Option<String>)> {
+            None
+        }
+    }
+
+    // UC: UC-002 A7
+    #[test]
+    fn test_graceful_stop_sends_led_and_rumble_off_to_every_controller() {
+        use crate::output::tests::{RecordingDevice, WriteMode};
+        let device = RecordingDevice::new(WriteMode::Ok);
+        let outputs = DeviceOutputs::default();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let backend = RecordingBackend(device.clone());
+        let loop_outputs = outputs.clone();
+        let handle = std::thread::spawn(move || {
+            run_device_loop(backend, cmd_rx, &Heartbeat::new(), &loop_outputs)
+        });
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Discover {
+                force: false,
+                verify_only: false,
+                exclude_serials: vec![],
+                reply: reply_tx,
+            })
+            .unwrap();
+        assert_eq!(reply_rx.blocking_recv().unwrap().len(), 1);
+        assert!(outputs.router.submit(SERIAL, 255, 0, 0, 200));
+
+        assert!(graceful_stop(
+            &cmd_tx,
+            &outputs.router,
+            Duration::from_secs(2)
+        ));
+        handle.join().unwrap();
+
+        let last = device.reports().pop().expect("a write");
+        assert_eq!(
+            (last[2], last[3], last[4], last[6]),
+            (0, 0, 0, 0),
+            "the last write must be LED off, rumble 0"
+        );
     }
 }
