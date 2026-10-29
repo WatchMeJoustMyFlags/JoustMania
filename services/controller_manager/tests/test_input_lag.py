@@ -23,8 +23,10 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
+from lib.controller_constants import ButtonKey
 from proto import controller_manager_pb2
 from services.controller_manager.discovery_loop import DiscoveryLoop
+from services.controller_manager.multiplexer.press_latch import latch_presses, merge_latched_presses
 from services.controller_manager.tests.backend_doubles import InertBackendHooks, autospec_backend
 
 LAG_METRIC = "services.controller_manager.metrics.controller_input_lag_seconds"
@@ -86,6 +88,60 @@ class TestSampleAge:
         await _poll_at(loop, 100.0)
         await _poll_at(loop, 100.080)
         assert loop.sample_age_seconds(SERIAL, 100.090) == pytest.approx(0.090)
+
+
+class TestLatchedTapIsNotAFreshFrame:
+    """#2352 B3: the tap-latch copy (UC-010 BR-012) must not reset the sample's pick-up time."""
+
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
+    @pytest.mark.asyncio
+    async def test_latched_copy_keeps_aging_and_counts_no_fresh_frame(self):
+        real = {"accel": {"x": 0, "y": 0, "z": 1}, ButtonKey.TRIGGER: False}
+        latch: dict[str, set[str]] = {}
+        backend = autospec_backend()
+        backend.get_controller_state.side_effect = lambda _serial: merge_latched_presses(latch, SERIAL, real)
+        loop = _make_loop(backend)
+
+        await _poll_at(loop, 100.0)  # first sample
+        fresh_before = loop._records[SERIAL].hw_fresh
+
+        # A tap landed between two polls, but the backend has no new sample: the poll returns a copy.
+        latch_presses(latch, SERIAL, {ButtonKey.TRIGGER: True})
+        await _poll_at(loop, 100.050)
+        assert loop.controller_states[SERIAL][ButtonKey.TRIGGER] is True  # the tap reached the loop
+        await _poll_at(loop, 100.060)  # the release poll: the real sample again
+
+        assert loop._records[SERIAL].hw_fresh == fresh_before
+        assert loop.sample_age_seconds(SERIAL, 100.070) == pytest.approx(0.070)
+
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
+    @pytest.mark.asyncio
+    async def test_new_sample_together_with_a_tap_counts_fresh_once(self):
+        first = {"accel": {"x": 0, "y": 0, "z": 1}, ButtonKey.TRIGGER: False}
+        second = {"accel": {"x": 0, "y": 0, "z": 2}, ButtonKey.TRIGGER: False}
+        latch: dict[str, set[str]] = {}
+        current = {"sample": first}
+        backend = autospec_backend()
+        backend.get_controller_state.side_effect = lambda _serial: merge_latched_presses(
+            latch, SERIAL, current["sample"]
+        )
+        loop = _make_loop(backend)
+
+        await _poll_at(loop, 100.0)
+        fresh_before = loop._records[SERIAL].hw_fresh
+
+        # A tap and a genuinely new sample land together: the latched copy wraps the NEW sample.
+        latch_presses(latch, SERIAL, {ButtonKey.TRIGGER: True})
+        current["sample"] = second
+        await _poll_at(loop, 100.050)
+        assert loop.controller_states[SERIAL][ButtonKey.TRIGGER] is True
+        assert loop._records[SERIAL].hw_fresh == fresh_before + 1
+        assert loop.sample_age_seconds(SERIAL, 100.060) == pytest.approx(0.010)
+
+        # The next poll returns that same sample itself: not a new frame.
+        await _poll_at(loop, 100.070)
+        assert loop._records[SERIAL].hw_fresh == fresh_before + 1
+        assert loop.sample_age_seconds(SERIAL, 100.080) == pytest.approx(0.030)
 
 
 class TestGameplayFrameObservesLag:
