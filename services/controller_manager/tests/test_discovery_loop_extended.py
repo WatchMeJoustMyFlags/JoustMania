@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
+from services.controller_manager.tests.backend_doubles import InertBackendHooks
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -25,7 +27,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
 
-class MockBackend:
+class MockBackend(InertBackendHooks):
     """Mock backend for testing discovery loop."""
 
     def __init__(self):

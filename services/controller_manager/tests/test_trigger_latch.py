@@ -26,6 +26,7 @@ from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
+from services.controller_manager.tests.backend_doubles import inert_hooks
 from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 HID_SERIAL = normalize_serial("AA:BB:CC:DD:EE:01")
@@ -38,16 +39,18 @@ def _frames(servicer, subscriber_id="game", flt=None):
 
 def _wire(servicer, latched: list[bool], level: bool = False):
     """Servicer whose backend latch is a queue of consume results and whose state level is fixed."""
-    backend = MagicMock(
-        spec=[
-            "consume_death_frame",
-            "consume_trigger_press",
-            "pattern_serials",
-            "pattern_frame",
-            "pattern_stream_rate",
-            "record_pattern_overrun",
-            "release_pattern_stream",
-        ]
+    backend = inert_hooks(
+        MagicMock(
+            spec=[
+                "consume_death_frame",
+                "consume_trigger_press",
+                "pattern_serials",
+                "pattern_frame",
+                "pattern_stream_rate",
+                "record_pattern_overrun",
+                "release_pattern_stream",
+            ]
+        )
     )
     backend.pattern_serials.return_value = set()
     backend.pattern_frame.return_value = None

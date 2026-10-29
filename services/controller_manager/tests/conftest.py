@@ -91,10 +91,10 @@ def fake_move():
 @pytest.fixture(autouse=True)
 def _charge_cues_without_flagd(monkeypatch):
     """Shield charge rumble pattern (#2094) with the flag defaults, without a flagd provider."""
-    from services.controller_manager import feedback_manager
+    from services.controller_manager import shield_effects
     from services.controller_manager.effects_base import ChargeCues
 
-    monkeypatch.setattr(feedback_manager, "read_charge_cues", lambda: ChargeCues())
+    monkeypatch.setattr(shield_effects, "read_charge_cues", lambda: ChargeCues())
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +103,6 @@ def _shield_ending_lead_without_flagd(monkeypatch):
 
     Its sleep moves a shared FakeClock, which would distort the shield LED timing tests.
     """
-    from services.controller_manager import feedback_manager
+    from services.controller_manager import shield_effects
 
-    monkeypatch.setattr(feedback_manager, "read_shield_ending_lead", lambda: 0.0)
+    monkeypatch.setattr(shield_effects, "read_shield_ending_lead", lambda: 0.0)

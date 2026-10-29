@@ -579,11 +579,11 @@ class DiscoveryLoop:
             # Debug: Log tracked controller count periodically (every 5 seconds)
             if current_time - self._last_controller_count_log >= 5.0:
                 adapter_info = ""
-                if hasattr(self.backend, "get_adapter_type"):
-                    adapter_counts: dict[str, int] = {}
-                    for s in all_serials:
-                        atype = self.backend.get_adapter_type(s)
-                        adapter_counts[atype] = adapter_counts.get(atype, 0) + 1
+                adapter_counts: dict[str, int] = {}
+                for s in all_serials:
+                    atype = self.backend.get_adapter_type(s)
+                    adapter_counts[atype] = adapter_counts.get(atype, 0) + 1
+                if any(adapter_counts):  # a backend without adapters reports "" for all
                     adapter_info = ", adapters=" + "+".join(f"{k}:{v}" for k, v in sorted(adapter_counts.items()))
                 msg = f"Polling {len(all_serials)} controllers at 100Hz"
                 msg += f", active={active_count}, idle={idle_count}{adapter_info}"
@@ -893,13 +893,11 @@ class DiscoveryLoop:
         target_backend = ""
         rollout_count = 0
         rollout_read_error = False
-        rollout_summary = getattr(self.backend, "rollout_summary", None)
-        if rollout_summary is not None:
-            try:
-                target_backend, rollout_count = rollout_summary()
-            except Exception:
-                rollout_read_error = True
-                logger.debug("Failed to read rollout summary for health span", exc_info=True)
+        try:
+            target_backend, rollout_count = self.backend.rollout_summary()
+        except Exception:
+            rollout_read_error = True
+            logger.debug("Failed to read rollout summary for health span", exc_info=True)
         self._log_rollout_read_transition(rollout_read_error)
 
         # Active rollout strategy ("off"/"immediate"/"progressive"). The agent
@@ -907,12 +905,10 @@ class DiscoveryLoop:
         # on any error so a flagd outage never breaks span emission; the agent
         # treats absence as "behave as before" (progressive ladder).
         rollout_strategy = ""
-        rollout_strategy_fn = getattr(self.backend, "rollout_strategy", None)
-        if rollout_strategy_fn is not None:
-            try:
-                rollout_strategy = rollout_strategy_fn()
-            except Exception:
-                logger.debug("Failed to read rollout strategy for health span", exc_info=True)
+        try:
+            rollout_strategy = self.backend.rollout_strategy()
+        except Exception:
+            logger.debug("Failed to read rollout strategy for health span", exc_info=True)
 
         self._update_connection_quality(
             list(signals["per_serial"]), now_mono if now_mono is not None else time.monotonic()
@@ -935,9 +931,7 @@ class DiscoveryLoop:
 
             # One event per active serial with per-serial signals.
             for serial, s in signals["per_serial"].items():
-                adapter_type = ""
-                if hasattr(self.backend, "get_adapter_type"):
-                    adapter_type = self.backend.get_adapter_type(serial)
+                adapter_type = self.backend.get_adapter_type(serial)
                 sample = {
                     "controller.serial": serial,
                     "bluetooth.movement_update_hz": float(s["update_hz"]),
@@ -980,9 +974,7 @@ class DiscoveryLoop:
         if record is not None:
             drops, errors = record.poll_drops, record.poll_errors
             record.poll_drops = record.poll_errors = 0
-        led = 0
-        if hasattr(self.backend, "_led_failures"):
-            led = self.backend._led_failures.pop(serial, 0)
+        led = self.backend.take_led_failures(serial)
         return drops, errors, led
 
     def drain_disconnects(self) -> list[str]:
@@ -1037,22 +1029,18 @@ class DiscoveryLoop:
             if self.name_manager:
                 name = self.name_manager.get_name(serial)
 
-            # Resolve adapter type if backend supports it (MultiplexerBackend)
-            adapter_type = ""
-            if hasattr(self.backend, "get_adapter_type"):
-                adapter_type = self.backend.get_adapter_type(serial)
+            adapter_type = self.backend.get_adapter_type(serial)
 
-            # Resolve reservation metadata if backend supports it. Reserved
+            # Resolve reservation metadata (None when the backend has none). Reserved
             # controllers are hidden from button-stream consumers (the menu)
             # but stay fully usable via gameplay-data streams and explicit-serial
             # LED/feedback commands (#777).
             reserved = False
             tag = ""
-            if hasattr(self.backend, "get_controller_metadata"):
-                metadata = self.backend.get_controller_metadata(serial)
-                if metadata:
-                    reserved = metadata.get(ControllerInfoKey.RESERVED, False)
-                    tag = metadata.get(ControllerInfoKey.TAG, "")
+            metadata = self.backend.get_controller_metadata(serial)
+            if metadata:
+                reserved = metadata.get(ControllerInfoKey.RESERVED, False)
+                tag = metadata.get(ControllerInfoKey.TAG, "")
 
             # Track controller
             self.tracked_controllers[serial] = {

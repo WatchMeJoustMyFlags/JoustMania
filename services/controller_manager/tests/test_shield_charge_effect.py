@@ -14,6 +14,7 @@ import pytest
 from lib.clock import FakeClock
 from proto import controller_manager_pb2
 from services.controller_manager import feedback_manager as fm_module
+from services.controller_manager import shield_effects as shield_module
 from services.controller_manager.effects_base import (
     CHARGE_MAX_DURATION_MS,
     ChargeCues,
@@ -22,7 +23,7 @@ from services.controller_manager.effects_base import (
 )
 from services.controller_manager.feedback_manager import FeedbackManager
 
-_REAL_READ_CHARGE_CUES = fm_module.read_charge_cues  # before the autouse fixture patches it
+_REAL_READ_CHARGE_CUES = shield_module.read_charge_cues  # before the autouse fixture patches it
 
 WHITE = (255, 255, 255)
 PLAYER = (0, 255, 0)
@@ -61,7 +62,7 @@ def no_charge_cues(monkeypatch):
 
     The pattern's sleeps move the shared FakeClock, which would distort the LED timing tests.
     """
-    monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
+    monkeypatch.setattr(shield_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
 
 
 @pytest.fixture
@@ -179,7 +180,7 @@ class TestUC040ChargeLayer:
     ):
         """UC-040 BR-021: the coordinator re-sends while the charge is held; same layer, one pattern."""
         patterns = []
-        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: patterns.append(1) or ChargeCues(intensity=0))
+        monkeypatch.setattr(shield_module, "read_charge_cues", lambda: patterns.append(1) or ChargeCues(intensity=0))
         clock.enable_blocking()
         await _effect(manager, CHARGE, 20_000)
         await _advance(clock, 1.0)
@@ -383,7 +384,7 @@ class TestUC040SwellRumble:
         self, manager, backend, clock, monkeypatch
     ):
         """UC-040 BR-021: grant pulse (255) then a warning (100, 200 ms): the rumble ends at 0."""
-        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues())
+        monkeypatch.setattr(shield_module, "read_charge_cues", lambda: ChargeCues())
         clock.enable_blocking()
         await _effect(manager, CHARGE, 60_000)
         await _spin()
@@ -409,7 +410,7 @@ class TestUC040DeathRumbleIsNeverShortened:
     async def test_swell_and_charge_grant_skip_a_running_death_rumble(self, manager, backend, clock, monkeypatch):
         """UC-040 BR-021: while the death rumble runs, a swell or a new charge's grant leaves its timer alone."""
         monkeypatch.setattr(
-            fm_module, "read_charge_cues", lambda: ChargeCues(reminder_s=0, pre_expiry_s=0)
+            shield_module, "read_charge_cues", lambda: ChargeCues(reminder_s=0, pre_expiry_s=0)
         )  # grant only
         monkeypatch.setattr(fm_module, "DEATH_RUMBLE_MS", 300)
         monkeypatch.setattr(fm_module, "DEATH_RED_HOLD_MS", 1)
@@ -442,7 +443,7 @@ async def _no_render(*_args):
 @pytest.fixture
 def cue_manager(manager, monkeypatch):
     monkeypatch.setattr(FeedbackManager, "_shield_render_loop", _no_render)
-    monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues())  # the flag defaults
+    monkeypatch.setattr(shield_module, "read_charge_cues", lambda: ChargeCues())  # the flag defaults
     return manager
 
 
@@ -511,7 +512,7 @@ class TestUC040ChargeRumblePattern:
     async def test_flag_values_shape_the_pattern(self, cue_manager, backend, monkeypatch):
         """UC-040 BR-021: intensity, pulse length, reminder interval and lead come from the flags."""
         cues = ChargeCues(intensity=180, pulse_ms=200, reminder_s=3.0, pre_expiry_s=2.0)
-        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: cues)
+        monkeypatch.setattr(shield_module, "read_charge_cues", lambda: cues)
         await _effect(cue_manager, CHARGE, 10_000)
         await _run_cues_to_end(cue_manager)
 
@@ -587,7 +588,7 @@ class TestUC040ChargeRumblePattern:
 
         stop_timer = cue_manager.vibration_tasks.get(SERIAL)
         assert pulse.done()
-        assert stop_timer is not None and stop_timer.get_name() != fm_module.CHARGE_PULSE_TASK_NAME
+        assert stop_timer is not None and stop_timer.get_name() != shield_module.CHARGE_PULSE_TASK_NAME
         assert not stop_timer.done()
         assert backend.rumble[-1][1] == 200  # the concurrent rumble is still on
         await asyncio.wait_for(stop_timer, timeout=1)
@@ -634,7 +635,7 @@ class TestUC040ChargeRumblePattern:
     @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
     async def test_no_reminder_after_expiry(self, cue_manager, backend, monkeypatch):
         """UC-040 A32: reminders at 5 and 10 s of a 12 s charge, none after its end."""
-        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(pre_expiry_s=0))
+        monkeypatch.setattr(shield_module, "read_charge_cues", lambda: ChargeCues(pre_expiry_s=0))
         await _effect(cue_manager, CHARGE, 12_000)
         await _run_cues_to_end(cue_manager)
 
@@ -722,7 +723,7 @@ class TestUC040ChargeRumblePattern:
     @pytest.mark.uc("UC-040", flow="A30", br=["BR-021"])
     async def test_intensity_zero_turns_the_pattern_off(self, cue_manager, backend, monkeypatch):
         """UC-040 BR-021: shield.charge_rumble_intensity 0 means no charge rumble at all."""
-        monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
+        monkeypatch.setattr(shield_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
         await _effect(cue_manager, CHARGE, 20_000)
         await _spin(40)
 
@@ -772,13 +773,13 @@ class TestUC040ChargeRumbleFlags:
 # Shield ending soon (#2094, UC-040 A16 / A17, BR-021)
 # ---------------------------------------------------------------------------
 
-_REAL_READ_SHIELD_ENDING_LEAD = fm_module.read_shield_ending_lead
+_REAL_READ_SHIELD_ENDING_LEAD = shield_module.read_shield_ending_lead
 
 
 @pytest.fixture
 def ending_manager(cue_manager, monkeypatch):
-    monkeypatch.setattr(fm_module, "read_shield_ending_lead", lambda: 1.0)  # the flag default
-    monkeypatch.setattr(fm_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
+    monkeypatch.setattr(shield_module, "read_shield_ending_lead", lambda: 1.0)  # the flag default
+    monkeypatch.setattr(shield_module, "read_charge_cues", lambda: ChargeCues(intensity=0))
     return cue_manager
 
 

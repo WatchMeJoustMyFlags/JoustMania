@@ -1,6 +1,6 @@
 """Shared backend doubles: the servicer calls the mock-only hooks without probing."""
 
-from unittest.mock import create_autospec
+from unittest.mock import MagicMock, create_autospec
 
 from services.controller_manager.backend import ControllerBackend
 from services.controller_manager.mock_hooks import MockFeatureHooks
@@ -20,6 +20,7 @@ def autospec_backend():
     backend.pattern_frame.return_value = None
     backend.pattern_stream_rate.return_value = None
     backend.consume_trigger_press.return_value = False
+    inert_hooks(backend)
     return backend
 
 
@@ -49,3 +50,13 @@ class AdapterAsBackend(InertBackendHooks):
 
     def release_pattern_stream(self, subscriber_id):
         self._adapter.release_pattern_stream(subscriber_id)
+
+
+def inert_hooks(backend):
+    """Give a ``MagicMock(spec=[...])`` backend the inert defaults of MockFeatureHooks the discovery loop calls."""
+    backend.get_adapter_type = MagicMock(return_value="")
+    backend.get_controller_metadata = MagicMock(return_value=None)
+    backend.rollout_summary = MagicMock(return_value=("", 0))
+    backend.rollout_strategy = MagicMock(return_value="")
+    backend.take_led_failures = MagicMock(return_value=0)
+    return backend

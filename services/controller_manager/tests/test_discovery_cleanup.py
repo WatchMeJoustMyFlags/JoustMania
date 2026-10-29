@@ -19,6 +19,7 @@ from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.event_publisher import EventPublisher
 from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.monitoring import ControllerMonitoring
+from services.controller_manager.tests.backend_doubles import inert_hooks
 
 SERIALS = ("serial_A", "serial_B")
 
@@ -29,6 +30,7 @@ def _frame(serial: str) -> dict:
 
 def _make_loop():
     backend = create_autospec(ControllerBackend, instance=True)
+    inert_hooks(backend)
     backend.get_connected_controllers.return_value = list(SERIALS)
     # Polls after the spawn read, per serial: frame, frame, exception (poll error),
     # None (poll drop); every later poll is a fresh frame.
