@@ -109,7 +109,7 @@ class ZombieInitFlags:
             respawn_min, respawn_max = ZOMBIE_RESPAWN_MIN, ZOMBIE_RESPAWN_MAX
         count_ok = isinstance(initial_count, int) and initial_count >= 1
         return cls(
-            thresholds=MappingProxyType(resolve_mode_thresholds(thresholds, ZOMBIE_THRESHOLDS)),
+            thresholds=MappingProxyType(dict(resolve_mode_thresholds(thresholds, ZOMBIE_THRESHOLDS))),
             initial_count=initial_count if count_ok else INITIAL_ZOMBIES,
             respawn_min_seconds=respawn_min,
             respawn_max_seconds=respawn_max,

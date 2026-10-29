@@ -66,7 +66,7 @@ class WerewolfInitFlags:
     def from_raw(cls, *, thresholds: Any, werewolf_fraction: Any) -> "WerewolfInitFlags":
         """Validate the raw flag values; a malformed one gives the module default (fail closed)."""
         return cls(
-            thresholds=MappingProxyType(resolve_mode_thresholds(thresholds, WEREWOLF_THRESHOLDS)),
+            thresholds=MappingProxyType(dict(resolve_mode_thresholds(thresholds, WEREWOLF_THRESHOLDS))),
             werewolf_fraction=resolve_fraction(werewolf_fraction, WEREWOLF_FRACTION),
         )
 
