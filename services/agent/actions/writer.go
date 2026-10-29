@@ -97,9 +97,12 @@ const (
 	defaultGlobalSensitivity = 2    // matches "medium"
 	defaultPlayerSensitivity = 1.5  // matches "handicap"
 	defaultPlayerHandicap    = 1.25 // #1107: mild "help" (>1 harder to die), within [0.5,2.0]
-	defaultShieldSeconds     = 5    // matches "default"
-	defaultGlobalDifficulty  = 1.5  // matches interventions.json "hard" (#766 F6)
-	defaultPacingProfile     = "frantic"
+	// defaultShieldSeconds is the fail-closed length for a grant the loop did not
+	// stamp (UC-040 BR-029): the loop stamps every grant with the shield_seconds
+	// "default" variant when the ShieldSecondsReader is wired (shield_seconds.go).
+	defaultShieldSeconds    = decision.DefaultShieldSeconds
+	defaultGlobalDifficulty = 1.5 // matches interventions.json "hard" (#766 F6)
+	defaultPacingProfile    = "frantic"
 	// defaultTempoRamp is the safe fallback ramp_tempo curve (#1117).
 	defaultTempoRamp = "1.3:8:linear"
 	// defaultToughnessBoost is the safe fallback toughness_boost directive (#1129).

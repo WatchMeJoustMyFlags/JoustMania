@@ -57,7 +57,7 @@ chose and why"). Verified keys/values from live span data:
 
 | Question on stage | Attribute(s) on `agent.decision` | Example value |
 |---|---|---|
-| What did it decide? | `decision.action`, `decision.reason` | `grant_shield` / `shield the weakest player (skill 0.62) while the field shrinks` |
+| What did it decide? | `decision.action`, `decision.reason` | `grant_shield` / `shield a struggling player (skill 0.62) while the field shrinks` |
 | Was it allowed to act? | `decision.blocked`, `decision.block_reason` | `true` / `not_allowed` |
 | Which goal was it serving? | `decision.objective_served` | `balanced` |
 | Which backend actually ran? | `decide.backend` (and, on the sibling `agent.decide` span, `decide.backend.requested`, `decide.fallback_reason`) | `rules` / `claude` / `llm_not_eligible` |

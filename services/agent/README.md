@@ -540,7 +540,7 @@ per second. The weighted per-minute budget is enforced downstream by the loop
 |------|-----------|---------|--------------|
 | R1/R2 | endurance | session younger than `fitness.endurance.min_session_seconds` while players are eliminated | `adjust_music_tempo` (slow) / `play_audio_cue` |
 | R3 | balanced | skill spread > `fitness.balanced.max_skill_gap` | `adjust_player_sensitivity` → highest-skill outlier |
-| R4 | balanced | weakest player while the field shrinks (needs ≥ 2 players with known skill — "weakest" is only meaningful relative to others) | `grant_shield` → weakest |
+| R4 | balanced | a struggling player (below the field mean, never the strongest; fewest shields first) while the field shrinks (needs ≥ 2 players with known skill — "struggling" is only meaningful relative to others) | `grant_shield` → struggling player |
 | R5 | accelerate | duration > `fitness.accelerate.target_session_seconds` | `adjust_music_tempo` (fast) |
 | R6 | accelerate | duration > 1.5× target, > 2 players | `eliminate_player` → least active |
 | R7 | accelerate | duration > 2× target **and accelerate strictly dominant** (a tie never ends a game) | `end_game` |
