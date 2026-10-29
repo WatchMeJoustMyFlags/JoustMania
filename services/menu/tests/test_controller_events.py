@@ -184,18 +184,21 @@ class TestHandleConnectionError:
     """Tests for _handle_connection_error extracted helper."""
 
     @pytest.fixture(autouse=True)
-    def no_real_sleep(self, monkeypatch):
-        """The retry back-off is real wall-clock time (up to 20 s per test); skip it."""
-        monkeypatch.setattr("services.menu.controller_events.asyncio.sleep", AsyncMock())
+    def sleep(self, monkeypatch):
+        """The retry back-off is real wall-clock time (up to 20 s per test); record it instead."""
+        fake_sleep = AsyncMock()
+        monkeypatch.setattr("services.menu.controller_events.asyncio.sleep", fake_sleep)
+        return fake_sleep
 
     @pytest.mark.asyncio
-    async def test_returns_doubled_delay(self, event_loop_instance):
+    async def test_returns_doubled_delay(self, event_loop_instance, sleep):
         """Should return doubled retry delay after sleeping."""
         event_loop_instance._running = True
         result = await event_loop_instance._handle_connection_error(
             RuntimeError("test"), retry_delay=2.0, max_retry_delay=30.0
         )
         assert result == 4.0
+        sleep.assert_awaited_once_with(2.0)
 
     @pytest.mark.asyncio
     async def test_caps_at_max_delay(self, event_loop_instance):
@@ -207,13 +210,14 @@ class TestHandleConnectionError:
         assert result == 30.0
 
     @pytest.mark.asyncio
-    async def test_returns_unchanged_when_not_running(self, event_loop_instance):
+    async def test_returns_unchanged_when_not_running(self, event_loop_instance, sleep):
         """Should return unchanged delay when loop is not running."""
         event_loop_instance._running = False
         result = await event_loop_instance._handle_connection_error(
             RuntimeError("test"), retry_delay=5.0, max_retry_delay=30.0
         )
         assert result == 5.0
+        sleep.assert_not_awaited()
 
 
 class TestClearStreamState:
