@@ -248,6 +248,7 @@ impl OutputRouter {
         let slot = Arc::new(OutputSlot::default());
         let writer = Writer {
             serial: serial.to_string(),
+            labels: crate::metrics::ControllerLabels::new(serial),
             slot: slot.clone(),
             slots: self.slots.clone(),
             origin: self.origin,
@@ -291,6 +292,7 @@ impl OutputRouter {
 /// newer slot has replaced it.
 struct Writer {
     serial: String,
+    labels: crate::metrics::ControllerLabels,
     slot: Arc<OutputSlot>,
     slots: Arc<Mutex<HashMap<String, Arc<OutputSlot>>>>,
     origin: Instant,
@@ -354,11 +356,13 @@ impl Writer {
             // Stamped before the device lock: waiting on it is part of the stall.
             let stamp = self.origin.elapsed().as_millis() as u64 + 1;
             slot.write_started.store(stamp, Ordering::Relaxed);
+            let write_started = Instant::now();
             let result = device
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .write(&report);
             slot.write_started.store(0, Ordering::Relaxed);
+            crate::metrics::record_write(&self.labels, write_started.elapsed(), result.is_ok());
             last_write = Some(Instant::now());
             let mut gave_up = false;
             match result {
