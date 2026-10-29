@@ -38,7 +38,20 @@ def _frames(servicer, subscriber_id="game", flt=None):
 
 def _wire(servicer, latched: list[bool], level: bool = False):
     """Servicer whose backend latch is a queue of consume results and whose state level is fixed."""
-    backend = MagicMock(spec=["consume_trigger_press"])
+    backend = MagicMock(
+        spec=[
+            "consume_death_frame",
+            "consume_trigger_press",
+            "pattern_serials",
+            "pattern_frame",
+            "pattern_stream_rate",
+            "record_pattern_overrun",
+            "release_pattern_stream",
+        ]
+    )
+    backend.pattern_serials.return_value = set()
+    backend.pattern_frame.return_value = None
+    backend.pattern_stream_rate.return_value = None
     backend.consume_trigger_press.side_effect = lambda _serial: latched.pop(0) if latched else False
     servicer.backend = backend
     state = servicer.state_builder.build_state.return_value

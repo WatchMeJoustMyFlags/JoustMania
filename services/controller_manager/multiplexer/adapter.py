@@ -7,6 +7,9 @@ All methods are sync (blocking) — called via asyncio.to_thread().
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Set
+
+from services.controller_manager.mock_hooks import MockFeatureHooks
 
 
 class DiscoveryFailedError(Exception):
@@ -17,7 +20,7 @@ class DiscoveryFailedError(Exception):
     """
 
 
-class ControllerIOAdapter(ABC):
+class ControllerIOAdapter(MockFeatureHooks, ABC):
     """Thin I/O adapter for controller communication.
 
     Adapters handle device handles and raw I/O only.
@@ -64,13 +67,8 @@ class ControllerIOAdapter(ABC):
     def close(self, serial: str) -> None:
         """Release controller handle."""
 
-    def consume_trigger_press(self, serial: str) -> bool:  # noqa: ARG002
-        """Whether the trigger was pressed since the last call, then clear (#1837).
-
-        The gameplay send path calls this once per delivered game frame, so a press
-        shorter than the frame interval is not lost. Default: no latch.
-        """
-        return False
+    #: Serials carrying a motion pattern (the MockAdapter replaces this with a live set).
+    pattern_serials: Set[str] = frozenset()
 
     def get_adapter_for_serial(self, serial: str) -> str | None:  # noqa: ARG002
         """Return BT adapter name (e.g. 'hci0') for this serial, if known."""

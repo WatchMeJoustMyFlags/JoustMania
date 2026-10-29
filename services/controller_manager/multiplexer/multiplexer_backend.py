@@ -640,15 +640,13 @@ class MultiplexerBackend(ControllerBackend):
         frame-budget death latch — see mock_adapter.consume_death_frame.
         """
         adapter = self._serial_to_adapter.get(serial)
-        consume = getattr(adapter, "consume_death_frame", None)
-        if consume is not None:
-            consume(serial)
+        if adapter is not None:
+            adapter.consume_death_frame(serial)
 
     def consume_trigger_press(self, serial: str) -> bool:
         """Route the per-game-frame trigger latch read to the owning adapter (#1837)."""
         adapter = self._serial_to_adapter.get(serial)
-        consume = getattr(adapter, "consume_trigger_press", None)
-        return consume(serial) is True if consume is not None else False
+        return adapter.consume_trigger_press(serial) is True if adapter is not None else False
 
     # -- Motion patterns (UC-046, #1258): only the MockAdapter implements them --
 
@@ -656,36 +654,29 @@ class MultiplexerBackend(ControllerBackend):
         """Serials that carry a motion pattern, across adapters (cheap per-frame check)."""
         out: set[str] = set()
         for adapter in self._adapters:
-            out |= getattr(adapter, "pattern_serials", set())
+            out |= adapter.pattern_serials
         return out
 
-    def pattern_frame(self, serial: str, subscriber_id: str, explicit: bool) -> dict | None:
+    def pattern_frame(self, serial: str, subscriber_id: str, explicit: bool) -> tuple[dict, bool] | None:
         """Route a delivered-frame pattern evaluation to the owning adapter."""
-        frame = getattr(self._serial_to_adapter.get(serial), "pattern_frame", None)
-        return frame(serial, subscriber_id, explicit) if frame is not None else None
+        adapter = self._serial_to_adapter.get(serial)
+        return adapter.pattern_frame(serial, subscriber_id, explicit) if adapter is not None else None
 
     def pattern_stream_rate(self, serials) -> int | None:
         """Pinned stream rate when the stream names a pattern controller, else None."""
         for serial in serials:
-            rate_of = getattr(self._serial_to_adapter.get(serial), "pattern_stream_rate", None)
-            if rate_of is not None:
-                rate = rate_of([serial])
-                if rate is not None:
-                    return rate
+            adapter = self._serial_to_adapter.get(serial)
+            rate = adapter.pattern_stream_rate([serial]) if adapter is not None else None
+            if rate is not None:
+                return rate
         return None
 
     def record_pattern_overrun(self, subscriber_id: str) -> int:
-        return sum(
-            adapter.record_pattern_overrun(subscriber_id)
-            for adapter in self._adapters
-            if hasattr(adapter, "record_pattern_overrun")
-        )
+        return sum(adapter.record_pattern_overrun(subscriber_id) for adapter in self._adapters)
 
     def release_pattern_stream(self, subscriber_id: str) -> None:
         for adapter in self._adapters:
-            release = getattr(adapter, "release_pattern_stream", None)
-            if release is not None:
-                release(subscriber_id)
+            adapter.release_pattern_stream(subscriber_id)
 
     async def set_led_color(self, serial: str, r: int, g: int, b: int) -> bool:
         adapter = self._serial_to_adapter.get(serial)
