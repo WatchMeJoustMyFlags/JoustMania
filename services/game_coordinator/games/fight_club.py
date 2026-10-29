@@ -19,16 +19,16 @@ from opentelemetry.trace import Status, StatusCode
 from lib.colors import Colors
 from lib.feature_flags import read_float_flag
 from lib.telemetry import inject_trace_context
-from lib.types import GameEvent, Sound
+from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator import game_clock, metrics
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
-    BaseGameMode,
     Phase,
     Player,
     resolve_non_negative_duration,
 )
+from services.game_coordinator.games.streamed_intro import StreamedIntroGameMode
 from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class FightClubPlayer(Player):
     invincible_until: float = 0.0
 
 
-class FightClubGame(BaseGameMode):
+class FightClubGame(StreamedIntroGameMode):
     """
     Fight Club game mode using gRPC communication.
 
@@ -82,6 +82,8 @@ class FightClubGame(BaseGameMode):
 
     Special: Face-off mode for tied scores (no time limit).
     """
+
+    RUN_SPAN_NAME = "fight_club_game"
 
     def __init__(
         self,
@@ -955,121 +957,33 @@ class FightClubGame(BaseGameMode):
         self.game_over = True
         await super().on_force_end()
 
-    async def run(self):
-        """
-        Run the Fight Club game.
+    def _log_run_config(self) -> None:
+        # invincibility and min_rounds are set in __init__ from StartGameConfig
+        logger.info(f"Fight Club config: invincibility={self._invincibility_duration}s, min_rounds={self._min_rounds}")
 
-        Override to manage round-based gameplay.
-        """
-        from services.game_coordinator.games.base import GameState
+    async def _run_streamed_gameplay(self) -> bool:
+        """Seat round 1 after the warm-up, then gameplay_phase (UC-025 A2, A4)."""
+        if not self.running:
+            return False
 
-        # Set once the teardown step ended the shield feedback; otherwise the
-        # finally ends it (UC-020 failure postcondition, #2357).
-        shield_feedback_ended = False
-        # The session game root span carries the outcome (#1328).
-        self._capture_game_root_span()
-        with tracer.start_as_current_span("fight_club_game") as game_span:
-            self.game_span = game_span
-            game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
+        # Disconnects buffered during the intro, the countdown and the warm-up
+        # leave the rotation before round 1 is seated: no forfeit point, no
+        # round pause; fewer than two connected players end the game (A4).
+        ended_before_round_one = await self._handle_warmup_disconnects()
+        if not self.running:
+            return False
 
-            try:
-                self.running = True
-                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
+        # The first round (and its timer) starts after the warm-up
+        if not ended_before_round_one:
+            await self._start_round()
 
-                # Initialization phase
-                with tracer.start_as_current_span("initialization_phase") as init_span:
-                    # invincibility and min_rounds are now set in __init__ from StartGameConfig
-                    logger.info(
-                        f"Fight Club config: invincibility={self._invincibility_duration}s, "
-                        f"min_rounds={self._min_rounds}"
-                    )
-                    await self._initialize_players()
-                    if len(self.players) < 2:
-                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
-                    # Before any task is created: tasks copy the context (#1273).
-                    self._set_flag_eval_context()
-                    self._create_player_spans(None)
-                    # The intro colours go over the stream, so it opens first; a drain
-                    # discards the intro's frames and keeps disconnects (UC-025 A2 step 1).
-                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
-                    await self._run_streamed_intro_and_instructions(init_span)
-
-                if not self.running:
-                    return
-
-                # Countdown
-                with tracer.start_as_current_span("countdown_phase"):
-                    await self._countdown()
-
-                if not self.running:
-                    return
-
-                # Start gameplay
-                self.state = GameState.RUNNING
-                self.start_time = game_clock.now()
-
-                # Fight Club publishes game_started after the countdown (UC-025 A2 step 1).
-                await self.event_publisher(
-                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
-                )
-
-                # Start music (no tempo loop by design, UC-025 BR-002)
-                await self._start_game_music()
-
-                # Prime the EMA filters before death detection (UC-030 BR-003)
-                await self._warmup_ema()
-
-                if not self.running:
-                    return
-
-                # Disconnects buffered during the intro, the countdown and the warm-up
-                # leave the rotation before round 1 is seated: no forfeit point, no
-                # round pause; fewer than two connected players end the game (A4).
-                ended_before_round_one = await self._handle_warmup_disconnects()
-                if not self.running:
-                    return
-
-                # The first round (and its timer) starts after the warm-up
-                if not ended_before_round_one:
-                    await self._start_round()
-
-                # Game loop (gameplay stream already started before intro)
-                with tracer.start_as_current_span("gameplay_phase"):
-                    if ended_before_round_one:
-                        await self._hold_win_display()
-                    else:
-                        await self._game_loop()
-                self._latch_game_outcome()
-
-                # End game
-                with tracer.start_as_current_span("teardown_phase") as teardown_span:
-                    # Shield LEDs end with the game, before the winner effects (#1301).
-                    await self._end_shield_feedback()
-                    shield_feedback_ended = True
-                    await self._end_game_impl()
-                    self._record_game_outcome(teardown_span)
-                    # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
-                    self._release_gameplay_stream()
-
-                game_span.set_status(Status(StatusCode.OK))
-
-            except Exception as e:
-                self._run_failed = True
-                logger.error(f"Game error: {e}", exc_info=True)
-                game_span.record_exception(e)
-                game_span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-            finally:
-                self._record_force_ended_outcome_if_unrecorded()
-                force_ended = not self.running
-                self.running = False
-                # The music stops here on every path; the shield feedback only when
-                # the teardown step did not end it (error, cancel or early return).
-                await self._stop_run_feedback(False, shield_feedback_ended)
-                if force_ended:
-                    await self.on_force_end()
-                await self._cleanup_after_run()
+        # Game loop (gameplay stream already started before intro)
+        with tracer.start_as_current_span("gameplay_phase"):
+            if ended_before_round_one:
+                await self._hold_win_display()
+            else:
+                await self._game_loop()
+        return True
 
     async def _process_controller_state(self, state):
         """

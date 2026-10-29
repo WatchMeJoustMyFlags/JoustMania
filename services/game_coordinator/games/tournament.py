@@ -18,17 +18,15 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from lib.feature_flags import read_float_flag
-from lib.types import GameEvent, Sound
+from lib.types import Sound
 from proto import controller_manager_pb2
 from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import (
-    GAME_MODE_ATTR,
-    BaseGameMode,
-    GameState,
     Phase,
     Player,
     resolve_non_negative_duration,
 )
+from services.game_coordinator.games.streamed_intro import StreamedIntroGameMode
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -84,7 +82,7 @@ class Match:
     is_bye: bool = False  # True if only one player (automatic advance)
 
 
-class TournamentGame(BaseGameMode):
+class TournamentGame(StreamedIntroGameMode):
     """
     Tournament game mode using gRPC communication.
 
@@ -94,6 +92,8 @@ class TournamentGame(BaseGameMode):
     Handles odd player counts with byes (some players automatically
     advance to next round).
     """
+
+    RUN_SPAN_NAME = "tournament_game"
 
     def __init__(
         self,
@@ -1032,104 +1032,17 @@ class TournamentGame(BaseGameMode):
             self.match_span = None
         await super().cleanup()
 
-    async def run(self):
+    async def _run_streamed_gameplay(self) -> bool:
+        """The bracket runs on the base game loop (UC-025 step 1, BR-002, D-G33, #1882).
+
+        One stream read for the whole game, a bracket step per frame; match spans
+        start inside gameplay_phase. The end step closes the player spans with
+        tournament_ended; an early exit or an error leaves them to the run-end
+        cleanup (#1997).
         """
-        Run the Tournament game.
-
-        Same start and teardown as Fight Club and Werewolf (UC-025 step 1, Pre-1,
-        BR-002): the bracket runs on the base game loop (D-G33, #1882).
-        """
-        # Set once the teardown step ended the shield feedback; otherwise the
-        # finally ends it (UC-020 failure postcondition, #2357).
-        shield_feedback_ended = False
-        # The session game root span carries the outcome (#1328).
-        self._capture_game_root_span()
-        with tracer.start_as_current_span("tournament_game") as game_span:
-            self.game_span = game_span
-            game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
-
-            try:
-                self.running = True
-                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
-
-                # Initialization phase
-                with tracer.start_as_current_span("initialization_phase") as init_span:
-                    await self._initialize_players()
-                    if len(self.players) < 2:
-                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
-                    # Before any task is created: tasks copy the context (#1273).
-                    self._set_flag_eval_context()
-                    self._create_player_spans(None)  # Uses current context
-                    # The intro colours go over the stream, so it opens first; a drain
-                    # discards the intro's frames and keeps disconnects (UC-025 step 1).
-                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
-                    await self._run_streamed_intro_and_instructions(init_span)
-
-                if not self.running:
-                    return
-
-                # Countdown
-                with tracer.start_as_current_span("countdown_phase"):
-                    await self._countdown()
-
-                if not self.running:
-                    return
-
-                # Start gameplay
-                self.state = GameState.RUNNING
-                self.start_time = game_clock.now()
-
-                # Emit game_started event (required for integration tests)
-                await self.event_publisher(
-                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
-                )
-
-                # Start music (no tempo loop by design, UC-025 BR-002)
-                await self._start_game_music()
-
-                # Prime the EMA filters before death detection (UC-030 BR-003)
-                await self._warmup_ema()
-
-                if not self.running:
-                    return
-
-                # The bracket runs on the base game loop: one stream read for the whole
-                # game, a bracket step per frame (D-G33, #1882). Match spans start
-                # inside gameplay_phase.
-                with tracer.start_as_current_span("gameplay_phase"):
-                    await self._game_loop()
-                if self._bracket_error is not None:
-                    raise self._bracket_error
-                self._latch_game_outcome()
-                # The end step closes the player spans with tournament_ended; an early
-                # exit or an error leaves them to the run-end cleanup (#1997).
-
-                # End game
-                with tracer.start_as_current_span("teardown_phase") as teardown_span:
-                    # Shield LEDs end with the game, before the winner effects (#1301).
-                    await self._end_shield_feedback()
-                    shield_feedback_ended = True
-                    await self._end_game_impl()
-                    self._record_game_outcome(teardown_span)
-                    # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
-                    self._release_gameplay_stream()
-
-                game_span.set_status(Status(StatusCode.OK))
-
-            except Exception as e:
-                self._run_failed = True
-                logger.error(f"Game error: {e}", exc_info=True)
-                game_span.record_exception(e)
-                game_span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-            finally:
-                self._record_force_ended_outcome_if_unrecorded()
-                force_ended = not self.running
-                self.running = False
-                # The music stops here on every path; the shield feedback only when
-                # the teardown step did not end it (error, cancel or early return).
-                await self._stop_run_feedback(False, shield_feedback_ended)
-                if force_ended:
-                    await self.on_force_end()
-                await self._cleanup_after_run()
+        if not self.running:
+            return False
+        await super()._run_streamed_gameplay()
+        if self._bracket_error is not None:
+            raise self._bracket_error
+        return True
