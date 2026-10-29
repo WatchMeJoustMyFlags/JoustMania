@@ -18,6 +18,8 @@
 #          fraction: [lo, hi] fraction_percent range of a fraction write
 #          shape: true    an object with the keys and value kinds of the default variant
 # persist: true = an admin setting a write MAY persist with "persist": true
+# kill_switch: true = a safety flag: a persisted write or clear applies in memory even
+#          when the state file cannot be saved (reports not persisted, #2368)
 # description: one line in game terms, at most 120 characters; required on every row
 #          with scope experiment+arm (the experiment proposer shows it, #2345), optional
 #          elsewhere; the same text as the flags.md §13.3 description table
@@ -46,8 +48,8 @@ flags:
   - {set: interventions, key: end_game, kind: event, scope: [game], bounds: {payload: {}}}
 
   # --- agent (flags.md §13.2) ---------------------------------------------------
-  - {set: agent, key: interventions_allowed, kind: overlay, scope: [stack], persist: true}
-  - {set: agent, key: enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
+  - {set: agent, key: interventions_allowed, kind: overlay, scope: [stack], persist: true, kill_switch: true}
+  - {set: agent, key: enabled, kind: overlay, scope: [stack], kill_switch: true, bounds: {variants: ["on", "off"]}}
   - {set: agent, key: interventions_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   - {set: agent, key: experiments_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   - {set: agent, key: experiment_dynamic_enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}

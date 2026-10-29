@@ -53,6 +53,7 @@ type mdRow struct {
 	scopes                 []string
 	persist                bool
 	realWrite              bool // the row names `real_write: no_live_real_game`
+	killSwitch             bool // the row names `kill_switch: true` (#2368)
 }
 
 var backticked = regexp.MustCompile("`([^`]+)`")
@@ -108,8 +109,9 @@ func parseFlagsMD(t *testing.T) []mdRow {
 		for _, k := range keys {
 			rows = append(rows, mdRow{
 				set: set, key: k[1], kind: cells[1], scopes: scopes, bounds: cells[3],
-				persist:   strings.HasPrefix(cells[4], "**yes**"),
-				realWrite: strings.Contains(strings.Join(cells[5:], "|"), "`real_write: "+RealWriteNoLiveRealGame+"`"),
+				persist:    strings.HasPrefix(cells[4], "**yes**"),
+				realWrite:  strings.Contains(strings.Join(cells[5:], "|"), "`real_write: "+RealWriteNoLiveRealGame+"`"),
+				killSwitch: strings.Contains(strings.Join(cells[5:], "|"), "`kill_switch: true`"),
 			})
 		}
 	}
@@ -194,6 +196,9 @@ func TestRegistryMatchesFlagsMD(t *testing.T) {
 			}
 			if p.RealWriteNeedsNoRealGame() != row.realWrite {
 				t.Errorf("%s: real_write %q in registry, flags.md names it: %v", row.key, p.RealWrite, row.realWrite)
+			}
+			if p.KillSwitch != row.killSwitch {
+				t.Errorf("%s: kill_switch %v in registry, flags.md names it: %v", row.key, p.KillSwitch, row.killSwitch)
 			}
 			checkBounds(t, row, p)
 		}

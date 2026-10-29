@@ -106,7 +106,7 @@ func NewMetrics(meter metric.Meter, stats func() state.Stats) (*Metrics, error) 
 		return nil, err
 	}
 	persistErrors, err := meter.Int64ObservableCounter("flagservice_admin_persist_errors_total",
-		metric.WithDescription("Failed writes of the admin state file (the persisted write is rolled back and refused)"))
+		metric.WithDescription("Failed writes of the admin state file (rolled back and refused, except a kill switch, which applies in memory)"))
 	if err != nil {
 		return nil, err
 	}

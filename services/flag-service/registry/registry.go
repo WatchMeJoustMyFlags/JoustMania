@@ -111,6 +111,18 @@ type Policy struct {
 	// Required on a row that allows ScopeExperiment: the agent's experiment
 	// proposer shows it to the model next to the key, variants and range.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// KillSwitch marks a safety flag (flags.md §13, C-034): a persisted write
+	// or clear of it whose state-file save fails still applies in memory and
+	// reports persisted false, instead of being rolled back (#2368).
+	KillSwitch bool `yaml:"kill_switch,omitempty" json:"kill_switch,omitempty"`
+}
+
+// AppliesWhenPersistFails reports whether a persisted write or clear of this
+// flag applies in memory even when the state file cannot be saved: a kill
+// switch must take effect now, a restart bringing the old value back is the
+// smaller risk (#2368). Every other flag is rolled back (500 persist_failed).
+func (p *Policy) AppliesWhenPersistFails() bool {
+	return p.KillSwitch
 }
 
 // RealWriteNeedsNoRealGame reports whether a real-scope write of this flag is

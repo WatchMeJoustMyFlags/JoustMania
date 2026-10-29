@@ -804,6 +804,44 @@ func TestAdminPersistence(t *testing.T) {
 			t.Fatalf("got %v: the memory must keep what the file still holds", v)
 		}
 	})
+	t.Run("UC-053/A2 a kill switch's persisted write applies despite a failing save and reports persisted false (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "full", Persist: true, Writer: "menu"})
+		breakStateFile(t, path)
+		res, err := f.state.Put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "none", Persist: true, Writer: "menu"})
+		if err != nil {
+			t.Fatalf("err = %v: a kill switch must not be refused on a failed save", err)
+		}
+		if res.Persisted {
+			t.Fatal("reported persisted although the save failed")
+		}
+		if f.state.PersistErrors() != 1 {
+			t.Fatalf("persist errors %d, want 1", f.state.PersistErrors())
+		}
+		if v := f.snapshotFlag("interventions_allowed")["defaultVariant"]; v != "none" {
+			t.Fatalf("got %v, want the kill switch none applied in memory", v)
+		}
+	})
+	t.Run("UC-053/A2 a kill switch's persisted clear applies despite a failing save and is flagged not persisted (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "full", Persist: true, Writer: "menu"})
+		breakStateFile(t, path)
+		res, err := f.state.Clear(ClearRequest{Set: "agent", Flag: "interventions_allowed", Persist: true})
+		if err != nil {
+			t.Fatalf("err = %v: a kill switch clear must not be refused on a failed save", err)
+		}
+		if res.Cleared != 1 || res.Persisted || !res.PersistFailed {
+			t.Fatalf("result %+v, want cleared 1, persisted false, persist failed", res)
+		}
+		if f.state.PersistErrors() != 1 {
+			t.Fatalf("persist errors %d, want 1", f.state.PersistErrors())
+		}
+		if v := f.snapshotFlag("interventions_allowed")["defaultVariant"]; v == "full" {
+			t.Fatalf("got %v: the cleared kill switch value still applies", v)
+		}
+	})
 	t.Run("UC-053/A2 with persistence disabled a persisted write is not an error and reports persisted false", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
 		res := f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true})
@@ -1171,6 +1209,23 @@ func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
 		}
 		if got := f.snapshotFlag("sensitivity")["defaultVariant"]; got == "slow" {
 			t.Fatalf("defaultVariant = %v: the refused write still applies", got)
+		}
+	})
+	t.Run("UC-053/A12 a read error still lets the kill switch apply in memory (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{stateFile: path})
+		res, err := f.state.Put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "none", Persist: true, Writer: "menu"})
+		if err != nil {
+			t.Fatalf("err = %v: the kill switch must work while persistence is blocked", err)
+		}
+		if res.Persisted || f.state.PersistErrors() != 1 {
+			t.Fatalf("persisted %v errors %d, want false and 1", res.Persisted, f.state.PersistErrors())
+		}
+		if got := f.snapshotFlag("interventions_allowed")["defaultVariant"]; got != "none" {
+			t.Fatalf("defaultVariant = %v, want the kill switch none", got)
 		}
 	})
 }

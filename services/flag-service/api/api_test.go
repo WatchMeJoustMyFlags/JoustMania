@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -658,6 +659,77 @@ func TestStrictBooleanQueryParams(t *testing.T) {
 			if s, b := e.do("DELETE", "/game/shield.activation?"+q, nil); s != 204 {
 				t.Fatalf("?%s: %d %v, want 204", q, s, b)
 			}
+		}
+	})
+}
+
+// newEnvStateFile is newEnv (stream open) with the state file stateFile.
+func newEnvStateFile(t *testing.T, stateFile string) *httptest.Server {
+	t.Helper()
+	_, file, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(file), "..")
+	base, err := baseline.Load(filepath.Join(root, "..", "flagd", "ci"), baseline.DefaultFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := registry.LoadFile(filepath.Join(root, "registry.yaml"), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _, err := state.New(base, reg, state.Options{Epoch: "e1", Served: base.Order, StateFile: stateFile, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, _ := st.Subscribe("")
+	t.Cleanup(sub.Close)
+	metrics, err := telemetry.NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewManualReader())).Meter("t"), st.Stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider().Tracer("t"), Links: &syncserver.Links{}}
+	srv := httptest.NewServer(a.Handler())
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func deleteHeader(t *testing.T, url string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodDelete, url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode, resp.Header.Get(HeaderPersisted)
+}
+
+// UC: UC-053 A12
+func TestKillSwitchPersistedClearSignalsPersistFailure(t *testing.T) {
+	t.Run("UC-053/A12 a kill switch DELETE ?persist=true with an unwritable state file answers 204 and X-Flag-Persisted false (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil { // unreadable at start: persistence blocked
+			t.Fatal(err)
+		}
+		srv := newEnvStateFile(t, path)
+		e := &env{t: t, srv: srv}
+		code, body := e.do(http.MethodPut, "/agent/interventions_allowed", map[string]any{"variant": "full", "persist": true, "writer": "menu"})
+		if code != http.StatusOK || body["persisted"] != false {
+			t.Fatalf("PUT %d %v, want 200 persisted false", code, body)
+		}
+		code, hdr := deleteHeader(t, srv.URL+"/agent/interventions_allowed?persist=true")
+		if code != http.StatusNoContent || hdr != "false" {
+			t.Fatalf("DELETE %d %s=%q, want 204 and false", code, HeaderPersisted, hdr)
+		}
+	})
+	t.Run("UC-053/A2 a persisted DELETE that reached the state file answers X-Flag-Persisted true", func(t *testing.T) {
+		srv := newEnvStateFile(t, filepath.Join(t.TempDir(), "admin.json"))
+		e := &env{t: t, srv: srv}
+		if code, body := e.do(http.MethodPut, "/agent/interventions_allowed", map[string]any{"variant": "full", "persist": true, "writer": "menu"}); code != http.StatusOK || body["persisted"] != true {
+			t.Fatalf("PUT %d %v", code, body)
+		}
+		code, hdr := deleteHeader(t, srv.URL+"/agent/interventions_allowed?persist=true")
+		if code != http.StatusNoContent || hdr != "true" {
+			t.Fatalf("DELETE %d %s=%q, want 204 and true", code, HeaderPersisted, hdr)
 		}
 	})
 }

@@ -454,6 +454,13 @@ menu admin) is written to the service's own state file and restored at start (FR
 written without it (a stage script, a test) stays in memory. `no` = a write asking to persist is `400 malformed`.
 Every value not persisted lives in memory only (architecture note §10.1).
 
+**Failed save, kill switches (`kill_switch: true`, #2368, UC-053 A12):** when the state file cannot be saved (or was
+unreadable at start), a persisted `PUT` or `DELETE ?persist=true` is rolled back and answered `500 persist_failed`,
+except on a row with `kill_switch: true` (`interventions_allowed`, `enabled`; C-034 safety flags): a safety stop
+must take effect now, so it applies in memory and answers `persisted: false` (`PUT`) or `204` with
+`X-Flag-Persisted: false` (`DELETE`), counted in `flagservice_admin_persist_errors_total`; a restart brings back what
+the file holds (services.md §7.2). The attribute is served in the row's `policy` by the read endpoints.
+
 **Persisted vs overlay (who writes which, #1682):** a persisted value is an **operator choice** (the menu admin,
 `agent-backend.sh` for the decision backend and model); an in-memory overlay is a **stage beat** or a test
 (`talk-stage.sh`, the dry-run scripts, fixtures). A persisted write replaces an in-memory overlay of the same
@@ -512,8 +519,8 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 
 | Key | Kind | Scope | Bounds | Persist | Today's writer |
 |---|---|---|---|---|---|
-| `interventions_allowed` | overlay | stack | declared variants (`none`, `probe`, `ambient`, `standard`, `full`, `shadow_experimental`) | **yes** (admin kill switch, FR-019) | menu admin, `talk-stage.sh permissions` |
-| `enabled` | overlay | stack | `on`, `off` | no | `agent-killswitch.sh`, `agent-dryrun-enable.sh`, `talk-stage.sh`; the operator pad through the menu (#2050, `agent_enabled_writer`): a writer with no `persist` field, because a write asking to persist is `400` (UC-015 BR-001) |
+| `interventions_allowed` | overlay | stack | declared variants (`none`, `probe`, `ambient`, `standard`, `full`, `shadow_experimental`) | **yes** (admin kill switch, FR-019) | menu admin, `talk-stage.sh permissions`; registry `kill_switch: true` (a persisted write or clear applies even when the state file cannot be saved, #2368) |
+| `enabled` | overlay | stack | `on`, `off` | no | `agent-killswitch.sh`, `agent-dryrun-enable.sh`, `talk-stage.sh`; the operator pad through the menu (#2050, `agent_enabled_writer`): a writer with no `persist` field, because a write asking to persist is `400` (UC-015 BR-001); registry `kill_switch: true` (#2368) |
 | `interventions_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh`; the operator pad's resume through the menu (#2093, `agent_enabled_writer`, no `persist` field, so a restart returns to the fail-closed `off`; UC-015 BR-003). The pad's stop never writes it (BR-002) |
 | `experiments_enabled`, `experiment_dynamic_enabled` | overlay | stack | `on`, `off` | no | `agent-dryrun-enable.sh`, `talk-stage.sh` |
 | `rollout_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
