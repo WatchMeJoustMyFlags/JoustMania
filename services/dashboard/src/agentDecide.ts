@@ -611,7 +611,7 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): { signal: Abo
  * One decide poll (#2287): run decideSearches(store, tick) one after the other,
  * merge each lane's rows into the store and return the total answer size and the
  * agent.flag_state spans of the fetched game traces. Throws
- * JaegerUnavailableError like fetchDecideFeed when the primary (game or all) lane
+ * JaegerUnavailableError as the single-lane poll did when the primary (game or all) lane
  * fails; rows of a lane that answered before the failure stay merged. A failing
  * shadow lane is reported in `laneErrors` instead (#2386, UC-035 BR-011).
  */

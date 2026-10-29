@@ -314,7 +314,7 @@ Budget-aware admission (#1326, UC-040 A20/A21, BR-014/BR-015; `decision/budget.g
   budget state per (intervention, target); the state changes when an intervention is admitted or one leaves
   the 60 s window. Repeats in between only count in `agent_decisions_total` and log
   `agent.decision_rate_limit_repeat` at debug level. `agent.decide` still reports `decide.blocked`. The
-  dashboard's blocked tallies read `agent_decisions_total` for that reason (`services/dashboard/src/agent.ts`).
+  dashboard's blocked tallies read `agent_decisions_total` for that reason (`services/dashboard/src/agentOverlay.ts`).
 
 Blocked decisions are recorded on the `agent.decision` span
 (`decision.blocked=true`, `decision.block_reason`) and never applied. The `agent.decide` span of the same
@@ -381,7 +381,7 @@ So a rules decision blocked by the allow-list reads `outcome=act`, `decide.block
 `services/agent/decision/decide_hook.go:DecideDiscardBackendChanged`).
 
 Outcomes are recorded **only as span attributes** (the dashboard Agent tab reads them from Jaeger,
-`services/dashboard/src/agent.ts:455-560`). One exception: since #2123 every remote `agent.decide` record that carries
+`services/dashboard/src/agentDecide.ts:parseDecideTraces`). One exception: since #2123 every remote `agent.decide` record that carries
 a `decide.discarded_reason` is counted in `agent_decide_discarded_total{reason}`
 (`services/agent/decision/metrics.go:newDecideDiscardedCounter`), so dropped answers show without Jaeger.
 
@@ -710,7 +710,7 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   `{"question_id": "ffa.target", "choice": "MOCK0003", ...}`, `{"question_id": "ffa.magnitude", "score": 0.25, "confidence": 0.4}`;
   `choice`, `probabilities` and `noul` are omitted when empty. On the rules path the `ffa.intervention` /
   `ffa.target` choices are the emitted decision's (§5), also when the permission chain blocks it. Consumers: the dashboard Agent tab reads
-  `question_id` / `choice` for `ffa.intervention` and `ffa.target` (`services/dashboard/src/agent.ts`), and the
+  `question_id` / `choice` for `ffa.intervention` and `ffa.target` (`services/dashboard/src/agentDecide.ts:parseDecideAnswers`), and the
   decide service-tier tests match the scripted intervention in it (`tests/service/test_tc008_remote_backend_routing.py`, `tests/service/test_tc009_kill_switch.py`).
   Changing this shape breaks both.
 - `chat {model}` (CLIENT) per remote call: OTel GenAI semantic conventions
