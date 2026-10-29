@@ -137,6 +137,8 @@ struct DeviceEntry<D> {
     /// hidraw ring and forwards nothing, so the stream starts with fresh input
     /// instead of the reports queued while nobody read (#2372).
     flush_input: bool,
+    /// Metric attributes, built once at open (#2374).
+    labels: crate::metrics::ControllerLabels,
 }
 
 /// Run the device manager loop on the current thread (blocking).
@@ -395,6 +397,7 @@ fn handle_discover<B: HidBackend>(
                     adapter_name,
                     read_failed: false,
                     flush_input: false,
+                    labels: crate::metrics::ControllerLabels::new(&serial),
                 }
             });
         }
@@ -438,6 +441,7 @@ fn handle_open<B: HidBackend>(
                     adapter_name,
                     read_failed: false,
                     flush_input: false,
+                    labels: crate::metrics::ControllerLabels::new(serial),
                 },
             );
             true
@@ -490,7 +494,7 @@ fn poll_all_devices<D: HidDeviceIo>(
         };
         let drain = hid::read_latest_input(&*device, zcm2);
         drop(device);
-        crate::metrics::record_drain(serial, u64::from(drain.reports_read));
+        crate::metrics::record_drain(&entry.labels, u64::from(drain.reports_read));
         if drain.read_failed && !entry.read_failed {
             info!(serial = %serial, "Read failed, dropping the controller on the next discovery");
             entry.read_failed = true;
@@ -1731,6 +1735,7 @@ mod tests {
                 adapter_name: None,
                 read_failed: false,
                 flush_input: false,
+                labels: crate::metrics::ControllerLabels::new(SERIAL),
             },
         )]);
         let (sender, _rx) = crate::input_slot::channel();
@@ -1843,5 +1848,248 @@ mod tests {
         assert!(graceful_stop(&cmd_tx, &router, Duration::from_secs(2)));
         let last = device.reports().pop().expect("a write");
         assert_eq!((last[2], last[3], last[4], last[6]), (0, 0, 0, 0));
+    }
+    /// Backend with one controller whose reads and writes are scripted by the test.
+    struct ScriptedBackend(ScriptedDevice);
+
+    #[derive(Clone, Default)]
+    struct ScriptedDevice {
+        reports: Arc<Mutex<VecDeque<[u8; hid::INPUT_REPORT_SIZE]>>>,
+        empty_reads: Arc<std::sync::atomic::AtomicUsize>,
+        writes: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl HidDeviceIo for ScriptedDevice {
+        fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize> {
+            match self.reports.lock().unwrap().pop_front() {
+                Some(report) => {
+                    buf[..report.len()].copy_from_slice(&report);
+                    Ok(report.len())
+                }
+                None => {
+                    self.empty_reads
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(0)
+                }
+            }
+        }
+
+        fn write(&self, data: &[u8]) -> hidapi::HidResult<usize> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(data.len())
+        }
+    }
+
+    impl HidBackend for ScriptedBackend {
+        type Device = ScriptedDevice;
+
+        fn refresh_devices(&mut self) -> hidapi::HidResult<()> {
+            Ok(())
+        }
+
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, ScriptedDevice, u16, Option<String>)> {
+            if skip(METRICS_SERIAL) {
+                return vec![];
+            }
+            vec![(
+                METRICS_SERIAL.to_string(),
+                self.0.clone(),
+                PRODUCT_ID_ZCM2,
+                None,
+            )]
+        }
+
+        fn open_controller_by_serial(
+            &self,
+            _serial: &str,
+        ) -> Option<(ScriptedDevice, u16, Option<String>)> {
+            None
+        }
+    }
+
+    const METRICS_SERIAL: &str = "00:06:f7:de:ad:01";
+
+    /// Sum of a u64 counter's data points, optionally for one serial.
+    fn counter_total(
+        exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
+        name: &str,
+        serial: Option<&str>,
+    ) -> u64 {
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+        let mut total = 0;
+        for rm in exporter.get_finished_metrics().unwrap() {
+            for m in rm.scope_metrics().flat_map(|sm| sm.metrics()) {
+                if m.name() != name {
+                    continue;
+                }
+                if let AggregatedMetrics::U64(MetricData::Sum(sum)) = m.data() {
+                    for point in sum.data_points() {
+                        let on_serial = serial.is_none_or(|want| {
+                            point
+                                .attributes()
+                                .any(|kv| kv.key.as_str() == "serial" && kv.value.as_str() == want)
+                        });
+                        if on_serial {
+                            total += point.value();
+                        }
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    /// Observation count of an f64 histogram, optionally for one serial.
+    fn histogram_count(
+        exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
+        name: &str,
+        serial: Option<&str>,
+    ) -> u64 {
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+        let mut total = 0;
+        for rm in exporter.get_finished_metrics().unwrap() {
+            for m in rm.scope_metrics().flat_map(|sm| sm.metrics()) {
+                if m.name() != name {
+                    continue;
+                }
+                if let AggregatedMetrics::F64(MetricData::Histogram(h)) = m.data() {
+                    for point in h.data_points() {
+                        let on_serial = serial.is_none_or(|want| {
+                            point
+                                .attributes()
+                                .any(|kv| kv.key.as_str() == "serial" && kv.value.as_str() == want)
+                        });
+                        if on_serial {
+                            total += point.count();
+                        }
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    /// The only test that calls `metrics::install` (a first-wins OnceLock): it
+    /// drives the real write, drain, replacement and pass paths and checks that
+    /// each reached its instrument (#2374). The unlabelled counts use `>=`
+    /// because a test running in parallel may record too once installed.
+    #[test]
+    fn test_the_real_paths_record_their_metrics() {
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        crate::metrics::install(&provider.meter("test"));
+
+        let device = ScriptedDevice::default();
+        let outputs = DeviceOutputs::default();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let backend = ScriptedBackend(device.clone());
+        let loop_outputs = outputs.clone();
+        let handle = std::thread::spawn(move || {
+            run_device_loop(backend, cmd_rx, &Heartbeat::new(), &loop_outputs)
+        });
+        let wait_until = |what: &str, cond: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !cond() {
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        // Whole polls that ran after `from` empty reads: each poll ends in one empty read.
+        let empties = device.empty_reads.clone();
+        let polls_after = |from: usize, n: usize| {
+            let empties = empties.clone();
+            move || empties.load(SeqCst) >= from + n
+        };
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Discover {
+                force: false,
+                verify_only: false,
+                exclude_serials: vec![],
+                reply: reply_tx,
+            })
+            .unwrap();
+        assert_eq!(reply_rx.blocking_recv().unwrap().len(), 1);
+
+        // The stream never takes a sample: the second offer replaces the first.
+        let (sink, _receiver) = crate::input_slot::channel();
+        cmd_tx
+            .send(DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender: sink,
+            })
+            .unwrap();
+        // The first poll after the registration only flushes; wait for it and one more.
+        wait_until("the flush poll", &polls_after(0, 2));
+
+        // A drain of 3 reports: 3 read, 2 superseded, 1 offered.
+        device
+            .reports
+            .lock()
+            .unwrap()
+            .extend([[0u8; hid::INPUT_REPORT_SIZE]; 3]);
+        let seen = device.empty_reads.load(SeqCst);
+        wait_until("the drain", &polls_after(seen, 2));
+        // One more report: offered while the first still waits.
+        device
+            .reports
+            .lock()
+            .unwrap()
+            .push_back([0u8; hid::INPUT_REPORT_SIZE]);
+        let seen = device.empty_reads.load(SeqCst);
+        wait_until("the replacing offer", &polls_after(seen, 2));
+
+        assert!(outputs.router.submit(METRICS_SERIAL, 255, 0, 0, 0));
+        wait_until("the write", &|| device.writes.load(SeqCst) >= 1);
+        assert!(graceful_stop(
+            &cmd_tx,
+            &outputs.router,
+            Duration::from_secs(2)
+        ));
+        handle.join().unwrap();
+        provider.force_flush().unwrap();
+
+        assert_eq!(
+            counter_total(
+                &exporter,
+                "rust_hid_input_reports_read_total",
+                Some(METRICS_SERIAL)
+            ),
+            4,
+            "drain: reports read"
+        );
+        assert!(
+            counter_total(&exporter, "rust_hid_input_reports_drained_total", None) >= 2,
+            "drain: superseded reports"
+        );
+        assert!(
+            counter_total(&exporter, "rust_hid_input_slot_replacements_total", None) >= 1,
+            "slot replacement"
+        );
+        assert!(
+            histogram_count(
+                &exporter,
+                "rust_hid_output_write_duration_seconds",
+                Some(METRICS_SERIAL)
+            ) >= 1,
+            "output write"
+        );
+        assert!(
+            histogram_count(&exporter, "rust_hid_device_loop_pass_seconds", None) >= 1,
+            "device-loop pass"
+        );
     }
 }

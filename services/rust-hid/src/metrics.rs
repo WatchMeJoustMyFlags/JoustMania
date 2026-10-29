@@ -18,6 +18,26 @@ const PASS_BUCKETS: [f64; 10] = [
     0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.1, 0.5, 1.0,
 ];
 
+/// A controller's metric attributes, built once when it opens so the 1 kHz poll
+/// and every write record without allocating.
+#[derive(Debug, Clone)]
+pub struct ControllerLabels {
+    serial: [KeyValue; 1],
+    write_ok: [KeyValue; 2],
+    write_error: [KeyValue; 2],
+}
+
+impl ControllerLabels {
+    pub fn new(serial: &str) -> Self {
+        let serial_label = || KeyValue::new("serial", serial.to_string());
+        Self {
+            serial: [serial_label()],
+            write_ok: [serial_label(), KeyValue::new("result", "ok")],
+            write_error: [serial_label(), KeyValue::new("result", "error")],
+        }
+    }
+}
+
 pub struct Instruments {
     write_duration: Histogram<f64>,
     pass_duration: Histogram<f64>,
@@ -56,14 +76,13 @@ impl Instruments {
         }
     }
 
-    pub fn record_write(&self, serial: &str, took: Duration, ok: bool) {
-        self.write_duration.record(
-            took.as_secs_f64(),
-            &[
-                KeyValue::new("serial", serial.to_string()),
-                KeyValue::new("result", if ok { "ok" } else { "error" }),
-            ],
-        );
+    pub fn record_write(&self, labels: &ControllerLabels, took: Duration, ok: bool) {
+        let attrs = if ok {
+            &labels.write_ok
+        } else {
+            &labels.write_error
+        };
+        self.write_duration.record(took.as_secs_f64(), attrs);
     }
 
     pub fn record_pass(&self, took: Duration) {
@@ -71,12 +90,11 @@ impl Instruments {
     }
 
     /// One drain of one controller: `read` reports came off the device.
-    pub fn record_drain(&self, serial: &str, read: u64) {
+    pub fn record_drain(&self, labels: &ControllerLabels, read: u64) {
         if read == 0 {
             return;
         }
-        self.reports_read
-            .add(read, &[KeyValue::new("serial", serial.to_string())]);
+        self.reports_read.add(read, &labels.serial);
         if read > 1 {
             self.reports_drained.add(read - 1, &[]);
         }
@@ -94,9 +112,9 @@ pub fn install(meter: &Meter) {
     let _ = INSTALLED.set(Instruments::new(meter));
 }
 
-pub fn record_write(serial: &str, took: Duration, ok: bool) {
+pub fn record_write(labels: &ControllerLabels, took: Duration, ok: bool) {
     if let Some(i) = INSTALLED.get() {
-        i.record_write(serial, took, ok);
+        i.record_write(labels, took, ok);
     }
 }
 
@@ -106,9 +124,9 @@ pub fn record_pass(took: Duration) {
     }
 }
 
-pub fn record_drain(serial: &str, read: u64) {
+pub fn record_drain(labels: &ControllerLabels, read: u64) {
     if let Some(i) = INSTALLED.get() {
-        i.record_drain(serial, read);
+        i.record_drain(labels, read);
     }
 }
 
@@ -160,10 +178,11 @@ mod tests {
             .build();
         let i = Instruments::new(&provider.meter("test"));
 
-        i.record_write("aa", Duration::from_millis(3), true);
-        i.record_write("aa", Duration::from_millis(700), false);
+        let labels = ControllerLabels::new("aa");
+        i.record_write(&labels, Duration::from_millis(3), true);
+        i.record_write(&labels, Duration::from_millis(700), false);
         i.record_pass(Duration::from_micros(200));
-        i.record_drain("aa", 3);
+        i.record_drain(&labels, 3);
         i.record_slot_replacement();
         provider.force_flush().unwrap();
 
