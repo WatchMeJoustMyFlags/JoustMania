@@ -70,7 +70,7 @@ func recordingExperimentLoop(t *testing.T) (*experimentLoop, *tracetest.SpanReco
 	loop.tracer = tp.Tracer("test")
 
 	id, err := loop.registry.Declare(experiment.Intent{
-		FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 	})
 	if err != nil {
 		t.Fatalf("declare: %v", err)

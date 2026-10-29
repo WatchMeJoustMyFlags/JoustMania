@@ -22,7 +22,7 @@ import (
 func TestFirstTickSeed_UsesLiveVerdictMinN(t *testing.T) {
 	t.Setenv("AGENT_VERDICT_MIN_N", "1") // ignored since #1907
 	loop, _, lc := loopForConfigTest(t, 8)
-	lc.setSeed(testSeed("invincibility_seconds", 6.0, 2))
+	lc.setSeed(testSeed("nonstop.respawn_seconds", 6.0, 2))
 	lc.set(flags.ExperimentConfig{Enabled: true, ShadowEffectiveConcurrency: 4, VerdictMinN: 1, VerdictMinPairs: 1})
 
 	loop.allocateIfEnabled(context.Background())

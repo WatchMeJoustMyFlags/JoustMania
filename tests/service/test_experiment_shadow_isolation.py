@@ -64,7 +64,7 @@ ARM_EXPERIMENTAL = "experimental"
 GAME = "game"
 EXPERIMENT_ID = "exp_itest_isolation"
 OTHER_EXPERIMENT_ID = "exp_itest_other"
-EXPERIMENT_FLAGS = ("invincibility_seconds", "sensitivity")
+EXPERIMENT_FLAGS = ("nonstop.respawn_seconds", "sensitivity")
 
 RESOLVE_TIMEOUT_SECONDS = FLAGD_RESOLVE_TIMEOUT_SECONDS
 
@@ -109,8 +109,8 @@ def experiment_values(stack, flag_service):
     with flagd_probe_client(stack, GAME, resolver="rpc") as client:
 
         def _gone() -> bool:
-            a = client.get_float_value("invincibility_seconds", float("nan"), shadow)
-            b = client.get_float_value("invincibility_seconds", float("nan"), real)
+            a = client.get_float_value("nonstop.respawn_seconds", float("nan"), shadow)
+            b = client.get_float_value("nonstop.respawn_seconds", float("nan"), real)
             return abs(a - b) <= 0.01
 
         assert poll_until(_gone, FLAGD_RESOLVE_TIMEOUT_SECONDS), (
@@ -128,7 +128,7 @@ async def test_experiment_reaches_shadow_never_real(flag_service, stack):
 
     Baselines are read from the live flagd before the write (the CI baseline
     differs from the local one). Two flags cover both rendering cases:
-    ``invincibility_seconds`` has no baseline targeting (the rung's else is the
+    ``nonstop.respawn_seconds`` has no baseline targeting (the rung's else is the
     default) and ``sensitivity`` has one (game_mode == Werewolf -> fast), which a
     real Werewolf game must keep.
     """
@@ -168,34 +168,34 @@ async def test_experiment_reaches_shadow_never_real(flag_service, stack):
 
     with flagd_probe_client(stack, GAME, resolver="rpc") as client:
 
-        def _inv(ctx) -> float:
-            return client.get_float_value("invincibility_seconds", float("nan"), ctx)
+        def _respawn(ctx) -> float:
+            return client.get_float_value("nonstop.respawn_seconds", float("nan"), ctx)
 
         def _sens(ctx) -> int:
             return int(client.get_integer_value("sensitivity", -1, ctx))
 
         # Step 1: the RPC provider serves a baseline.
         assert poll_until(
-            lambda: not math.isnan(_inv(real)) and _sens(real) != -1,
+            lambda: not math.isnan(_respawn(real)) and _sens(real) != -1,
             RESOLVE_TIMEOUT_SECONDS,
         ), "flagd RPC provider did not serve a baseline in time"
 
-        inv_baseline = _inv(real)
+        respawn_baseline = _respawn(real)
         sens_baseline = _sens(real)
         sens_werewolf_baseline = _sens(real_werewolf)
-        inv_value = 8.0 if inv_baseline < 8.0 else 2.0
+        respawn_value = 8.0 if respawn_baseline < 8.0 else 2.0
         sens_value = 0 if sens_baseline != 0 else 4
 
         # Step 2: the agent's experiment write, through the flag service.
-        result = write_experiment(flag_service, "invincibility_seconds", inv_value)
+        result = write_experiment(flag_service, "nonstop.respawn_seconds", respawn_value)
         write_experiment(flag_service, "sensitivity", sens_value)
         assert result.get("variant"), f"no variant in the write result: {result}"
 
         # Step 3: flagd serves the rung (sync stream, no file watch).
         assert poll_until(
-            lambda: abs(_inv(experimental) - inv_value) <= 0.01,
+            lambda: abs(_respawn(experimental) - respawn_value) <= 0.01,
             RESOLVE_TIMEOUT_SECONDS,
-        ), f"experimental arm resolves {_inv(experimental)}, want {inv_value}"
+        ), f"experimental arm resolves {_respawn(experimental)}, want {respawn_value}"
 
         # Step 4: only the experimental arm of this experiment sees the values.
         assert _sens(experimental) == sens_value
@@ -206,8 +206,8 @@ async def test_experiment_reaches_shadow_never_real(flag_service, stack):
             ("other experiment", other_experiment),
             ("empty context", empty),
         ):
-            assert abs(_inv(ctx) - inv_baseline) <= 0.01, (
-                f"{name} resolved the experiment: invincibility={_inv(ctx)} (must stay {inv_baseline})"
+            assert abs(_respawn(ctx) - respawn_baseline) <= 0.01, (
+                f"{name} resolved the experiment: respawn={_respawn(ctx)} (must stay {respawn_baseline})"
             )
         assert _sens(real) == sens_baseline, f"REAL sensitivity leaked: {_sens(real)}"
         assert _sens(control) == sens_baseline
@@ -217,7 +217,7 @@ async def test_experiment_reaches_shadow_never_real(flag_service, stack):
         )
 
     # Step 5: the flag service view shows the overlay, the baseline default is unchanged.
-    view = flag_service.get(GAME, "invincibility_seconds")
+    view = flag_service.get(GAME, "nonstop.respawn_seconds")
     arms = (view.get("experiments") or {}).get(EXPERIMENT_ID) or {}
     assert ARM_EXPERIMENTAL in arms, view
     assert view["effective_default"] == view["baseline_default"], view

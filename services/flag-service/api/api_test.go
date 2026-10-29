@@ -362,11 +362,11 @@ func TestDryRunEndpoint(t *testing.T) {
 	t.Run("UC-042/main PUT ?dry_run=true answers the rendered flag and applies nothing", func(t *testing.T) {
 		e := newEnv(t, true)
 		body := map[string]any{"value": 4, "scope": map[string]any{"experiment_id": "exp_1", "arm": "experimental"}}
-		status, res := e.do("PUT", "/game/invincibility_seconds?dry_run=true", body)
+		status, res := e.do("PUT", "/game/nonstop.respawn_seconds?dry_run=true", body)
 		if status != 200 || res["dry_run"] != true || res["rendered"] == nil || res["rendered_before"] == nil {
 			t.Fatalf("%d %v", status, res)
 		}
-		_, view := e.do("GET", "/game/invincibility_seconds", nil)
+		_, view := e.do("GET", "/game/nonstop.respawn_seconds", nil)
 		if fmt.Sprint(view["rendered"]) != fmt.Sprint(res["rendered_before"]) {
 			t.Fatalf("the dry run was applied:\n%v\n%v", view["rendered"], res["rendered_before"])
 		}
@@ -609,7 +609,7 @@ func TestReadEndpointsServeDescription(t *testing.T) {
 
 // UC: UC-042 main
 func TestStrictBooleanQueryParams(t *testing.T) {
-	const path = "/game/invincibility_seconds"
+	const path = "/game/nonstop.respawn_seconds"
 	put := map[string]any{"value": 4, "scope": map[string]any{"experiment_id": "exp_1", "arm": "experimental"}}
 	bad := []string{"yes", "True", "TRUE", "", "2", "on"}
 	cases := []struct{ method, param, rest string }{

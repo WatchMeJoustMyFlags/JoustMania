@@ -415,13 +415,6 @@
           "objective": "balanced",
           "target_n": 8,
           "hypothesis": "M8 dry-run seed - frantic music pacing windows shorten and intensify FFA games"
-        },
-        "invincibility_4_5": {
-          "flag": "invincibility_seconds",
-          "value": 4.5,
-          "objective": "balanced",
-          "target_n": 8,
-          "hypothesis": "A shorter respawn invincibility (4.5 s) keeps games tense without unfair deaths"
         }
       },
       "defaultVariant": "off"

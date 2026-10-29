@@ -138,11 +138,11 @@ func TestRetroProposer_UsesTheTicksDynamicSettings(t *testing.T) {
 	loop := proposerLoop(t)
 	loop.proposer.Record(experiment.RetroSuggestion{Reason: "room faded"})
 	cfg := dynCfg(5)
-	cfg.DynamicCandidates = "fight_club.min_rounds"
+	cfg.DynamicCandidates = "fight_club.round_seconds"
 
 	loop.declareFromRetroIfEnabled(context.Background(), cfg)
 
-	if _, ok := loop.registry.ActiveFlags()["fight_club.min_rounds"]; !ok || loop.registry.LiveCount() != 1 {
-		t.Fatalf("active = %v, want exactly fight_club.min_rounds (the tick's candidate list)", loop.registry.ActiveFlags())
+	if _, ok := loop.registry.ActiveFlags()["fight_club.round_seconds"]; !ok || loop.registry.LiveCount() != 1 {
+		t.Fatalf("active = %v, want exactly fight_club.round_seconds (the tick's candidate list)", loop.registry.ActiveFlags())
 	}
 }

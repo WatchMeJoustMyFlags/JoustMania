@@ -145,15 +145,15 @@ func TestDeclareDynamic_SettingsAreReadPerTick(t *testing.T) {
 	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(5)
 
-	cfg.DynamicCandidates = "invincibility_seconds"
+	cfg.DynamicCandidates = "nonstop.respawn_seconds"
 	loop.declareDynamicIfEnabled(context.Background(), cfg)
-	cfg.DynamicCandidates = "fight_club.min_rounds"
+	cfg.DynamicCandidates = "fight_club.round_seconds"
 	loop.declareDynamicIfEnabled(context.Background(), cfg)
 
 	active := loop.registry.ActiveFlags()
-	_, first := active["invincibility_seconds"]
-	_, second := active["fight_club.min_rounds"]
+	_, first := active["nonstop.respawn_seconds"]
+	_, second := active["fight_club.round_seconds"]
 	if !first || !second || len(active) != 2 {
-		t.Fatalf("active = %v, want invincibility_seconds then fight_club.min_rounds", active)
+		t.Fatalf("active = %v, want nonstop.respawn_seconds then fight_club.round_seconds", active)
 	}
 }

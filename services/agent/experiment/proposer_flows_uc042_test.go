@@ -207,7 +207,7 @@ func TestProposeOnce_FailedModelCallKeepsCadenceAndBudgetUsed(t *testing.T) {
 func TestProposeOnce_FullExperimentBudgetRefusesNoCapacity(t *testing.T) {
 	t.Run("UC-042/A11 a full concurrent-experiment budget refuses with no_capacity and declares nothing", func(t *testing.T) {
 		backend := &sequenceBackend{replies: []string{
-			`{"flag":"invincibility_seconds","value":6.0,"rationale":"longer spawn shield"}`,
+			`{"flag":"nonstop.respawn_seconds","value":6.0,"rationale":"longer spawn shield"}`,
 			`{"flag":"death_grace_period_seconds","value":3.0,"rationale":"longer grace"}`,
 		}}
 		p, reg, root, svc, rec := registryProposer(t, backend, 1)

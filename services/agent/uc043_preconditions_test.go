@@ -42,7 +42,7 @@ func TestExperimentLoop_RunsOnlyWhenEnabledAndExperimentsEnabled(t *testing.T) {
 			ctx := context.Background()
 			if tc.declare {
 				id, err := loop.registry.Declare(experiment.Intent{
-					FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+					FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 				})
 				if err != nil {
 					t.Fatalf("declare: %v", err)

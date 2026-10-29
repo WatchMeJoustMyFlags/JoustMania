@@ -149,10 +149,12 @@ Seed another flag instead: select another reviewed variant of `experiment_seed`
 (live, no restart; the agent does not act on the value it acted on last again
 until it has read `off`: `agent-dryrun-enable.sh off`, wait one
 `experiment_tick_seconds`, then `on` re-runs the same seed in the same agent
-process):
+process). `windows_frantic` is the only one today: the `invincibility_4_5`
+variant was removed with `invincibility_seconds`'s catalog entry (#2366, a
+shadow game never read it).
 
 ```bash
-./scripts/flags.sh set agent experiment_seed invincibility_4_5   # invincibility_seconds = 4.5
+./scripts/flags.sh set agent experiment_seed <variant>
 ```
 
 The flag service takes declared variants only, so a new seed is a new variant
@@ -160,7 +162,8 @@ of `experiment_seed` in both `services/flagd/agent.json` and
 `services/flagd/ci/agent.json` (a reviewed change; `TestExperimentSeedVariants`
 and `TestExperimentSeedFlagVariantsParse` check it). The seed flag must **exist in `services/flagd/ci/game.json`**, be in the
 experiment catalog (a registry row with `experiment+arm` scope,
-[flags.md §13.3](specs/flags.md#13-mutable-flag-registry)), and the value must
+[flags.md §13.3](specs/flags.md#13-mutable-flag-registry); only flags a shadow
+game reads are in it, UC-043 BR-009), and the value must
 be in its bounds; the flag service rejects anything else with HTTP 422
 (`flag_read_only` / `out_of_bounds`).
 

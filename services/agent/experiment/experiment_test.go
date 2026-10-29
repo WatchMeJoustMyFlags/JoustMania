@@ -100,12 +100,12 @@ func controlCtx(id string) map[string]any {
 // UC: UC-043 main BR-001 Post-F-1
 func TestReview_ExperimentScopedProposal(t *testing.T) {
 	g, svc, rec := gateWithRecorder(t)
-	const flagKey, expID = "invincibility_seconds", "exp_alpha"
+	const flagKey, expID = "nonstop.respawn_seconds", "exp_alpha"
 	beforeVar, beforeVal := resolve(t, svc, flagKey, realCtx())
 
 	if err := g.Review(context.Background(), Proposal{
 		FlagKey: flagKey, ExperimentID: expID, ExperimentalValue: 6.0,
-		Rationale: "longer invincibility may reduce early-game frustration",
+		Rationale: "a longer respawn wait may reduce early-game frustration",
 	}); err != nil {
 		t.Fatalf("valid proposal rejected: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestReview_ExperimentScopedProposal(t *testing.T) {
 		t.Fatalf("other experiment resolves %s", v)
 	}
 	// Check before write: one dry run, then the one write (PR #1417 review B5).
-	if got := svc.Calls; len(got) != 2 || got[0] != "DRYRUN game/invincibility_seconds experiment+arm" || got[1] != "PUT game/invincibility_seconds experiment+arm" {
+	if got := svc.Calls; len(got) != 2 || got[0] != "DRYRUN game/nonstop.respawn_seconds experiment+arm" || got[1] != "PUT game/nonstop.respawn_seconds experiment+arm" {
 		t.Fatalf("calls = %v, want a dry run then one experiment+arm PUT", got)
 	}
 	assertSpan(t, rec, SpanProposed, false, "")
@@ -153,7 +153,7 @@ func TestReview_PreservesExistingTargetingForReal(t *testing.T) {
 // UC: UC-042 main
 func TestReview_TwoExperimentsSameFlagNonBleed(t *testing.T) {
 	g, svc, _ := gateWithRecorder(t)
-	const flagKey = "invincibility_seconds"
+	const flagKey = "nonstop.respawn_seconds"
 	ctx := context.Background()
 	if err := g.Review(ctx, Proposal{FlagKey: flagKey, ExperimentID: "exp_a", ExperimentalValue: 6.0}); err != nil {
 		t.Fatal(err)
@@ -167,9 +167,9 @@ func TestReview_TwoExperimentsSameFlagNonBleed(t *testing.T) {
 	}{
 		{experimentalCtx("exp_a"), 6.0},
 		{experimentalCtx("exp_b"), 2.0},
-		{controlCtx("exp_a"), 4.0},
-		{controlCtx("exp_b"), 4.0},
-		{realCtx(), 4.0},
+		{controlCtx("exp_a"), 3.0},
+		{controlCtx("exp_b"), 3.0},
+		{realCtx(), 3.0},
 	} {
 		if _, val := resolve(t, svc, flagKey, c.ctx); val != c.want {
 			t.Fatalf("ctx %v resolves %v, want %v", c.ctx, val, c.want)
@@ -180,7 +180,7 @@ func TestReview_TwoExperimentsSameFlagNonBleed(t *testing.T) {
 // Re-experimenting with the same id replaces the value (no second rung).
 func TestReview_ReExperimentReplacesValue(t *testing.T) {
 	g, svc, _ := gateWithRecorder(t)
-	const flagKey, expID = "invincibility_seconds", "exp_re"
+	const flagKey, expID = "nonstop.respawn_seconds", "exp_re"
 	ctx := context.Background()
 	if err := g.Review(ctx, Proposal{FlagKey: flagKey, ExperimentID: expID, ExperimentalValue: 6.0}); err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestReview_ReExperimentReplacesValue(t *testing.T) {
 	if _, val := resolve(t, svc, flagKey, experimentalCtx(expID)); val != 7.0 {
 		t.Fatalf("experimental arm = %v, want 7.0 (latest)", val)
 	}
-	if _, val := resolve(t, svc, flagKey, realCtx()); val != 4.0 {
+	if _, val := resolve(t, svc, flagKey, realCtx()); val != 3.0 {
 		t.Fatalf("real drifted: %v", val)
 	}
 }
@@ -223,7 +223,7 @@ func TestReview_BlocksPathOrOtherSetInFlagKey(t *testing.T) {
 // FR-138: an experiment value without an experiment id is refused.
 func TestReview_BlocksUnscopedProposal(t *testing.T) {
 	g, svc, rec := gateWithRecorder(t)
-	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0})
+	err := g.Review(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0})
 	assertBlocked(t, err, ReasonNotExperimentable)
 	assertNoWrites(t, svc)
 	assertSpan(t, rec, SpanProposed, true, ReasonNotExperimentable)
@@ -243,16 +243,16 @@ func TestReview_BlocksFlagOutsideCatalog(t *testing.T) {
 // The registry bounds a catalog value to a declared variant's value.
 func TestReview_BlocksOutOfBoundsValue(t *testing.T) {
 	g, svc, _ := gateWithRecorder(t)
-	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 99.0})
+	err := g.Review(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentID: "exp_x", ExperimentalValue: 99.0})
 	assertBlocked(t, err, ReasonOutOfBounds)
-	if arms := svc.ArmValues(GameFlagSet, "invincibility_seconds"); len(arms) != 0 {
+	if arms := svc.ArmValues(GameFlagSet, "nonstop.respawn_seconds"); len(arms) != 0 {
 		t.Fatalf("refused value was stored: %v", arms)
 	}
 }
 
 func TestReview_BlocksStringOnNumericFlag(t *testing.T) {
 	g, svc, rec := gateWithRecorder(t)
-	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: "six"})
+	err := g.Review(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentID: "exp_x", ExperimentalValue: "six"})
 	assertBlocked(t, err, ReasonTypeMismatch)
 	assertNoWrites(t, svc)
 	assertSpan(t, rec, SpanProposed, true, ReasonTypeMismatch)
@@ -262,14 +262,14 @@ func TestReview_BlocksStringOnNumericFlag(t *testing.T) {
 // number kind: accepted.
 func TestReview_AcceptsAnyNumberKind(t *testing.T) {
 	g, _, _ := gateWithRecorder(t)
-	if err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_i", ExperimentalValue: 6}); err != nil {
+	if err := g.Review(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentID: "exp_i", ExperimentalValue: 6}); err != nil {
 		t.Fatalf("int on float flag rejected: %v", err)
 	}
-	if err := g.Review(context.Background(), Proposal{FlagKey: "fight_club.min_rounds", ExperimentID: "exp_f", ExperimentalValue: 15.0}); err != nil {
+	if err := g.Review(context.Background(), Proposal{FlagKey: "fight_club.round_seconds", ExperimentID: "exp_f", ExperimentalValue: 15.0}); err != nil {
 		t.Fatalf("float on int flag rejected: %v", err)
 	}
 	// A value inside the catalog range that is no declared variant (the dry-run seed).
-	if err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_r", ExperimentalValue: 4.5}); err != nil {
+	if err := g.Review(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentID: "exp_r", ExperimentalValue: 4.5}); err != nil {
 		t.Fatalf("in-range value rejected: %v", err)
 	}
 }
@@ -278,11 +278,11 @@ func TestReview_AcceptsAnyNumberKind(t *testing.T) {
 func TestReview_ServiceErrorsFailClosed(t *testing.T) {
 	g, svc, _ := gateWithRecorder(t)
 	svc.FailPut = &flagservice.Error{Status: 503, Reason: "no_sync_stream"}
-	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
+	err := g.Review(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
 	assertBlocked(t, err, ReasonWriteSimulationError)
 
 	broken := NewGate(NewWriter(failingService{}, discardLogger()), nil, discardLogger())
-	err = broken.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
+	err = broken.Review(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
 	assertBlocked(t, err, ReasonReadError)
 }
 
@@ -294,10 +294,10 @@ func TestReview_DryRunCatchesARealLeakBeforeWriting(t *testing.T) {
 	svc := newGameService(t)
 	leaky := &leakingService{Service: svc}
 	g := NewGate(NewWriter(leaky, discardLogger()), nil, discardLogger())
-	err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
+	err := g.Review(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0})
 	assertBlocked(t, err, ReasonDefaultChanged)
 	assertNoWrites(t, svc)
-	if arms := svc.ArmValues(GameFlagSet, "invincibility_seconds"); len(arms) != 0 {
+	if arms := svc.ArmValues(GameFlagSet, "nonstop.respawn_seconds"); len(arms) != 0 {
 		t.Fatalf("a refused proposal left arm values: %v", arms)
 	}
 }
@@ -367,7 +367,7 @@ func TestCheckTypeCompatible_KindMatching(t *testing.T) {
 
 func TestWriter_ApplyRefusesUnscoped(t *testing.T) {
 	w := NewWriter(newGameService(t), discardLogger())
-	if _, err := w.Apply(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0}); !errors.Is(err, ErrUnscoped) {
+	if _, err := w.Apply(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0}); !errors.Is(err, ErrUnscoped) {
 		t.Fatalf("err = %v, want ErrUnscoped", err)
 	}
 }
@@ -375,7 +375,7 @@ func TestWriter_ApplyRefusesUnscoped(t *testing.T) {
 func TestWriter_ConcurrentApplies(t *testing.T) {
 	svc := newGameService(t)
 	w := NewWriter(svc, discardLogger())
-	flags := []string{"invincibility_seconds", "fight_club.min_rounds", "nonstop.respawn_seconds"}
+	flags := []string{"tournament.match_seconds", "fight_club.round_seconds", "nonstop.respawn_seconds"}
 	values := []any{6.0, 15, 1.5}
 	var wg sync.WaitGroup
 	for i := 0; i < 30; i++ {
@@ -437,7 +437,7 @@ func TestGateTargetingWriter_ApplyIsGated(t *testing.T) {
 	svc := newGameService(t)
 	w := NewWriter(svc, discardLogger())
 	tw := NewGateTargetingWriter(NewGate(w, nil, discardLogger()), w)
-	err := tw.Apply(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_f", ExperimentalValue: "not-a-number"})
+	err := tw.Apply(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentID: "exp_f", ExperimentalValue: "not-a-number"})
 	if rej, ok := AsReject(err); !ok || rej.Reason != ReasonTypeMismatch {
 		t.Fatalf("expected ReasonTypeMismatch, got %v", err)
 	}
@@ -469,7 +469,7 @@ func TestReview_ConcurrentWriteIsNoFalseRejection(t *testing.T) {
 	svc := newGameService(t)
 	racing := &racingService{Service: svc}
 	g := NewGate(NewWriter(racing, discardLogger()), nil, discardLogger())
-	if err := g.Review(context.Background(), Proposal{FlagKey: "invincibility_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0}); err != nil {
+	if err := g.Review(context.Background(), Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentID: "exp_x", ExperimentalValue: 6.0}); err != nil {
 		t.Fatalf("rejected because of another writer: %v", err)
 	}
 }
@@ -500,7 +500,7 @@ func (l *leakingService) Put(ctx context.Context, set, flag string, w flagservic
 	}
 	var doc map[string]any
 	_ = json.Unmarshal(res.Rendered, &doc)
-	doc["defaultVariant"] = "8s"
+	doc["defaultVariant"] = "slow"
 	res.Rendered, _ = json.Marshal(doc)
 	return res, nil
 }

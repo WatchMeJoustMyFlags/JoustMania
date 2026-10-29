@@ -77,7 +77,7 @@ func TestUC043_A1_KillSwitchTickRevertsPromotions(t *testing.T) {
 			t.Fatalf("precondition: %d live experiments, want 1", len(live))
 		}
 		promotions := &fakeKillSwitchPromotions{pending: []promote.KillSwitchRevert{{
-			ExperimentID: live[0], FlagKey: "invincibility_seconds",
+			ExperimentID: live[0], FlagKey: "nonstop.respawn_seconds",
 			Outcome: promote.OutcomeReverted, Reason: promote.KillSwitchReason,
 		}}}
 		loop.promotions = promotions
