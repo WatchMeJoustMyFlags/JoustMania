@@ -2,6 +2,7 @@ package flags
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"sync"
@@ -11,9 +12,10 @@ import (
 )
 
 // GameDomain is the domain / flagSetId of the game set (services/flagd/game.json).
-// The agent only READS two flags from it, for the charge ledger of UC-040 A31 step 1
-// (#1837): shield.activation and shield.charge_expiry_seconds. It never writes them
-// (C-034, agent_set_never_written_c034_test.go).
+// The agent only READS flags from it: shield.activation and
+// shield.charge_expiry_seconds for the charge ledger of UC-040 A31 step 1 (#1837),
+// and the shadow start-config keys of an experiment arm (ShadowGameInt, UC-046
+// BR-019, #2392). It never writes them (C-034, agent_set_never_written_c034_test.go).
 const GameDomain = "game"
 
 // DefaultShieldChargeExpiry is the coordinator's default charge expiry
@@ -100,6 +102,27 @@ func shieldChargeContext(gameID string, attrs GameAttrs) openfeature.EvaluationC
 		evalCtx["arm"] = attrs.Arm
 	}
 	return openfeature.NewEvaluationContext("", evalCtx)
+}
+
+// ShadowGameInt resolves one integer game flag for a shadow game of an experiment
+// arm, with the context the game coordinator gives that game's own flag reads:
+// game_kind shadow, the game mode, experiment_id and arm (UC-046 BR-019, #2392). The
+// shadow spawner puts the result into the game's StartGameConfig, so an experiment
+// on a start-config key (sensitivity) gives each arm its own value. An evaluation
+// error, a nil game client or an unready domain is returned as an error: the caller
+// refuses the spawn rather than start an arm with a value the other arm may not
+// share.
+func (f *Flags) ShadowGameInt(ctx context.Context, key, mode, experimentID, arm string) (int64, error) {
+	if f == nil || f.game == nil {
+		return 0, errors.New("game flag set not wired")
+	}
+	evalCtx := openfeature.NewEvaluationContext("", map[string]any{
+		"game_kind":     "shadow",
+		"game_mode":     mode,
+		"experiment_id": experimentID,
+		"arm":           arm,
+	})
+	return f.game.IntValue(ctx, key, 0, evalCtx)
 }
 
 // gameModeLatchTTL bounds how long the first shield.activation read of a game is kept: a
