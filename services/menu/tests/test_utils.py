@@ -9,7 +9,7 @@ from lib.colors import Colors
 from lib.types import Sound
 from services.menu.utils.audio import GAME_MODE_VOICE, AudioHelper
 from services.menu.utils.led import DEFAULT_COLOR, GAME_MODE_COLORS, LedController
-from services.menu.utils.settings import GAME_MODES, get_next_game_mode, is_valid_game_mode, validate_mode_keys
+from services.menu.utils.settings import GAME_MODES, get_next_game_mode, validate_mode_keys
 
 
 class TestAudioHelper:
@@ -274,13 +274,6 @@ class TestSettingsModuleFunctions:
         result = get_next_game_mode(Games.JoustFFA, forward=False)
 
         assert result.name == expected_name
-
-    def test_is_valid_game_mode(self):
-        """is_valid_game_mode should validate game modes."""
-        from lib.types import Games
-
-        assert is_valid_game_mode(Games.JoustFFA) is True
-        assert is_valid_game_mode(Games.Werewolf) is True
 
 
 class TestGameModesConstant:

@@ -7,20 +7,15 @@ import pytest
 
 from proto import controller_manager_pb2
 from services.menu import metrics as menu_metrics
-from services.menu.controller_events import BUTTON_TYPE_NAMES, ControllerEventLoop
+from services.menu.controller_events import BUTTON_TYPE_NAMES, ControllerEventCallbacks, ControllerEventLoop
 
 
 @pytest.fixture
 def mock_callbacks():
     """Create mock ControllerEventCallbacks."""
-    callbacks = MagicMock()
-    callbacks.on_connect = AsyncMock()
-    callbacks.on_disconnect = AsyncMock()
-    callbacks.on_button = AsyncMock()
-    callbacks.update_battery = MagicMock()
-    callbacks.get_menu_state = MagicMock(return_value=1)  # RUNNING
-    callbacks.get_connected_serials = MagicMock(return_value=set())
-    callbacks.on_stream_reconnected = AsyncMock()
+    callbacks = create_autospec(ControllerEventCallbacks, instance=True)
+    callbacks.get_menu_state.return_value = 1  # RUNNING
+    callbacks.get_connected_serials.return_value = set()
     return callbacks
 
 
