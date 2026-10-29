@@ -1506,8 +1506,9 @@ class BaseGameMode(ShieldMixin, ABC):
 
         # Wait for the clip to finish; a force-end stops the wait at once.
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + duration
-        for _ in range(math.ceil(duration / INSTRUCTIONS_POLL_SECONDS)):
+        wait_seconds = duration * self._INSTRUCTIONS_WAIT_SCALE
+        deadline = loop.time() + wait_seconds
+        for _ in range(math.ceil(wait_seconds / INSTRUCTIONS_POLL_SECONDS)):
             remaining = deadline - loop.time()
             if not self.running or remaining <= 0:
                 break
@@ -1701,7 +1702,7 @@ class BaseGameMode(ShieldMixin, ABC):
                 if not self.running:
                     logger.info(_MSG_COUNTDOWN_INTERRUPTED)
                     return
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(self._COUNTDOWN_BEEP_POLL_S)
 
         # Play start sound — inherits gameplay_phase as parent span
         await self._play_sound(Sound.SFX_START3, priority=2)
@@ -2189,6 +2190,12 @@ class BaseGameMode(ShieldMixin, ABC):
         return attempt
 
     _RECONNECT_BACKOFF_S = 1.0
+
+    # Real waits a test can shorten (#2361): production keeps these values.
+    # Poll step of the countdown beep wait (one step per 50 ms of beep interval).
+    _COUNTDOWN_BEEP_POLL_S: float = 0.05
+    # Factor on the wait for the instruction clip to finish (1.0 = the clip's length).
+    _INSTRUCTIONS_WAIT_SCALE: float = 1.0
     # Errors of the gameplay call itself, raised by a read or by a write on it
     # (UC-030 BR-006): the game loop reconnects on these. Any other error while a
     # frame is processed ends the game with game_error (UC-020 BR-003, #2001).

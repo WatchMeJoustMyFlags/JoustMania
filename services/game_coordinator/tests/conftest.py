@@ -233,7 +233,8 @@ def _flag_providers_ready_instantly(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _short_real_time_durations(request, monkeypatch):
-    """Shorten the real-time intros, pauses, holds and the default countdown / rainbow (#2361).
+    """Shorten the real-time intros, pauses, holds, beeps, instruction waits, reconnect backoff
+    and the default countdown / rainbow (#2361).
 
     Production keeps its durations: this only replaces the module constants and the
     class attribute the modes read at call time. A test that asserts the real values
@@ -257,6 +258,9 @@ def _short_real_time_durations(request, monkeypatch):
     ):
         monkeypatch.setattr(module, name, value)
     monkeypatch.setattr(BaseGameMode, "_WIN_HOLD_S", 0.0)
+    monkeypatch.setattr(BaseGameMode, "_COUNTDOWN_BEEP_POLL_S", 0.0)
+    monkeypatch.setattr(BaseGameMode, "_INSTRUCTIONS_WAIT_SCALE", 0.1)
+    monkeypatch.setattr(BaseGameMode, "_RECONNECT_BACKOFF_S", 0.01)
 
     # The singleton's code defaults (750 ms countdown phases, winner rainbow): only
     # when the config still holds them, so a test that sets its own keeps it.
