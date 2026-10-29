@@ -132,7 +132,7 @@ class TestMultiplexerGetConnectedControllers:
 
         mux.get_connected_controllers(force_rescan=True)
 
-        a1.discover.assert_called_once_with(force=True, verify_only=False, exclude_serials=ANY)
+        a1.discover.assert_called_once_with(force=True, exclude_serials=ANY)
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_cleans_stale_state_on_disconnect(self, mock_metrics):
@@ -592,28 +592,6 @@ class TestShutdownDuringDiscovery:
             assert mux.get_connected_controllers() == ["AA:AA"]
 
 
-class TestMultiplexerScanControllers:
-    @pytest.mark.asyncio
-    async def test_scan_returns_results(self):
-        a1 = _make_adapter(serials=["AA:AA"])
-        mux = MultiplexerBackend(adapters=[a1])
-
-        result = await mux.scan_controllers()
-
-        assert len(result) == 1
-        assert result[0]["serial"] == "AA:AA"
-
-    @pytest.mark.asyncio
-    async def test_scan_merges_from_multiple_adapters(self):
-        a1 = _make_adapter(serials=["AA:AA"])
-        a2 = _make_adapter(serials=["BB:BB"])
-        mux = MultiplexerBackend(adapters=[a1, a2])
-
-        result = await mux.scan_controllers()
-
-        assert len(result) == 2
-
-
 class TestRouteControllers:
     """Tests for OpenFeature targeting-based adapter routing."""
 
@@ -1062,84 +1040,29 @@ class TestGetAdapterType:
         assert mux.get_adapter_type("ZZ:ZZ") == "unknown"
 
 
-class TestDiscoveryThrottling:
-    """Tests for verify_only discovery throttling."""
+class TestEveryPassIsAFullDiscovery:
+    """Every discovery pass enumerates in full (no verify-only pass, #2352)."""
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    def test_first_call_is_full_discovery(self, mock_metrics):
-        """First call should always do full discovery (verify_only=False)."""
-        a1 = _make_adapter(serials=["AA:AA"])
-        mux = MultiplexerBackend(adapters=[a1])
-
-        mux.get_connected_controllers()
-
-        a1.discover.assert_called_once_with(force=False, verify_only=False, exclude_serials=ANY)
-
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    def test_rapid_second_call_uses_verify_only(self, mock_metrics):
-        """Immediate second call should use verify_only=True."""
-        a1 = _make_adapter(serials=["AA:AA"])
-        mux = MultiplexerBackend(adapters=[a1])
-
-        mux.get_connected_controllers()
-        a1.discover.reset_mock()
-
-        mux.get_connected_controllers()
-
-        a1.discover.assert_called_once_with(force=False, verify_only=True, exclude_serials=ANY)
-
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    def test_force_always_does_full_discovery(self, mock_metrics):
-        """force=True should bypass throttle and use verify_only=False."""
-        a1 = _make_adapter(serials=["AA:AA"])
-        mux = MultiplexerBackend(adapters=[a1])
-
-        # First call to set _last_full_discovery
-        mux.get_connected_controllers()
-        a1.discover.reset_mock()
-
-        # Immediate force call should still do full discovery
-        mux.get_connected_controllers(force_rescan=True)
-
-        a1.discover.assert_called_once_with(force=True, verify_only=False, exclude_serials=ANY)
-
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    def test_verify_only_still_returns_controllers(self, mock_metrics):
-        """Known controllers should still be reported during verify_only cycles."""
+    def test_back_to_back_passes_both_enumerate(self, mock_metrics):
         a1 = _make_adapter(serials=["AA:AA", "BB:BB"])
         mux = MultiplexerBackend(adapters=[a1])
 
-        # First call — full discovery
-        result1 = mux.get_connected_controllers()
-        assert sorted(result1) == ["AA:AA", "BB:BB"]
+        assert sorted(mux.get_connected_controllers()) == ["AA:AA", "BB:BB"]
+        assert sorted(mux.get_connected_controllers()) == ["AA:AA", "BB:BB"]
 
-        # Second call — verify_only, but adapter still returns known serials
-        result2 = mux.get_connected_controllers()
-        assert sorted(result2) == ["AA:AA", "BB:BB"]
+        assert a1.discover.call_count == 2
+        a1.discover.assert_called_with(force=False, exclude_serials=ANY)
+        assert mock_metrics.discovery_full_enumerate_total.inc.call_count == 2
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.time")
-    def test_after_interval_does_full_discovery_again(self, mock_time, mock_metrics):
-        """After the throttle interval elapses, full discovery should run again."""
+    def test_force_is_passed_through(self, mock_metrics):
         a1 = _make_adapter(serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1])
 
-        # First call at t=0
-        mock_time.monotonic.return_value = 0.0
-        mock_time.time = MagicMock(return_value=1000.0)
-        mux.get_connected_controllers()
-        a1.discover.reset_mock()
+        mux.get_connected_controllers(force_rescan=True)
 
-        # Second call at t=0.1 — within interval, should be verify_only
-        mock_time.monotonic.return_value = 0.1
-        mux.get_connected_controllers()
-        a1.discover.assert_called_once_with(force=False, verify_only=True, exclude_serials=ANY)
-        a1.discover.reset_mock()
-
-        # Third call at t=0.6 — past the 0.5s interval, should be full
-        mock_time.monotonic.return_value = 0.6
-        mux.get_connected_controllers()
-        a1.discover.assert_called_once_with(force=False, verify_only=False, exclude_serials=ANY)
+        a1.discover.assert_called_once_with(force=True, exclude_serials=ANY)
 
 
 class TestLedBatchVersusDiscoveryCleanup:
@@ -1212,7 +1135,7 @@ class TestRoutingSwitchKeepsTheController:
             spec = create_autospec(ControllerIOAdapter, instance=True)
             spec.adapter_type = adapter_type
             # Like rust-hid: a serial another adapter holds is not opened (exclude_serials).
-            spec.discover.side_effect = lambda force=False, verify_only=False, exclude_serials=None: [  # noqa: ARG005
+            spec.discover.side_effect = lambda force=False, exclude_serials=None: [  # noqa: ARG005
                 serial for serial in ["AA:AA"] if serial not in (exclude_serials or [])
             ]
             spec.open.return_value = True

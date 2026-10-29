@@ -20,6 +20,7 @@
  * updateFreshness / rendered, with the same STALE_AFTER_MS staleness model so the
  * operator is never fooled by frozen numbers when a poll is failing.
  */
+import { renderFreshness } from "../freshness.js";
 import { escapeHtml } from "../html.js";
 import type {
   AgentView as AgentViewData,
@@ -96,12 +97,7 @@ export class AgentView {
   updateDecideFreshness() {
     const el = this.decideFreshnessEl;
     if (!el || this.decideUpdatedMs === null) return;
-    const ageMs = performance.now() - this.decideUpdatedMs;
-    const ageSec = Math.max(0, Math.round(ageMs / 1000));
-    const stale = ageMs >= STALE_AFTER_MS;
-    el.textContent = stale ? `stale — last updated ${ageSec}s ago` : `updated ${ageSec}s ago`;
-    el.classList.toggle("stale", stale);
-    el.hidden = false;
+    renderFreshness(el, this.decideUpdatedMs, STALE_AFTER_MS);
   }
 
   renderDecide(feed: DecideFeed) {
@@ -180,14 +176,7 @@ export class AgentView {
   updateFreshness() {
     const el = this.freshnessEl;
     if (!el || this.lastUpdatedMs === null) return;
-    const ageMs = performance.now() - this.lastUpdatedMs;
-    const ageSec = Math.max(0, Math.round(ageMs / 1000));
-    const stale = ageMs >= STALE_AFTER_MS;
-    el.textContent = stale
-      ? `stale — last updated ${ageSec}s ago`
-      : `updated ${ageSec}s ago`;
-    el.classList.toggle("stale", stale);
-    el.hidden = false;
+    renderFreshness(el, this.lastUpdatedMs, STALE_AFTER_MS);
   }
 
   get rendered(): boolean {

@@ -6,6 +6,7 @@
  * comes from the newest experiment.progress span per experiment in Jaeger (see
  * ../experiments.ts, #2059); the view polls to update live during a shadow run.
  */
+import { renderFreshness } from "../freshness.js";
 import { escapeHtml } from "../html.js";
 import type { ArmAggregate, ExperimentView, Recommendation } from "../experiments.js";
 import { EXPERIMENT_PROGRESS_NO_DATA } from "../degrade.js";
@@ -51,16 +52,7 @@ export class ExperimentsView {
   updateFreshness() {
     const el = this.freshnessEl;
     if (!el || this.lastUpdatedMs === null) return;
-
-    const ageMs = performance.now() - this.lastUpdatedMs;
-    const ageSec = Math.max(0, Math.round(ageMs / 1000));
-    const stale = ageMs >= STALE_AFTER_MS;
-
-    el.textContent = stale
-      ? `stale — last updated ${ageSec}s ago`
-      : `updated ${ageSec}s ago`;
-    el.classList.toggle("stale", stale);
-    el.hidden = false;
+    renderFreshness(el, this.lastUpdatedMs, STALE_AFTER_MS);
   }
 
   render(experiments: ExperimentView[]) {

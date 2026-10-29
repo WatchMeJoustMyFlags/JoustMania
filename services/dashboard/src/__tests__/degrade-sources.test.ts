@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchDecideFeed, fetchFlagStates, fetchInterventionCounts, fetchRollouts, RolloutStore } from "../agent.js";
+import { DecideStore, pollDecides, fetchFlagStates, fetchInterventionCounts, fetchRollouts, RolloutStore } from "../agent.js";
 import { ExperimentStore, pollExperiments } from "../experiments.js";
 import { JaegerUnavailableError } from "../jaeger.js";
 import { keepGameEventStreamOpen } from "../stream.js";
@@ -86,7 +86,7 @@ describe("UC-035: A3 Jaeger down vs no data", () => {
   for (const mode of ["reject", "503", "errors"] as const) {
     it(`UC-035/A3 Jaeger down (${mode}) fails every agent and experiment search`, async () => {
       stubBackends({ jaeger: mode });
-      await expect(fetchDecideFeed(null)).rejects.toBeInstanceOf(JaegerUnavailableError);
+      await expect(pollDecides(new DecideStore(), 0)).rejects.toBeInstanceOf(JaegerUnavailableError);
       await expect(fetchFlagStates()).rejects.toBeInstanceOf(JaegerUnavailableError);
       await expect(fetchRollouts(new RolloutStore())).rejects.toBeInstanceOf(JaegerUnavailableError);
       await expect(pollExperiments(new ExperimentStore())).rejects.toBeInstanceOf(JaegerUnavailableError);
@@ -125,7 +125,7 @@ describe("UC-035: A3 Grafana down", () => {
     await expect(fetchInterventionCounts()).resolves.toBeDefined();
     await expect(fetchFlagStates()).resolves.toBeDefined();
     await expect(pollExperiments(new ExperimentStore())).resolves.toBeDefined();
-    await expect(fetchDecideFeed(null)).resolves.toBeDefined();
+    await expect(pollDecides(new DecideStore(), 0)).resolves.toBeDefined();
 
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.filter((u) => u.includes("/grafana"))).toEqual([]);
