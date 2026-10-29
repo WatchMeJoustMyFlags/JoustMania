@@ -321,6 +321,7 @@ All pull requests must pass CI checks before merging:
 7. **Spec Gate** - Spec lint over `docs/` and the spec-touched check (see [CI spec gate](#ci-spec-gate))
 8. **Spec references** - `make spec-refs-check` in the same job (see [Spec references](#spec-references))
 9. **Generated specs** - `docs/specs/generated/` (metric catalog, RPC tables, flag sets, `ci/` flag diffs) must match the code: run `make specs` and commit (checked by `make specs-check` in the Telemetry Contract job). Totals (flags, RPCs, metrics) are not committed, so parallel PRs do not conflict on them (#2152): `make specs-counts` prints them. After a rebase that conflicts in a generated file, take either side and run `make specs`
+10. **Registry vs pinned release** (#2403) - a change to `services/flag-service/registry.yaml`, `services/flagd/**` or `.env` loads the checkout's registry with the `registry.LoadFile` of the release tag pinned in `.env` (`scripts/ci/check-registry-pinned.sh`, go only, no docker). Compose mounts the checkout's registry next to that release image and the parser is strict, so a new field must ship in a tolerant parser first (release, bump `IMAGE_TAG`), then land in the yaml
 
 **When the full-stack e2e job runs (#1583).** `Integration Tests` (one job, one
 compose stack, about 5-8 minutes) starts the whole docker-compose stack, so it
