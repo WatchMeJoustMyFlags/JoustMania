@@ -9,7 +9,6 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 
 from opentelemetry import trace
@@ -19,6 +18,7 @@ from lib.colors import Colors
 from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
     BaseGameMode,
@@ -550,7 +550,7 @@ class WerewolfGame(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winner": winner,
             "revealed": self.revealed,
             "outcome": self.game_outcome(),
@@ -580,6 +580,9 @@ class WerewolfGame(BaseGameMode):
         # Import here to avoid circular imports
         from services.game_coordinator.games.base import GameState
 
+        # Set once the teardown step ended the shield feedback; otherwise the
+        # finally ends it (UC-020 failure postcondition, #2357).
+        shield_feedback_ended = False
         # The session game root span carries the outcome (#1328).
         self._capture_game_root_span()
         with tracer.start_as_current_span("werewolf_game") as game_span:
@@ -618,7 +621,7 @@ class WerewolfGame(BaseGameMode):
 
                 # Start gameplay
                 self.state = GameState.RUNNING
-                self.start_time = time.time()
+                self.start_time = game_clock.now()
 
                 # Werewolf publishes game_started after the countdown (UC-022 A1).
                 await self.event_publisher(
@@ -643,6 +646,7 @@ class WerewolfGame(BaseGameMode):
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
                     # Shield LEDs end with the game, before the winner effects (#1301).
                     await self._end_shield_feedback()
+                    shield_feedback_ended = True
                     await self._end_game_impl()
                     self._record_game_outcome(teardown_span)
                     # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
@@ -660,7 +664,9 @@ class WerewolfGame(BaseGameMode):
                 self._record_force_ended_outcome_if_unrecorded()
                 force_ended = not self.running
                 self.running = False
-                await self._stop_game_music()
+                # The music stops here on every path; the shield feedback only when
+                # the teardown step did not end it (error, cancel or early return).
+                await self._stop_run_feedback(False, shield_feedback_ended)
                 if force_ended:
                     await self.on_force_end()
                 await self._cleanup_after_run()

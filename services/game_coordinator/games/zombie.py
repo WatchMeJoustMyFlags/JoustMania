@@ -13,7 +13,6 @@ Original JoustMania behavior preserved (minus weapon system).
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 
 from opentelemetry import trace
@@ -23,7 +22,7 @@ from lib.colors import Colors
 from lib.feature_flags import read_float_flag, read_int_flag, read_object_flag
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
-from services.game_coordinator import metrics
+from services.game_coordinator import game_clock, metrics
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
     BaseGameMode,
@@ -443,7 +442,7 @@ class ZombieGame(BaseGameMode):
             # Zombie killed - set respawn timer
             zombie_player.alive = False
             respawn_delay = self._rng.uniform(self.zombie_respawn_min, self.zombie_respawn_max)
-            zombie_player.respawn_until = time.time() + respawn_delay
+            zombie_player.respawn_until = game_clock.now() + respawn_delay
 
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")
 
@@ -477,7 +476,7 @@ class ZombieGame(BaseGameMode):
             # instantly re-kill the fresh zombie (#757). Sourced from the
             # ``game.death_grace_period_seconds`` flag (#766 F2 / #1090), frozen per
             # game at init in BaseGameMode; matches the respawn grace below.
-            zombie_player.grace_until = time.time() + self.death_grace_period
+            zombie_player.grace_until = game_clock.now() + self.death_grace_period
 
             # Update lists
             if serial in self.human_serials:
@@ -615,7 +614,7 @@ class ZombieGame(BaseGameMode):
         player.smoothed_accel = 0.0
         # Grace period after respawn, sourced from ``game.death_grace_period_seconds``
         # (#766 F2 / #1090), frozen per game at init in BaseGameMode.
-        player.grace_until = time.time() + self.death_grace_period
+        player.grace_until = game_clock.now() + self.death_grace_period
         self._mark_alive_in_metrics(serial)
 
         logger.info(f"Zombie {serial} respawned ({cause})")
@@ -711,7 +710,7 @@ class ZombieGame(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winner": winner,
             "time_remaining": self.time_remaining,
             "outcome": self.game_outcome(),
@@ -738,6 +737,9 @@ class ZombieGame(BaseGameMode):
         """
         from services.game_coordinator.games.base import GameState
 
+        # Set once the teardown step ended the shield feedback; otherwise the
+        # finally ends it (UC-020 failure postcondition, #2357).
+        shield_feedback_ended = False
         # The session game root span carries the outcome (#1328).
         self._capture_game_root_span()
         with tracer.start_as_current_span("zombie_game") as game_span:
@@ -774,7 +776,7 @@ class ZombieGame(BaseGameMode):
 
                 # Start gameplay
                 self.state = GameState.RUNNING
-                self.start_time = time.time()
+                self.start_time = game_clock.now()
 
                 # Zombies publishes game_started after the countdown (UC-023 step 1).
                 await self.event_publisher(
@@ -798,6 +800,8 @@ class ZombieGame(BaseGameMode):
                 # End game
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
                     await self._end_game_impl()
+                    # The finally adds no shield end after the winner effects.
+                    shield_feedback_ended = True
                     self._record_game_outcome(teardown_span)
 
                 game_span.set_status(Status(StatusCode.OK))
@@ -812,7 +816,9 @@ class ZombieGame(BaseGameMode):
                 self._record_force_ended_outcome_if_unrecorded()
                 force_ended = not self.running
                 self.running = False
-                await self._stop_game_music()
+                # The music stops here on every path; the shield feedback only when
+                # the teardown step did not end it (error, cancel or early return).
+                await self._stop_run_feedback(False, shield_feedback_ended)
                 if force_ended:
                     await self.on_force_end()
                 await self._cleanup_after_run()

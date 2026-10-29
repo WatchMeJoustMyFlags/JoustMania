@@ -9,7 +9,6 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
-import time
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -17,7 +16,7 @@ from opentelemetry.trace import Status, StatusCode
 
 from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator import metrics
+from services.game_coordinator import game_clock, metrics
 from services.game_coordinator.games.base import Phase, Player
 from services.game_coordinator.games.teams_base import TEAM_WIN_SOUNDS, TeamsGameBase
 from services.game_coordinator.stream_writes import serialized_write
@@ -201,7 +200,7 @@ class SwapperGame(TeamsGameBase):
         # cannot instantly re-kill the player on their new team (#757). Sourced from
         # the ``game.death_grace_period_seconds`` flag (#766 F2 / #1090), frozen per
         # game at init in BaseGameMode.
-        player.grace_until = time.time() + self.death_grace_period
+        player.grace_until = game_clock.now() + self.death_grace_period
 
         # Log the swap
         swap_count = getattr(player, "swap_count", 0) + 1
@@ -569,7 +568,7 @@ class SwapperGame(TeamsGameBase):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winning_team": winning_team if winning_team is not None else "none",
             "outcome": self.game_outcome(),
         }

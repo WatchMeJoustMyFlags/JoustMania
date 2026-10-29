@@ -8,9 +8,9 @@ Phase 36b: Refactored to extend TeamsGameBase, eliminating ~500 lines of duplica
 """
 
 import logging
-import time
 
 from lib.types import Sound
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import Phase, Player
 from services.game_coordinator.games.teams_base import TeamsGameBase
@@ -58,7 +58,7 @@ class SimpleTeamsGame(TeamsGameBase):
             controllers: List of controller protobuf messages from GetReadyControllers
         """
         config = get_config_manager().get_config()
-        game_start_time = time.time()
+        game_start_time = game_clock.now()
 
         # Create a list for assignment (optionally randomized). Sort by serial
         # first so the optional shuffle below consumes a deterministic ordering

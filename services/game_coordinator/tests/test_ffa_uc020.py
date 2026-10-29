@@ -27,6 +27,7 @@ import pytest
 
 from lib.types import GameEvent, Sound
 from proto import audio_pb2, controller_manager_pb2, game_coordinator_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.event_bus import EventBus
 from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GameSession
 from services.game_coordinator.games import base as base_module
@@ -477,7 +478,7 @@ class TestUC020FreeForAll:
         clock = FakeClock(time.time())
         between_seen = False
 
-        with patch.object(base_module, "time", clock):
+        with patch.object(game_clock, "now", clock.time):
             await game._start_game_music()
             assert game.music_speed == SLOW_MUSIC_SPEED
             # (when, new tempo, glide seconds)

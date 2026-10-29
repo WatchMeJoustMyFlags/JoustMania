@@ -10,7 +10,6 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from enum import Enum
 
@@ -22,7 +21,7 @@ from lib.feature_flags import read_float_flag
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
-from services.game_coordinator import metrics
+from services.game_coordinator import game_clock, metrics
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
     BaseGameMode,
@@ -314,16 +313,16 @@ class FightClubGame(BaseGameMode):
         defender.state = FightState.DEFENDER
         defender.color = DEFENDER_COLOR
         defender.alive = True
-        defender.invincible_until = time.time() + self._invincibility_duration
+        defender.invincible_until = game_clock.now() + self._invincibility_duration
 
         fighter.state = FightState.FIGHTER
         fighter.color = FIGHTER_COLOR
         fighter.alive = True
-        fighter.invincible_until = time.time() + self._invincibility_duration
+        fighter.invincible_until = game_clock.now() + self._invincibility_duration
 
         # Set round end time
         if not self.face_off_mode:
-            self.round_end_time = time.time() + self._round_duration
+            self.round_end_time = game_clock.now() + self._round_duration
         else:
             self.round_end_time = float("inf")  # No time limit in face-off
 
@@ -394,7 +393,7 @@ class FightClubGame(BaseGameMode):
         Track round time and play countdown beeps.
         """
         while self.running:
-            remaining = self.round_end_time - time.time()
+            remaining = self.round_end_time - game_clock.now()
 
             if remaining <= 0:
                 # Time's up - both players lose
@@ -932,7 +931,7 @@ class FightClubGame(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winner": winner_serial or "none",
             "winner_score": winner_score,
             "total_rounds": self.round_number,
@@ -964,6 +963,9 @@ class FightClubGame(BaseGameMode):
         """
         from services.game_coordinator.games.base import GameState
 
+        # Set once the teardown step ended the shield feedback; otherwise the
+        # finally ends it (UC-020 failure postcondition, #2357).
+        shield_feedback_ended = False
         # The session game root span carries the outcome (#1328).
         self._capture_game_root_span()
         with tracer.start_as_current_span("fight_club_game") as game_span:
@@ -1005,7 +1007,7 @@ class FightClubGame(BaseGameMode):
 
                 # Start gameplay
                 self.state = GameState.RUNNING
-                self.start_time = time.time()
+                self.start_time = game_clock.now()
 
                 # Fight Club publishes game_started after the countdown (UC-025 A2 step 1).
                 await self.event_publisher(
@@ -1044,6 +1046,7 @@ class FightClubGame(BaseGameMode):
                 with tracer.start_as_current_span("teardown_phase") as teardown_span:
                     # Shield LEDs end with the game, before the winner effects (#1301).
                     await self._end_shield_feedback()
+                    shield_feedback_ended = True
                     await self._end_game_impl()
                     self._record_game_outcome(teardown_span)
                     # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
@@ -1061,7 +1064,9 @@ class FightClubGame(BaseGameMode):
                 self._record_force_ended_outcome_if_unrecorded()
                 force_ended = not self.running
                 self.running = False
-                await self._stop_game_music()
+                # The music stops here on every path; the shield feedback only when
+                # the teardown step did not end it (error, cancel or early return).
+                await self._stop_run_feedback(False, shield_feedback_ended)
                 if force_ended:
                     await self.on_force_end()
                 await self._cleanup_after_run()

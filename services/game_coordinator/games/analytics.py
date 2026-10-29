@@ -16,11 +16,12 @@ Memory footprint:
 
 import logging
 import math
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import TYPE_CHECKING
+
+from services.game_coordinator import game_clock
 
 # Rolling-window size for windowed movement variance (#730 / #722 §7).
 # Fixed (the unused policy.movement_variance_window flag was removed in #1322).
@@ -142,7 +143,7 @@ class PlayerAnalytics:
         # Update peak
         if raw_accel_mag > self.peak_accel:
             self.peak_accel = raw_accel_mag
-            self.peak_accel_time = time.time() - self.game_start_time
+            self.peak_accel_time = game_clock.now() - self.game_start_time
 
         # Welford's online algorithm for mean/variance
         delta = raw_accel_mag - self._mean

@@ -746,6 +746,8 @@ class InterventionManager:
         self._deferral_since: float | None = None
         self._deferral_last_warned: float | None = None
         self._deferral_recheck = None  # asyncio.TimerHandle while a re-check is pending
+        # Strong references to the tasks this manager creates: the loop keeps only a weak one (#2357).
+        self._background_tasks: set[asyncio.Task] = set()
         self._user_client = None  # user domain (on-device cue gate, #818)
 
         # Per-session, per-flag last-applied state value (state-shaped change
@@ -1150,7 +1152,7 @@ class InterventionManager:
             running = None
 
         if running is not None:
-            running.create_task(self.evaluate_all())
+            self._spawn_evaluate_all(running)
         else:
             asyncio.run(self.evaluate_all())
 
@@ -2035,6 +2037,12 @@ class InterventionManager:
             self._deferral_recheck.cancel()
             self._deferral_recheck = None
 
+    def _spawn_evaluate_all(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Run evaluate_all() as a task that stays referenced until it is done (#2357, RUF006)."""
+        task = loop.create_task(self.evaluate_all())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     def _schedule_deferral_recheck(self) -> None:
         if self._deferral_recheck is not None:
             return
@@ -2045,7 +2053,7 @@ class InterventionManager:
 
         def _recheck() -> None:
             self._deferral_recheck = None
-            loop.create_task(self.evaluate_all())
+            self._spawn_evaluate_all(loop)
 
         self._deferral_recheck = loop.call_later(DEFERRAL_RECHECK_S, _recheck)
 
