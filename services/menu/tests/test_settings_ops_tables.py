@@ -4,7 +4,7 @@ import pytest
 
 from lib.colors import Colors
 from services.menu import settings_ops
-from services.menu.handlers import admin
+from services.menu.handlers import admin_options as admin
 
 
 @pytest.mark.uc("UC-012", flow="A1")
