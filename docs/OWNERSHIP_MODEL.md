@@ -131,7 +131,7 @@ persist its own governor (§1, §6.2).
 ## 3. Parameter Ownership Table
 
 The eight admin flags. All are read once by the menu into `StartGameConfig`
-([`services/menu/servicer.py:_build_game_config`](../services/menu/servicer.py),
+([`services/menu/game_lifecycle.py:GameLifecycleMixin._build_game_config`](../services/menu/game_lifecycle.py),
 `StartGameConfig` build) and frozen into the game object in its constructor
 ([`services/game_coordinator/games/base.py:__init__`](../services/game_coordinator/games/base.py),
 constructor). "Frozen at start" means a mid-game admin flag change **silently
@@ -349,7 +349,7 @@ LED color (red = off / Turquoise / Orange / green = full) and a voice line.
 | Concern | File |
 |---|---|
 | Human write path | [`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py), [`lib/flag_service_writer.py`](../lib/flag_service_writer.py) → flag service ([`services/flag-service/`](../services/flag-service/)) |
-| Baseline → game start | [`services/menu/servicer.py`](../services/menu/servicer.py) (`_build_game_config`), [`services/game_coordinator/game_factory.py`](../services/game_coordinator/game_factory.py) |
+| Baseline → game start | [`services/menu/game_lifecycle.py`](../services/menu/game_lifecycle.py) (`_build_game_config`), [`services/game_coordinator/game_factory.py`](../services/game_coordinator/game_factory.py) |
 | Baseline freeze | [`services/game_coordinator/games/base.py`](../services/game_coordinator/games/base.py) (`__init__`, ~490-580) |
 | Agent write path | [`services/agent/actions/writer.go`](../services/agent/actions/writer.go) |
 | Agent guardrails | [`services/game_coordinator/interventions.py`](../services/game_coordinator/interventions.py) |

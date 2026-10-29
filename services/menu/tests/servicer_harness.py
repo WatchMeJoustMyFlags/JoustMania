@@ -45,14 +45,14 @@ def make_real_servicer(writer_factory=None):
     channel = create_autospec(grpc.aio.Channel, instance=True)
     with (
         patch("lib.grpc_utils.create_channel", return_value=channel),
-        patch("services.menu.servicer.init_flag_domain", autospec=True),
-        patch("services.menu.servicer.get_flag_client", side_effect=default_returning_flag_client),
-        patch("services.menu.servicer.FlagServiceWriter", side_effect=writer_factory),
-        patch("services.menu.servicer.LedController", autospec=True),
-        patch("services.menu.servicer.AudioHelper", autospec=True),
-        patch("services.menu.servicer.EventPublisher", autospec=True),
-        patch("services.menu.servicer.ControllerEventLoop", autospec=True),
-        patch("services.menu.servicer.IdleMonitor", autospec=True),
+        patch("services.menu.menu_setup.init_flag_domain", autospec=True),
+        patch("services.menu.menu_setup.get_flag_client", side_effect=default_returning_flag_client),
+        patch("services.menu.menu_setup.FlagServiceWriter", side_effect=writer_factory),
+        patch("services.menu.menu_setup.LedController", autospec=True),
+        patch("services.menu.menu_setup.AudioHelper", autospec=True),
+        patch("services.menu.menu_setup.EventPublisher", autospec=True),
+        patch("services.menu.menu_setup.ControllerEventLoop", autospec=True),
+        patch("services.menu.menu_setup.IdleMonitor", autospec=True),
     ):
         from services.menu.servicer import MenuServicer
 
