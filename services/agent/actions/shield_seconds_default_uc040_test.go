@@ -70,6 +70,10 @@ func TestShieldSecondsReader(t *testing.T) {
 		{"the variant is not a number", &fakeFlagViewer{view: shieldView(map[string]string{"default": `"five"`})}},
 		{"the variant is 0 (no shield)", &fakeFlagViewer{view: shieldView(map[string]string{"default": "0"})}},
 		{"the variant is above the 10 s bound", &fakeFlagViewer{view: shieldView(map[string]string{"default": "11"})}},
+		// 1 or 2 s passes the registry (1 to 10) but not the grant_shield magnitude
+		// bounds (3 to 10): the record would report 3 s while 2 s is written.
+		{"the variant is 2 s, below the 3 s magnitude bound", &fakeFlagViewer{view: shieldView(map[string]string{"default": "2"})}},
+		{"the variant is 1 s, below the 3 s magnitude bound", &fakeFlagViewer{view: shieldView(map[string]string{"default": "1"})}},
 	} {
 		t.Run("UC-040/BR-029 fail closed to 5 s when "+tc.name, func(t *testing.T) {
 			clock := time.Unix(1, 0)

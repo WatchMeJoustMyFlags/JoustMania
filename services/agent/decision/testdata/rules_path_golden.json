@@ -454,7 +454,7 @@
         "ObjectiveServed": "balanced",
         "Fitness": {
           "active_players": 3,
-          "weakest_skill": 0.2
+          "target_skill": 0.2
         },
         "Objectives": {
           "balanced": 1
@@ -484,7 +484,7 @@
         "Fitness": {
           "active_players": 3,
           "shield_grants": 0,
-          "weakest_skill": 0.5
+          "target_skill": 0.5
         },
         "Objectives": {
           "balanced": 1
@@ -513,7 +513,7 @@
         "ObjectiveServed": "balanced",
         "Fitness": {
           "active_players": 3,
-          "weakest_skill": 0.2
+          "target_skill": 0.2
         },
         "Objectives": {
           "balanced": 1

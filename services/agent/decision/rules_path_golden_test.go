@@ -19,7 +19,9 @@ import (
 //
 // #2395 changed it on purpose: with R4's catch-up the balanced fixture shields WEAK,
 // MID, WEAK (steps 0-2; MID was WEAK before), and the rate-limited steps 3-7 name MID
-// (fewest shields) instead of WEAK. STRONG is never an R4 candidate (below minScore).
+// (fewest shields) instead of WEAK. STRONG is never an R4 candidate (not below the
+// field's mean skill). Review of #2419 renamed the fitness key weakest_skill to
+// target_skill (the target is not always the weakest).
 //
 // Regenerate (only for an intended behavior change): go test ./decision -run
 // TestRulesPathGolden -update-rules-golden

@@ -129,14 +129,93 @@ func TestPickShieldCatchUp(t *testing.T) {
 			}
 		})
 	}
-	t.Run("UC-040/A41 BR-030 the kept candidate keeps its place among the other rules", func(t *testing.T) {
-		other := scoredCandidate{candidate{decision: Decision{Intervention: InterventionPlayAudioCue}}, 0.4}
+	t.Run("UC-040/A41 BR-030 the kept candidate takes the best R4 score and place, so it stays in the emission", func(t *testing.T) {
+		// WEAK 0.45 and MID 0.35 around two other rules' candidates at 0.42 and 0.40:
+		// MID at its own place would be third, out of the two-decision emission, where
+		// shielding WEAK would have gone out first.
+		cue := scoredCandidate{candidate{decision: Decision{Intervention: InterventionPlayAudioCue}}, 0.42}
+		tempo := scoredCandidate{candidate{decision: Decision{Intervention: InterventionAdjustMusicTempo}}, 0.40}
 		c := field(nil)
-		ranked := append(r4Ranked(c, nil), other)
+		ranked := append(r4Ranked(c, nil), cue, tempo)
 		sortRanked(ranked)
 		got := pickShieldCatchUp(ranked, c, map[string]int{"WEAK": 1})
-		if len(got) != 2 || got[0].decision.Intervention != InterventionPlayAudioCue || got[1].decision.TargetSerial != "MID" {
-			t.Fatalf("ranked = %v, want the audio cue (0.40) then MID's shield (0.35)", decisionsOf(candidatesOf(got)))
+		if len(got) != 3 || got[0].decision.TargetSerial != "MID" || got[0].score != 0.45 ||
+			got[1].decision.Intervention != InterventionPlayAudioCue || got[2].decision.Intervention != InterventionAdjustMusicTempo {
+			t.Fatalf("ranked = %v, want MID's shield first at WEAK's 0.45, then the cue and the tempo", decisionsOf(candidatesOf(got)))
+		}
+		if top := got[:maxDecisionsPerEval]; shieldTargets(decisionsOf(candidatesOf(top))) == nil {
+			t.Fatalf("no shield in the first %d: %v", maxDecisionsPerEval, decisionsOf(candidatesOf(top)))
+		}
+	})
+}
+
+// r4Targets is every grant_shield target the rules would rank for c, given the
+// grants and the no-shield set, before pickShieldCatchUp keeps one.
+func r4Targets(c gamecontext.GameContext, noShield map[string]bool) []string {
+	return shieldTargets(decisionsOf(candidatesOf(r4Ranked(c, noShield))))
+}
+
+// UC: UC-040 A41 BR-030
+func TestShieldCandidates_StrugglingPlayersOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		gone     []string
+		players  map[string]float64
+		grants   map[string]int
+		noShield map[string]bool
+		ranked   []string // R4's candidates (sorted)
+		want     string   // the kept target, "" for none
+	}{
+		{name: "duel, 4 players 2 out: the weakest helped once, the strongest never gets a catch-up shield",
+			gone: []string{"G1", "G2"}, players: map[string]float64{"WEAK": 0.2, "STRONG": 0.8},
+			grants: map[string]int{"WEAK": 1}, ranked: []string{"WEAK"}, want: "WEAK"},
+		{name: "duel, 4 players 2 out: the weakest cooling, nobody is shielded",
+			gone: []string{"G1", "G2"}, players: map[string]float64{"WEAK": 0.2, "STRONG": 0.8},
+			noShield: map[string]bool{"WEAK": true}, ranked: nil, want: ""},
+		{name: "8 players 4 out: only the players below the mean (0.53) are candidates",
+			gone:    []string{"G1", "G2", "G3", "G4"},
+			players: map[string]float64{"A": 0.2, "B": 0.4, "C": 0.7, "D": 0.8},
+			grants:  map[string]int{"A": 1}, ranked: []string{"A", "B"}, want: "B"},
+		{name: "8 players 5 out: the struggling player cooling, the stronger ones stay unshielded",
+			gone:     []string{"G1", "G2", "G3", "G4", "G5"},
+			players:  map[string]float64{"A": 0.3, "B": 0.6, "C": 0.85},
+			noShield: map[string]bool{"A": true}, ranked: nil, want: ""},
+		{name: "an even field has no struggling player",
+			gone: []string{"G1"}, players: map[string]float64{"A": 0.1, "B": 0.1, "C": 0.1}, ranked: nil, want: ""},
+	} {
+		t.Run("UC-040/A41 BR-030 "+tc.name, func(t *testing.T) {
+			ps := map[string]testPlayer{}
+			for serial, skill := range tc.players {
+				ps[serial] = testPlayer{skill: fptr(skill), active: true}
+			}
+			c := gameCtx(30, tc.gone, ps)
+			got := r4Targets(c, tc.noShield)
+			sort.Strings(got)
+			if !equalStrings(got, tc.ranked) {
+				t.Fatalf("R4 candidates = %v, want %v", got, tc.ranked)
+			}
+			kept := shieldTargets(decisionsOf(candidatesOf(pickShieldCatchUp(r4Ranked(c, tc.noShield), c, tc.grants))))
+			if (tc.want == "" && len(kept) != 0) || (tc.want != "" && !equalStrings(kept, []string{tc.want})) {
+				t.Fatalf("kept %v, want %q", kept, tc.want)
+			}
+		})
+	}
+	t.Run("UC-040/A41 BR-030 duel through the engine: no rule shields STRONG", func(t *testing.T) {
+		clock := time.Unix(10_000, 0)
+		r := newObjectiveRules(balancedRulesConfig(), balancedRulesConfig(), balancedRulesConfig(),
+			func() time.Time { return clock }, rand.New(rand.NewPCG(1, 2)))
+		r.SetShieldGrantSource(func() map[string]int { return map[string]int{"WEAK": 1} })
+		r.SetShieldSource(func(gamecontext.GameContext) (map[string]bool, map[string]bool) {
+			return nil, map[string]bool{"WEAK": true} // WEAK in the cooldown
+		})
+		c := gameCtx(30, []string{"G1", "G2"}, map[string]testPlayer{
+			"WEAK":   {skill: fptr(0.2), active: true},
+			"STRONG": {skill: fptr(0.8), active: true},
+		})
+		for _, d := range r.Evaluate(context.Background(), c) {
+			if d.Intervention == InterventionGrantShield {
+				t.Fatalf("the rules shield %s in a duel where WEAK cannot be shielded: %+v", d.TargetSerial, d)
+			}
 		}
 	})
 }

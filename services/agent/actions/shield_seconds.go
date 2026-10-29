@@ -17,10 +17,11 @@ import (
 // never granted resolves, so the agent reads the named variant, not the default.
 const (
 	shieldSecondsVariant = "default"
-	// shieldSecondsMin / shieldSecondsMax are the registry bounds of a shield_seconds
-	// write (docs/specs/flags.md §13.1: 1 to 10); a variant value outside them, or one
-	// that is not a number, is not used.
-	shieldSecondsMin = 1.0
+	// shieldSecondsMin / shieldSecondsMax are the grant_shield magnitude bounds
+	// (decide/ffa.go magnitudeBounds: 3 to 10 s), so the rules record's ffa.magnitude
+	// answer is the written length (BR-029). A variant value outside them, or one that
+	// is not a number, is not used. The registry accepts 1 to 10 (flags.md §13.1).
+	shieldSecondsMin = 3.0
 	shieldSecondsMax = 10.0
 	// shieldSecondsReadTimeout bounds the read: the decision loop waits for it.
 	shieldSecondsReadTimeout = 200 * time.Millisecond

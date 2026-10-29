@@ -46,14 +46,15 @@ func shieldTargets(ds []Decision) []string {
 
 // UC: UC-040 A31 A41
 func TestApplyChargePolicy_R4SkipsChargedWeakest(t *testing.T) {
-	t.Run("UC-040/A31 A41 a charged weakest gets no grant_shield; the other players stay candidates", func(t *testing.T) {
+	t.Run("UC-040/A31 A41 a charged weakest gets no grant_shield; the other struggling player stays a candidate", func(t *testing.T) {
 		cands := balancedCandidates(chargeRulesCtx(), defaultFit())
-		if got := shieldTargets(decisionsOf(cands)); !equalStrings(got, []string{"MID", "STRONG", "WEAK"}) {
-			t.Fatalf("precondition: R4 candidates %v, want [MID STRONG WEAK]", got)
+		// Mean skill 0.43: WEAK and MID are below it; STRONG never is (A41 step 2).
+		if got := shieldTargets(decisionsOf(cands)); !equalStrings(got, []string{"MID", "WEAK"}) {
+			t.Fatalf("precondition: R4 candidates %v, want [MID WEAK]", got)
 		}
 		kept := applyChargePolicy(cands, map[string]bool{"WEAK": true})
-		if got := shieldTargets(decisionsOf(kept)); !equalStrings(got, []string{"MID", "STRONG"}) {
-			t.Fatalf("grant_shield candidates after the charge policy = %v, want [MID STRONG] (WEAK dropped, A41: a non-candidate holds nobody back)", got)
+		if got := shieldTargets(decisionsOf(kept)); !equalStrings(got, []string{"MID"}) {
+			t.Fatalf("grant_shield candidates after the charge policy = %v, want [MID] (WEAK dropped, A41: a non-candidate holds nobody back)", got)
 		}
 		if len(kept) == 0 {
 			t.Fatal("the charge policy must keep the other candidates")
