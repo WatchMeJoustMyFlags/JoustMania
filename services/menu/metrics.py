@@ -26,13 +26,21 @@ grpc_request_duration_seconds = Histogram(
 # Button monitoring metrics (Phase 56: Event-driven spans)
 button_frames_processed_total = Counter(
     "menu_button_frames_processed_total",
-    "Total number of controller state frames processed by button monitor",
+    "Total number of button-stream events (connect, disconnect, button) dispatched by the menu",
 )
 
 button_presses_total = Counter(
     "menu_button_presses_total",
-    "Total number of button presses detected",
-    ["button", "action"],  # button: 'trigger', 'move', 'select', 'start', etc. action: 'press', 'hold'
+    "Total number of button presses received from the controller manager",
+    ["button", "action"],  # button: BUTTON_TYPE_NAMES or 'unknown'; action: 'press' (releases are not counted)
+)
+
+# #2380: how long the menu takes to handle one button-stream event, handler failures included.
+button_dispatch_seconds = Histogram(
+    "menu_button_dispatch_seconds",
+    "Time the menu takes to dispatch one button-stream event",
+    ["event_type"],  # connect / disconnect / button
+    buckets=[0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500, 1.0, 2.5],
 )
 
 # Stream metrics (Phase 59)
