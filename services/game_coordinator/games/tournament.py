@@ -13,6 +13,7 @@ import logging
 import math
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -80,6 +81,25 @@ class Match:
     winner_serial: str | None = None
     is_complete: bool = False
     is_bye: bool = False  # True if only one player (automatic advance)
+
+
+@dataclass(frozen=True)
+class TournamentInitFlags:
+    """The tournament flags latched at game init, validated and immutable (#2359)."""
+
+    match_seconds: float
+    time_between_matches_seconds: float
+
+    @classmethod
+    def from_raw(cls, *, match_seconds: Any, time_between_matches_seconds: Any) -> "TournamentInitFlags":
+        """Validate the raw flag values. A 0 s match would break play, so it falls back; a 0 s pause is allowed."""
+        match = resolve_non_negative_duration(match_seconds, MATCH_DURATION)
+        return cls(
+            match_seconds=match if match > 0 else MATCH_DURATION,
+            time_between_matches_seconds=resolve_non_negative_duration(
+                time_between_matches_seconds, TIME_BETWEEN_MATCHES
+            ),
+        )
 
 
 class TournamentGame(StreamedIntroGameMode):
@@ -154,17 +174,14 @@ class TournamentGame(StreamedIntroGameMode):
         # Read ONCE here (init-frozen); malformed values fall back to module
         # constants. A 0s match would break play, so it must be strictly positive;
         # a 0s inter-match pause is acceptable.
-        match_seconds = resolve_non_negative_duration(
-            read_float_flag("game", "tournament.match_seconds", MATCH_DURATION, game_id=self.game_id),
-            MATCH_DURATION,
-        )
-        self._match_duration: float = match_seconds if match_seconds > 0 else MATCH_DURATION
-        self._time_between_matches: float = resolve_non_negative_duration(
-            read_float_flag(
+        self.mode_flags = TournamentInitFlags.from_raw(
+            match_seconds=read_float_flag("game", "tournament.match_seconds", MATCH_DURATION, game_id=self.game_id),
+            time_between_matches_seconds=read_float_flag(
                 "game", "tournament.time_between_matches_seconds", TIME_BETWEEN_MATCHES, game_id=self.game_id
             ),
-            TIME_BETWEEN_MATCHES,
         )
+        self._match_duration: float = self.mode_flags.match_seconds
+        self._time_between_matches: float = self.mode_flags.time_between_matches_seconds
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""

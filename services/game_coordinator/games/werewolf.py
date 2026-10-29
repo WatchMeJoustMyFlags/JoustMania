@@ -9,7 +9,10 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -50,6 +53,22 @@ def resolve_fraction(value, default: float) -> float:
     if value != value:  # NaN
         return default
     return float(value) if 0.0 < value < 1.0 else default
+
+
+@dataclass(frozen=True)
+class WerewolfInitFlags:
+    """The werewolf flags latched at game init, validated and immutable (#2359)."""
+
+    thresholds: Mapping[Sensitivity, tuple[float, float]]
+    werewolf_fraction: float
+
+    @classmethod
+    def from_raw(cls, *, thresholds: Any, werewolf_fraction: Any) -> "WerewolfInitFlags":
+        """Validate the raw flag values; a malformed one gives the module default (fail closed)."""
+        return cls(
+            thresholds=MappingProxyType(resolve_mode_thresholds(thresholds, WEREWOLF_THRESHOLDS)),
+            werewolf_fraction=resolve_fraction(werewolf_fraction, WEREWOLF_FRACTION),
+        )
 
 
 HUMAN_COLOR = Colors.Yellow.value  # Yellow for humans (and all players before reveal)
@@ -125,16 +144,17 @@ class WerewolfGame(StreamedIntroGameMode):
 
         # #766 F1: werewolf threshold overrides promoted to ``game.werewolf.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to WEREWOLF_THRESHOLDS.
-        self.werewolf_thresholds = resolve_mode_thresholds(
-            read_object_flag("game", "werewolf.thresholds", {}, game_id=self.game_id), WEREWOLF_THRESHOLDS
+        self.mode_flags = WerewolfInitFlags.from_raw(
+            thresholds=read_object_flag("game", "werewolf.thresholds", {}, game_id=self.game_id),
+            werewolf_fraction=read_float_flag(
+                "game", "werewolf.werewolf_fraction", WEREWOLF_FRACTION, game_id=self.game_id
+            ),
         )
+        self.werewolf_thresholds = dict(self.mode_flags.thresholds)
 
         # #766 F2: werewolf population fraction promoted to ``game.werewolf.werewolf_fraction``.
         # Read once at init (init-frozen); out-of-range values fall back to WEREWOLF_FRACTION.
-        self.werewolf_fraction = resolve_fraction(
-            read_float_flag("game", "werewolf.werewolf_fraction", WEREWOLF_FRACTION, game_id=self.game_id),
-            WEREWOLF_FRACTION,
-        )
+        self.werewolf_fraction = self.mode_flags.werewolf_fraction
 
         # The result, latched once in _check_win_condition together with the outcome
         # (UC-022 BR-004, #1343, #2009): "humans" / "werewolves" / "tie". None = no

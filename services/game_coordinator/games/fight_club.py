@@ -12,6 +12,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -66,6 +67,19 @@ class FightClubPlayer(Player):
     state: FightState = FightState.IN_LINE
     score: int = 0
     invincible_until: float = 0.0
+
+
+@dataclass(frozen=True)
+class FightClubInitFlags:
+    """The fight club flags latched at game init, validated and immutable (#2359)."""
+
+    round_seconds: float
+
+    @classmethod
+    def from_raw(cls, *, round_seconds: Any) -> "FightClubInitFlags":
+        """Validate the raw flag value. A 0 s round would break play, so a non-positive value falls back."""
+        seconds = resolve_non_negative_duration(round_seconds, ROUND_DURATION)
+        return cls(round_seconds=seconds if seconds > 0 else ROUND_DURATION)
 
 
 class FightClubGame(StreamedIntroGameMode):
@@ -160,11 +174,10 @@ class FightClubGame(StreamedIntroGameMode):
         # #766 F2: round duration promoted to ``game.fight_club.round_seconds``.
         # Read ONCE here (init-frozen); a non-positive/malformed value falls back
         # to the ROUND_DURATION module constant (a 0s round would break play).
-        round_seconds = resolve_non_negative_duration(
-            read_float_flag("game", "fight_club.round_seconds", ROUND_DURATION, game_id=self.game_id),
-            ROUND_DURATION,
+        self.mode_flags = FightClubInitFlags.from_raw(
+            round_seconds=read_float_flag("game", "fight_club.round_seconds", ROUND_DURATION, game_id=self.game_id)
         )
-        self._round_duration: float = round_seconds if round_seconds > 0 else ROUND_DURATION
+        self._round_duration: float = self.mode_flags.round_seconds
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
