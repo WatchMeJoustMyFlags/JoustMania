@@ -6,6 +6,7 @@ for testing game modes without real hardware or gRPC services.
 """
 
 import asyncio
+import dataclasses
 import sys
 import time
 from pathlib import Path
@@ -228,3 +229,46 @@ def _flag_providers_ready_instantly(monkeypatch):
         return []
 
     monkeypatch.setattr("services.game_coordinator.game_session.await_flag_providers_ready", _ready)
+
+
+@pytest.fixture(autouse=True)
+def _short_real_time_durations(request, monkeypatch):
+    """Shorten the real-time intros, pauses, holds and the default countdown / rainbow (#2361).
+
+    Production keeps its durations: this only replaces the module constants and the
+    class attribute the modes read at call time. A test that asserts the real values
+    or the real timing opts out with ``@pytest.mark.real_durations``; a test that
+    sets its own value patches it after this fixture and wins.
+    """
+    if request.node.get_closest_marker("real_durations"):
+        return
+    from services.game_coordinator import runtime_config
+    from services.game_coordinator.games import fight_club, tournament, traitor, werewolf, zombie
+    from services.game_coordinator.games.base import BaseGameMode
+
+    for module, name, value in (
+        (tournament, "TOURNAMENT_INTRO_DURATION_S", 0.1),
+        (tournament, "ROUND_PAUSE_S", 0.0),
+        (werewolf, "WEREWOLF_INTRO_DURATION_S", 0.1),
+        (zombie, "ZOMBIE_INTRO_DURATION_S", 0.1),
+        (fight_club, "FC_INTRO_DURATION_S", 0.1),
+        (fight_club, "ROUND_PAUSE_SECONDS", 0.0),
+        (traitor, "TRAITOR_SIGNAL_DURATION", 1),
+    ):
+        monkeypatch.setattr(module, name, value)
+    monkeypatch.setattr(BaseGameMode, "_WIN_HOLD_S", 0.0)
+
+    # The singleton's code defaults (750 ms countdown phases, winner rainbow): only
+    # when the config still holds them, so a test that sets its own keeps it.
+    manager = runtime_config.get_config_manager()
+    defaults = runtime_config.GamePerformanceConfig()
+    original = manager.config
+    if (original.countdown_phase_duration_ms, original.winner_rainbow_duration_ms) == (
+        defaults.countdown_phase_duration_ms,
+        defaults.winner_rainbow_duration_ms,
+    ):
+        monkeypatch.setattr(
+            manager,
+            "config",
+            dataclasses.replace(original, countdown_phase_duration_ms=50, winner_rainbow_duration_ms=100),
+        )

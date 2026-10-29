@@ -768,6 +768,7 @@ class TestZombieIntroPhase:
             assert serial in color_serials, f"Missing base_color for {serial}"
 
     @pytest.mark.asyncio
+    @pytest.mark.real_durations
     async def test_zombie_intro_stops_if_not_running(self, zombie_game):
         """If game.running becomes False during intro, zombie_intro_end should NOT be published."""
         from unittest.mock import AsyncMock, patch

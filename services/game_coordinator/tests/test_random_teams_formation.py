@@ -285,6 +285,7 @@ async def test_drop_and_reconnect_during_formation_is_not_eliminated():
 
 @pytest.mark.uc("UC-021", flow="A1")
 @pytest.mark.asyncio
+@pytest.mark.real_durations
 async def test_drop_and_reconnect_during_the_countdown_is_still_eliminated():
     # 1 s formation is ~100 frames; seq 150 lies in the countdown, after the drain stopped.
     game, calls = await _run_with_formation_disconnect(gaps={SERIALS[0]: (150, 160)}, disconnect_seq=150)
