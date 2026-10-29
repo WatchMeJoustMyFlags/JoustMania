@@ -124,7 +124,7 @@ _READ_HELPERS = {
 
 # Coordinator wrappers that take the flag key as a parameter:
 # name -> (flag set, getter, key parameter name).
-# games/base.py _read_volume_flag: get_flag_client("user").get_float_value(flag_name).
+# games/flag_snapshot.py _read_volume_flag: get_flag_client("user").get_float_value(flag_name).
 _WRAPPERS = {"_read_volume_flag": ("user", "float", "flag_name")}
 
 # Getter call sites with a non-literal key that are covered another way, as
@@ -139,7 +139,7 @@ _COVERED_NON_LITERAL = {
         "resolve_player_targets",
         "flag_key",
     ): "targeted_value_kinds()",
-    ("base.py", "_read_volume_flag", "flag_name"): "_WRAPPERS",
+    ("flag_snapshot.py", "_read_volume_flag", "flag_name"): "_WRAPPERS",
 }
 
 # Per-serial reads: the caller passes value_kind, which must match the spec's.
