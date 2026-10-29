@@ -15,6 +15,7 @@ closed. ``_read_volume_flag`` is the one reader that lives here (``user`` domain
 import logging
 import math
 from dataclasses import dataclass
+from typing import Any
 
 from lib.types import Sensitivity
 
@@ -410,3 +411,57 @@ def resolve_music_windows(flag_value: dict) -> MusicWindows:
             return defaults  # any inverted window -> whole-set fallback
 
     return MusicWindows(**resolved)
+
+
+@dataclass(frozen=True)
+class GameInitFlags:
+    """The game flags a game latches at init, validated and immutable (#2359).
+
+    ``BaseGameMode.__init__`` reads each raw value (``games.base.read_*_flag``,
+    ``get_config_manager``) and passes them to :meth:`from_raw`, which validates
+    every field (a malformed value gives the default, fail closed) and freezes the
+    result. The snapshot is built once per game; the game's attributes
+    (``slow_max``, ``music_windows``, ...) start from it. Keys that docs/specs/flags.md
+    marks live (per ramp, per grant, per tempo change) are not in here: they are
+    read at use time. ``tempo_schedule_mode`` is the init value of an attribute the
+    config-change listener swaps live.
+    """
+
+    slow_warning: tuple[float, ...]
+    slow_max: tuple[float, ...]
+    fast_warning: tuple[float, ...]
+    fast_max: tuple[float, ...]
+    ema_weight: float
+    death_grace_period_seconds: float
+    music_windows: MusicWindows
+    tempo_schedule_mode: str
+    game_volume: float
+    countdown_music_volume: float
+
+    @classmethod
+    def from_raw(
+        cls,
+        *,
+        thresholds: Any,
+        ema_weight: float,
+        death_grace_period_seconds: Any,
+        death_grace_default: float,
+        windows: Any,
+        tempo_schedule_mode: Any,
+        game_volume: float,
+        countdown_music_volume: float,
+    ) -> "GameInitFlags":
+        """Validate the raw flag values. ``ema_weight`` and the volumes arrive validated by their readers."""
+        tables = resolve_base_thresholds(thresholds)
+        return cls(
+            slow_warning=tuple(tables["slow_warning"]),
+            slow_max=tuple(tables["slow_max"]),
+            fast_warning=tuple(tables["fast_warning"]),
+            fast_max=tuple(tables["fast_max"]),
+            ema_weight=ema_weight,
+            death_grace_period_seconds=resolve_non_negative_duration(death_grace_period_seconds, death_grace_default),
+            music_windows=resolve_music_windows(windows),
+            tempo_schedule_mode=resolve_tempo_schedule_mode(tempo_schedule_mode),
+            game_volume=game_volume,
+            countdown_music_volume=countdown_music_volume,
+        )
