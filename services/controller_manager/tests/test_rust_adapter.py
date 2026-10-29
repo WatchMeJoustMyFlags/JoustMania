@@ -66,23 +66,7 @@ class TestDiscover:
         adapter._stub.Discover.assert_called_once()
         call_args = adapter._stub.Discover.call_args[0][0]
         assert call_args.force is True
-        assert call_args.verify_only is False
-
-    def test_discover_verify_only(self):
-        adapter = _make_adapter()
-        mock_response = MagicMock()
-        mock_ctrl = MagicMock()
-        mock_ctrl.serial = "AABBCCDDEEFF"
-        mock_ctrl.adapter_name = "hci0"
-        mock_ctrl.product_id = 0x03D5
-        mock_response.controllers = [mock_ctrl]
-        adapter._stub.Discover.return_value = mock_response
-        adapter._stream_running = True
-
-        adapter.discover(verify_only=True)
-
-        call_args = adapter._stub.Discover.call_args[0][0]
-        assert call_args.verify_only is True
+        assert call_args.verify_only is False  # proto field kept; never set (#2352)
 
     def test_discover_rpc_error_raises_discovery_failed(self):
         """A failed Discover is not "no controllers" (UC-002 A1, #2125)."""

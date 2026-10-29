@@ -36,7 +36,7 @@ class HangingAdapter(MockAdapter):
     def adapter_type(self) -> str:
         return "rust"
 
-    def discover(self, force=False, verify_only=False, exclude_serials=None):  # noqa: ARG002
+    def discover(self, force=False, exclude_serials=None):  # noqa: ARG002
         if not self.done.is_set():
             self.release.wait(timeout=HANG_S * 2)
         return [HUNG_SERIAL]

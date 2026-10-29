@@ -117,15 +117,6 @@ class MultiplexerBackend(ControllerBackend):
         # Rollout routing (rollout flagd domain). Evaluated per cycle.
         self._rollout_router = RolloutRouter()
 
-        # Discovery throttle: full enumeration at most every N seconds, verify-only
-        # in between. The discovery check runs at 1 Hz (NFR-002), so every check is
-        # a full enumeration, which UC-002 step 3 needs to find a new controller on
-        # the next check. A full pass is cheap: rust-hid enumerates but opens only
-        # controllers that are not open yet and never reads a polled one (UC-002
-        # BR-006, #2314).
-        self._last_full_discovery: float = 0.0
-        self._full_discovery_interval: float = 0.5  # seconds
-
         # Consecutive failed discovery passes per adapter (UC-002 A1, #2125).
         # Only the discovery worker thread reads and writes it.
         self._failed_discovery_passes: dict[ControllerIOAdapter, int] = {}
@@ -281,17 +272,11 @@ class MultiplexerBackend(ControllerBackend):
         Phase 2 — Route: for serials seen by multiple adapters, pick one via
                   OpenFeature targeting. Close handles on non-winning adapters.
         """
-        now = time.monotonic()
-        if force or (now - self._last_full_discovery >= self._full_discovery_interval):
-            verify_only = False
-            self._last_full_discovery = now
-        else:
-            verify_only = True
-
-        if verify_only:
-            metrics.discovery_verify_only_total.inc()
-        else:
-            metrics.discovery_full_enumerate_total.inc()
+        # Every pass is a full enumeration (the discovery check runs at 1 Hz,
+        # NFR-002), which UC-002 step 3 needs to find a new controller on the next
+        # check. It is cheap: rust-hid enumerates but opens only controllers that
+        # are not open yet and never reads a polled one (UC-002 BR-006, #2314).
+        metrics.discovery_full_enumerate_total.inc()
 
         # Phase 1: all adapters discover independently.
         # Each adapter receives exclude_serials — serials claimed by other adapters
@@ -305,7 +290,7 @@ class MultiplexerBackend(ControllerBackend):
         for adapter in self._adapters:
             claimed_by_others = [s for s, a in previous.items() if a is not adapter]
             try:
-                serials = adapter.discover(force=force, verify_only=verify_only, exclude_serials=claimed_by_others)
+                serials = adapter.discover(force=force, exclude_serials=claimed_by_others)
             except DiscoveryFailedError as e:
                 carried.update(self._carry_routes_after_failed_discovery(adapter, previous, e))
                 continue
@@ -637,18 +622,6 @@ class MultiplexerBackend(ControllerBackend):
                         self._count_led_failure(serial, current_time)
 
         return updated_count
-
-    async def scan_controllers(self) -> list[dict]:
-        results: list[dict] = []
-        for adapter in self._adapters:
-            try:
-                serials = adapter.discover(force=True)
-            except DiscoveryFailedError as e:
-                logger.warning(f"{adapter.adapter_type} scan failed: {e}")
-                continue
-            for serial in serials:
-                results.append({"address": serial, "serial": serial, "name": f"Controller {serial[-4:]}"})
-        return results
 
     # -- Per-controller methods -----------------------------------------------
 

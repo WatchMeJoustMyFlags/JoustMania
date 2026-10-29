@@ -191,7 +191,6 @@ class MockAdapter(ControllerIOAdapter):
     def discover(
         self,
         force: bool = False,  # noqa: ARG002
-        verify_only: bool = False,  # noqa: ARG002
         exclude_serials: list[str] | None = None,  # noqa: ARG002
     ) -> list[str]:
         """Return all mock controller serials.

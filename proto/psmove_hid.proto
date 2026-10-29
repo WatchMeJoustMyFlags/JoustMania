@@ -55,8 +55,13 @@ service ControllerIOService {
 }
 
 message DiscoverRequest {
-  bool force = 1;        // Force full rescan, removing stale devices
-  bool verify_only = 2;  // Only verify existing devices, skip enumeration
+  // Skip the read check that finds dead devices (a periodic forced rescan).
+  // Has no effect while a StreamIO call is open: the device loop's poll finds
+  // dead devices then, and no Discover pass reads a polled device (UC-002 BR-006).
+  bool force = 1;
+  // Only drop devices that are gone, skip enumeration: opens nothing. Honoured
+  // with or without an open StreamIO call.
+  bool verify_only = 2;
   repeated string exclude_serials = 3;  // Serials claimed by another adapter — skip opening these
 }
 
