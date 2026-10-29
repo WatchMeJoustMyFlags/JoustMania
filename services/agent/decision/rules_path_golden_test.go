@@ -17,6 +17,9 @@ import (
 // the legacy mode/model/resolver path, so this test proves that removal left the
 // rules path's decisions and permission outcomes byte-identical.
 //
+// #2395 changed it on purpose: with R4's catch-up the balanced fixture shields WEAK,
+// then MID, and no helped player again while STRONG has none.
+//
 // Regenerate (only for an intended behavior change): go test ./decision -run
 // TestRulesPathGolden -update-rules-golden
 
@@ -46,7 +49,11 @@ func TestRulesPathGolden(t *testing.T) {
 				ActConfidenceThreshold: flags.DefaultDecisionActConfidenceThreshold,
 			},
 		})
-		l.Rules = newTestEngine(fx.cfg, &clock)
+		engine := newTestEngine(fx.cfg, &clock)
+		// R4's catch-up reads the loop's shield grants as main.go wires it (UC-040
+		// A41, BR-030; #2395): the one intended golden change, in the balanced fixture.
+		engine.SetShieldGrantSource(l.ShieldGrants)
+		l.Rules = engine
 		l.now = func() time.Time { return clock }
 		sink := &capturingSink{}
 		l.Actions = sink

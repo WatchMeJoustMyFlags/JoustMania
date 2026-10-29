@@ -69,6 +69,20 @@ type ObjectiveRules struct {
 	// read once per ranking. nil (the golden harness, every older test) filters
 	// nothing.
 	appliedSource func() map[string]string
+
+	// grantSource is the loop's shield-grant view (UC-040 A41, BR-030,
+	// Loop.ShieldGrants): read once per ranking, it makes R4 a catch-up among the
+	// players with the fewest agent shields this game. nil (every older test) keeps
+	// R4 on the weakest player.
+	grantSource func() map[string]int
+}
+
+// SetShieldGrantSource installs the shield-grant view (Loop.ShieldGrants). It is
+// called under the engine lock, so it must not call back into the engine.
+func (r *ObjectiveRules) SetShieldGrantSource(src func() map[string]int) {
+	r.mu.Lock()
+	r.grantSource = src
+	r.mu.Unlock()
 }
 
 // SetAppliedSource installs the applied-value view (Loop.AppliedValues). It is called
@@ -304,7 +318,11 @@ func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, no
 	roll, rollTarget := r.chaosRoll(c)
 
 	cands := enduranceCandidates(c, fit)
-	cands = append(cands, balancedCandidates(c, fit)...)
+	var grants map[string]int
+	if r.grantSource != nil {
+		grants = r.grantSource()
+	}
+	cands = append(cands, balancedCandidatesFor(c, fit, grants)...)
 	cands = append(cands, accelerateCandidates(c, fit, weights)...)
 	cands = append(cands, chaosCandidates(c, pol, roll, rollTarget)...)
 

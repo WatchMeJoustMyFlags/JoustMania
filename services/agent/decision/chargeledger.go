@@ -73,11 +73,43 @@ type ShieldChargeMode func(ctx context.Context, gameID string) (trigger bool, ex
 // inert: no grant_shield is ever blocked already_charged. Set during construction.
 func (l *Loop) SetShieldChargeMode(mode ShieldChargeMode) { l.shieldChargeMode = mode }
 
-// DefaultShieldSeconds is the grant_shield length when the decision carries no
-// value (or one that does not parse): the writer writes it (actions/writer.go), and
-// the ledger takes the shield's end from it (UC-040 BR-022). It matches the
-// interventions set's shield_seconds "default" variant.
+// DefaultShieldSeconds is the fail-closed grant_shield length (UC-040 BR-029, #2395):
+// the loop stamps a grant with no value with the shield_seconds "default" variant
+// (SetShieldSecondsSource) and falls back to this when that cannot be read; the writer
+// (actions/writer.go) and the ledger use it for a decision that still carries no
+// value, or one that does not parse (UC-040 BR-022). It equals the variant's baseline.
 const DefaultShieldSeconds = 5
+
+// ShieldSecondsSource returns the grant_shield length in seconds for a decision that
+// carries no value (UC-040 BR-029, #2395). main.go wires actions.ShieldSecondsReader,
+// which reads the interventions/shield_seconds "default" variant through the flag
+// service at use time and fails closed to DefaultShieldSeconds, so it always returns a
+// usable length.
+type ShieldSecondsSource func(ctx context.Context) float64
+
+// SetShieldSecondsSource injects the grant length source. nil (the construction
+// default) keeps a grant without a value empty. Set during construction.
+func (l *Loop) SetShieldSecondsSource(src ShieldSecondsSource) { l.shieldSeconds = src }
+
+// withShieldSeconds stamps a targeted grant_shield that carries no value (every rules
+// decision, a remote answer without a magnitude) with the configured length, so the
+// ledger's cooldown end and in-flight seconds and the writer use one value (UC-040
+// BR-029). The source is read only for a grant the allow-list permits; a value the
+// decision already carries (a remote magnitude) is kept.
+func (l *Loop) withShieldSeconds(ctx context.Context, snapshot flags.Snapshot, d Decision) Decision {
+	if l.shieldSeconds == nil || d.Intervention != InterventionGrantShield || d.TargetSerial == "" || d.Value != "" {
+		return d
+	}
+	if !snapshot.Permits(d.Intervention) {
+		return d
+	}
+	v := l.shieldSeconds(ctx)
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		v = DefaultShieldSeconds
+	}
+	d.Value = strconv.FormatFloat(v, 'g', -1, 64)
+	return d
+}
 
 // shieldLimits are the live shield limits of one check (UC-040 A33, BR-022): the
 // policy.max_shields_per_player_per_game and policy.shield_cooldown_seconds values of
@@ -387,6 +419,32 @@ func (cl *chargeLedger) inFlight() map[string]time.Duration {
 				out = make(map[string]time.Duration)
 			}
 			out[serial] = d
+		}
+	}
+	return out
+}
+
+// ShieldGrants is the rules engine's catch-up view of the ledger (UC-040 A41, BR-030;
+// #2395): the agent's grant_shield writes per serial in this game, the ones in flight
+// included (so two concurrent cycles do not both pick the same not-yet-helped player).
+// The ledger is per Loop and a Loop is per game id, so the count starts at 0 in every
+// game and a shadow game never sees a real game's grants. nil when there are none.
+func (l *Loop) ShieldGrants() map[string]int {
+	return l.charges.grants()
+}
+
+// grants returns, from one lock, committed plus in-flight grants per serial (only
+// serials with some).
+func (cl *chargeLedger) grants() map[string]int {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	var out map[string]int
+	for serial, e := range cl.entries {
+		if n := e.committed + len(e.pending); n > 0 {
+			if out == nil {
+				out = make(map[string]int, len(cl.entries))
+			}
+			out[serial] = n
 		}
 	}
 	return out

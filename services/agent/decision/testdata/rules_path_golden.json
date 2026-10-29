@@ -308,7 +308,7 @@
           },
           {
             "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
+            "TargetSerial": "MID",
             "Dispatched": true,
             "BlockReason": "",
             "Weight": 1
@@ -324,13 +324,6 @@
             "Dispatched": true,
             "BlockReason": "",
             "Weight": 1
-          },
-          {
-            "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
-            "Dispatched": true,
-            "BlockReason": "",
-            "Weight": 1
           }
         ]
       },
@@ -340,15 +333,8 @@
           {
             "Intervention": "adjust_player_sensitivity",
             "TargetSerial": "STRONG",
-            "Dispatched": false,
-            "BlockReason": "rate_limit",
-            "Weight": 1
-          },
-          {
-            "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
-            "Dispatched": false,
-            "BlockReason": "rate_limit",
+            "Dispatched": true,
+            "BlockReason": "",
             "Weight": 1
           }
         ]
@@ -359,13 +345,6 @@
           {
             "Intervention": "adjust_player_sensitivity",
             "TargetSerial": "STRONG",
-            "Dispatched": false,
-            "BlockReason": "rate_limit",
-            "Weight": 1
-          },
-          {
-            "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
@@ -381,13 +360,6 @@
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
-          },
-          {
-            "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
-            "Dispatched": false,
-            "BlockReason": "rate_limit",
-            "Weight": 1
           }
         ]
       },
@@ -400,13 +372,6 @@
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
-          },
-          {
-            "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
-            "Dispatched": false,
-            "BlockReason": "rate_limit",
-            "Weight": 1
           }
         ]
       },
@@ -416,13 +381,6 @@
           {
             "Intervention": "adjust_player_sensitivity",
             "TargetSerial": "STRONG",
-            "Dispatched": false,
-            "BlockReason": "rate_limit",
-            "Weight": 1
-          },
-          {
-            "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
@@ -477,13 +435,14 @@
       },
       {
         "Intervention": "grant_shield",
-        "TargetSerial": "WEAK",
+        "TargetSerial": "MID",
         "Value": "",
-        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
+        "Reason": "catch-up: shield the weakest player not helped yet (skill 0.50) while the field shrinks",
         "ObjectiveServed": "balanced",
         "Fitness": {
           "active_players": 3,
-          "weakest_skill": 0.2
+          "shield_grants": 0,
+          "weakest_skill": 0.5
         },
         "Objectives": {
           "balanced": 1
@@ -505,14 +464,15 @@
         }
       },
       {
-        "Intervention": "grant_shield",
-        "TargetSerial": "WEAK",
+        "Intervention": "adjust_player_sensitivity",
+        "TargetSerial": "STRONG",
         "Value": "",
-        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
+        "Reason": "skill gap 0.70 exceeds 0.40: handicap the outlier",
         "ObjectiveServed": "balanced",
         "Fitness": {
-          "active_players": 3,
-          "weakest_skill": 0.2
+          "max_skill_gap": 0.4,
+          "outlier_skill": 0.9,
+          "skill_gap": 0.7
         },
         "Objectives": {
           "balanced": 1

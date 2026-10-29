@@ -338,6 +338,11 @@ type Loop struct {
 	// the ledger inert.
 	charges          chargeLedger
 	shieldChargeMode ShieldChargeMode
+	// shieldSeconds is the grant_shield length source (UC-040 BR-029, #2395): the
+	// interventions/shield_seconds "default" variant, read per grant. nil (the golden
+	// harness, every older test) leaves the decision's value empty, so the writer and
+	// the ledger use DefaultShieldSeconds.
+	shieldSeconds ShieldSecondsSource
 
 	// flagState is this partition's agent.flag_state digest (#2059, flag_state.go).
 	flagState flagStateTracker
@@ -801,6 +806,7 @@ func (l *Loop) nowOrDefault() func() time.Time {
 // decision.blocked=true (and the BlockReason) on both spans and in the
 // LayerState — recorded, never silently dropped.
 func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, now time.Time, state *LayerState) {
+	d = l.withShieldSeconds(ctx, snapshot, d)
 	cost := interventionCost(d.Intervention)
 	perm := l.evaluatePermission(ctx, snapshot, c, d, now, cost, state)
 	reason, blocked := perm.reason, perm.blocked
