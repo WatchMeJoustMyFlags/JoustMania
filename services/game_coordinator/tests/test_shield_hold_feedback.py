@@ -46,11 +46,16 @@ class RecordingStream:
         self.writes.append(message)
 
     def effects(self, serial=None):
-        """(effect name, duration_ms, shield_hold or None) per game effect, optionally for one serial."""
+        """(effect name, duration_ms, shield_hold or None) per game effect, optionally for one serial.
+
+        The help cue PULSE (UC-040 A42, BR-031) is left out; test_shield_help_cue.py pins it.
+        """
         out = []
         for message in self.writes:
             effect = message.game_effect
             if serial is not None and effect.serial != serial:
+                continue
+            if effect.effect == pb.GAME_EFFECT_PULSE:
                 continue
             hold = effect.shield_hold if effect.HasField("shield_hold") else None
             out.append((pb.GameEffect.Name(effect.effect), effect.duration_ms, hold))

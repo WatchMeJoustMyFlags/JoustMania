@@ -452,3 +452,38 @@ class TestUC040LiveLedColourInStream:
         await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_SHIELD, duration_ms=0)
         restored = cache.build_state(SERIAL, info)
         assert (restored.color.r, restored.color.g, restored.color.b) == PLAYER
+
+
+class TestUC040HelpCueBeforeTheShield:
+    """UC-040 A42 step 2 (#2395): the helped cue pulse, sent just before the shield, shows first."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A42", br=["BR-031"])
+    async def test_pulse_then_shield_shows_the_pulse_first_then_the_shield(self, manager, backend):
+        magenta = (255, 0, 192)
+        ok = await manager.handle_game_effect(
+            serial=SERIAL,
+            effect=controller_manager_pb2.GAME_EFFECT_PULSE,
+            color=magenta,
+            duration_ms=500,
+            speed=4,
+        )
+        assert ok
+        pulse = manager.active_effects[SERIAL].task
+        await _shield(manager, duration_ms=5000)
+        await _spin(5)
+
+        # While the pulse runs the shield layer waits under it: only scaled magenta is painted.
+        assert not pulse.done()
+        assert backend.history, "the pulse paints"
+        assert not any(_is_shield_frame(c) and c != OFF for c in backend.history), backend.history
+        assert manager.shield_active(SERIAL)
+
+        await pulse
+        pulse_end = len(backend.history)
+        await _spin(10)
+        after = backend.history[pulse_end:]
+        assert after, "the shield renderer paints once the pulse ends"
+        assert all(_is_shield_frame(c) or c == OFF for c in after), after
+        assert PLAYER not in after  # no restore flash between the cue and the shield
+        await manager.end_shield_effect(SERIAL)
