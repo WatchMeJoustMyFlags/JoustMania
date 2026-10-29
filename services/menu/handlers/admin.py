@@ -34,9 +34,12 @@ from lib.telemetry import SpanAttr
 from lib.types import Sound
 from services.menu.handlers.base import ButtonDebouncer, ControllerState
 from services.menu.settings_ops import (
+    AGENT_LEVEL_COLORS,
     AGENT_LEVEL_VOICES,
     AGENT_POLICY_FLAG,
+    FORCE_ALL_START_VOICES,
     NUM_TEAMS_VOICES,
+    SENSITIVITY_COLORS,
     SENSITIVITY_VALUES,
     SENSITIVITY_VOICES,
     SettingsOps,
@@ -984,16 +987,7 @@ class AdminModeHandler:
 
                 # Map variant name to numeric value for visual feedback
                 new_value = SENSITIVITY_VALUES.get(new_variant, 2)
-
-                # Visual feedback: Color by sensitivity level (5 distinct colors)
-                sensitivity_colors = [
-                    Colors.Blue,  # Ultra Slow (0)
-                    Colors.Turquoise,  # Slow (1)
-                    Colors.Green,  # Medium (2)
-                    Colors.Orange,  # Fast (3)
-                    Colors.Red,  # Ultra Fast (4)
-                ]
-                color = sensitivity_colors[new_value].value
+                color = SENSITIVITY_COLORS[new_value].value
 
                 # Show sensitivity color (GAME_EFFECT_PULSE restores to base automatically)
                 await self._send_game_effect(
@@ -1408,13 +1402,7 @@ class AdminModeHandler:
                 # Visual feedback: distinct color per level so the agent's
                 # permission state is unambiguous at a glance. Red = off (panic),
                 # escalating warmth toward full.
-                level_colors = {
-                    "none": Colors.Red,  # agent disabled (panic off)
-                    "ambient": Colors.Turquoise,  # cosmetic-only
-                    "standard": Colors.Orange,  # tunable deltas
-                    "full": Colors.Green,  # all interventions
-                }
-                color = level_colors.get(new_level, Colors.Purple).value
+                color = AGENT_LEVEL_COLORS.get(new_level, Colors.Purple).value
                 # The pulse is cosmetic: a failure or slow stream must not drop the
                 # voice line that follows (#1643).
                 try:
@@ -1512,14 +1500,7 @@ class AdminModeHandler:
             match option_name:
                 case "sensitivity":
                     # 5-color gradient for sensitivity levels (0-4)
-                    sensitivity_colors = [
-                        Colors.Blue,  # Ultra Slow (0)
-                        Colors.Turquoise,  # Slow (1)
-                        Colors.Green,  # Medium (2)
-                        Colors.Orange,  # Fast (3)
-                        Colors.Red,  # Ultra Fast (4)
-                    ]
-                    pulse_color = sensitivity_colors[int(value)].value
+                    pulse_color = SENSITIVITY_COLORS[int(value)].value
 
                 case "num_teams":
                     # Gradient from green (2 teams) to red (6 teams)
@@ -1567,7 +1548,7 @@ class AdminModeHandler:
                     await self._play_voice(voice)
             elif option_name == "force_all_start":
                 # Play true/false voice
-                voice = Sound.MENU_VOX_ADMINOP_TRUE if value is True else Sound.MENU_VOX_ADMINOP_FALSE
+                voice = FORCE_ALL_START_VOICES[value is True]
                 await self._play_voice(voice)
         except Exception as e:
             logger.error(f"Error playing value voice: {e}", exc_info=True)
