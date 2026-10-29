@@ -1,10 +1,15 @@
 """GameInitFlags: the validated, immutable snapshot of the init-latched game flags (#2359)."""
 
 import dataclasses
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from conftest import EventCollector
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from conftest import EventCollector  # noqa: E402
 
 from services.game_coordinator.games import base
 from services.game_coordinator.games.base import DEATH_GRACE_PERIOD, GAME_VOLUME, SLOW_MAX
