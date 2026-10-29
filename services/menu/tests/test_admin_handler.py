@@ -1800,7 +1800,7 @@ class TestAgentControlOption:
         handler.current_option = handler.option_names.index("agent_control")
         mock_state_manager.agent_settings_writer = None
 
-        with caplog.at_level(logging.WARNING, logger="services.menu.handlers.admin"):
+        with caplog.at_level(logging.WARNING, logger="services.menu.handlers.admin_options"):
             await handler.handle_increase_value("test_serial")
 
         assert any(r.levelname == "WARNING" and "Agent control unavailable" in r.getMessage() for r in caplog.records)
