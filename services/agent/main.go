@@ -517,10 +517,10 @@ type components struct {
 	sharedSink decision.ActionSink
 	// shieldSeconds reads the grant_shield length for every loop (UC-040 BR-029).
 	shieldSeconds *actions.ShieldSecondsReader
-	llmBudget  llmBudgetShare
-	tuning     *agentTuning
-	text       *textBackends
-	window     *gamewindow.Store
+	llmBudget     llmBudgetShare
+	tuning        *agentTuning
+	text          *textBackends
+	window        *gamewindow.Store
 
 	decideBackends  *decision.DecideRegistry
 	experimentFlags *experimentFlagLookup
