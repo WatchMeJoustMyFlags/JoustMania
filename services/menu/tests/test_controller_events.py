@@ -183,6 +183,11 @@ class TestButtonTypeNames:
 class TestHandleConnectionError:
     """Tests for _handle_connection_error extracted helper."""
 
+    @pytest.fixture(autouse=True)
+    def no_real_sleep(self, monkeypatch):
+        """The retry back-off is real wall-clock time (up to 20 s per test); skip it."""
+        monkeypatch.setattr("services.menu.controller_events.asyncio.sleep", AsyncMock())
+
     @pytest.mark.asyncio
     async def test_returns_doubled_delay(self, event_loop_instance):
         """Should return doubled retry delay after sleeping."""
