@@ -58,8 +58,7 @@ class TestPollDropCounting:
 
     def test_initial_counters_empty(self):
         loop = _create_discovery_loop()
-        assert loop._poll_drops == {}
-        assert loop._poll_errors == {}
+        assert loop._records == {}
 
     def test_poll_drops_increment(self):
         """Manually incrementing poll_drops dict simulates None poll results."""
@@ -67,31 +66,31 @@ class TestPollDropCounting:
         serial = "AA:BB:CC"
 
         # Simulate what _update_controller_states does on None result
-        loop._poll_drops[serial] = loop._poll_drops.get(serial, 0) + 1
-        assert loop._poll_drops[serial] == 1
+        loop._record(serial).poll_drops += 1
+        assert loop._record(serial).poll_drops == 1
 
-        loop._poll_drops[serial] = loop._poll_drops.get(serial, 0) + 1
-        assert loop._poll_drops[serial] == 2
+        loop._record(serial).poll_drops += 1
+        assert loop._record(serial).poll_drops == 2
 
     def test_poll_errors_increment(self):
         """Manually incrementing poll_errors dict simulates exception results."""
         loop = _create_discovery_loop()
         serial = "AA:BB:CC"
 
-        loop._poll_errors[serial] = loop._poll_errors.get(serial, 0) + 1
-        assert loop._poll_errors[serial] == 1
+        loop._record(serial).poll_errors += 1
+        assert loop._record(serial).poll_errors == 1
 
     def test_multiple_serials_independent(self):
         """Each serial has independent counters."""
         loop = _create_discovery_loop()
-        loop._poll_drops["S1"] = 3
-        loop._poll_drops["S2"] = 7
-        loop._poll_errors["S1"] = 1
+        loop._record("S1").poll_drops = 3
+        loop._record("S2").poll_drops = 7
+        loop._record("S1").poll_errors = 1
 
-        assert loop._poll_drops["S1"] == 3
-        assert loop._poll_drops["S2"] == 7
-        assert loop._poll_errors["S1"] == 1
-        assert loop._poll_errors.get("S2", 0) == 0
+        assert loop._record("S1").poll_drops == 3
+        assert loop._record("S2").poll_drops == 7
+        assert loop._record("S1").poll_errors == 1
+        assert loop._record("S2").poll_errors == 0
 
 
 class TestDrainHealthCounters:
@@ -101,8 +100,8 @@ class TestDrainHealthCounters:
         # Use spec=[] so backend has no _led_failures attribute
         backend = MagicMock(spec=[])
         loop = _create_discovery_loop(backend=backend)
-        loop._poll_drops["S1"] = 5
-        loop._poll_errors["S1"] = 2
+        loop._record("S1").poll_drops = 5
+        loop._record("S1").poll_errors = 2
 
         drops, errors, led = loop.drain_health_counters("S1")
         assert drops == 5
@@ -112,8 +111,8 @@ class TestDrainHealthCounters:
     def test_drain_resets_counters(self):
         backend = MagicMock(spec=[])
         loop = _create_discovery_loop(backend=backend)
-        loop._poll_drops["S1"] = 5
-        loop._poll_errors["S1"] = 2
+        loop._record("S1").poll_drops = 5
+        loop._record("S1").poll_errors = 2
 
         loop.drain_health_counters("S1")
 
@@ -136,7 +135,7 @@ class TestDrainHealthCounters:
         backend = MagicMock()
         backend._led_failures = {"S1": 3}
         loop = _create_discovery_loop(backend=backend)
-        loop._poll_drops["S1"] = 1
+        loop._record("S1").poll_drops = 1
 
         drops, errors, led = loop.drain_health_counters("S1")
         assert drops == 1
@@ -149,7 +148,7 @@ class TestDrainHealthCounters:
         """Backend without _led_failures (non-multiplexer) returns 0 LED failures."""
         backend = MagicMock(spec=[])  # No attributes at all
         loop = _create_discovery_loop(backend=backend)
-        loop._poll_drops["S1"] = 1
+        loop._record("S1").poll_drops = 1
 
         drops, errors, led = loop.drain_health_counters("S1")
         assert drops == 1
@@ -157,11 +156,11 @@ class TestDrainHealthCounters:
 
     def test_drain_does_not_affect_other_serials(self):
         loop = _create_discovery_loop()
-        loop._poll_drops["S1"] = 5
-        loop._poll_drops["S2"] = 10
+        loop._record("S1").poll_drops = 5
+        loop._record("S2").poll_drops = 10
 
         loop.drain_health_counters("S1")
-        assert loop._poll_drops.get("S2") == 10
+        assert loop._record("S2").poll_drops == 10
 
 
 class TestDisconnectCleanup:
@@ -173,15 +172,14 @@ class TestDisconnectCleanup:
         serial = "S1"
 
         # Accumulate some counters
-        loop._poll_drops[serial] = 5
-        loop._poll_errors[serial] = 2
+        loop._record(serial).poll_drops = 5
+        loop._record(serial).poll_errors = 2
 
         # Simulate disconnect cleanup (same as in _check_for_new_controllers)
-        loop._poll_drops.pop(serial, None)
-        loop._poll_errors.pop(serial, None)
+        loop._records.pop(serial, None)
 
-        assert serial not in loop._poll_drops
-        assert serial not in loop._poll_errors
+        assert loop._record(serial).poll_drops == 0
+        assert loop._record(serial).poll_errors == 0
 
 
 class TestLedFailureTracking:

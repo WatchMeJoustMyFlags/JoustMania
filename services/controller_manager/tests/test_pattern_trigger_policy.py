@@ -15,6 +15,7 @@ from proto import controller_manager_pb2
 from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.multiplexer import motion_patterns as mp
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
+from services.controller_manager.tests.backend_doubles import AdapterAsBackend
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CASES = REPO_ROOT / "services/agent/patterngame/testdata/trigger_policy_cases.json"
@@ -217,7 +218,7 @@ class TestUC046TriggerOnTheGameplayStream:
     def servicer(self):
         adapter = MockAdapter()
         with (
-            patch("services.controller_manager.servicer.create_backend", return_value=adapter),
+            patch("services.controller_manager.servicer.create_backend", return_value=AdapterAsBackend(adapter)),
             patch("services.controller_manager.servicer.DiscoveryLoop") as loop_cls,
         ):
             loop = create_autospec(DiscoveryLoop, instance=True)
