@@ -76,6 +76,7 @@ from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-ex
     TEMPO_MODE_AGENT,
     TEMPO_MODE_RULE,
     TEMPO_SCHEDULE_MODE_DEFAULT,
+    GameInitFlags,
     MusicWindows,
     _read_volume_flag,
     resolve_base_thresholds,
@@ -795,68 +796,66 @@ class BaseGameMode(ShieldMixin, ABC):
         # No agent override at game start; effective == baseline.
         self._sensitivity_override: Sensitivity | None = None
 
-        # #766 F1: death/warning threshold tables promoted to the ``game.thresholds``
-        # object flag. Read ONCE here (init-frozen by design — no live re-evaluation);
-        # malformed/missing values fall back to the module constants.
-        flag_thresholds = read_object_flag("game", "thresholds", {}, game_id=self.game_id)
-        tables = resolve_base_thresholds(flag_thresholds)
-        self.slow_warning = tables["slow_warning"]
-        self.slow_max = tables["slow_max"]
-        self.fast_warning = tables["fast_warning"]
-        self.fast_max = tables["fast_max"]
-
+        # Init-latched flags (#2359): every read below happens once, here, and the raw
+        # values are validated and frozen into ``init_flags`` (GameInitFlags.from_raw).
+        # The attributes after it start from the snapshot. The readers are called as
+        # ``read_*_flag`` / ``get_config_manager`` in this module, so tests patch them here.
+        #
+        # #766 F1: death/warning threshold tables, the ``game.thresholds`` object flag
+        # (init-frozen; malformed/missing values fall back to the module constants).
+        #
         # EMA filter weight (#766 F4, agent-domain `perception.ema_weight`).
         # READ ONCE HERE AT GAME INIT and frozen for the life of the game. It is
         # intentionally never re-evaluated mid-game: changing the smoothing
         # weight while running would invalidate the per-player movement variance
-        # baseline that the agent's perception layer relies on (#722 §5 —
+        # baseline that the agent's perception layer relies on (#722 §5 --
         # difficulty/filter changes "invalidate the variance baseline"). Falls
         # back to the hardcoded default (4.0) when flagd is unavailable.
-        self._ema_weight = get_config_manager().read_ema_weight()
-
-        # UC-020 BR-002: read here but consumed only by respawn modes; no effect in FFA.
-        # #766 F2: post-respawn grace period promoted to ``game.death_grace_period_seconds``.
-        # Read ONCE here (init-frozen); malformed/negative values fall back to the
-        # DEATH_GRACE_PERIOD module constant (the source of truth).
         #
-        # SCOPE (#1090): this is the post-respawn/conversion invincibility window for
-        # RESPAWN modes only (zombie conversion + respawn, swapper team-swap). It is
-        # CONSUMED by those modes (zombie.py / swapper.py set ``player.grace_until =
-        # game_clock.now() + self.death_grace_period``). FFA has no respawn, so this flag
-        # has NO effect on FFA — it is NOT an FFA difficulty/pacing lever. The real
-        # FFA difficulty/pacing levers are ``game.thresholds`` (death thresholds) and
-        # ``game.windows`` (tempo cadence), both consumed per-frame in
-        # ``_compute_effective_thresholds``.
-        self.death_grace_period = resolve_non_negative_duration(
-            read_float_flag("game", "death_grace_period_seconds", DEATH_GRACE_PERIOD, game_id=self.game_id),
-            DEATH_GRACE_PERIOD,
+        # UC-020 BR-002 / #766 F2: ``game.death_grace_period_seconds``, the
+        # post-respawn/conversion invincibility window for RESPAWN modes only
+        # (zombie conversion + respawn, swapper team-swap; they set
+        # ``player.grace_until = game_clock.now() + self.death_grace_period``). FFA has
+        # no respawn, so it has NO effect on FFA (#1090). Init-frozen; malformed or
+        # negative values fall back to DEATH_GRACE_PERIOD.
+        #
+        # #766 F3: ``game.windows`` music tempo-change windows (init-frozen calibration;
+        # the ``pacing_profile`` presets are named variants).
+        #
+        # #1109: ``game.tempo_schedule_mode``: read ONCE here for the initial value, then
+        # kept LIVE by the PROVIDER_CONFIGURATION_CHANGED listener (TempoScheduleManager),
+        # which swaps ``self.tempo_schedule_mode`` mid-game.
+        #
+        # F7, #766: per-channel volumes from the user domain (init-frozen). Defaults
+        # reproduce the original constants; malformed values fall back to them.
+        self.init_flags = GameInitFlags.from_raw(
+            thresholds=read_object_flag("game", "thresholds", {}, game_id=self.game_id),
+            ema_weight=get_config_manager().read_ema_weight(),
+            death_grace_period=read_float_flag(
+                "game", "death_grace_period_seconds", DEATH_GRACE_PERIOD, game_id=self.game_id
+            ),
+            death_grace_default=DEATH_GRACE_PERIOD,
+            windows=read_object_flag("game", "windows", {}, game_id=self.game_id),
+            tempo_schedule_mode=read_string_flag(
+                "game", "tempo_schedule_mode", TEMPO_SCHEDULE_MODE_DEFAULT, game_id=self.game_id
+            ),
+            game_volume=_read_volume_flag("audio_volume.game", GAME_VOLUME),
+            countdown_music_volume=_read_volume_flag("audio_volume.countdown_music", COUNTDOWN_MUSIC_VOLUME),
         )
-
-        # #766 F3: music tempo-change scheduling windows promoted to the
-        # ``game.windows`` object flag (the ``pacing_profile`` presets live as
-        # named variants). Read ONCE here (init-frozen calibration); malformed
-        # values fall back to the module constants. F6 will add a LIVE
-        # ``pacing_profile`` intervention that atomically swaps
-        # ``self.music_windows`` mid-game — see MusicWindows for the seam.
-        self.music_windows = resolve_music_windows(read_object_flag("game", "windows", {}, game_id=self.game_id))
-        # #766 F6: the init-resolved windows are retained so the LIVE
-        # ``pacing_profile`` intervention can restore them when it reverts to the
-        # neutral profile. Never reassigned after init (the live handler swaps
-        # ``self.music_windows`` only).
+        self.slow_warning = list(self.init_flags.slow_warning)
+        self.slow_max = list(self.init_flags.slow_max)
+        self.fast_warning = list(self.init_flags.fast_warning)
+        self.fast_max = list(self.init_flags.fast_max)
+        self._ema_weight = self.init_flags.ema_weight
+        self.death_grace_period = self.init_flags.death_grace_period
+        # F6 (#766): the live ``pacing_profile`` intervention swaps ``self.music_windows``
+        # atomically; ``init_music_windows`` is the restore target, never reassigned.
+        self.music_windows = self.init_flags.music_windows
         self.init_music_windows = self.music_windows
+        self.tempo_schedule_mode = self.init_flags.tempo_schedule_mode
+        self.game_volume = self.init_flags.game_volume
+        self.countdown_music_volume = self.init_flags.countdown_music_volume
 
-        # #1109: tempo-schedule SOURCE mode (``game.tempo_schedule_mode``). Read
-        # ONCE here for the initial value, then kept LIVE by the
-        # PROVIDER_CONFIGURATION_CHANGED listener (TempoScheduleManager), which
-        # atomically swaps ``self.tempo_schedule_mode`` mid-game exactly like the
-        # F6 ``music_windows`` seam. The single pacing pathway
-        # (``_decide_next_change_delay``) reads this attribute fresh on every
-        # tempo-change decision, so flipping the flag switches the source LIVE
-        # without a restart. Default/unknown => "rule" (default rule reproduces
-        # today's random-window timing => behavior unchanged).
-        self.tempo_schedule_mode = resolve_tempo_schedule_mode(
-            read_string_flag("game", "tempo_schedule_mode", TEMPO_SCHEDULE_MODE_DEFAULT, game_id=self.game_id)
-        )
         # #1109 agent-mode seam (#1103 follow-up): the next-change delay an agent
         # tempo directive (ramp_tempo) wants the schedule to honor. ``None`` =>
         # no directive present => "agent" mode falls back to the default rule.
@@ -933,12 +932,6 @@ class BaseGameMode(ShieldMixin, ABC):
 
         # Tracked async tasks for automatic cleanup on game end
         self._tasks: set[asyncio.Task] = set()
-
-        # Per-channel volumes (F7, #766) — read once at game init from the user
-        # domain (init-frozen). Defaults reproduce the original constants, so
-        # promotion is behavior-neutral. Malformed values fall back to defaults.
-        self.game_volume = _read_volume_flag("audio_volume.game", GAME_VOLUME)
-        self.countdown_music_volume = _read_volume_flag("audio_volume.countdown_music", COUNTDOWN_MUSIC_VOLUME)
 
         logger.info(f"{self.get_game_name()} game initialized: {self.game_id}")
 

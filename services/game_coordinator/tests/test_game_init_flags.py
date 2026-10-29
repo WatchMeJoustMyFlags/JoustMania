@@ -1,0 +1,69 @@
+"""GameInitFlags: the validated, immutable snapshot of the init-latched game flags (#2359)."""
+
+import dataclasses
+from unittest.mock import patch
+
+import pytest
+from conftest import EventCollector
+
+from services.game_coordinator.games import base
+from services.game_coordinator.games.base import DEATH_GRACE_PERIOD, GAME_VOLUME, SLOW_MAX
+from services.game_coordinator.games.ffa import FFAGame
+from services.game_coordinator.games.flag_snapshot import GameInitFlags, MusicWindows
+
+
+def _make_ffa():
+    return FFAGame(controller_manager_client=None, event_publisher=EventCollector().publish, sensitivity=2)
+
+
+def _raw(**overrides):
+    raw = {
+        "thresholds": {},
+        "ema_weight": 4.0,
+        "death_grace_period": DEATH_GRACE_PERIOD,
+        "death_grace_default": DEATH_GRACE_PERIOD,
+        "windows": {},
+        "tempo_schedule_mode": "rule",
+        "game_volume": GAME_VOLUME,
+        "countdown_music_volume": 0.15,
+    }
+    raw.update(overrides)
+    return raw
+
+
+def test_snapshot_is_frozen():
+    snapshot = GameInitFlags.from_raw(**_raw())
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        snapshot.slow_max = (1, 2, 3, 4, 5)
+    assert isinstance(snapshot.slow_max, tuple)
+
+
+def test_malformed_raw_values_give_the_defaults():
+    snapshot = GameInitFlags.from_raw(
+        **_raw(
+            thresholds="junk",
+            death_grace_period=-1.0,
+            windows=[1],
+            tempo_schedule_mode="random",
+        )
+    )
+    assert snapshot.slow_max == tuple(SLOW_MAX)
+    assert snapshot.death_grace_period == DEATH_GRACE_PERIOD
+    assert snapshot.music_windows == MusicWindows.defaults()
+    assert snapshot.tempo_schedule_mode == "rule"
+
+
+def test_game_attributes_start_from_one_snapshot_read_once():
+    """Each init flag is read exactly once through the patchable readers on base."""
+    with (
+        patch.object(base, "read_object_flag", return_value={}) as objects,
+        patch.object(base, "read_float_flag", return_value=0.25) as floats,
+        patch.object(base, "read_string_flag", return_value="agent") as strings,
+    ):
+        game = _make_ffa()
+    assert [c.args[1] for c in objects.call_args_list] == ["thresholds", "windows"]
+    assert [c.args[1] for c in floats.call_args_list] == ["death_grace_period_seconds"]
+    assert [c.args[1] for c in strings.call_args_list] == ["tempo_schedule_mode"]
+    assert game.death_grace_period == game.init_flags.death_grace_period == 0.25
+    assert game.tempo_schedule_mode == game.init_flags.tempo_schedule_mode == "agent"
+    assert game.music_windows is game.init_music_windows is game.init_flags.music_windows
