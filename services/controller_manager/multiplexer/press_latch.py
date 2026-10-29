@@ -17,6 +17,16 @@ from lib.controller_constants import BUTTON_TRACKING_TO_STATE
 PRESS_KEYS = tuple(BUTTON_TRACKING_TO_STATE.values())
 
 
+class LatchedState(dict):
+    """A poll result with latched presses merged in; ``sample`` is the real sample it copies.
+
+    The copy is a new object on every poll, so identity checks on the poll result (the
+    discovery loop's fresh-frame test) must look at ``sample`` instead (#2352 B3).
+    """
+
+    sample: dict
+
+
 def latch_presses(latch: dict[str, set[str]], serial: str, state: dict) -> None:
     """Remember every button that is down in ``state`` until the next poll of ``serial``."""
     for key in PRESS_KEYS:
@@ -27,7 +37,7 @@ def latch_presses(latch: dict[str, set[str]], serial: str, state: dict) -> None:
 def merge_latched_presses(latch: dict[str, set[str]], serial: str, state: dict | None) -> dict | None:
     """``state`` with every button latched since the last poll set pressed; clears the latch.
 
-    Returns ``state`` itself when nothing has to change, otherwise a copy, so the
+    Returns ``state`` itself when nothing has to change, otherwise a ``LatchedState`` copy, so the
     cached last state keeps the real sample and the next poll shows the release.
     """
     pressed = latch.pop(serial, None)
@@ -36,7 +46,8 @@ def merge_latched_presses(latch: dict[str, set[str]], serial: str, state: dict |
     missing = [key for key in pressed if not state.get(key)]
     if not missing:
         return state
-    merged = dict(state)
+    merged = LatchedState(state)
+    merged.sample = getattr(state, "sample", state)
     for key in missing:
         merged[key] = True
     return merged

@@ -638,7 +638,9 @@ class DiscoveryLoop:
                 # Truthy dict: fresh frame only if the poll returned a *different*
                 # object than last time. A stale replay (same object, e.g. an
                 # UnstableAdapter throttle window) is NOT a new movement update.
-                obj_id = id(state)
+                # A tap-latch copy (press_latch.LatchedState) is judged by the real sample it copies,
+                # so the copy is neither a fresh frame nor makes the next poll look like one (#2352 B3).
+                obj_id = id(getattr(state, "sample", state))
                 if self._hw_last_obj_id.get(serial) != obj_id:
                     self._hw_last_obj_id[serial] = obj_id
                     self._record_fresh_frame(serial, current_time, self._loop_stall_total)
