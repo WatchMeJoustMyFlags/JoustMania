@@ -190,7 +190,7 @@ class TestLoopLateness:
         loop = _make_loop(SlowBackend())
         loop._record_fresh_frame("AA", 0.0, stall_total=0.0)
         loop._record_fresh_frame("AA", 0.06, stall_total=0.04)
-        assert loop._hw_max_gap_ms["AA"] == pytest.approx(20.0)
+        assert loop._record("AA").hw_max_gap_ms == pytest.approx(20.0)
         # Input lag still uses the real pick-up time.
         assert loop.sample_age_seconds("AA", 0.07) == pytest.approx(0.01)
 

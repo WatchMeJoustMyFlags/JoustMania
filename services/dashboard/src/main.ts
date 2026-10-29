@@ -3,7 +3,7 @@
  *
  * Real-time controller visualization and game controls using Connect-Web.
  */
-import { escapeHtml } from "./html.js";
+import { html, setHtml } from "./html.js";
 import { keepGameEventStreamOpen } from "./stream.js";
 import { keepControllerStreamOpen } from "./controllerStream.js";
 import { controllerClient, gameClient, menuClient } from "./client.js";
@@ -483,9 +483,7 @@ function renderFollowBanner() {
   if (!banner) return;
   const text = followBanner(followTracker.state);
   banner.hidden = text === "";
-  banner.innerHTML = text
-    ? `<span class="decide-game decide-game-shadow">shadow</span> ${escapeHtml(text)}`
-    : "";
+  setHtml(banner, text ? html`<span class="decide-game decide-game-shadow">shadow</span> ${text}` : html``);
 }
 
 // Fold the followed shadow game's own events (shields, deaths) until it is no

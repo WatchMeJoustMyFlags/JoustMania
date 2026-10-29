@@ -59,7 +59,21 @@ def rig():
     ctrl["death_frames_remaining"] = 3
     ctrl["death_hold_until"] = 0.0
 
-    backend = MagicMock(spec=["consume_death_frame"])
+    backend = MagicMock(
+        spec=[
+            "consume_death_frame",
+            "consume_trigger_press",
+            "pattern_serials",
+            "pattern_frame",
+            "pattern_stream_rate",
+            "record_pattern_overrun",
+            "release_pattern_stream",
+        ]
+    )
+    backend.consume_trigger_press.return_value = False
+    backend.pattern_serials.return_value = set()
+    backend.pattern_frame.return_value = None
+    backend.pattern_stream_rate.return_value = None
     backend.consume_death_frame.side_effect = adapter.consume_death_frame
 
     with (
@@ -88,8 +102,8 @@ def rig():
     servicer.state_builder.build_state = MagicMock(return_value=_state())
     servicer.tracked_controllers[SERIAL] = {}
 
-    loop._poll_drops[SERIAL] = 2
-    loop._poll_errors[SERIAL] = 1
+    loop._record(SERIAL).poll_drops = 2
+    loop._record(SERIAL).poll_errors = 1
     return servicer, ctrl
 
 

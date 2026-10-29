@@ -324,8 +324,8 @@ terminal (`scripts/flags.sh`) or a baseline edit. A conforming implementation mu
 `agent_control` (MOVE to select it, SELECT/START to change), that cycles the
 GLOBAL `interventions_allowed` policy in the `agent` set through the levels
 `none → ambient → standard → full` and back
-(`AdminModeHandler.handle_agent_control`,
-[`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py)). `none`
+(`AdminOptionsMixin.handle_agent_control`,
+[`services/menu/handlers/admin_options.py`](../services/menu/handlers/admin_options.py)). `none`
 is the hard panic-off: it is **load-bearing at the gate** because the
 coordinator's allow-list (`_check_chain`, step (a)) then rejects every agent
 intervention regardless of what the agent process does. Each level has a distinct
@@ -348,7 +348,7 @@ LED color (red = off / Turquoise / Orange / green = full) and a voice line.
 
 | Concern | File |
 |---|---|
-| Human write path | [`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py), [`lib/flag_service_writer.py`](../lib/flag_service_writer.py) → flag service ([`services/flag-service/`](../services/flag-service/)) |
+| Human write path | [`services/menu/handlers/admin_options.py`](../services/menu/handlers/admin_options.py), [`lib/flag_service_writer.py`](../lib/flag_service_writer.py) → flag service ([`services/flag-service/`](../services/flag-service/)) |
 | Baseline → game start | [`services/menu/game_lifecycle.py`](../services/menu/game_lifecycle.py) (`_build_game_config`), [`services/game_coordinator/game_factory.py`](../services/game_coordinator/game_factory.py) |
 | Baseline freeze | [`services/game_coordinator/games/base.py`](../services/game_coordinator/games/base.py) (`__init__`, ~490-580) |
 | Agent write path | [`services/agent/actions/writer.go`](../services/agent/actions/writer.go) |
