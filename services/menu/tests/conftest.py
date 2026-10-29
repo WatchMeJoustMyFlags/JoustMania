@@ -34,4 +34,4 @@ def _no_real_flagd_provider(monkeypatch):
     session. Without a provider, flag reads return their defaults.
     """
     monkeypatch.setattr("lib.feature_flags.init_flag_domain", lambda _domain: None)
-    monkeypatch.setattr("services.menu.servicer.init_flag_domain", lambda _domain: None)
+    monkeypatch.setattr("services.menu.menu_setup.init_flag_domain", lambda _domain: None)
