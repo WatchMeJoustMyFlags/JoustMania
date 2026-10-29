@@ -11,6 +11,7 @@
  *   fallback    claude timed out, rules answered
  *   discarded   act answer dropped (game_ended), truncated answers, hostile rationale
  */
+import { escapeHtml } from "../html.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DecideStore,
@@ -30,7 +31,6 @@ import { toOtlp } from "./otlp.js";
 import type { DecideRow, JaegerTracesResponse } from "../agent.js";
 import {
   AgentView,
-  escapeHtml,
   renderConfidenceBar,
   renderDecideRow,
   renderDecideStrip,

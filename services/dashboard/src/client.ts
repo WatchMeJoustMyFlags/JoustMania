@@ -26,7 +26,7 @@ import type {
 import type { GetGameStateResponseLike, ListGamesResponseLike } from "./follow.js";
 import { serverStream as connectServerStream, unaryRpcError } from "./connect.js";
 
-const BASE_URL = import.meta.env.DEV ? "" : globalThis.location.origin;
+import { BASE_URL } from "./baseUrl.js";
 
 // Generic unary call
 async function unaryCall<Req, Res>(

@@ -94,6 +94,7 @@ jobs:
       agent_tests: ${{ steps.f.outputs.agent_tests }}
       flag_service: ${{ steps.f.outputs.flag_service }}
       flag_service_tests: ${{ steps.f.outputs.flag_service_tests }}
+      registry_pinned: ${{ steps.f.outputs.registry_pinned }}
       dockerfiles: ${{ steps.f.outputs.dockerfiles }}
       specs: ${{ steps.f.outputs.specs }}
       spec_code: ${{ steps.f.outputs.spec_code }}
@@ -179,6 +180,13 @@ jobs:
               - 'services/flag-service/**'
               - 'services/flagd/**'
               - 'docs/specs/flags.md'
+            # #2403: the checkout's registry.yaml must load with the release
+            # flag-service pinned in .env (compose mounts one next to the other).
+            registry_pinned:
+              - 'services/flag-service/registry.yaml'
+              - 'services/flagd/**'
+              - '.env'
+              - 'scripts/ci/check-registry-pinned.sh'
             dockerfiles:
               - '**/Dockerfile'
               - '.hadolint.yaml'
@@ -756,6 +764,28 @@ jobs:
           git diff --exit-code go.mod go.sum
           go test -v -race ./...
           go vet ./...
+
+  # #2403: compose mounts the checkout's registry.yaml into the flag-service
+  # image pinned by .env, and the released parser is strict. PR CI builds the
+  # PR's own image, so only this job sees a field the release cannot parse.
+  # Builds the tagged registry.LoadFile with go (no docker pull).
+  registry-pinned:
+    name: Registry vs pinned release
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.registry_pinned == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: services/flag-service/go.mod
+          cache-dependency-path: services/flag-service/go.sum
+
+      - name: Load registry.yaml with the pinned release parser
+        run: scripts/ci/check-registry-pinned.sh
 
   # Self-contained shell tests for the operator scripts (#1366): agent-backend.sh
   # (UC-044), talk-stage.sh / talk-preflight.sh (UC-070) and
@@ -1870,6 +1900,7 @@ jobs:
       - rust-checks
       - agent-tests
       - flag-service-tests
+      - registry-pinned
       - script-tests
       - telemetry-contract
       - flagd-contract

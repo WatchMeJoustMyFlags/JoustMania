@@ -9,6 +9,7 @@ mod feature_flags;
 mod grpc_tracing;
 mod hid;
 mod input_slot;
+mod metrics;
 mod output;
 mod service;
 mod watchdog;
@@ -481,6 +482,9 @@ fn init_metrics(
             }
         })
         .build();
+
+    // Histograms and counters recorded where the work happens (#2374).
+    metrics::install(&provider.meter("rust_hid"));
 
     info!("OTEL metrics initialized (1s export interval)");
     Some(provider)

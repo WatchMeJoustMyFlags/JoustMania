@@ -149,6 +149,15 @@ AUTOMATIC_FLASH_MS = 150
 AUTOMATIC_FLASH_GAP_SECONDS = 0.3
 # The menu re-reads which settings the operator set at most this often (GetMenuStatus, BR-018, #2222).
 OPERATOR_REFRESH_SECONDS = 2.0
+# UC-012: one pulse colour per sensitivity level (0 Ultra Slow .. 4 Ultra Fast), used by every admin path.
+SENSITIVITY_COLORS = [Colors.Blue, Colors.Turquoise, Colors.Green, Colors.Orange, Colors.Red]
+# Admin agent-policy pulse: red = off (panic), escalating warmth toward full (#819).
+AGENT_LEVEL_COLORS = {
+    "none": Colors.Red,
+    "ambient": Colors.Turquoise,
+    "standard": Colors.Orange,
+    "full": Colors.Green,
+}
 # UC-015 BR-018 (#2215): the colour of each shield mode's pulse on the lobby controllers (the BR-015 pulse).
 SHIELD_MODE_COLORS: dict[str, tuple[int, int, int]] = {
     "instant": Colors.White.value,
