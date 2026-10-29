@@ -117,18 +117,21 @@ func (s *State) restoreLocked(pv persistedValue) string {
 }
 
 // saveAdminLocked rewrites the state file from the current admin values. A
-// failure is logged and counted; the value still applies in memory.
-func (s *State) saveAdminLocked() {
+// failure is logged, counted and returned: the caller rolls its in-memory
+// change back, so memory and disk never disagree (#2368). With persistence
+// disabled (no state file) there is nothing to fail: it returns nil and
+// lastPersistOK stays false, so the write reports persisted:false.
+func (s *State) saveAdminLocked() error {
 	path := s.opts.StateFile
 	if path == "" {
 		s.lastPersistOK = false
-		return
+		return nil
 	}
 	if s.persistBlocked {
 		s.persistErrors++
 		s.lastPersistOK = false
-		s.opts.Logger.Error("flag service: the state file was unreadable at start; the value applies in memory only", "path", path)
-		return
+		s.opts.Logger.Error("flag service: the state file was unreadable at start; the admin write is refused", "path", path)
+		return errors.New("the state file was unreadable at start; admin settings cannot be persisted until the next start")
 	}
 	doc := persistedDoc{Version: stateFileVersion, Values: []persistedValue{}}
 	for key, f := range s.flags {
@@ -149,10 +152,11 @@ func (s *State) saveAdminLocked() {
 	if err := writeAtomic(path, doc); err != nil {
 		s.persistErrors++
 		s.lastPersistOK = false
-		s.opts.Logger.Error("flag service: could not write the state file; the value applies in memory only", "path", path, "error", err)
-		return
+		s.opts.Logger.Error("flag service: could not write the state file; the admin write is refused and rolled back", "path", path, "error", err)
+		return err
 	}
 	s.lastPersistOK = true
+	return nil
 }
 
 func writeAtomic(path string, doc persistedDoc) error {

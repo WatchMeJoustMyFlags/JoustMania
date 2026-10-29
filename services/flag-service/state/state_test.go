@@ -747,21 +747,85 @@ func TestAdminPersistence(t *testing.T) {
 			t.Fatalf("report %+v, want 2 restored and 2 dropped", report)
 		}
 	})
-	t.Run("UC-053/A2 an unwritable state file is counted; the value applies in memory", func(t *testing.T) {
+	t.Run("UC-053/A2 an unwritable state file refuses the persisted write and rolls it back (#2368)", func(t *testing.T) {
 		dir := t.TempDir()
 		blocker := filepath.Join(dir, "file")
 		if err := os.WriteFile(blocker, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		f := newPersisting(t, filepath.Join(blocker, "admin.json"), "e1") // parent is a file
-		res := f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true})
-		if res.Persisted || f.state.PersistErrors() != 1 {
-			t.Fatalf("persisted %v errors %d", res.Persisted, f.state.PersistErrors())
+		_, err := f.state.Put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true})
+		if err == nil || err.Status != 500 || err.Reason != fserr.ReasonPersistFailed {
+			t.Fatalf("err = %v, want 500 persist_failed", err)
 		}
-		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v != "four" {
-			t.Fatalf("in-memory value %v", v)
+		if f.state.PersistErrors() != 1 {
+			t.Fatalf("persist errors %d, want 1", f.state.PersistErrors())
+		}
+		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v == "four" {
+			t.Fatalf("the refused write still applies in memory: %v", v)
 		}
 	})
+	t.Run("UC-053/A2 a persisted write that fails to save keeps the earlier admin value and overlay (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "two", Persist: true, Writer: "menu"})
+		f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "three", Writer: "stage"}) // stack overlay
+		breakStateFile(t, path)
+		_, err := f.state.Put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true, Writer: "menu"})
+		if err == nil || err.Status != 500 {
+			t.Fatalf("err = %v, want 500", err)
+		}
+		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v != "three" {
+			t.Fatalf("got %v, want the stage overlay back", v)
+		}
+		if _, cerr := f.state.ClearWriter("game", "stage"); cerr != nil {
+			t.Fatal(cerr)
+		}
+		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v != "two" {
+			t.Fatalf("got %v, want the earlier admin value two", v)
+		}
+	})
+	t.Run("UC-053/A2 a persisted clear that fails to save keeps the admin value and is not counted persisted (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true, Writer: "menu"})
+		breakStateFile(t, path)
+		res, err := f.state.Clear(ClearRequest{Set: "game", Flag: "num_teams", Persist: true})
+		if err == nil || err.Status != 500 || err.Reason != fserr.ReasonPersistFailed {
+			t.Fatalf("err = %v, want 500 persist_failed", err)
+		}
+		if res.Persisted || res.Cleared != 0 {
+			t.Fatalf("result %+v reports a persisted clear", res)
+		}
+		if f.state.PersistErrors() != 1 {
+			t.Fatalf("persist errors %d, want 1", f.state.PersistErrors())
+		}
+		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v != "four" {
+			t.Fatalf("got %v: the memory must keep what the file still holds", v)
+		}
+	})
+	t.Run("UC-053/A2 with persistence disabled a persisted write is not an error and reports persisted false", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		res := f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true})
+		if res.Persisted {
+			t.Fatal("reported persisted without a state file")
+		}
+	})
+}
+
+// breakStateFile makes the next state-file save fail: the file path becomes a
+// non-empty directory, so the atomic rename onto it fails.
+func breakStateFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(path, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "x", "y"), []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // UC: UC-052 main
@@ -1086,16 +1150,15 @@ func TestStateFileCorruptCopiesAreCapped(t *testing.T) {
 
 // UC: UC-053 A12
 func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
-	t.Run("UC-053/A12 a read error keeps the file and applies admin values in memory only", func(t *testing.T) {
+	t.Run("UC-053/A12 a read error keeps the file and refuses persisted admin writes", func(t *testing.T) {
 		// A directory at the state-file path: ReadFile fails with an I/O error, not "not exist".
 		path := filepath.Join(t.TempDir(), "admin.json")
 		if err := os.Mkdir(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		f := newFixture(t, fixtureOpts{stateFile: path})
-		res := f.put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "slow", Persist: true, Writer: "menu"})
-		if res.Persisted {
-			t.Fatal("reported persisted while persistence is blocked")
+		if _, err := f.state.Put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "slow", Persist: true, Writer: "menu"}); err == nil || err.Status != 500 {
+			t.Fatalf("err = %v, want 500 while persistence is blocked", err)
 		}
 		if f.state.PersistErrors() != 1 {
 			t.Fatalf("persist errors = %d, want 1", f.state.PersistErrors())
@@ -1106,8 +1169,8 @@ func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
 		if m, _ := filepath.Glob(path + ".corrupt-*"); len(m) != 0 {
 			t.Fatalf("an unreadable file was moved aside as corrupt: %v", m)
 		}
-		if got := f.snapshotFlag("sensitivity")["defaultVariant"]; got != "slow" {
-			t.Fatalf("defaultVariant = %v, want the in-memory admin value slow", got)
+		if got := f.snapshotFlag("sensitivity")["defaultVariant"]; got == "slow" {
+			t.Fatalf("defaultVariant = %v: the refused write still applies", got)
 		}
 	})
 }

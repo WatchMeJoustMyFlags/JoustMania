@@ -429,7 +429,7 @@ write it re-renders the merged configuration and pushes it to every open stream.
   stacks never read the production stack's admin settings.
 - **Atomic write.** The service writes a temporary file in the same directory and renames it over the state
   file (the state file is on a named volume, not a single-file bind mount, so rename is safe). A failed write
-  is logged and counted in `flagservice_admin_persist_errors_total`; the value still applies in memory.
+  is logged and counted in `flagservice_admin_persist_errors_total`, and the persisted `PUT` or `DELETE ?persist=true` that caused it is rolled back and answered `500 persist_failed`, so memory never differs from the file (a cleared value would otherwise return after a restart; #2368). Persistence switched off (`off`) never fails: the write applies in memory and reports `persisted: false`.
 - **Corrupt file.** A state file that does not parse is moved aside to `admin.json.corrupt-<unix ts>`; the
   service logs it, counts it in `flagservice_admin_state_corrupt_total`, starts from the baseline and **never
   refuses to start** because of it.

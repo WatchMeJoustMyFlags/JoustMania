@@ -319,8 +319,13 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 		if req.Persist {
 			// The host's setting replaces any in-memory overlay, so it takes
 			// effect now, and is kept across restarts (A2).
+			prevAdmin, prevStack := f.admin, f.stack
 			f.admin, f.stack = v, nil
-			s.saveAdminLocked()
+			if err := s.saveAdminLocked(); err != nil {
+				// Memory must match disk: undo, and tell the caller (#2368).
+				f.admin, f.stack = prevAdmin, prevStack
+				return res, fserr.PersistFailed("%s was not changed: the state file could not be written: %v", req.Flag, err)
+			}
 		} else {
 			f.stack = v
 		}
@@ -484,9 +489,16 @@ func (s *State) Clear(req ClearRequest) (WriteResult, *fserr.Error) {
 	case registry.ScopeStack:
 		switch {
 		case req.Persist && f.admin != nil:
-			f.admin, res.Cleared = nil, 1
+			prevAdmin := f.admin
+			f.admin = nil
+			if err := s.saveAdminLocked(); err != nil {
+				// The old value would come back after a restart: keep it
+				// live too, and tell the caller (#2368).
+				f.admin = prevAdmin
+				return res, fserr.PersistFailed("the persisted value of %s was not cleared: the state file could not be written: %v", req.Flag, err)
+			}
+			res.Cleared = 1
 			res.Persisted = true
-			s.saveAdminLocked()
 		case !req.Persist && f.stack != nil:
 			f.stack, res.Cleared = nil, 1
 		}
