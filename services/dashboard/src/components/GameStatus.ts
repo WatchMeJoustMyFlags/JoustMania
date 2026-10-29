@@ -1,3 +1,5 @@
+import { html, setHtml } from "../html.js";
+
 /**
  * Game Status Component
  *
@@ -17,12 +19,12 @@ export class GameStatus {
   }
 
   updateState(state: string) {
-    this.stateElement.innerHTML = `Game: <strong>${state}</strong>`;
+    setHtml(this.stateElement, html`Game: <strong>${state}</strong>`);
   }
 
   updatePlayerCount(total: number, alive: number) {
-    this.playerCountElement.innerHTML = `Players: <strong>${total}</strong> connected`;
-    this.aliveCountElement.innerHTML = `Alive: <strong>${alive > 0 ? alive : "-"}</strong>`;
+    setHtml(this.playerCountElement, html`Players: <strong>${total}</strong> connected`);
+    setHtml(this.aliveCountElement, html`Alive: <strong>${alive > 0 ? alive : "-"}</strong>`);
   }
 
   updateEvents(events: string[]) {

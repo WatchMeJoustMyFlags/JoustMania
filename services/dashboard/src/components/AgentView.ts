@@ -21,7 +21,7 @@
  * operator is never fooled by frozen numbers when a poll is failing.
  */
 import { renderFreshness } from "../freshness.js";
-import { escapeHtml } from "../html.js";
+import { html, setHtml, type SafeHtml } from "../html.js";
 import type {
   AgentView as AgentViewData,
   DecideCurrent,
@@ -89,8 +89,8 @@ export class AgentView {
 
   setDecideError(message: string) {
     if (!this.decideFeedEl || !this.decideStripEl) return;
-    this.decideFeedEl.innerHTML = `<div class="loading">${escapeHtml(message)}</div>`;
-    this.decideStripEl.innerHTML = "";
+    setHtml(this.decideFeedEl, html`<div class="loading">${message}</div>`);
+    setHtml(this.decideStripEl, html``);
     this.decideRendered = true;
   }
 
@@ -111,7 +111,7 @@ export class AgentView {
     const stripKey = feed.current ? decideStripKey(feed.current) : "";
     if (stripKey !== this.lastStripKey) {
       const switched = !!this.lastStripKey && !!stripKey;
-      this.decideStripEl.innerHTML = renderDecideStrip(feed.current, switched);
+      setHtml(this.decideStripEl, decideStripHtml(feed.current, switched));
       this.lastStripKey = stripKey;
     }
 
@@ -120,39 +120,39 @@ export class AgentView {
     this.lastRowsKey = rowsKey;
 
     if (feed.rows.length === 0) {
-      this.decideFeedEl.innerHTML =
-        '<div class="loading">No agent.decide spans found in Jaeger yet. ' +
-        "Rows appear here as soon as the agent decides in an FFA game.</div>";
+      setHtml(
+        this.decideFeedEl,
+        html`<div class="loading">No agent.decide spans found in Jaeger yet. Rows appear here as soon as the agent decides in an FFA game.</div>`,
+      );
       return;
     }
     // First render: nothing is "new". Afterwards, highlight rows not seen before.
     const previous = this.seenDecideKeys;
     const keys = new Set<string>();
-    const html = feed.rows
-      .map((row) => {
-        const key = `${row.traceId}/${row.spanId}`;
-        keys.add(key);
-        return renderDecideRow(row, previous !== null && !previous.has(key));
-      })
-      .join("");
+    const rowsHtml = feed.rows.map((row) => {
+      const key = `${row.traceId}/${row.spanId}`;
+      keys.add(key);
+      return decideRowHtml(row, previous !== null && !previous.has(key));
+    });
     this.seenDecideKeys = previous ? new Set([...previous, ...keys]) : keys;
     // Bound the memory of a long-running dashboard.
     if (this.seenDecideKeys.size > 2000) this.seenDecideKeys = keys;
-    this.decideFeedEl.innerHTML = html;
+    setHtml(this.decideFeedEl, html`${rowsHtml}`);
   }
 
   /** Write a panel only when its HTML differs: a rewrite drops an open hover tooltip. */
-  private setPanel(el: HTMLElement, html: string) {
-    if (this.lastHtml.get(el) === html) return;
-    this.lastHtml.set(el, html);
-    el.innerHTML = html;
+  private setPanel(el: HTMLElement, markup: SafeHtml) {
+    const text = markup.toString();
+    if (this.lastHtml.get(el) === text) return;
+    this.lastHtml.set(el, text);
+    setHtml(el, markup);
   }
 
   setError(message: string) {
-    const html = `<div class="loading">${escapeHtml(message)}</div>`;
-    this.setPanel(this.feedEl, html);
-    this.setPanel(this.flagsEl, html);
-    this.setPanel(this.overlayEl, html);
+    const markup = html`<div class="loading">${message}</div>`;
+    this.setPanel(this.feedEl, markup);
+    this.setPanel(this.flagsEl, markup);
+    this.setPanel(this.overlayEl, markup);
     this.hasRendered = true;
   }
 
@@ -162,9 +162,9 @@ export class AgentView {
    * left to renderOverlay.
    */
   setJaegerError(message: string) {
-    const html = `<div class="loading">${escapeHtml(message)}</div>`;
-    this.setPanel(this.feedEl, html);
-    this.setPanel(this.flagsEl, html);
+    const markup = html`<div class="loading">${message}</div>`;
+    this.setPanel(this.feedEl, markup);
+    this.setPanel(this.flagsEl, markup);
     this.hasRendered = true;
   }
 
@@ -197,37 +197,35 @@ export class AgentView {
     if (feed.length === 0) {
       this.setPanel(
         this.feedEl,
-        '<div class="loading">No blocked agent.decision or rollout spans in Jaeger yet. ' +
-          "Allowed decisions appear in the decide feed below and in the Jaeger trace (link above); this feed shows " +
-          "blocked decisions and rollout activity.</div>",
+        html`<div class="loading">No blocked agent.decision or rollout spans in Jaeger yet. Allowed decisions appear in the decide feed below and in the Jaeger trace (link above); this feed shows blocked decisions and rollout activity.</div>`,
       );
       return;
     }
-    this.setPanel(this.feedEl, feed.map((row) => this.renderFeedRow(row)).join(""));
+    this.setPanel(this.feedEl, html`${feed.map((row) => this.renderFeedRow(row))}`);
   }
 
-  private renderFeedRow(row: DecisionFeedRow): string {
+  private renderFeedRow(row: DecisionFeedRow): SafeHtml {
     const time = formatTime(row.tsMs);
     const session = row.sessionId
-      ? `<span class="agent-feed-session" title="${escapeHtml(row.sessionId)}">${escapeHtml(shortId(row.sessionId))}</span>`
+      ? html`<span class="agent-feed-session" title="${row.sessionId}">${shortId(row.sessionId)}</span>`
       : "";
     const action = row.action
-      ? `<span class="agent-feed-action">${escapeHtml(row.action)}</span>`
+      ? html`<span class="agent-feed-action">${row.action}</span>`
       : "";
     const target = row.target
-      ? `<span class="decide-arrow">→</span> <span class="decide-target">${escapeHtml(row.target)}</span>`
+      ? html`<span class="decide-arrow">→</span> <span class="decide-target">${row.target}</span>`
       : "";
     const reason = row.reason
-      ? `<span class="agent-feed-reason" title="${escapeHtml(row.reason)}">${escapeHtml(row.reason)}</span>`
+      ? html`<span class="agent-feed-reason" title="${row.reason}">${row.reason}</span>`
       : "";
     const badge = row.blocked
-      ? '<span class="agent-badge agent-badge-blocked">blocked</span>'
-      : `<span class="agent-badge agent-badge-${row.kind}">${escapeHtml(row.kind)}</span>`;
-    return `
+      ? html`<span class="agent-badge agent-badge-blocked">blocked</span>`
+      : html`<span class="agent-badge agent-badge-${row.kind}">${row.kind}</span>`;
+    return html`
       <div class="agent-feed-row agent-feed-${row.kind}">
         <span class="agent-feed-time">${time}</span>
         ${badge}
-        <span class="agent-feed-signal">${escapeHtml(row.signal)}</span>
+        <span class="agent-feed-signal">${row.signal}</span>
         ${action}
         ${target}
         ${session}
@@ -237,63 +235,59 @@ export class AgentView {
   }
 
   private renderFlags(flags: FlagPanel | null) {
-    this.setPanel(this.flagsEl, renderFlagPanel(flags));
+    this.setPanel(this.flagsEl, flagPanelHtml(flags));
   }
 
   /** The VictoriaMetrics overlay alone; leaves the Jaeger panels and their freshness. */
   renderOverlay(overlay: InterventionOverlay) {
     const applied =
       overlay.appliedOk === null
-        ? '<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>'
-        : `<span class="agent-stat-val agent-stat-applied">${overlay.appliedOk}</span>`;
+        ? html`<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>`
+        : html`<span class="agent-stat-val agent-stat-applied">${overlay.appliedOk}</span>`;
     const appliedErr =
       overlay.appliedError && overlay.appliedError > 0
-        ? `<span class="agent-stat-sub" title="failed flag-file writes">(${overlay.appliedError} failed)</span>`
+        ? html`<span class="agent-stat-sub" title="failed flag-file writes">(${overlay.appliedError} failed)</span>`
         : "";
 
-    const shadowCell = (n: number | null, extra = "") =>
+    const shadowCell = (n: number | null, extra: SafeHtml | "" = "") =>
       n === null
-        ? '<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>'
-        : `<span class="agent-stat-val agent-stat-shadow">${n}</span>${extra}`;
+        ? html`<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>`
+        : html`<span class="agent-stat-val agent-stat-shadow">${n}</span>${extra}`;
     const shadowErr =
       overlay.shadowAppliedError && overlay.shadowAppliedError > 0
-        ? ` <span class="agent-stat-sub" title="failed flag-file writes">(${overlay.shadowAppliedError} failed)</span>`
+        ? html` <span class="agent-stat-sub" title="failed flag-file writes">(${overlay.shadowAppliedError} failed)</span>`
         : "";
 
     const blocked =
       overlay.totalBlocked === null
-        ? '<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>'
-        : `<span class="agent-stat-val agent-stat-blocked">${overlay.totalBlocked}</span>`;
+        ? html`<span class="agent-stat-val agent-stat-na" title="VictoriaMetrics unreachable">n/a</span>`
+        : html`<span class="agent-stat-val agent-stat-blocked">${overlay.totalBlocked}</span>`;
 
     const byAction =
       overlay.blockedByAction.length > 0
-        ? overlay.blockedByAction
-            .map(
-              (t) => `
+        ? overlay.blockedByAction.map(
+            (t) => html`
               <div class="agent-tally">
-                <span class="agent-tally-label">${escapeHtml(t.action || "(unknown)")}</span>
+                <span class="agent-tally-label">${t.action || "(unknown)"}</span>
                 <span class="agent-tally-count agent-tally-blocked">${t.blocked}</span>
               </div>`,
-            )
-            .join("")
+          )
         : overlay.totalBlocked === null
-          ? '<div class="agent-tally-empty">n/a</div>'
-          : '<div class="agent-tally-empty">none blocked</div>';
+          ? html`<div class="agent-tally-empty">n/a</div>`
+          : html`<div class="agent-tally-empty">none blocked</div>`;
 
     const byReason =
       overlay.blockedByReason.length > 0
-        ? overlay.blockedByReason
-            .map(
-              (r) => `
+        ? overlay.blockedByReason.map(
+            (r) => html`
               <div class="agent-tally">
-                <span class="agent-tally-label">${escapeHtml(r.reason)}</span>
+                <span class="agent-tally-label">${r.reason}</span>
                 <span class="agent-tally-count">${r.count}</span>
               </div>`,
-            )
-            .join("")
-        : '<div class="agent-tally-empty">&mdash;</div>';
+          )
+        : html`<div class="agent-tally-empty">&mdash;</div>`;
 
-    this.setPanel(this.overlayEl, `
+    this.setPanel(this.overlayEl, html`
       <div class="agent-overlay-stats">
         <div class="agent-stat">
           <span class="agent-stat-label">applied (10m)</span>
@@ -357,7 +351,11 @@ function onOff(v: boolean | null): string {
  * exported for tests. A missing span is the no-data hint, never an error.
  */
 export function renderFlagPanel(flags: FlagPanel | null): string {
-  if (!flags) return `<div class="loading">${escapeHtml(FLAG_STATE_NO_DATA)}</div>`;
+  return flagPanelHtml(flags).toString();
+}
+
+function flagPanelHtml(flags: FlagPanel | null): SafeHtml {
+  if (!flags) return html`<div class="loading">${FLAG_STATE_NO_DATA}</div>`;
   const rows: [string, string][] = [
     ["agent enabled (kill switch)", onOff(flags.enabled)],
     ["decision backend", flags.decisionBackend || "—"],
@@ -371,35 +369,33 @@ export function renderFlagPanel(flags: FlagPanel | null): string {
     ["objectives", flags.objectives || "—"],
     ["game mode", flags.gameMode || "—"],
   ];
-  const body = rows
-    .map(
-      ([k, v]) => `
+  const body = rows.map(
+    ([k, v]) => html`
         <div class="agent-flag">
-          <span class="agent-flag-key">${escapeHtml(k)}</span>
-          <span class="agent-flag-val">${escapeHtml(v)}</span>
+          <span class="agent-flag-key">${k}</span>
+          <span class="agent-flag-val">${v}</span>
         </div>`,
-    )
-    .join("");
+  );
   // #2093: enabled=on with the write gate off looks live but writes nothing.
   const gateHint =
     flags.enabled === true && flags.interventionsEnabled === false
-      ? `<div class="agent-flags-warn" role="status">${escapeHtml(WRITE_GATE_OFF_HINT)}</div>`
+      ? html`<div class="agent-flags-warn" role="status">${WRITE_GATE_OFF_HINT}</div>`
       : "";
-  return `
+  return html`
       ${gateHint}
       <div class="agent-flags-grid">${body}</div>
       <div class="agent-flags-note">
         Effective flags of ${renderGameBadge(flags.gameId, flags.gameKind)} from its newest
-        <a href="${escapeHtml(jaegerTraceUrl(flags.traceId, flags.spanId))}" target="_blank" rel="noreferrer"><code>agent.flag_state</code></a>
-        span (${escapeHtml(flags.trigger || "?")}, ${formatTime(flags.tsMs)}).
+        <a href="${jaegerTraceUrl(flags.traceId, flags.spanId)}" target="_blank" rel="noreferrer"><code>agent.flag_state</code></a>
+        span (${flags.trigger || "?"}, ${formatTime(flags.tsMs)}).
       </div>
     `;
 }
 
 /* ---------------- agent.decide rendering (#1233) ---------------- */
 /*
- * Pure string builders (exported for tests). Every span-derived value goes
- * through escapeHtml: the rationale and even the answers are model output.
+ * Pure builders on the `html` tag (the exported render* wrappers return the string for tests):
+ * every interpolation is escaped, which matters because the rationale and even the answers are model output.
  */
 
 /** Visible rationale length; the full (already span-capped) text is the tooltip. */
@@ -455,12 +451,10 @@ export function shortGameId(id: string): string {
 }
 
 /** Game badge: short id + kind (real / shadow / unknown). */
-function renderGameBadge(gameId: string, gameKind: string): string {
+function renderGameBadge(gameId: string, gameKind: string): SafeHtml {
   const kind = gameKind === "shadow" ? "shadow" : gameKind ? "real" : "unknown";
   const label = gameKind || "?";
-  return `<span class="decide-game decide-game-${kind}" title="${escapeHtml(gameId || "unknown game")}">${escapeHtml(
-    label,
-  )} ${escapeHtml(shortGameId(gameId))}</span>`;
+  return html`<span class="decide-game decide-game-${kind}" title="${gameId || "unknown game"}">${label} ${shortGameId(gameId)}</span>`;
 }
 
 function fmtConfidence(v: number | null): string {
@@ -476,32 +470,36 @@ export function truncateText(text: string, max: number): string {
 
 /** The "current backend" header strip. */
 export function renderDecideStrip(current: DecideCurrent | null, switched = false): string {
+  return decideStripHtml(current, switched).toString();
+}
+
+function decideStripHtml(current: DecideCurrent | null, switched: boolean): SafeHtml {
   if (!current) {
-    return '<div class="decide-strip decide-strip-empty">current backend: waiting for the first agent.decide span…</div>';
+    return html`<div class="decide-strip decide-strip-empty">current backend: waiting for the first agent.decide span…</div>`;
   }
   const requestedDiffers = current.requested && current.requested !== current.backend;
   const requested = requestedDiffers
-    ? `<span class="decide-strip-requested">requested <b>${escapeHtml(current.requested)}</b></span>`
+    ? html`<span class="decide-strip-requested">requested <b>${current.requested}</b></span>`
     : "";
   // A rules decide (incl. a fallback, whose span still names the requested
   // backend's model) is decided by the rules engine: no model.
   const model = current.backend === "rules" ? "rules engine" : current.model || "—";
   const threshold =
     current.threshold === null
-      ? '<span class="decide-strip-val" title="no confidence routing recorded yet (rules does not route by confidence)">—</span>'
-      : `<span class="decide-strip-val${current.thresholdFromOlder ? " decide-strip-dim" : ""}"${
-          current.thresholdFromOlder ? ' title="from an earlier decision; the newest one did not route by confidence"' : ""
+      ? html`<span class="decide-strip-val" title="no confidence routing recorded yet (rules does not route by confidence)">—</span>`
+      : html`<span class="decide-strip-val${current.thresholdFromOlder ? " decide-strip-dim" : ""}"${
+          current.thresholdFromOlder ? html` title="from an earlier decision; the newest one did not route by confidence"` : ""
         }>${current.threshold.toFixed(2)}</span>`;
-  return `
+  return html`
     <div class="decide-strip${switched ? " decide-strip-switched" : ""}">
       <div class="decide-strip-item">
         <span class="decide-strip-key">backend</span>
-        <span class="decide-strip-val decide-backend-${backendClass(current.backend)}">${escapeHtml(current.backend || "—")}</span>
+        <span class="decide-strip-val decide-backend-${backendClass(current.backend)}">${current.backend || "—"}</span>
         ${requested}
       </div>
       <div class="decide-strip-item">
         <span class="decide-strip-key">model</span>
-        <span class="decide-strip-val decide-strip-model">${escapeHtml(model)}</span>
+        <span class="decide-strip-val decide-strip-model">${model}</span>
       </div>
       <div class="decide-strip-item">
         <span class="decide-strip-key">act threshold</span>
@@ -518,19 +516,23 @@ function backendClass(backend: string): string {
 
 /** The confidence bar with the threshold tick. */
 export function renderConfidenceBar(confidence: number | null, threshold: number | null): string {
+  return confidenceBarHtml(confidence, threshold).toString();
+}
+
+function confidenceBarHtml(confidence: number | null, threshold: number | null): SafeHtml {
   const bar = confidenceBar(confidence, threshold);
   const state = bar.pass === null ? "na" : bar.pass ? "pass" : "fail";
   const tick =
     bar.thresholdPct === null
       ? ""
-      : `<span class="decide-conf-tick" style="left:${bar.thresholdPct}%"></span>`;
+      : html`<span class="decide-conf-tick" style="left:${bar.thresholdPct}%"></span>`;
   const cmp =
     confidence === null
-      ? "no confidence"
+      ? html`no confidence`
       : threshold === null
-        ? `conf ${fmtConfidence(confidence)}`
-        : `conf ${fmtConfidence(confidence)} ${bar.pass ? "&ge;" : "&lt;"} ${fmtConfidence(threshold)}`;
-  return `
+        ? html`conf ${fmtConfidence(confidence)}`
+        : html`conf ${fmtConfidence(confidence)} ${bar.pass ? html`&ge;` : html`&lt;`} ${fmtConfidence(threshold)}`;
+  return html`
     <div class="decide-conf decide-conf-${state}">
       <div class="decide-conf-track">
         <span class="decide-conf-fill" style="width:${bar.fillPct}%"></span>
@@ -542,60 +544,56 @@ export function renderConfidenceBar(confidence: number | null, threshold: number
 
 /** One decide feed row. */
 export function renderDecideRow(row: DecideRow, isNew = false): string {
+  return decideRowHtml(row, isNew).toString();
+}
+
+function decideRowHtml(row: DecideRow, isNew: boolean): SafeHtml {
   const outcome = row.outcome;
   const backendDiffers = row.requested && row.requested !== row.backend;
   const model = row.model
-    ? `<span class="decide-model${backendDiffers ? " decide-backend-struck" : ""}">${escapeHtml(row.model)}</span>`
+    ? html`<span class="decide-model${backendDiffers ? " decide-backend-struck" : ""}">${row.model}</span>`
     : "";
   // On a fallback the model belongs to the REQUESTED backend (struck through),
   // not to rules, which has none.
   const backend = backendDiffers
-    ? `<span class="decide-backend decide-backend-${backendClass(row.requested)} decide-backend-struck" title="requested backend">${escapeHtml(row.requested)}</span>` +
-      model +
-      `<span class="decide-arrow">→</span>` +
-      `<span class="decide-backend decide-backend-${backendClass(row.backend)}">${escapeHtml(row.backend)}</span>`
-    : `<span class="decide-backend decide-backend-${backendClass(row.backend)}">${escapeHtml(row.backend || "—")}</span>` +
-      (row.backend === "rules" ? "" : model);
+    ? html`<span class="decide-backend decide-backend-${backendClass(row.requested)} decide-backend-struck" title="requested backend">${row.requested}</span>${model}<span class="decide-arrow">→</span><span class="decide-backend decide-backend-${backendClass(row.backend)}">${row.backend}</span>`
+    : html`<span class="decide-backend decide-backend-${backendClass(row.backend)}">${row.backend || "—"}</span>${row.backend === "rules" ? "" : model}`;
   const fallback = row.fallbackReason
-    ? `<span class="decide-fallback-reason" title="decide.fallback_reason">${escapeHtml(row.fallbackReason)}${
-        row.errorType && row.errorType !== row.fallbackReason ? ` · ${escapeHtml(row.errorType)}` : ""
+    ? html`<span class="decide-fallback-reason" title="decide.fallback_reason">${row.fallbackReason}${
+        row.errorType && row.errorType !== row.fallbackReason ? html` · ${row.errorType}` : ""
       }</span>`
     : "";
   const answer = row.intervention
-    ? `<span class="decide-answer">${escapeHtml(row.intervention)}${
+    ? html`<span class="decide-answer">${row.intervention}${
         row.target && row.target !== "none"
-          ? ` <span class="decide-arrow">→</span> <span class="decide-target">${escapeHtml(row.target)}</span>`
+          ? html` <span class="decide-arrow">→</span> <span class="decide-target">${row.target}</span>`
           : ""
       }</span>`
-    : '<span class="decide-answer decide-answer-none">no answer</span>';
+    : html`<span class="decide-answer decide-answer-none">no answer</span>`;
   const outcomeReason = row.outcomeReason
-    ? `<span class="decide-outcome-reason">${escapeHtml(row.outcomeReason)}</span>`
+    ? html`<span class="decide-outcome-reason">${row.outcomeReason}</span>`
     : "";
   const rationale = row.rationale
-    ? `<div class="decide-why" title="${escapeHtml(row.rationale)}"><span class="decide-why-label">why</span> ${escapeHtml(
-        truncateText(row.rationale, RATIONALE_VISIBLE_CHARS),
-      )}</div>`
+    ? html`<div class="decide-why" title="${row.rationale}"><span class="decide-why-label">why</span> ${truncateText(row.rationale, RATIONALE_VISIBLE_CHARS)}</div>`
     : "";
   const decisions =
     row.decisions.length > 0
-      ? `<div class="decide-decisions">${row.decisions
-          .map((d) => {
-            // #1295: name the targeted player (display name, else serial).
-            const target = decisionTargetLabel(d);
-            const targetHtml = target
-              ? ` <span class="decide-arrow">→</span> <span class="decide-target"${
-                  d.targetName && d.targetSerial ? ` title="${escapeHtml(d.targetSerial)}"` : ""
-                }>${escapeHtml(target)}</span>`
-              : "";
-            const status = decisionStatusLabel(d);
-            const notWritten = d.blocked || d.applied === false;
-            return `<span class="decide-decision ${notWritten ? "decide-decision-blocked" : "decide-decision-allowed"}"${
-              d.reason ? ` title="${escapeHtml(d.reason)}"` : ""
-            }>agent.decision: ${escapeHtml(d.action || "?")}${targetHtml} · ${escapeHtml(status)}</span>`;
-          })
-          .join("")}</div>`
+      ? html`<div class="decide-decisions">${row.decisions.map((d) => {
+          // #1295: name the targeted player (display name, else serial).
+          const target = decisionTargetLabel(d);
+          const targetHtml = target
+            ? html` <span class="decide-arrow">→</span> <span class="decide-target"${
+                d.targetName && d.targetSerial ? html` title="${d.targetSerial}"` : ""
+              }>${target}</span>`
+            : "";
+          const status = decisionStatusLabel(d);
+          const notWritten = d.blocked || d.applied === false;
+          return html`<span class="decide-decision ${notWritten ? "decide-decision-blocked" : "decide-decision-allowed"}"${
+            d.reason ? html` title="${d.reason}"` : ""
+          }>agent.decision: ${d.action || "?"}${targetHtml} · ${status}</span>`;
+        })}</div>`
       : "";
-  return `
+  return html`
     <div class="decide-row decide-row-${outcome}${isNew ? " decide-row-new" : ""}">
       <div class="decide-line">
         <span class="agent-feed-time">${formatTime(row.tsMs)}</span>
@@ -606,9 +604,9 @@ export function renderDecideRow(row: DecideRow, isNew = false): string {
         ${answer}
         ${outcomeReason}
         <span class="decide-latency">${Math.round(row.latencyMs)} ms</span>
-        <a class="decide-trace" href="${escapeHtml(jaegerTraceUrl(row.traceId, row.spanId))}" target="_blank" rel="noreferrer" title="open this decision in Jaeger">trace ↗</a>
+        <a class="decide-trace" href="${jaegerTraceUrl(row.traceId, row.spanId)}" target="_blank" rel="noreferrer" title="open this decision in Jaeger">trace ↗</a>
       </div>
-      ${renderConfidenceBar(row.confidence, row.threshold)}
+      ${confidenceBarHtml(row.confidence, row.threshold)}
       ${rationale}
       ${decisions}
     </div>`;
