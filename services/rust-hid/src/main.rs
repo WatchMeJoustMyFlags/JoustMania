@@ -8,6 +8,7 @@ mod device_manager;
 mod feature_flags;
 mod grpc_tracing;
 mod hid;
+mod input_slot;
 mod output;
 mod service;
 mod watchdog;
