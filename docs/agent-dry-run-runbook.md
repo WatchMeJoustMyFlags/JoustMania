@@ -162,8 +162,8 @@ of `experiment_seed` in both `services/flagd/agent.json` and
 `services/flagd/ci/agent.json` (a reviewed change; `TestExperimentSeedVariants`
 and `TestExperimentSeedFlagVariantsParse` check it). The seed flag must **exist in `services/flagd/ci/game.json`**, be in the
 experiment catalog (a registry row with `experiment+arm` scope,
-[flags.md §13.3](specs/flags.md#13-mutable-flag-registry); only flags a shadow
-game reads are in it, UC-043 BR-009), and the value must
+[flags.md §13.3](specs/flags.md#13-mutable-flag-registry); a seed should use a flag
+a JoustFFA shadow game reads; see the known gaps in UC-043 BR-009), and the value must
 be in its bounds; the flag service rejects anything else with HTTP 422
 (`flag_read_only` / `out_of_bounds`).
 
