@@ -324,6 +324,13 @@
             "Dispatched": true,
             "BlockReason": "",
             "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "WEAK",
+            "Dispatched": true,
+            "BlockReason": "",
+            "Weight": 1
           }
         ]
       },
@@ -333,8 +340,15 @@
           {
             "Intervention": "adjust_player_sensitivity",
             "TargetSerial": "STRONG",
-            "Dispatched": true,
-            "BlockReason": "",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "MID",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
             "Weight": 1
           }
         ]
@@ -345,6 +359,13 @@
           {
             "Intervention": "adjust_player_sensitivity",
             "TargetSerial": "STRONG",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "MID",
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
@@ -360,6 +381,13 @@
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "MID",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
           }
         ]
       },
@@ -372,6 +400,13 @@
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "MID",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
           }
         ]
       },
@@ -381,6 +416,13 @@
           {
             "Intervention": "adjust_player_sensitivity",
             "TargetSerial": "STRONG",
+            "Dispatched": false,
+            "BlockReason": "rate_limit",
+            "Weight": 1
+          },
+          {
+            "Intervention": "grant_shield",
+            "TargetSerial": "MID",
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
@@ -437,7 +479,7 @@
         "Intervention": "grant_shield",
         "TargetSerial": "MID",
         "Value": "",
-        "Reason": "catch-up: shield the weakest player not helped yet (skill 0.50) while the field shrinks",
+        "Reason": "catch-up: shield the player with the fewest agent shields (skill 0.50, 0 shields) while the field shrinks",
         "ObjectiveServed": "balanced",
         "Fitness": {
           "active_players": 3,
@@ -464,15 +506,14 @@
         }
       },
       {
-        "Intervention": "adjust_player_sensitivity",
-        "TargetSerial": "STRONG",
+        "Intervention": "grant_shield",
+        "TargetSerial": "WEAK",
         "Value": "",
-        "Reason": "skill gap 0.70 exceeds 0.40: handicap the outlier",
+        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
         "ObjectiveServed": "balanced",
         "Fitness": {
-          "max_skill_gap": 0.4,
-          "outlier_skill": 0.9,
-          "skill_gap": 0.7
+          "active_players": 3,
+          "weakest_skill": 0.2
         },
         "Objectives": {
           "balanced": 1

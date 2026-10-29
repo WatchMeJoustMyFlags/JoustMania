@@ -683,6 +683,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	if decideRec != nil {
 		state.DecideBackend = decideRec.used // rides every agent.decision span
 	}
+	decisions = l.stampShieldSeconds(rootCtx, snapshot, decisions, decideRec)
 	before := len(state.Outcomes)
 	for _, d := range decisions {
 		l.runDecision(rootCtx, snapshot, c, d, now(), &state)

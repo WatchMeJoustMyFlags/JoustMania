@@ -2,16 +2,23 @@ package decision
 
 import (
 	"context"
+	"encoding/json"
 	"math/rand/v2"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 )
 
 // shield_catchup_uc040_test.go covers #2395 on the agent side: R4's catch-up among the
-// players not helped yet in this game (UC-040 A41, BR-030) and the grant_shield length
+// candidates with the fewest agent shields in this game (UC-040 A41, BR-030) and the grant_shield length
 // from the shield_seconds "default" variant (UC-040 BR-029).
 
 // catchUpLoop is a rules loop with the shield ledger wired into the engine as main.go
@@ -55,18 +62,24 @@ func shieldWriteOrder(sink *capturingSink) []string {
 	return out
 }
 
-func signalsOf(c gamecontext.GameContext) (active, skilled []*gamecontext.PlayerSignals) {
-	active = activePlayers(c)
-	for _, p := range active {
-		if p.SkillLevel != nil {
-			skilled = append(skilled, p)
+// r4Ranked is the R4 part of a ranking of c: R4's candidates scored, minScore
+// applied, the no-shield set dropped, as rankLocked builds them before
+// pickShieldCatchUp.
+func r4Ranked(c gamecontext.GameContext, noShield map[string]bool) []scoredCandidate {
+	cands := applyChargePolicy(balancedCandidates(c, defaultFit()), noShield)
+	var r4 []candidate
+	for _, cd := range cands {
+		if cd.shieldCatch {
+			r4 = append(r4, cd)
 		}
 	}
-	return active, skilled
+	return scoreAndSort(r4, map[string]float64{ObjectiveBalanced: 1}, FitnessEvaluation{})
 }
 
 // UC: UC-040 A41 BR-030
-func TestCatchUpTarget(t *testing.T) {
+func TestPickShieldCatchUp(t *testing.T) {
+	// GONE out of 4: ef 0.25, so urgency (1-skill)*0.5: WEAK 0.45, MID 0.35,
+	// STRONG 0.05 (below minScore 0.10: never a candidate).
 	field := func(extra map[string]testPlayer) gamecontext.GameContext {
 		ps := map[string]testPlayer{
 			"WEAK":   {skill: fptr(0.1), active: true},
@@ -79,40 +92,70 @@ func TestCatchUpTarget(t *testing.T) {
 		return gameCtx(30, []string{"GONE"}, ps)
 	}
 	for _, tc := range []struct {
-		name    string
-		extra   map[string]testPlayer
-		grants  map[string]int
-		want    string
-		skipped bool
+		name     string
+		extra    map[string]testPlayer
+		grants   map[string]int
+		noShield map[string]bool
+		want     string
+		catchUp  bool
 	}{
-		{name: "no grant view: the weakest", grants: nil, want: "WEAK"},
+		{name: "no grant view: the weakest", want: "WEAK"},
 		{name: "nobody helped yet: the weakest", grants: map[string]int{}, want: "WEAK"},
-		{name: "the weakest helped: the next weakest not helped", grants: map[string]int{"WEAK": 1}, want: "MID", skipped: true},
-		{name: "two helped: the last not helped", grants: map[string]int{"WEAK": 1, "MID": 1}, want: "STRONG", skipped: true},
-		{name: "every alive player helped once: everyone eligible again", grants: map[string]int{"WEAK": 1, "MID": 1, "STRONG": 1}, want: "WEAK"},
-		{name: "second round: the fewest grants first", grants: map[string]int{"WEAK": 2, "MID": 1, "STRONG": 1}, want: "MID", skipped: true},
-		{name: "a dead player's grants do not hold the round", extra: map[string]testPlayer{"DEAD": {skill: fptr(0.0), active: false}},
-			grants: map[string]int{"WEAK": 1, "MID": 1, "STRONG": 1}, want: "WEAK"},
-		{name: "an alive player without a skill level and no grant: no helped player is eligible",
-			extra: map[string]testPlayer{"NEW": {active: true}}, grants: map[string]int{"WEAK": 1, "MID": 1, "STRONG": 1}, want: ""},
+		{name: "the weakest helped: the next candidate with none", grants: map[string]int{"WEAK": 1}, want: "MID", catchUp: true},
+		{name: "a non-candidate with none does not hold the others back", grants: map[string]int{"WEAK": 1, "MID": 1}, want: "WEAK"},
+		{name: "the fewest grants first", grants: map[string]int{"WEAK": 2, "MID": 1}, want: "MID", catchUp: true},
+		{name: "the fewest grants first, however many", grants: map[string]int{"WEAK": 3, "MID": 5}, want: "WEAK"},
+		{name: "a filtered player (cap, cooldown, charge) is not a candidate", noShield: map[string]bool{"WEAK": true}, want: "MID"},
+		{name: "every candidate filtered: no shield", noShield: map[string]bool{"WEAK": true, "MID": true}, want: ""},
+		{name: "an alive player without a skill level does not hold the others back",
+			extra: map[string]testPlayer{"NEW": {active: true}}, grants: map[string]int{"WEAK": 1, "MID": 1}, want: "WEAK"},
 	} {
 		t.Run("UC-040/A41 BR-030 "+tc.name, func(t *testing.T) {
-			active, skilled := signalsOf(field(tc.extra))
-			got, skipped := catchUpTarget(active, skilled, tc.grants)
-			gotSerial := ""
-			if got != nil {
-				gotSerial = got.Serial
+			c := field(tc.extra)
+			got := pickShieldCatchUp(r4Ranked(c, tc.noShield), c, tc.grants)
+			if tc.want == "" {
+				if len(got) != 0 {
+					t.Fatalf("kept %v, want no R4 candidate", decisionsOf(candidatesOf(got)))
+				}
+				return
 			}
-			if gotSerial != tc.want || skipped != tc.skipped {
-				t.Fatalf("target = %q (skipped %v), want %q (skipped %v)", gotSerial, skipped, tc.want, tc.skipped)
+			if len(got) != 1 || got[0].decision.TargetSerial != tc.want {
+				t.Fatalf("kept %v, want one R4 candidate on %s", shieldTargets(decisionsOf(candidatesOf(got))), tc.want)
+			}
+			_, hasGrants := got[0].decision.Fitness["shield_grants"]
+			isCatchUp := strings.HasPrefix(got[0].decision.Reason, "catch-up:")
+			if hasGrants != tc.catchUp || isCatchUp != tc.catchUp {
+				t.Fatalf("reason %q fitness %v, want catch-up %v", got[0].decision.Reason, got[0].decision.Fitness, tc.catchUp)
 			}
 		})
 	}
+	t.Run("UC-040/A41 BR-030 the kept candidate keeps its place among the other rules", func(t *testing.T) {
+		other := scoredCandidate{candidate{decision: Decision{Intervention: InterventionPlayAudioCue}}, 0.4}
+		c := field(nil)
+		ranked := append(r4Ranked(c, nil), other)
+		sortRanked(ranked)
+		got := pickShieldCatchUp(ranked, c, map[string]int{"WEAK": 1})
+		if len(got) != 2 || got[0].decision.Intervention != InterventionPlayAudioCue || got[1].decision.TargetSerial != "MID" {
+			t.Fatalf("ranked = %v, want the audio cue (0.40) then MID's shield (0.35)", decisionsOf(candidatesOf(got)))
+		}
+	})
+}
+
+func candidatesOf(ranked []scoredCandidate) []candidate {
+	out := make([]candidate, len(ranked))
+	for i, sc := range ranked {
+		out[i] = sc.candidate
+	}
+	return out
+}
+
+func sortRanked(ranked []scoredCandidate) {
+	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
 }
 
 // UC: UC-040 A41 BR-030
 func TestCatchUp_RulesRotateShields(t *testing.T) {
-	t.Run("UC-040/A41 BR-030 the rules shield the not-yet-helped players in turn, and a helped one again only once every alive player has had one", func(t *testing.T) {
+	t.Run("UC-040/A41 BR-030 the rules keep shielding and spread the shields over the candidates, fewest first", func(t *testing.T) {
 		l, sink, clock := catchUpLoop(t)
 		c := catchUpCtx(gamecontext.GameKindReal)
 		for i := 0; i < 6; i++ {
@@ -121,26 +164,13 @@ func TestCatchUp_RulesRotateShields(t *testing.T) {
 		}
 		got := shieldWriteOrder(sink)
 		t.Logf("shield writes over 6 cycles: %v", got)
-		if len(got) < 2 || got[0] != "WEAK" || got[1] != "MID" {
-			t.Fatalf("shield writes = %v, want WEAK then MID first", got)
+		// STRONG (skill 0.9) is below minScore and never a candidate: it holds nobody back.
+		want := []string{"WEAK", "MID", "WEAK", "MID", "WEAK", "MID"}
+		if !equalStrings(got, want) {
+			t.Fatalf("shield writes = %v, want %v", got, want)
 		}
-		for _, s := range got[2:] {
-			if s == "WEAK" || s == "MID" {
-				t.Fatalf("shield writes = %v: a helped player was shielded again while STRONG has none", got)
-			}
-		}
-		if grants := l.ShieldGrants(); grants["WEAK"] != 1 || grants["MID"] != 1 {
-			t.Fatalf("ShieldGrants = %v, want WEAK 1 and MID 1", grants)
-		}
-
-		// STRONG leaves the alive set: every alive player has had one, WEAK is first again.
-		c.Players["STRONG"].Active = bptr(false)
-		c.Session.EliminationSequence = append(c.Session.EliminationSequence, "STRONG")
-		before := len(got)
-		runCycle(l, c)
-		got = shieldWriteOrder(sink)
-		if len(got) != before+1 || got[before] != "WEAK" {
-			t.Fatalf("after STRONG died shield writes = %v, want one more to WEAK", got)
+		if grants := l.ShieldGrants(); grants["WEAK"] != 3 || grants["MID"] != 3 || grants["STRONG"] != 0 {
+			t.Fatalf("ShieldGrants = %v, want WEAK 3 and MID 3", grants)
 		}
 	})
 }
@@ -243,5 +273,45 @@ func TestShieldSeconds_StampedFromTheSource(t *testing.T) {
 		l.Flags = fakeFlags{snap: snap}
 		l.SetShieldSecondsSource(func(context.Context) float64 { t.Fatal("source read for a refused grant"); return 0 })
 		runCycle(l, chargeRulesCtx())
+	})
+}
+
+// UC: UC-040 BR-029
+func TestShieldSeconds_RulesMagnitudeReportsTheStampedLength(t *testing.T) {
+	t.Run("UC-040/BR-029 the rules record's ffa.magnitude is the stamped length, not the 5 s bounds default", func(t *testing.T) {
+		l, sink, _ := catchUpLoop(t)
+		sr := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+		t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+		l.Tracer = tp.Tracer("test")
+		l.SetShieldSecondsSource(func(context.Context) float64 { return 10 })
+		// No skill gap above 0.40, so R4's shield is the top-ranked decision.
+		c := catchUpCtx(gamecontext.GameKindReal)
+		c.Players["STRONG"].SkillLevel = fptr(0.4)
+		runCycle(l, c)
+		if ds := sink.decisions(); len(ds) == 0 || ds[0].Intervention != InterventionGrantShield || ds[0].Value != "10" {
+			t.Fatalf("written = %+v, want a grant_shield of 10 s first", ds)
+		}
+		spans := spansByName(sr.Ended(), SpanDecide)
+		if len(spans) != 1 {
+			t.Fatalf("agent.decide spans = %d, want 1", len(spans))
+		}
+		var as []decide.Answer
+		if err := json.Unmarshal([]byte(strAttr(t, spans[0], AttrDecideAnswers)), &as); err != nil {
+			t.Fatalf("decide.answers: %v", err)
+		}
+		found := false
+		for _, a := range as {
+			if a.QuestionID == decide.QuestionFFAMagnitude {
+				found = true
+				// grant_shield bounds 3..10: 10 s is the top of the range.
+				if got, _ := decide.ResolveMagnitude(InterventionGrantShield, a.Score); got != 10 {
+					t.Fatalf("ffa.magnitude score %v resolves to %v s, want 10 s", a.Score, got)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("no ffa.magnitude answer on the rules record")
+		}
 	})
 }

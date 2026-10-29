@@ -26,6 +26,9 @@ type candidate struct {
 	// (tempo, sensitivity): they trigger the variance-baseline cooldown and
 	// are blocked for low-battery players by the battery policy.
 	difficulty bool
+	// shieldCatch marks an R4 grant_shield candidate: rankLocked keeps only one of
+	// them (pickShieldCatchUp, UC-040 A41, BR-030).
+	shieldCatch bool
 }
 
 // statueVarianceEpsilon is the movement-variance level below which a player is
@@ -130,15 +133,9 @@ func enduranceCandidates(c gamecontext.GameContext, fit FitnessThresholds) []can
 
 // balancedCandidates implements R3 (handicap the skill outlier when the spread
 // exceeds the fitness gap) and R4 (shield the weakest player while the field
-// shrinks), without the catch-up view.
+// shrinks).
+// R4 yields one candidate per player; rankLocked keeps one (pickShieldCatchUp).
 func balancedCandidates(c gamecontext.GameContext, fit FitnessThresholds) []candidate {
-	return balancedCandidatesFor(c, fit, nil)
-}
-
-// balancedCandidatesFor is balancedCandidates with the loop's shield grants per serial
-// in this game (Loop.ShieldGrants): R4 then shields the weakest of the players with
-// the fewest grants (UC-040 A41, BR-030). nil grants: the weakest player.
-func balancedCandidatesFor(c gamecontext.GameContext, fit FitnessThresholds, grants map[string]int) []candidate {
 	active := activePlayers(c)
 	var out []candidate
 
@@ -181,36 +178,32 @@ func balancedCandidatesFor(c gamecontext.GameContext, fit FitnessThresholds, gra
 		}
 	}
 
-	// R4: shield the weakest while the field shrinks; with the grant view, the weakest
-	// of the players not helped yet in this round (catch-up, UC-040 A41, BR-030).
+	// R4: shield the weak while the field shrinks. Every alive player with a skill
+	// level is a candidate with their own urgency; after the filters and minScore the
+	// rules keep one R4 candidate: the one with the fewest agent shields this game,
+	// the weakest on a tie (catch-up, UC-040 A41, BR-030; pickShieldCatchUp).
 	if len(skilled) >= 2 {
 		if ef := elimFraction(c, len(active)); ef > 0 {
-			weakest, skipped := catchUpTarget(active, skilled, grants)
-			urgency := 0.0
-			if weakest != nil {
-				urgency = clamp01((1 - *weakest.SkillLevel) * 2 * ef)
-			}
-			if urgency > 0 {
-				reason := fmt.Sprintf("shield the weakest player (skill %.2f) while the field shrinks", *weakest.SkillLevel)
-				fitness := map[string]float64{
-					"weakest_skill":  *weakest.SkillLevel,
-					"active_players": float64(len(active)),
-				}
-				if skipped {
-					reason = fmt.Sprintf("catch-up: shield the weakest player not helped yet (skill %.2f) while the field shrinks", *weakest.SkillLevel)
-					fitness["shield_grants"] = float64(grants[weakest.Serial])
+			for _, p := range skilled {
+				urgency := clamp01((1 - *p.SkillLevel) * 2 * ef)
+				if urgency <= 0 {
+					continue
 				}
 				out = append(out, candidate{
 					decision: Decision{
 						Intervention:    InterventionGrantShield,
-						TargetSerial:    weakest.Serial,
-						Reason:          reason,
+						TargetSerial:    p.Serial,
+						Reason:          fmt.Sprintf("shield the weakest player (skill %.2f) while the field shrinks", *p.SkillLevel),
 						ObjectiveServed: ObjectiveBalanced,
-						Fitness:         fitness,
+						Fitness: map[string]float64{
+							"weakest_skill":  *p.SkillLevel,
+							"active_players": float64(len(active)),
+						},
 					},
-					objective: ObjectiveBalanced,
-					urgency:   urgency,
-					cost:      costOf(InterventionGrantShield),
+					objective:   ObjectiveBalanced,
+					urgency:     urgency,
+					cost:        costOf(InterventionGrantShield),
+					shieldCatch: true,
 				})
 			}
 		}
@@ -218,42 +211,65 @@ func balancedCandidatesFor(c gamecontext.GameContext, fit FitnessThresholds, gra
 	return out
 }
 
-// catchUpTarget is R4's target (UC-040 A41, BR-030; #2395): the weakest skilled
-// player among those with the fewest agent shields in this game, the fewest counted
-// over every alive player. Players with no shield yet come first; once every alive
-// player has one, they are all eligible again, and so on. An alive player without a
-// skill level counts for the fewest but cannot be R4's target: while they hold it, no
-// helped player is eligible (fewer shields, never more). nil grants (no catch-up view)
-// gives the weakest skilled player. skipped reports that a weaker player was passed
-// over. The order of skilled (by serial) breaks skill ties, as before.
-func catchUpTarget(active, skilled []*gamecontext.PlayerSignals, grants map[string]int) (target *gamecontext.PlayerSignals, skipped bool) {
-	weakestOf := func(ps []*gamecontext.PlayerSignals) *gamecontext.PlayerSignals {
-		var w *gamecontext.PlayerSignals
-		for _, p := range ps {
-			if w == nil || *p.SkillLevel < *w.SkillLevel {
-				w = p
+// pickShieldCatchUp keeps one R4 candidate in ranked (UC-040 A41, BR-030; #2395):
+// among the R4 candidates that survived the filters (charge, cap, cooldown, pool,
+// battery) and minScore, the one with the fewest agent shields in this game (grants,
+// Loop.ShieldGrants), ties to the weakest, then the serial. A player who is not a
+// candidate never holds the others back. The kept candidate keeps its own score and
+// place. When a weaker R4 candidate was passed over, its reason says catch-up and its
+// fitness carries shield_grants. nil grants: every count is 0, so the weakest
+// surviving candidate.
+func pickShieldCatchUp(ranked []scoredCandidate, c gamecontext.GameContext, grants map[string]int) []scoredCandidate {
+	skill := func(sc scoredCandidate) float64 { return *c.Players[sc.decision.TargetSerial].SkillLevel }
+	best, weakest := -1, -1
+	for i, sc := range ranked {
+		if !sc.shieldCatch {
+			continue
+		}
+		if weakest < 0 || skill(sc) < skill(ranked[weakest]) ||
+			(skill(sc) == skill(ranked[weakest]) && sc.decision.TargetSerial < ranked[weakest].decision.TargetSerial) {
+			weakest = i
+		}
+		if best < 0 || fewerShields(sc, ranked[best], grants, skill) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return ranked
+	}
+	out := ranked[:0]
+	for i, sc := range ranked {
+		if sc.shieldCatch && i != best {
+			continue
+		}
+		if i == best && best != weakest {
+			d := sc.decision
+			n := grants[d.TargetSerial]
+			d.Reason = fmt.Sprintf("catch-up: shield the player with the fewest agent shields (skill %.2f, %d shields) while the field shrinks", skill(sc), n)
+			fit := make(map[string]float64, len(d.Fitness)+1)
+			for k, v := range d.Fitness {
+				fit[k] = v
 			}
+			fit["shield_grants"] = float64(n)
+			d.Fitness = fit
+			sc.decision = d
 		}
-		return w
+		out = append(out, sc)
 	}
-	weakest := weakestOf(skilled)
-	if len(grants) == 0 {
-		return weakest, false
+	return out
+}
+
+// fewerShields orders R4 candidates for pickShieldCatchUp: fewer agent shields this
+// game first, then the weaker player, then the lower serial.
+func fewerShields(a, b scoredCandidate, grants map[string]int, skill func(scoredCandidate) float64) bool {
+	ga, gb := grants[a.decision.TargetSerial], grants[b.decision.TargetSerial]
+	if ga != gb {
+		return ga < gb
 	}
-	fewest := -1
-	for _, p := range active {
-		if n := grants[p.Serial]; fewest < 0 || n < fewest {
-			fewest = n
-		}
+	if skill(a) != skill(b) {
+		return skill(a) < skill(b)
 	}
-	eligible := make([]*gamecontext.PlayerSignals, 0, len(skilled))
-	for _, p := range skilled {
-		if grants[p.Serial] == fewest {
-			eligible = append(eligible, p)
-		}
-	}
-	target = weakestOf(eligible)
-	return target, target != nil && target != weakest
+	return a.decision.TargetSerial < b.decision.TargetSerial
 }
 
 // accelerateCandidates implements R5 (speed up past the target duration),

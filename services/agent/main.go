@@ -808,8 +808,8 @@ func (c *components) newDecisionLoop(gameID string) *decision.Loop {
 	// The rules engine reads the loop's shield ledger once per ranking and skips a
 	// grant_shield to a charged, capped or cooling-down player (UC-040 A31, A33).
 	rules.SetShieldSource(loop.ShieldSerials)
-	// R4 shields the weakest of the players with the fewest agent shields in this
-	// game (catch-up, UC-040 A41, BR-030; #2395).
+	// R4 keeps the candidate with the fewest agent shields in this game, the weakest on a tie
+	// (catch-up, UC-040 A41, BR-030; #2395).
 	rules.SetShieldGrantSource(loop.ShieldGrants)
 	// The rules engine skips a state or level candidate whose value the loop
 	// already applied (UC-040 A35 step 4), so it does not take a slot every second.

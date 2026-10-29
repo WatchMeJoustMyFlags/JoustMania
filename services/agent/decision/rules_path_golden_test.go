@@ -18,7 +18,8 @@ import (
 // rules path's decisions and permission outcomes byte-identical.
 //
 // #2395 changed it on purpose: with R4's catch-up the balanced fixture shields WEAK,
-// then MID, and no helped player again while STRONG has none.
+// MID, WEAK (steps 0-2; MID was WEAK before), and the rate-limited steps 3-7 name MID
+// (fewest shields) instead of WEAK. STRONG is never an R4 candidate (below minScore).
 //
 // Regenerate (only for an intended behavior change): go test ./decision -run
 // TestRulesPathGolden -update-rules-golden

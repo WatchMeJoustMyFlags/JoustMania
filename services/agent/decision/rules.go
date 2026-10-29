@@ -71,9 +71,9 @@ type ObjectiveRules struct {
 	appliedSource func() map[string]string
 
 	// grantSource is the loop's shield-grant view (UC-040 A41, BR-030,
-	// Loop.ShieldGrants): read once per ranking, it makes R4 a catch-up among the
-	// players with the fewest agent shields this game. nil (every older test) keeps
-	// R4 on the weakest player.
+	// Loop.ShieldGrants): read once per ranking, R4 keeps the candidate with the
+	// fewest agent shields this game. nil (every older test) counts 0 for everyone,
+	// so R4 keeps the weakest surviving candidate.
 	grantSource func() map[string]int
 }
 
@@ -318,11 +318,7 @@ func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, no
 	roll, rollTarget := r.chaosRoll(c)
 
 	cands := enduranceCandidates(c, fit)
-	var grants map[string]int
-	if r.grantSource != nil {
-		grants = r.grantSource()
-	}
-	cands = append(cands, balancedCandidatesFor(c, fit, grants)...)
+	cands = append(cands, balancedCandidates(c, fit)...)
 	cands = append(cands, accelerateCandidates(c, fit, weights)...)
 	cands = append(cands, chaosCandidates(c, pol, roll, rollTarget)...)
 
@@ -332,7 +328,11 @@ func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, no
 		cands = applyAppliedPolicy(cands, r.appliedSource(), c)
 	}
 	cands = r.applyVarianceCooldown(cands, now, pol)
-	return scoreAndSort(cands, weights, fitEval), weights, fitEval
+	var grants map[string]int
+	if r.grantSource != nil {
+		grants = r.grantSource()
+	}
+	return pickShieldCatchUp(scoreAndSort(cands, weights, fitEval), c, grants), weights, fitEval
 }
 
 // chaosRoll draws R9's randomness: a roll in [0,1) and a random active player.
@@ -368,8 +368,9 @@ func normalizedWeights(w map[string]float64) map[string]float64 {
 // it drops every grant_shield candidate whose target is in noShield (charged, at the
 // shield cap or in the cooldown), because the ledger would refuse it. Like the
 // battery policy the candidate is not ranked, so R4 does not take an emission slot
-// every second for a refused shield. It does not move the shield to another player:
-// R4 means "the weakest". A nil or empty noShield keeps every candidate.
+// every second for a refused shield. Another player's R4 candidate may then be the
+// one pickShieldCatchUp keeps (UC-040 A41, BR-030). A nil or empty noShield keeps
+// every candidate.
 func applyChargePolicy(cands []candidate, noShield map[string]bool) []candidate {
 	if len(noShield) == 0 {
 		return cands

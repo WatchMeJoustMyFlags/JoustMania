@@ -111,6 +111,62 @@ func (l *Loop) withShieldSeconds(ctx context.Context, snapshot flags.Snapshot, d
 	return d
 }
 
+// stampShieldSeconds stamps the grant_shield length on the rules decisions of one
+// cycle before they run (withShieldSeconds), and makes the rules record's
+// ffa.magnitude answer report the stamped length of the decision its answers
+// describe (the first one), so the decide span and record say what is written, not
+// the 5 s bounds default (UC-040 BR-029, decide contract §4; #2395). runDecision
+// keeps a value already stamped, so the source is read once per grant.
+func (l *Loop) stampShieldSeconds(ctx context.Context, snapshot flags.Snapshot, ds []Decision, rec *decideRecord) []Decision {
+	if l.shieldSeconds == nil || len(ds) == 0 {
+		return ds
+	}
+	out := make([]Decision, len(ds))
+	for i, d := range ds {
+		out[i] = l.withShieldSeconds(ctx, snapshot, d)
+	}
+	if rec != nil && rec.hasResp {
+		rec.resp = magnitudeFromDecision(rec.req, rec.resp, out[0])
+	}
+	return out
+}
+
+// magnitudeFromDecision returns resp with its ffa.magnitude answer set to d's value,
+// normalised over d's bounds, when resp chose d's intervention and d carries a
+// numeric value. Otherwise resp is returned unchanged.
+func magnitudeFromDecision(req decide.Request, resp decide.Response, d Decision) decide.Response {
+	iv, ok := resp.Find(decide.QuestionFFAIntervention)
+	if !ok || iv.Choice != d.Intervention {
+		return resp
+	}
+	v, err := strconv.ParseFloat(d.Value, 64)
+	if err != nil {
+		return resp
+	}
+	norm, ok := decide.NormalizeMagnitude(d.Intervention, v)
+	if !ok {
+		return resp
+	}
+	var q *decide.Question
+	for i := range req.Questions {
+		if req.Questions[i].ID == decide.QuestionFFAMagnitude && req.Questions[i].Kind == decide.KindScore {
+			q = &req.Questions[i]
+		}
+	}
+	if q == nil {
+		return resp
+	}
+	answers := make([]decide.Answer, len(resp.Answers))
+	copy(answers, resp.Answers)
+	for i := range answers {
+		if answers[i].QuestionID == decide.QuestionFFAMagnitude {
+			answers[i].Score = q.Range[0] + norm*(q.Range[1]-q.Range[0])
+		}
+	}
+	resp.Answers = answers
+	return resp
+}
+
 // shieldLimits are the live shield limits of one check (UC-040 A33, BR-022): the
 // policy.max_shields_per_player_per_game and policy.shield_cooldown_seconds values of
 // the snapshot. 0 = unlimited / off; both 0 (the zero value) refuse nothing.
@@ -426,7 +482,7 @@ func (cl *chargeLedger) inFlight() map[string]time.Duration {
 
 // ShieldGrants is the rules engine's catch-up view of the ledger (UC-040 A41, BR-030;
 // #2395): the agent's grant_shield writes per serial in this game, the ones in flight
-// included (so two concurrent cycles do not both pick the same not-yet-helped player).
+// included (so two concurrent cycles do not both pick the same player with the fewest).
 // The ledger is per Loop and a Loop is per game id, so the count starts at 0 in every
 // game and a shadow game never sees a real game's grants. nil when there are none.
 func (l *Loop) ShieldGrants() map[string]int {
