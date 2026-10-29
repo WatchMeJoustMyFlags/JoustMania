@@ -134,15 +134,16 @@ func budgetCfg(maxConcurrent int) flags.ExperimentConfig {
 // config decides the flag, with no restart.
 // UC: UC-042 A3
 func TestRetroProposer_UsesTheTicksDynamicSettings(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	t.Setenv(envProposerEnabled, "true")
 	loop := proposerLoop(t)
 	loop.proposer.Record(experiment.RetroSuggestion{Reason: "room faded"})
 	cfg := dynCfg(5)
-	cfg.DynamicCandidates = "fight_club.round_seconds"
+	cfg.DynamicCandidates = "nonstop.spawn_protection_seconds"
 
 	loop.declareFromRetroIfEnabled(context.Background(), cfg)
 
-	if _, ok := loop.registry.ActiveFlags()["fight_club.round_seconds"]; !ok || loop.registry.LiveCount() != 1 {
-		t.Fatalf("active = %v, want exactly fight_club.round_seconds (the tick's candidate list)", loop.registry.ActiveFlags())
+	if _, ok := loop.registry.ActiveFlags()["nonstop.spawn_protection_seconds"]; !ok || loop.registry.LiveCount() != 1 {
+		t.Fatalf("active = %v, want exactly nonstop.spawn_protection_seconds (the tick's candidate list)", loop.registry.ActiveFlags())
 	}
 }

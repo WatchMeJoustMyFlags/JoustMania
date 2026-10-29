@@ -1029,7 +1029,7 @@ export class QueryWindow {
   private newestMs: number | null = null;
   private heldSinceMs = 0;
 
-  constructor(private readonly now: () => number = () => Date.now()) {}
+  constructor(private readonly now: () => number = () => performance.now()) {}
 
   observe(rows: Pick<DecideRow, "tsMs">[]): void {
     for (const r of rows) {
@@ -1062,7 +1062,7 @@ export class DecideStore {
 
   constructor(
     private readonly max = MAX_DECIDE_ROWS,
-    private readonly now: () => number = () => Date.now(),
+    private readonly now: () => number = () => performance.now(),
   ) {}
 
   /** Merge rows a search of `lane` returned (its window moves with them). */
@@ -1257,7 +1257,7 @@ export class FlagFallbackPacer {
   private lastKey: string | null = null;
   private lastMs = 0;
 
-  constructor(private readonly now: () => number = () => Date.now()) {}
+  constructor(private readonly now: () => number = () => performance.now()) {}
 
   /** Whether a fallback search for `key` may run now; records it when it may. */
   take(key: string): boolean {

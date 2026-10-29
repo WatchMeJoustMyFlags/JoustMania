@@ -185,10 +185,11 @@ func TestDynamicDeclarer_ConfigureFromFlags(t *testing.T) {
 // TestDynamicDeclarer_Rotation asserts successive Declares cover DIFFERENT flags
 // via the deterministic cursor (no repeat until the candidate ring is exhausted).
 func TestDynamicDeclarer_Rotation(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	svc := gameServiceForDeclarer(t)
 	d := &dynamicDeclarer{
 		gameFlags:        svc,
-		candidates:       []string{"sensitivity", "nonstop.respawn_seconds", "fight_club.round_seconds"},
+		candidates:       []string{"sensitivity", "nonstop.respawn_seconds", "nonstop.spawn_protection_seconds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	seen := map[string]int{}
@@ -212,6 +213,7 @@ func TestDynamicDeclarer_Rotation(t *testing.T) {
 // TestDynamicDeclarer_DedupSkipsActiveFlag asserts a flag with an ALREADY-ACTIVE
 // experiment is skipped, so the declarer never stacks a second experiment on it.
 func TestDynamicDeclarer_DedupSkipsActiveFlag(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	svc := gameServiceForDeclarer(t)
 	d := &dynamicDeclarer{
 		gameFlags:        svc,
@@ -407,6 +409,7 @@ func withCandidates(loop *experimentLoop, keys string) {
 // experiment AND Starts it (writes shadow targeting → RUNNING), and that a second
 // call dedups the now-active flag onto a different one.
 func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(5)
@@ -435,10 +438,11 @@ func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
 // TestDeclareDynamic_RespectsConcurrentBackstop asserts the declarer stops once the
 // live set reaches the concurrent-experiment budget.
 func TestDeclareDynamic_RespectsConcurrentBackstop(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(2) // budget of 2 (well under capacity 8)
-	cfg.DynamicCandidates = "sensitivity,nonstop.respawn_seconds,fight_club.round_seconds"
+	cfg.DynamicCandidates = "sensitivity,nonstop.respawn_seconds,nonstop.spawn_protection_seconds"
 
 	for i := 0; i < 5; i++ {
 		loop.declareDynamicIfEnabled(context.Background(), cfg)
