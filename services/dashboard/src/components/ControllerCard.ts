@@ -13,6 +13,7 @@ import type { ShieldView } from "../shield.js";
 import { controllerClient } from "../client.js";
 import { identifyController } from "../identify.js";
 import { UNPAIR_NOTICE_EVENT, canUnpair, requestUnpair } from "../unpair.js";
+import { html, setHtml } from "../html.js";
 
 /**
  * CSS for the LED circle. `color` is the colour last written to the LED, so a
@@ -117,7 +118,7 @@ export class ControllerCard {
   private createElement(): HTMLElement {
     const card = document.createElement("div");
     card.className = "controller-card connected";
-    card.innerHTML = `
+    setHtml(card, html`
       <div class="controller-name"></div>
       <div class="controller-id"></div>
       <div class="led-color"></div>
@@ -140,7 +141,7 @@ export class ControllerCard {
       <div class="identify-status" hidden></div>
       <button type="button" class="unpair-btn" title="Remove this controller from every Bluetooth adapter">Unpair</button>
       <div class="unpair-result" hidden></div>
-    `;
+    `);
     return card;
   }
 
