@@ -1162,14 +1162,13 @@ class BaseGameMode(ShieldMixin, ABC):
         logger.info(f"Playing instructions {clip}, waiting {duration:.1f}s before the countdown")
 
         # Wait for the clip to finish; a force-end stops the wait at once.
-        loop = asyncio.get_running_loop()
         wait_seconds = duration * self._INSTRUCTIONS_WAIT_SCALE
-        deadline = loop.time() + wait_seconds
+        deadline = game_clock.now() + wait_seconds
         for _ in range(math.ceil(wait_seconds / INSTRUCTIONS_POLL_SECONDS)):
-            remaining = deadline - loop.time()
+            remaining = deadline - game_clock.now()
             if not self.running or remaining <= 0:
                 break
-            await asyncio.sleep(min(INSTRUCTIONS_POLL_SECONDS, remaining))
+            await game_clock.sleep(min(INSTRUCTIONS_POLL_SECONDS, remaining))
 
         if not self.running:
             await self._stop_instruction_clip()
@@ -1359,7 +1358,7 @@ class BaseGameMode(ShieldMixin, ABC):
                 if not self.running:
                     logger.info(_MSG_COUNTDOWN_INTERRUPTED)
                     return
-                await asyncio.sleep(self._COUNTDOWN_BEEP_POLL_S)
+                await game_clock.sleep(self._COUNTDOWN_BEEP_POLL_S)
 
         # Play start sound — inherits gameplay_phase as parent span
         await self._play_sound(Sound.SFX_START3, priority=2)
@@ -1874,7 +1873,7 @@ class BaseGameMode(ShieldMixin, ABC):
         if self._latched_outcome is None:
             return
         logger.info("Win condition met, keeping game active for 1 second to show winner")
-        await asyncio.sleep(self._WIN_HOLD_S)
+        await game_clock.sleep(self._WIN_HOLD_S)
 
     async def _game_loop(self):
         """Main game loop - processes controller states and checks for deaths."""
@@ -3136,7 +3135,7 @@ class BaseGameMode(ShieldMixin, ABC):
             if not self.running:
                 logger.info(f"Rainbow wait interrupted at {i * 0.1:.1f}s/{rainbow_duration_s}s")
                 return False
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         return True
 
@@ -4367,7 +4366,7 @@ class BaseGameMode(ShieldMixin, ABC):
                         # A non-audio error (pacing seam, metrics, tracing) must not end
                         # the tempo loop for the rest of the game: log it, retry next tick.
                         self._log_tick_failure(e)
-                    await asyncio.sleep(0.1)  # Check every 100ms
+                    await game_clock.sleep(0.1)  # Check every 100ms
             finally:
                 if token is not None:
                     otel_context.detach(token)

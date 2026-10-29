@@ -1351,6 +1351,7 @@ class TestSwapperMotionLoop:
             player.grace_until = 0.0
         return game, events
 
+    @pytest.mark.real_game_time
     @pytest.mark.uc("UC-024", flow="main", steps=[2])
     @pytest.mark.asyncio
     async def test_lethal_motion_inside_the_grace_does_not_swap_again(self):

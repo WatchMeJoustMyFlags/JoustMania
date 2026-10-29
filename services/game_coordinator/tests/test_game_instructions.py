@@ -15,6 +15,8 @@ from opentelemetry import trace
 
 from lib.types import GameEvent, Sound
 from proto import audio_pb2
+from services.game_coordinator import game_clock
+from services.game_coordinator.games.base import BaseGameMode
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 from services.game_coordinator.tests.conftest import EventCollector, MockControllerManagerService
@@ -39,7 +41,7 @@ class TimedAudio(RecordingAudio):
         self.times: list[tuple[str, str, float]] = []
 
     def _stamp(self, name: str, request) -> None:
-        self.times.append((name, getattr(request, "file_path", ""), time.monotonic()))
+        self.times.append((name, getattr(request, "file_path", ""), game_clock.now()))
 
     async def PlaySound(self, request):  # noqa: N802 - gRPC stub name
         self._stamp("PlaySound", request)
@@ -97,11 +99,11 @@ class TestUC020InstructionsOn:
     """UC-020 A5: instructions on."""
 
     @pytest.mark.asyncio
-    @pytest.mark.real_durations
     @pytest.mark.uc("UC-020", flow="A5", steps=[1, 2, 4])
     @pytest.mark.uc("UC-012", flow="A3", steps=[2])
-    async def test_ffa_plays_clip_and_countdown_waits_for_it(self, fast_config):  # noqa: F811
+    async def test_ffa_plays_clip_and_countdown_waits_for_it(self, fast_config, monkeypatch):  # noqa: F811
         """A5: the FFA clip plays first and the music and the countdown start only after it finished."""
+        monkeypatch.setattr(BaseGameMode, "_INSTRUCTIONS_WAIT_SCALE", 1.0)  # the full clip length, on game time
         cm = RecordingControllerManager(num_controllers=3, death_schedule={1.0: 0, 1.6: 1}, max_duration=8.0)
         audio = TimedAudio()
         game, events = _ffa(audio, cm=cm)

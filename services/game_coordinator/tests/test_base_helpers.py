@@ -679,6 +679,7 @@ class TestGrantToughnessBoost:
         await game.grant_toughness_boost("BB", 5.0, 9.0)
         assert game.players["BB"].toughness_boost_factor == pytest.approx(2.0)
 
+    @pytest.mark.real_game_time
     @pytest.mark.uc("UC-040", flow="main", steps=[13])
     @pytest.mark.asyncio
     async def test_uc040_step13_toughness_boost_lasts_at_most_30_s(self, game):
