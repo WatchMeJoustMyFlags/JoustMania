@@ -324,7 +324,7 @@ class TestMenuServicerStartStopMenu:
             await asyncio.Event().wait()
 
         real_servicer.audio.start_lobby_music.side_effect = _hangs
-        with patch("services.menu.servicer.LOBBY_RESTORE_STEP_TIMEOUT_SECONDS", 0.05):
+        with patch("services.menu.game_lifecycle.LOBBY_RESTORE_STEP_TIMEOUT_SECONDS", 0.05):
             task = asyncio.ensure_future(real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock()))
             done, _ = await asyncio.wait({task}, timeout=2)
             if task not in done:
@@ -1484,7 +1484,7 @@ class TestStartWhileGameActive:
 class TestLobbyRestoreBounded:
     """UC-010 BR-010 (#2072): each lobby-restore step is bounded, so a hung gRPC call cannot block reset_menu."""
 
-    _BOUND = "services.menu.servicer.LOBBY_RESTORE_STEP_TIMEOUT_SECONDS"
+    _BOUND = "services.menu.game_lifecycle.LOBBY_RESTORE_STEP_TIMEOUT_SECONDS"
 
     @staticmethod
     async def _ends(coro) -> None:
@@ -1505,7 +1505,7 @@ class TestLobbyRestoreBounded:
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-        from services.menu.servicer import _bounded_restore_step
+        from services.menu.game_lifecycle import _bounded_restore_step
 
         monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
         exporter = InMemorySpanExporter()
@@ -1704,14 +1704,14 @@ class TestGameEventResult:
     """Tests for the _GameEventResult dataclass."""
 
     def test_game_started_true(self):
-        from services.menu.servicer import _GameEventResult
+        from services.menu.game_lifecycle import _GameEventResult
 
         result = _GameEventResult(game_started=True, should_return=False)
         assert result.game_started is True
         assert result.should_return is False
 
     def test_should_return_true(self):
-        from services.menu.servicer import _GameEventResult
+        from services.menu.game_lifecycle import _GameEventResult
 
         result = _GameEventResult(game_started=False, should_return=True)
         assert result.game_started is False
@@ -1784,7 +1784,8 @@ class TestHandleFirstGameEvent:
     @pytest.mark.uc("UC-010", flow="A3", steps=[1])
     async def test_start_error_returns_should_return_true(self, servicer):
         """game_start_error event should return result with should_return=True."""
-        from services.menu.servicer import MenuServicer, _GameEventResult
+        from services.menu.game_lifecycle import _GameEventResult
+        from services.menu.servicer import MenuServicer
 
         event = MagicMock()
         event.event_type = "game_start_error"
@@ -1806,7 +1807,8 @@ class TestHandleFirstGameEvent:
     @pytest.mark.asyncio
     async def test_success_event_returns_game_started_true(self, servicer):
         """Non-error first event should return result with game_started=True."""
-        from services.menu.servicer import MenuServicer, _GameEventResult
+        from services.menu.game_lifecycle import _GameEventResult
+        from services.menu.servicer import MenuServicer
 
         event = MagicMock()
         event.event_type = "game_started"
@@ -1955,7 +1957,7 @@ class TestBuildGameConfig:
 
         from services.menu.servicer import MenuServicer
 
-        with patch("services.menu.servicer.set_game_transaction_context"):
+        with patch("services.menu.game_lifecycle.set_game_transaction_context"):
             return MenuServicer._build_game_config(servicer, game_mode, players)
 
     @pytest.mark.uc("UC-010", flow="main", steps=[5])
@@ -2090,8 +2092,8 @@ class TestRestartLobby:
         servicer.state = menu_pb2.MenuState.GAME_STARTING
 
         with (
-            patch("services.menu.servicer.tracer") as mock_tracer,
-            patch("services.menu.servicer.otel_context"),
+            patch("services.menu.game_lifecycle.tracer") as mock_tracer,
+            patch("services.menu.game_lifecycle.otel_context"),
         ):
             mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
             mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
@@ -2109,8 +2111,8 @@ class TestRestartLobby:
         from services.menu.servicer import MenuServicer
 
         with (
-            patch("services.menu.servicer.tracer") as mock_tracer,
-            patch("services.menu.servicer.otel_context"),
+            patch("services.menu.game_lifecycle.tracer") as mock_tracer,
+            patch("services.menu.game_lifecycle.otel_context"),
         ):
             mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
             mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
@@ -2128,8 +2130,8 @@ class TestRestartLobby:
         from services.menu.servicer import MenuServicer
 
         with (
-            patch("services.menu.servicer.tracer") as mock_tracer,
-            patch("services.menu.servicer.otel_context"),
+            patch("services.menu.game_lifecycle.tracer") as mock_tracer,
+            patch("services.menu.game_lifecycle.otel_context"),
         ):
             mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
             mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
@@ -2147,8 +2149,8 @@ class TestRestartLobby:
         from services.menu.servicer import MenuServicer
 
         with (
-            patch("services.menu.servicer.tracer") as mock_tracer,
-            patch("services.menu.servicer.otel_context"),
+            patch("services.menu.game_lifecycle.tracer") as mock_tracer,
+            patch("services.menu.game_lifecycle.otel_context"),
         ):
             mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
             mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
@@ -2166,8 +2168,8 @@ class TestRestartLobby:
         from services.menu.servicer import MenuServicer
 
         with (
-            patch("services.menu.servicer.tracer") as mock_tracer,
-            patch("services.menu.servicer.otel_context"),
+            patch("services.menu.game_lifecycle.tracer") as mock_tracer,
+            patch("services.menu.game_lifecycle.otel_context"),
         ):
             mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
             mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
@@ -2185,8 +2187,8 @@ class TestRestartLobby:
         from services.menu.servicer import MenuServicer
 
         with (
-            patch("services.menu.servicer.tracer") as mock_tracer,
-            patch("services.menu.servicer.otel_context"),
+            patch("services.menu.game_lifecycle.tracer") as mock_tracer,
+            patch("services.menu.game_lifecycle.otel_context"),
         ):
             mock_tracer.start_as_current_span.return_value.__enter__ = MagicMock()
             mock_tracer.start_as_current_span.return_value.__exit__ = MagicMock(return_value=False)
@@ -2253,7 +2255,7 @@ class TestBuildTraceMetadata:
 
         from services.menu.servicer import MenuServicer
 
-        with patch("services.menu.servicer.TraceContextTextMapPropagator") as mock_propagator_cls:
+        with patch("services.menu.game_lifecycle.TraceContextTextMapPropagator") as mock_propagator_cls:
             mock_propagator = MagicMock()
             mock_propagator_cls.return_value = mock_propagator
 
@@ -2295,7 +2297,7 @@ class TestBuildGameConfigCustomValues:
 
         from services.menu.servicer import MenuServicer
 
-        with patch("services.menu.servicer.set_game_transaction_context"):
+        with patch("services.menu.game_lifecycle.set_game_transaction_context"):
             return MenuServicer._build_game_config(servicer, game_mode, players)
 
     @pytest.mark.uc("UC-010", flow="main", steps=[5])
@@ -2431,7 +2433,8 @@ class TestConsumeGameEvents:
     @pytest.mark.asyncio
     async def test_game_ended_event_returns_should_return_true(self, servicer):
         """A game_ended event should trigger restart and return should_return=True."""
-        from services.menu.servicer import MenuServicer, _GameEventResult
+        from services.menu.game_lifecycle import _GameEventResult
+        from services.menu.servicer import MenuServicer
 
         event = MagicMock()
         event.event_type = "game_started"
@@ -2513,7 +2516,8 @@ class TestConsumeGameEvents:
     @pytest.mark.asyncio
     async def test_empty_stream_returns_not_should_return(self, servicer):
         """An empty stream should return should_return=False."""
-        from services.menu.servicer import MenuServicer, _GameEventResult
+        from services.menu.game_lifecycle import _GameEventResult
+        from services.menu.servicer import MenuServicer
 
         async def fake_stream():
             return
@@ -2695,7 +2699,7 @@ class TestRunGameLifecycleMidStartFailure:
 
         from services.menu.servicer import MenuServicer
 
-        with patch("services.menu.servicer.metrics"):
+        with patch("services.menu.game_lifecycle.metrics"):
             await MenuServicer._run_game_lifecycle(servicer, "s1", source="web")
 
     @pytest.mark.asyncio
@@ -2762,7 +2766,7 @@ class TestRunGameLifecycleRosterAbort:
 
         from services.menu.servicer import MenuServicer
 
-        with patch("services.menu.servicer.metrics"), patch("services.menu.servicer.asyncio.sleep", AsyncMock()):
+        with patch("services.menu.game_lifecycle.metrics"), patch("services.menu.servicer.asyncio.sleep", AsyncMock()):
             await MenuServicer._run_game_lifecycle(servicer, "s1", source="controller", controllers=controllers)
 
     @pytest.mark.asyncio
