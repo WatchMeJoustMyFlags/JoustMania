@@ -350,7 +350,7 @@ DISCONNECTED controllers show nothing. There is no dedicated "connection flash":
 | `FORCE_START_CHARGE` | White fading out over 2 s | none | none |
 | `SHOW_BATTERY` | Battery tier colour for 1 s | none | base colour |
 | `IDENTIFY` | White 2 Hz flash, 3 s default (500 ms to 10 s) | 150 intensity, 500 ms | base colour (UC-004) |
-| `PULSE` | Caller colour (default White), default 600 ms at speed 3 | none | base colour |
+| `PULSE` | Caller colour (default White), default 600 ms at speed 3. The agent shield's helped cue (UC-040 A42, BR-031, #2395) is a Magenta (255,0,192) pulse, 500 ms at speed 4, sent just before the shield layer; as an overlay it draws over every shield layer | none | base colour, or the shield layer when one is active |
 | `FLASH` | Caller colour (default White), default 400 ms at speed 5 | none | base colour |
 | `RUMBLE` | none | intensity `min(255, speed * 50)` (speed default 5), default 2000 ms (secret signalling) | none |
 | `SHIELD_CHARGE` (agent, #1837) | The player's current base colour breathing 60% to 100% at 0.5 Hz, rendered at 5 to 10 Hz or on visible change only; the lowest shield layer (the full shield and the toughness boost draw over it); `duration_ms` capped at 120 s, re-sent by the coordinator while the charge is held; a closed game stream ends the charge and `SHIELD` layers of its controllers (serials snapshotted before release; delayed about 7 s, longer than the coordinator reconnect backoff, and cancelled when a new game stream claims the serial); after a mid-game coordinator reconnect the coordinator re-sends `SHIELD_CHARGE` and `SHIELD` with the time left (UC-040 BR-021) | one tick, 100 ms at 120, when the layer starts | base colour |

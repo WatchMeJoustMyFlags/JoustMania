@@ -60,10 +60,14 @@ class RecordingStream:
         self.writes.append(message)
 
     def effects(self):
+        """(serial, effect, duration_ms) per game effect, without the help cue PULSE.
+
+        The cue (UC-040 A42, BR-031) is pinned in test_shield_help_cue.py.
+        """
         return [
             (m.game_effect.serial, m.game_effect.effect, m.game_effect.duration_ms)
             for m in self.writes
-            if m.HasField("game_effect")
+            if m.HasField("game_effect") and m.game_effect.effect != controller_manager_pb2.GAME_EFFECT_PULSE
         ]
 
 

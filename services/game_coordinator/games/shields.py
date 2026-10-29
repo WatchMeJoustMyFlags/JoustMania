@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 
+from lib.colors import Colors
 from lib.feature_flags import GAME_KIND_SHADOW
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sound
@@ -76,6 +77,14 @@ from services.game_coordinator.stream_writes import serialized_write
 if TYPE_CHECKING:
     from services.game_coordinator.games.base import Player
 
+# The "helped" cue of an agent shield (#2395, UC-040 A42, BR-031): a short magenta
+# GAME_EFFECT_PULSE (the agent colour of #818) on the helped controller, sent before the
+# shield's own LED command. The controller manager plays an overlay effect over every
+# shield layer, so the layer shows once the pulse ends.
+SHIELD_HELP_CUE_COLOR = Colors.Magenta.value
+SHIELD_HELP_CUE_DURATION_MS = 500
+SHIELD_HELP_CUE_SPEED = 4  # pulses per second: two pulses in 500 ms
+
 
 class ShieldMixin:
     """Shield behaviour of every game mode, mixed into ``BaseGameMode`` (#2360)."""
@@ -108,6 +117,11 @@ class ShieldMixin:
         So with a cooldown set, a running agent shield is never extended; cooldown
         0 restores extend-not-shorten. A kept (no-op) grant does not count.
 
+        Every caller is an agent grant (``handle_shield_seconds``, the
+        ``shield_seconds`` intervention), so an applied grant first pulses the
+        helped controller magenta (#2395, UC-040 A42, BR-031) in all three modes;
+        a refused or kept grant sends no cue.
+
         Shield feedback (#1301, UC-040 A16): the ``shield_up`` sound, a
         ``GAME_EFFECT_SHIELD`` for the remaining protection (rendered by the
         controller manager: fade, last-second blink, restore) and a
@@ -133,7 +147,11 @@ class ShieldMixin:
         latched_here = not self._shield_hold_latched
         hold = self._latch_shield_hold()
         if hold is not None:
-            return self._grant_shield_energy(player, seconds, hold)
+            granted = self._grant_shield_energy(player, seconds, hold)
+            # UC-040 BR-031: the helped cue; it takes the stream lock before the
+            # queued SHIELD_ENERGY / SHIELD_HOLD write of this grant.
+            await self._send_shield_help_cue(player)
+            return granted
 
         # UC-040 BR-019: in trigger mode the grant is a charge the player activates
         # (A30). Read per grant, so a flip applies to the next grant only; the grant
@@ -186,10 +204,42 @@ class ShieldMixin:
                 attributes={"shield_seconds": seconds, **player_identity_attributes(serial, player.name)},
             )
 
-        # Perceptible feedback for the remaining protection (#1301, UC-040 A16).
+        # The helped cue (UC-040 BR-031), then the shield's own feedback (#1301, UC-040 A16).
+        await self._send_shield_help_cue(player)
         await self._send_shield_feedback(player, new_grace - game_clock.now(), kind="full", sound=not was_protected)
 
         return True
+
+    async def _send_shield_help_cue(self, player: "Player") -> None:
+        """Pulse the helped controller magenta before the shield colour (#2395, UC-040 A42, BR-031).
+
+        Called only by an applied ``grant_shield`` (the agent's grant), after the
+        protection, charge or energy is in place and before the shield's LED command.
+        Best-effort: a failed write is logged and never fails the grant.
+        """
+        if not self.gameplay_stream:
+            return
+        try:
+            from proto import controller_manager_pb2
+
+            red, green, blue = SHIELD_HELP_CUE_COLOR
+            trace_parent, trace_state = inject_trace_context(player.span)
+            await serialized_write(
+                self.gameplay_stream,
+                controller_manager_pb2.GameplayStreamControl(
+                    game_effect=controller_manager_pb2.GameEffectCommand(
+                        serial=player.serial,
+                        effect=controller_manager_pb2.GAME_EFFECT_PULSE,
+                        color=controller_manager_pb2.RGB(r=red, g=green, b=blue),
+                        duration_ms=SHIELD_HELP_CUE_DURATION_MS,
+                        speed=SHIELD_HELP_CUE_SPEED,
+                        trace_parent=trace_parent,
+                        trace_state=trace_state,
+                    )
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"Shield help cue for {player.serial} failed (shield unaffected): {e}")
 
     def _shield_limits(self) -> tuple[int, int]:
         """``(max shields per player per game, cooldown seconds)`` for the next grant (UC-040 BR-022).
@@ -488,6 +538,7 @@ class ShieldMixin:
                     },
                 )
 
+        await self._send_shield_help_cue(player)  # UC-040 BR-031: before the charge layer
         await self._send_shield_charge_layer(player, now)
         try:
             await self.event_publisher(
