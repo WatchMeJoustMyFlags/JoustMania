@@ -30,6 +30,7 @@ import grpc
 from openfeature.evaluation_context import EvaluationContext
 from opentelemetry import context as otel_context
 from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from lib.controller_constants import battery_to_pct
 from lib.feature_flags import (
@@ -905,6 +906,14 @@ class Phase:
 
     name: str
     execute: callable
+
+
+@dataclass
+class _RunProgress:
+    """How far run()'s teardown got: what its finally must still stop (#2357)."""
+
+    music_stopped: bool = False
+    shield_feedback_ended: bool = False
 
 
 class PollDegradationError(Exception):
@@ -4995,158 +5004,202 @@ class BaseGameMode(ABC):
             game_kind=self.game_kind,
         )
 
+    async def _teardown_before_end(self, teardown_span: trace.Span, progress: "_RunProgress") -> None:
+        """Teardown steps before ``_end_game_impl`` (the winner effects)."""
+        teardown_span.add_event(
+            "game.state_changed",
+            {
+                "game.state": "ENDING",
+                "game.id": self.game_id,
+            },
+        )
+        # Stop game music first (inside teardown_phase so StopMusic span is a child)
+        await self._stop_game_music()
+        progress.music_stopped = True
+
+        # Shield LEDs end with the game, before the winner effects (#1301).
+        await self._end_shield_feedback()
+        progress.shield_feedback_ended = True
+
+    # A flow that returns before its teardown when force-ended records the
+    # force_ended outcome in run()'s finally (StreamedIntroGameMode).
+    _RUN_RETURNS_EARLY_ON_FORCE_END: bool = False
+
     async def run(self):
         """
-        Main entry point to run the game (Template Method).
+        Main entry point to run the game (Template Method, the only run()).
 
-        Orchestrates all game phases with consistent span hierarchy:
-        1. initialization_phase (setup: players, colors, stream, music)
-        2. gameplay_phase (player_lifecycle spans with countdown_phase children)
-        3. teardown_phase
+        Modes change the flow through the hooks, never by overriding run():
 
-        Phase spans are automatically children of the current game span.
+        - ``_run_span_scope``: the span the run executes in (base: none).
+        - ``_run_until_teardown``: start, initialization and gameplay; returns
+          False when a force-end skips the teardown.
+        - ``_teardown_before_end`` / ``_teardown_after_outcome``: the teardown
+          steps around ``_end_game_impl`` and the outcome record.
+        - ``_on_run_error``: how an error is reported before it is re-raised.
+        - ``_stop_feedback_and_force_end``: the finally's music / shield stop
+          and the force-end hook, in the flow's order.
+
+        The base flow: initialization_phase (setup: players, colors, stream,
+        music), gameplay_phase (player_lifecycle spans with countdown_phase
+        children), teardown_phase. Phase spans are children of the game span.
 
         A run that raises or is cancelled before the teardown step still stops
         the game music and ends the shield feedback in ``finally`` (UC-020
-        failure postcondition, #2357), as the modes with their own ``run()`` do.
+        failure postcondition, #2357).
         """
-        music_stopped = False
-        shield_feedback_ended = False
-        try:
-            # State transitions
-            self.state = GameState.STARTING
-            self.running = True  # Set early to allow force_end during countdown
-            current_span = trace.get_current_span()
-            self._capture_game_root_span()
-            current_span.add_event(
-                "game.state_changed",
-                {
-                    "game.state": "STARTING",
-                    GAME_MODE_ATTR: self.get_game_name(),
-                    "game.id": self.game_id,
-                },
-            )
-            await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
+        progress = _RunProgress()
+        # The session game root span carries the outcome (#1328).
+        self._capture_game_root_span()
+        with self._run_span_scope() as game_span:
+            try:
+                if await self._run_until_teardown():
+                    self._latch_game_outcome()
+                    with self._run_tracer().start_as_current_span("teardown_phase") as teardown_span:
+                        await self._teardown_before_end(teardown_span, progress)
+                        await self._end_game_impl()
+                        # The finally adds no shield end after the winner effects.
+                        progress.shield_feedback_ended = True
+                        self._record_game_outcome(teardown_span)
+                        self._teardown_after_outcome()
+                    if game_span is not None:
+                        game_span.set_status(Status(StatusCode.OK))
+            except Exception as e:
+                self._run_failed = True
+                await self._on_run_error(e, game_span)
+                raise
+            finally:
+                if self._RUN_RETURNS_EARLY_ON_FORCE_END:
+                    self._record_force_ended_outcome_if_unrecorded()
+                force_ended = not self.running
+                self.running = False
+                await self._stop_feedback_and_force_end(force_ended, progress)
+                await self._cleanup_after_run()
+                logger.info(f"{self.get_game_name()} game finished: {self.game_id}")
 
-            # Phase 1: Initialization (setup only — no countdown)
-            with tracer.start_as_current_span("initialization_phase") as init_span:
-                init_span.set_attribute("game.id", self.game_id)
-                init_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
+    def _run_tracer(self) -> trace.Tracer:
+        """The tracer of run()'s own spans (teardown_phase)."""
+        return tracer
 
-                self._emit_sensitivity_metric()
-                logger.info(f"Sensitivity: {self.sensitivity.name} ({self.sensitivity.value})")
+    @contextlib.contextmanager
+    def _run_span_scope(self):
+        """The span run() executes in; yields it, or None (base: the session's game span)."""
+        yield None
 
-                # Initialize players
-                await self._initialize_players()
+    async def _run_until_teardown(self) -> bool:
+        """Start, initialization and gameplay of the base flow; True: run the teardown."""
+        # State transitions
+        self.state = GameState.STARTING
+        self.running = True  # Set early to allow force_end during countdown
+        current_span = trace.get_current_span()
+        current_span.add_event(
+            "game.state_changed",
+            {
+                "game.state": "STARTING",
+                GAME_MODE_ATTR: self.get_game_name(),
+                "game.id": self.game_id,
+            },
+        )
+        await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
-                # Validate player count
-                if len(self.players) < 2:
-                    raise ValueError(f"Need at least 2 players, got {len(self.players)}")
+        # Phase 1: Initialization (setup only — no countdown)
+        with tracer.start_as_current_span("initialization_phase") as init_span:
+            init_span.set_attribute("game.id", self.game_id)
+            init_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
-                init_span.set_attribute("player_count", len(self.players))
+            self._emit_sensitivity_metric()
+            logger.info(f"Sensitivity: {self.sensitivity.name} ({self.sensitivity.value})")
 
-                self._set_flag_eval_context()
+            # Initialize players
+            await self._initialize_players()
 
-                # A mode whose phases send effects over the stream opens it first
-                # (UC-021 A1, D-G10); a drain discards frames until the start.
-                early_stream = self._opens_stream_before_additional_phases()
+            # Validate player count
+            if len(self.players) < 2:
+                raise ValueError(f"Need at least 2 players, got {len(self.players)}")
+
+            init_span.set_attribute("player_count", len(self.players))
+
+            self._set_flag_eval_context()
+
+            # A mode whose phases send effects over the stream opens it first
+            # (UC-021 A1, D-G10); a drain discards frames until the start.
+            early_stream = self._opens_stream_before_additional_phases()
+            if early_stream:
+                await self._start_gameplay_stream()
+                self._start_early_stream_drain()
+            phases_completed = False
+            try:
+                # Additional phases (e.g., color_assignment, team_formation)
+                # These are children of initialization_phase
+                for phase in self._get_additional_phases():
+                    with tracer.start_as_current_span(phase.name):
+                        await phase.execute()
+
+                # Spoken instructions, when the host switched them on (UC-020 A5):
+                # the clip finishes before the music and the countdown start.
+                await self._play_instructions(init_span)
+                phases_completed = True
+            finally:
                 if early_stream:
+                    await self._stop_early_stream_drain(reopen=phases_completed)
+
+            # A force-end during the instructions skips the start: no stream,
+            # music, game_started or countdown; teardown records force_ended.
+            force_ended_before_start = not self.running
+            if not force_ended_before_start:
+                # Start gameplay stream before countdown (needed for countdown effects)
+                if not early_stream:
                     await self._start_gameplay_stream()
-                    self._start_early_stream_drain()
-                phases_completed = False
-                try:
-                    # Additional phases (e.g., color_assignment, team_formation)
-                    # These are children of initialization_phase
-                    for phase in self._get_additional_phases():
-                        with tracer.start_as_current_span(phase.name):
-                            await phase.execute()
 
-                    # Spoken instructions, when the host switched them on (UC-020 A5):
-                    # the clip finishes before the music and the countdown start.
-                    await self._play_instructions(init_span)
-                    phases_completed = True
-                finally:
-                    if early_stream:
-                        await self._stop_early_stream_drain(reopen=phases_completed)
+                # Start game music BEFORE countdown at low volume.
+                # OGG decode happens during countdown, so music is ready instantly after.
+                await self._start_game_music(volume=self.countdown_music_volume)
 
-                # A force-end during the instructions skips the start: no stream,
-                # music, game_started or countdown; teardown records force_ended.
-                force_ended_before_start = not self.running
-                if not force_ended_before_start:
-                    # Start gameplay stream before countdown (needed for countdown effects)
-                    if not early_stream:
-                        await self._start_gameplay_stream()
+        if force_ended_before_start:
+            # run() latches the outcome before the teardown.
+            logger.info(f"{self.get_game_name()} force-ended before the start: {self.game_id}")
+        else:
+            await self._run_gameplay_phase()
+        return True
 
-                    # Start game music BEFORE countdown at low volume.
-                    # OGG decode happens during countdown, so music is ready instantly after.
-                    await self._start_game_music(volume=self.countdown_music_volume)
+    def _teardown_after_outcome(self) -> None:
+        """Teardown steps after ``_end_game_impl`` and the outcome record."""
+        # Winner effects are sent: close the stream (UC-030 BR-006)
+        self._release_gameplay_stream()
 
-            if force_ended_before_start:
-                logger.info(f"{self.get_game_name()} force-ended before the start: {self.game_id}")
-                self._latch_game_outcome()
-            else:
-                await self._run_gameplay_phase()
+        # Clear THIS session's analytics so dashboards show no data when
+        # the game is over, without clobbering other concurrent sessions
+        # (#775). Game-state gauges are per game_id, so each session
+        # removes only its own series (FR-041).
+        self._clear_shield_metrics()
+        metrics.clear_session_player_analytics(
+            list(self.players.keys()),
+            self.game_id,
+            game_kind=self.game_kind,
+        )
 
-            # Phase 3: Teardown
-            with tracer.start_as_current_span("teardown_phase") as teardown_span:
-                teardown_span.add_event(
-                    "game.state_changed",
-                    {
-                        "game.state": "ENDING",
-                        "game.id": self.game_id,
-                    },
-                )
-                # Stop game music first (inside teardown_phase so StopMusic span is a child)
-                await self._stop_game_music()
-                music_stopped = True
+    async def _on_run_error(self, error: Exception, game_span: trace.Span | None) -> None:  # noqa: ARG002
+        """Report a run error before run() re-raises it: GAME_ERROR is published here (#2025 S2)."""
+        logger.error(f"{self.get_game_name()} game error: {error}", exc_info=True)
+        self.state = GameState.ENDED
+        current_span = trace.get_current_span()
+        current_span.add_event(
+            "game.state_changed",
+            {
+                "game.state": "ENDED",
+                "game.id": self.game_id,
+                "game.error": str(error),
+            },
+        )
+        await self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(error)})
+        self.game_error_published = True
 
-                # Shield LEDs end with the game, before the winner effects (#1301).
-                await self._end_shield_feedback()
-                shield_feedback_ended = True
-
-                await self._end_game_impl()
-                self._record_game_outcome(teardown_span)
-
-                # Winner effects are sent: close the stream (UC-030 BR-006)
-                self._release_gameplay_stream()
-
-                # Clear THIS session's analytics so dashboards show no data when
-                # the game is over, without clobbering other concurrent sessions
-                # (#775). Game-state gauges are per game_id, so each session
-                # removes only its own series (FR-041).
-                self._clear_shield_metrics()
-                metrics.clear_session_player_analytics(
-                    list(self.players.keys()),
-                    self.game_id,
-                    game_kind=self.game_kind,
-                )
-
-        except Exception as e:
-            self._run_failed = True
-            logger.error(f"{self.get_game_name()} game error: {e}", exc_info=True)
-            self.state = GameState.ENDED
-            current_span = trace.get_current_span()
-            current_span.add_event(
-                "game.state_changed",
-                {
-                    "game.state": "ENDED",
-                    "game.id": self.game_id,
-                    "game.error": str(e),
-                },
-            )
-            await self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(e)})
-            self.game_error_published = True
-            raise
-
-        finally:
-            force_ended = not self.running
-            self.running = False
-            # Call force-end hook if game was externally stopped
-            if force_ended:
-                await self.on_force_end()
-            await self._stop_run_feedback(music_stopped, shield_feedback_ended)
-            await self._cleanup_after_run()
-            logger.info(f"{self.get_game_name()} game finished: {self.game_id}")
+    async def _stop_feedback_and_force_end(self, force_ended: bool, progress: "_RunProgress") -> None:
+        """The finally's force-end hook, then the music / shield stop the teardown did not reach."""
+        # Call force-end hook if game was externally stopped
+        if force_ended:
+            await self.on_force_end()
+        await self._stop_run_feedback(progress.music_stopped, progress.shield_feedback_ended)
 
     async def _stop_run_feedback(self, music_stopped: bool, shield_feedback_ended: bool) -> None:
         """Stop the music and end the shield feedback the teardown step did not reach (#2357).
