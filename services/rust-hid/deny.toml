@@ -1,0 +1,23 @@
+# cargo-deny policy for rust-hid (#2374). CI job "Rust Deny" runs
+# `cargo deny check advisories bans sources`.
+# Licenses are not checked yet: no licence policy has been decided.
+
+[graph]
+# The Pi (aarch64) and CI (x86_64) builds; unused platform crates are not checked.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+
+[advisories]
+# Unmaintained crates warn only; vulnerabilities and yanked crates fail.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+[bans]
+# Two versions of one crate are common in the tonic / opentelemetry stack: report, do not fail.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

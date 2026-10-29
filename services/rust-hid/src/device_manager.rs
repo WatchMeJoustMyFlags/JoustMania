@@ -265,6 +265,10 @@ fn handle_command<B: HidBackend>(
             reply,
         } => {
             let polling = stream.is_some();
+            if force && polling {
+                // The poll already finds dead controllers, so `force` adds nothing (psmove_hid.proto).
+                debug!("Discover force ignored: the input stream is open");
+            }
             let serials = handle_discover(
                 api,
                 devices,
@@ -322,7 +326,8 @@ fn handle_command<B: HidBackend>(
 /// One Discover request as the device loop sees it.
 #[derive(Debug, Clone, Copy)]
 struct DiscoverPass {
-    /// Skip the read check of open devices (a periodic forced rescan).
+    /// Skip the read check of open devices (a periodic forced rescan). No effect
+    /// while the input stream is open: `polling` skips the read check anyway.
     force: bool,
     /// Skip the enumeration: only drop the devices that are gone.
     verify_only: bool,
@@ -516,28 +521,31 @@ fn poll_all_devices<D: HidDeviceIo>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::thread::JoinHandle;
     use std::time::Instant;
 
-    const SERIAL: &str = "00:06:f7:aa:bb:cc";
+    /// Already in the normalized form discovery reports (`hid::normalize_serial`).
+    pub(crate) const SERIAL: &str = "0006F7AABBCC";
     const PRODUCT_ID_ZCM2: u16 = 0x0C5E;
 
     #[derive(Default)]
-    struct FakeDeviceState {
+    pub(crate) struct FakeDeviceState {
         /// Input reports the device will return, oldest first.
-        pending: VecDeque<[u8; hid::INPUT_REPORT_SIZE]>,
+        pub(crate) pending: VecDeque<[u8; hid::INPUT_REPORT_SIZE]>,
         /// When a read found no pending report: once per poll of this device.
-        drained_at: Vec<Instant>,
+        pub(crate) drained_at: Vec<Instant>,
         /// Every read fails: the controller is gone (#2314).
-        read_fails: bool,
+        pub(crate) read_fails: bool,
+        /// Every output report written to the device, oldest first.
+        pub(crate) writes: Vec<Vec<u8>>,
     }
 
     /// In-memory HID device shared between the test and the device loop thread.
     #[derive(Clone, Default)]
-    struct FakeDevice(Arc<Mutex<FakeDeviceState>>);
+    pub(crate) struct FakeDevice(pub(crate) Arc<Mutex<FakeDeviceState>>);
 
     impl HidDeviceIo for FakeDevice {
         fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize> {
@@ -560,13 +568,14 @@ mod tests {
         }
 
         fn write(&self, data: &[u8]) -> hidapi::HidResult<usize> {
+            self.0.lock().unwrap().writes.push(data.to_vec());
             Ok(data.len())
         }
     }
 
     /// Backend with one attached ZCM2 controller.
-    struct FakeBackend {
-        device: FakeDevice,
+    pub(crate) struct FakeBackend {
+        pub(crate) device: FakeDevice,
     }
 
     impl HidBackend for FakeBackend {
@@ -613,23 +622,32 @@ mod tests {
         device: &FakeDevice,
         heartbeat: Heartbeat,
     ) -> (mpsc::Sender<DeviceCmd>, JoinHandle<()>) {
+        spawn_loop_with(device, heartbeat, DeviceOutputs::default())
+    }
+
+    /// The device loop over the fake device, writing through `outputs`: a
+    /// gRPC service built on `outputs.router` drives it (controller_io_service tests).
+    pub(crate) fn spawn_loop_with(
+        device: &FakeDevice,
+        heartbeat: Heartbeat,
+        outputs: DeviceOutputs,
+    ) -> (mpsc::Sender<DeviceCmd>, JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let backend = FakeBackend {
             device: device.clone(),
         };
-        let handle = std::thread::spawn(move || {
-            run_device_loop(backend, cmd_rx, &heartbeat, &DeviceOutputs::default())
-        });
+        let handle =
+            std::thread::spawn(move || run_device_loop(backend, cmd_rx, &heartbeat, &outputs));
         (cmd_tx, handle)
     }
 
-    fn shutdown(cmd_tx: &mpsc::Sender<DeviceCmd>, handle: JoinHandle<()>) {
+    pub(crate) fn shutdown(cmd_tx: &mpsc::Sender<DeviceCmd>, handle: JoinHandle<()>) {
         cmd_tx.send(DeviceCmd::Shutdown).unwrap();
         handle.join().unwrap();
     }
 
     /// A ZCM2 input report: trigger 200, Cross pressed, gyro x = -1234.
-    fn sample_report() -> [u8; hid::INPUT_REPORT_SIZE] {
+    pub(crate) fn sample_report() -> [u8; hid::INPUT_REPORT_SIZE] {
         let mut data = [0u8; hid::INPUT_REPORT_SIZE];
         data[0] = 0x01;
         data[2] = hid::Button::CROSS as u8;
@@ -716,7 +734,7 @@ mod tests {
     }
 
     /// True when the loop polls the device: its empty-read count grows.
-    fn loop_polls(device: &FakeDevice) -> bool {
+    pub(crate) fn loop_polls(device: &FakeDevice) -> bool {
         let before = device.0.lock().unwrap().drained_at.len();
         std::thread::sleep(Duration::from_millis(100));
         device.0.lock().unwrap().drained_at.len() > before
