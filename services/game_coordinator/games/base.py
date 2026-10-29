@@ -2192,6 +2192,9 @@ class BaseGameMode(ABC):
     # this many frames (about 1 s at the default 60 Hz; UC-030 BR-006, #1931).
     _RECONNECT_HEALTHY_FRAMES = 60
 
+    # The win hold; a class attribute so tests shorten it (#2361). Production keeps 1 s.
+    _WIN_HOLD_S: float = 1.0
+
     async def _hold_win_display(self) -> None:
         """Latch the outcome and keep the game active 1 s to show the winner (UC-020 BR-003).
 
@@ -2202,7 +2205,7 @@ class BaseGameMode(ABC):
         if self._latched_outcome is None:
             return
         logger.info("Win condition met, keeping game active for 1 second to show winner")
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(self._WIN_HOLD_S)
 
     async def _game_loop(self):
         """Main game loop - processes controller states and checks for deaths."""

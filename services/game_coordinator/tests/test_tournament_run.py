@@ -810,6 +810,7 @@ async def test_a_stream_that_ends_ok_in_a_match_ends_the_game_once():
 
 
 @pytest.mark.uc("UC-025", flow="main", steps=[2, 4])
+@pytest.mark.real_durations
 def test_the_spec_defaults():
     """Step 2 and 4: 4 s invincibility, 2 s round pause, 5 s between matches; A1: 22 s match limit."""
     game = TournamentGame(

@@ -62,6 +62,7 @@ addopts = "-v"
 markers = [
     "uc(id, flow=, br=, steps=, tc=, cond=): traceability tag to a use-case flow / business rule (see .claude/skills/README.md)",
     "nfr(*ids): traceability tag to the non-functional requirement(s) (NFR-XXX in docs/requirements.md) the test measures or verifies (see .claude/skills/README.md)",
+    "real_durations: game_coordinator tests only: keep the production intro / pause / countdown durations (the autouse fixture in tests/conftest.py shortens them, #2361)",
 ]
 
 # ty - Type checking configuration

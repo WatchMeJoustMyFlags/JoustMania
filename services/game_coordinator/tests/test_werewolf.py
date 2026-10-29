@@ -788,6 +788,7 @@ class TestWerewolfIntroPhase:
             assert serial in rumble_serials
 
     @pytest.mark.asyncio
+    @pytest.mark.real_durations
     async def test_intro_stops_if_not_running(self, werewolf_game):
         """If game.running becomes False during intro, werewolf_intro_end should NOT be published."""
         from unittest.mock import AsyncMock, patch
