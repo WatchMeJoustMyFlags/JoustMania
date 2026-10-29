@@ -475,8 +475,9 @@ class MultiplexerBackend(ControllerBackend):
     def _cleanup_stale_state(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Remove centralized state for controllers no longer present."""
         # Union of every per-serial table: a controller that never received an
-        # LED colour still has backend / adapter info series to remove (#1468).
-        tracked = set(self._led_colors) | set(self._last_backend) | set(self._last_adapter)
+        # LED colour still has backend / adapter info series to remove (#1468),
+        # and a rumble-only serial is replayed by the LED batch (#2365).
+        tracked = set(self._led_colors) | set(self._rumble) | set(self._last_backend) | set(self._last_adapter)
         stale = tracked - set(seen)
         for serial in stale:
             self._led_colors.pop(serial, None)
