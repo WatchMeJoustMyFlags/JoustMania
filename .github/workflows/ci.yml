@@ -732,7 +732,7 @@ jobs:
         with:
           manifest-path: services/rust-hid/Cargo.toml
           command: check
-          arguments: advisories bans sources
+          command-arguments: advisories bans sources
 
   # Go agent service tests (OTLP fan-out target)
   agent-tests:
