@@ -20,7 +20,7 @@ import {
   RolloutStore,
   activityFeed,
   blockedRowsFrom,
-  fetchDecideFeed,
+  pollDecides,
   fetchFlagStates,
   fetchInterventionCounts,
   fetchRollouts,
@@ -325,8 +325,8 @@ describe("UC-035: main step 3, no browser clock in a Jaeger request", () => {
     const browserDay = new Date().toISOString().slice(0, 10);
     const urls = stubFetch(() => json(toOtlp(games)));
     const store = new DecideStore();
-    store.merge((await fetchDecideFeed(store.queryStartMs())).rows);
-    await fetchDecideFeed(store.queryStartMs());
+    await pollDecides(store, 0);
+    await pollDecides(store, 0);
     expect(new URL(urls[0], "http://x").searchParams.get("query.startTimeMin")).toBe(COLD_START_TIME_MIN);
     for (const u of urls) {
       const params = new URL(u, "http://x").searchParams;

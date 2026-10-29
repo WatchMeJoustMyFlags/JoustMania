@@ -11,8 +11,8 @@ the wiring that only the full stack has:
 - agent -> otel-collector -> Jaeger, read back through envoy the way the
   dashboard's Agent tab reads it (Jaeger query API v3, ``GET /jaeger/api/v3/traces
   ?query.serviceName=agent&query.operationName=agent.decide&query.searchDepth=5``, #2283,
-  ``services/dashboard/src/agent.ts``
-  ``decideQueryParams``; UC-035 step 3, decision feed only);
+  ``services/dashboard/src/agentDecide.ts``
+  ``decideSearches`` / ``searchParams`` in ``jaeger.ts``; UC-035 step 3, decision feed only);
 - the game's trace in Jaeger: the root span named after the mode, its phases,
   one span per player, and the agent's rules-path spans as remote children of
   the coordinator's ``game_cycle`` span, each ``agent.decision`` keeping its
@@ -77,7 +77,7 @@ GAME_PHASES = ("initialization_phase", "gameplay_phase", "game_cycle", "teardown
 # Agent spans that must name the game (validation 1); game.kind where the spec puts it.
 AGENT_SPANS_WITH_GAME_ID = ("agent.signal_received", "agent.decide", "agent.decision")
 AGENT_SPANS_WITH_GAME_KIND = ("agent.decide", "agent.decision")
-# The Agent tab's decide query (agent.ts DECIDE_OPERATION, DECIDE_TRACE_LIMIT).
+# The Agent tab's decide query (agentDecide.ts DECIDE_OPERATION, DECIDE_TRACE_LIMIT).
 DECIDE_QUERY = {"service": "agent", "operation": "agent.decide", "limit": 5}
 
 # Interventions on, rules backend, the allow-list that lets the rules engine's
@@ -283,7 +283,7 @@ def _tags(span: dict) -> dict:
 
 
 def _parent_id(span: dict) -> str:
-    """CHILD_OF reference, as agent.ts parentSpanId reads it."""
+    """CHILD_OF reference, as jaeger.ts parentSpanId reads it."""
     ref = next(
         (r for r in span.get("references", []) if r.get("refType") == "CHILD_OF"), None
     )

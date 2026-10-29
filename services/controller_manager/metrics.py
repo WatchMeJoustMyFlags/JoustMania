@@ -206,15 +206,10 @@ battery_check_duration_seconds = Histogram(
     buckets=[0.001, 0.005, 0.010, 0.025, 0.050, 0.100],
 )
 
-# Discovery throttle metrics
+# Discovery pass counter
 discovery_full_enumerate_total = Counter(
     "controller_discovery_full_enumerate_total",
     "Full discovery enumerations (with HID/psmove scanning)",
-)
-
-discovery_verify_only_total = Counter(
-    "controller_discovery_verify_only_total",
-    "Verify-only discovery cycles (skipped enumeration)",
 )
 
 # Parallel polling metrics (Phase 62)

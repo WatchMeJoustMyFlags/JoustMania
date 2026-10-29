@@ -198,8 +198,9 @@ services/controller_manager/
 ├── multiplexer/
 │   ├── adapter.py         # ControllerIOAdapter ABC
 │   ├── multiplexer_backend.py  # Orchestrator with centralized state
-│   ├── python_hid_adapter.py  # PythonHidAdapter (gRPC → python-hid)
-│   ├── rust_adapter.py    # RustAdapter (gRPC → rust-hid)
+│   ├── hid_service_adapter.py  # HidServiceAdapter: shared gRPC HID-service client
+│   ├── python_hid_adapter.py  # PythonHidAdapter (HidServiceAdapter → python-hid)
+│   ├── rust_adapter.py    # RustServiceAdapter (HidServiceAdapter → rust-hid)
 │   ├── mock_adapter.py    # MockAdapter (simulated I/O)
 │   ├── bt_discovery.py    # CentralizedBTDiscovery
 │   └── validation.py      # Backend combination validation
