@@ -661,7 +661,7 @@ for publish in ("docker-build-merge", "docker-build-extra-merge"):
 # 9. (#1569) The CI Complete gate stays blocking.
 REQUIRED_NEEDS = {
     "changes", "dashboard-tests", "connect-proxy-tests", "lib-tests", "service-checks",
-    "rust-checks", "agent-tests", "flag-service-tests", "script-tests", "telemetry-contract",
+    "rust-checks", "rust-deny", "agent-tests", "flag-service-tests", "script-tests", "telemetry-contract",
     "flagd-contract", "service-tests", "lint-dockerfiles", "spec-gate", "validate",
     "integration-test", "docker-build", "docker-build-extra", "docker-build-merge",
     "docker-build-extra-merge", "retag-skipped",

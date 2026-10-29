@@ -15,7 +15,7 @@ tonic-prost = "0.14"
 prost = "0.14"
 tonic-health = "0.14"
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 tokio-stream = "0.1"
 # HID device access (hidraw backend for Linux)
 hidapi = { version = "2.6.7", features = ["linux-static-hidraw"] }

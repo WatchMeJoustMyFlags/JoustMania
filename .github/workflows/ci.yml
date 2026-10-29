@@ -708,6 +708,24 @@ jobs:
         working-directory: services/rust-hid
         run: cargo clippy --all-targets -- -D warnings
 
+  # Rust dependency policy (#2374): RustSec advisories, yanked crates, banned
+  # wildcards and unknown registries / git sources, from services/rust-hid/deny.toml.
+  rust-deny:
+    name: Rust Deny
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.run_all_checks == 'true'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Cargo deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: services/rust-hid/Cargo.toml
+          command: check
+          arguments: advisories bans sources
+
   # Go agent service tests (OTLP fan-out target)
   agent-tests:
     name: Agent Tests
@@ -1868,6 +1886,7 @@ jobs:
       - lib-tests
       - service-checks
       - rust-checks
+      - rust-deny
       - agent-tests
       - flag-service-tests
       - script-tests
