@@ -25,7 +25,6 @@ import (
 
 	"github.com/joustmania/flag-service/fserr"
 	"github.com/joustmania/flag-service/state"
-	"github.com/joustmania/flag-service/syncserver"
 	"github.com/joustmania/flag-service/telemetry"
 )
 
@@ -43,7 +42,7 @@ type API struct {
 	State   *state.State
 	Metrics *telemetry.Metrics
 	Tracer  trace.Tracer
-	Links   *syncserver.Links
+	Links   *telemetry.Links
 	Logger  *slog.Logger
 	// Ready reports whether the gRPC sync listener is up (GET /healthz).
 	Ready func() bool
