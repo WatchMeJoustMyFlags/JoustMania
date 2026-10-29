@@ -3,6 +3,7 @@
  *
  * Displays a single controller with LED color, battery, accelerometer visualization.
  */
+import { BASE_URL } from "../baseUrl.js";
 import type { ConnectionQuality, GameplayData, RGB } from "../gen/controller_manager_pb.js";
 import { accelDotOffset, batteryView, normalizeGameplay, statusView } from "../motion.js";
 import type { StatusView } from "../motion.js";
@@ -100,7 +101,7 @@ export class ControllerCard {
       const outcome = await requestUnpair(this.serial, {
         confirm: (message) => globalThis.confirm(message),
         fetch: (input, init) => globalThis.fetch(input, init),
-        baseUrl: import.meta.env.DEV ? "" : globalThis.location.origin,
+        baseUrl: BASE_URL,
       });
       if (outcome.kind === "cancelled") return;
       // The card disappears when the controller disconnects: also log to the event feed

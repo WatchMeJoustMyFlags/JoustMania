@@ -15,18 +15,10 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
-      // Proxy Loki queries (agent experiment telemetry, #981) through envoy,
-      // which routes /loki/* to the Loki HTTP API (port 80 entry point). In
-      // production the dashboard is served behind the same envoy, so this proxy
-      // only matters for `vite dev`.
-      '/loki': {
-        target: 'http://localhost:80',
-        changeOrigin: true,
-      },
       // Proxy VictoriaMetrics queries (agent applied-intervention count, #792)
-      // through envoy, which routes /victoria-metrics/* to the VM HTTP API. As
-      // with /loki, this only matters for `vite dev`; in production the dashboard
-      // is served behind the same envoy.
+      // through envoy, which routes /victoria-metrics/* to the VM HTTP API. This
+      // only matters for `vite dev`; in production the dashboard is served behind
+      // the same envoy.
       '/victoria-metrics': {
         target: 'http://localhost:80',
         changeOrigin: true,
