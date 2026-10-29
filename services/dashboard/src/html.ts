@@ -45,3 +45,8 @@ function render(value: unknown): string {
   if (value === null || value === undefined || value === false) return "";
   return escapeHtml(String(value));
 }
+
+/** The one way to write markup into the DOM: only `SafeHtml` (built with `html`) is accepted, a plain string is a type error. */
+export function setHtml(el: Element, markup: SafeHtml): void {
+  el.innerHTML = markup.value;
+}

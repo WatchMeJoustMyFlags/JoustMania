@@ -7,7 +7,7 @@
  * ../experiments.ts, #2059); the view polls to update live during a shadow run.
  */
 import { renderFreshness } from "../freshness.js";
-import { escapeHtml } from "../html.js";
+import { html, setHtml, type SafeHtml } from "../html.js";
 import type { ArmAggregate, ExperimentView, Recommendation } from "../experiments.js";
 import { EXPERIMENT_PROGRESS_NO_DATA } from "../degrade.js";
 
@@ -35,7 +35,7 @@ export class ExperimentsView {
   }
 
   setError(message: string) {
-    this.container.innerHTML = `<div class="loading">${escapeHtml(message)}</div>`;
+    setHtml(this.container, html`<div class="loading">${message}</div>`);
     this.hasRendered = true;
   }
 
@@ -61,13 +61,11 @@ export class ExperimentsView {
     this.updateFreshness();
 
     if (experiments.length === 0) {
-      this.container.innerHTML = `<div class="loading">${escapeHtml(EXPERIMENT_PROGRESS_NO_DATA)}</div>`;
+      setHtml(this.container, html`<div class="loading">${EXPERIMENT_PROGRESS_NO_DATA}</div>`);
       return;
     }
 
-    this.container.innerHTML = experiments
-      .map((exp) => this.renderCard(exp))
-      .join("");
+    setHtml(this.container, html`${experiments.map((exp) => this.renderCard(exp))}`);
   }
 
   /** True once any render/error has painted (so we don't flash the loader). */
@@ -75,18 +73,18 @@ export class ExperimentsView {
     return this.hasRendered;
   }
 
-  private renderCard(exp: ExperimentView): string {
+  private renderCard(exp: ExperimentView): SafeHtml {
     const verdict = normalizeVerdict(exp.verdict, exp.live, exp.status);
-    const armsHtml = exp.arms.map((arm) => this.renderArm(arm)).join("");
+    const armsHtml = exp.arms.map((arm) => this.renderArm(arm));
     const deltaHtml = this.renderDelta(exp.delta);
 
-    return `
+    return html`
       <div class="experiment-card">
         <div class="experiment-header">
-          <span class="experiment-id" title="${escapeHtml(exp.experimentId)}">
-            ${escapeHtml(exp.experimentId)}
+          <span class="experiment-id" title="${exp.experimentId}">
+            ${exp.experimentId}
           </span>
-          <span class="experiment-verdict ${verdict.cssClass}">${escapeHtml(verdict.label)}</span>
+          <span class="experiment-verdict ${verdict.cssClass}">${verdict.label}</span>
         </div>
         ${renderTested(exp)}
         <div class="experiment-arms">
@@ -94,40 +92,40 @@ export class ExperimentsView {
         </div>
         <div class="experiment-footer">
           ${deltaHtml}
-          ${exp.recommendation ? `<div class="experiment-recommendation">${escapeHtml(recommendationText(exp.recommendation))}</div>` : ""}
-          ${exp.reason ? `<div class="experiment-reason" title="${escapeHtml(exp.reason)}">${escapeHtml(endedText(exp))}</div>` : ""}
+          ${exp.recommendation ? html`<div class="experiment-recommendation">${recommendationText(exp.recommendation)}</div>` : ""}
+          ${exp.reason ? html`<div class="experiment-reason" title="${exp.reason}">${endedText(exp)}</div>` : ""}
           ${renderTraceLink(exp)}
         </div>
       </div>
     `;
   }
 
-  private renderArm(arm: ArmAggregate): string {
+  private renderArm(arm: ArmAggregate): SafeHtml {
     const inFlight = Math.max(0, arm.inFlight);
-    return `
+    return html`
       <div class="experiment-arm">
-        <div class="arm-name">${escapeHtml(prettyArm(arm.arm))}</div>
+        <div class="arm-name">${prettyArm(arm.arm)}</div>
         <div class="arm-stats">
           <span class="arm-count" title="games concluded with a fitness sample">
             n=${arm.sampleCount}
           </span>
           <span class="arm-mean" title="mean fitness across this arm's samples">
-            x&#772;=${arm.sampleCount > 0 ? arm.meanFitness.toFixed(3) : "&mdash;"}
+            x&#772;=${arm.sampleCount > 0 ? arm.meanFitness.toFixed(3) : html`&mdash;`}
           </span>
-          ${inFlight > 0 ? `<span class="arm-inflight" title="games assigned but not yet concluded">+${inFlight} in&nbsp;flight</span>` : ""}
+          ${inFlight > 0 ? html`<span class="arm-inflight" title="games assigned but not yet concluded">+${inFlight} in&nbsp;flight</span>` : ""}
         </div>
       </div>
     `;
   }
 
-  private renderDelta(delta: number | null): string {
+  private renderDelta(delta: number | null): SafeHtml {
     if (delta === null) {
-      return `<div class="experiment-delta delta-neutral">&Delta; &mdash; <span class="delta-label">(awaiting both arms)</span></div>`;
+      return html`<div class="experiment-delta delta-neutral">&Delta; &mdash; <span class="delta-label">(awaiting both arms)</span></div>`;
     }
     const sign = delta > 0 ? "+" : "";
     const cssClass =
       delta > 0 ? "delta-positive" : delta < 0 ? "delta-negative" : "delta-neutral";
-    return `<div class="experiment-delta ${cssClass}">&Delta; ${sign}${delta.toFixed(3)} <span class="delta-label">(experimental &minus; control fitness)</span></div>`;
+    return html`<div class="experiment-delta ${cssClass}">&Delta; ${sign}${delta.toFixed(3)} <span class="delta-label">(experimental &minus; control fitness)</span></div>`;
   }
 }
 
@@ -144,19 +142,19 @@ export function endedText(exp: ExperimentView): string {
   return exp.reason ? `${exp.status || "ended"}: ${exp.reason}` : "";
 }
 
-function renderTested(exp: ExperimentView): string {
+function renderTested(exp: ExperimentView): SafeHtml | "" {
   const tested = testedText(exp);
   if (!tested && !exp.thesis) return "";
-  return `<div class="experiment-tested">
-          ${tested ? `<div class="experiment-flag" title="${escapeHtml(tested)}">${escapeHtml(tested)}</div>` : ""}
-          ${exp.thesis ? `<div class="experiment-thesis" title="${escapeHtml(exp.thesis)}">${escapeHtml(exp.thesis)}</div>` : ""}
+  return html`<div class="experiment-tested">
+          ${tested ? html`<div class="experiment-flag" title="${tested}">${tested}</div>` : ""}
+          ${exp.thesis ? html`<div class="experiment-thesis" title="${exp.thesis}">${exp.thesis}</div>` : ""}
         </div>`;
 }
 
 /** Link to the snapshot's trace in the embedded Jaeger (same host, UC-035 BR-001). */
-function renderTraceLink(exp: ExperimentView): string {
+function renderTraceLink(exp: ExperimentView): SafeHtml | "" {
   if (!exp.traceId) return "";
-  return `<a class="experiment-trace" href="/jaeger/trace/${encodeURIComponent(exp.traceId)}" target="_blank" rel="noopener">trace</a>`;
+  return html`<a class="experiment-trace" href="/jaeger/trace/${encodeURIComponent(exp.traceId)}" target="_blank" rel="noopener">trace</a>`;
 }
 
 /** UC-035 step 4 / UC-043 A19 (#2276): the refused promotion as a recommendation. */

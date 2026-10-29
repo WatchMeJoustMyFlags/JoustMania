@@ -1176,6 +1176,14 @@ jobs:
       - name: Unit tests
         run: npx vitest run
 
+      # #2388: informational, not a gate (no threshold, never fails the job). Re-runs the
+      # suite with v8 coverage and prints the totals in the job summary.
+      - name: Coverage report (informational)
+        continue-on-error: true
+        run: |
+          npm run -s test:coverage > coverage.log 2>&1 || true
+          { echo '### Dashboard coverage (informational)'; echo '```'; sed -n '/Coverage summary/,$p' coverage.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
   # #1491: connect-proxy `buf generate` + `go vet` + `go test`. They live in the
   # Dockerfile's builder stage (the generated proto packages exist only there),
   # so build that stage alone: no runtime image, no push, no integration-test

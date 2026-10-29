@@ -104,10 +104,11 @@ func TestChargeLedger_InertStateUnchanged(t *testing.T) {
 }
 
 // TestChargeLedger_RulesDoNotReproposeChargedTarget: with the engine wired to the
-// loop's ledger, the rules path never proposes a grant the ledger refuses; the slot goes
-// to the next-ranked candidate, and the agent.decide state marks the charged player.
+// loop's ledger, the rules path never proposes a grant the ledger refuses; the shield
+// goes to another R4 candidate (A41) or the slot to the next-ranked candidate, and the
+// agent.decide state marks the charged players.
 //
-// UC: UC-040 A31
+// UC: UC-040 A31 A41
 func TestChargeLedger_RulesDoNotReproposeChargedTarget(t *testing.T) {
 	t.Run("UC-040/A31 no already_charged refusals inside the window", func(t *testing.T) {
 		snap := rulesSnapshot()
@@ -126,6 +127,7 @@ func TestChargeLedger_RulesDoNotReproposeChargedTarget(t *testing.T) {
 		if !containsString(first, "grant_shield/WEAK:dispatched") {
 			t.Fatalf("first cycle outcomes = %v, want grant_shield/WEAK dispatched", first)
 		}
+		charged := map[string]bool{"WEAK": true}
 		for i := 1; i <= 3; i++ {
 			clock = clock.Add(2 * time.Second)
 			got := outcomeSummary(runCycle(l, chargeRulesCtx()))
@@ -133,19 +135,27 @@ func TestChargeLedger_RulesDoNotReproposeChargedTarget(t *testing.T) {
 				t.Fatalf("cycle %d: no decision, want the next-ranked candidate", i)
 			}
 			for _, o := range got {
-				if strings.HasPrefix(o, "grant_shield/") || strings.HasSuffix(o, ":already_charged") {
+				serial, _, _ := strings.Cut(strings.TrimPrefix(o, "grant_shield/"), ":")
+				if (strings.HasPrefix(o, "grant_shield/") && charged[serial]) || strings.HasSuffix(o, ":already_charged") {
 					t.Fatalf("cycle %d outcomes = %v: a charged target was proposed", i, got)
 				}
+				if strings.HasPrefix(o, "grant_shield/") && strings.HasSuffix(o, ":dispatched") {
+					charged[serial] = true
+				}
 			}
+		}
+		// A41: MID (the other R4 candidate) gets the next shield; STRONG is below minScore.
+		if !charged["MID"] || charged["STRONG"] {
+			t.Fatalf("charged after 4 cycles = %v, want WEAK and MID", charged)
 		}
 		decides := spansByName(sr.Ended(), SpanDecide)
 		if len(decides) < 2 {
 			t.Fatalf("agent.decide spans = %d, want one per ranking", len(decides))
 		}
-		want := decide.BuildStateWith(chargeRulesCtx(), decide.Annotations{Charged: map[string]bool{"WEAK": true}}).Digest
+		want := decide.BuildStateWith(chargeRulesCtx(), decide.Annotations{Charged: map[string]bool{"WEAK": true, "MID": true}}).Digest
 		v, ok := attrValue(decides[len(decides)-1], AttrDecideStateDigest)
 		if !ok || v.AsString() != want {
-			t.Fatalf("agent.decide state digest = %q, want the state with WEAK shield_charged (%q)", v.AsString(), want)
+			t.Fatalf("agent.decide state digest = %q, want the state with WEAK and MID shield_charged (%q)", v.AsString(), want)
 		}
 	})
 }
