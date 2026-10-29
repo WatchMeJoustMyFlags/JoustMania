@@ -47,8 +47,10 @@ export class ControllerGrid {
     }
     if (!this.countsElement) return;
     const text = adapterCountsText(counts);
+    const shown = text && this.adaptersStale ? `${text} · stale` : text;
+    if (this.countsElement.hidden === (text === "") && this.countsElement.textContent === shown) return;
     this.countsElement.hidden = text === "";
-    this.countsElement.textContent = text && this.adaptersStale ? `${text} · stale` : text;
+    this.countsElement.textContent = shown;
     this.countsElement.classList.toggle("stale", this.adaptersStale);
   }
 

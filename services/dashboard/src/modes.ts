@@ -67,3 +67,39 @@ export async function loadModeChoices(
     return FALLBACK_CHOICES;
   }
 }
+
+const RETRY_BASE_MS = 2000;
+const RETRY_MAX_MS = 30_000;
+
+/**
+ * Offer the default mode at once, then retry ListGameModes with backoff until the
+ * menu answers with modes (#2387): a dashboard opened while the menu is down no
+ * longer stays FFA-only. `apply` gets the fallback on the first failure and the
+ * real choices on success. `isActive` ends the loop (the page went away).
+ */
+export async function loadModeChoicesWithRetry(
+  listGameModes: () => Promise<Partial<ListGameModesResponse>>,
+  apply: (choices: ModeChoices) => void,
+  options: { sleep?: (ms: number) => Promise<void>; isActive?: () => boolean } = {},
+): Promise<void> {
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const isActive = options.isActive ?? (() => true);
+  let delayMs = RETRY_BASE_MS;
+  let first = true;
+  while (isActive()) {
+    try {
+      const response = await listGameModes();
+      if ((response.gameModes ?? []).length > 0) {
+        apply(modeChoices(response));
+        return;
+      }
+      console.error("ListGameModes returned no modes, retrying");
+    } catch (error) {
+      console.error("ListGameModes failed, offering the default mode until it answers:", error);
+    }
+    if (first) apply(FALLBACK_CHOICES);
+    first = false;
+    await sleep(delayMs);
+    delayMs = Math.min(delayMs * 2, RETRY_MAX_MS);
+  }
+}

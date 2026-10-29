@@ -160,10 +160,10 @@ describe("UC-035: A4 the game event stream is lost", () => {
     }
     let reopen: (() => void) | undefined;
 
-    await keepGameEventStreamOpen(failing, (e) => store.apply(e), (fn) => (reopen = fn));
+    await keepGameEventStreamOpen(failing, (e) => store.apply(e, now, now), (fn) => (reopen = fn));
 
     // The badge from before the loss keeps counting down on its own; nothing new arrives.
-    expect(shieldBadge(store.get("MOCK0001", now + 1000), now + 1000)?.text).toBe("Shield 4.0s");
+    expect(shieldBadge(store.get("MOCK0001", now + 1000, now + 1000), now + 1000, now + 1000)?.text).toBe("Shield 4.0s");
     expect(store.get("MOCK0002", now + 1000)).toBeNull();
     expect(reopen).toBeTypeOf("function");
   });

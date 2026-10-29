@@ -46,7 +46,7 @@ import {
 } from "./degrade.js";
 import { FollowTracker, GameEventClock, followBanner, isRealGameLive, seedFromPoll, visibleTiles } from "./follow.js";
 import type { GameInfoLike } from "./follow.js";
-import { loadModeChoices, startGameEvent } from "./modes.js";
+import { loadModeChoicesWithRetry, startGameEvent } from "./modes.js";
 import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
@@ -148,9 +148,10 @@ async function init() {
     onStopGame: handleStopGame,
   });
   // The playable modes come from the menu (#1278); FFA stays preselected.
-  loadModeChoices(() => menuClient.listGameModes())
-    .then((choices) => controls.setModeChoices(choices))
-    .catch(console.error);
+  // Retried with backoff until the menu answers (#2387).
+  loadModeChoicesWithRetry(() => menuClient.listGameModes(), (choices) => controls.setModeChoices(choices)).catch(
+    console.error,
+  );
   experimentsView = new ExperimentsView("experiments-grid", "experiments-freshness");
   agentView = new AgentView("agent-feed", "agent-flags", "agent-overlay", "agent-freshness", {
     strip: "decide-strip",
