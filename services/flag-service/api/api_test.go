@@ -35,6 +35,7 @@ type env struct {
 	st     *state.State
 	spans  *tracetest.SpanRecorder
 	reader *sdkmetric.ManualReader
+	links  *syncserver.Links
 }
 
 func newEnv(t *testing.T, stream bool) *env {
@@ -75,10 +76,11 @@ func newEnvRegistry(t *testing.T, stream bool, regYAML string) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("t"), Links: &syncserver.Links{}}
+	links := &syncserver.Links{}
+	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("t"), Links: links}
 	srv := httptest.NewServer(a.Handler())
 	t.Cleanup(srv.Close)
-	return &env{t: t, srv: srv, st: st, spans: spans, reader: reader}
+	return &env{t: t, srv: srv, st: st, spans: spans, reader: reader, links: links}
 }
 
 func (e *env) do(method, path string, body any) (int, map[string]any) {
@@ -744,6 +746,24 @@ func TestKillSwitchPersistedClearSignalsPersistFailure(t *testing.T) {
 		code, hdr := deleteHeader(t, srv.URL+"/agent/interventions_allowed?persist=true")
 		if code != http.StatusNoContent || hdr != "true" {
 			t.Fatalf("DELETE %d %s=%q, want 204 and true", code, HeaderPersisted, hdr)
+		}
+	})
+}
+
+// UC: UC-053 A7
+func TestWritesEndTheirInflightMark(t *testing.T) {
+	t.Run("UC-053/A7 every write path, rejected or not, ends its in-flight mark (#2369)", func(t *testing.T) {
+		e := newEnv(t, true)
+		e.do("PUT", "/game/nonstop.respawn_seconds", `{"value":4,"scope":{"experiment_id":"e","arm":"a"}}`)
+		e.do("PUT", "/game/nonstop.respawn_seconds", `{"value":"x"`)
+		e.do("PUT", "/game/nonstop.respawn_seconds", `{"value":999,"scope":{"experiment_id":"e","arm":"a"}}`)
+		e.do("POST", "/game/nope", `{}`)
+		e.do("DELETE", "/game/nonstop.respawn_seconds?experiment_id=e&arm=a", nil)
+		e.do("DELETE", "/game/nonstop.respawn_seconds?persist=maybe", nil)
+		e.do("DELETE", "/game?writer=menu", nil)
+		e.do("DELETE", "/nope?writer=menu", nil)
+		if n := e.links.Inflight(); n != 0 {
+			t.Fatalf("%d writes still marked in flight", n)
 		}
 	})
 }

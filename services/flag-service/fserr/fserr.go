@@ -18,6 +18,7 @@ const (
 	GameNotLive         = "game_not_live"
 	SetNotServed        = "set_not_served"
 	TooManyGames        = "too_many_games"
+	GameIDTaken         = "game_id_taken"
 	RealGameLive        = "real_game_live"
 	WriterMismatch      = "writer_mismatch"
 	FlagReadOnly        = "flag_read_only"

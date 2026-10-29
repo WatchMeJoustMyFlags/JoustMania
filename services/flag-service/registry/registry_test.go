@@ -487,3 +487,41 @@ func TestKillSwitchSetMatchesFlagsMD(t *testing.T) {
 		})
 	}
 }
+
+// UC: UC-053 A5
+func TestCheckValueShapeCeiling(t *testing.T) {
+	p := &Policy{Set: "game", Key: "windows", Kind: KindOverlay, Scopes: []string{ScopeExperiment}, Bounds: Bounds{Shape: true}}
+	f := &baseline.Flag{Variants: map[string]json.RawMessage{
+		"default": json.RawMessage(`{"a":4,"b":8}`), "calm": json.RawMessage(`{"a":3,"b":30}`)}, DefaultVariant: "default"}
+	for value, ok := range map[string]bool{
+		`{"a":8,"b":60}`:     true,
+		`{"a":0,"b":0}`:      true,
+		`{"a":9,"b":11}`:     false,
+		`{"a":4,"b":61}`:     false,
+		`{"a":-1,"b":11}`:    false,
+		`{"a":1e9,"b":11}`:   false,
+		`{"a":4,"b":999999}`: false,
+	} {
+		t.Run("UC-053/A5 shape ceiling "+value, func(t *testing.T) {
+			_, err := CheckValue(p, f, "", json.RawMessage(value))
+			if ok != (err == nil) {
+				t.Fatalf("value %s: accepted=%v, want %v (%v)", value, err == nil, ok, err)
+			}
+			if err != nil && err.Reason != fserr.OutOfBounds {
+				t.Fatalf("reason %s, want out_of_bounds", err.Reason)
+			}
+		})
+	}
+}
+
+// UC: UC-053 A5
+func TestPatternFloatIsPlainDecimal(t *testing.T) {
+	seg := &segment{kind: "float", lo: 0, hi: 10}
+	for part, ok := range map[string]bool{"1": true, "2.5": true, "0.25": true, "0x1p0": false, "inf": false, "NaN": false, "1e1": false, "1_0": false, "": false} {
+		t.Run("UC-053/A5 float segment "+part, func(t *testing.T) {
+			if got := seg.match(part); got != ok {
+				t.Fatalf("match(%q)=%v, want %v", part, got, ok)
+			}
+		})
+	}
+}

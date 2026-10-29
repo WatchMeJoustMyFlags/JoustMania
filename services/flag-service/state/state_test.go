@@ -674,9 +674,9 @@ func TestAdminPersistence(t *testing.T) {
 			t.Fatalf("the corrupt file was not moved aside: %v", err)
 		}
 	})
-	t.Run("UC-053/A12 a state file with an unsupported version is moved aside as corrupt", func(t *testing.T) {
+	t.Run("UC-053/A12 a state file with a version below the supported one is moved aside as corrupt", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "admin.json")
-		doc := `{"version":2,"values":[{"flag_set":"game","flag":"sensitivity","variant":"slow","written_at":"2026-10-16T12:00:00Z"}]}`
+		doc := `{"version":0,"values":[{"flag_set":"game","flag":"sensitivity","variant":"slow","written_at":"2026-10-16T12:00:00Z"}]}`
 		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 			t.Fatal(err)
 		}

@@ -57,11 +57,19 @@ func (s *State) loadAdmin() LoadReport {
 		return report
 	}
 	var doc persistedDoc
-	if err == nil {
-		err = json.Unmarshal(raw, &doc)
-		if err == nil && doc.Version != stateFileVersion {
-			err = fmt.Errorf("unsupported state file version %d", doc.Version)
-		}
+	err = json.Unmarshal(raw, &doc)
+	if err == nil && doc.Version > stateFileVersion {
+		// Written by a newer flag service (a rollback): not corrupt. Keep the
+		// file as it is and never write over it; admin values apply in memory
+		// only until the next start, like an unreadable file (UC-053 A12).
+		s.persistBlocked = true
+		report.FutureVersion = true
+		s.opts.Logger.Error("flag service: the state file is from a newer version; kept untouched, admin settings will not be persisted until the next start",
+			"path", path, "file_version", doc.Version, "supported_version", stateFileVersion)
+		return report
+	}
+	if err == nil && doc.Version != stateFileVersion {
+		err = fmt.Errorf("unsupported state file version %d", doc.Version)
 	}
 	if err != nil {
 		report.Corrupt = true

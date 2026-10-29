@@ -212,6 +212,9 @@ type LoadReport struct {
 	Dropped     []string
 	Corrupt     bool
 	CorruptPath string
+	// FutureVersion: the file was written by a newer flag service; it is kept
+	// untouched and admin writes stay in memory (UC-053 A12).
+	FutureVersion bool
 }
 
 // New builds the state from the baseline and the registry, and restores the
