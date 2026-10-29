@@ -97,6 +97,7 @@ class TestUC020InstructionsOn:
     """UC-020 A5: instructions on."""
 
     @pytest.mark.asyncio
+    @pytest.mark.real_durations
     @pytest.mark.uc("UC-020", flow="A5", steps=[1, 2, 4])
     @pytest.mark.uc("UC-012", flow="A3", steps=[2])
     async def test_ffa_plays_clip_and_countdown_waits_for_it(self, fast_config):  # noqa: F811
