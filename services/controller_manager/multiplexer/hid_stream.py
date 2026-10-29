@@ -24,6 +24,17 @@ but never handed to gRPC goes to ``_unsent_commands``, which the next iterator
 sends first, so a rumble taken in the last ``get()`` window is not lost; a
 command already yielded counts as sent and is never handed back (no duplicate).
 
+The command iterator runs on a gRPC thread nobody joins, so a stopping stream's
+iterator can still be inside its ``get()`` when the next stream opens (#2351).
+``_take_lock`` makes one take (the wait, the currency check and the hand-back)
+atomic against every other take and against the next stream's coalescing step:
+a command an old iterator took is handed back before the next stream merges,
+or it was taken after the merge and is then the oldest pending command. Either
+way it is never sent after a newer one (before #2351 the old colour could
+follow the new one and stay on until the 2 s LED keep-alive). The lock is held
+for at most one ``COMMAND_POLL_S`` wait and never with ``_stream_lock`` or
+``_data_lock``; the order is ``_take_lock``, then the queue's mutex.
+
 Commands still queued when a stream ends are stale by the time the next stream
 opens (#2304). Before it opens its call, the next stream coalesces them per
 serial (``coalesce_commands``): the LED colour is the latest one asked for, so
@@ -80,6 +91,8 @@ class HidStreamMixin:
         self._stream_closed = False  # set by _close_stream() (close_all): no stream opens again
         # Commands an exiting iterator took but never yielded; the next iterator sends them first.
         self._unsent_commands: deque = deque()
+        # One take at a time, and no coalescing during a take (#2351, module docstring).
+        self._take_lock = threading.Lock()
         # Buttons seen down since the last poll, per serial (#2312); guarded by _data_lock.
         self._press_latch: dict[str, set[str]] = {}
 
@@ -137,14 +150,16 @@ class HidStreamMixin:
 
         def command_iterator():
             while self._stream_is_current(generation):
-                cmd = self._take_command()
-                if cmd is None:
-                    continue
-                if not self._stream_is_current(generation):
-                    # Taken while this stream stopped: gRPC would drop it, so the next
-                    # stream sends it, ahead of anything queued after it (#2275).
-                    self._unsent_commands.appendleft(cmd)
-                    return
+                with self._take_lock:
+                    cmd = self._take_command()
+                    if cmd is None:
+                        continue
+                    if not self._stream_is_current(generation):
+                        # Taken while this stream stopped: gRPC would drop it, so the next
+                        # stream sends it, ahead of anything queued after it (#2275). Under
+                        # _take_lock, so the next stream has not sent anything newer (#2351).
+                        self._unsent_commands.appendleft(cmd)
+                        return
                 yield cmd
 
         call = None
@@ -194,6 +209,11 @@ class HidStreamMixin:
 
     def _coalesce_pending_commands(self) -> None:
         """Drop the stale LED states a previous stream left queued (#2304); hand-backs stay first."""
+        # Waits for a stopping iterator's take, so its hand-back is merged here (#2351).
+        with self._take_lock:
+            self._coalesce_locked()
+
+    def _coalesce_locked(self) -> None:
         unsent = []
         while True:
             try:

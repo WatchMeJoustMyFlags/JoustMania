@@ -14,6 +14,7 @@ discovery cycle — no reconnect needed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -28,6 +29,10 @@ logger = logging.getLogger(__name__)
 # The LED batch resends an unchanged output at least this often, so the
 # controller's LED (which times out on the hardware) stays lit.
 LED_KEEPALIVE_S = 2.0
+# Bound on one adapter's startup Discover + Open pass (#2351). Under the server's
+# 10 s startup wait, so a wedged HID service leaves the adapter with no
+# controllers (the discovery loop finds them later) instead of holding startup.
+INIT_ADAPTER_TIMEOUT_S = 8.0
 
 # Consecutive failed discovery passes of one adapter before its controllers are
 # dropped (UC-002 A1, #2125). Until then the adapter keeps its previous routes,
@@ -150,25 +155,49 @@ class MultiplexerBackend(ControllerBackend):
     # -- Fleet-level methods --------------------------------------------------
 
     async def initialize(self) -> bool:
+        """Discover and open each adapter's controllers, off the event loop (#2351).
+
+        Discover / Open are blocking gRPC calls (5 s deadline each against a wedged
+        rust-hid): they run in a worker thread, bounded by ``INIT_ADAPTER_TIMEOUT_S``,
+        so the event loop stays free and the server's startup timeout can fire. Routes
+        are set here, on the loop, only for a pass that finished in time; an adapter
+        that timed out starts with no controllers and the discovery loop retries.
+        """
         with self._routing_lock:
             self._closed = False
         any_success = False
         for adapter in self._adapters:
             try:
-                try:
-                    serials = adapter.discover()
-                except DiscoveryFailedError as e:
-                    # Backend not up yet: start with no controllers, discovery retries.
-                    logger.warning(f"{adapter.adapter_type} discovery failed at startup: {e}")
-                    serials = []
+                serials = await asyncio.wait_for(
+                    asyncio.to_thread(self._discover_and_open, adapter), timeout=INIT_ADAPTER_TIMEOUT_S
+                )
                 for serial in serials:
-                    adapter.open(serial)
                     self._set_route(serial, adapter)
                 any_success = True
                 logger.info(f"Initialized {adapter.adapter_type} adapter with {len(serials)} controllers")
+            except TimeoutError:
+                # Like a failed Discover: the backend is not answering yet, discovery retries.
+                logger.warning(
+                    f"{adapter.adapter_type} startup discovery took over {INIT_ADAPTER_TIMEOUT_S}s; "
+                    "starting with no controllers"
+                )
+                any_success = True
             except Exception:
                 logger.exception(f"Failed to initialize {adapter.adapter_type} adapter")
         return any_success
+
+    @staticmethod
+    def _discover_and_open(adapter: ControllerIOAdapter) -> list[str]:
+        """Worker thread: one adapter's startup Discover and Open calls; returns the serials to route."""
+        try:
+            serials = adapter.discover()
+        except DiscoveryFailedError as e:
+            # Backend not up yet: start with no controllers, discovery retries.
+            logger.warning(f"{adapter.adapter_type} discovery failed at startup: {e}")
+            return []
+        for serial in serials:
+            adapter.open(serial)
+        return serials
 
     async def shutdown(self):
         # Mark closed BEFORE closing the adapters: a discovery pass that reopens

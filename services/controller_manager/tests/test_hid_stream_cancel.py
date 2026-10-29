@@ -9,6 +9,7 @@ cancellation, through the adapters' real channel with its interceptors.
 
 import queue
 import threading
+import time
 import types
 from concurrent import futures
 
@@ -405,40 +406,72 @@ class StallAfterGetQueue(queue.Queue):
         return command
 
 
+def _reopen_while_the_old_iterator_holds(adapter, held, queued_after):
+    """The old iterator takes ``held`` and stalls before its hand-back; ``queued_after`` is queued and the
+    next stream opens meanwhile. Returns what the next stream sends: the commands it sends before the old
+    iterator hands back (the stale window, #2351), then everything it sends after.
+    """
+    old_call, new_call = GatedCall(), GatedCall()
+    adapter._stub = GatedStub(old_call, new_call)
+    gate = threading.Event()
+    adapter._command_queue = commands = StallAfterGetQueue([gate])
+
+    commands.put_nowait(held)
+    old_iterator = _open_stream(adapter, old_call)
+    old_pull, old_result = _next_command(old_iterator)
+    assert commands.taken[0].wait(timeout=GATE_TIMEOUT_S)  # the old iterator holds ``held``
+    adapter._stop_stream()
+    for cmd in queued_after:
+        commands.put_nowait(cmd)
+    adapter._ensure_stream()  # the next stream opens while the old iterator still holds ``held``
+
+    sent: list = []
+    opened_early = new_call.reading.wait(timeout=0.3)
+    if opened_early:  # opened before the hand-back: collect what it sends from now on
+        _collect(adapter._stub.iterators[-1], sent)
+    gate.set()  # ... the old iterator hands ``held`` back only now
+    old_pull.join(timeout=GATE_TIMEOUT_S)
+    assert old_result.get("value") == STOPPED, "the old iterator yielded to a stopped stream"
+    assert new_call.reading.wait(timeout=GATE_TIMEOUT_S)
+    if not opened_early:
+        _collect(adapter._stub.iterators[-1], sent)
+    time.sleep(0.3)  # quiet time: a late stale command would arrive here
+    return [_as_tuple(cmd) for cmd in sent]
+
+
+def _collect(command_iterator, sent: list) -> None:
+    """Append every command the iterator sends to ``sent``, from a daemon thread (the fixture stops it)."""
+
+    def pull():
+        for cmd in command_iterator:
+            sent.append(cmd)
+
+    threading.Thread(target=pull, daemon=True).start()
+
+
 @pytest.mark.uc("UC-002", flow="A7")
 @pytest.mark.usefixtures("short_joins")
-def test_several_handed_back_commands_keep_their_queue_order(adapter):
-    """#2275: two stale iterators hand back A (taken first) and B; the next stream sends A, then B."""
-    calls = [GatedCall(), GatedCall(), GatedCall()]
-    adapter._stub = GatedStub(*calls)
-    gates = [threading.Event(), threading.Event()]
-    adapter._command_queue = commands = StallAfterGetQueue(gates)
-    first, second = _rumble(), _rumble()
+def test_handed_back_and_queued_commands_keep_their_queue_order(adapter):
+    """#2275 with #2351: rumble A held by a stopping iterator, B queued after it: the next stream sends A, then B."""
+    first = _command(1, 1, 1, rumble=200)
+    second = _command(1, 1, 1, rumble=100)
 
-    commands.put_nowait(first)
-    old_iterator = _open_stream(adapter, calls[0])
-    old_pull, _ = _next_command(old_iterator)
-    assert commands.taken[0].wait(timeout=GATE_TIMEOUT_S)
-    adapter._stop_stream()
+    sent = _reopen_while_the_old_iterator_holds(adapter, first, [second])
 
-    commands.put_nowait(second)
-    newer_iterator = _open_stream(adapter, calls[1])
-    newer_pull, _ = _next_command(newer_iterator)
-    assert commands.taken[1].wait(timeout=GATE_TIMEOUT_S)
-    adapter._stop_stream()
+    assert sent == [_as_tuple(first), _as_tuple(second)], "handed-back commands were sent out of order"
+    assert not adapter._unsent_commands and adapter._command_queue.empty()
 
-    gates[1].set()  # the newer iterator hands back B first ...
-    newer_pull.join(timeout=GATE_TIMEOUT_S)
-    gates[0].set()  # ... then the older one hands back A
-    old_pull.join(timeout=GATE_TIMEOUT_S)
 
-    new_iterator = _open_stream(adapter, calls[2])
-    sent = []
-    for _ in range(2):
-        pull, result = _next_command(new_iterator)
-        pull.join(timeout=GATE_TIMEOUT_S)
-        sent.append(result.get("value"))
-    assert sent[0] is first and sent[1] is second, "handed-back commands were sent out of order"
+@pytest.mark.uc("UC-002", flow="A7")
+@pytest.mark.usefixtures("short_joins")
+def test_a_late_hand_back_never_follows_a_newer_colour(adapter):
+    """#2351: red held by a stopping iterator, blue queued after it: red is never sent after blue."""
+    red = _command(255, 0, 0)
+    blue = _command(0, 0, 255)
+
+    sent = _reopen_while_the_old_iterator_holds(adapter, red, [blue])
+
+    assert sent == [(HID_SERIAL, 0, 0, 255, 0)], f"stale colour sent after the newer one: {sent}"
 
 
 OTHER_SERIAL = "AA:BB:CC:DD:EE:02"
