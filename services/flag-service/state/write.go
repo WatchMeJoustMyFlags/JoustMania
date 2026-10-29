@@ -679,22 +679,38 @@ func (s *State) ExpireExperiments() int {
 			s.expSeen[g.ExperimentID] = now
 		}
 	}
-	dropped := map[string]bool{}
-	present := map[string]bool{}
+	// Idleness is decided per experiment, over every flag the experiment holds
+	// arms for: an experiment never loses some flags' arms and keeps others.
+	lastWrite := map[string]time.Time{}
 	for _, f := range s.flags {
 		for id, byArm := range f.experiments {
-			last := s.expSeen[id]
+			last := lastWrite[id]
 			for _, v := range byArm {
 				if v.WrittenAt.After(last) {
 					last = v.WrittenAt
 				}
 			}
-			if now.Sub(last) >= s.opts.ExperimentIdle {
-				delete(f.experiments, id)
-				dropped[id] = true
-				continue
-			}
+			lastWrite[id] = last
+		}
+	}
+	dropped := map[string]bool{}
+	present := map[string]bool{}
+	for id, written := range lastWrite {
+		last := s.expSeen[id]
+		if written.After(last) {
+			last = written
+		}
+		if now.Sub(last) >= s.opts.ExperimentIdle {
+			dropped[id] = true
+		} else {
 			present[id] = true
+		}
+	}
+	for _, f := range s.flags {
+		for id := range f.experiments {
+			if dropped[id] {
+				delete(f.experiments, id)
+			}
 		}
 	}
 	for id := range s.expSeen {

@@ -65,6 +65,11 @@ const MaxFreeString = 512
 // soundIDPattern is the syntax of an audio_cue sound id. The service cannot
 // see the audio container's assets; the audio service resolves the id
 // (flags.md §13.1).
+// decimalFloatPattern is the plain decimal form a "float lo hi" pattern segment
+// accepts. strconv.ParseFloat alone would also take hex floats (0x1p0), inf and
+// nan, which the readers of such a string do not parse.
+var decimalFloatPattern = regexp.MustCompile(`^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$`)
+
 var soundIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]{1,64}$`)
 
 // Bounds says which values a write may carry. Exactly one of the fields is
@@ -363,6 +368,9 @@ func CheckValue(p *Policy, flag *baseline.Flag, variant string, value json.RawMe
 		if !sameShape(flag.Variants[flag.DefaultVariant], value) {
 			return nil, fserr.Unprocessable(fserr.OutOfBounds, "%s takes an object with the keys and value types of its declared variants, got %s", p.Key, value)
 		}
+		if msg := shapeNumbersOutOfCeiling(flag, value); msg != "" {
+			return nil, fserr.Unprocessable(fserr.OutOfBounds, "%s: %s, got %s", p.Key, msg, value)
+		}
 	case p.Bounds.FreeString:
 		s, ok := asString(value)
 		if !ok || len(s) > MaxFreeString {
@@ -388,6 +396,50 @@ func sameShape(want, value json.RawMessage) bool {
 		}
 	}
 	return true
+}
+
+// ShapeCeilingFactor scales the largest value a declared variant holds for a
+// key into the ceiling a shape-bound write may reach for that key (C-034: the
+// registry, not the writer, is the ceiling). A number below 0 is out of bounds.
+const ShapeCeilingFactor = 2
+
+// shapeNumbersOutOfCeiling returns why a number of value is out of the shape
+// bound, or "" when every number is within 0 to ShapeCeilingFactor times the
+// largest value any declared variant holds for the same key. The ceiling is
+// derived from the baseline variants, so the registry needs no field for it.
+func shapeNumbersOutOfCeiling(flag *baseline.Flag, value json.RawMessage) string {
+	var v map[string]json.RawMessage
+	if json.Unmarshal(value, &v) != nil {
+		return "not an object"
+	}
+	largest := map[string]float64{}
+	for _, raw := range flag.Variants {
+		var w map[string]float64
+		if json.Unmarshal(raw, &w) != nil {
+			continue
+		}
+		for k, n := range w {
+			if n > largest[k] {
+				largest[k] = n
+			}
+		}
+	}
+	keys := make([]string, 0, len(v))
+	for k := range v {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		var n float64
+		if json.Unmarshal(v[k], &n) != nil {
+			continue // not a number: the shape check decided its kind
+		}
+		ceiling := largest[k] * ShapeCeilingFactor
+		if n < 0 || n > ceiling {
+			return fmt.Sprintf("%s must be within 0 to %v", k, ceiling)
+		}
+	}
+	return ""
 }
 
 func kindOf(raw json.RawMessage) string {
@@ -508,6 +560,9 @@ func (s *segment) match(part string) bool {
 		n, err := strconv.Atoi(part)
 		return err == nil && float64(n) >= s.lo && float64(n) <= s.hi
 	case "float":
+		if !decimalFloatPattern.MatchString(part) {
+			return false
+		}
 		f, err := strconv.ParseFloat(part, 64)
 		return err == nil && f >= s.lo && f <= s.hi
 	}

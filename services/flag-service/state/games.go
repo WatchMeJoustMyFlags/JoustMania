@@ -32,6 +32,9 @@ func validateGame(g *Game) *fserr.Error {
 	if strings.Contains(g.ID, "/") || len(g.ID) > MaxIDLength || len(g.CoordinatorInstance) > MaxIDLength || len(g.Kind) > MaxIDLength {
 		return fserr.BadRequest("game id, kind or coordinator_instance malformed")
 	}
+	if len(g.ExperimentID) > MaxIDLength || len(g.Arm) > MaxIDLength {
+		return fserr.BadRequest("experiment_id or arm is longer than %d characters", MaxIDLength)
+	}
 	if len(g.Serials) > MaxSerialsPerGame {
 		return fserr.BadRequest("a game has at most %d serials", MaxSerialsPerGame)
 	}
@@ -54,7 +57,12 @@ func (s *State) RegisterGame(g Game) (already bool, err *fserr.Error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, already = s.games[g.ID]
+	old, already := s.games[g.ID]
+	// A game another coordinator instance holds is never re-homed (UC-053 A10,
+	// as in Reconcile).
+	if already && old.CoordinatorInstance != "" && old.CoordinatorInstance != g.CoordinatorInstance {
+		return false, fserr.Conflict(fserr.GameIDTaken, "game %q is registered by coordinator instance %q, not %q", g.ID, old.CoordinatorInstance, g.CoordinatorInstance)
+	}
 	if !already && len(s.games) >= s.opts.MaxGames {
 		return false, fserr.Conflict(fserr.TooManyGames, "%d game scopes are live (the cap, NFR-051)", len(s.games))
 	}
@@ -126,6 +134,13 @@ func (s *State) Reconcile(instance string, games []Game) ([]GameEnd, *fserr.Erro
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A listed id that another coordinator instance holds is never re-homed:
+	// the batch is refused whole and changes nothing (UC-053 A10).
+	for _, g := range games {
+		if old := s.games[g.ID]; old != nil && old.CoordinatorInstance != instance {
+			return nil, fserr.Conflict(fserr.GameIDTaken, "game %q is registered by coordinator instance %q, not %q", g.ID, old.CoordinatorInstance, instance)
+		}
+	}
 	// The cap applies as on PUT /games (NFR-051): count the live games after the
 	// reconcile (this instance's unlisted games are dropped, new ids added). A
 	// batch over the cap is rejected whole with 409 too_many_games and changes
