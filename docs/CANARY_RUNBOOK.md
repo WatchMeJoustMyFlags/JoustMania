@@ -74,6 +74,7 @@ Key source files:
 | File | Role |
 |------|------|
 | `services/controller_manager/multiplexer/multiplexer_backend.py` | `_resolve_adapter_for_serial()` routing logic |
+| `services/controller_manager/multiplexer/hid_service_adapter.py` | `HidServiceAdapter`, the gRPC client both HID adapters share |
 | `services/controller_manager/multiplexer/rust_adapter.py` | `RustServiceAdapter` (gRPC client to rust-hid) |
 | `services/controller_manager/multiplexer/python_hid_adapter.py` | `PythonHidAdapter` (gRPC client to python-hid) |
 | `services/controller_manager/backend_factory.py` | Adapter instantiation, `backend` flag |
