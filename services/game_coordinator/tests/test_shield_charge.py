@@ -612,9 +612,11 @@ async def test_error_teardown_ends_the_charge_span_even_when_cleanup_raises():
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A32")
+@pytest.mark.uc("UC-040", flow="A42", br=["BR-031"])
 @pytest.mark.usefixtures("flags")
 async def test_a_grant_arriving_during_cleanup_leaves_no_charge_span_open():
-    """A32 (#1868 nit): a grant that lands while cleanup() awaits is still ended by run()'s finally."""
+    """A32 (#1868 nit), A42 step 3 (#2395): a grant that lands while cleanup() awaits is refused
+    ``game_ending``, so no charge is stored and no charge span is left open."""
     game = FFAGame(
         controller_manager_client=MockControllerManagerService(num_controllers=3, infinite=True),
         event_publisher=EventCollector().publish,
@@ -631,8 +633,13 @@ async def test_a_grant_arriving_during_cleanup_leaves_no_charge_span_open():
         player_span = create_autospec(Span, instance=True)
         player_span.get_span_context.return_value = INVALID_SPAN_CONTEXT
         game.players["mock_controller_0"].span = player_span
-        with patch.object(base_module.tracer, "start_span", return_value=late_span):
-            assert await game.grant_shield("mock_controller_0", 5.0) is True
+        with (
+            patch.object(base_module.tracer, "start_span", return_value=late_span) as start_span,
+            pytest.raises(InterventionNotApplied) as refused,
+        ):
+            await game.grant_shield("mock_controller_0", 5.0)
+        assert refused.value.reason == "game_ending"
+        start_span.assert_not_called()
 
     game._run_gameplay_phase = failing_gameplay
     game.cleanup = AsyncMock(side_effect=cleanup_with_late_grant)
@@ -640,7 +647,9 @@ async def test_a_grant_arriving_during_cleanup_leaves_no_charge_span_open():
     with pytest.raises(RuntimeError, match="gameplay broke"):
         await asyncio.wait_for(game.run(), timeout=10)
 
-    late_span.end.assert_called_once()
+    game.cleanup.assert_awaited_once()
+    assert game.players["mock_controller_0"].shield_charge_seconds == 0
+    late_span.end.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #
