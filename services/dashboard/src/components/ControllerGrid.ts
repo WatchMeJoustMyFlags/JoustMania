@@ -3,6 +3,7 @@
  *
  * Displays a grid of controller cards with real-time updates.
  */
+import { html, setHtml } from "../html.js";
 import { ControllerCard } from "./ControllerCard.js";
 import type { GameplayData } from "../gen/controller_manager_pb.js";
 import type { ShieldStore } from "../shield.js";
@@ -56,12 +57,12 @@ export class ControllerGrid {
 
   setLoading(loading: boolean) {
     if (loading) {
-      this.container.innerHTML = '<div class="loading">Connecting to controller manager...</div>';
+      setHtml(this.container, html`<div class="loading">Connecting to controller manager...</div>`);
     }
   }
 
   setError(message: string) {
-    this.container.innerHTML = `<div class="loading">${message}</div>`;
+    setHtml(this.container, html`<div class="loading">${message}</div>`);
   }
 
   /**
@@ -114,7 +115,7 @@ export class ControllerGrid {
       const existing = this.container.querySelector(":scope > .loading");
       if (existing?.textContent === "No controllers connected") return;
       // Drop any other placeholder (connecting, connection lost) before the empty state.
-      this.container.innerHTML = '<div class="loading">No controllers connected</div>';
+      setHtml(this.container, html`<div class="loading">No controllers connected</div>`);
     }
   }
 }
