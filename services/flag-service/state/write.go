@@ -181,10 +181,22 @@ func (s *State) liveChecksLocked(f *flagState, sc Scope, scopeName string, res *
 	// the lock RegisterGame and Reconcile hold, so no registration can slip in
 	// between this check and the write. Clear has its own opt-in copy of this
 	// check (UnlessRealGame, #2236); the kill-switch revert does not opt in.
-	if scopeName == registry.ScopeReal && f.policy.RealWriteNeedsNoRealGame() {
-		if id := s.liveRealGameLocked(); id != "" {
-			return fserr.Conflict(fserr.RealGameLive, "real game %q is registered; a real write of %s waits until no real game runs", id, f.key)
-		}
+	if err := s.checkRealGameLocked(f, scopeName, "a real write"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// checkRealGameLocked is the real_game_live 409 of the real scope: a flag
+// marked real_write: no_live_real_game is refused while a non-shadow game is
+// registered. what names the refused act in the message ("a real write", "a
+// guarded revert"). Put always runs it; Clear only when the caller opted in.
+func (s *State) checkRealGameLocked(f *flagState, scopeName, what string) *fserr.Error {
+	if scopeName != registry.ScopeReal || !f.policy.RealWriteNeedsNoRealGame() {
+		return nil
+	}
+	if id := s.liveRealGameLocked(); id != "" {
+		return fserr.Conflict(fserr.RealGameLive, "real game %q is registered; %s of %s waits until no real game runs", id, what, f.key)
 	}
 	return nil
 }
@@ -219,94 +231,22 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 	defer s.mu.Unlock()
 	res := WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: s.opts.Epoch, ScopeKey: req.Scope.Name()}
 
-	f, err := s.lookupLocked(req.Set, req.Flag, &res)
+	plan, err := s.checkPutLocked(req, &res)
 	if err != nil {
 		return res, err
 	}
-	p := f.policy
-	if p.Kind == registry.KindEvent {
-		return res, fserr.BadRequest("%s is an event flag: append with POST", req.Flag)
-	}
-	if (req.Variant == "") == (req.Value == nil) {
-		return res, fserr.BadRequest("exactly one of variant and value")
-	}
-	if err := checkIDs(req.Scope, req.Writer); err != nil {
-		return res, err
-	}
-	scopeName := res.ScopeKey
-	if scopeName == "" || !p.AllowsScope(scopeName) {
-		return res, fserr.BadRequest("the scope does not fit %s (allowed: %v)", req.Flag, p.Scopes)
-	}
-	stackLike := scopeName == registry.ScopeStack || scopeName == registry.ScopeReal || scopeName == registry.ScopeFraction
-	var ttl time.Duration
-	if req.TTLSeconds != nil && scopeName == registry.ScopeReal && p.RealWriteNeedsNoRealGame() {
-		// An expiring real overlay would revert on a timer, mid-game, without
-		// passing the real-game guard (#2096, UC-043 A17).
-		return res, fserr.BadRequest("ttl_seconds is not allowed on a real write of %s (real_write: %s)", req.Flag, p.RealWrite)
-	}
-	if req.TTLSeconds != nil {
-		if !stackLike || *req.TTLSeconds <= 0 || math.IsInf(*req.TTLSeconds, 0) || math.IsNaN(*req.TTLSeconds) {
-			return res, fserr.BadRequest("ttl_seconds must be positive and applies to stack overlays only")
-		}
-		ttl = time.Duration(*req.TTLSeconds * float64(time.Second))
-	}
-	if req.IfWriterIn != nil && scopeName != registry.ScopeReal {
-		return res, fserr.BadRequest("if_writer_in applies to the real overlay only (game_kind=real)")
-	}
-	if len(req.IfWriterIn) > MaxIfWriterIn {
-		return res, fserr.BadRequest("if_writer_in has more than %d entries", MaxIfWriterIn)
-	}
-	for _, w := range req.IfWriterIn {
-		if len(w) > MaxIDLength {
-			return res, fserr.BadRequest("an if_writer_in entry is longer than %d characters", MaxIDLength)
-		}
-	}
-	if req.Persist {
-		// UC-053 BR-004: only a stack-scoped admin setting the registry marks
-		// persistable goes to the state file; nothing else outlives a restart.
-		switch {
-		case !p.Persist || scopeName != registry.ScopeStack:
-			return res, fserr.BadRequest("%s cannot persist in scope %s (registry persist: %v)", req.Flag, scopeName, p.Persist)
-		case req.TTLSeconds != nil:
-			return res, fserr.BadRequest("persist and ttl_seconds exclude each other")
-		case req.DryRun:
-			return res, fserr.BadRequest("a dry run cannot persist")
-		}
-	}
-	if err := s.liveChecksLocked(f, req.Scope, scopeName, &res); err != nil {
-		return res, err
-	}
-	checked, err := registry.CheckValue(p, f.base, req.Variant, req.Value)
-	if err != nil {
-		return res, err
-	}
-	if scopeName == registry.ScopeFraction {
-		pct := *req.Scope.FractionPercent
-		if pct < p.Bounds.Fraction[0] || pct > p.Bounds.Fraction[1] {
-			return res, fserr.Unprocessable(fserr.OutOfBounds, "fraction_percent %d outside %v", pct, p.Bounds.Fraction)
-		}
-	}
-	if err := s.streamCheckLocked(f.set); err != nil {
-		return res, err
-	}
-	// #2260, UC-043 A19: the write precondition, checked last (a dry run
-	// included), under the same lock as the write, so no other write can slip
-	// in between the compare and the write. Like the DELETE ?if_writer= (#1877)
-	// every 4xx/5xx above (real_game_live included) takes precedence over 412.
-	if req.IfWriterIn != nil && !realWriterAllowed(f.real, req.IfWriterIn) {
-		return res, fserr.PreconditionFailed(fserr.WriterMismatch, "the real overlay of %s is owned by %s, not one of %q; nothing written", f.key, describeRealWriter(f.real), req.IfWriterIn)
-	}
+	f, scopeName, checked := plan.f, plan.scope, plan.checked
 
 	now := s.opts.Now()
 	v := &value{Writer: req.Writer, DecisionID: req.DecisionID, WrittenAt: now, Persisted: req.Persist}
-	if ttl > 0 {
-		v.ExpiresAt = now.Add(ttl)
+	if plan.ttl > 0 {
+		v.ExpiresAt = now.Add(plan.ttl)
 	}
-	if stackLike && checked.Variant != "" {
+	if plan.stackLike && checked.Variant != "" {
 		v.Variant = checked.Variant // D13: point defaultVariant at the declared variant
 	} else {
 		prefix := "r"
-		if stackLike {
+		if plan.stackLike {
 			prefix = "o"
 		}
 		v.Variant = s.nextVariant(prefix)
@@ -318,57 +258,148 @@ func (s *State) Put(req WriteRequest) (WriteResult, *fserr.Error) {
 		return s.dryRunLocked(f, req, scopeName, v, res)
 	}
 
-	switch scopeName {
-	case registry.ScopeStack:
-		if req.Persist {
-			// The host's setting replaces any in-memory overlay, so it takes
-			// effect now, and is kept across restarts (A2).
-			prevAdmin, prevStack := f.admin, f.stack
-			f.admin, f.stack = v, nil
-			if err := s.saveAdminLocked(); err != nil {
-				if f.policy.AppliesWhenPersistFails() {
-					// A kill switch takes effect now; the answer says
-					// persisted:false (#2368, UC-053 A2/A12).
-					s.opts.Logger.Error("flag service: kill switch applied in memory only; the state file could not be written", "flag", f.key, "error", err)
-					// Not on disk: flagservice_overlays must not count it
-					// as persisted until a later save writes it.
-					v.Persisted = false
-					break
-				}
+	if scopeName == registry.ScopeStack && req.Persist {
+		// The host's setting replaces any in-memory overlay, so it takes
+		// effect now, and is kept across restarts (A2).
+		prevAdmin, prevStack := f.admin, f.stack
+		f.admin, f.stack = v, nil
+		if err := s.saveAdminLocked(); err != nil {
+			if !f.policy.AppliesWhenPersistFails() {
 				// Memory must match disk: undo, and tell the caller (#2368).
 				f.admin, f.stack = prevAdmin, prevStack
 				return res, fserr.PersistFailed("%s was not changed: the state file could not be written: %v", req.Flag, err)
 			}
-		} else {
-			f.stack = v
+			// A kill switch takes effect now; the answer says
+			// persisted:false (#2368, UC-053 A2/A12).
+			s.opts.Logger.Error("flag service: kill switch applied in memory only; the state file could not be written", "flag", f.key, "error", err)
+			// Not on disk: flagservice_overlays must not count it
+			// as persisted until a later save writes it.
+			v.Persisted = false
 		}
-	case registry.ScopeReal:
-		f.real = v
-	case registry.ScopeFraction:
-		v.Fraction = *req.Scope.FractionPercent
-		f.fraction = v
-	case registry.ScopeGame:
-		f.games[req.Scope.GameID] = v
-	case registry.ScopeGameSerial:
-		bySerial := f.serials[req.Scope.GameID]
-		if bySerial == nil {
-			bySerial = map[string]*value{}
-			f.serials[req.Scope.GameID] = bySerial
-		}
-		bySerial[req.Scope.Serial] = v
-	case registry.ScopeExperiment:
-		byArm := f.experiments[req.Scope.ExperimentID]
-		if byArm == nil {
-			byArm = map[string]*value{}
-			f.experiments[req.Scope.ExperimentID] = byArm
-		}
-		byArm[req.Scope.Arm] = v
+	} else {
+		f.place(scopeName, req.Scope, v)
 	}
 	s.changed()
 	res.Variant = v.Variant
 	res.SnapshotVersion = s.version
 	res.Persisted = req.Persist && s.lastPersistOK
 	return res, nil
+}
+
+// putPlan is a checked Put, ready to apply.
+type putPlan struct {
+	f         *flagState
+	scope     string
+	stackLike bool
+	ttl       time.Duration
+	checked   *registry.Checked
+}
+
+// checkPutLocked runs every precondition of a Put in this order (the first
+// failure answers; TestPreconditionMatrix_Put pins each pair):
+//
+//	lookup 404/422 > kind 400 > variant|value 400 > ids 400 > scope fit 400 >
+//	ttl 400 > if_writer_in shape 400 > persist 400 > live (served, game,
+//	serial, real game) 409/422 > value 422 > fraction 422 > stream 503 >
+//	if_writer_in 412
+//
+// The 412 is last, a dry run included, under the lock of the write, so no
+// other write can slip in between the compare and the write (#2260, UC-043
+// A19), and every 4xx/5xx above it takes precedence.
+func (s *State) checkPutLocked(req WriteRequest, res *WriteResult) (putPlan, *fserr.Error) {
+	var plan putPlan
+	f, err := s.lookupLocked(req.Set, req.Flag, res)
+	if err != nil {
+		return plan, err
+	}
+	p := f.policy
+	if p.Kind == registry.KindEvent {
+		return plan, fserr.BadRequest("%s is an event flag: append with POST", req.Flag)
+	}
+	if (req.Variant == "") == (req.Value == nil) {
+		return plan, fserr.BadRequest("exactly one of variant and value")
+	}
+	if err := checkIDs(req.Scope, req.Writer); err != nil {
+		return plan, err
+	}
+	scopeName := res.ScopeKey
+	if err := checkScopeFit(f, scopeName); err != nil {
+		return plan, err
+	}
+	plan.f, plan.scope = f, scopeName
+	plan.stackLike = scopeName == registry.ScopeStack || scopeName == registry.ScopeReal || scopeName == registry.ScopeFraction
+	if req.TTLSeconds != nil && scopeName == registry.ScopeReal && p.RealWriteNeedsNoRealGame() {
+		// An expiring real overlay would revert on a timer, mid-game, without
+		// passing the real-game guard (#2096, UC-043 A17).
+		return plan, fserr.BadRequest("ttl_seconds is not allowed on a real write of %s (real_write: %s)", req.Flag, p.RealWrite)
+	}
+	if req.TTLSeconds != nil {
+		if !plan.stackLike || *req.TTLSeconds <= 0 || math.IsInf(*req.TTLSeconds, 0) || math.IsNaN(*req.TTLSeconds) {
+			return plan, fserr.BadRequest("ttl_seconds must be positive and applies to stack overlays only")
+		}
+		plan.ttl = time.Duration(*req.TTLSeconds * float64(time.Second))
+	}
+	if err := checkIfWriterIn(req.IfWriterIn, scopeName); err != nil {
+		return plan, err
+	}
+	if req.Persist {
+		// UC-053 BR-004: only a stack-scoped admin setting the registry marks
+		// persistable goes to the state file; nothing else outlives a restart.
+		switch {
+		case !p.Persist || scopeName != registry.ScopeStack:
+			return plan, fserr.BadRequest("%s cannot persist in scope %s (registry persist: %v)", req.Flag, scopeName, p.Persist)
+		case req.TTLSeconds != nil:
+			return plan, fserr.BadRequest("persist and ttl_seconds exclude each other")
+		case req.DryRun:
+			return plan, fserr.BadRequest("a dry run cannot persist")
+		}
+	}
+	if err := s.liveChecksLocked(f, req.Scope, scopeName, res); err != nil {
+		return plan, err
+	}
+	plan.checked, err = registry.CheckValue(p, f.base, req.Variant, req.Value)
+	if err != nil {
+		return plan, err
+	}
+	if scopeName == registry.ScopeFraction {
+		pct := *req.Scope.FractionPercent
+		if pct < p.Bounds.Fraction[0] || pct > p.Bounds.Fraction[1] {
+			return plan, fserr.Unprocessable(fserr.OutOfBounds, "fraction_percent %d outside %v", pct, p.Bounds.Fraction)
+		}
+	}
+	if err := s.streamCheckLocked(f.set); err != nil {
+		return plan, err
+	}
+	if req.IfWriterIn != nil && !realWriterAllowed(f.real, req.IfWriterIn) {
+		return plan, fserr.PreconditionFailed(fserr.WriterMismatch, "the real overlay of %s is owned by %s, not one of %q; nothing written", f.key, describeRealWriter(f.real), req.IfWriterIn)
+	}
+	return plan, nil
+}
+
+// checkScopeFit is the 400 of a scope that fits no registry scope or is not
+// one of the flag's scopes. Put and Clear share it.
+func checkScopeFit(f *flagState, scopeName string) *fserr.Error {
+	if scopeName == "" || !f.policy.AllowsScope(scopeName) {
+		return fserr.BadRequest("the scope does not fit %s (allowed: %v)", f.key, f.policy.Scopes)
+	}
+	return nil
+}
+
+// checkIfWriterIn is the shape check of ?if_writer_in= (real scope only, at
+// most MaxIfWriterIn entries, each at most MaxIDLength).
+func checkIfWriterIn(list []string, scopeName string) *fserr.Error {
+	if list != nil && scopeName != registry.ScopeReal {
+		return fserr.BadRequest("if_writer_in applies to the real overlay only (game_kind=real)")
+	}
+	if len(list) > MaxIfWriterIn {
+		return fserr.BadRequest("if_writer_in has more than %d entries", MaxIfWriterIn)
+	}
+	for _, w := range list {
+		if len(w) > MaxIDLength {
+			return fserr.BadRequest("an if_writer_in entry is longer than %d characters", MaxIDLength)
+		}
+	}
+	return nil
 }
 
 // realWriterAllowed reports whether a real overlay (nil = none) passes an
@@ -457,133 +488,169 @@ func (s *State) Clear(req ClearRequest) (WriteResult, *fserr.Error) {
 	defer s.mu.Unlock()
 	res := WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: s.opts.Epoch, ScopeKey: req.Scope.Name()}
 
-	f, err := s.lookupLocked(req.Set, req.Flag, &res)
+	f, err := s.checkClearLocked(req, &res)
 	if err != nil {
 		return res, err
 	}
 	scopeName := res.ScopeKey
-	if scopeName == registry.ScopeGameSerial && req.Scope.Serial == "" {
-		scopeName = ""
-	}
-	if scopeName == "" || !f.policy.AllowsScope(scopeName) {
-		return res, fserr.BadRequest("the scope does not fit %s (allowed: %v)", req.Flag, f.policy.Scopes)
-	}
-	if !s.served[f.set] {
-		return res, fserr.Conflict(fserr.SetNotServed, "flag set %q is not served by the flag service yet", f.set)
-	}
-	if err := s.streamCheckLocked(f.set); err != nil {
-		return res, err
-	}
-	if req.Persist && scopeName != registry.ScopeStack {
-		return res, fserr.BadRequest("persist=true clears a stack-wide admin value only")
-	}
-	if req.IfWriter != "" && scopeName != registry.ScopeReal {
-		return res, fserr.BadRequest("if_writer applies to the real overlay only (game_kind=real)")
-	}
-	// #2236, UC-043 A17 step 3: the guarded revert. Checked under s.mu, like the
-	// Put guard, so a game registering between the agent's own read and this
-	// DELETE still blocks it. A plain DELETE (the kill switch) never comes here.
-	if req.UnlessRealGame && scopeName == registry.ScopeReal && f.policy.RealWriteNeedsNoRealGame() {
-		if id := s.liveRealGameLocked(); id != "" {
-			return res, fserr.Conflict(fserr.RealGameLive, "real game %q is registered; a guarded revert of %s waits until no real game runs", id, f.key)
+	if scopeName == registry.ScopeStack {
+		if err := s.clearStackLocked(f, req, &res); err != nil {
+			return res, err
 		}
-	}
-	// #1877, UC-043 A18: the compare-and-delete precondition, checked last, under
-	// the same lock as the clear, so no other write can slip in between the
-	// compare and the delete. Like HTTP If-Match (RFC 9110 §13.2.2) it is
-	// evaluated only when the clear would otherwise succeed: every 4xx/5xx above
-	// (real_game_live included) takes precedence over 412. A missing overlay is
-	// not a mismatch: the clear stays an idempotent 204 with nothing cleared.
-	if req.IfWriter != "" && f.real != nil && f.real.Writer != req.IfWriter {
-		return res, fserr.PreconditionFailed(fserr.WriterMismatch, "the real overlay of %s was written by %q, not %q; nothing cleared", f.key, f.real.Writer, req.IfWriter)
-	}
-	sc := req.Scope
-	switch scopeName {
-	case registry.ScopeStack:
-		switch {
-		case req.Persist && f.admin != nil:
-			prevAdmin := f.admin
-			f.admin = nil
-			res.Cleared = 1
-			if err := s.saveAdminLocked(); err != nil {
-				if f.policy.AppliesWhenPersistFails() {
-					// A kill switch is cleared now; the 204 carries the
-					// not-persisted header (#2368, services.md §7.2).
-					s.opts.Logger.Error("flag service: kill switch cleared in memory only; the state file could not be written", "flag", f.key, "error", err)
-					res.PersistFailed = true
-					break
-				}
-				// The old value would come back after a restart: keep it
-				// live too, and tell the caller (#2368).
-				f.admin, res.Cleared = prevAdmin, 0
-				return res, fserr.PersistFailed("the persisted value of %s was not cleared: the state file could not be written: %v", req.Flag, err)
-			}
-			res.Persisted = true
-		case req.Persist && s.persistBlocked && f.policy.Persist:
-			// No admin value in memory, but the unreadable state file may
-			// still hold one that returns at the next start (UC-053 A12):
-			// a 204 would claim it is gone (#2368). saveAdminLocked counts
-			// the failure and returns the error. A flag whose policy takes no
-			// persisted value cannot be in the file: it keeps the plain 204.
-			err := s.saveAdminLocked()
-			if f.policy.AppliesWhenPersistFails() {
-				s.opts.Logger.Error("flag service: kill switch clear not persisted; the state file was unreadable at start", "flag", f.key, "error", err)
-				res.PersistFailed = true
-				break
-			}
-			return res, fserr.PersistFailed("the persisted value of %s was not cleared: %v", req.Flag, err)
-		case !req.Persist && f.stack != nil:
-			f.stack, res.Cleared = nil, 1
-		}
-	case registry.ScopeReal:
-		if f.real != nil {
-			f.real, res.Cleared = nil, 1
-		}
-	case registry.ScopeFraction:
-		if f.fraction != nil {
-			f.fraction, res.Cleared = nil, 1
-		}
-	case registry.ScopeGame:
-		if f.policy.Kind == registry.KindEvent {
-			// Clearing empties the game's list but keeps its seq: the next
-			// event gets the next seq, so the coordinator (which applies only
-			// a seq above the last one it applied) never drops it (PR #1417
-			// review). The list goes with the game scope at game end.
-			if list, ok := f.events[sc.GameID]; ok && len(list.Events) > 0 {
-				list.Events = []event{}
-				list.Variant = s.nextVariant("r")
-				res.Cleared = 1
-			}
-		} else if _, ok := f.games[sc.GameID]; ok {
-			delete(f.games, sc.GameID)
-			res.Cleared = 1
-		}
-	case registry.ScopeGameSerial:
-		if m := f.serials[sc.GameID]; m != nil {
-			if _, ok := m[sc.Serial]; ok {
-				delete(m, sc.Serial)
-				res.Cleared = 1
-				if len(m) == 0 {
-					delete(f.serials, sc.GameID)
-				}
-			}
-		}
-	case registry.ScopeExperiment:
-		if m := f.experiments[sc.ExperimentID]; m != nil {
-			if _, ok := m[sc.Arm]; ok {
-				delete(m, sc.Arm)
-				res.Cleared = 1
-				if len(m) == 0 {
-					delete(f.experiments, sc.ExperimentID)
-				}
-			}
-		}
+	} else if s.removeLocked(f, scopeName, req.Scope) {
+		res.Cleared = 1
 	}
 	if res.Cleared > 0 {
 		s.changed()
 	}
 	res.SnapshotVersion = s.version
 	return res, nil
+}
+
+// checkClearLocked runs every precondition of a Clear in this order (the first
+// failure answers; TestPreconditionMatrix_Clear pins each pair):
+//
+//	lookup 404/422 > scope fit 400 > served 409 > stream 503 > persist 400 >
+//	if_writer shape 400 > guarded revert 409 > if_writer 412
+//
+// Unlike Put there is no id-length check and no game-live check: clearing
+// what is not there is an idempotent 204. The 412 is last, under the lock of
+// the clear, and evaluated only when the clear would otherwise succeed
+// (#1877, UC-043 A18, like HTTP If-Match, RFC 9110 §13.2.2): a missing
+// overlay is not a mismatch.
+func (s *State) checkClearLocked(req ClearRequest, res *WriteResult) (*flagState, *fserr.Error) {
+	f, err := s.lookupLocked(req.Set, req.Flag, res)
+	if err != nil {
+		return nil, err
+	}
+	scopeName := res.ScopeKey
+	if err := checkScopeFit(f, scopeName); err != nil {
+		return nil, err
+	}
+	if !s.served[f.set] {
+		return nil, fserr.Conflict(fserr.SetNotServed, "flag set %q is not served by the flag service yet", f.set)
+	}
+	if err := s.streamCheckLocked(f.set); err != nil {
+		return nil, err
+	}
+	if req.Persist && scopeName != registry.ScopeStack {
+		return nil, fserr.BadRequest("persist=true clears a stack-wide admin value only")
+	}
+	if req.IfWriter != "" && scopeName != registry.ScopeReal {
+		return nil, fserr.BadRequest("if_writer applies to the real overlay only (game_kind=real)")
+	}
+	// #2236, UC-043 A17 step 3: the guarded revert. Checked under s.mu, like the
+	// Put guard, so a game registering between the agent's own read and this
+	// DELETE still blocks it. A plain DELETE (the kill switch) never comes here.
+	if req.UnlessRealGame {
+		if err := s.checkRealGameLocked(f, scopeName, "a guarded revert"); err != nil {
+			return nil, err
+		}
+	}
+	if req.IfWriter != "" && f.real != nil && f.real.Writer != req.IfWriter {
+		return nil, fserr.PreconditionFailed(fserr.WriterMismatch, "the real overlay of %s was written by %q, not %q; nothing cleared", f.key, f.real.Writer, req.IfWriter)
+	}
+	return f, nil
+}
+
+// clearStackLocked clears the stack scope: the in-memory overlay, or with
+// Persist the persisted admin value (also leaving the state file).
+func (s *State) clearStackLocked(f *flagState, req ClearRequest, res *WriteResult) *fserr.Error {
+	switch {
+	case req.Persist && f.admin != nil:
+		prevAdmin := f.admin
+		f.admin = nil
+		res.Cleared = 1
+		if err := s.saveAdminLocked(); err != nil {
+			if f.policy.AppliesWhenPersistFails() {
+				// A kill switch is cleared now; the 204 carries the
+				// not-persisted header (#2368, services.md §7.2).
+				s.opts.Logger.Error("flag service: kill switch cleared in memory only; the state file could not be written", "flag", f.key, "error", err)
+				res.PersistFailed = true
+				return nil
+			}
+			// The old value would come back after a restart: keep it
+			// live too, and tell the caller (#2368).
+			f.admin, res.Cleared = prevAdmin, 0
+			return fserr.PersistFailed("the persisted value of %s was not cleared: the state file could not be written: %v", req.Flag, err)
+		}
+		res.Persisted = true
+	case req.Persist && s.persistBlocked && f.policy.Persist:
+		// No admin value in memory, but the unreadable state file may
+		// still hold one that returns at the next start (UC-053 A12):
+		// a 204 would claim it is gone (#2368). saveAdminLocked counts
+		// the failure and returns the error. A flag whose policy takes no
+		// persisted value cannot be in the file: it keeps the plain 204.
+		err := s.saveAdminLocked()
+		if f.policy.AppliesWhenPersistFails() {
+			s.opts.Logger.Error("flag service: kill switch clear not persisted; the state file was unreadable at start", "flag", f.key, "error", err)
+			res.PersistFailed = true
+			return nil
+		}
+		return fserr.PersistFailed("the persisted value of %s was not cleared: %v", req.Flag, err)
+	case !req.Persist && f.stack != nil:
+		f.stack, res.Cleared = nil, 1
+	}
+	return nil
+}
+
+// removeLocked empties the slot scopeName and sc address (any scope but stack) and
+// reports whether something was there. An event flag's game slot is its
+// list: clearing empties it but keeps its seq, so the next event gets the
+// next seq and the coordinator (which applies only a seq above the last one
+// it applied) never drops it (PR #1417 review). The list goes with the game
+// scope at game end.
+func (s *State) removeLocked(f *flagState, scopeName string, sc Scope) bool {
+	switch scopeName {
+	case registry.ScopeReal:
+		return clearSlot(&f.real)
+	case registry.ScopeFraction:
+		return clearSlot(&f.fraction)
+	case registry.ScopeGame:
+		if f.policy.Kind == registry.KindEvent {
+			if list, ok := f.events[sc.GameID]; ok && len(list.Events) > 0 {
+				list.Events = []event{}
+				list.Variant = s.nextVariant("r")
+				return true
+			}
+			return false
+		}
+		return deleteKey(f.games, sc.GameID)
+	case registry.ScopeGameSerial:
+		return deleteNested(f.serials, sc.GameID, sc.Serial)
+	case registry.ScopeExperiment:
+		return deleteNested(f.experiments, sc.ExperimentID, sc.Arm)
+	}
+	return false
+}
+
+func clearSlot(slot **value) bool {
+	if *slot == nil {
+		return false
+	}
+	*slot = nil
+	return true
+}
+
+func deleteKey(m map[string]*value, key string) bool {
+	if _, ok := m[key]; !ok {
+		return false
+	}
+	delete(m, key)
+	return true
+}
+
+// deleteNested deletes outer[o][inner] and drops the outer entry when it
+// empties.
+func deleteNested(outer map[string]map[string]*value, o, inner string) bool {
+	m := outer[o]
+	if m == nil || !deleteKey(m, inner) {
+		return false
+	}
+	if len(m) == 0 {
+		delete(outer, o)
+	}
+	return true
 }
 
 // ClearWriter removes every stack-wide overlay (stack, real, fraction) that
