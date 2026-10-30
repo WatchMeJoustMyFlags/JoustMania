@@ -311,6 +311,7 @@ class TestSwapperMotionProcessing:
 
         assert game.players[serial].alive is True
 
+    @pytest.mark.real_game_time
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-024", flow="main", steps=[2])
     async def test_lethal_motion_swaps_team(self, game):

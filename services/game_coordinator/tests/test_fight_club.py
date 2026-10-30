@@ -19,6 +19,8 @@ import pytest
 import pytest_asyncio
 from opentelemetry import trace
 
+from services.game_coordinator import game_clock
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -389,7 +391,7 @@ class TestFightClubGameMode:
         defender_serial = game.current_defender
 
         # Verify invincibility is active
-        assert game.players[defender_serial].invincible_until > time.time()
+        assert game.players[defender_serial].invincible_until > game_clock.now()
 
         # Feed 10 lethal motion frames during invincibility
         for _ in range(10):

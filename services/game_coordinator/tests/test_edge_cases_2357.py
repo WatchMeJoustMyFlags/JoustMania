@@ -103,6 +103,7 @@ def _no_shield_limits():
 # B4: the game clock
 # --------------------------------------------------------------------------- #
 @pytest.mark.uc("UC-030", flow="A1", br=["BR-010"])
+@pytest.mark.real_game_time
 class TestGameClock:
     @pytest.mark.asyncio
     async def test_wall_clock_step_forward_does_not_end_a_running_grace(self):
@@ -182,6 +183,7 @@ async def _feed_lethal_frames(game: FFAGame, serial: str) -> list[str]:
 
 
 @pytest.mark.uc("UC-030", flow="A1", br=["BR-010"])
+@pytest.mark.real_game_time
 class TestGameClockFramePath:
     """The per-frame grace gate (``_process_controller_state``) reads the game clock, not the wall clock."""
 

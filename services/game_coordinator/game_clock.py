@@ -15,6 +15,7 @@ Callers use ``game_clock.now()`` (attribute lookup), so a test can patch
 ``game_clock.now``. Never patch ``time.monotonic`` itself: the asyncio loop uses it.
 """
 
+import asyncio
 import time
 
 _WALL_ANCHOR = time.time() - time.monotonic()
@@ -28,3 +29,13 @@ def now() -> float:
 def to_wall(instant: float) -> float:
     """Wall-clock epoch seconds for a game-clock ``instant``, for timestamps sent out."""
     return time.time() + (instant - now())
+
+
+async def sleep(seconds: float) -> None:
+    """Wait ``seconds`` of game time (production: plain ``asyncio.sleep``).
+
+    Game-time waits (countdown beeps, instruction clip, tempo ticks) go through here so
+    a test can run game time faster than real time by patching ``game_clock.now`` and
+    ``game_clock.sleep`` together (tests/conftest.py ``DilatedGameClock``).
+    """
+    await asyncio.sleep(seconds)

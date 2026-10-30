@@ -9,7 +9,6 @@ Subclasses:
 - RandomTeamsGame (Random Teams): Random team assignment with team_formation_phase
 """
 
-import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -315,7 +314,7 @@ class TeamsGameBase(BaseGameMode):
                 if not self.running:
                     logger.info("Countdown interrupted by force_end")
                     return
-                await asyncio.sleep(0.05)
+                await game_clock.sleep(0.05)
 
         # Play start sound (Phase 29)
         await self._play_sound(Sound.SFX_START3, priority=2)

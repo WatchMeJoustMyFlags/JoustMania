@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from services.game_coordinator import game_clock
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -649,7 +651,7 @@ class TestGrantToughnessBoost:
         assert ok is True
         p = game.players["AA"]
         assert p.toughness_boost_factor == pytest.approx(1.8)
-        assert p.toughness_boost_until > time.time()
+        assert p.toughness_boost_until > game_clock.now()
 
     @pytest.mark.asyncio
     async def test_default_boost_when_omitted(self, game):
@@ -667,7 +669,7 @@ class TestGrantToughnessBoost:
     @pytest.mark.asyncio
     async def test_seconds_capped(self, game):
         await game.grant_toughness_boost("AA", 9999.0)
-        assert game.players["AA"].toughness_boost_until <= time.time() + game.TOUGHNESS_BOOST_MAX_SECONDS + 1.0
+        assert game.players["AA"].toughness_boost_until <= game_clock.now() + game.TOUGHNESS_BOOST_MAX_SECONDS + 1.0
 
     @pytest.mark.uc("UC-040", flow="main", steps=[13])
     @pytest.mark.asyncio
@@ -679,6 +681,7 @@ class TestGrantToughnessBoost:
         await game.grant_toughness_boost("BB", 5.0, 9.0)
         assert game.players["BB"].toughness_boost_factor == pytest.approx(2.0)
 
+    @pytest.mark.real_game_time
     @pytest.mark.uc("UC-040", flow="main", steps=[13])
     @pytest.mark.asyncio
     async def test_uc040_step13_toughness_boost_lasts_at_most_30_s(self, game):
@@ -741,7 +744,7 @@ class TestSoftPenaltyPrimitives:
         ok = await game.warn_player("AA")
         assert ok is True
         # warn is purely visual/haptic: warning_until set, thresholds untouched.
-        assert game.players["AA"].warning_until > time.time()
+        assert game.players["AA"].warning_until > game_clock.now()
         assert game.players["AA"].soft_penalty_until == 0.0
         after = game._compute_effective_thresholds(game.players["AA"])
         assert before == pytest.approx(after)
@@ -760,7 +763,7 @@ class TestSoftPenaltyPrimitives:
         assert ok is True
         p = game.players["AA"]
         assert p.soft_penalty_factor == pytest.approx(0.6)
-        assert p.soft_penalty_until > time.time()
+        assert p.soft_penalty_until > game_clock.now()
 
     @pytest.mark.asyncio
     async def test_tighten_default_factor_when_omitted(self, game):
@@ -780,7 +783,7 @@ class TestSoftPenaltyPrimitives:
     @pytest.mark.asyncio
     async def test_tighten_seconds_capped(self, game):
         await game.apply_soft_penalty("AA", 9999.0)
-        assert game.players["AA"].soft_penalty_until <= time.time() + game.SOFT_PENALTY_MAX_SECONDS + 1.0
+        assert game.players["AA"].soft_penalty_until <= game_clock.now() + game.SOFT_PENALTY_MAX_SECONDS + 1.0
 
     @pytest.mark.asyncio
     async def test_tighten_nonpositive_seconds_noop(self, game):
@@ -853,7 +856,7 @@ class TestApplyAutoRubberband:
         lag = game.players["LAG"]
         lead = game.players["LEAD"]
         # The laggard (most behind) gets the boost.
-        assert lag.rubberband_until > time.time()
+        assert lag.rubberband_until > game_clock.now()
         assert lag.rubberband_boost > 1.0
         # The leader gets (close to) nothing — never penalized.
         assert lead.rubberband_boost == pytest.approx(1.0) or lead.rubberband_until <= time.time()
@@ -910,7 +913,7 @@ class TestApplyAutoRubberband:
     @pytest.mark.asyncio
     async def test_seconds_capped(self, game):
         await game.apply_auto_rubberband("strong", seconds=9999.0)
-        assert game.players["LAG"].rubberband_until <= time.time() + game.RUBBERBAND_MAX_SECONDS + 1.0
+        assert game.players["LAG"].rubberband_until <= game_clock.now() + game.RUBBERBAND_MAX_SECONDS + 1.0
 
     @pytest.mark.asyncio
     async def test_nonpositive_seconds_noop(self, game):

@@ -8,7 +8,6 @@ Last team standing wins.
 Phase 36b: Refactored to extend TeamsGameBase, eliminating ~550 lines of duplicate code.
 """
 
-import asyncio
 import logging
 
 from lib.types import Sound
@@ -212,7 +211,7 @@ class RandomTeamsGame(TeamsGameBase):
             if not self.running:
                 logger.info("Team formation interrupted by force_end")
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         # Set persistent team colors after pulse completes
         await self._set_team_colors(pulse_effect=False, duration_ms=0)

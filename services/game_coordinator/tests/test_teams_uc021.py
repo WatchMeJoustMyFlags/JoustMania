@@ -306,6 +306,7 @@ class TestMainSteps3To5:
         assert GameEvent.GAME_TIE not in types
         assert game.state == GameState.ENDED
 
+    @pytest.mark.real_game_time
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-021", flow="A2")
     async def test_run_with_every_team_eliminated_publishes_tie_then_game_ended(self, fast_config):

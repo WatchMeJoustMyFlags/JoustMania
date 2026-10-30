@@ -32,6 +32,7 @@ disable_logging_for_tests()
 
 # Import protobufs from proto package (must be after path setup)
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 
 
 async def async_noop(*_args, **_kwargs):
@@ -63,7 +64,7 @@ class MockBidirectionalStream:
     async def write(self, message):
         """Handle client messages (config, filter updates, effects)."""
         if message.HasField("config"):
-            self.start_time = time.time()
+            self.start_time = game_clock.now()
         elif message.HasField("filter_update"):
             self.filter_serials = set(message.filter_update.serials) if message.filter_update.serials else None
         elif message.HasField("game_effect"):
@@ -82,7 +83,7 @@ class MockBidirectionalStream:
             await asyncio.sleep(0.01)
             return controller_manager_pb2.GameplayDataUpdate(controllers=[], timestamp=int(time.time() * 1000))
 
-        elapsed = time.time() - self.start_time
+        elapsed = game_clock.now() - self.start_time
 
         if not self.infinite and elapsed > self.max_duration:
             self.running = False
@@ -118,7 +119,7 @@ class MockBidirectionalStream:
             )
             gameplay_data_list.append(gd)
 
-        await asyncio.sleep(1.0 / 60.0)
+        await game_clock.sleep(1.0 / 60.0)
         return controller_manager_pb2.GameplayDataUpdate(
             controllers=gameplay_data_list, timestamp=int(time.time() * 1000)
         )
@@ -229,6 +230,43 @@ def _flag_providers_ready_instantly(monkeypatch):
         return []
 
     monkeypatch.setattr("services.game_coordinator.game_session.await_flag_providers_ready", _ready)
+
+
+GAME_TIME_SCALE = 10.0
+
+
+class DilatedGameClock:
+    """Game time that runs ``scale`` times faster than the wall clock (#2361).
+
+    ``now()`` advances ``scale`` seconds per real second and ``sleep(s)`` waits ``s / scale``
+    real seconds, so every game-time wait and deadline stays consistent with the others
+    while the suite does not sit through them. Production keeps the monotonic clock at 1x.
+    """
+
+    def __init__(self, scale: float = GAME_TIME_SCALE):
+        self.scale = scale
+        self._origin_real = time.monotonic()
+        self._origin_game = game_clock.now()
+
+    def now(self) -> float:
+        return self._origin_game + (time.monotonic() - self._origin_real) * self.scale
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds / self.scale)
+
+
+@pytest.fixture(autouse=True)
+def _fast_game_time(request, monkeypatch):
+    """Run game time 10x faster than real time (#2361).
+
+    A test that compares game time with the wall clock opts out with
+    ``@pytest.mark.real_game_time``; a test that patches ``game_clock.now`` itself patches after this fixture and wins.
+    """
+    if request.node.get_closest_marker("real_game_time") or request.node.get_closest_marker("real_durations"):
+        return
+    clock = DilatedGameClock()
+    monkeypatch.setattr(game_clock, "now", clock.now)
+    monkeypatch.setattr(game_clock, "sleep", clock.sleep)
 
 
 @pytest.fixture(autouse=True)

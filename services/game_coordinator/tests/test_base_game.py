@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from services.game_coordinator import game_clock
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -1397,7 +1399,7 @@ class TestStartupGracePeriod:
         player = game.players["test_serial"]
 
         # Set grace period in the future (simulates startup grace)
-        player.grace_until = time.time() + 0.3
+        player.grace_until = game_clock.now() + 0.3
 
         # Create a massive spike that would normally kill instantly
         controller_state = controller_manager_pb2.GameplayData(

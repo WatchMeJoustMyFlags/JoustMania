@@ -243,6 +243,7 @@ class TestUC030DeathDetection:
         assert elapsed >= 0.1  # drains for ~100 ms (no upper wall-clock bound: CI load)
         assert 1 <= consumed < 30
 
+    @pytest.mark.real_game_time
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", flow="A1", br=["BR-003"])
     async def test_game_loop_sets_the_startup_grace(self):

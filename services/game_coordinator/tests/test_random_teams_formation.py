@@ -6,6 +6,7 @@ start. FFA keeps its stream open after colour assignment (UC-020 main step 1).
 """
 
 import asyncio
+import dataclasses
 import sys
 import time
 from pathlib import Path
@@ -21,9 +22,11 @@ from conftest import EventCollector, MockControllerManagerService
 
 from lib.types import GameEvent
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games import random_teams as random_teams_mod
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.random_teams import RandomTeamsGame
+from services.game_coordinator.runtime_config import get_config_manager
 
 SERIALS = [f"mock_controller_{i}" for i in range(4)]
 
@@ -96,7 +99,7 @@ class QueueStream:
                 )
             )
             self.seq += 1
-            await asyncio.sleep(0.01)
+            await game_clock.sleep(0.01)
 
     def __aiter__(self):
         return self
@@ -285,8 +288,10 @@ async def test_drop_and_reconnect_during_formation_is_not_eliminated():
 
 @pytest.mark.uc("UC-021", flow="A1")
 @pytest.mark.asyncio
-@pytest.mark.real_durations
-async def test_drop_and_reconnect_during_the_countdown_is_still_eliminated():
+async def test_drop_and_reconnect_during_the_countdown_is_still_eliminated(monkeypatch):
+    # The production 750 ms countdown phases, on the fast game clock (conftest).
+    manager = get_config_manager()
+    monkeypatch.setattr(manager, "config", dataclasses.replace(manager.config, countdown_phase_duration_ms=750))
     # 1 s formation is ~100 frames; seq 150 lies in the countdown, after the drain stopped.
     game, calls = await _run_with_formation_disconnect(gaps={SERIALS[0]: (150, 160)}, disconnect_seq=150)
 
