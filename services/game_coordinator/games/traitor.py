@@ -10,7 +10,10 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -87,6 +90,23 @@ class TraitorPlayer(Player):
     secret_team: int = -1  # The team the traitor actually wins with (-1 = not a traitor)
 
 
+@dataclass(frozen=True)
+class TraitorInitFlags:
+    """The traitor flags latched at game init, validated and immutable (#2359)."""
+
+    count_tiers: tuple[Mapping[str, int], ...]
+    count_fallback_divisor: int
+
+    @classmethod
+    def from_raw(cls, *, count_tiers: Any) -> "TraitorInitFlags":
+        """Validate the raw flag value; any malformed component gives the module defaults (fail closed)."""
+        tiers, divisor = resolve_count_tiers(count_tiers, DEFAULT_TRAITOR_COUNT_TIERS, DEFAULT_TRAITOR_FALLBACK_DIVISOR)
+        return cls(
+            count_tiers=tuple(MappingProxyType(dict(tier)) for tier in tiers),
+            count_fallback_divisor=divisor,
+        )
+
+
 class TraitorGame(TeamsGameBase):
     """
     Traitor game mode using gRPC communication.
@@ -151,11 +171,11 @@ class TraitorGame(TeamsGameBase):
         # #766 F2: traitor count tiers promoted to ``game.traitor.count_tiers``.
         # Read ONCE here (init-frozen); malformed values fall back to the module
         # defaults (the source of truth).
-        self._count_tiers, self._count_fallback_divisor = resolve_count_tiers(
-            read_object_flag("game", "traitor.count_tiers", {}, game_id=self.game_id),
-            DEFAULT_TRAITOR_COUNT_TIERS,
-            DEFAULT_TRAITOR_FALLBACK_DIVISOR,
+        self.mode_flags = TraitorInitFlags.from_raw(
+            count_tiers=read_object_flag("game", "traitor.count_tiers", {}, game_id=self.game_id)
         )
+        self._count_tiers = [dict(tier) for tier in self.mode_flags.count_tiers]
+        self._count_fallback_divisor = self.mode_flags.count_fallback_divisor
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
