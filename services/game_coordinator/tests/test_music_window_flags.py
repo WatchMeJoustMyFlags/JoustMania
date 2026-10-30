@@ -157,7 +157,7 @@ def test_default_instance_reproduces_scheduling_ranges():
     game.players = {"a": object(), "b": object()}
     game.dead_count = 0
 
-    import time as _time
+    from services.game_coordinator import game_clock
 
     # speed_up=True -> slow windows; speed_up=False -> fast windows.
     for speed_up, lo, hi in (
@@ -166,7 +166,7 @@ def test_default_instance_reproduces_scheduling_ranges():
     ):
         game.speed_up = speed_up
         for _ in range(200):
-            now = _time.time()
+            now = game_clock.now()
             delay = game._get_music_change_time() - now
             assert lo - 0.001 <= delay <= hi + 0.001
 
