@@ -13,7 +13,9 @@
 # flag baseline (services/flagd, which compose mounts at /etc/flagd). No docker.
 #
 # Usage: scripts/ci/check-registry-pinned.sh [registry.yaml]
-# Exit: 0 loads, 1 does not load, 2 setup problem (no tag, no go).
+# Exit: 0 loads (or SKIP: no tag yet, but IMAGE_TAG is the release this checkout
+# cuts per .release-please-manifest.json, as on a release-please PR (#2435)),
+# 1 does not load, 2 setup problem (no tag and not that release, no go).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -33,7 +35,15 @@ TAG="joustmania-v${IMAGE_TAG}"
 
 if ! git -C "$ROOT" rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
   git -C "$ROOT" fetch -q --no-tags --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG" \
-    || { echo "ERROR: release tag $TAG not found locally or on origin" >&2; exit 2; }
+    || {
+      MANIFEST_VERSION="$(sed -n 's/^[[:space:]]*"\.":[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/.release-please-manifest.json" 2>/dev/null | head -n1)"
+      if [[ -n "$MANIFEST_VERSION" && "$IMAGE_TAG" == "$MANIFEST_VERSION" ]]; then
+        echo "SKIP: IMAGE_TAG=$IMAGE_TAG is the release this checkout cuts (tag not created yet)" >&2
+        exit 0
+      fi
+      echo "ERROR: release tag $TAG not found locally or on origin" >&2
+      exit 2
+    }
 fi
 
 WORK="$(mktemp -d)"
