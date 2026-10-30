@@ -14,6 +14,7 @@ Phase 36b: Refactored to extend BaseGameMode, eliminating ~450 lines of duplicat
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from opentelemetry import trace
 
@@ -67,6 +68,27 @@ def resolve_scoring(flag_value, default_base: int, default_penalty: int) -> tupl
     base = _non_neg_int(flag_value.get("base"), default_base)
     penalty = _non_neg_int(flag_value.get("death_penalty"), default_penalty)
     return base, penalty
+
+
+@dataclass(frozen=True)
+class NonstopInitFlags:
+    """The nonstop flags latched at game init, validated and immutable (#2359)."""
+
+    respawn_seconds: float
+    spawn_protection_seconds: float
+    score_base: int
+    score_death_penalty: int
+
+    @classmethod
+    def from_raw(cls, *, respawn_seconds: Any, spawn_protection_seconds: Any, scoring: Any) -> "NonstopInitFlags":
+        """Validate the raw flag values; a malformed one gives the module constant (fail closed)."""
+        base, penalty = resolve_scoring(scoring, SCORE_BASE, SCORE_DEATH_PENALTY)
+        return cls(
+            respawn_seconds=resolve_non_negative_duration(respawn_seconds, RESPAWN_DURATION),
+            spawn_protection_seconds=resolve_non_negative_duration(spawn_protection_seconds, SPAWN_PROTECTION_DURATION),
+            score_base=base,
+            score_death_penalty=penalty,
+        )
 
 
 @dataclass
@@ -154,21 +176,17 @@ class NonstopJoustGame(BaseGameMode):
         # #766 F2: respawn/spawn-protection durations and scoring weights promoted
         # to game flags. Read ONCE here (init-frozen); malformed values fall back
         # to the module constants (the source of truth).
-        self.respawn_duration = resolve_non_negative_duration(
-            read_float_flag("game", "nonstop.respawn_seconds", RESPAWN_DURATION, game_id=self.game_id),
-            RESPAWN_DURATION,
-        )
-        self.spawn_protection_duration = resolve_non_negative_duration(
-            read_float_flag(
+        self.mode_flags = NonstopInitFlags.from_raw(
+            respawn_seconds=read_float_flag("game", "nonstop.respawn_seconds", RESPAWN_DURATION, game_id=self.game_id),
+            spawn_protection_seconds=read_float_flag(
                 "game", "nonstop.spawn_protection_seconds", SPAWN_PROTECTION_DURATION, game_id=self.game_id
             ),
-            SPAWN_PROTECTION_DURATION,
+            scoring=read_object_flag("game", "nonstop.scoring", {}, game_id=self.game_id),
         )
-        self.score_base, self.score_death_penalty = resolve_scoring(
-            read_object_flag("game", "nonstop.scoring", {}, game_id=self.game_id),
-            SCORE_BASE,
-            SCORE_DEATH_PENALTY,
-        )
+        self.respawn_duration = self.mode_flags.respawn_seconds
+        self.spawn_protection_duration = self.mode_flags.spawn_protection_seconds
+        self.score_base = self.mode_flags.score_base
+        self.score_death_penalty = self.mode_flags.score_death_penalty
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""

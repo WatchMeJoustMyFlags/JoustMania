@@ -13,7 +13,10 @@ Original JoustMania behavior preserved (minus weapon system).
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -82,6 +85,37 @@ class ZombiePlayer(Player):
     respawn_until: float = 0.0  # Time when zombie can respawn (0 = not respawning)
 
 
+@dataclass(frozen=True)
+class ZombieInitFlags:
+    """The zombie flags latched at game init, validated and immutable (#2359)."""
+
+    thresholds: Mapping[Sensitivity, tuple[float, float]]
+    initial_count: int
+    respawn_min_seconds: float
+    respawn_max_seconds: float
+
+    @classmethod
+    def from_raw(
+        cls, *, thresholds: Any, initial_count: Any, respawn_min_seconds: Any, respawn_max_seconds: Any
+    ) -> "ZombieInitFlags":
+        """Validate the raw flag values; a malformed one gives the module default (fail closed).
+
+        ``initial_count`` must be a positive int. The respawn bounds are non-negative and the
+        min must not exceed the max, else both fall back together to keep a sane window.
+        """
+        respawn_min = resolve_non_negative_duration(respawn_min_seconds, ZOMBIE_RESPAWN_MIN)
+        respawn_max = resolve_non_negative_duration(respawn_max_seconds, ZOMBIE_RESPAWN_MAX)
+        if respawn_min > respawn_max:
+            respawn_min, respawn_max = ZOMBIE_RESPAWN_MIN, ZOMBIE_RESPAWN_MAX
+        count_ok = isinstance(initial_count, int) and initial_count >= 1
+        return cls(
+            thresholds=MappingProxyType(dict(resolve_mode_thresholds(thresholds, ZOMBIE_THRESHOLDS))),
+            initial_count=initial_count if count_ok else INITIAL_ZOMBIES,
+            respawn_min_seconds=respawn_min,
+            respawn_max_seconds=respawn_max,
+        )
+
+
 class ZombieGame(StreamedIntroGameMode):
     """
     Zombie game mode using gRPC communication.
@@ -145,30 +179,26 @@ class ZombieGame(StreamedIntroGameMode):
 
         # #766 F1: zombie threshold overrides promoted to ``game.zombie.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to ZOMBIE_THRESHOLDS.
-        self.zombie_thresholds = resolve_mode_thresholds(
-            read_object_flag("game", "zombie.thresholds", {}, game_id=self.game_id), ZOMBIE_THRESHOLDS
+        self.mode_flags = ZombieInitFlags.from_raw(
+            thresholds=read_object_flag("game", "zombie.thresholds", {}, game_id=self.game_id),
+            initial_count=read_int_flag("game", "zombie.initial_count", INITIAL_ZOMBIES, game_id=self.game_id),
+            respawn_min_seconds=read_float_flag(
+                "game", "zombie.respawn_min_seconds", ZOMBIE_RESPAWN_MIN, game_id=self.game_id
+            ),
+            respawn_max_seconds=read_float_flag(
+                "game", "zombie.respawn_max_seconds", ZOMBIE_RESPAWN_MAX, game_id=self.game_id
+            ),
         )
+        self.zombie_thresholds = dict(self.mode_flags.thresholds)
 
         # #766 F2: initial zombie count and respawn delay window promoted to game
         # flags. Read ONCE here (init-frozen); malformed values fall back to the
         # module constants. ``initial_count`` must be a positive int; respawn
         # bounds are non-negative and the min must not exceed the max (else both
         # fall back together to preserve a sane window).
-        initial = read_int_flag("game", "zombie.initial_count", INITIAL_ZOMBIES, game_id=self.game_id)
-        self.initial_zombies = initial if isinstance(initial, int) and initial >= 1 else INITIAL_ZOMBIES
-
-        respawn_min = resolve_non_negative_duration(
-            read_float_flag("game", "zombie.respawn_min_seconds", ZOMBIE_RESPAWN_MIN, game_id=self.game_id),
-            ZOMBIE_RESPAWN_MIN,
-        )
-        respawn_max = resolve_non_negative_duration(
-            read_float_flag("game", "zombie.respawn_max_seconds", ZOMBIE_RESPAWN_MAX, game_id=self.game_id),
-            ZOMBIE_RESPAWN_MAX,
-        )
-        if respawn_min > respawn_max:
-            respawn_min, respawn_max = ZOMBIE_RESPAWN_MIN, ZOMBIE_RESPAWN_MAX
-        self.zombie_respawn_min = respawn_min
-        self.zombie_respawn_max = respawn_max
+        self.initial_zombies = self.mode_flags.initial_count
+        self.zombie_respawn_min = self.mode_flags.respawn_min_seconds
+        self.zombie_respawn_max = self.mode_flags.respawn_max_seconds
 
         self.zombie_serials: list[str] = []
         self.human_serials: list[str] = []
