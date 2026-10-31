@@ -42,8 +42,9 @@ through flags.
   caused by the player, not by the system (see NFR-001 to NFR-004 in
   [requirements.md](requirements.md)).
 - **The host stays in charge of intent.** The human admin decides what is
-  played and how it is calibrated; the agent only nudges a running game within
-  bounds. This split is the [ownership model](OWNERSHIP_MODEL.md).
+  played and how it is calibrated. The agent acts within the bounds and toward
+  the goals the host sets, and is free to find its own moves inside them. This
+  split is the [ownership model](OWNERSHIP_MODEL.md).
 - **Runs at a party.** One Raspberry Pi, Bluetooth controllers, a speaker, no
   internet required to play. Hosted inference is optional; the rules engine is
   the offline floor.
@@ -115,6 +116,7 @@ pull the network and show the rules fallback. See [UC-070](use_cases/UC-070.md).
 3. **Everything observable, everything reversible.** New behaviour ships with
    spans or metrics ([telemetry spec](specs/telemetry.md)) and, where it is
    tunable, a flag ([flag catalog](specs/flags.md)).
+4. **Decisions are checked against their expected result.** Our own decisions are recorded in the use cases and requirements (with their issue); the agent's decisions carry a prediction that is scored after the game (#2479).
 
 ## 7. Out of scope
 
