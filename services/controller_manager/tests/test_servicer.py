@@ -15,7 +15,7 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
 
@@ -39,7 +39,12 @@ class MockGrpcContext:
         return self._cancelled
 
 
-from services.controller_manager.tests.backend_doubles import InertBackendHooks, autospec_discovery_loop, autospec_span
+from services.controller_manager.tests.backend_doubles import (
+    InertBackendHooks,
+    autospec_discovery_loop,
+    autospec_span,
+    stub_method,
+)
 
 
 class MockBackend(InertBackendHooks):
@@ -486,11 +491,9 @@ class TestExtractedHelpers:
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.feedback_manager.apply_base_color = AsyncMock()
 
-        cmd = MagicMock()
-        cmd.serial = "AA:BB"
-        cmd.color.r = 255
-        cmd.color.g = 0
-        cmd.color.b = 0
+        cmd = controller_manager_pb2.ControllerColorConfig(
+            serial="AA:BB", color=controller_manager_pb2.RGB(r=255, g=0, b=0)
+        )
 
         await servicer._process_base_color_command(cmd, "sub_1", "TestStream")
 
@@ -502,11 +505,9 @@ class TestExtractedHelpers:
         servicer, _ = servicer_components
         servicer.feedback_manager.apply_base_color = AsyncMock()
 
-        cmd = MagicMock()
-        cmd.serial = "UNKNOWN"
-        cmd.color.r = 255
-        cmd.color.g = 0
-        cmd.color.b = 0
+        cmd = controller_manager_pb2.ControllerColorConfig(
+            serial="UNKNOWN", color=controller_manager_pb2.RGB(r=255, g=0, b=0)
+        )
 
         await servicer._process_base_color_command(cmd, "sub_1", "TestStream")
 
@@ -518,14 +519,9 @@ class TestExtractedHelpers:
         servicer, _ = servicer_components
         servicer.feedback_manager.handle_game_effect = AsyncMock()
 
-        cmd = MagicMock()
-        cmd.serial = "AA:BB"
-        cmd.effect = controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH
-        cmd.HasField.return_value = False  # no color
-        cmd.duration_ms = 0
-        cmd.speed = 0
-        cmd.trace_parent = ""
-        cmd.trace_state = ""
+        cmd = controller_manager_pb2.GameEffectCommand(
+            serial="AA:BB", effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH
+        )
 
         await servicer._process_game_effect_command(cmd, "sub_1")
 
@@ -547,17 +543,13 @@ class TestExtractedHelpers:
         servicer, _ = servicer_components
         servicer.feedback_manager.handle_game_effect = AsyncMock()
 
-        cmd = MagicMock()
-        cmd.serial = "AA:BB"
-        cmd.effect = controller_manager_pb2.GAME_EFFECT_FLASH
-        cmd.HasField.side_effect = lambda field: field == "color"
-        cmd.color.r = 0
-        cmd.color.g = 255
-        cmd.color.b = 0
-        cmd.duration_ms = 500
-        cmd.speed = 3
-        cmd.trace_parent = ""
-        cmd.trace_state = ""
+        cmd = controller_manager_pb2.GameEffectCommand(
+            serial="AA:BB",
+            effect=controller_manager_pb2.GAME_EFFECT_FLASH,
+            color=controller_manager_pb2.RGB(r=0, g=255, b=0),
+            duration_ms=500,
+            speed=3,
+        )
 
         await servicer._process_game_effect_command(cmd, "sub_1")
 
@@ -575,23 +567,23 @@ class TestExtractedHelpers:
 
     def _make_mock_state(self, serial="AA:BB", name="P1"):
         """Create a mock controller state with real protobuf sub-messages."""
-        mock_state = MagicMock()
-        mock_state.serial = serial
-        mock_state.move_num = 0
-        mock_state.battery = 80
-        mock_state.team = 0
-        mock_state.color = controller_manager_pb2.RGB(r=255, g=0, b=0)
-        mock_state.accel = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
-        mock_state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
-        mock_state.rssi = 0
-        mock_state.name = name
-        return mock_state
+        return controller_manager_pb2.ControllerState(
+            serial=serial,
+            move_num=0,
+            battery=80,
+            team=0,
+            color=controller_manager_pb2.RGB(r=255, g=0, b=0),
+            accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+            gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+            rssi=0,
+            name=name,
+        )
 
     def test_build_gameplay_update_no_filter(self, servicer_components):
         """_build_gameplay_update should include all controllers when filter is None."""
         servicer, _ = servicer_components
 
-        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
 
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
@@ -604,7 +596,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should only include filtered controllers."""
         servicer, _ = servicer_components
 
-        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
 
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
@@ -618,8 +610,7 @@ class TestExtractedHelpers:
         servicer, _ = servicer_components
         span = autospec_span()
 
-        filter_update = MagicMock()
-        filter_update.serials = ["AA:BB", "CC:DD"]
+        filter_update = controller_manager_pb2.FilterUpdate(serials=["AA:BB", "CC:DD"])
 
         result = servicer._process_filter_update(filter_update, "sub_1", span, None)
 
@@ -632,8 +623,7 @@ class TestExtractedHelpers:
         span = autospec_span()
 
         existing = {"AA:BB"}
-        filter_update = MagicMock()
-        filter_update.serials = ["AA:BB"]
+        filter_update = controller_manager_pb2.FilterUpdate(serials=["AA:BB"])
 
         result = servicer._process_filter_update(filter_update, "sub_1", span, existing)
 
@@ -645,8 +635,7 @@ class TestExtractedHelpers:
         servicer, _ = servicer_components
         span = autospec_span()
 
-        filter_update = MagicMock()
-        filter_update.serials = []
+        filter_update = controller_manager_pb2.FilterUpdate(serials=[])
 
         result = servicer._process_filter_update(filter_update, "sub_1", span, {"AA:BB"})
 
@@ -658,11 +647,7 @@ class TestExtractedHelpers:
         servicer, _ = servicer_components
         servicer.feedback_manager.apply_base_color = AsyncMock()
 
-        cmd = MagicMock()
-        cmd.serial = ""
-        cmd.color.r = 255
-        cmd.color.g = 0
-        cmd.color.b = 0
+        cmd = controller_manager_pb2.ControllerColorConfig(serial="", color=controller_manager_pb2.RGB(r=255, g=0, b=0))
 
         await servicer._process_base_color_command(cmd, "sub_1", "TestStream")
 
@@ -681,7 +666,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should return empty when filter matches nothing."""
         servicer, _ = servicer_components
 
-        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
 
         update = servicer._build_gameplay_update({"XX:YY"})
@@ -692,11 +677,11 @@ class TestExtractedHelpers:
         """Each streamed controller drains its mock death latch once (#926)."""
         servicer, _ = servicer_components
 
-        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
         # Backend exposes the duck-typed hook (only MockAdapter does in prod).
-        servicer.backend.consume_death_frame = MagicMock()
+        stub_method(servicer.backend, "consume_death_frame")
 
         # A game stream (it sent colours); observer streams never drain it (UC-035 BR-006).
         servicer._game_stream_serials["game"] = {"AA:BB", "CC:DD"}
@@ -711,10 +696,10 @@ class TestExtractedHelpers:
         """Filtered-out controllers don't get a death-frame tick (#926)."""
         servicer, _ = servicer_components
 
-        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
-        servicer.backend.consume_death_frame = MagicMock()
+        stub_method(servicer.backend, "consume_death_frame")
         servicer._game_stream_serials["game"] = {"AA:BB"}
 
         servicer._build_gameplay_update({"AA:BB"}, "game")
@@ -725,7 +710,7 @@ class TestExtractedHelpers:
         """Backends without the hook (hardware) stream normally (#926)."""
         servicer, _ = servicer_components
 
-        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         # MockBackend inherits the inert death hook — must not raise.
 
@@ -741,16 +726,14 @@ class TestExtractedHelpers:
         servicer.feedback_manager.set_controller_color = AsyncMock(return_value=True)
         span = autospec_span()
 
-        config = MagicMock()
-        config.update_frequency_hz = 60
-
-        # Create color config entries
-        color1 = MagicMock()
-        color1.serial = "AA:BB"
-        color1.color.r = 255
-        color1.color.g = 0
-        color1.color.b = 0
-        config.colors = [color1]
+        config = controller_manager_pb2.GameplayStreamConfig(
+            update_frequency_hz=60,
+            colors=[
+                controller_manager_pb2.ControllerColorConfig(
+                    serial="AA:BB", color=controller_manager_pb2.RGB(r=255, g=0, b=0)
+                )
+            ],
+        )
 
         hz, filt = await servicer._process_gameplay_config(config, "sub_1", span)
 
@@ -765,9 +748,7 @@ class TestExtractedHelpers:
         servicer, _ = servicer_components
         span = autospec_span()
 
-        config = MagicMock()
-        config.update_frequency_hz = 30
-        config.colors = []
+        config = controller_manager_pb2.GameplayStreamConfig(update_frequency_hz=30)
 
         hz, filt = await servicer._process_gameplay_config(config, "sub_1", span)
 
@@ -782,9 +763,7 @@ class TestExtractedHelpers:
         servicer, _ = servicer_components
         span = autospec_span()
 
-        config = MagicMock()
-        config.update_frequency_hz = 0
-        config.colors = []
+        config = controller_manager_pb2.GameplayStreamConfig(update_frequency_hz=0)
 
         hz, filt = await servicer._process_gameplay_config(config, "sub_1", span)
 
@@ -1056,23 +1035,23 @@ class TestStreamGameplayData:
 
     def _make_mock_state(self, serial="AA:BB", name="P1"):
         """Create a mock controller state."""
-        mock_state = MagicMock()
-        mock_state.serial = serial
-        mock_state.move_num = 0
-        mock_state.battery = 80
-        mock_state.team = 0
-        mock_state.color = controller_manager_pb2.RGB(r=255, g=0, b=0)
-        mock_state.accel = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
-        mock_state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
-        mock_state.rssi = 0
-        mock_state.name = name
-        return mock_state
+        return controller_manager_pb2.ControllerState(
+            serial=serial,
+            move_num=0,
+            battery=80,
+            team=0,
+            color=controller_manager_pb2.RGB(r=255, g=0, b=0),
+            accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+            gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+            rssi=0,
+            name=name,
+        )
 
     @pytest.mark.asyncio
     async def test_yields_gameplay_updates(self, servicer):
         """Stream should yield GameplayDataUpdate messages with controller data."""
         servicer.tracked_controllers["AA:BB"] = {}
-        servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state("AA:BB", "P1"))
+        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state("AA:BB", "P1"))
 
         context = MockGrpcContext()
         updates = []
@@ -1107,7 +1086,9 @@ class TestStreamGameplayData:
         servicer.tracked_controllers["CC:DD"] = {}
         servicer.feedback_manager.set_controller_color = AsyncMock(return_value=True)
 
-        servicer.state_builder.build_state = MagicMock(side_effect=lambda serial, _info: self._make_mock_state(serial))
+        stub_method(
+            servicer.state_builder, "build_state", side_effect=lambda serial, _info: self._make_mock_state(serial)
+        )
 
         # Build config that sets 60Hz and filters to AA:BB only
         config_msg = controller_manager_pb2.GameplayStreamControl(
@@ -1164,7 +1145,9 @@ class TestStreamGameplayData:
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
 
-        servicer.state_builder.build_state = MagicMock(side_effect=lambda serial, _info: self._make_mock_state(serial))
+        stub_method(
+            servicer.state_builder, "build_state", side_effect=lambda serial, _info: self._make_mock_state(serial)
+        )
 
         # Send a filter_update to restrict to AA:BB only
         filter_msg = controller_manager_pb2.GameplayStreamControl(

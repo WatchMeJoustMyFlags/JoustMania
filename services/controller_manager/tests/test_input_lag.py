@@ -36,6 +36,7 @@ from services.controller_manager.tests.backend_doubles import (
     autospec_monitoring,
     autospec_publisher,
     autospec_rescan_timer,
+    stub_method,
 )
 
 LAG_METRIC = "services.controller_manager.metrics.controller_input_lag_seconds"
@@ -170,17 +171,18 @@ class TestGameplayFrameObservesLag:
             from services.controller_manager.servicer import ControllerManagerServicer
 
             servicer = ControllerManagerServicer()
-            state = MagicMock()
-            state.serial = SERIAL
-            state.move_num = 0
-            state.battery = 80
-            state.team = 0
-            state.color = controller_manager_pb2.RGB(r=255, g=0, b=0)
-            state.accel = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
-            state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
-            state.rssi = 0
-            state.name = "P1"
-            servicer.state_builder.build_state = MagicMock(return_value=state)
+            state = controller_manager_pb2.ControllerState(
+                serial=SERIAL,
+                move_num=0,
+                battery=80,
+                team=0,
+                color=controller_manager_pb2.RGB(r=255, g=0, b=0),
+                accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+                gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+                rssi=0,
+                name="P1",
+            )
+            stub_method(servicer.state_builder, "build_state", return_value=state)
             servicer.tracked_controllers[SERIAL] = {}
             yield servicer, mock_loop
 

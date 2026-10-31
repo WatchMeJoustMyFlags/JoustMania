@@ -7,7 +7,7 @@ the reconnect continuity of k.
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -15,7 +15,7 @@ from proto import controller_manager_pb2
 from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.multiplexer import motion_patterns as mp
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-from services.controller_manager.tests.backend_doubles import AdapterAsBackend
+from services.controller_manager.tests.backend_doubles import AdapterAsBackend, stub_method
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CASES = REPO_ROOT / "services/agent/patterngame/testdata/trigger_policy_cases.json"
@@ -243,7 +243,7 @@ class TestUC046TriggerOnTheGameplayStream:
         serials = [adapter.add_controller(reserved=True) for _ in range(2)]
         arch = _archetype(BURST)
         adapter.install_pattern(serials, arch)
-        servicer.state_builder.build_state = MagicMock(side_effect=self._state)
+        stub_method(servicer.state_builder, "build_state", side_effect=self._state)
         for s in serials:
             servicer.tracked_controllers[s] = {}
         game, dashboard = [], []

@@ -11,12 +11,10 @@ from proto import psmove_hid_pb2
 from services.controller_manager.multiplexer.adapter import DiscoveryFailedError
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RPC_TIMEOUT_S
+from services.controller_manager.tests.backend_doubles import autospec_channel
 from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 SERIAL = "AABBCCDDEEFF"
-
-
-from services.controller_manager.tests.backend_doubles import autospec_channel
 
 
 def _make_adapter() -> PythonHidAdapter:

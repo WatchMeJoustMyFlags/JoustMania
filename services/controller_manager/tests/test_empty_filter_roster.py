@@ -8,7 +8,7 @@ health counters of controllers that belong to another game (a shadow game's mock
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -17,24 +17,25 @@ project_root = test_dir.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from proto import controller_manager_pb2
+from services.controller_manager.tests.backend_doubles import autospec_backend, autospec_discovery_loop, stub_method
 
 MINE = "mock_controller_0"
 THEIRS = "mock_controller_1"
 
 
-def _state(serial: str) -> MagicMock:
-    state = MagicMock()
-    state.serial = serial
-    state.move_num = 0
-    state.battery = 80
-    state.team = 0
-    state.color = controller_manager_pb2.RGB(r=255, g=0, b=0)
-    state.accel = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
-    state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
-    state.rssi = 0
-    state.name = serial
-    state.trigger_pressed = False
-    return state
+def _state(serial: str) -> controller_manager_pb2.ControllerState:
+    return controller_manager_pb2.ControllerState(
+        serial=serial,
+        move_num=0,
+        battery=80,
+        team=0,
+        color=controller_manager_pb2.RGB(r=255, g=0, b=0),
+        accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+        gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+        rssi=0,
+        name=serial,
+        trigger_pressed=False,
+    )
 
 
 @pytest.fixture
@@ -54,20 +55,7 @@ def rig():
     def drain_health(serial):
         return health.pop(serial, (0, 0, 0))
 
-    backend = MagicMock(
-        spec=[
-            "consume_death_frame",
-            "consume_trigger_press",
-            "pattern_serials",
-            "pattern_frame",
-            "pattern_stream_rate",
-            "record_pattern_overrun",
-            "release_pattern_stream",
-        ]
-    )
-    backend.pattern_serials.return_value = set()
-    backend.pattern_frame.return_value = None
-    backend.pattern_stream_rate.return_value = None
+    backend = autospec_backend()
     backend.consume_death_frame.side_effect = consume_death
     backend.consume_trigger_press.side_effect = consume_trigger
 
@@ -79,11 +67,11 @@ def rig():
 
         servicer = ControllerManagerServicer()
 
-    servicer.discovery_loop = MagicMock()
+    servicer.discovery_loop = autospec_discovery_loop()
     servicer.discovery_loop.drain_disconnects.return_value = []
     servicer.discovery_loop.drain_health_counters.side_effect = drain_health
-    servicer.state_builder.build_state = MagicMock(side_effect=lambda serial, _info: _state(serial))
-    servicer._connection_quality_msg = MagicMock(return_value=None)
+    stub_method(servicer.state_builder, "build_state", side_effect=lambda serial, _info: _state(serial))
+    stub_method(servicer, "_connection_quality_msg", return_value=None)
     servicer.tracked_controllers[MINE] = {}
     servicer.tracked_controllers[THEIRS] = {}
     return servicer, death, trigger, health

@@ -29,7 +29,7 @@ from services.controller_manager.feedback_manager import (
     FeedbackManager,
     clamp_identify_duration,
 )
-from services.controller_manager.tests.backend_doubles import InertBackendHooks
+from services.controller_manager.tests.backend_doubles import InertBackendHooks, stub_method
 
 WHITE = (255, 255, 255)
 OFF = (0, 0, 0)
@@ -566,8 +566,10 @@ class TestUC004IdentifyControllerRpc:
     @pytest.mark.uc("UC-004", flow="A2", br=["BR-003"])
     async def test_closing_the_game_stream_releases_the_roster(self, servicer):
         """UC-004 BR-003: StreamGameplayData's close path forgets the game's players."""
-        servicer.state_builder.build_state = MagicMock(
-            side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial)
+        stub_method(
+            servicer.state_builder,
+            "build_state",
+            side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial),
         )
         servicer.discovery_loop.drain_health_counters.return_value = (0, 0, 0)
         config = controller_manager_pb2.GameplayStreamControl(config=_game_config(SERIAL))

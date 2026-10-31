@@ -21,13 +21,11 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter  # noqa: E402
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter  # noqa: E402
+from services.controller_manager.tests.backend_doubles import autospec_channel  # noqa: E402
 from services.controller_manager.tests.fake_stream_call import FakeStreamCall  # noqa: E402
 
 SERIAL = "AABBCCDDEE01"  # normalized form, as discover() returns it
 FRAME = {"serial": SERIAL, "battery": 5}
-
-
-from services.controller_manager.tests.backend_doubles import autospec_channel
 
 
 def _bare(adapter_cls):

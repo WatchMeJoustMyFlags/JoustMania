@@ -3,7 +3,6 @@
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import grpc
 import grpc.aio
@@ -17,6 +16,7 @@ sys.path.insert(0, str(test_dir))
 from test_identify_controller import SERIAL, _game_config, servicer  # noqa: F401  (pytest fixture)
 
 from proto import controller_manager_pb2
+from services.controller_manager.tests.backend_doubles import stub_method
 
 
 class _AbortedError(Exception):
@@ -43,8 +43,10 @@ async def _requests():
 
 @pytest.fixture
 def stream_servicer(servicer):  # noqa: F811
-    servicer.state_builder.build_state = MagicMock(
-        side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial)
+    stub_method(
+        servicer.state_builder,
+        "build_state",
+        side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial),
     )
     servicer.discovery_loop.drain_health_counters.return_value = (0, 0, 0)
     return servicer
@@ -54,7 +56,7 @@ def stream_servicer(servicer):  # noqa: F811
 @pytest.mark.uc("UC-030", flow="main", br=["BR-006"])
 async def test_frame_error_ends_the_call_with_internal(stream_servicer):
     """UC-030 BR-006: an unexpected per-frame exception aborts INTERNAL, never ends OK."""
-    stream_servicer._build_gameplay_update = MagicMock(side_effect=RuntimeError("boom"))
+    stub_method(stream_servicer, "_build_gameplay_update", side_effect=RuntimeError("boom"))
     context = _Context()
 
     with pytest.raises(_AbortedError):

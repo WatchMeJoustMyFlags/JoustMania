@@ -25,11 +25,9 @@ from services.controller_manager.multiplexer.multiplexer_backend import (
 )
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
+from services.controller_manager.tests.backend_doubles import autospec_channel
 
 SERIALS = ["AABBCCDDEE01", "AABBCCDDEE02"]
-
-
-from services.controller_manager.tests.backend_doubles import autospec_channel
 
 
 def _hid_adapter(adapter_cls: type[RustServiceAdapter | PythonHidAdapter]) -> RustServiceAdapter | PythonHidAdapter:
