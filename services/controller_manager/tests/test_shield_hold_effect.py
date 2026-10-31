@@ -540,6 +540,28 @@ class TestUC040HoldEmptyThenDeath:
         assert backend.rumble[-1][1] == 0
         await _finish(cue_manager, clock)
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    @pytest.mark.parametrize("effect", [pb.GAME_EFFECT_SHIELD_CHARGE, pb.GAME_EFFECT_TOUGHNESS_BOOST])
+    async def test_a_partial_end_with_no_layer_left_keeps_the_hold_state(self, cue_manager, backend, clock, effect):
+        """UC-040 BR-026 (#2462): only a full end (death, game end) stops the hold state when no layer is left.
+
+        A charge or boost end that finds no layer must not stop a living player's hold rumble or idle pool.
+        """
+        await _effect(cue_manager, ENERGY, 5000, _state(energy=2000))
+        await _effect(cue_manager, HOLD, 5000, _state(energy=5000, cues=_cues(ending_lead_ms=0)))
+        cue_manager._shield_layers.pop(SERIAL)  # no layer left; the hold state is still live
+        rumble_writes = len(backend.rumble)
+
+        assert await cue_manager.end_shield_effect(SERIAL, kinds=frozenset({"charge"})) is False
+        await _effect(cue_manager, effect, 0)
+
+        assert cue_manager._background_rumble.get(SERIAL) == 70
+        assert SERIAL in cue_manager._hold_energy
+        assert SERIAL in cue_manager._hold_cues
+        assert len(backend.rumble) == rumble_writes  # no motor write
+        await _finish(cue_manager, clock)
+
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", br=["BR-026"])
