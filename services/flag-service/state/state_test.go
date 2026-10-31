@@ -1298,3 +1298,34 @@ func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-053 A2 UC-015 BR-018
+func TestHoldShieldKeysPersist(t *testing.T) {
+	holdKeys := map[string]string{
+		"shield.energy_max_seconds":     "7",
+		"shield.energy_budget_seconds":  "12",
+		"shield.energy_initial_seconds": "3",
+		"shield.recharge_per_second":    "0.4",
+		"shield.min_burst_seconds":      "0.6",
+		"shield.hold_rumble_intensity":  "90",
+		"shield.empty_pulse_ms":         "300",
+	}
+	for key, value := range holdKeys {
+		t.Run("UC-053/A2 "+key+" persisted write survives a restart (#2452)", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "admin.json")
+			f := newFixture(t, fixtureOpts{stateFile: path, epoch: "e1"})
+			res := f.put(WriteRequest{Set: "game", Flag: key, Value: raw(value), Persist: true, Writer: "operator"})
+			if !res.Persisted {
+				t.Fatal("the result does not say persisted")
+			}
+			g := newFixture(t, fixtureOpts{stateFile: path, epoch: "e2"})
+			var want any
+			if err := json.Unmarshal([]byte(value), &want); err != nil {
+				t.Fatal(err)
+			}
+			if _, got := g.resolve(key, map[string]any{}); got != want {
+				t.Fatalf("%s after restart %v, want %v", key, got, want)
+			}
+		})
+	}
+}
