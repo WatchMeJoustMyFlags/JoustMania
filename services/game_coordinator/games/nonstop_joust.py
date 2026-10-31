@@ -521,6 +521,16 @@ class NonstopJoustGame(BaseGameMode):
         # The stream stays open for the end-game step; run()'s teardown (natural end)
         # or cleanup() (force-end, error) closes it (UC-030 BR-006).
 
+    async def _resend_dead_player_state(self) -> None:
+        """A reopened stream's config sends the countdown players off: show the colour again (#2484).
+
+        Without the reset, ``_last_respawn_color`` blocks the re-send until the colour
+        changes, up to 1 s of a dark LED.
+        """
+        for player in self.players.values():
+            player._last_respawn_color = None
+        await super()._resend_dead_player_state()
+
     async def _update_respawn_timers(self):
         """Update respawn timers and respawn players (Nonstop-specific)."""
         from proto import controller_manager_pb2

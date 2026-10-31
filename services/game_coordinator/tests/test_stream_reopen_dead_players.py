@@ -24,6 +24,8 @@ from proto import controller_manager_pb2
 from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.ffa import FFAGame
+from services.game_coordinator.games.nonstop_joust import NonstopJoustGame, NonstopPlayer
+from services.game_coordinator.games.swapper import SwapperGame
 
 DEATH = controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH
 SHIELD = controller_manager_pb2.GAME_EFFECT_SHIELD
@@ -131,3 +133,62 @@ class TestUC030BR006ReopenDeadPlayers:
         await game._create_gameplay_stream()
 
         assert game.streams[0].effects() == [("p2", SHIELD, 0)]
+
+
+def _stream_game(game_cls, game_id):
+    g = game_cls(
+        controller_manager_client=MockControllerManagerService(num_controllers=3),
+        event_publisher=EventCollector().publish,
+        audio_client=None,
+        game_id=game_id,
+    )
+    g.running = True
+    g.start_time = game_clock.now()
+    for serial in ("p1", "p2", "p3"):
+        g.players[serial] = Player(serial=serial, alive=True, color=GREEN)
+    g.controller_client = MagicMock()
+    g.controller_client.StreamGameplayData.side_effect = RecordingStream
+    if game_cls is NonstopJoustGame:
+        g.players = {s: NonstopPlayer(serial=s, alive=True, color=GREEN) for s in g.players}
+    return g
+
+
+class TestUC030BR006ReopenEdgeCases:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", br=["BR-006"])
+    async def test_nonstop_reopen_shows_the_respawn_countdown_colour_again(self):
+        """The config sends the countdown player off; the colour sent before the reopen must go out again (#2484)."""
+        g = _stream_game(NonstopJoustGame, "test_reopen_nonstop")
+        g._clock = lambda: 100.0
+        player = g.players["p2"]
+        player.alive = False
+        player.respawn_deadline = 101.5
+        with patch.object(g, "_play_sound", new_callable=AsyncMock):
+            g.gameplay_stream = RecordingStream()
+            await g._update_respawn_timers()  # 1.5 s left: yellow
+            assert player._last_respawn_color == (255, 255, 0)
+
+            await g._create_gameplay_stream()
+            new_stream = g.gameplay_stream
+            await g._update_respawn_timers()
+
+        assert new_stream.config_colors()["p2"] == (0, 0, 0)
+        colours = [
+            (m.base_color.color.r, m.base_color.color.g, m.base_color.color.b)
+            for m in new_stream.writes
+            if m.HasField("base_color") and m.base_color.serial == "p2"
+        ]
+        assert colours == [(255, 255, 0)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", br=["BR-006"])
+    async def test_swapper_reopen_leaves_a_player_mid_swap_alone(self):
+        """alive is False only across the swap pause: no SHIELD 0 for it, but one for a player who left."""
+        g = _stream_game(SwapperGame, "test_reopen_swapper")
+        g.players["p1"].alive = False  # mid-swap
+        g.players["p2"].alive = False  # disconnected, eliminated
+        g._eliminated.add("p2")
+
+        await g._create_gameplay_stream()
+
+        assert g.gameplay_stream.effects() == [("p2", SHIELD, 0)]
