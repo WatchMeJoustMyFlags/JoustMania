@@ -35,6 +35,10 @@ rpc StartMenu(StartMenuRequest) returns (StartMenuResponse);
 - `success`: Whether the menu started successfully
 - `error`: Error message if failed (e.g., "Menu already running")
 
+During a game (starting, running or restoring the lobby) `StartMenu` answers `success` but does not enter
+the lobby; the lobby restore after the game leaves the menu RUNNING (UC-010 A12). A STOPPED menu never
+auto starts a game, even when every controller is ready (UC-010 BR-014).
+
 ### StopMenu
 
 Stops the menu and clears all lobby state.

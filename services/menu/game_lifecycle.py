@@ -18,7 +18,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 
 from lib.feature_flags import GAME_KIND_REAL, set_game_transaction_context
 from lib.telemetry import get_tracer
-from lib.types import Games, Sound
+from lib.types import GameEvent, Games, Sound
 from proto import menu_pb2
 from services.menu import metrics
 
@@ -105,12 +105,40 @@ class GameLifecycleMixin:
         if self._lobby_restarting:
             await self.audio.play_sound(Sound.SFX_BEEP_LOUD)
 
+    async def _ready_start_game(self, serial: str) -> bool:
+        """The lobby's ready auto start and READY trigger start (UC-010 step 4).
+
+        UC-010 BR-014 (#2449): a STOPPED menu never auto starts. The start is dropped and logged,
+        nothing is published, and the ready latch is cleared; `StartMenu` re-enables it.
+        """
+        if self.state == menu_pb2.MenuState.STOPPED:
+            self._drop_ready_start_on_stopped_menu(serial)
+            return False
+        return await self._start_game(serial, ready_start=True)
+
+    def _drop_ready_start_on_stopped_menu(self, serial: str) -> None:
+        logger.info(f"Ready start from {serial} dropped: menu is stopped (UC-010 BR-014)")
+        self.ready_handler.reset_game_start_flag()
+
+    def start_menu_during_game(self) -> bool:
+        """Remember a `StartMenu` that arrives while the game lifecycle is live (UC-010 A12, #2449).
+
+        The lobby is not entered mid-game. A menu stopped during the game is marked started again:
+        GAME_STARTING while the game runs (the restore then sets RUNNING), RUNNING inside the restore
+        (the restore reads the state right before the idle monitor). Returns True when it undid a stop.
+        """
+        if self.state != menu_pb2.MenuState.STOPPED:
+            return False
+        self.state = menu_pb2.MenuState.RUNNING if self._lobby_restarting else menu_pb2.MenuState.GAME_STARTING
+        return True
+
     async def _start_game(
         self,
         serial: str,
         source: str = "controller",
         controllers: list[str] | None = None,
         game_mode: Games | None = None,
+        ready_start: bool = False,
     ) -> bool:
         """
         Schedule game start as a background task; False when it is refused (UC-010 A8).
@@ -126,6 +154,7 @@ class GameLifecycleMixin:
                 force_all_start-aware list); None uses the ready controllers.
             game_mode: Mode to start, resolved by the caller (web start_game);
                 None reads ``current_selection`` when the lifecycle runs.
+            ready_start: The lobby's ready auto start (UC-010 BR-014: dropped on a STOPPED menu).
         """
         # UC-010 A8 (#2054): a live lifecycle task is a game that is starting or running. Refuse
         # the start; never cancel the live game's stream. A finished task needs no cancel.
@@ -135,7 +164,7 @@ class GameLifecycleMixin:
 
         # Schedule game lifecycle as background task to avoid blocking button monitor
         self._game_lifecycle_task = asyncio.create_task(
-            self._run_game_lifecycle(serial, source, controllers, game_mode=game_mode)
+            self._run_game_lifecycle(serial, source, controllers, game_mode=game_mode, ready_start=ready_start)
         )
 
         # Log any exceptions from the background task
@@ -155,6 +184,7 @@ class GameLifecycleMixin:
         source: str = "controller",
         controllers: list[str] | None = None,
         game_mode: Games | None = None,
+        ready_start: bool = False,
     ):
         """
         Run the full game lifecycle via StreamGameEvents.
@@ -172,11 +202,17 @@ class GameLifecycleMixin:
                 force_all_start-aware list); None uses the ready controllers.
             game_mode: Mode resolved by the caller. A web start_game passes it so a
                 lobby SELECT during the delay cannot swap the mode (#1278).
+            ready_start: The lobby's ready auto start; dropped when a StopMenu landed meanwhile
+                (UC-010 BR-014).
         """
         from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
 
         # Brief delay to let button monitor finish current event dispatch
         await asyncio.sleep(0.1)
+        if ready_start and self.state == menu_pb2.MenuState.STOPPED:
+            # UC-010 BR-014: a StopMenu during the ready feedback delay also stops the auto start.
+            self._drop_ready_start_on_stopped_menu(serial)
+            return
         mode = game_mode if game_mode is not None else self.current_selection
 
         # Determine trace context for the game:
@@ -201,6 +237,9 @@ class GameLifecycleMixin:
                 # Don't leave the menu stuck in GAME_STARTING if a start aborts.
                 if self.state == menu_pb2.MenuState.GAME_STARTING:
                     self.state = menu_pb2.MenuState.RUNNING
+                    # A RUNNING menu has its idle monitor (idempotent; UC-010 A12: a StartMenu that
+                    # undid a stop before this abort leaves no idle monitor running otherwise).
+                    self.idle_monitor.start()
                 # Publish on every roster abort (UC-010 A3) — the ready/auto-start
                 # path is still RUNNING here, only admin force-start is GAME_STARTING.
                 await self.event_publisher.publish(
@@ -308,6 +347,8 @@ class GameLifecycleMixin:
         """
         stream = None
         game_started = False
+        # UC-010 A13 (#2450): the start was confirmed and every reconnect failed.
+        coordinator_lost = False
         max_reconnect_attempts = 3
         self._followed_game_id = None
 
@@ -335,6 +376,7 @@ class GameLifecycleMixin:
                     # A stream that breaks mid-iteration never returns its result: the confirmed
                     # start (BR-006) is what makes the break eligible for a reconnect.
                     game_started = game_started or self._followed_game_id is not None
+                    coordinator_lost = game_started and attempt >= max_reconnect_attempts
                     game_started = self._check_retry_eligible(e, game_started, attempt, max_reconnect_attempts)
                     backoff = attempt + 1
                     logger.warning(f"Game event stream error: {e}. Reconnecting in {backoff}s...")
@@ -359,6 +401,13 @@ class GameLifecycleMixin:
                     await self.event_publisher.publish(
                         "game_start_cancelled",
                         {"game_name": request.start_config.game_name, "reason": _start_failure_reason(e)},
+                    )
+                elif coordinator_lost:
+                    # UC-010 A13 (#2450): the menu no longer follows the started game; this goes out
+                    # after the restore, also when the restore raises.
+                    await self.event_publisher.publish(
+                        GameEvent.GAME_ENDED,
+                        {"game_id": self._followed_game_id, "reason": "coordinator_lost"},
                     )
         finally:
             self._cancel_stream(stream)
@@ -528,6 +577,7 @@ class GameLifecycleMixin:
         UC-010 BR-010: every step is bounded; a step that times out is logged and skipped, so the
         restore always ends and the idle monitor always starts. UC-010 A11 (#2379): a menu stopped
         during the game stays STOPPED and gets no idle monitor; the rest of the restore still runs.
+        UC-010 A12 (#2449): a later StartMenu during the game undoes that stop (last one wins).
         """
 
         async def start_button_monitor_and_wait() -> None:

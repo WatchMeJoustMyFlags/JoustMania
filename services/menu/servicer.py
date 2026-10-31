@@ -275,6 +275,14 @@ class MenuServicer(GameLifecycleMixin, menu_pb2_grpc.MenuServiceServicer):
                 metrics.grpc_requests_total.labels(method="StartMenu", status="already_running").inc()
                 return menu_pb2.StartMenuResponse(success=False, error="Menu already running")
 
+            if self._lifecycle_live():
+                # UC-010 A12 (#2449): no lobby mid-game; the restore applies the request when the game ends.
+                if self.start_menu_during_game():
+                    await self.event_publisher.publish("menu_started", {})
+                logger.info("StartMenu during a game: the lobby restore will start the menu")
+                metrics.grpc_requests_total.labels(method="StartMenu", status="deferred").inc()
+                return menu_pb2.StartMenuResponse(success=True, error="")
+
             await self.enter_lobby()
 
             logger.info("Menu started")
