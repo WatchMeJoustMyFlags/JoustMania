@@ -86,12 +86,14 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 			keyMaxInterventionsPerMinute:   4,
 			keyMaxShieldsPerPlayerPerGame:  1,
 			keyShieldCooldownSeconds:       30,
+			keyShieldDangerSamples:         5,
 			keyEnduranceMinSessionSeconds:  300,
 			keyAccelerateTargetSessionSecs: 30,
 		},
 		floats: map[string]float64{
 			keyBalancedMaxSkillGap:          0.2,
 			keyBalancedSpikeSurvival:        0.9,
+			keyShieldDangerRatio:            0.95,
 			keyBluetoothMaxEventGapMs:       25,
 			keyBluetoothMaxDroppedEventsPct: 0.05,
 			keyBluetoothMinMovementUpdateHz: 20,
@@ -115,7 +117,8 @@ func TestEvaluate_FlagdShape(t *testing.T) {
 	if !reflect.DeepEqual(got.InterventionsAllowed, wantAllowed) {
 		t.Errorf("InterventionsAllowed = %v, want %v", got.InterventionsAllowed, wantAllowed)
 	}
-	wantPolicy := Policy{BatteryThreshold: 30, MaxInterventionsPerMinute: 4, MaxShieldsPerPlayerPerGame: 1, ShieldCooldownSeconds: 30}
+	wantPolicy := Policy{BatteryThreshold: 30, MaxInterventionsPerMinute: 4, MaxShieldsPerPlayerPerGame: 1, ShieldCooldownSeconds: 30,
+		ShieldDangerRatio: 0.95, ShieldDangerSamples: 5}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want %+v", got.Policy, wantPolicy)
 	}
@@ -154,6 +157,8 @@ func TestEvaluate_DefaultsWhenMissing(t *testing.T) {
 		MaxInterventionsPerMinute:  DefaultMaxInterventionsPerMinute,
 		MaxShieldsPerPlayerPerGame: DefaultMaxShieldsPerPlayerPerGame,
 		ShieldCooldownSeconds:      DefaultShieldCooldownSeconds,
+		ShieldDangerRatio:          DefaultShieldDangerRatio,
+		ShieldDangerSamples:        DefaultShieldDangerSamples,
 	}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want defaults %+v", got.Policy, wantPolicy)
@@ -255,6 +260,8 @@ func TestEvaluate_DefaultsOnError(t *testing.T) {
 		MaxInterventionsPerMinute:  DefaultMaxInterventionsPerMinute,
 		MaxShieldsPerPlayerPerGame: DefaultMaxShieldsPerPlayerPerGame,
 		ShieldCooldownSeconds:      DefaultShieldCooldownSeconds,
+		ShieldDangerRatio:          DefaultShieldDangerRatio,
+		ShieldDangerSamples:        DefaultShieldDangerSamples,
 	}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v on error, want defaults %+v", got.Policy, wantPolicy)
