@@ -24,6 +24,7 @@ from opentelemetry.trace import INVALID_SPAN_CONTEXT, Span
 
 from lib.types import GameEvent, Sound
 from proto import audio_pb2, controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import WARNING_DURATION, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.tournament import TournamentPlayer
@@ -92,7 +93,7 @@ def _game(count: int = 3, *, audio=None) -> tuple[FFAGame, EventCollector]:
     )
     game.gameplay_stream = RecordingStream()
     game.running = True
-    game.start_time = time.time()
+    game.start_time = game_clock.now()
     for i in range(count):
         serial = f"p{i}"
         game.players[serial] = Player(serial=serial, team=0, alive=True, color=(255, 0, 0))
@@ -143,7 +144,7 @@ class TestUC030DeathDetection:
         player.smoothed_accel = (warn + death) / 2  # between warning and death
         sample = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=(warn + death) / 2)
 
-        before = time.time()
+        before = game_clock.now()
         await game._process_controller_state(controller_manager_pb2.GameplayData(serial="p0", accel=sample))
         await game._process_controller_state(controller_manager_pb2.GameplayData(serial="p0", accel=sample))
 
@@ -181,7 +182,7 @@ class TestUC030DeathDetection:
         """UC-030 A1: inside ``grace_until`` the EMA is reset; no warning, death_warning or death fires."""
         game, events = _game(2)
         player = game.players["p0"]
-        player.grace_until = time.time() + 60.0
+        player.grace_until = game_clock.now() + 60.0
         await self._assert_window_suppresses_detection(game, events, player)
 
     @pytest.mark.asyncio
@@ -191,7 +192,7 @@ class TestUC030DeathDetection:
         game, events = _game(2)
         player = game.players["p0"]
         assert await game.grant_shield("p0", 60.0) is True
-        assert player.grace_until > time.time()
+        assert player.grace_until > game_clock.now()
         await self._assert_window_suppresses_detection(game, events, player)
 
     @pytest.mark.asyncio
@@ -202,7 +203,7 @@ class TestUC030DeathDetection:
         player = TournamentPlayer(serial="p0", team=0, alive=True, color=(255, 0, 0))
         player.span = game.players["p0"].span
         game.players["p0"] = player
-        player.invincible_until = time.time() + 60.0
+        player.invincible_until = game_clock.now() + 60.0
         await self._assert_window_suppresses_detection(game, events, player)
 
     @pytest.mark.asyncio
@@ -253,7 +254,7 @@ class TestUC030DeathDetection:
         game.players["p0"].smoothed_accel = 10.0  # a spike left in the filter
         game.gameplay_stream = RecordingStream([_frame(("p0", LETHAL), ("p1", STILL))])
 
-        before = time.time()
+        before = game_clock.now()
         await game._game_loop()
         after = time.time()
 
@@ -269,7 +270,7 @@ class TestUC030DeathDetection:
     async def test_game_loop_startup_grace_never_shortens_a_longer_grace(self):
         """UC-030 BR-003: a shield granted before the loop (longer than 0.3 s) is kept."""
         game, _events = _game(2)
-        shield_until = time.time() + 60
+        shield_until = game_clock.now() + 60
         game.players["p0"].grace_until = shield_until
         game.gameplay_stream = RecordingStream([_frame(("p0", STILL), ("p1", STILL))])
 
