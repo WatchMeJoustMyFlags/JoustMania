@@ -849,6 +849,14 @@
       },
       "defaultVariant": "default"
     },
+    "decision.predictions_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
     "inference.backend": {
       "state": "ENABLED",
       "variants": {

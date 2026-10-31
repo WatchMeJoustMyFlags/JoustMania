@@ -131,7 +131,60 @@ func answerFromRanked(ranked []scoredCandidate, req decide.Request, known bool) 
 		}
 		resp.Answers = append(resp.Answers, a)
 	}
+	if known && iv.ok && iv.best != nil {
+		resp.Prediction = rulesPrediction(*iv.best, req.State)
+	}
 	return resp
+}
+
+// rulePrediction is one row of the fixed rules prediction table (#2479, UC-040
+// A44, BR-034): what the rule expects if its decision is applied. P is a
+// documented prior, not a claim; the scoring measures it.
+type rulePrediction struct {
+	template string
+	horizonS int
+	p        float64
+}
+
+// rulesPredictions is the fixed table. R7 (end the game) has none: the action is
+// the outcome. R6 has one only while at least 3 players stay alive after the
+// elimination (rulesPrediction), otherwise it is trivially true.
+var rulesPredictions = map[string]rulePrediction{
+	"R1":  {decide.TemplateNoElimination, 15, 0.6},
+	"R2":  {decide.TemplateNoElimination, 15, 0.55},
+	"R3":  {decide.TemplateClosenessRises, 15, 0.55},
+	"R4":  {decide.TemplateSurvives, 15, 0.7},
+	"R4d": {decide.TemplateSurvives, 10, 0.7},
+	"R5":  {decide.TemplateElimination, 30, 0.6},
+	"R6":  {decide.TemplateGameEnds, 60, 0.5},
+	"R8":  {decide.TemplateActivityRises, 10, 0.6},
+	"R9":  {decide.TemplateActivityRises, 10, 0.6},
+}
+
+// rulesPrediction is the prediction of the winning candidate's rule, nil when the
+// rule has none.
+func rulesPrediction(best scoredCandidate, st decide.State) *decide.Prediction {
+	row, ok := rulesPredictions[best.rule]
+	if !ok {
+		return nil
+	}
+	if best.rule == "R6" {
+		alive := 0
+		for _, p := range st.Players {
+			if p.Alive {
+				alive++
+			}
+		}
+		if alive-1 < 3 {
+			return nil
+		}
+	}
+	target := ""
+	if row.template == decide.TemplateSurvives || row.template == decide.TemplateActivityRises {
+		target = best.decision.TargetSerial
+	}
+	p := decide.NewPrediction(row.template, row.horizonS, row.p, decide.SourceRules, best.rule, target)
+	return &p
 }
 
 // interventionPick is the adapter's answer to ffa.intervention plus the

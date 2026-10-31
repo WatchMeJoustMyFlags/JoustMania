@@ -215,13 +215,16 @@ func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 			return func(c gamecontext.GameContext) { seen[name] = append(seen[name], c.EndReason) }
 		}
 		counter := newGameEndStaleCounter(metricnoopProvider())
-		return buildGameEndChain(counter,
+		return buildGameEndChain(counter, record("predictions"),
 			record("experiment"), record("retro"), record("summary"), record("proposer")), seen
 	}
 
-	t.Run("UC-041/A4 stale end reaches the experiment hook only", func(t *testing.T) {
+	t.Run("UC-041/A4 stale end reaches the prediction book and the experiment hook only", func(t *testing.T) {
 		chain, seen := newChain()
 		chain(gamecontext.GameContext{SessionID: "game_stale", EndReason: gamecontext.EndReasonStale})
+		if len(seen["predictions"]) != 1 {
+			t.Errorf("prediction book saw %d stale ends, want 1 (it scores them stale_end)", len(seen["predictions"]))
+		}
 		if len(seen["experiment"]) != 1 {
 			t.Errorf("experiment hook saw %d stale ends, want 1 (it releases the slot itself)", len(seen["experiment"]))
 		}
@@ -232,15 +235,16 @@ func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-041/main step 7 consumers run in order: experiment, retro, summary, proposer", func(t *testing.T) {
+	// UC: UC-040 A44 BR-034
+	t.Run("UC-041/main step 7 UC-040/A44 consumers run in order: predictions, experiment, retro, summary, proposer", func(t *testing.T) {
 		var order []string
 		record := func(name string) func(gamecontext.GameContext) {
 			return func(gamecontext.GameContext) { order = append(order, name) }
 		}
-		chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()),
+		chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), record("predictions"),
 			record("experiment"), record("retro"), record("summary"), record("proposer"))
 		chain(gamecontext.GameContext{SessionID: "game_order", EndReason: gamecontext.EndReasonZero})
-		want := []string{"experiment", "retro", "summary", "proposer"}
+		want := []string{"predictions", "experiment", "retro", "summary", "proposer"}
 		if strings.Join(order, ",") != strings.Join(want, ",") {
 			t.Fatalf("consumer order = %v, want %v", order, want)
 		}

@@ -413,3 +413,70 @@ const (
 	// is wired or the store has no settled sample for this game yet.
 	AttrExperimentFitness = "experiment.fitness"
 )
+
+// SpanPredictionOutcome is one scored decision prediction or base-rate control
+// (#2479, UC-040 A44, BR-034; services/agent/prediction). It is a remote child of
+// the game's game_cycle / gameplay_phase / root span, starts when the prediction
+// was registered and ends when it was scored, and links to the agent.decide span
+// that carried the prediction (link.kind=prediction).
+const SpanPredictionOutcome = "agent.prediction.outcome"
+
+// LinkKindPrediction labels the agent.prediction.outcome -> agent.decide link.
+const LinkKindPrediction = "prediction"
+
+// Attributes of agent.prediction.outcome (#2479).
+const (
+	AttrPredictionID             = "prediction.id"
+	AttrPredictionTemplate       = "prediction.template"
+	AttrPredictionCharacteristic = "prediction.characteristic"
+	AttrPredictionScope          = "prediction.scope"
+	AttrPredictionTarget         = "prediction.target"
+	AttrPredictionHorizonS       = "prediction.horizon_s"
+	AttrPredictionP              = "prediction.p"
+	AttrPredictionSource         = "prediction.source"
+	AttrPredictionRule           = "prediction.rule"
+	// AttrPredictionBackend is the backend whose decision carried the prediction
+	// ("none" for a control); the same key as agent.decide's decide.backend.
+	AttrPredictionBackend = "decide.backend"
+	// AttrPredictionActed is true when the decision passed the permission chain and
+	// its write was applied; false for held, blocked, gated-off and discarded
+	// decisions (counterfactuals) and for controls.
+	AttrPredictionActed = "prediction.acted"
+	// AttrPredictionOutcome is hit, miss or unscorable.
+	AttrPredictionOutcome = "prediction.outcome"
+	// AttrPredictionUnscorableReason: game_ended, data_missing, stale_end, overflow,
+	// no_target or target_not_alive.
+	AttrPredictionUnscorableReason = "prediction.unscorable_reason"
+	// AttrPredictionDecidedEarly is true when the prediction was scored before its
+	// horizon (a survives / no_elimination miss, an elimination / game_ends hit).
+	AttrPredictionDecidedEarly = "prediction.decided_early"
+	// AttrPredictionBefore / AttrPredictionAfter are the measured characteristic
+	// before and after (activity_rises, closeness_rises).
+	AttrPredictionBefore = "prediction.before"
+	AttrPredictionAfter  = "prediction.after"
+	// AttrPredictionEliminations is the eliminations counted in the horizon.
+	AttrPredictionEliminations = "prediction.eliminations"
+	// AttrPredictionEndOffsetS is the game end in seconds after registration.
+	AttrPredictionEndOffsetS = "prediction.end_offset_s"
+	// AttrPredictionScoredAtOffsetS is the scoring time in seconds after registration.
+	AttrPredictionScoredAtOffsetS = "prediction.scored_at_offset_s"
+	// AttrPredictionTiming is "approx" when the timeline lost entries of the horizon
+	// and the elimination count fell back to the elimination sequence.
+	AttrPredictionTiming = "prediction.timing"
+)
+
+// agent.decide attributes of the decision's prediction (#2479), present when the
+// decision carried one and it was registered.
+const (
+	AttrDecidePredictionID             = "decide.prediction.id"
+	AttrDecidePredictionTemplate       = "decide.prediction.template"
+	AttrDecidePredictionCharacteristic = "decide.prediction.characteristic"
+	AttrDecidePredictionScope          = "decide.prediction.scope"
+	AttrDecidePredictionHorizonS       = "decide.prediction.horizon_s"
+	AttrDecidePredictionP              = "decide.prediction.p"
+	AttrDecidePredictionSource         = "decide.prediction.source"
+	AttrDecidePredictionRule           = "decide.prediction.rule"
+	// AttrDecidePredictionMerged is true when an identical prediction was already
+	// pending: decide.prediction.id is that pending prediction's id.
+	AttrDecidePredictionMerged = "decide.prediction.merged"
+)

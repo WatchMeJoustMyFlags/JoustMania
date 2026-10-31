@@ -48,6 +48,7 @@ import (
 
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/prediction"
 )
 
 // Decision is a single intervention the rules engine wants applied.
@@ -357,6 +358,9 @@ type Loop struct {
 	experimentFlag func(c gamecontext.GameContext) string
 	// experimentFlagSeen quiets repeated experiment_flag blocks (UC-040 A40 step 6).
 	experimentFlagSeen experimentFlagRefusals
+	// predictions is the SHARED prediction book (#2479, prediction_hook.go). nil
+	// registers nothing.
+	predictions *prediction.Book
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -634,6 +638,9 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		)
 	}
 
+	// #2479: early-decided predictions and the due base-rate control of this game.
+	l.observePredictions(snapshot, c)
+
 	decisions, decideRec := l.decide(ctx, snapshot, rules, c, trig)
 
 	// Lift the cycle-level fitness evaluation the engine just computed onto the
@@ -864,6 +871,9 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 		return
 	}
 	l.dispatchDecision(ctx, dCtx, snapshot, c, d, cost, state, dSpan, aSpan, &applied)
+	if applied {
+		state.appliedOutcomes = append(state.appliedOutcomes, len(state.Outcomes)-1)
+	}
 }
 
 // repeatRefusalReason reports the reason of a blocked decision that repeats an

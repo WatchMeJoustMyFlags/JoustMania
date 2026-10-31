@@ -213,6 +213,11 @@ type Response struct {
 	// Rationale is an optional one-line "why" from the backend. It is
 	// untrusted model text: truncate before putting it on spans or logs.
 	Rationale string `json:"rationale,omitempty"`
+	// Prediction is what the backend expects to happen if its answer is applied
+	// (#2479, UC-040 A44, BR-034; prediction.go). It is outside Answers, so
+	// Validate never reads it and a missing or bad prediction never blocks a
+	// decision. nil when the backend stated none (and for every noop).
+	Prediction *Prediction `json:"prediction,omitempty"`
 }
 
 // Backend is a decision backend. Decide must honor ctx cancellation; callers
