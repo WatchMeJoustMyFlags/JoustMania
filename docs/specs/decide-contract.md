@@ -656,6 +656,15 @@ reads is logged and counted (`game_intervention_event_gaps_total`)
 `end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`, the same path as
 `ForceEndGame` with a `game_id`) ([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for), #1310).
 
+**Group shield event** (planned, #2467; today only the flag exists): `group_shield` is a sixth event flag with the payload
+`{"serials":"A,B,C","seconds":"5"}` (`serials` 2 to 6 distinct players of the game, `seconds` 1 to 10; the flag service
+checks both, [flags.md §13.1](flags.md#131-interventions-all-writes-are-game-scoped)). Like every event it is applied at
+most once per event seq: the seq advances before dispatch, so a failed dispatch is not retried, and an agent restart
+resets the agent's own counter, which is why the coordinator keeps its own per-game count
+([UC-040 BR-033](../use_cases/UC-040.md)). No `interventions_allowed` variant names `grant_group_shield` and no agent code
+writes the event until the PRs that add them; `tests/contract/test_flagd_resolution.py`
+`test_allow_list_variants_only_name_coordinator_types` keeps a type the coordinator cannot apply out of every variant.
+
 Per-serial **grant** flags (`shield_seconds`, `toughness_boost_seconds`,
 `soft_penalty_action`) are one-shot per decision: every write gets a fresh variant from the
 flag service. The coordinator (`InterventionManager._evaluate_targeted_grant`) reads each

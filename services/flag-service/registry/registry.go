@@ -90,7 +90,9 @@ type Bounds struct {
 	// FreeString accepts any string up to MaxFreeString characters.
 	FreeString bool `yaml:"free_string,omitempty" json:"free_string,omitempty"`
 	// Payload is the schema of an event payload: field -> rule. Rules:
-	// "serial" (a serial of the game), "serial_or_empty", "sound", or an
+	// "serial" (a serial of the game), "serial_or_empty", "serial_set" (a
+	// comma-separated list of 2 to MaxSerialSet distinct serials of the game),
+	// "sound", "float lo hi" (a plain decimal string within the bounds) or an
 	// "enum a|b" list.
 	Payload map[string]string `yaml:"payload,omitempty" json:"payload,omitempty"`
 	// Fraction is the allowed fraction_percent range for a fraction write.
@@ -319,9 +321,14 @@ func validDescription(p *Policy) error {
 
 func validPayloadRule(rule string) error {
 	switch {
-	case rule == "serial", rule == "serial_or_empty", rule == "sound":
+	case rule == "serial", rule == "serial_or_empty", rule == "serial_set", rule == "sound":
 		return nil
 	case strings.HasPrefix(rule, "enum "):
+		return nil
+	case strings.HasPrefix(rule, "float "):
+		if seg, err := parseSegment(rule); err != nil || seg.kind != "float" {
+			return fmt.Errorf("payload rule %q: float lo hi", rule)
+		}
 		return nil
 	}
 	return fmt.Errorf("unknown payload rule %q", rule)
@@ -608,6 +615,13 @@ func checkPayloadField(key, field, rule string, raw any, inGame func(string) boo
 		if s != "" && !inGame(s) {
 			return fserr.Unprocessable(fserr.SerialNotInGame, "%s: serial %q is not a player of the game", key, s)
 		}
+	case rule == "serial_set":
+		return checkSerialSet(key, field, s, inGame)
+	case strings.HasPrefix(rule, "float "):
+		seg, err := parseSegment(rule)
+		if err != nil || !seg.match(s) {
+			return fserr.Unprocessable(fserr.OutOfBounds, "%s payload field %q: %q is not a number within %s", key, field, s, strings.TrimPrefix(rule, "float "))
+		}
 	case rule == "sound":
 		if !soundIDPattern.MatchString(s) {
 			return fserr.Unprocessable(fserr.OutOfBounds, "%s: %q is not a sound id", key, s)
@@ -615,6 +629,37 @@ func checkPayloadField(key, field, rule string, raw any, inGame func(string) boo
 	case strings.HasPrefix(rule, "enum "):
 		if !contains(strings.Split(strings.TrimPrefix(rule, "enum "), "|"), s) {
 			return fserr.Unprocessable(fserr.OutOfBounds, "%s payload field %q: %q is not allowed", key, field, s)
+		}
+	}
+	return nil
+}
+
+// MinSerialSet and MaxSerialSet bound a "serial_set" payload value.
+const (
+	MinSerialSet = 2
+	MaxSerialSet = 6
+)
+
+// checkSerialSet validates a comma-separated list of distinct serials, each a
+// player of the game.
+func checkSerialSet(key, field, s string, inGame func(string) bool) *fserr.Error {
+	if s == "" {
+		return fserr.BadRequest("%s payload needs %q", key, field)
+	}
+	serials := strings.Split(s, ",")
+	if len(serials) < MinSerialSet || len(serials) > MaxSerialSet {
+		return fserr.Unprocessable(fserr.OutOfBounds, "%s payload field %q: %d serials, need %d to %d", key, field, len(serials), MinSerialSet, MaxSerialSet)
+	}
+	seen := make(map[string]bool, len(serials))
+	for _, serial := range serials {
+		if serial == "" || seen[serial] {
+			return fserr.Unprocessable(fserr.OutOfBounds, "%s payload field %q: empty or repeated serial %q", key, field, serial)
+		}
+		seen[serial] = true
+	}
+	for _, serial := range serials {
+		if !inGame(serial) {
+			return fserr.Unprocessable(fserr.SerialNotInGame, "%s: serial %q is not a player of the game", key, serial)
 		}
 	}
 	return nil

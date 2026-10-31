@@ -183,6 +183,17 @@
         }
       },
       "defaultVariant": "none"
+    },
+    "group_shield": {
+      "state": "ENABLED",
+      "variants": {
+        "none": {
+          "epoch": "",
+          "seq": 0,
+          "events": []
+        }
+      },
+      "defaultVariant": "none"
     }
   }
 }
