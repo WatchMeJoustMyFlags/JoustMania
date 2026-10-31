@@ -25,7 +25,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, async_noop
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream, async_noop
 from test_random_teams_formation import SERIALS, QueueControllerManager, QueueStream, RecordingLog, _players, _wait_for
 
 from lib.types import GameEvent, Sound
@@ -39,14 +39,6 @@ from services.game_coordinator.games.nonstop_joust import (
     NonstopPlayer,
 )
 from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
-
-
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
 
 
 class TestNonstopJoustGameMode:

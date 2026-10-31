@@ -160,14 +160,6 @@ async def async_noop(*_args, **_kwargs):
     pass
 
 
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes during performance tests."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
-
-
 def create_ffa_game(num_controllers: int) -> tuple[FFAGame, list[str]]:
     """Create an FFA game instance with mock players pre-initialized.
 
@@ -183,6 +175,7 @@ def create_ffa_game(num_controllers: int) -> tuple[FFAGame, list[str]]:
     test_conftest = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(test_conftest)
     MockControllerManagerService = test_conftest.MockControllerManagerService
+    MockGameplayStream = test_conftest.MockGameplayStream
 
     mock_cm = MockControllerManagerService(num_controllers=num_controllers)
 

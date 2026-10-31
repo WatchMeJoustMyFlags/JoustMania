@@ -40,6 +40,16 @@ async def async_noop(*_args, **_kwargs):
     pass
 
 
+class MockGameplayStream:
+    """Gameplay stream double for game tests: accepts writes and records them in ``messages``."""
+
+    def __init__(self):
+        self.messages = []
+
+    async def write(self, message):
+        self.messages.append(message)
+
+
 class MockBidirectionalStream:
     """Mock bidirectional gRPC stream for StreamGameplayData."""
 

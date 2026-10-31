@@ -25,7 +25,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import MockControllerManagerService, async_noop
+from conftest import MockControllerManagerService, MockGameplayStream, async_noop
 
 from proto import controller_manager_pb2
 from services.game_coordinator.games.ffa import FFAGame
@@ -37,16 +37,6 @@ from services.game_coordinator.games.tournament import TournamentGame, Tournamen
 from services.game_coordinator.games.traitor import TraitorGame
 from services.game_coordinator.games.werewolf import WerewolfGame
 from services.game_coordinator.games.zombie import ZombieGame
-
-
-class MockGameplayStream:
-    """Mock bidirectional stream for testing."""
-
-    def __init__(self):
-        self.messages = []
-
-    async def write(self, message):
-        self.messages.append(message)
 
 
 def _gentle_state(serial: str) -> controller_manager_pb2.GameplayData:

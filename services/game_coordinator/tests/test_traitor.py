@@ -24,7 +24,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, async_noop
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream, async_noop
 
 from lib.types import GameEvent
 from proto import controller_manager_pb2, game_coordinator_pb2
@@ -34,14 +34,6 @@ from services.game_coordinator.games.traitor import TraitorGame, TraitorPlayer
 from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
 from services.game_coordinator.tests.test_death_detection_uc030 import LETHAL, STILL, _frame
 from services.game_coordinator.tests.test_ffa_uc020 import RecordingAudio, RecordingControllerManager
-
-
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
 
 
 class TestTraitorGameMode:

@@ -36,7 +36,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, async_noop
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream, async_noop
 
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import BaseGameMode, Player
@@ -50,13 +50,6 @@ def _no_shield_limits():
     """Shield limits off (#2044, UC-040 BR-022): these tests are not about the cap or the cooldown."""
     with patch.object(BaseGameMode, "_shield_limits", return_value=(0, 0)):
         yield
-
-
-class MockGameplayStream:
-    """Minimal gameplay-stream mock that accepts writes silently."""
-
-    async def write(self, message):
-        pass
 
 
 def _make_ffa_game():
