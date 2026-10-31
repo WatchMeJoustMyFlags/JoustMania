@@ -288,3 +288,5 @@ spec PRs. Verified against `main` @ 2d162b33; rows added or updated by the audit
 - Runtime behaviour of the likely bugs above (D-A2, D-G3, D-G8, D-G10, D-M1) was established by reading code, not by running a game.
 - End-to-end death-detection latency (NFR-004) has no measurement on record; only the game-side share is measured (`services/game_coordinator/tests/performance/test_game_loop_timing.py`, #1394). Flag propagation (NFR-050, which replaced NFR-014) is measured by `tests/service/test_flag_propagation.py` (#1394).
 - The ≈ 4.67 GB memory sum (D-P2) is the sum of compose limits, not measured usage.
+
+Merge-queue verification (#1809): throwaway line, never merged.
