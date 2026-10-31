@@ -9,6 +9,18 @@ name: Review gate
 # merge_group ONLY: on pull_request a check run with this name would show up on
 # PR heads and could satisfy the required check without a review. CI Complete
 # (ci.yml) must not depend on this job: it also runs on PR heads.
+# ACCEPTED RISK (#1809, review of PR #2439): merge_group runs the workflow and
+# script from the merge-group commit, i.e. including the gated PR's own changes.
+# A PR that edits this workflow, review-gate.sh, or adds a job named
+# "Reviewed head" can satisfy the check itself. Accepted for now: the threat is a
+# push after the review, not a hostile PR (every agent runs as the maintainer).
+# Defence in depth: the script is checked out at merge_group.base_sha (stops a
+# script edit, not a yml edit). Reviewers must flag any diff touching
+# `.github/workflows/**` or `scripts/ci/review-gate.sh` (review-pr guidance, PR2).
+# Real fix (follow-up): a reviewer GitHub App posting both statuses, with the
+# required check pinned to its integration id.
+# The gate is sound only under merge-queue grouping_strategy ALLGREEN (it checks
+# only the PR of its own queue entry); `safe-merge.sh --arm` refuses otherwise.
 # Required in the `main` ruleset with source "Any source" (the PR-head status
 # comes from a user token, the queue check run from GitHub Actions).
 
@@ -29,6 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.merge_group.base_sha }}
           persist-credentials: false
           sparse-checkout: scripts/ci/review-gate.sh
           sparse-checkout-cone-mode: false

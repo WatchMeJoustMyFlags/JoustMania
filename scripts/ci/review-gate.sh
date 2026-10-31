@@ -49,6 +49,7 @@ read -r id state creator <<<"$newest"
 
 [[ "$state" == success ]] || fail "PR #$pr head ${head:0:8}: newest \"$CONTEXT\" is $state (by $creator)"
 [[ "$creator" == *"[bot]" ]] && fail "PR #$pr head ${head:0:8}: \"$CONTEXT\" was posted by a bot ($creator)"
+set -f  # no glob expansion of the approver list
 for a in ${approvers//,/ }; do
   if [[ "$creator" == "$a" ]]; then
     echo "REVIEWED: PR #$pr head ${head:0:8} by $creator"

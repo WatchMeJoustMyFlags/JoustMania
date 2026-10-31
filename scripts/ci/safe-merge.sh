@@ -26,7 +26,10 @@
 #   --depth D                 --arm: review depth named in the status description
 #   --revoke                  #1809: withdraw the review of the full SHA: post a
 #                             "Reviewed head" failure status (the newest status
-#                             wins). No merge, no PR change otherwise.
+#                             wins). No merge, no PR change otherwise. It does NOT
+#                             disarm auto-merge or dequeue: pair it with
+#                             `gh pr merge N --disable-auto` (or dequeue); a gate
+#                             that already passed is not re-run.
 #
 # Rules:
 #   - Polls once every SAFE_MERGE_POLL seconds (default 75, never below 60
@@ -297,13 +300,15 @@ post_review_status() {  # sha state description -> 0 posted
   [[ -n "$REVIEW_URL" ]] && args+=(-f target_url="$REVIEW_URL")
   gh api -X POST "repos/{owner}/{repo}/statuses/$sha" "${args[@]}" >/dev/null
 }
-# Arming is only safe while the ruleset makes the status required: otherwise
-# auto-merge merges on CI Complete alone. A failed read counts as not required.
+# Arming is only safe while the ruleset makes the status required AND the merge
+# queue groups ALLGREEN (review-gate.sh checks only the PR of its own queue
+# entry; under HEADGREEN earlier entries of a group merge on the top entry's
+# gate). A failed read counts as not enforced (fail closed).
 review_required() {
-  local contexts
-  contexts="$(gh api "repos/{owner}/{repo}/rules/branches/main" \
-    --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context' 2>/dev/null)" || return 1
-  grep -qxF "$REVIEW_CONTEXT" <<<"$contexts"
+  local lines
+  lines="$(gh api "repos/{owner}/{repo}/rules/branches/main" \
+    --jq '.[] | if .type == "required_status_checks" then (.parameters.required_status_checks[].context | "ctx:" + .) elif .type == "merge_queue" then "grouping:" + (.parameters.grouping_strategy // "") else empty end' 2>/dev/null)" || return 1
+  grep -qxF "ctx:$REVIEW_CONTEXT" <<<"$lines" && grep -qxF "grouping:ALLGREEN" <<<"$lines"
 }
 
 if $REVOKE; then
@@ -314,7 +319,7 @@ fi
 
 if $ARM; then
   review_required \
-    || done_line "NOT ARMED: \"$REVIEW_CONTEXT\" is not enforced (not a required check in the main ruleset, or the rules read failed); nothing posted" 2
+    || done_line "NOT ARMED: \"$REVIEW_CONTEXT\" is not enforced (not a required check in the main ruleset, merge queue grouping is not ALLGREEN, or the rules read failed); nothing posted" 2
   fetch_view || done_line "ERROR: GitHub API unavailable after retries" 1
   head="$(jq -r .headRefOid <<<"$VIEW")"
   state="$(jq -r .state <<<"$VIEW")"
@@ -345,6 +350,7 @@ fi
 
 start=$(date +%s)
 reran=false
+posted=false
 while :; do
   fetch_view || done_line "ERROR: GitHub API unavailable after retries" 1
   head="$(jq -r .headRefOid <<<"$VIEW")"
@@ -357,6 +363,13 @@ while :; do
   fi
   if [[ "$(jq -r '.mergeable // ""' <<<"$VIEW")" == CONFLICTING ]]; then
     done_line "NOT MERGED: CONFLICTING (head $short); needs a rebase on main" 5
+  fi
+  # #1809: post the status BEFORE the CI wait, on the exact matched head: once
+  # "Reviewed head" is required, a never-posted context would keep the rollup
+  # pending and this loop would wait until timeout. Non-blocking on failure.
+  if ! $WAIT_ONLY && ! $posted; then
+    posted=true
+    post_review_status "$head" success "safe-merge ${head:0:8}" || log "could not post the \"$REVIEW_CONTEXT\" status; merging anyway"
   fi
 
   cls="$(jq -c "$JQ_CLASSIFY" <<<"$VIEW")"
@@ -402,7 +415,6 @@ if $WAIT_ONLY; then
   done_line "CI GREEN (head $short)$($reran && echo ' after one rerun'); not merged (--wait-ci)" 0
 fi
 
-post_review_status "$head" success "safe-merge ${head:0:8}" || log "could not post the \"$REVIEW_CONTEXT\" status; merging anyway"
 log "merging at $head"
 gh pr merge "$PR" --squash --match-head-commit "$head" >&2 || log "gh pr merge returned non-zero"
 sleep "$SETTLE"

@@ -475,11 +475,11 @@ calls | grep -qxF 'gh issue close 7 --comment Done in #42' || fail "comment with
 ok
 
 # 18. #1809 --arm: ruleset guard, then the status POST, then auto-merge; exit 8, no waiting.
-rules() {  # contexts... -> rules.json with one required_status_checks rule
+rules() {  # contexts... -> rules.json: required_status_checks + merge_queue (RULES_GROUPING, default ALLGREEN)
   local ctx="" c
   for c in "$@"; do ctx+="${ctx:+,}{\"context\":\"$c\"}"; done
-  printf '[{"type":"deletion"},{"type":"required_status_checks","parameters":{"required_status_checks":[%s]}}]' \
-    "$ctx" >"${STUB_DIR}/rules.json"
+  printf '[{"type":"deletion"},{"type":"required_status_checks","parameters":{"required_status_checks":[%s]}},{"type":"merge_queue","parameters":{"grouping_strategy":"%s"}}]' \
+    "$ctx" "${RULES_GROUPING:-ALLGREEN}" >"${STUB_DIR}/rules.json"
 }
 REVIEW_URL=https://github.com/o/r/pull/42#issuecomment-1
 # Happy path: POST before the merge, full SHA, ARMED, no issue calls.
@@ -530,6 +530,11 @@ run 42 "$HEAD" --arm
 [[ $RC -eq 5 && "$OUT" == *"CONFLICTING"* ]] || fail "arm conflicting: rc=$RC $OUT"
 calls | grep -qE 'api -X|pr merge' && fail "conflicting must not post or arm: $(calls)"
 # Ruleset lacks the context, or the rules read fails: exit 2 "not enforced", nothing posted.
+# Queue grouping other than ALLGREEN: refuse too (fail closed).
+reset; view "$GREEN"; RULES_GROUPING=HEADGREEN rules "Reviewed head"
+run 42 "$HEAD" --arm
+[[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "HEADGREEN grouping: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge|pr view' && fail "HEADGREEN must not post or arm: $(calls)"
 reset; view "$GREEN"; rules "CI Complete" "Reviewed head (old)"
 run 42 "$HEAD" --arm
 [[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "ruleset without context: rc=$RC $OUT"
@@ -571,6 +576,14 @@ run 42 abcdef1
 post_line="$(grep -n "api -X POST repos/{owner}/{repo}/statuses/$HEAD -f state=success -f context=Reviewed head" "${STUB_DIR}/calls" | cut -d: -f1 || true)"
 merge_line="$(grep -n "pr merge 42 --squash --match-head-commit $HEAD" "${STUB_DIR}/calls" | cut -d: -f1 || true)"
 [[ -n "$post_line" && -n "$merge_line" ]] && (( post_line < merge_line )) || fail "status before merge: $(calls)"
+# ... and before the CI wait: with CI pending the status is posted already.
+reset; SAFE_MERGE_MAX_WAIT=0
+view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'CI Complete' QUEUED '' 100)"
+run 42 abcdef1
+[[ $RC -eq 4 ]] || fail "pending CI times out: rc=$RC $OUT"
+SAFE_MERGE_MAX_WAIT=5
+calls | grep -q "api -X POST repos/{owner}/{repo}/statuses/$HEAD -f state=success -f context=Reviewed head" \
+  || fail "status must be posted before the CI wait (rc=$RC $OUT): $(calls)"
 reset; view "$GREEN"; touch "${STUB_DIR}/status-fail"
 run 42 abcdef1
 [[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "failed status post must not block the merge: rc=$RC $OUT"
