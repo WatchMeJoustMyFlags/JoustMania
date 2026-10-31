@@ -127,17 +127,12 @@ async def handle_toughness_boost(ctx: InterventionContext, manager: Intervention
 
     values = _grant_values(ctx, manager, "0", "string")
 
-    grant = getattr(game, "grant_toughness_boost", None)
-    if not callable(grant):
-        logger.debug("toughness_boost: game has no grant_toughness_boost, ignoring")
-        return
-
     for serial, raw in values.items():
         parsed = parse_toughness_boost_value(raw)
         if parsed is None:
             continue  # neutral / malformed: safe no-op for this serial
         seconds, boost = parsed
-        await grant(serial, seconds, boost)
+        await game.grant_toughness_boost(serial, seconds, boost)
 
 
 # Soft-penalty (#1134, #1103 Phase 3) value parsing. Value is a STRING:
@@ -222,21 +217,15 @@ async def handle_soft_penalty(ctx: InterventionContext, manager: InterventionMan
 
     values = _grant_values(ctx, manager, "none", "string")
 
-    warn = getattr(game, "warn_player", None)
-    tighten = getattr(game, "apply_soft_penalty", None)
-    if not callable(warn) or not callable(tighten):
-        logger.debug("soft_penalty: game missing warn_player/apply_soft_penalty, ignoring")
-        return
-
     for serial, raw in values.items():
         parsed = parse_soft_penalty_value(raw)
         if parsed is None:
             continue  # neutral: no penalty for this serial
         action, seconds, factor = parsed
         if action == "tighten":
-            await tighten(serial, seconds, factor)
+            await game.apply_soft_penalty(serial, seconds, factor)
         else:
-            await warn(serial)
+            await game.warn_player(serial)
 
 
 # Auto-rubberband (#1143, #1103 Phase 3) value parsing. The value is a single
@@ -289,12 +278,7 @@ async def handle_auto_rubberband(ctx: InterventionContext) -> None:
     if strength is None:
         return  # neutral / malformed: safe no-op
 
-    apply = getattr(game, "apply_auto_rubberband", None)
-    if not callable(apply):
-        logger.debug("auto_rubberband: game has no apply_auto_rubberband, ignoring")
-        return
-
-    await apply(strength)
+    await game.apply_auto_rubberband(strength)
 
 
 async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionManager) -> None:
@@ -319,11 +303,6 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
 
     shields = _grant_values(ctx, manager, SHIELD_NONE, "float")
 
-    grant = getattr(game, "grant_shield", None)
-    if not callable(grant):
-        logger.debug("shield_seconds: game has no grant_shield, ignoring")
-        return
-
     applied = False
     not_applied: InterventionNotApplied | None = None
     for serial, raw_seconds in shields.items():
@@ -334,8 +313,8 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
         if seconds <= SHIELD_NONE:
             continue  # neutral default: no shield for this serial
         try:
-            # grant() returns False for a dead or unknown serial: not applied.
-            applied = bool(await grant(serial, seconds)) or applied
+            # grant_shield() returns False for a dead or unknown serial: not applied.
+            applied = bool(await game.grant_shield(serial, seconds)) or applied
         except InterventionNotApplied as e:
             not_applied = not_applied or e
     if not_applied is not None and not applied:
@@ -364,12 +343,11 @@ async def handle_eliminate_player(ctx: InterventionContext) -> None:
         logger.warning("eliminate_player: empty target serial, ignoring")
         return
 
-    players = getattr(game, "players", {})
-    player = players.get(serial)
+    player = game.players.get(serial)
     if player is None:
         logger.warning(f"eliminate_player: unknown serial {serial}, refused")
         raise InterventionNotApplied(BLOCK_ELIMINATE_REFUSED, f"eliminate_player: unknown serial {serial}")
-    if not getattr(player, "alive", False):
+    if not player.alive:
         logger.info(f"eliminate_player: {serial} already dead, refused")
         raise InterventionNotApplied(BLOCK_ELIMINATE_REFUSED, f"eliminate_player: {serial} already dead")
 
@@ -400,13 +378,8 @@ async def handle_revive_player(ctx: InterventionContext) -> None:
         logger.warning("revive_player: empty target serial, ignoring")
         return
 
-    revive = getattr(game, "revive_player", None)
-    if not callable(revive):
-        logger.debug("revive_player: game has no revive_player, ignoring")
-        return
-
     logger.info(f"revive_player: reviving {serial}")
-    if not await revive(serial):
+    if not await game.revive_player(serial):
         raise InterventionNotApplied(BLOCK_REVIVE_REFUSED, f"revive_player: mode refused revive of {serial}")
 
 

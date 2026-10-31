@@ -582,6 +582,28 @@ async def test_mode_matrix_blocks_led_effect_in_werewolf():
     assert eff[0]["block_reason"] == BLOCK_MODE_UNSUPPORTED
 
 
+class _NamelessGame(FakeInterventionGame):
+    """A game whose get_game_name() raises (#2361 review)."""
+
+    def get_game_name(self):
+        raise RuntimeError("mode name unavailable")
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A22")
+async def test_mode_matrix_fails_open_when_the_mode_name_raises():
+    """A raising get_game_name() reads as mode "" (no denial): revive, denied in FFA, still applies."""
+    mgr, events = make_manager(
+        interventions={"revive_player": edge_event("revive_player", "ctrl_a")},
+        game=_NamelessGame("FFA", serials=("ctrl_a",)),
+    )
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()
+    rev = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "revive_player"]
+    assert rev[0]["blocked"] == "false"
+    assert rev[0]["block_reason"] == ""
+
+
 @pytest.mark.asyncio
 async def test_mode_matrix_allows_revive_in_nonstop():
     mgr, events = make_manager(

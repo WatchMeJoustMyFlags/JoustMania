@@ -55,7 +55,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openfeature import api as openfeature_api
 from openfeature.evaluation_context import EvaluationContext
@@ -72,6 +72,9 @@ from services.game_coordinator.game_loop_dispatch import (
 )
 from services.game_coordinator.intervention_errors import InterventionNotApplied
 from services.game_coordinator.stream_writes import serialized_write
+
+if TYPE_CHECKING:
+    from services.game_coordinator.intervention_target import InterventionTarget
 
 logger = logging.getLogger(__name__)
 
@@ -511,7 +514,7 @@ class InterventionContext:
     value: object
     payload: str
     target_serial: str | None
-    game: object
+    game: "InterventionTarget | None"
     objective: str
     game_id: str = ""
 
@@ -618,17 +621,19 @@ BLOCK_ELIMINATE_REFUSED = "eliminate_refused"
 _PRIMARY_SENTINEL_GAME_ID = ""
 
 
-async def run_in_game_flag_context(game: object, fn: Callable[..., Awaitable[Any]], *args: Any) -> Any:
+async def run_in_game_flag_context(
+    game: "InterventionTarget | None", fn: Callable[..., Awaitable[Any]], *args: Any
+) -> Any:
     """Run ``await fn(*args)`` with ``game``'s flag transaction context (#1970, UC-040 BR-018).
 
     Called on the game's loop by ``GameLoopDispatcher.run``, so a dispatched
     handler's flag reads resolve as the game's own reads do (an experiment arm's
     value included). The context is read from the game here, on the game loop,
     and the previous transaction context is restored afterwards, so on the
-    inline path it never leaks into the caller's task. A game without a
-    ``flag_eval_context`` (a test fake, no game) runs ``fn`` unchanged.
+    inline path it never leaks into the caller's task. No game, or a context that
+    is not an ``EvaluationContext``, runs ``fn`` unchanged.
     """
-    eval_context = getattr(game, "flag_eval_context", None)
+    eval_context = game.flag_eval_context if game is not None else None
     if not isinstance(eval_context, EvaluationContext):
         return await fn(*args)
     previous = openfeature_api.get_transaction_context()
@@ -668,7 +673,7 @@ class SessionView:
     """
 
     game_id: str
-    game: object
+    game: "InterventionTarget | None"
     publish: "Callable[[str, dict], Awaitable[None]]"
     # True only for the real (primary) game; unknown kind fails closed (shadow).
     is_real: bool = False
@@ -883,12 +888,11 @@ class InterventionManager:
             logger.info("audio_cue: empty sound id, skipping")
             return
         game = ctx.game
-        play = getattr(game, "_play_sound", None) if game is not None else None
-        if not callable(play):
+        if game is None:
             logger.info(f"audio_cue: no live game audio path for sound '{sound_id}', skipping")
             return
         # _play_sound already swallows unknown-sound / audio errors defensively.
-        await play(sound_id, priority=2)
+        await game._play_sound(sound_id, priority=2)
         logger.info(f"audio_cue: played sound '{sound_id}'")
 
     async def _handle_volume_override(self, ctx: InterventionContext) -> None:
@@ -917,15 +921,15 @@ class InterventionManager:
         await self._set_volume(ctx.game, GAME_VOLUME)
         logger.info(f"volume_override: reverted volume to game default {GAME_VOLUME}")
 
-    async def _set_volume(self, game: object, volume: float) -> None:
+    async def _set_volume(self, game: "InterventionTarget | None", volume: float) -> None:
         """Send a SetVolume RPC via the live game's audio client (no-op if
         there is no running game / audio client). A shadow game never sends it:
         the audio service is shared and its room volume is the real game's
         (UC-031 BR-006, #1835)."""
-        if getattr(game, "game_kind", None) == GAME_KIND_SHADOW:
+        if game is not None and game.game_kind == GAME_KIND_SHADOW:
             logger.info("volume_override: shadow game is silent, skipping")
             return
-        audio_client = getattr(game, "audio_client", None) if game is not None else None
+        audio_client = game.audio_client if game is not None else None
         if audio_client is None:
             logger.info("volume_override: no live game audio client, skipping")
             return
@@ -950,7 +954,7 @@ class InterventionManager:
             return
 
         game = ctx.game
-        stream = getattr(game, "gameplay_stream", None) if game is not None else None
+        stream = game.gameplay_stream if game is not None else None
         if stream is None:
             logger.info("controller_effect: no live gameplay stream, skipping")
             return
@@ -971,7 +975,7 @@ class InterventionManager:
             )
             # Re-read the stream per write: a reopen swaps in a new call and closes the
             # old one, and a game end drops it (UC-030 BR-006, #1913).
-            stream = getattr(game, "gameplay_stream", None)
+            stream = game.gameplay_stream
             if stream is None:
                 logger.debug("controller_effect: the gameplay stream closed, stopping")
                 return
@@ -1684,7 +1688,9 @@ class InterventionManager:
             logger.debug(f"agent cue gate read failed, defaulting to enabled: {e}")
             return True
 
-    async def _emit_agent_cue(self, spec: InterventionSpec, target: str | None, game: object) -> None:
+    async def _emit_agent_cue(
+        self, spec: InterventionSpec, target: str | None, game: "InterventionTarget | None"
+    ) -> None:
         """Pulse a distinct 'agent acted' LED on the controller(s) (#818).
 
         Minimal, non-disruptive: a short magenta LED PULSE (GAME_EFFECT_PULSE
@@ -1696,7 +1702,7 @@ class InterventionManager:
         """
         if not self._cue_enabled():
             return
-        stream = getattr(game, "gameplay_stream", None) if game is not None else None
+        stream = game.gameplay_stream if game is not None else None
         if stream is None:
             return
         try:
@@ -1739,7 +1745,9 @@ class InterventionManager:
         except Exception as e:
             logger.debug(f"agent cue emission failed for '{spec.type_id}': {e}")
 
-    def _check_chain(self, spec: InterventionSpec, target: str | None, game: object) -> tuple[str | None, int | None]:
+    def _check_chain(
+        self, spec: InterventionSpec, target: str | None, game: "InterventionTarget | None"
+    ) -> tuple[str | None, int | None]:
         """Run the enforcement chain. Returns ``(block_reason, reservation)``: a reason when blocked, else
         None plus the backstop reservation token to refund if the handler applies nothing (#1868).
 
@@ -1864,7 +1872,7 @@ class InterventionManager:
         self,
         flag_key: str,
         default,
-        game: object,
+        game: "InterventionTarget | None",
         *,
         value_kind: str = "float",
         battery_gate: bool = True,
@@ -2192,34 +2200,27 @@ def _spec_default(spec: InterventionSpec) -> object:
     return spec.none_value if isinstance(spec.none_value, str) else ""
 
 
-def _active_player_serials(game: object) -> list[str]:
-    """Best-effort list of active (alive) player serials from a live game.
+def _active_player_serials(game: "InterventionTarget | None") -> list[str]:
+    """Serials of the live game's players that are still alive.
 
-    Returns serials of players that are still alive; falls back to all serials
-    if aliveness can't be read. Empty list when there is no game / no players.
+    Empty list when there is no game / no players.
     """
     if game is None:
         return []
-    players = getattr(game, "players", None)
-    if not isinstance(players, dict):
-        return []
-    serials: list[str] = []
-    for serial, player in players.items():
-        alive = getattr(player, "alive", True)
-        if alive:
-            serials.append(serial)
-    return serials
+    return [serial for serial, player in game.players.items() if player.alive]
 
 
-def _game_mode_name(game: object) -> str:
-    """Best-effort mode name from a live game via get_game_name()."""
-    getter = getattr(game, "get_game_name", None)
-    if callable(getter):
-        try:
-            return getter()
-        except Exception:
-            return ""
-    return ""
+def _game_mode_name(game: "InterventionTarget | None") -> str:
+    """Best-effort mode name from a live game via get_game_name().
+
+    Fails open: no game or a raising getter gives ``""`` (no mode denial).
+    """
+    if game is None:
+        return ""
+    try:
+        return game.get_game_name()
+    except Exception:
+        return ""
 
 
 # --- PR E ambient/session helpers -------------------------------------- #
@@ -2275,17 +2276,14 @@ def _resolve_effect(effect_name: str) -> int | None:
         return None
 
 
-def _effect_targets(game: object, serial: str) -> list[str]:
+def _effect_targets(game: "InterventionTarget", serial: str) -> list[str]:
     """Resolve controller serials for an effect.
 
     Empty ``serial`` broadcasts to all alive players; a specific serial routes
     to that one player when present and alive. Unknown / dead serials -> [].
     """
-    players = getattr(game, "players", None) if game is not None else None
-    if not isinstance(players, dict):
-        # No player map (e.g. test stub): honor an explicit serial, else nothing.
-        return [serial] if serial else []
+    players = game.players
     if serial:
         player = players.get(serial)
-        return [serial] if player is not None and getattr(player, "alive", False) else []
-    return [s for s, p in players.items() if getattr(p, "alive", False)]
+        return [serial] if player is not None and player.alive else []
+    return [s for s, p in players.items() if p.alive]
