@@ -20,11 +20,11 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-import time
 
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from lib.types import Sound
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.tournament import (
     WAITING_COLOR,
     Match,
@@ -605,7 +605,7 @@ class TestKillPlayerInvincibility:
         p1, p2 = serials[0], serials[1]
 
         game.players[p1].tournament_state = TournamentState.FIGHTING
-        game.players[p1].invincible_until = time.time() + 100  # Far future
+        game.players[p1].invincible_until = game_clock.now() + 100  # Far future
         game.players[p2].tournament_state = TournamentState.FIGHTING
 
         game.current_match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
@@ -625,9 +625,9 @@ class TestKillPlayerInvincibility:
         p1, p2 = serials[0], serials[1]
 
         game.players[p1].tournament_state = TournamentState.FIGHTING
-        game.players[p1].invincible_until = time.time() - 1  # Past
+        game.players[p1].invincible_until = game_clock.now() - 1  # Past
         game.players[p2].tournament_state = TournamentState.FIGHTING
-        game.players[p2].invincible_until = time.time() - 1
+        game.players[p2].invincible_until = game_clock.now() - 1
 
         game.current_match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
 
@@ -647,7 +647,7 @@ class TestKillPlayerInvincibility:
         p1, p2, p3 = serials[0], serials[1], serials[2]
 
         game.players[p3].tournament_state = TournamentState.FIGHTING
-        game.players[p3].invincible_until = time.time() - 1
+        game.players[p3].invincible_until = game_clock.now() - 1
 
         game.current_match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
 
@@ -664,7 +664,7 @@ class TestKillPlayerInvincibility:
 
         serial = list(game.players.keys())[0]
         game.players[serial].tournament_state = TournamentState.FIGHTING
-        game.players[serial].invincible_until = time.time() - 1
+        game.players[serial].invincible_until = game_clock.now() - 1
 
         game.current_match = None
 
@@ -799,7 +799,7 @@ class TestTournamentEndGame:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
         game.state = GameState.RUNNING
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.gameplay_stream = RecordingGameplayStream()
         game._play_sound = AsyncMock()
         # Patch asyncio.sleep to be instant for the celebration loop

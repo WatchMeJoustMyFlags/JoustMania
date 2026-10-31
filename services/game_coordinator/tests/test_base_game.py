@@ -13,7 +13,6 @@ Issue #209: Improve test coverage for critical game flow
 """
 
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -247,12 +246,12 @@ class TestWarningBehavior:
         player.grace_until = 0.0
         player.warning_until = 0.0
 
-        before_time = time.time()
+        before_time = game_clock.now()
 
         # Trigger warning via _warn_player
         await game._warn_player("test_serial", accel_mag=1.5, threshold=1.4)
 
-        after_time = time.time()
+        after_time = game_clock.now()
 
         # Warning should be set for WARNING_DURATION
         assert player.warning_until >= before_time + WARNING_DURATION

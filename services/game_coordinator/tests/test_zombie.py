@@ -10,7 +10,6 @@ Tests the core Zombie mechanics:
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -320,14 +319,14 @@ class TestZombieKillMechanics:
 
         human_serial = game.human_serials[0]
         player = game.players[human_serial]
-        assert player.grace_until <= time.time()
+        assert player.grace_until <= game_clock.now()
 
-        before = time.time()
+        before = game_clock.now()
         await game._kill_player_impl(human_serial, accel_mag=3.0)
 
         # Grace should extend ~2s past the conversion
         assert player.grace_until >= before + 1.9
-        assert player.grace_until <= time.time() + 2.1
+        assert player.grace_until <= game_clock.now() + 2.1
 
     @pytest.mark.uc("UC-023", flow="main", steps=[4])
     @pytest.mark.asyncio
@@ -1392,7 +1391,7 @@ class TestZombieLedAfterKill:
         await game._kill_player(zombie, 5.0)
         task = game._respawn_tasks[zombie]
 
-        before = time.time()
+        before = game_clock.now()
         assert await game.revive_player(zombie) is True
         await asyncio.gather(task, return_exceptions=True)
 
@@ -1533,7 +1532,7 @@ class TestZombieSpecUnits:
         expected_delay = expected_rng.uniform(3.0, 7.0)
 
         zombie = game.zombie_serials[0]
-        before = time.time()
+        before = game_clock.now()
         await game._kill_player_impl(zombie, 5.0)
         delay = game.players[zombie].respawn_until - before
 
