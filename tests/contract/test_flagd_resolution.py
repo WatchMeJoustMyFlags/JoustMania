@@ -555,7 +555,7 @@ _SCAN_FIXTURES = {
         'read_string_flag("game", flag_key="k", default="x")\n',
         ("game", "k", "string"),
     ),
-    "unknown_helper": ('read_bool_flag("game", "k", False)\n', None),
+    "unknown_helper": ('read_secret_flag("game", "k", False)\n', None),
     "wrapper_non_literal": ("_read_volume_flag(name, 0.5)\n", None),
     "wrapper_keyword": (
         '_read_volume_flag(flag_name="audio_volume.x", default=0.5)\n',
