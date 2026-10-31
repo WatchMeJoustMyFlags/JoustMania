@@ -42,6 +42,16 @@
         "max": 60
       },
       "defaultVariant": "normal"
+    },
+    "silent_disconnect_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "quick": 2,
+        "default": 3,
+        "relaxed": 5,
+        "max": 10
+      },
+      "defaultVariant": "default"
     }
   }
 }

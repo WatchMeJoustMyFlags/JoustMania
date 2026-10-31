@@ -373,11 +373,13 @@ def read_object_flag_variant(
 
 def read_float_flag(domain: str, flag_key: str, default: float, game_id: str | None = None) -> float:
     """
-    Read a number-typed flag once at init time, with a hardcoded fallback.
+    Read a number-typed flag, with a hardcoded fallback.
 
-    Init-frozen scalar sibling of :func:`read_object_flag` (#766 F2): the value
-    is fetched once (e.g. in a game mode ``__init__``) and never re-evaluated
-    mid-game. The domain is initialized lazily on first use. On ANY failure
+    Scalar sibling of :func:`read_object_flag` (#766 F2). Each call evaluates
+    the flag once: a caller that latches it (e.g. in a game mode ``__init__``)
+    gets an init-frozen value, a caller that reads it at use time (e.g. the
+    controller manager's ``silent_disconnect_seconds`` on every discovery
+    pass) gets the live value. The domain is initialized lazily on first use. On ANY failure
     (provider not ready, missing flag, evaluation error, non-numeric value) the
     supplied ``default`` is returned so the promotion stays behavior-neutral.
 
