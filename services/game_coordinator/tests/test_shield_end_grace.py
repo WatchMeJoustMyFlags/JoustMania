@@ -547,7 +547,7 @@ class TestUC040BR035RunOutCap:
             accel = hard(g)
             hold = g._shield_hold
             first_run_out = None
-            await step(g, clock, "p1", False, accel=accel, dt=0.0)
+            await step(g, clock, "p1", False)  # arm (UC-030 BR-005); still, so nothing kills yet
             deadline = clock.t + 30.0
             while p1.alive and clock.t < deadline:
                 if p1.hold_started_at:
