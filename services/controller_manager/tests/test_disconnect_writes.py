@@ -2,8 +2,9 @@
 Writes during a disconnect and feedback left over after one (#2471).
 
 UC-002 A1 (disconnect), A4 / BR-008 (reconnect LED):
-- H1: an LED or rumble write for a serial with no adapter route is kept and sent
-  once the serial is routed again; the owner's newer write still wins;
+- H1: an LED or rumble write for a serial with no adapter route is kept, and held
+  (writes after the re-route too) until the controller registers again; the owner's
+  colour written on the registration wins;
 - the output from before the disconnect is still dropped;
 - H2: a disconnect ends the controller's feedback (effects, layers, timers);
 - D1: a second registration cancels the first delayed LED resend;
@@ -86,6 +87,24 @@ class TestUC002H1WritesDuringADisconnect:
 
         adapter.set_output.assert_not_called()
         assert mux._led_colors[SERIAL] == (0, 255, 0)  # kept for the registration
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    async def test_a_write_after_the_reroute_but_before_the_registration_stays_held(self, routed):
+        """A cue's rumble (or any write) to the routed, unregistered serial sends neither it nor the kept colour."""
+        mux, adapter = routed
+        assert await mux.set_led_color(SERIAL, 0, 255, 0) is False  # kept stale game colour
+        _reroute(mux, adapter)
+
+        assert await mux.set_rumble(SERIAL, 80) is False
+        assert await mux.set_led_color(SERIAL, 255, 255, 255) is False
+        mux.update_all_leds()
+
+        adapter.set_output.assert_not_called()
+        mux.force_led_resend(SERIAL)  # the registration
+        assert await mux.set_led_color(SERIAL, 0, 0, 0) is True  # the owner's off
+        sent = [c.args[1:4] for c in adapter.set_output.call_args_list]
+        assert (0, 255, 0) not in sent
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
