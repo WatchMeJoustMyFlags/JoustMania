@@ -115,6 +115,7 @@ _READ_HELPER_SHAPE = re.compile(r"^read_\w+_flag\w*$")
 # read_int_flag reads with the FLOAT getter on purpose (whole-number floats
 # still resolve) and coerces afterwards. Every helper takes (domain, flag_key, ...).
 _READ_HELPERS = {
+    "read_bool_flag": "boolean",
     "read_float_flag": "float",
     "read_int_flag": "float",
     "read_string_flag": "string",
