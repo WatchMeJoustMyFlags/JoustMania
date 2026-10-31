@@ -29,8 +29,12 @@ from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.tests.backend_doubles import (
     autospec_backend,
     autospec_button_detector,
+    autospec_discovery_loop,
     autospec_feedback_manager,
+    autospec_monitoring,
     autospec_publisher,
+    autospec_rescan_timer,
+    autospec_span,
 )
 
 SERIAL = "00:06:F7:AA:BB:CC"
@@ -199,8 +203,8 @@ def _make_loop(backend) -> DiscoveryLoop:
         controller_states={},
         button_detector=autospec_button_detector(),
         feedback_manager=autospec_feedback_manager(),
-        monitoring=MagicMock(last_battery_check=0),
-        rescan_timer=MagicMock(),
+        monitoring=autospec_monitoring(),
+        rescan_timer=autospec_rescan_timer(),
         paired_serials=[],
         base_colors={},
         event_publisher=autospec_publisher(),
@@ -281,7 +285,7 @@ class TestDiscoveryLoopExport:
         for i in range(5):
             await _poll_at(loop, 100.0 + i * 0.010)
 
-        span = MagicMock()
+        span = autospec_span()
         tracer = MagicMock()
         tracer.start_as_current_span.return_value.__enter__.return_value = span
         with patch(METRICS), patch("services.controller_manager.discovery_loop.tracer", tracer):
@@ -335,10 +339,10 @@ class TestGameplayFrameCarriesQuality:
             patch("services.controller_manager.servicer.DiscoveryLoop") as discovery_cls,
         ):
             create_backend.return_value = autospec_backend()
-            mock_loop = MagicMock()
-            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
-            mock_loop.drain_disconnects = MagicMock(return_value=[])
-            mock_loop.sample_age_seconds = MagicMock(return_value=None)
+            mock_loop = autospec_discovery_loop()
+            mock_loop.drain_health_counters.return_value = (0, 0, 0)
+            mock_loop.drain_disconnects.return_value = []
+            mock_loop.sample_age_seconds.return_value = None
             discovery_cls.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -377,7 +381,7 @@ class TestGameplayFrameCarriesQuality:
     def test_message_is_built_once_per_stats_update(self, servicer):
         servicer, mock_loop = servicer
         first = GapStats(p95_ms=10.0, max_ms=12.0, quality=GOOD, samples=900)
-        mock_loop.connection_quality = MagicMock(return_value=first)
+        mock_loop.connection_quality.return_value = first
         msg_a = servicer._connection_quality_msg(SERIAL)
         assert servicer._connection_quality_msg(SERIAL) is msg_a
 
@@ -389,7 +393,7 @@ class TestGameplayFrameCarriesQuality:
     @pytest.mark.uc("UC-035", flow="main", steps=[2], br=["BR-005"])
     def test_unknown_quality_leaves_the_field_unset(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.connection_quality = MagicMock(return_value=None)
+        mock_loop.connection_quality.return_value = None
 
         update = servicer._build_gameplay_update(None, "dashboard")
 

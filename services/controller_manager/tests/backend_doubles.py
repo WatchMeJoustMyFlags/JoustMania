@@ -2,8 +2,15 @@
 
 from unittest.mock import MagicMock, create_autospec
 
+import grpc
+import grpc.aio
+from openfeature.client import OpenFeatureClient
+from opentelemetry import trace
+
 from services.controller_manager.backend import ControllerBackend
 from services.controller_manager.button_detector import ButtonDetector
+from services.controller_manager.discovery import PeriodicRescanTimer
+from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.event_publisher import EventPublisher
 from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.mock_hooks import MockFeatureHooks
@@ -82,8 +89,10 @@ def autospec_feedback_manager():
 
 
 def autospec_monitoring():
-    """An autospec'd ControllerMonitoring."""
-    return create_autospec(ControllerMonitoring, instance=True)
+    """An autospec'd ControllerMonitoring (``last_battery_check`` is an instance attribute, so seed it)."""
+    monitoring = create_autospec(ControllerMonitoring, instance=True)
+    monitoring.last_battery_check = 0
+    return monitoring
 
 
 def autospec_publisher():
@@ -94,3 +103,33 @@ def autospec_publisher():
 def autospec_adapter():
     """An autospec'd ControllerIOAdapter."""
     return create_autospec(ControllerIOAdapter, instance=True)
+
+
+def autospec_rescan_timer():
+    """An autospec'd PeriodicRescanTimer."""
+    return create_autospec(PeriodicRescanTimer, instance=True)
+
+
+def autospec_discovery_loop():
+    """An autospec'd DiscoveryLoop."""
+    return create_autospec(DiscoveryLoop, instance=True)
+
+
+def autospec_span():
+    """An autospec'd OpenTelemetry Span."""
+    return create_autospec(trace.Span, instance=True)
+
+
+def autospec_flag_client():
+    """An autospec'd OpenFeature client."""
+    return create_autospec(OpenFeatureClient, instance=True)
+
+
+def autospec_servicer_context():
+    """An autospec'd grpc.aio.ServicerContext."""
+    return create_autospec(grpc.aio.ServicerContext, instance=True)
+
+
+def autospec_channel():
+    """An autospec'd grpc.Channel."""
+    return create_autospec(grpc.Channel, instance=True)

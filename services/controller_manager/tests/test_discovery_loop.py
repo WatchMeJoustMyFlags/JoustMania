@@ -16,6 +16,7 @@ from services.controller_manager.tests.backend_doubles import (
     autospec_feedback_manager,
     autospec_monitoring,
     autospec_publisher,
+    autospec_rescan_timer,
 )
 
 
@@ -35,7 +36,7 @@ class TestActivityTracking:
         feedback_manager = autospec_feedback_manager()
         monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
-        rescan_timer = MagicMock()
+        rescan_timer = autospec_rescan_timer()
         paired_serials = []
         base_colors = {}
         event_publisher = autospec_publisher()
@@ -202,7 +203,7 @@ class TestAdaptivePollingLogic:
         feedback_manager = autospec_feedback_manager()
         monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
-        rescan_timer = MagicMock()
+        rescan_timer = autospec_rescan_timer()
         paired_serials = []
         base_colors = {}
         event_publisher = autospec_publisher()
@@ -288,7 +289,7 @@ class TestDiscoveryLoopLifecycle:
         feedback_manager = autospec_feedback_manager()
         monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
-        rescan_timer = MagicMock()
+        rescan_timer = autospec_rescan_timer()
         paired_serials = []
         base_colors = {}
         event_publisher = autospec_publisher()
@@ -337,7 +338,7 @@ class TestPollingStateCleanup:
         feedback_manager = autospec_feedback_manager()
         monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
-        rescan_timer = MagicMock()
+        rescan_timer = autospec_rescan_timer()
         paired_serials = []
         base_colors = {}
         event_publisher = autospec_publisher()
@@ -400,7 +401,7 @@ class TestAccelerometerMovementCalculation:
         feedback_manager = autospec_feedback_manager()
         monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
-        rescan_timer = MagicMock()
+        rescan_timer = autospec_rescan_timer()
         paired_serials = []
         base_colors = {}
         event_publisher = autospec_publisher()

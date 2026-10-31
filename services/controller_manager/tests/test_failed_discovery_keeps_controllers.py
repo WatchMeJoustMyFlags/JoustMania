@@ -12,6 +12,7 @@ import grpc
 import pytest
 
 from lib.controller_constants import StateKey
+from proto import psmove_hid_pb2
 from services.controller_manager.button_detector import ButtonDetector
 from services.controller_manager.discovery import PeriodicRescanTimer
 from services.controller_manager.discovery_loop import DiscoveryLoop
@@ -28,10 +29,13 @@ from services.controller_manager.multiplexer.rust_adapter import RustServiceAdap
 SERIALS = ["AABBCCDDEE01", "AABBCCDDEE02"]
 
 
+from services.controller_manager.tests.backend_doubles import autospec_channel
+
+
 def _hid_adapter(adapter_cls: type[RustServiceAdapter | PythonHidAdapter]) -> RustServiceAdapter | PythonHidAdapter:
     adapter = adapter_cls.__new__(adapter_cls)
     adapter._init_stream_state()
-    adapter._channel = MagicMock()
+    adapter._channel = autospec_channel()
     adapter._stub = MagicMock(spec_set=["Discover", "Open", "Close", "CloseAll", "StreamIO"])
     adapter._command_queue = queue.Queue(maxsize=256)
     adapter._latest_data = {}
@@ -50,7 +54,7 @@ def _answer(serials):
     response = MagicMock()
     controllers = []
     for serial in serials:
-        ctrl = MagicMock()
+        ctrl = psmove_hid_pb2.DiscoveredController()
         ctrl.serial = serial
         ctrl.adapter_name = "hci0"
         controllers.append(ctrl)

@@ -32,6 +32,7 @@ from services.controller_manager.mock_control_service import MockControllerServi
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
 from services.controller_manager.tests.backend_doubles import (
+    autospec_discovery_loop,
     autospec_feedback_manager,
     autospec_monitoring,
     autospec_publisher,
@@ -183,9 +184,7 @@ def servicer():
         patch("services.controller_manager.servicer.DiscoveryLoop") as mock_discovery_loop,
     ):
         mock_create_backend.return_value = MockBackend()
-        mock_loop = MagicMock()
-        mock_loop.start = MagicMock()
-        mock_loop.stop = MagicMock()
+        mock_loop = autospec_discovery_loop()
         mock_loop.wait_stopped = AsyncMock()
         mock_discovery_loop.return_value = mock_loop
 

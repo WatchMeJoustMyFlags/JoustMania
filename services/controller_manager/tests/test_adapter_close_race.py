@@ -27,11 +27,14 @@ SERIAL = "AABBCCDDEE01"  # normalized form, as discover() returns it
 FRAME = {"serial": SERIAL, "battery": 5}
 
 
+from services.controller_manager.tests.backend_doubles import autospec_channel
+
+
 def _bare(adapter_cls):
     """Adapter without __init__ (no gRPC channel)."""
     adapter = adapter_cls.__new__(adapter_cls)
     adapter._init_stream_state()
-    adapter._channel = MagicMock()
+    adapter._channel = autospec_channel()
     adapter._stub = MagicMock()
     adapter._command_queue = queue.Queue(maxsize=256)
     adapter._latest_data = {}

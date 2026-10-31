@@ -24,6 +24,9 @@ from services.controller_manager import servicer as servicer_module
 CHARGE = controller_manager_pb2.GAME_EFFECT_SHIELD_CHARGE
 
 
+from services.controller_manager.tests.backend_doubles import autospec_span
+
+
 class _Context:
     cancelled_flag = False
 
@@ -84,7 +87,7 @@ class TestUC040StreamCloseCleanup:
         """UC-040 A32: the coordinator reconnect re-claims the controller; its charge layer survives."""
         await _run_stream(stream_servicer)
         # The reconnected stream sends its colours config within the delay.
-        await stream_servicer._process_gameplay_config(_game_config(SERIAL), "game_stream_2", MagicMock())
+        await stream_servicer._process_gameplay_config(_game_config(SERIAL), "game_stream_2", autospec_span())
 
         await _wait_cleanups(stream_servicer)
 
@@ -129,7 +132,7 @@ class TestUC040CleanupOutlastsReconnectBackoff:
         await asyncio.sleep(0.2)
         stream_servicer.feedback_manager.end_shield_effect.assert_not_called()
 
-        await stream_servicer._process_gameplay_config(_game_config(SERIAL), "game_stream_2", MagicMock())
+        await stream_servicer._process_gameplay_config(_game_config(SERIAL), "game_stream_2", autospec_span())
         await _wait_cleanups(stream_servicer)
 
         stream_servicer.feedback_manager.end_shield_effect.assert_not_called()
