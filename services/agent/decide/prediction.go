@@ -152,10 +152,11 @@ func NewPrediction(template string, horizonS int, p float64, source, rule, targe
 // lever_default) for a decision whose backend stated none: jev, and claude or
 // openai while the model is not asked. value is Decision.Value ("" when the
 // intervention takes no number), target the decision's target serial, and
-// tempo the game's current music tempo (nil when unknown). It returns nil for
-// the interventions with nothing measurable to expect (audio cue, volume,
-// eliminate, revive, end_game, noop, ...), for a value that does not say a
-// direction, and for an unparseable value.
+// tempo the game's current music tempo (nil when unknown; unused while the tempo
+// lever has no default). It returns nil for the interventions with nothing
+// measurable to expect (audio cue, volume, music tempo, eliminate, revive,
+// end_game, noop, ...), for a value that does not say a direction, and for an
+// unparseable value.
 //
 // The direction of each lever follows its flag (services/flagd/interventions.json):
 // player sensitivity below 1 protects, a handicap factor above 1 helps, a
@@ -185,16 +186,10 @@ func LeverPrediction(intervention, value, target string, tempo *float64) *Predic
 			return mk(TemplateSurvives, 15, target)
 		}
 	case IntvAdjustMusicTempo:
-		v, ok := num()
-		if !ok || tempo == nil {
-			return nil
-		}
-		switch {
-		case v < *tempo:
-			return mk(TemplateNoElimination, 15, "")
-		case v > *tempo:
-			return mk(TemplateActivityRises, 10, "")
-		}
+		// None in either direction: the death threshold slides with the tempo, so
+		// the tempo's effect on eliminations and on activity (intensity / threshold)
+		// is confounded with the threshold change (review of #2485).
+		return nil
 	case IntvSendControllerEffect:
 		if target == "" {
 			return nil

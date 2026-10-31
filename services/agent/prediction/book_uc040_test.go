@@ -713,3 +713,89 @@ func TestBook_ShutdownLeavesNoGoroutine(t *testing.T) {
 		t.Fatalf("shutdown must score nothing, pending = %d", b.Pending())
 	}
 }
+
+// UC: UC-040 A44 BR-034
+// TestBook_FieldSetFixedAtRegistration: closeness and field activity are measured
+// on the players alive and covered before the decision; an elimination among them
+// makes the after window data_missing instead of a spread that shrank because the
+// outlier left.
+func TestBook_FieldSetFixedAtRegistration(t *testing.T) {
+	h := newHarness(t)
+	c := game("P1", "P2", "P3")
+	c = withHistory(withHistory(withHistory(c, "P1", -15*time.Second, 15, 0.8), "P2", -15*time.Second, 15, 1.2), "P3", -15*time.Second, 15, 3.0)
+	h.register(pred(decide.TemplateClosenessRises, 15, ""), c, true)
+	h.at(18 * time.Second)
+	live := withHistory(withHistory(c, "P1", 0, 15, 0.8), "P2", 0, 15, 1.2)
+	live = eliminate(live, "P3", 5*time.Second)
+	h.setLive(&live)
+	h.fire()
+	want(t, h.one(h.end(live)), OutcomeUnscorable, ReasonDataMissing, false)
+}
+
+// UC: UC-040 A44 BR-034
+// TestBook_ControlRotationOffset: each game starts its control template rotation
+// at a hash of its id, so a template is not always sampled at the same game time.
+func TestBook_ControlRotationOffset(t *testing.T) {
+	first := map[string]string{}
+	for _, id := range []string{"g-a", "g-b", "g-c", "g-d", "g-e", "g-f", "g-g", "g-h"} {
+		h := newHarness(t)
+		c := game("P1", "P2")
+		c.SessionID = id
+		c.Session.DurationSeconds = fp(15)
+		h.b.Observe(c)
+		rs := h.end(c)
+		if len(rs) != 1 {
+			t.Fatalf("%s: %d controls, want 1", id, len(rs))
+		}
+		first[rs[0].Prediction.Template] = id
+	}
+	if len(first) < 2 {
+		t.Fatalf("every game started its rotation with the same template: %v", first)
+	}
+}
+
+// UC: UC-040 A44 BR-034
+// TestBook_MetricsSplitActed: outcomes and the Brier sum carry acted, so a
+// counterfactual never mixes into the acted calibration.
+func TestBook_MetricsSplitActed(t *testing.T) {
+	h := newHarness(t)
+	c := game("P1", "P2")
+	h.register(pred(decide.TemplateSurvives, 15, "P1"), c, true)
+	h.register(pred(decide.TemplateSurvives, 15, "P2"), c, false)
+	h.at(18 * time.Second)
+	h.setLive(&c)
+	h.fire()
+	var rm metricdata.ResourceMetrics
+	if err := h.reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	type key struct{ metric, acted string }
+	got := map[key]float64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			add := func(set attribute.Set, v float64) {
+				a, _ := set.Value("acted")
+				got[key{m.Name, a.AsString()}] += v
+			}
+			switch d := m.Data.(type) {
+			case metricdata.Sum[int64]:
+				for _, dp := range d.DataPoints {
+					add(dp.Attributes, float64(dp.Value))
+				}
+			case metricdata.Sum[float64]:
+				for _, dp := range d.DataPoints {
+					add(dp.Attributes, dp.Value)
+				}
+			}
+		}
+	}
+	brier := (0.7 - 1) * (0.7 - 1)
+	for k, w := range map[key]float64{
+		{MetricOutcomes, "true"}: 1, {MetricOutcomes, "false"}: 1,
+		{MetricBrierSum, "true"}: brier, {MetricBrierSum, "false"}: brier,
+	} {
+		if d := got[k] - w; d > 1e-9 || d < -1e-9 {
+			t.Errorf("%s{acted=%s} = %v, want %v (all: %v)", k.metric, k.acted, got[k], w, got)
+		}
+	}
+}

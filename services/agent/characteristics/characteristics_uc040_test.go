@@ -110,3 +110,16 @@ func TestEliminations(t *testing.T) {
 		t.Fatal("an empty timeline with eliminations is incomplete")
 	}
 }
+
+// UC: UC-040 A44 BR-034
+// TestActivity_CoverageCountsSeconds: several samples in one second count once.
+func TestActivity_CoverageCountsSeconds(t *testing.T) {
+	var h []gamecontext.MovementSample
+	for i := 0; i < 12; i++ {
+		h = append(h, gamecontext.MovementSample{At: t0.Add(time.Second + time.Duration(i)*200*time.Millisecond), Intensity: 1})
+	}
+	c := ctxWith(map[string][]gamecontext.MovementSample{"A": h})
+	if _, ok := PlayerActivity(c, "A", Window{From: t0, To: t0.Add(10 * time.Second)}); ok {
+		t.Fatal("12 samples in 3 seconds of a 10 s window must be data missing")
+	}
+}

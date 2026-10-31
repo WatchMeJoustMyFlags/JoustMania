@@ -121,6 +121,7 @@ func PlayerActivity(c gamecontext.GameContext, serial string, w Window) (float64
 		return 0, false
 	}
 	sum, n := 0.0, 0
+	seconds := map[int64]bool{}
 	for _, s := range p.History {
 		if !w.contains(s.At) {
 			continue
@@ -131,8 +132,11 @@ func PlayerActivity(c gamecontext.GameContext, serial string, w Window) (float64
 		}
 		sum += s.Intensity / *th
 		n++
+		seconds[s.At.Unix()] = true
 	}
-	if n == 0 || float64(n) < MinCoverage*w.Seconds() {
+	// Coverage counts distinct 1 s buckets: the history may hold more than one
+	// sample per second.
+	if n == 0 || float64(len(seconds)) < MinCoverage*w.Seconds() {
 		return 0, false
 	}
 	return sum / float64(n), true
@@ -153,21 +157,48 @@ func alivePlayers(c gamecontext.GameContext) []string {
 // AlivePlayers returns the alive serials, sorted.
 func AlivePlayers(c gamecontext.GameContext) []string { return alivePlayers(c) }
 
-// perPlayer returns the activity of every alive player covered in w.
-func perPlayer(c gamecontext.GameContext, w Window) []float64 {
-	var out []float64
+// CoveredPlayers returns the alive players covered in w, sorted: the fixed player
+// set a field measure is taken over before and after a decision.
+func CoveredPlayers(c gamecontext.GameContext, w Window) []string {
+	var out []string
 	for _, serial := range alivePlayers(c) {
-		if v, ok := PlayerActivity(c, serial, w); ok {
-			out = append(out, v)
+		if _, ok := PlayerActivity(c, serial, w); ok {
+			out = append(out, serial)
 		}
 	}
 	return out
 }
 
+// perPlayer returns the activity of each of serials covered in w; ok is false
+// when one of them is no longer alive (the set changed) or not covered.
+func perPlayer(c gamecontext.GameContext, serials []string, w Window) ([]float64, bool) {
+	out := make([]float64, 0, len(serials))
+	for _, serial := range serials {
+		if alive, _ := Alive(c, serial); !alive {
+			return nil, false
+		}
+		v, ok := PlayerActivity(c, serial, w)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, v)
+	}
+	return out, true
+}
+
 // FieldActivity is the mean activity of the alive players covered in w; false
 // with fewer than MinFieldPlayers covered players.
 func FieldActivity(c gamecontext.GameContext, w Window) (float64, bool) {
-	vals := perPlayer(c, w)
+	return FieldActivityOf(c, CoveredPlayers(c, w), w)
+}
+
+// FieldActivityOf is the mean activity of exactly serials in w; false with fewer
+// than MinFieldPlayers serials, or when one of them died or is not covered.
+func FieldActivityOf(c gamecontext.GameContext, serials []string, w Window) (float64, bool) {
+	vals, ok := perPlayer(c, serials, w)
+	if !ok {
+		return 0, false
+	}
 	if len(vals) < MinFieldPlayers {
 		return 0, false
 	}
@@ -181,8 +212,13 @@ func FieldActivity(c gamecontext.GameContext, w Window) (float64, bool) {
 // Closeness is the spread (max - min) of per-player activity among the alive
 // players covered in w: lower is closer. False with fewer than MinFieldPlayers.
 func Closeness(c gamecontext.GameContext, w Window) (float64, bool) {
-	vals := perPlayer(c, w)
-	if len(vals) < MinFieldPlayers {
+	return ClosenessOf(c, CoveredPlayers(c, w), w)
+}
+
+// ClosenessOf is the spread of exactly serials in w; false as FieldActivityOf.
+func ClosenessOf(c gamecontext.GameContext, serials []string, w Window) (float64, bool) {
+	vals, ok := perPlayer(c, serials, w)
+	if !ok || len(vals) < MinFieldPlayers {
 		return 0, false
 	}
 	lo, hi := vals[0], vals[0]

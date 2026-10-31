@@ -45,6 +45,10 @@ type baseline struct {
 	// (at - horizon, at]; beforeOK false means data_missing.
 	before   float64
 	beforeOK bool
+	// players is the fixed player set of a field measure (activity_rises field,
+	// closeness_rises): the alive players covered before the decision. The after
+	// window is measured on the same set; if one of them died it is data_missing.
+	players []string
 }
 
 func (b baseline) horizonEnd() time.Time { return b.at.Add(b.horizon) }
@@ -76,10 +80,12 @@ func takeBaseline(p decide.Prediction, c gamecontext.GameContext, t time.Time) b
 		if p.Scope == decide.ScopeTarget {
 			b.before, b.beforeOK = characteristics.PlayerActivity(c, p.Target, before)
 		} else {
-			b.before, b.beforeOK = characteristics.FieldActivity(c, before)
+			b.players = characteristics.CoveredPlayers(c, before)
+			b.before, b.beforeOK = characteristics.FieldActivityOf(c, b.players, before)
 		}
 	case decide.TemplateClosenessRises:
-		b.before, b.beforeOK = characteristics.Closeness(c, before)
+		b.players = characteristics.CoveredPlayers(c, before)
+		b.before, b.beforeOK = characteristics.ClosenessOf(c, b.players, before)
 	}
 	return b
 }
@@ -193,14 +199,14 @@ func horizonVerdict(p decide.Prediction, b baseline, c gamecontext.GameContext, 
 			}
 			val, ok = characteristics.PlayerActivity(c, p.Target, after)
 		} else {
-			val, ok = characteristics.FieldActivity(c, after)
+			val, ok = characteristics.FieldActivityOf(c, b.players, after)
 		}
 		return compare(b.before, val, ok, func(before, after float64) bool { return after > before*riseFactor })
 	case decide.TemplateClosenessRises:
 		if !b.beforeOK {
 			return unscorable(ReasonDataMissing)
 		}
-		val, ok := characteristics.Closeness(c, after)
+		val, ok := characteristics.ClosenessOf(c, b.players, after)
 		return compare(b.before, val, ok, func(before, after float64) bool { return after < before*closerFactor })
 	case decide.TemplateGameEnds:
 		return miss()

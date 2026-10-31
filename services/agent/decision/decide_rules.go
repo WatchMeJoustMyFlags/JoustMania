@@ -147,10 +147,13 @@ type rulePrediction struct {
 }
 
 // rulesPredictions is the fixed table. R7 (end the game) has none: the action is
-// the outcome. R6 has one only while at least 3 players stay alive after the
-// elimination (rulesPrediction), otherwise it is trivially true.
+// the outcome. R1 (slow the music) has none: the death threshold slides from
+// SLOW_MAX to FAST_MAX with the tempo, so slowing makes the same motion more
+// deadly, and the tempo's effect on eliminations is confounded with that
+// threshold change (review of #2485). R6 has one only while at least 3 players
+// stay alive after the elimination (rulesPrediction), otherwise it is trivially
+// true.
 var rulesPredictions = map[string]rulePrediction{
-	"R1":  {decide.TemplateNoElimination, 15, 0.6},
 	"R2":  {decide.TemplateNoElimination, 15, 0.55},
 	"R3":  {decide.TemplateClosenessRises, 15, 0.55},
 	"R4":  {decide.TemplateSurvives, 15, 0.7},

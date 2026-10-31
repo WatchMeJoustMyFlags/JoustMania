@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/decide"
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/prediction"
 	"github.com/joustmania/agent/telemetry/keys"
@@ -66,7 +67,7 @@ func TestRulesPathGolden_PredictionsOnAndOff(t *testing.T) {
 
 // UC: UC-040 A44 BR-034
 func TestPredictions_FlagGatesRegistration(t *testing.T) {
-	fx := decideFixtures()[0] // endurance: R1 wins
+	fx := decideFixtures()[2] // accelerate: R5 wins
 	for _, off := range []bool{false, true} {
 		clock := time.Unix(10_000, 0)
 		snap := rulesSnapshot()
@@ -78,7 +79,6 @@ func TestPredictions_FlagGatesRegistration(t *testing.T) {
 		b := testBook(t, &clock)
 		l.SetPredictionBook(b)
 		c := fx.ctx
-		c.Session.DurationSeconds = fptr(20)
 		l.OnEvaluate(context.Background(), c, testTrigger())
 
 		id := ""
@@ -91,8 +91,8 @@ func TestPredictions_FlagGatesRegistration(t *testing.T) {
 				case keys.AttrDecidePredictionID:
 					id = a.Value.AsString()
 				case keys.AttrDecidePredictionRule:
-					if a.Value.AsString() != "R1" {
-						t.Errorf("rule = %s, want R1", a.Value.AsString())
+					if a.Value.AsString() != "R5" {
+						t.Errorf("rule = %s, want R5", a.Value.AsString())
 					}
 				}
 			}
@@ -103,7 +103,7 @@ func TestPredictions_FlagGatesRegistration(t *testing.T) {
 			}
 			continue
 		}
-		// R1's prediction plus the base-rate control due at 20 s of play.
+		// R5's prediction plus the base-rate control due at 100 s of play.
 		if id == "" || b.Pending() != 2 {
 			t.Fatalf("UC-040/A44 flag on: id %q, pending %d, want the decision's prediction and one control", id, b.Pending())
 		}
@@ -125,7 +125,7 @@ func TestRulesPrediction_Table(t *testing.T) {
 		horizon, alive        int
 		target                bool
 	}{
-		{"R1", decide.TemplateNoElimination, decide.ScopeGame, 15, 4, false},
+		{"R1", "", "", 0, 4, false}, // tempo effect confounded with the threshold
 		{"R2", decide.TemplateNoElimination, decide.ScopeGame, 15, 4, false},
 		{"R3", decide.TemplateClosenessRises, decide.ScopeField, 15, 4, false},
 		{"R4", decide.TemplateSurvives, decide.ScopeTarget, 15, 4, true},
@@ -222,8 +222,12 @@ func TestEvaluateDecide_ResponseCarriesRulesPrediction(t *testing.T) {
 				t.Errorf("UC-040/A44 %s: a noop answer carries %+v, want no prediction", fx.name, *resp.Prediction)
 			}
 		case fx.name == "endurance":
-			if resp.Prediction == nil || resp.Prediction.Rule != "R1" || resp.Prediction.Template != decide.TemplateNoElimination {
-				t.Errorf("UC-040/A44 endurance: prediction %+v, want R1 no_elimination", resp.Prediction)
+			if resp.Prediction != nil {
+				t.Errorf("UC-040/A44 endurance: R1 carries %+v, want none", *resp.Prediction)
+			}
+		case fx.name == "accelerate":
+			if resp.Prediction == nil || resp.Prediction.Rule != "R5" || resp.Prediction.Template != decide.TemplateElimination {
+				t.Errorf("UC-040/A44 accelerate: prediction %+v, want R5 elimination", resp.Prediction)
 			}
 		}
 	}
@@ -302,5 +306,102 @@ func TestRemotePrediction_LeverDefault(t *testing.T) {
 	}
 	if got := remotePrediction(decide.Response{}, Decision{Intervention: InterventionEndGame}, c); got != nil {
 		t.Fatalf("end_game has no lever default, got %+v", *got)
+	}
+}
+
+// actedResults ends c's game in b and returns the results of source.
+func actedResults(t *testing.T, b *prediction.Book, c gamecontext.GameContext, source string) []prediction.Result {
+	t.Helper()
+	end := c
+	end.EndReason = gamecontext.EndReasonZero
+	b.OnGameEnd(end)
+	var out []prediction.Result
+	for _, r := range b.Results(c.SessionID) {
+		if r.Prediction.Source == source {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// UC: UC-040 A44 BR-034
+// TestPredictionActed_RulesPath: through OnEvaluate, an applied write registers
+// an acted prediction; a gated-off write and a blocked decision register a
+// counterfactual.
+func TestPredictionActed_RulesPath(t *testing.T) {
+	fx := decideFixtures()[2] // accelerate: R5 adjust_music_tempo wins
+	withoutTempo := []string{}
+	for _, iv := range allInterventions() {
+		if iv != InterventionAdjustMusicTempo {
+			withoutTempo = append(withoutTempo, iv)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		sink    ActionSink
+		allowed []string
+		want    bool
+	}{
+		{"UC-040/A44 applied write is acted", &capturingSink{}, allInterventions(), true},
+		{"UC-040/A44 gated-off write is a counterfactual", &gatedSink{gateOn: false}, allInterventions(), false},
+		{"UC-040/A44 blocked decision is a counterfactual", &capturingSink{}, withoutTempo, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := time.Unix(10_000, 0)
+			snap := rulesSnapshot()
+			snap.InterventionsAllowed = tc.allowed
+			l, _ := decideRecordingLoop(t, snap)
+			l.Rules = newTestEngine(fx.cfg, &clock)
+			l.now = func() time.Time { return clock }
+			l.Actions = tc.sink
+			b := testBook(t, &clock)
+			l.SetPredictionBook(b)
+			l.OnEvaluate(context.Background(), fx.ctx, testTrigger())
+			rs := actedResults(t, b, fx.ctx, decide.SourceRules)
+			if len(rs) != 1 || rs[0].Prediction.Rule != "R5" || rs[0].Acted != tc.want {
+				t.Fatalf("rules results = %+v, want one R5 with acted=%v", rs, tc.want)
+			}
+		})
+	}
+}
+
+// UC: UC-040 A44 BR-034
+// TestPredictionActed_RemotePath: through runDecideRemote and decideRemoteApply,
+// an applied remote write registers an acted lever-default prediction; a gated-off
+// write and a decision the live allow-list blocks register a counterfactual.
+func TestPredictionActed_RemotePath(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		gated  bool
+		revoke bool
+		want   bool
+	}{
+		{"UC-040/A44 applied remote write is acted", false, false, true},
+		{"UC-040/A44 gated-off remote write is a counterfactual", true, false, false},
+		{"UC-040/A44 remote decision blocked at landing is a counterfactual", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, "shield"))
+			be.block = true
+			h := newRemoteHarness(t, remoteSnapshot(time.Hour), be)
+			b := testBook(t, h.clock)
+			h.loop.SetPredictionBook(b)
+			if tc.gated {
+				h.loop.Actions = &gatedSink{gateOn: false}
+			}
+			h.loop.OnEvaluate(context.Background(), remoteContext(), testTrigger())
+			<-be.started
+			if tc.revoke {
+				h.flags.mutate(func(s *flags.Snapshot) {
+					s.InterventionsAllowed = []string{"noop", "adjust_music_tempo", "play_audio_cue"}
+				})
+			}
+			close(be.release)
+			h.loop.AwaitInflight()
+			rs := actedResults(t, b, remoteContext(), decide.SourceLeverDefault)
+			if len(rs) != 1 || rs[0].Prediction.Template != decide.TemplateSurvives || rs[0].Backend != "claude" || rs[0].Acted != tc.want {
+				t.Fatalf("lever results = %+v, want one survives from claude with acted=%v", rs, tc.want)
+			}
+		})
 	}
 }

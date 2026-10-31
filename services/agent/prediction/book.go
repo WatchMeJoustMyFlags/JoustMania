@@ -134,6 +134,10 @@ type gameBook struct {
 	results       []Result
 	controls      int
 	nextControlAt time.Duration
+	// controlOffset is where this game's template rotation starts (a hash of the
+	// game id), so a template's base rate is not always sampled at the same
+	// game times.
+	controlOffset int
 }
 
 // Book is the process-wide prediction book. The zero value is not usable; use New.
@@ -268,7 +272,9 @@ func (b *Book) Register(r Registration) (id string, merged, ok bool) {
 func (b *Book) gameLocked(gameID string) *gameBook {
 	gb := b.games[gameID]
 	if gb == nil {
-		gb = &gameBook{nextControlAt: controlInterval}
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(gameID))
+		gb = &gameBook{nextControlAt: controlInterval, controlOffset: int(h.Sum32() % uint32(len(controlSpecs)))}
 		b.games[gameID] = gb
 	}
 	return gb
@@ -418,7 +424,7 @@ func (b *Book) dueControlLocked(c gamecontext.GameContext) (decide.Prediction, b
 	if gb.controls >= maxControlsPerGame || time.Duration(dur*float64(time.Second)) < gb.nextControlAt {
 		return decide.Prediction{}, false
 	}
-	spec := controlSpecs[gb.controls%len(controlSpecs)]
+	spec := controlSpecs[(gb.controlOffset+gb.controls)%len(controlSpecs)]
 	gb.controls++
 	gb.nextControlAt += controlInterval
 	target := ""
