@@ -588,11 +588,11 @@ jobs:
       # Install system dependencies for services with native Python packages
       - name: Install system dependencies
         if: matrix.service == 'controller_manager' || matrix.service == 'audio' || matrix.service == 'pairing_daemon'
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
           # controller_manager/pairing_daemon: dbus-python needs libdbus-1-dev and libglib2.0-dev
           # audio: pyalsaaudio needs libasound2-dev
-          sudo apt-get install -y libdbus-1-dev libglib2.0-dev libasound2-dev pkg-config
+          scripts/ci/apt-install.sh libdbus-1-dev libglib2.0-dev libasound2-dev pkg-config
 
       - name: Lint
         run: |
@@ -677,9 +677,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler libhidapi-dev libudev-dev pkg-config
+        timeout-minutes: 5
+        run: scripts/ci/apt-install.sh protobuf-compiler libhidapi-dev libudev-dev pkg-config
 
       # Version is pinned in services/rust-hid/rust-toolchain.toml (#1255);
       # Renovate proposes bumps, so new lints land in a reviewed PR.
@@ -892,7 +891,8 @@ jobs:
       - name: Install GLib for the GKeyFile round trip (UC-061 BR-004)
         # tests/contract/test_hotspot_profile.py parses the rendered NM keyfile with
         # GLib's own GKeyFile parser through the system python3; it fails in CI without it.
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends python3-gi gir1.2-glib-2.0
+        timeout-minutes: 5
+        run: scripts/ci/apt-install.sh --no-install-recommends python3-gi gir1.2-glib-2.0
 
       - name: Run telemetry contract tests
         # test_flagd_resolution.py, test_flagd_rpc_retry.py and test_fractional_bucketing.py (grpc + provider) run in the Flagd Contract job below.
@@ -946,9 +946,8 @@ jobs:
       # rust-hid's live flag test (tests/service/test_rust_hid_flag_live.py, #1713)
       # builds rust-hid: same toolchain and system packages as Rust Checks.
       - name: Install rust-hid build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler libhidapi-dev libudev-dev pkg-config
+        timeout-minutes: 5
+        run: scripts/ci/apt-install.sh protobuf-compiler libhidapi-dev libudev-dev pkg-config
 
       - name: Read pinned Rust version
         id: rust-version
