@@ -219,6 +219,8 @@ jobs:
               - 'Makefile'
               # self-test edits to this job
               - '.github/workflows/ci.yml'
+              # test-review-gate.sh checks the merge-queue review gate (#1809)
+              - '.github/workflows/review-gate.yml'
             # Telemetry contract (#1357) and infra config tests (#1365):
             # producers, agent extractors, dashboards, envoy and the
             # collector config, plus the compose file (image tags, host ports).
