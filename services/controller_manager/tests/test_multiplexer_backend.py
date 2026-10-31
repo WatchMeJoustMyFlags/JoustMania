@@ -19,19 +19,18 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
+from services.controller_manager.tests.backend_doubles import autospec_adapter
 
 
 def _make_adapter(adapter_type="mock", serials=None):
     """Create a mock ControllerIOAdapter."""
-    adapter = MagicMock()
+    adapter = autospec_adapter()
     adapter.adapter_type = adapter_type
-    adapter.discover = MagicMock(return_value=serials or [])
-    adapter.open = MagicMock(return_value=True)
-    adapter.poll = MagicMock(return_value=None)
-    adapter.set_output = MagicMock(return_value=True)
-    adapter.close = MagicMock()
-    adapter.close_all = MagicMock()
-    adapter.get_adapter_for_serial = MagicMock(return_value=None)
+    adapter.discover.return_value = serials or []
+    adapter.open.return_value = True
+    adapter.poll.return_value = None
+    adapter.set_output.return_value = True
+    adapter.get_adapter_for_serial.return_value = None
     # Plain adapters are their own device owner — no shared inner.
     adapter.inner = None
     return adapter

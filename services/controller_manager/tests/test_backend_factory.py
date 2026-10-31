@@ -22,6 +22,7 @@ from services.controller_manager.backend_factory import (
     _resolve_backend_name,
     create_backend,
 )
+from services.controller_manager.tests.backend_doubles import autospec_adapter
 
 
 def _mock_details(value, reason="STATIC", error_code=None, error_message=None):
@@ -114,9 +115,9 @@ class TestCreateBackendIntegration:
             patch("lib.feature_flags.get_flag_client", side_effect=Exception("flagd unavailable")),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            rust_adapter = MagicMock()
+            rust_adapter = autospec_adapter()
             rust_adapter.adapter_type = "rust"
-            mock_adapter = MagicMock()
+            mock_adapter = autospec_adapter()
             mock_adapter.adapter_type = "mock"
             mock_create.side_effect = [rust_adapter, mock_adapter]
 
@@ -150,9 +151,9 @@ class TestMultiAdapterCreation:
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            mock_adapter = MagicMock()
+            mock_adapter = autospec_adapter()
             mock_adapter.adapter_type = "mock"
-            python_adapter = MagicMock()
+            python_adapter = autospec_adapter()
             python_adapter.adapter_type = "python"
             mock_create.side_effect = [mock_adapter, python_adapter]
 
@@ -174,10 +175,10 @@ class TestMultiAdapterCreation:
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            python_adapter = MagicMock()
+            python_adapter = autospec_adapter()
             python_adapter.adapter_type = "python"
             python_adapter.inner = None
-            mock_adapter = MagicMock()
+            mock_adapter = autospec_adapter()
             mock_adapter.adapter_type = "mock"
             mock_adapter.inner = None
             mock_create.side_effect = [python_adapter, mock_adapter]
@@ -202,10 +203,10 @@ class TestMultiAdapterCreation:
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            rust_adapter = MagicMock()
+            rust_adapter = autospec_adapter()
             rust_adapter.adapter_type = "rust"
             rust_adapter.inner = None
-            mock_adapter = MagicMock()
+            mock_adapter = autospec_adapter()
             mock_adapter.adapter_type = "mock"
             mock_adapter.inner = None
             mock_create.side_effect = [rust_adapter, mock_adapter]
@@ -235,9 +236,9 @@ class TestMultiAdapterCreation:
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            rust_adapter = MagicMock()
+            rust_adapter = autospec_adapter()
             rust_adapter.adapter_type = "rust"
-            mock_adapter = MagicMock()
+            mock_adapter = autospec_adapter()
             mock_adapter.adapter_type = "mock"
             mock_create.side_effect = [rust_adapter, mock_adapter]
 
@@ -257,9 +258,9 @@ class TestMultiAdapterCreation:
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            mock_adapter = MagicMock()
+            mock_adapter = autospec_adapter()
             mock_adapter.adapter_type = "mock"
-            python_adapter = MagicMock()
+            python_adapter = autospec_adapter()
             python_adapter.adapter_type = "python"
             mock_create.side_effect = [mock_adapter, python_adapter]
 

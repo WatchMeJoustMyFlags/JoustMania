@@ -10,7 +10,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
-from services.controller_manager.tests.backend_doubles import autospec_backend
+from services.controller_manager.tests.backend_doubles import (
+    autospec_backend,
+    autospec_button_detector,
+    autospec_feedback_manager,
+    autospec_monitoring,
+    autospec_publisher,
+)
 
 
 class TestActivityTracking:
@@ -25,14 +31,14 @@ class TestActivityTracking:
         backend = autospec_backend()
         tracked_controllers = {}
         controller_states = {}
-        button_detector = MagicMock()
-        feedback_manager = MagicMock()
-        monitoring = MagicMock()
+        button_detector = autospec_button_detector()
+        feedback_manager = autospec_feedback_manager()
+        monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
         rescan_timer = MagicMock()
         paired_serials = []
         base_colors = {}
-        event_publisher = MagicMock()
+        event_publisher = autospec_publisher()
 
         # Don't start the task - just return the instance
         return DiscoveryLoop(
@@ -192,14 +198,14 @@ class TestAdaptivePollingLogic:
         backend = autospec_backend()
         tracked_controllers = {}
         controller_states = {}
-        button_detector = MagicMock()
-        feedback_manager = MagicMock()
-        monitoring = MagicMock()
+        button_detector = autospec_button_detector()
+        feedback_manager = autospec_feedback_manager()
+        monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
         rescan_timer = MagicMock()
         paired_serials = []
         base_colors = {}
-        event_publisher = MagicMock()
+        event_publisher = autospec_publisher()
 
         return DiscoveryLoop(
             backend=backend,
@@ -278,14 +284,14 @@ class TestDiscoveryLoopLifecycle:
         backend.initialize = MagicMock(return_value=False)  # Prevent actual init
         tracked_controllers = {}
         controller_states = {}
-        button_detector = MagicMock()
-        feedback_manager = MagicMock()
-        monitoring = MagicMock()
+        button_detector = autospec_button_detector()
+        feedback_manager = autospec_feedback_manager()
+        monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
         rescan_timer = MagicMock()
         paired_serials = []
         base_colors = {}
-        event_publisher = MagicMock()
+        event_publisher = autospec_publisher()
 
         return DiscoveryLoop(
             backend=backend,
@@ -327,14 +333,14 @@ class TestPollingStateCleanup:
         backend = autospec_backend()
         tracked_controllers = {}
         controller_states = {}
-        button_detector = MagicMock()
-        feedback_manager = MagicMock()
-        monitoring = MagicMock()
+        button_detector = autospec_button_detector()
+        feedback_manager = autospec_feedback_manager()
+        monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
         rescan_timer = MagicMock()
         paired_serials = []
         base_colors = {}
-        event_publisher = MagicMock()
+        event_publisher = autospec_publisher()
 
         return DiscoveryLoop(
             backend=backend,
@@ -390,14 +396,14 @@ class TestAccelerometerMovementCalculation:
         backend = autospec_backend()
         tracked_controllers = {}
         controller_states = {}
-        button_detector = MagicMock()
-        feedback_manager = MagicMock()
-        monitoring = MagicMock()
+        button_detector = autospec_button_detector()
+        feedback_manager = autospec_feedback_manager()
+        monitoring = autospec_monitoring()
         monitoring.last_battery_check = 0
         rescan_timer = MagicMock()
         paired_serials = []
         base_colors = {}
-        event_publisher = MagicMock()
+        event_publisher = autospec_publisher()
 
         return DiscoveryLoop(
             backend=backend,

@@ -3,7 +3,12 @@
 from unittest.mock import MagicMock, create_autospec
 
 from services.controller_manager.backend import ControllerBackend
+from services.controller_manager.button_detector import ButtonDetector
+from services.controller_manager.event_publisher import EventPublisher
+from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.mock_hooks import MockFeatureHooks
+from services.controller_manager.monitoring import ControllerMonitoring
+from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 
 
 class InertBackendHooks(MockFeatureHooks):
@@ -64,3 +69,28 @@ def inert_hooks(backend):
     backend.rollout_strategy = MagicMock(return_value="")
     backend.take_led_failures = MagicMock(return_value=0)
     return backend
+
+
+def autospec_button_detector():
+    """An autospec'd ButtonDetector: a call the real class does not have raises."""
+    return create_autospec(ButtonDetector, instance=True)
+
+
+def autospec_feedback_manager():
+    """An autospec'd FeedbackManager."""
+    return create_autospec(FeedbackManager, instance=True)
+
+
+def autospec_monitoring():
+    """An autospec'd ControllerMonitoring."""
+    return create_autospec(ControllerMonitoring, instance=True)
+
+
+def autospec_publisher():
+    """An autospec'd EventPublisher."""
+    return create_autospec(EventPublisher, instance=True)
+
+
+def autospec_adapter():
+    """An autospec'd ControllerIOAdapter."""
+    return create_autospec(ControllerIOAdapter, instance=True)

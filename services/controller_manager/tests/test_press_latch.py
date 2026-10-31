@@ -23,9 +23,9 @@ sys.path.insert(0, str(test_dir.parent.parent.parent))
 from lib.controller_constants import ButtonKey, normalize_serial
 from proto import controller_manager_pb2, psmove_hid_pb2
 from services.controller_manager.button_detector import ButtonDetector
-from services.controller_manager.event_publisher import EventPublisher
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
+from services.controller_manager.tests.backend_doubles import autospec_publisher
 from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 HID_SERIAL = normalize_serial("AA:BB:CC:DD:EE:01")
@@ -71,7 +71,7 @@ def _poll_events(adapter, detector, publisher):
 
 @pytest.fixture
 def detector():
-    publisher = MagicMock(spec=EventPublisher)
+    publisher = autospec_publisher()
     button_detector = ButtonDetector(publisher)
     button_detector._subscribers = {"menu": MagicMock()}
     with patch("services.controller_manager.button_detector.metrics"):

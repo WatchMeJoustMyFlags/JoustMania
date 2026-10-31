@@ -26,7 +26,12 @@ from services.controller_manager.connection_quality import (
     percentile_nearest_rank,
 )
 from services.controller_manager.discovery_loop import DiscoveryLoop
-from services.controller_manager.tests.backend_doubles import autospec_backend
+from services.controller_manager.tests.backend_doubles import (
+    autospec_backend,
+    autospec_button_detector,
+    autospec_feedback_manager,
+    autospec_publisher,
+)
 
 SERIAL = "00:06:F7:AA:BB:CC"
 TIME_FN = "services.controller_manager.discovery_loop.time.time"
@@ -192,13 +197,13 @@ def _make_loop(backend) -> DiscoveryLoop:
         backend=backend,
         tracked_controllers={SERIAL: {}},
         controller_states={},
-        button_detector=MagicMock(),
-        feedback_manager=MagicMock(),
+        button_detector=autospec_button_detector(),
+        feedback_manager=autospec_feedback_manager(),
         monitoring=MagicMock(last_battery_check=0),
         rescan_timer=MagicMock(),
         paired_serials=[],
         base_colors={},
-        event_publisher=MagicMock(),
+        event_publisher=autospec_publisher(),
     )
     loop.backend_initialized = True
     return loop

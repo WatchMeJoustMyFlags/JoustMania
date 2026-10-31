@@ -11,6 +11,7 @@ from lib.controller_constants import ButtonKey, ButtonTrackingKey, ControllerInf
 from proto import controller_manager_pb2
 from services.controller_manager.button_detector import ButtonDetector
 from services.controller_manager.event_publisher import EventPublisher
+from services.controller_manager.tests.backend_doubles import autospec_publisher
 
 
 class TestButtonDetectorInitialization:
@@ -113,7 +114,7 @@ class TestButtonTransitionDetection:
     @patch("services.controller_manager.button_detector.metrics")
     def test_press_transition_detected(self, _mock_metrics):
         """Button press (False -> True) generates press event."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -137,7 +138,7 @@ class TestButtonTransitionDetection:
     @patch("services.controller_manager.button_detector.metrics")
     def test_release_transition_detected(self, _mock_metrics):
         """Button release (True -> False) generates release event."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -160,7 +161,7 @@ class TestButtonTransitionDetection:
     @patch("services.controller_manager.button_detector.metrics")
     def test_no_event_when_state_unchanged(self, _mock_metrics):
         """No event published when button state doesn't change."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -178,7 +179,7 @@ class TestButtonTransitionDetection:
     @patch("services.controller_manager.button_detector.metrics")
     def test_multiple_transitions_in_single_poll(self, _mock_metrics):
         """Multiple button changes generate multiple events."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -197,7 +198,7 @@ class TestButtonTransitionDetection:
     @patch("services.controller_manager.button_detector.metrics")
     def test_all_button_types_map_correctly(self, _mock_metrics):
         """Each button type maps to correct protobuf enum."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -232,7 +233,7 @@ class TestButtonTransitionDetection:
     @patch("services.controller_manager.button_detector.metrics")
     def test_battery_included_in_event(self, _mock_metrics):
         """Button events include battery level from controller info."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -252,7 +253,7 @@ class TestButtonTransitionDetection:
     @patch("services.controller_manager.button_detector.metrics")
     def test_state_persists_after_transition(self, _mock_metrics):
         """Button state is updated after transition detection."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
 
         # Initialize with move=False
@@ -273,7 +274,7 @@ class TestConnectionEvents:
 
     def test_connect_event_published(self):
         """publish_connection_event sends connect event with correct fields."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -289,7 +290,7 @@ class TestConnectionEvents:
 
     def test_disconnect_event_published(self):
         """publish_connection_event sends disconnect event."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -303,7 +304,7 @@ class TestConnectionEvents:
 
     def test_connection_event_uses_correct_event_type_label(self):
         """Connection events are published with 'connection' event type label."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -315,7 +316,7 @@ class TestConnectionEvents:
 
     def test_connect_event_includes_connected_serials(self):
         """Connection event includes connected_serials when provided."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -330,7 +331,7 @@ class TestConnectionEvents:
 
     def test_connect_event_empty_connected_serials_by_default(self):
         """Connection event has empty connected_serials when not provided."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -348,7 +349,7 @@ class TestMultipleControllers:
     @patch("services.controller_manager.button_detector.metrics")
     def test_independent_state_tracking(self, _mock_metrics):
         """Each controller has independent button state."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -405,7 +406,7 @@ class TestReservedControllerSuppression:
     @patch("services.controller_manager.button_detector.metrics")
     def test_reserved_controller_button_press_not_published(self, _mock_metrics):
         """A reserved controller's button press is never sent to subscribers."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -424,7 +425,7 @@ class TestReservedControllerSuppression:
     @patch("services.controller_manager.button_detector.metrics")
     def test_unreserved_controller_button_press_still_published(self, _mock_metrics):
         """A normal (non-reserved) controller's button press is still published."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 
@@ -442,7 +443,7 @@ class TestReservedControllerSuppression:
     @patch("services.controller_manager.button_detector.metrics")
     def test_missing_reserved_metadata_defaults_to_published(self, _mock_metrics):
         """Absent reserved metadata is treated as visible (backward compatible)."""
-        publisher = MagicMock(spec=EventPublisher)
+        publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
         detector._subscribers = {"sub1": MagicMock()}
 

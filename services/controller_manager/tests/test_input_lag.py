@@ -27,7 +27,13 @@ from lib.controller_constants import ButtonKey
 from proto import controller_manager_pb2
 from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.multiplexer.press_latch import latch_presses, merge_latched_presses
-from services.controller_manager.tests.backend_doubles import InertBackendHooks, autospec_backend
+from services.controller_manager.tests.backend_doubles import (
+    InertBackendHooks,
+    autospec_backend,
+    autospec_button_detector,
+    autospec_feedback_manager,
+    autospec_publisher,
+)
 
 LAG_METRIC = "services.controller_manager.metrics.controller_input_lag_seconds"
 TIME_FN = "services.controller_manager.discovery_loop.time.time"
@@ -39,13 +45,13 @@ def _make_loop(backend) -> DiscoveryLoop:
         backend=backend,
         tracked_controllers={SERIAL: {}},
         controller_states={},
-        button_detector=MagicMock(),
-        feedback_manager=MagicMock(),
+        button_detector=autospec_button_detector(),
+        feedback_manager=autospec_feedback_manager(),
         monitoring=MagicMock(last_battery_check=0),
         rescan_timer=MagicMock(),
         paired_serials=[],
         base_colors={},
-        event_publisher=MagicMock(),
+        event_publisher=autospec_publisher(),
     )
     loop.backend_initialized = True
     return loop
