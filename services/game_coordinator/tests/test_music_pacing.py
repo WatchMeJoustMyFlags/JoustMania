@@ -9,7 +9,6 @@ removed in #2361; the agent shapes tempo through ``music_tempo_override`` and
 """
 
 import sys
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +22,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector
 
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.ffa import FFAGame
 
 
@@ -46,7 +46,7 @@ def test_get_music_change_time_is_now_plus_delay():
     game = _make_ffa()
     _arm_game(game)
     with patch.object(game, "_decide_next_change_delay", return_value=7.5):
-        before = time.time()
+        before = game_clock.now()
         result = game._get_music_change_time()
     assert abs(result - (before + 7.5)) < 0.05
 
