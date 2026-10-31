@@ -598,7 +598,10 @@ SAFE_MERGE_MAX_WAIT=5
 calls | grep -q "api -X POST repos/{owner}/{repo}/statuses/$HEAD -f state=success -f context=Reviewed head" \
   || fail "status must be posted before the CI wait (rc=$RC $OUT): $(calls)"
 # ... and only once: several pending polls produce exactly one POST.
-reset; SAFE_MERGE_MAX_WAIT=1
+# The timeout compares whole-second `date +%s` values, so MAX_WAIT=1 can fire
+# after one poll when the start lands on a second boundary (#2443). With
+# MAX_WAIT=2 the loop runs for more than one real second at POLL=0: many polls.
+reset; SAFE_MERGE_MAX_WAIT=2
 view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'CI Complete' QUEUED '' 100)"
 run 42 abcdef1
 SAFE_MERGE_MAX_WAIT=5
