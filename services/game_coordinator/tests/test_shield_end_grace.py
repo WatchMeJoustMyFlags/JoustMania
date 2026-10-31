@@ -231,7 +231,7 @@ async def assert_dies_after_capped_prime(game, clock, accel, trigger=False, done
 # --------------------------------------------------------------------------- #
 # BR-035: a window after the energy runs out, an instant expiry and a charge expiry
 # --------------------------------------------------------------------------- #
-class TestUC040BR033WindowOpens:
+class TestUC040BR035WindowOpens:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
@@ -295,7 +295,7 @@ class TestUC040BR033WindowOpens:
 # --------------------------------------------------------------------------- #
 # BR-035: inside the window the player can act at once
 # --------------------------------------------------------------------------- #
-class TestUC040BR033ActInsideTheWindow:
+class TestUC040BR035ActInsideTheWindow:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-008"])
@@ -333,7 +333,7 @@ class TestUC040BR033ActInsideTheWindow:
 # --------------------------------------------------------------------------- #
 # BR-035: what never opens a window
 # --------------------------------------------------------------------------- #
-class TestUC040BR033NoWindow:
+class TestUC040BR035NoWindow:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
@@ -374,7 +374,7 @@ class TestUC040BR033NoWindow:
 # --------------------------------------------------------------------------- #
 # BR-035: G = 0, the latch, the death
 # --------------------------------------------------------------------------- #
-class TestUC040BR033LatchAndDeath:
+class TestUC040BR035LatchAndDeath:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
@@ -445,7 +445,7 @@ class TestUC040BR033LatchAndDeath:
 # --------------------------------------------------------------------------- #
 # Telemetry (telemetry.md §4, §6)
 # --------------------------------------------------------------------------- #
-class TestUC040BR033Telemetry:
+class TestUC040BR035Telemetry:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     async def test_the_hold_span_carries_the_window(self, game, clock):
@@ -517,3 +517,182 @@ class TestUC040BR033Telemetry:
         assert "shield.end_grace_seconds" in settings
         values = [c.args[0] for c in gauge.labels.return_value.set.call_args_list]
         assert G in values
+
+
+# --------------------------------------------------------------------------- #
+# BR-035: a run-out window is at most the activation's cost (no chaining)
+# --------------------------------------------------------------------------- #
+class TestUC040BR035RunOutCap:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035", "BR-024"])
+    async def test_run_outs_and_recharge_never_chain_into_immunity(self, clock, flags, events):
+        """Review probe: recharge 0.5/s, min burst 0.3, budget 15, death-level movement every frame.
+
+        The player holds to empty, releases and re-holds as soon as a minimum burst has
+        recharged. The capped window (0.3 s after a 0.3 s activation) recharges only
+        0.15 s, so no re-hold fits in it: the player dies about 0.3 s after the first run-out.
+        """
+        flags.values.update(
+            {
+                "shield.recharge_per_second": 0.5,
+                "shield.min_burst_seconds": 0.3,
+                "shield.energy_budget_seconds": 15.0,
+                "shield.energy_initial_seconds": 0.3,
+            }
+        )
+        g = _make_ffa(events)
+        latch(g, clock)
+        with patch.object(g, "_play_sound", new_callable=AsyncMock):
+            p1 = g.players["p1"]
+            accel = hard(g)
+            hold = g._shield_hold
+            first_run_out = None
+            await step(g, clock, "p1", False, accel=accel, dt=0.0)
+            deadline = clock.t + 30.0
+            while p1.alive and clock.t < deadline:
+                if p1.hold_started_at:
+                    pressed = True
+                elif not p1.trigger_armed:
+                    pressed = False
+                else:
+                    pressed = g._shield_hold_energy(p1, clock.t + DT) >= hold.min_burst
+                await step(g, clock, "p1", pressed, accel=accel)
+                if first_run_out is None and p1.hold_empties:
+                    first_run_out = clock.t
+            assert first_run_out is not None, "the probe never ran out"
+            assert not p1.alive, "run-outs chained with the recharge into continuous immunity"
+            assert clock.t - first_run_out < 1.0
+            assert p1.hold_empties == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
+    async def test_a_minimum_burst_run_out_gets_at_most_its_cost(self, game, clock):
+        ended = await hold_until_empty(game, clock, energy=0.3)
+        assert game.players["p1"].end_grace_until == pytest.approx(ended + 0.3, abs=1e-6)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
+    async def test_a_long_activation_still_gets_the_full_window(self, game, clock):
+        ended = await hold_until_empty(game, clock, energy=3.0)
+        assert game.players["p1"].end_grace_until == pytest.approx(ended + G)
+
+
+# --------------------------------------------------------------------------- #
+# BR-035: the kill path and revive clear the window state
+# --------------------------------------------------------------------------- #
+class TestUC040BR035Clears:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", br=["BR-035"])
+    async def test_revive_clears_a_window_left_on_the_player(self, instant_game, clock):
+        p1 = instant_game.players["p1"]
+        await instant_game._kill_player("p1", 0.0, reason="agent_intervention")
+        p1.end_grace_until = clock.t + 5.0  # left over, whatever wrote it
+        p1.shield_end_at = clock.t
+        assert await instant_game.revive_player("p1", spawn_grace=0.5) is True
+        assert p1.end_grace_until == 0.0
+        assert p1.shield_end_at == 0.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", br=["BR-035"])
+    @pytest.mark.uc("UC-030", br=["BR-009"])
+    async def test_the_kill_path_drops_the_capped_prime_outside_hold(self, instant_game, clock):  # noqa: ARG002
+        """An instant shield with a window sets the BR-009 prime flag; a death drops it (plain prime on respawn)."""
+        p1 = instant_game.players["p1"]
+        assert await instant_game.grant_shield("p1", 1.0) is True
+        assert p1.hold_prime_cap is True
+        await instant_game._kill_player("p1", 0.0, reason="agent_intervention")
+        assert p1.hold_prime_cap is False
+        assert p1.end_grace_until == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# BR-035: the real startup path opens no window
+# --------------------------------------------------------------------------- #
+class TestUC040BR035StartupPath:
+    @pytest.mark.real_game_time
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", br=["BR-035"])
+    @pytest.mark.uc("UC-030", flow="A1", br=["BR-003"])
+    async def test_the_game_loop_startup_grace_opens_no_window(self):
+        from test_death_detection_uc030 import STILL, RecordingStream
+        from test_death_detection_uc030 import _frame as uc030_frame
+        from test_death_detection_uc030 import _game as uc030_game
+
+        game, _events = uc030_game(2)
+        game.gameplay_stream = RecordingStream([uc030_frame(("p0", STILL), ("p1", STILL))])
+        await game._game_loop()
+        assert game._shield_end_grace > 0.0, "precondition: the loop latched a window length"
+        for serial in ("p0", "p1"):
+            player = game.players[serial]
+            assert player.grace_until > 0.0, "precondition: the startup grace was set"
+            assert player.end_grace_until == 0.0
+            assert player.hold_prime_cap is False
+
+
+# --------------------------------------------------------------------------- #
+# BR-035: kills that bypass the frame gate apply in the window (Tournament, Fight Club, NonStop)
+# --------------------------------------------------------------------------- #
+class TestUC040BR035OtherModes:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A22", br=["BR-035"])
+    @pytest.mark.uc("UC-025", br=["BR-006"])
+    async def test_tournament_window_blocks_motion_but_not_eliminate(self):
+        from test_tournament_kill_gate import _eliminate_ctx
+        from test_tournament_run import _bracket_game
+        from test_tournament_run import _frame as bracket_frame
+
+        from services.game_coordinator.lifecycle_handlers import handle_eliminate_player
+
+        game, _ = await _bracket_game()
+        match = game.current_match
+        fighter, other = match.player1_serial, match.player2_serial
+        game.players[fighter].end_grace_until = game_clock.now() + 60.0
+        with patch("services.game_coordinator.games.base.metrics"):
+            await game._process_gameplay_update(bracket_frame([fighter], spike=[fighter]))
+            assert not match.is_complete, "a motion spike inside the window decided the match"
+            await handle_eliminate_player(_eliminate_ctx(game, fighter))
+        assert match.is_complete and match.winner_serial == other
+        assert game.players[fighter].end_grace_until == 0.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A22", br=["BR-035"])
+    @pytest.mark.uc("UC-025", flow="A2", br=["BR-006"])
+    async def test_fight_club_eliminate_applies_in_the_window(self):
+        from test_fight_club_disconnect import FC_METRICS, _counted, _end_round_timer, _round_on
+        from test_fight_club_disconnect import _eliminate_ctx as fc_eliminate_ctx
+
+        from services.game_coordinator.lifecycle_handlers import handle_eliminate_player
+
+        game, _ = await _round_on(3, "test_fc_end_grace_window")
+        fighter = game.current_fighter
+        game.players[fighter].end_grace_until = game_clock.now() + 60.0
+        dead, order = _counted(game)
+        with patch(FC_METRICS):
+            await handle_eliminate_player(fc_eliminate_ctx(game, fighter))
+        assert _counted(game) == (dead + 1, order + 1)
+        assert game.players[fighter].end_grace_until == 0.0
+        _end_round_timer(game)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", br=["BR-035"])
+    @pytest.mark.uc("UC-026", flow="main")
+    async def test_nonstop_eliminate_applies_in_the_window_and_the_respawn_has_none(self):
+        from services.game_coordinator.games.base import GameState
+        from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
+
+        mock_cm = MockControllerManagerService(num_controllers=2)
+        game = NonstopJoustGame(
+            controller_manager_client=mock_cm,
+            event_publisher=AsyncMock(),
+            audio_client=None,
+            game_id="test_nonstop_end_grace",
+        )
+        game.gameplay_stream = RecordingStream()
+        game.state = GameState.RUNNING
+        await game._initialize_players_impl(mock_cm.controllers)
+        victim = next(iter(game.players))
+        game.players[victim].end_grace_until = game_clock.now() + 60.0
+        with patch.object(game, "_play_sound", new_callable=AsyncMock):
+            assert await game._kill_player(victim, 0.0, reason="agent_intervention") is True
+        assert game.dead_count == 1
+        assert game.players[victim].end_grace_until == 0.0

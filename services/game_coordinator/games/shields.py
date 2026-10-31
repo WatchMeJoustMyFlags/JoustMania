@@ -824,18 +824,21 @@ class ShieldMixin:
         )
         self._shield_end_grace = resolve_end_grace(raw)
 
-    def _arm_shield_end_grace(self, player: "Player", shield_end: float) -> None:
+    def _arm_shield_end_grace(self, player: "Player", shield_end: float, cap: float | None = None) -> float:
         """A shield ends at ``shield_end``: open the end grace window after it (UC-040 BR-035).
 
-        Assigned, never added, so windows never stack. With a window the first
-        unprotected frame after it primes the EMA as the release tail does (UC-030 BR-009).
+        Assigned, never added, so windows never stack. ``cap`` limits the window (a hold
+        run-out: at most the activation's cost). With a window the first unprotected
+        frame after it primes the EMA as the release tail does (UC-030 BR-009).
+        Returns the window's length (0 = none).
         """
         player.shield_end_at = shield_end
-        grace = self._shield_end_grace
+        grace = self._shield_end_grace if cap is None else min(self._shield_end_grace, cap)
         if grace <= 0.0:
-            return
+            return 0.0
         player.end_grace_until = shield_end + grace
         player.hold_prime_cap = True
+        return grace
 
     def _shield_since_end_attributes(self, player: "Player", now: float) -> dict[str, int]:
         """``shield.since_end_ms`` for player_death when a shield ended less than 3 s ago (telemetry.md §4)."""
@@ -1081,9 +1084,9 @@ class ShieldMixin:
         end_grace = 0.0
         if ran_out:
             player.hold_empties += 1
-            # UC-040 BR-035: a window only when the energy ran out, never after a release.
-            self._arm_shield_end_grace(player, ended_at)
-            end_grace = self._shield_end_grace
+            # UC-040 BR-035: a window only when the energy ran out, never after a release, and
+            # at most the activation's cost, so run-outs and recharge never chain into immunity.
+            end_grace = self._arm_shield_end_grace(player, ended_at, cap=cost)
         elif outcome == HOLD_OUTCOME_RELEASED:
             player.shield_end_at = ended_at
         if outcome in (HOLD_OUTCOME_RELEASED, HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED):
