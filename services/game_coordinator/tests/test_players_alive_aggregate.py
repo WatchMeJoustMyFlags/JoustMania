@@ -77,7 +77,7 @@ async def test_zombie_death_lowers_aggregate_conversion_does_not():
         zombie = next(s for s in game.players if s != human)
         game.players[zombie].is_zombie = True
 
-    with patch(AGG) as agg, patch("services.game_coordinator.games.zombie.asyncio.sleep", async_noop):
+    with patch(AGG) as agg, patch("services.game_coordinator.game_clock.sleep", async_noop):
         await game._kill_player(human, accel_mag=5.0)  # conversion: stays alive
         assert game.players[human].alive
         agg.set.assert_called_with(4)

@@ -43,7 +43,7 @@ async def _run_timer(game) -> None:
         await real_sleep(0)
 
     game.running = True
-    with patch("services.game_coordinator.games.zombie.asyncio.sleep", instant_tick):
+    with patch("services.game_coordinator.game_clock.sleep", instant_tick):
         await game._game_timer()
 
 

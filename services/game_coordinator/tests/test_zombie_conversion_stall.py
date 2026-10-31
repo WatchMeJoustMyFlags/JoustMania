@@ -91,7 +91,7 @@ def held_delay(monkeypatch):
             return None
         return await real_sleep(delay, *args, **kwargs)
 
-    monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", sleep)
+    monkeypatch.setattr("services.game_coordinator.game_clock.sleep", sleep)
     return release
 
 

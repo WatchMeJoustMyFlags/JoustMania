@@ -232,6 +232,7 @@ async def test_traitor_signal_goes_over_the_stream_before_the_countdown():
     assert signal_end < countdown
 
 
+@pytest.mark.real_game_time
 @pytest.mark.uc("UC-022", flow="main", steps=[2], br=["BR-003"])
 @pytest.mark.asyncio
 async def test_frames_from_the_traitor_signal_never_reach_warmup_or_game_loop():
@@ -331,6 +332,7 @@ async def test_stream_broken_before_the_rumble_reopens_instead_of_ending_the_gam
     _assert_reopened_once_with_team_colours(log, client, game)
 
 
+@pytest.mark.real_game_time
 @pytest.mark.uc("UC-022", flow="main", steps=[2], br=["BR-003"])
 @pytest.mark.parametrize("die_after", [0.0, 0.3])
 @pytest.mark.asyncio
@@ -340,6 +342,7 @@ async def test_stream_drop_during_the_signal_reopens_once_with_team_colours(die_
     _assert_reopened_once_with_team_colours(log, client, game)
 
 
+@pytest.mark.real_game_time
 @pytest.mark.uc("UC-022", flow="main", steps=[2], br=["BR-003"])
 @pytest.mark.asyncio
 async def test_force_end_during_the_signal_stops_without_reopen_or_countdown():

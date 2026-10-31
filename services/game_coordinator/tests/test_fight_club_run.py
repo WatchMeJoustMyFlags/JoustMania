@@ -8,7 +8,7 @@ the shield feedback, closes the stream and runs the shared run-end cleanup.
 
 The run tests use #1912's queue stream, which produces a frame every 10 ms, so
 the drain stops by ``break`` and never reopens the stream. They never patch
-``asyncio.sleep``: the intro length is a module constant and the countdown is
+``game_clock.sleep``: the intro length is a module constant and the countdown is
 skipped through the runtime config.
 """
 
@@ -146,6 +146,7 @@ class SpikeControllerManager(QueueControllerManager):
         return stream
 
 
+@pytest.mark.real_game_time
 @pytest.mark.uc("UC-025", flow="A2", steps=[1])
 @pytest.mark.asyncio
 async def test_spikes_from_the_intro_never_reach_warmup_or_game_loop():

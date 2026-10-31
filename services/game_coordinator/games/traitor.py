@@ -8,7 +8,6 @@ with their secret team.
 Original JoustMania behavior preserved.
 """
 
-import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -352,7 +351,7 @@ class TraitorGame(TeamsGameBase):
             if not self.running:
                 logger.info("Traitor signal interrupted")
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         # Set persistent team colors
         await self._set_team_colors(pulse_effect=False)

@@ -11,7 +11,6 @@ Features:
 Phase 36b: Refactored to extend BaseGameMode, eliminating ~450 lines of duplicate code.
 """
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -766,7 +765,7 @@ class NonstopJoustGame(BaseGameMode):
                 if not self.running:
                     logger.info("End game interrupted by force_end")
                     break
-                await asyncio.sleep(WINNER_HOLD_TICK_SECONDS)
+                await game_clock.sleep(WINNER_HOLD_TICK_SECONDS)
 
         # The player spans (with final_score) were closed at the end of gameplay_phase.
 

@@ -7,7 +7,6 @@ but the last player to die is excluded from winners.
 Original JoustMania behavior preserved.
 """
 
-import asyncio
 import logging
 
 from opentelemetry import context as otel_context
@@ -394,9 +393,10 @@ class SwapperGame(TeamsGameBase):
     async def _swap_pause(self) -> None:
         """Let the swap flash play before the new team colour is written.
 
-        A seam: tests replace it on the instance instead of patching ``asyncio.sleep``.
+        A seam: tests replace it on the instance to skip or hold the pause.
+        test_game_clock_waits.py pins the duration.
         """
-        await asyncio.sleep(self.SWAP_FLASH_SECONDS)
+        await game_clock.sleep(self.SWAP_FLASH_SECONDS)
 
     def _sends_death_effect(self, serial: str) -> bool:
         """No base death effect for a swapped player, who stays in the game (#1342).
@@ -538,7 +538,7 @@ class SwapperGame(TeamsGameBase):
         for _ in range(20 if winning_team is not None else 0):  # 2 seconds
             if not self.running:
                 break
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         # End all player spans
         for serial, player in self.players.items():
