@@ -14,6 +14,19 @@
 #   --wait-queue              merge queue only: after enqueueing, wait until the
 #                             queue merges the PR (then close/note issues as
 #                             usual) or ejects it, instead of returning QUEUED
+#   --arm                     #1809: record the review and arm native auto-merge,
+#                             never wait (HEAD_PREFIX must be the full 40-hex SHA):
+#                             post the "Reviewed head" success status on the SHA,
+#                             then `gh pr merge --auto --squash --match-head-commit`.
+#                             Refuses (exit 2, nothing posted) unless the `main`
+#                             ruleset requires the "Reviewed head" check, and
+#                             with --wait-ci, --wait-queue, --rerun-failed-once,
+#                             --close / --comment-file and --note-*.
+#   --review-url U            --arm / --revoke: target_url of the status (verdict)
+#   --depth D                 --arm: review depth named in the status description
+#   --revoke                  #1809: withdraw the review of the full SHA: post a
+#                             "Reviewed head" failure status (the newest status
+#                             wins). No merge, no PR change otherwise.
 #
 # Rules:
 #   - Polls once every SAFE_MERGE_POLL seconds (default 75, never below 60
@@ -26,7 +39,14 @@
 #   - Green means: nothing pending, nothing failing, at least one counted check,
 #     and "CI Complete" SUCCESS in the chosen CI run. An empty rollup is waited on.
 #   - Merges only when the PR head starts with HEAD_PREFIX, with
-#     `gh pr merge --squash --match-head-commit <full sha>`.
+#     `gh pr merge --squash --match-head-commit <full sha>`. Right before that
+#     it posts the "Reviewed head" success status on the head (#1809; the merge
+#     still goes ahead if the post fails).
+#   - --arm (#1809) checks the ruleset, then the PR once (MERGED -> already
+#     merged, head mismatch -> 3, CONFLICTING -> 5), posts the status and arms
+#     auto-merge whatever the CI state is: GitHub queues the PR when the required
+#     checks pass. ARMED (exit 8); a failed state read after a successful arm
+#     reads "ARMED (state unverified)".
 #   - Issues are closed / commented ONLY after the PR state reads MERGED and
 #     the merged head still starts with HEAD_PREFIX.
 #   - A CONFLICTING PR fails fast (exit 5): GitHub runs no CI on it, so
@@ -58,7 +78,9 @@
 # Exit: 0 merged (or green with --wait-ci), 1 red CI / merge failed,
 #       2 usage, 3 head mismatch, 4 timeout, 5 CONFLICTING (needs rebase),
 #       6 QUEUED (in the merge queue, not merged yet; no issue changes),
-#       7 EJECTED (left the merge queue unmerged; no issue changes).
+#       7 EJECTED (left the merge queue unmerged; no issue changes),
+#       8 ARMED (--arm: review recorded, auto-merge enabled; nothing waited for).
+#       --revoke: 0 revoked, 1 the status post failed.
 #
 # Env: SAFE_MERGE_POLL (75), SAFE_MERGE_MAX_WAIT (seconds, 7200),
 #      SAFE_MERGE_QUEUE_WAIT (seconds to wait in the queue with --wait-queue, 3600),
@@ -75,6 +97,7 @@ PR="$1"; WANT="$2"; shift 2
 # --close takes 7 or 7,8 (digits and commas only); --note-issue one number.
 bad_number() { echo "$1 takes issue numbers like 7 or 7,8 (--note-issue: one): '$2'" >&2; exit 2; }
 WAIT_ONLY=false RERUN=false WAIT_QUEUE=false CLOSE="" CFILE="" NOTE_ISSUE="" NFILE=""
+ARM=false REVOKE=false REVIEW_URL="" DEPTH=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wait-ci) WAIT_ONLY=true ;;
@@ -84,6 +107,12 @@ while [[ $# -gt 0 ]]; do
     --comment-file) [[ $# -ge 2 ]] || usage; CFILE="$2"; shift ;;
     --note-issue) [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || bad_number --note-issue "${2-}"; NOTE_ISSUE="$2"; shift ;;
     --note-file) [[ $# -ge 2 ]] || usage; NFILE="$2"; shift ;;
+    --arm) ARM=true ;;
+    --revoke) REVOKE=true ;;
+    --review-url) [[ $# -ge 2 && "$2" =~ ^https://[^[:space:]]+$ ]] || { echo "--review-url takes an https:// URL: '${2-}'" >&2; exit 2; }
+      REVIEW_URL="$2"; shift ;;
+    --depth) [[ $# -ge 2 && "$2" =~ ^[a-z][a-z-]{0,19}$ ]] || { echo "--depth takes a word like full or delta: '${2-}'" >&2; exit 2; }
+      DEPTH="$2"; shift ;;
     *) usage ;;
   esac
   shift
@@ -93,6 +122,16 @@ done
 [[ -n "$NOTE_ISSUE" && -z "$NFILE" ]] && { echo "--note-issue needs --note-file" >&2; exit 2; }
 [[ -n "$NFILE" && -z "$NOTE_ISSUE" ]] && { echo "--note-file needs --note-issue" >&2; exit 2; }
 for f in "$CFILE" "$NFILE"; do [[ -z "$f" || -r "$f" ]] || { echo "cannot read $f" >&2; exit 2; }; done
+# #1809: --arm / --revoke act on one exact SHA and never wait or touch issues.
+if $ARM && $REVOKE; then echo "--arm and --revoke exclude each other" >&2; exit 2; fi
+if $ARM || $REVOKE; then
+  [[ "$WANT" =~ ^[0-9a-f]{40}$ ]] || { echo "--arm / --revoke need the full 40-hex head SHA, not '$WANT'" >&2; exit 2; }
+  if $WAIT_ONLY || $WAIT_QUEUE || $RERUN || [[ -n "$CLOSE$CFILE$NOTE_ISSUE$NFILE" ]]; then
+    echo "--arm / --revoke take no --wait-ci, --wait-queue, --rerun-failed-once, --close, --comment-file or --note-*" >&2; exit 2
+  fi
+fi
+[[ -n "$DEPTH" ]] && ! $ARM && { echo "--depth needs --arm" >&2; exit 2; }
+[[ -n "$REVIEW_URL" ]] && ! $ARM && ! $REVOKE && { echo "--review-url needs --arm or --revoke" >&2; exit 2; }
 
 POLL="${SAFE_MERGE_POLL:-75}"
 MAX_WAIT="${SAFE_MERGE_MAX_WAIT:-7200}"
@@ -250,6 +289,60 @@ wait_queue() {
   done
 }
 
+# #1809: the "Reviewed head" commit status on one full SHA (newest status wins).
+REVIEW_CONTEXT="Reviewed head"
+post_review_status() {  # sha state description -> 0 posted
+  local sha="$1"; shift
+  local args=(-f state="$1" -f context="$REVIEW_CONTEXT" -f description="$2")
+  [[ -n "$REVIEW_URL" ]] && args+=(-f target_url="$REVIEW_URL")
+  gh api -X POST "repos/{owner}/{repo}/statuses/$sha" "${args[@]}" >/dev/null
+}
+# Arming is only safe while the ruleset makes the status required: otherwise
+# auto-merge merges on CI Complete alone. A failed read counts as not required.
+review_required() {
+  local contexts
+  contexts="$(gh api "repos/{owner}/{repo}/rules/branches/main" \
+    --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context' 2>/dev/null)" || return 1
+  grep -qxF "$REVIEW_CONTEXT" <<<"$contexts"
+}
+
+if $REVOKE; then
+  post_review_status "$WANT" failure "revoked ${WANT:0:8}" \
+    || done_line "REVOKE FAILED: could not post the \"$REVIEW_CONTEXT\" failure status on ${WANT:0:8}" 1
+  done_line "REVOKED review of ${WANT:0:8} (\"$REVIEW_CONTEXT\" = failure)" 0
+fi
+
+if $ARM; then
+  review_required \
+    || done_line "NOT ARMED: \"$REVIEW_CONTEXT\" is not enforced (not a required check in the main ruleset, or the rules read failed); nothing posted" 2
+  fetch_view || done_line "ERROR: GitHub API unavailable after retries" 1
+  head="$(jq -r .headRefOid <<<"$VIEW")"
+  state="$(jq -r .state <<<"$VIEW")"
+  short="${head:0:8}"
+  [[ "$state" == MERGED ]] && done_line "already MERGED (head $short); nothing done" 0
+  [[ "$state" != OPEN ]] && done_line "NOT ARMED: PR is $state" 1
+  [[ "$head" == "$WANT" ]] || done_line "NOT ARMED: head $short does not match ${WANT:0:8}" 3
+  if [[ "$(jq -r '.mergeable // ""' <<<"$VIEW")" == CONFLICTING ]]; then
+    done_line "NOT ARMED: CONFLICTING (head $short); needs a rebase on main" 5
+  fi
+  # Posted before arming on purpose: a failed arm leaves a reviewed SHA, harmless.
+  post_review_status "$head" success "review-pr${DEPTH:+ $DEPTH} $short" \
+    || done_line "NOT ARMED: could not post the \"$REVIEW_CONTEXT\" status on $short" 1
+  log "review recorded on $head; arming auto-merge"
+  merge_rc=0
+  gh pr merge "$PR" --auto --squash --match-head-commit "$head" >&2 || merge_rc=$?
+  if ! queue_read; then
+    (( merge_rc == 0 )) && done_line "ARMED (head $short, state unverified); reviewed, auto-merge requested" 8
+    done_line "ARM FAILED (head $short): gh pr merge --auto returned $merge_rc; reviewed status stays" 1
+  fi
+  [[ "$qstate" == MERGED ]] && done_line "MERGED by auto-merge (head $short); no issue changes" 0
+  if [[ "$qstate" == OPEN && "$qhead" == "$head" ]] && queued; then
+    if [[ "$qin" == true ]]; then done_line "ARMED (head $short, queued: $(queue_desc))" 8; fi
+    done_line "ARMED (head $short, auto-merge: $(queue_desc))" 8
+  fi
+  done_line "ARM FAILED (head $short): PR reads $qstate, not armed (gh pr merge --auto returned $merge_rc); reviewed status stays" 1
+fi
+
 start=$(date +%s)
 reran=false
 while :; do
@@ -309,6 +402,7 @@ if $WAIT_ONLY; then
   done_line "CI GREEN (head $short)$($reran && echo ' after one rerun'); not merged (--wait-ci)" 0
 fi
 
+post_review_status "$head" success "safe-merge ${head:0:8}" || log "could not post the \"$REVIEW_CONTEXT\" status; merging anyway"
 log "merging at $head"
 gh pr merge "$PR" --squash --match-head-commit "$head" >&2 || log "gh pr merge returned non-zero"
 sleep "$SETTLE"

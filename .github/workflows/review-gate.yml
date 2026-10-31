@@ -1,0 +1,42 @@
+name: Review gate
+
+# #1809: the "Reviewed head" check for the merge queue. The reviewer posts a
+# "Reviewed head" commit status on the PR head SHA (`safe-merge.sh --arm`); a
+# merge-queue commit has its own SHA, so this job reports the same context
+# there after checking the newest status on the PR's current head
+# (scripts/ci/review-gate.sh, fails closed).
+#
+# merge_group ONLY: on pull_request a check run with this name would show up on
+# PR heads and could satisfy the required check without a review. CI Complete
+# (ci.yml) must not depend on this job: it also runs on PR heads.
+# Required in the `main` ruleset with source "Any source" (the PR-head status
+# comes from a user token, the queue check run from GitHub Actions).
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  statuses: read
+  pull-requests: read
+
+jobs:
+  reviewed-head:
+    name: Reviewed head
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci/review-gate.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Check the newest "Reviewed head" status on the PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          REVIEW_APPROVERS: ${{ vars.REVIEW_APPROVERS }}
+        run: scripts/ci/review-gate.sh
