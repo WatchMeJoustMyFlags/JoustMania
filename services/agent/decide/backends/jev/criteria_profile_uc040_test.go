@@ -23,7 +23,7 @@ var updateNeutralFixtures = flag.Bool("update-neutral-fixtures", false, "rewrite
 var bannedVerdicts = []string{
 	"unfairly", "wasted", "matters most", "lopsided", "to build tension", "to keep a lopsided game close",
 	"would help", "would even the game", "keeps the game close", "pile on", "little to balance",
-	"often right", "right when",
+	"often right", "right when", "help a struggling", "rein in",
 }
 
 func neutralRequest() decide.Request {
@@ -120,6 +120,40 @@ func TestNeutralProfile_Descriptions(t *testing.T) {
 			t.Errorf("neutral target instructions = %q", targetInstructions("grant_shield", "neutral"))
 		}
 	})
+}
+
+func TestNeutralProfile_StrengthQuestions(t *testing.T) {
+	for _, iv := range []string{"adjust_player_sensitivity", "set_player_handicap"} {
+		t.Run("UC-040/BR-036 neutral "+iv+" strength questions describe the effect on the target", func(t *testing.T) {
+			plan := detailsRequest(neutralRequest(), iv)
+			out, err := encodeRequest(fixtureModel, plan.ask, iv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire jevRequest
+			if err := json.Unmarshal(out.Body, &wire); err != nil {
+				t.Fatal(err)
+			}
+			found := 0
+			for id, q := range wire.Questions {
+				if strengthDirection(id) == "" {
+					continue
+				}
+				found++
+				checkNoVerdict(t, iv+" "+id, q.Instructions)
+				if !strings.Contains(q.Instructions, "make the target") {
+					t.Errorf("%s %s instructions = %q", iv, id, q.Instructions)
+				}
+			}
+			if found == 0 {
+				t.Fatal("no strength question asked")
+			}
+			v1, _ := encodeRequest(fixtureModel, detailsRequest(testRequest(), iv).ask, iv)
+			if !strings.Contains(string(v1.Body), "help a struggling player") {
+				t.Error("v1 strength wording must be unchanged")
+			}
+		})
+	}
 }
 
 func TestNeutralProfile_Suitability(t *testing.T) {

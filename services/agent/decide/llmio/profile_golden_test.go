@@ -113,12 +113,12 @@ func TestPromptProfile_NeutralLeverLines(t *testing.T) {
 				t.Errorf("neutral prompt contains %q", banned)
 			}
 		}
-		if strings.Contains(lower, "only intervene when") {
-			t.Error("neutral prompt keeps the v1 restraint clause")
+		if !strings.Contains(neutral, "only intervene when the game state clearly calls for it") {
+			t.Error("neutral must keep the restraint clause: it changes the lever wording, not the willingness to act")
 		}
 	})
 	t.Run("UC-040/BR-036 noop stays always valid, often right only in v1", func(t *testing.T) {
-		if !strings.Contains(neutral, `"noop" (do nothing) is always a valid answer.`) {
+		if !strings.Contains(neutral, `"noop" (do nothing) is always a valid answer; only intervene when`) {
 			t.Error("neutral prompt lost the noop-is-valid sentence")
 		}
 		if !strings.Contains(v1, "often the right answer") || strings.Contains(v1, "Levers:") {

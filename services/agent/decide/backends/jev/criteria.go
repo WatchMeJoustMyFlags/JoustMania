@@ -79,7 +79,7 @@ var interventionDescriptions = func() map[string]string {
 var interventionDescriptionsNeutral = func() map[string]string {
 	out := map[string]string{decide.OptionNoop: decide.NoopDescriptionNeutral}
 	for _, iv := range decide.Catalog {
-		out[iv.Name] = iv.JevDescriptionNeutral
+		out[iv.Name] = iv.Description(decide.PromptProfileNeutral)
 	}
 	return out
 }()
@@ -695,6 +695,13 @@ func conditionedMagnitude(q decide.Question, iv, profile string, levels []float6
 		effect := "help a struggling player (make them harder to eliminate)"
 		if dir == directionReinIn {
 			effect = "rein in the player with the most headroom (make them easier to eliminate)"
+		}
+		// Neutral (#2467, UC-040 BR-036): the effect on the target, no purpose.
+		if decide.NormalizePromptProfile(profile) == decide.PromptProfileNeutral {
+			effect = "make the target harder to eliminate"
+			if dir == directionReinIn {
+				effect = "make the target easier to eliminate"
+			}
 		}
 		names := [halfLevels]string{"A slight change", "A moderate change", "The strongest change"}
 		ladder := make([]string, len(levels))

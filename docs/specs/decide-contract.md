@@ -150,12 +150,14 @@ tooling only) still answers the Default.
   - `v1`: the system prompt, the user message and the answer schema are byte-identical to the shipped in-game prompt, and so
     are jev's criteria (golden tests: `services/agent/decide/llmio/profile_golden_test.go`, jev `contract_test.go`).
   - `neutral`: the system prompt is v1's with two changes: the noop sentence reads `"noop" (do nothing) is always a valid
-    answer.` (no "often the right answer", no "only intervene when the game state clearly calls for it"), and a static
+    answer; only intervene when the game state clearly calls for it.` (only "often the right answer" is dropped: neutral
+    changes the lever wording, not the willingness to act), and a static
     `Levers:` block follows the FFA rules, one line `- <name>: <effect>` per catalog lever (all of them, so the prompt stays
     static per profile and every offered lever has its line) plus `- noop: <effect>`. The lever lines describe what a lever does,
     never what it is for or when it is right (UC-040 BR-036; `services/agent/decide/catalog.go:Intervention.JevDescriptionNeutral`).
     The user message and the answer schema are the same as under v1. jev uses the same neutral lever lines for
-    `ffa.intervention` and in the details-stage instructions, a neutral noop line, and target suitability sentences that state the
+    `ffa.intervention` and in the details-stage instructions (a two-way lever's strength question says "make the target harder /
+    easier to eliminate" instead of "help a struggling player" / "rein in the player with the most headroom"), a neutral noop line, and target suitability sentences that state the
     player's situation (danger, refusals) without a verdict (`services/agent/decide/backends/jev/criteria.go`). The goal
     sentence of the system prompt and jev's game description and gate criteria are unchanged in both profiles (goal lines
     come with #2479, §14.4).
