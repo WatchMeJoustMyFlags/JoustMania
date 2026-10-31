@@ -418,7 +418,7 @@ a `decide.discarded_reason` is counted in `agent_decide_discarded_total{reason}`
 ### 6.1 Prediction registration (planned, #2479)
 
 A decision record that is not a `noop` and carries a prediction registers it with the agent's prediction book: every rules
-record, the rules fallback record (outcome `fallback`), and every remote record whose outcome is `act` or `held` after `mapAnswers`, or `discarded` only for `target_gone` and `state_too_old` (a `stale_context`, `game_ended`, `backend_changed`, `kill_switch` or `shutdown` discard registers nothing, and neither does a game that ended or a stale context). Noops carry no prediction in
+record, the rules fallback record (outcome `fallback`), and every remote record whose outcome is `act` (including a decision blocked by the permission chain, A10, or dropped by the actuation gate, A11) or `held` (A5, which ends at step 9) after `mapAnswers`, or `discarded` only for `target_gone` and `state_too_old` (A7, step 10; a `stale_context`, `game_ended`, `backend_changed`, `kill_switch` or `shutdown` discard registers nothing, and neither does a game that ended or a stale context). Noops carry no prediction in
 v1 (maintainer decision 2026-10-31; no restraint calibration). The prediction is stamped `acted` = the permission chain passed
 and the intervention was applied; a held, blocked or discarded one is kept as a counterfactual (`acted=false`) and reported
 apart. An identical (backend, source, rule or lever, template, target, `acted`) prediction that is still pending is counted `merged` (`decide.prediction.merged=true` on `agent.decide`, `agent_prediction_merged_total`) and not
