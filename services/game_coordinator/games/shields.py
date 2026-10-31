@@ -92,6 +92,8 @@ SHIELD_HELP_CUE_SPEED = 4  # pulses per second: two pulses in 500 ms
 # appear over the winner rainbow (a PULSE takes over every effect but IDENTIFY and
 # SHOW_BATTERY in the controller manager).
 SHIELD_REFUSED_GAME_ENDING = "game_ending"
+# A grant to a player who holds a shield charge (UC-040 A31, BR-020).
+SHIELD_REFUSED_ALREADY_CHARGED = "already_charged"
 
 # player_death carries `shield.since_end_ms` only when the player's last shield ended
 # less than this long ago (telemetry.md §4, UC-040 BR-035): the stage fairness check.
@@ -167,36 +169,34 @@ class ShieldMixin:
         # UC-040 BR-027: a hold game adds the grant to the player's energy (A36).
         latched_here = not self._shield_hold_latched
         hold = self._latch_shield_hold()
+        mode = None
+        if hold is None:
+            # UC-040 BR-019: in trigger mode the grant is a charge the player activates
+            # (A30). Read per grant, so a flip applies to the next grant only; the grant
+            # that latched the game reuses the latch's read.
+            mode, self._shield_mode_at_latch = self._shield_mode_at_latch, None
+            if mode is None or not latched_here:
+                mode = self._shield_activation_mode()
+
+        now = game_clock.now()
+        # Every check before any write or await (UC-040 A31, A34, A37, BR-022).
+        self._raise_shield_refusal(player, now, mode, hold)
+
         if hold is not None:
-            granted = self._grant_shield_energy(player, seconds, hold)
+            self._apply_shield_energy(player, seconds, now, hold)
             # UC-040 BR-031: the helped cue; it takes the stream lock before the
             # queued SHIELD_ENERGY / SHIELD_HOLD write of this grant.
             await self._send_shield_help_cue(player)
-            return granted
+            return True
 
-        # UC-040 BR-019: in trigger mode the grant is a charge the player activates
-        # (A30). Read per grant, so a flip applies to the next grant only; the grant
-        # that latched the game reuses the latch's read.
-        mode, self._shield_mode_at_latch = self._shield_mode_at_latch, None
-        if mode is None or not latched_here:
-            mode = self._shield_activation_mode()
-        trigger = mode == SHIELD_ACTIVATION_TRIGGER
-        if trigger and player.shield_charge_seconds > 0:
-            # UC-040 A31: a held charge is refused before the shield limits.
-            from services.game_coordinator.intervention_errors import InterventionNotApplied
-
-            logger.info(f"Shield charge for {serial} refused: a charge is already held")
-            raise InterventionNotApplied("already_charged")
-
-        now = game_clock.now()
-        self._check_shield_limits(player, now)
-
-        if trigger:
-            granted = await self._grant_shield_charge(player, seconds)
+        if mode == SHIELD_ACTIVATION_TRIGGER:
+            self._store_shield_charge(player, seconds, now)
             # BR-022: in trigger mode the cooldown runs from the grant (the charge
-            # stored), not from the activation.
+            # stored), not from the activation; recorded before the first await, so a
+            # feedback that fails or is cancelled still counts the stored charge.
             self._record_agent_shield(serial, now, seconds)
-            return granted
+            await self._shield_charge_feedback(player, seconds, now)
+            return True
 
         new_grace = now + seconds
         # Extend-not-shorten: the agent only ever writes its own
@@ -299,15 +299,68 @@ class ShieldMixin:
             resolve_shield_limit(cooldown, DEFAULT_SHIELD_COOLDOWN_SECONDS),
         )
 
-    def _check_shield_limits(self, player: "Player", now: float) -> None:
-        """Raise ``InterventionNotApplied`` when the cap or the cooldown refuses a grant (UC-040 A34)."""
+    def _shield_grant_refusal(
+        self,
+        player: "Player",
+        seconds: float,
+        now: float,
+        mode: str | None,
+        hold: ShieldHoldParams | None,
+    ) -> str | None:
+        """The reason a grant to ``player`` is refused at ``now``, or None (UC-040 A31, A34, A37, A42).
+
+        Pure: no write, no await, no span event; it reads the shield-limit flags
+        only when the checks reach them. ``hold`` is the game's latched hold
+        values (None outside hold mode); ``mode`` the activation mode of this
+        grant (ignored in hold mode). The order is ``grant_shield``'s:
+        ``game_ending``; then in hold mode the budget, then the pool (A37), in
+        trigger mode ``already_charged`` (A31); then the cap, then the cooldown
+        (BR-022). ``seconds`` does not decide a refusal today; it is part of the
+        signature so a caller checks a grant with the values it will apply.
+        """
+        del seconds  # no refusal depends on the length (see the docstring)
+        refusal = self._shield_refusal_detail(player, now, mode, hold)
+        return refusal[0] if refusal else None
+
+    def _shield_refusal_detail(
+        self, player: "Player", now: float, mode: str | None, hold: ShieldHoldParams | None
+    ) -> tuple[str, float] | None:
+        """``(reason, cooldown seconds remaining)`` of ``_shield_grant_refusal``, or None."""
+        if self._shield_grants_closed():
+            return SHIELD_REFUSED_GAME_ENDING, 0.0
+        if hold is not None:
+            energy_refusal = self._shield_energy_refusal(player, now, hold)
+            if energy_refusal is not None:
+                return energy_refusal, 0.0
+        elif mode == SHIELD_ACTIVATION_TRIGGER and player.shield_charge_seconds > 0:
+            return SHIELD_REFUSED_ALREADY_CHARGED, 0.0
         max_shields, cooldown = self._shield_limits()
         used = self._agent_shield_grants.get(player.serial, 0)
         if max_shields > 0 and used >= max_shields:
-            self._refuse_shield(player, SHIELD_REFUSED_CAP, used, 0.0)
+            return SHIELD_REFUSED_CAP, 0.0
         last_end = self._agent_shield_last_end.get(player.serial)
         if cooldown > 0 and last_end is not None and now < last_end + cooldown:
-            self._refuse_shield(player, SHIELD_REFUSED_COOLDOWN, used, last_end + cooldown - now)
+            return SHIELD_REFUSED_COOLDOWN, last_end + cooldown - now
+        return None
+
+    def _raise_shield_refusal(
+        self, player: "Player", now: float, mode: str | None, hold: ShieldHoldParams | None
+    ) -> None:
+        """Raise ``InterventionNotApplied`` when ``_shield_grant_refusal`` refuses the grant (UC-040 A22)."""
+        refusal = self._shield_refusal_detail(player, now, mode, hold)
+        if refusal is None:
+            return
+        reason, cooldown_remaining = refusal
+        if reason in (SHIELD_REFUSED_GAME_ENDING, SHIELD_REFUSED_ALREADY_CHARGED):
+            # No shield_refused span event for these two (A31, A42 step 3), as before.
+            from services.game_coordinator.intervention_errors import InterventionNotApplied
+
+            if reason == SHIELD_REFUSED_ALREADY_CHARGED:
+                logger.info(f"Shield charge for {player.serial} refused: a charge is already held")
+            else:
+                logger.info(f"Shield for {player.serial} refused: the game is ending")
+            raise InterventionNotApplied(reason)
+        self._refuse_shield(player, reason, self._agent_shield_grants.get(player.serial, 0), cooldown_remaining)
 
     def _refuse_shield(self, player: "Player", reason: str, used: int, cooldown_remaining: float) -> None:
         """Log, record ``shield_refused`` on the player's span and raise (UC-040 A34)."""
@@ -539,16 +592,15 @@ class ShieldMixin:
         except Exception as e:
             logger.warning(f"{effect_name} for {player.serial} failed (charge state unaffected): {e}")
 
-    async def _grant_shield_charge(self, player: "Player", seconds: float) -> bool:
-        """Store one shield charge for the player (UC-040 A30, BR-020).
+    def _store_shield_charge(self, player: "Player", seconds: float, now: float) -> None:
+        """Store one shield charge for the player (UC-040 A30, BR-020); synchronous.
 
         ``grace_until`` is left alone: the player is not protected until they
         activate the charge with the trigger (UC-030 A6). A grant while a charge
         is held is refused by ``grant_shield`` before this runs (``already_charged``,
         A31); the intervention manager records it as blocked and refunds the
-        backstop reservation.
+        backstop reservation. The feedback follows in ``_shield_charge_feedback``.
         """
-        now = game_clock.now()
         expiry = self._read_charge_expiry()
         player.shield_charge_seconds = seconds
         player.shield_charge_granted_at = now
@@ -574,6 +626,8 @@ class ShieldMixin:
                     },
                 )
 
+    async def _shield_charge_feedback(self, player: "Player", seconds: float, now: float) -> None:
+        """The stored charge's feedback: help cue, charge layer, ``player_shield_charged`` (BR-021, BR-031)."""
         await self._send_shield_help_cue(player)  # UC-040 BR-031: before the charge layer
         await self._send_shield_charge_layer(player, now)
         try:
@@ -591,7 +645,6 @@ class ShieldMixin:
             )
         except Exception as e:
             logger.warning(f"player_shield_charged event for {player.serial} failed (charge unaffected): {e}")
-        return True
 
     async def _send_shield_charge_layer(self, player: "Player", now: float) -> None:
         """Send (or re-send) the charge LED layer for the time left, capped at 120 s (BR-021)."""
@@ -1383,24 +1436,30 @@ class ShieldMixin:
         player.last_accel_mag = player.smoothed_accel
         return True
 
-    def _grant_shield_energy(self, player: "Player", seconds: float, hold: ShieldHoldParams) -> bool:
-        """Add a grant to the player's energy (UC-040 A36); refuse one that could add nothing (A37).
+    def _shield_energy_refusal(self, player: "Player", now: float, hold: ShieldHoldParams) -> str | None:
+        """The reason a grant could add no energy (UC-040 A37), or None; pure.
 
-        Order: budget used up, pool full, then the BR-022 cap and cooldown. A
-        refusal raises ``InterventionNotApplied``, so the backstop is refunded and
-        nothing counts. During a held activation the deadline moves out.
+        Order: budget used up, then pool full. The BR-022 cap and cooldown come
+        after these (``_shield_grant_refusal``).
         """
-        now = game_clock.now()
-        used = self._agent_shield_grants.get(player.serial, 0)
         budget_left = self._shield_hold_budget_left(player, now)
         if budget_left < hold.min_burst:
-            self._refuse_shield(player, SHIELD_REFUSED_BUDGET_EXHAUSTED, used, 0.0)
+            return SHIELD_REFUSED_BUDGET_EXHAUSTED
+        room = min(hold.cap, budget_left) - self._shield_hold_energy(player, now)
+        if room < SHIELD_HOLD_POOL_FULL_ROOM_SECONDS:
+            return SHIELD_REFUSED_POOL_FULL
+        return None
+
+    def _apply_shield_energy(self, player: "Player", seconds: float, now: float, hold: ShieldHoldParams) -> None:
+        """Add a checked grant to the player's energy and count it (UC-040 A36, BR-022).
+
+        The caller has run ``_shield_grant_refusal`` first (A37 and the limits);
+        synchronous. During a held activation the deadline moves out.
+        """
+        budget_left = self._shield_hold_budget_left(player, now)
         energy = self._shield_hold_energy(player, now)
         full = min(hold.cap, budget_left)
         room = full - energy
-        if room < SHIELD_HOLD_POOL_FULL_ROOM_SECONDS:
-            self._refuse_shield(player, SHIELD_REFUSED_POOL_FULL, used, 0.0)
-        self._check_shield_limits(player, now)
 
         added = min(seconds, room)
         if player.hold_started_at:
@@ -1435,4 +1494,3 @@ class ShieldMixin:
                     player.span.add_event(
                         "shield_energy_full", attributes={"shield.energy_source": "agent", **identity}
                     )
-        return True
