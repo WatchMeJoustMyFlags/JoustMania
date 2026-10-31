@@ -50,7 +50,7 @@ ELIMINATE_ACCEL = 0.0
 # Neutral shield value (no shield). Matches shield_seconds none variant.
 SHIELD_NONE = 0.0
 
-# Toughness boost (#1129, #1103 Phase 2) value parsing. Value is a STRING
+# Toughness boost value parsing. Value is a STRING
 # "<seconds>" or "<seconds>:<boost>"; bounds mirror BaseGameMode's clamps so a
 # malformed value degrades to a safe no-op rather than dispatching garbage.
 TOUGHNESS_BOOST_NONE_VALUES = frozenset({"", "0", "0.0", "none", "off"})
@@ -135,7 +135,7 @@ async def handle_toughness_boost(ctx: InterventionContext, manager: Intervention
         await game.grant_toughness_boost(serial, seconds, boost)
 
 
-# Soft-penalty (#1134, #1103 Phase 3) value parsing. Value is a STRING:
+# Soft-penalty value parsing. Value is a STRING:
 #   "warn" (default)               -> visible warning feedback, no threshold change
 #   "tighten"                      -> default expiring handicap reduction
 #   "tighten:<seconds>:<factor>"   -> explicit tighten window/strength
@@ -228,7 +228,7 @@ async def handle_soft_penalty(ctx: InterventionContext, manager: InterventionMan
             await game.warn_player(serial)
 
 
-# Auto-rubberband (#1143, #1103 Phase 3) value parsing. The value is a single
+# Auto-rubberband value parsing. The value is a single
 # STRING strength selector: "off" (default / neutral, no-op) | "gentle" | "strong".
 # Unlike the per-player flags this is a GLOBAL decision the coordinator expands.
 # Any malformed/unknown value degrades to the safe default "off" (no-op).
@@ -395,17 +395,17 @@ def register_lifecycle_handlers(manager: InterventionManager) -> None:
         "shield_seconds",
         lambda ctx: handle_shield_seconds(ctx, manager),
     )
-    # toughness_boost (#1129) also needs the manager for the targeting helper.
+    # toughness_boost also needs the manager for the targeting helper.
     manager.register_handler(
         "toughness_boost_seconds",
         lambda ctx: handle_toughness_boost(ctx, manager),
     )
-    # soft_penalty (#1134) also needs the manager for the targeting helper.
+    # soft_penalty also needs the manager for the targeting helper.
     manager.register_handler(
         "soft_penalty_action",
         lambda ctx: handle_soft_penalty(ctx, manager),
     )
-    # auto_rubberband (#1143) is a GLOBAL state decision (not per-serial), so it
+    # auto_rubberband is a GLOBAL state decision (not per-serial), so it
     # needs no targeting helper — register the plain handler directly.
     manager.register_handler("auto_rubberband", handle_auto_rubberband)
     manager.register_handler("eliminate_player", handle_eliminate_player)

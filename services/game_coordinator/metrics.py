@@ -12,13 +12,13 @@ from lib.otel_metrics import Counter, Gauge, Histogram
 
 # Game state metrics
 #
-# Multi-session (#775): lifecycle metrics carry a ``game_kind`` label
+# Multi-session: lifecycle metrics carry a ``game_kind`` label
 # ("primary" / "shadow") so shadow games are observable in their own series
 # instead of being invisible or clobbering the primary game's series. The
 # primary (menu-driven) session reports game_kind="primary"; concurrent
 # agent/shadow sessions report game_kind="shadow".
 #
-# Experiment attribution (#975, epic #982): the per-live-game GAUGES below carry
+# Experiment attribution: the per-live-game GAUGES below carry
 # experiment_id/arm. This is safe precisely because they are gauges keyed on the
 # already-unbounded game_id and SET per live game — the experiment labels add no
 # permanent series; they come and go with the game's game_id and are cleared at
@@ -44,13 +44,13 @@ current_game_mode = Gauge(
     ["mode", "game_kind", "game_id"],
 )
 
-# Trace-correlation signal (#1133, Phase 2 of #1088). A dedicated, low-rate
+# Trace-correlation signal (Phase 2 of #1088). A dedicated, low-rate
 # per-game gauge whose VALUE is always 1 while the game's root span is live; its
 # payload is the labels. It carries the game span's hex trace_id as game_trace_id
 # alongside game_id so the agent — which consumes game state only as METRICS (no
 # parent trace context) — can read the originating game trace_id during ingest and
 # add an OTel span LINK from agent.decision to that trace (navigable in Jaeger),
-# not merely a shared game.id attribute (Phase 1, #1095).
+# not merely a shared game.id attribute (Phase 1).
 #
 # Why a dedicated signal and not an exemplar (the OTLP-native alternative the issue
 # asked us to evaluate FIRST): the coordinator's gauges go through
@@ -62,19 +62,19 @@ current_game_mode = Gauge(
 # path is not feasible end-to-end in this stack; this dedicated attribute-carrying
 # signal is the documented Approach B.
 #
-# It also carries the root span's hex span_id as game_trace_span_id (#1157) so the
+# It also carries the root span's hex span_id as game_trace_span_id so the
 # agent's Link references the actual game-start span (Jaeger highlights it via
 # uiFind) rather than an all-zero span id under that trace.
 #
 # It ADDITIONALLY carries the hex span_id of the gameplay_phase sub-span as
-# gameplay_phase_span_id (#1195). gameplay_phase is the STABLE span covering the
+# gameplay_phase_span_id. gameplay_phase is the STABLE span covering the
 # whole active-play window WITHIN the game trace; the agent re-parents its in-game
 # decision chain (signal_received -> decision -> action) under THIS span instead of
-# the game root (#1187), so a reader sees interventions nested where they actually
+# the game root, so a reader sees interventions nested where they actually
 # occurred. Same trace as game_trace_span_id (game_trace_id is identical), so it is
 # a strict refinement: the agent falls back to game_trace_span_id (game root) when
 # this is empty (gameplay_phase not yet open / unsampled). The gamesummary hub-link
-# (#1174) and the retro/experiment Links deliberately KEEP targeting game_trace_span_id
+# and the retro/experiment Links deliberately KEEP targeting game_trace_span_id
 # (the root) — only the in-game decision chain retargets to gameplay_phase.
 #
 # Since #1325 it ALSO carries the hex span_id of the game_cycle span (a child of
@@ -121,7 +121,7 @@ games_completed_total = Counter(
     ["mode", "game_kind", "outcome"],
 )
 
-# Shadow game governance (#837).
+# Shadow game governance.
 # Shadow starts rejected by the resource gate while a real (menu-origin) game is
 # live and policy=block.
 shadow_games_blocked_total = Counter(
@@ -135,7 +135,7 @@ shadow_games_preempted_total = Counter(
     "Total shadow games force-ended (preempted) when a real game started",
 )
 
-# Flag service game lifecycle (FR-135, #1410): register / end / reconcile calls
+# Flag service game lifecycle (FR-135): register / end / reconcile calls
 # by result (ok, error, timeout). An error or timeout triggers a reconcile.
 flag_service_calls_total = Counter(
     "game_flag_service_calls_total",
@@ -143,7 +143,7 @@ flag_service_calls_total = Counter(
     ["call", "result"],
 )
 
-# Event-list reader (FR-137, #1410): an event list read whose oldest event is
+# Event-list reader (FR-137): an event list read whose oldest event is
 # newer than the last applied seq + 1, i.e. more than K events arrived between
 # two reads (architecture note §6).
 intervention_event_gaps_total = Counter(
@@ -152,7 +152,7 @@ intervention_event_gaps_total = Counter(
     ["flag"],
 )
 
-# Cross-set consistency gate (UC-053 A9, #1552): an intervention is deferred
+# Cross-set consistency gate (UC-053 A9): an intervention is deferred
 # while the coordinator's allow-list (agent set) is older than its interventions
 # set. The counter counts deferral episodes (a few ms each in steady state); the
 # gauge is the age of the current one (0 when none), so a stuck agent stream
@@ -178,7 +178,7 @@ players_alive = Gauge("game_players_alive", "Number of players currently alive")
 # Last writer of the unlabeled players_alive aggregate: (game_id, value). A
 # finishing session resets the gauge only while its own game is still the last
 # writer: a force-ended session whose thread ends after the next game started
-# must not zero that game's count (#2244). One module lock makes the write and
+# must not zero that game's count. One module lock makes the write and
 # the compare-and-zero atomic; it is held only for the gauge set (writers run
 # per init, death or revive, never per frame), never across an await or IO.
 _players_alive_lock = threading.Lock()
@@ -214,7 +214,7 @@ def reset_players_alive_if_owner(game_id: str) -> bool:
 # game_player_elimination_order{serial,game_id} (a gauge cleared at game end).
 player_deaths_total = Counter("game_player_deaths_total", "Total player deaths", ["mode", "game_kind"])
 
-# Hold-mode shield activations (#2096, UC-030 A7, UC-040 A39): one per ended
+# Hold-mode shield activations (UC-030 A7, UC-040 A39): one per ended
 # activation. outcome = released / empty / budget_exhausted / death / game_end.
 shield_hold_activations_total = Counter(
     "game_shield_hold_activations_total",
@@ -222,7 +222,7 @@ shield_hold_activations_total = Counter(
     ["mode", "game_kind", "outcome"],
 )
 
-# Hold-mode shield state for the agent (#2096, UC-040 A36, A37; UC-042 BR-007). Set at
+# Hold-mode shield state for the agent (UC-040 A36, A37; UC-042 BR-007). Set at
 # every hold transition and with the 2 s energy keyframe, removed at game end.
 # Per player (serial, game_id), like game_player_alive:
 player_shield_energy_seconds = Gauge(
@@ -332,8 +332,8 @@ actual_update_frequency_hz = Gauge(
     GAME_STATE_LABELS,
 )
 
-# Frame consistency metrics (Issue #183). Per game like the gauges above
-# (#1471): a concurrent real and shadow loop would otherwise overwrite each other.
+# Frame consistency metrics. Per game like the gauges above:
+# a concurrent real and shadow loop would otherwise overwrite each other.
 game_loop_frame_consistency_percent = Gauge(
     "game_loop_frame_consistency_percent",
     "Percentage of a live game loop's frames within target timing (within 50% of target frame time)",
@@ -363,14 +363,14 @@ config_changes_total = Counter(
 )
 
 # Feature flag metrics (Phase 44). Evaluations are counted by the standard OpenFeature
-# OTel metrics hook (feature_flag_evaluation_*_total, lib/openfeature_otel_hooks.py, #1427),
+# OTel metrics hook (feature_flag_evaluation_*_total, lib/openfeature_otel_hooks.py),
 # which replaced the subset counter game_flag_evaluations_total.
 flag_configuration_changes_total = Counter(
     "game_flag_configuration_changes_total",
     "Total number of PROVIDER_CONFIGURATION_CHANGED events received",
 )
 
-# Process-wide on purpose (#1471): the configured rate comes from the
+# Process-wide on purpose: the configured rate comes from the
 # RuntimeConfigManager singleton, read in an empty evaluation context, so every
 # game runs at the same configured rate and there is nothing per game to label.
 # A running game keeps the rate it read when its loop started (base.py), so after
@@ -398,7 +398,7 @@ filter_updates_total = Counter(
 
 active_controllers = Gauge("game_active_controllers", "Number of controllers currently being monitored (alive players)")
 
-# Stream reconnection metrics (Issue #330)
+# Stream reconnection metrics
 gameplay_stream_reconnects_total = Counter(
     "game_gameplay_stream_reconnects_total",
     "Total gameplay stream reconnection attempts",
@@ -437,9 +437,9 @@ player_alive = Gauge(
     ["serial", "game_id"],
 )
 
-# Intervention observability metrics (#730, closes gaps from #722 §7).
-# Continuous per-player signals the intervention rules engine (#726) and the
-# agent fitness functions (#731) read as PromQL instant queries.
+# Intervention observability metrics (closes gaps from #722 §7).
+# Continuous per-player signals the intervention rules engine and the
+# agent fitness functions read as PromQL instant queries.
 player_movement_variance = Gauge(
     "game_player_movement_variance",
     "Rolling-window variance of acceleration magnitude (g^2). "
@@ -454,7 +454,7 @@ player_skill_level = Gauge(
     ["serial", "game_id"],
 )
 
-# Whole-game RETAINED movement-variance aggregate (#1024). Unlike
+# Whole-game RETAINED movement-variance aggregate. Unlike
 # game_player_movement_variance (a rolling-window value frozen at the last live
 # frame before elimination), this is the cumulative Welford variance over the
 # ENTIRE game and stays meaningful at conclusion — emitted while alive and
@@ -587,19 +587,19 @@ def clear_session_player_analytics(
     clear_game_state_gauges(game_kind, game_id)
 
 
-# Agent intervention audit metric (#730, #722 §7).
+# Agent intervention audit metric.
 # Incremented by the flag-application layer in a later PR (PR C) for every agent
 # intervention attempt — applied or blocked. Also feeds the weighted rate limiter
-# (#722 §5) and the #731 fitness functions. Defined here now so the metric name
+# and the #731 fitness functions. Defined here now so the metric name
 # exists in the registry; zero usages in this PR is intentional.
 #   type:         intervention identifier (e.g. 'adjust_player_sensitivity', 'grant_shield')
 #   objective:    active session objective ('endurance'/'balanced'/'accelerate'/'chaos')
 #   blocked:      'true' if rejected by policy/permission enforcement, else 'false'
 #   block_reason: why a blocked attempt was rejected ('not_allowed', 'rate_limited',
 #                 'low_battery', 'mode_unsupported', 'no_game', 'handler_error',
-#                 'already_charged' (#1837, UC-040 A31), 'shield_cap_reached', 'shield_cooldown'
-#                 (#2044, UC-040 A34), 'shield_pool_full', 'shield_budget_exhausted'
-#                 (#2096, UC-040 A37), 'game_ending' (#2395, UC-040 A42), 'revive_refused', 'experiment_override',
+#                 'already_charged' (UC-040 A31), 'shield_cap_reached', 'shield_cooldown'
+#                 (UC-040 A34), 'shield_pool_full', 'shield_budget_exhausted'
+#                 (UC-040 A37), 'game_ending' (UC-040 A42), 'revive_refused', 'experiment_override',
 #                 'eliminate_refused' (UC-040 A22)); empty
 #                 string for applied (blocked='false') attempts. Cardinality is bounded
 #                 to this fixed reason set, so it is safe as a label.
@@ -610,14 +610,14 @@ interventions_total = Counter(
 )
 
 # An intervention side effect that could not run on its game's own event loop
-# (closed / stopping loop, or timeout): not applied (UC-040 BR-018, #1250).
+# (closed / stopping loop, or timeout): not applied (UC-040 BR-018).
 intervention_dispatch_failures_total = Counter(
     "game_intervention_dispatch_failures_total",
     "Intervention side effects not applied because the owning game's event loop was unavailable",
     ["type", "reason"],
 )
 
-# EventBus stream health metrics (Issue #337)
+# EventBus stream health metrics
 event_bus_publish_drops_total = Counter(
     "event_bus_publish_drops_total",
     "Total events dropped due to full subscriber queues",

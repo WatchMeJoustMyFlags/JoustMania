@@ -77,7 +77,7 @@ from services.game_coordinator.stream_writes import serialized_write
 if TYPE_CHECKING:
     from services.game_coordinator.games.base import Player
 
-# The "helped" cue of an agent shield (#2395, UC-040 A42, BR-031): a short magenta
+# The "helped" cue of an agent shield (UC-040 A42, BR-031): a short magenta
 # GAME_EFFECT_PULSE (the agent colour of #818) on the helped controller, sent before the
 # shield's own LED command. The controller manager plays an overlay effect over every
 # shield layer, so the layer shows once the pulse ends.
@@ -193,7 +193,7 @@ class ShieldMixin:
             return granted
 
         new_grace = now + seconds
-        # Extend-not-shorten (#817): the agent only ever writes its own
+        # Extend-not-shorten: the agent only ever writes its own
         # grace_until field — never invincible_until (the admin baseline). If the
         # player's effective grace (max of agent shield + admin invincibility) is
         # already longer than the request, this shield is a no-op extension: it
@@ -206,7 +206,7 @@ class ShieldMixin:
             )
             return True
 
-        # Sound only on the unprotected -> protected transition (#1301, UC-040
+        # Sound only on the unprotected -> protected transition (UC-040
         # BR-010); an extension restarts the LED fade silently.
         was_protected = self._shield_protected(player, game_clock.now())
         player.grace_until = new_grace
@@ -219,7 +219,7 @@ class ShieldMixin:
                 attributes={"shield_seconds": seconds, **player_identity_attributes(serial, player.name)},
             )
 
-        # The helped cue (UC-040 BR-031), then the shield's own feedback (#1301, UC-040 A16).
+        # The helped cue (UC-040 BR-031), then the shield's own feedback (UC-040 A16).
         await self._send_shield_help_cue(player)
         await self._send_shield_feedback(player, new_grace - game_clock.now(), kind="full", sound=not was_protected)
 
@@ -463,7 +463,7 @@ class ShieldMixin:
             logger.warning(f"Ending shield feedback failed: {e}")
 
     # ------------------------------------------------------------------
-    # Shield charge (#1837, FR-160; UC-040 A30-A32, BR-019-BR-021; UC-030 A6)
+    # Shield charge (FR-160; UC-040 A30-A32, BR-019-BR-021; UC-030 A6)
     # ------------------------------------------------------------------
 
     def _shield_mode_flag_applies(self) -> bool:
@@ -724,7 +724,7 @@ class ShieldMixin:
                 self._drop_shield_hold(player, HOLD_OUTCOME_GAME_END, now)
 
     # ------------------------------------------------------------------
-    # Shield hold (#2096, FR-161; UC-030 A7, BR-008, BR-009; UC-040 A36-A39,
+    # Shield hold (FR-161; UC-030 A7, BR-008, BR-009; UC-040 A36-A39,
     # BR-024-BR-027). Everything here is synchronous: no I/O, nothing awaited.
     # ------------------------------------------------------------------
 
@@ -1071,7 +1071,7 @@ class ShieldMixin:
                 self._release_shield_hold(player, player.hold_last_pressed_at, hold)
 
     # ------------------------------------------------------------------
-    # Hold feedback (#2096, UC-040 BR-026): one ordered outbound task per hold game.
+    # Hold feedback (UC-040 BR-026): one ordered outbound task per hold game.
     # The frame path only marks a player; nothing here is awaited in the frame.
     # ------------------------------------------------------------------
 

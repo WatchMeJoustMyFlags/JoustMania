@@ -74,7 +74,7 @@ class SwapperGame(TeamsGameBase):
         # Track the last player to die (excluded from winners)
         self.last_death_serial: str | None = None
 
-        # Players eliminated by a controller disconnect (UC-024 A1, #1344). They stay
+        # Players eliminated by a controller disconnect (UC-024 A1). They stay
         # in ``players`` but no longer count for a team, convergence or the winners.
         # Marked before the base kill path runs, so a swap still in flight sees it.
         # revive_player is denied for Swapper (interventions.py capability matrix); if
@@ -196,8 +196,8 @@ class SwapperGame(TeamsGameBase):
         self.last_death_serial = serial
 
         # Post-swap invincibility window so the death spike that triggered the swap
-        # cannot instantly re-kill the player on their new team (#757). Sourced from
-        # the ``game.death_grace_period_seconds`` flag (#766 F2 / #1090), frozen per
+        # cannot instantly re-kill the player on their new team. Sourced from
+        # the ``game.death_grace_period_seconds`` flag, frozen per
         # game at init in BaseGameMode.
         player.grace_until = game_clock.now() + self.death_grace_period
 
@@ -285,7 +285,7 @@ class SwapperGame(TeamsGameBase):
         player.alive = True
 
         # The base kill path zeroed the per-player gauge before the swap; the swapped
-        # player is still in the game (#1342). The base recounts the aggregate after
+        # player is still in the game. The base recounts the aggregate after
         # this impl. Skipped after a force end, which cleared the player analytics (no
         # gauge series recreated).
         if self.running:
@@ -293,7 +293,7 @@ class SwapperGame(TeamsGameBase):
         logger.debug(f"Player {serial} respawned on team {new_team}")
         if self._swap_cut_short():
             # The win latched, or the game ended, while the colour was written (BR-003,
-            # BR-004, #1988): the player is on its new team, but no event or beep.
+            # BR-004): the player is on its new team, but no event or beep.
             return
 
         # Publish swap event
@@ -452,7 +452,7 @@ class SwapperGame(TeamsGameBase):
             # All remaining players on one team: latch before publishing (BR-004).
             # The outcome latches first, before the winner and the publish awaits: a
             # force-end that won the race declares no winner (BR-003), one landing
-            # during the publish keeps this winner (BR-004, #1988).
+            # during the publish keeps this winner (BR-004).
             self._latch_game_outcome()
             if self.game_outcome() == "force_ended":
                 return False

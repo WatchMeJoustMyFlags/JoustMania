@@ -169,7 +169,7 @@ class TournamentGame(StreamedIntroGameMode):
         # Configurable timing - now passed via config
         self._invincibility_duration: float = invincibility_seconds
 
-        # #766 F2: match duration and inter-match pause promoted to game flags.
+        # match duration and inter-match pause promoted to game flags.
         # Read ONCE here (init-frozen); malformed values fall back to module
         # constants. A 0s match would break play, so it must be strictly positive;
         # a 0s inter-match pause is acceptable.
@@ -286,7 +286,7 @@ class TournamentGame(StreamedIntroGameMode):
             current_round += 1
 
         # Bye winners enter round 2 now: bye matches are born complete, so
-        # _get_next_match never returns them (#1990). _advance_winner reads self.bracket, so publish it first.
+        # _get_next_match never returns them. _advance_winner reads self.bracket, so publish it first.
         self.bracket = matches
         for match in matches:
             if match.is_bye and match.winner_serial:
@@ -538,9 +538,9 @@ class TournamentGame(StreamedIntroGameMode):
         # current GameEffect enum (third proto-drift crash in this mode's
         # match path, after the serials field and the __anext__ call) —
         # use WINNER_RAINBOW, the celebration effect the champion path
-        # (#699) already uses; the runtime AttributeError killed the game
+        # already uses; the runtime AttributeError killed the game
         # at first match completion. The final gets none: the champion's
-        # rainbow comes with the end of the game (UC-025 step 5, #1986).
+        # rainbow comes with the end of the game (UC-025 step 5).
         if not self._is_final(match):
             await self._write_effect_guarded(
                 controller_manager_pb2.GameplayStreamControl(
@@ -691,7 +691,7 @@ class TournamentGame(StreamedIntroGameMode):
             elif not self._stall_logged:
                 # No playable match yet more than one player is left: the bracket is
                 # stuck (a bye that never advanced was #1990; a match with two
-                # disconnected players used to feed an empty slot, #2000).
+                # disconnected players used to feed an empty slot).
                 self._stall_logged = True
                 logger.error(f"Tournament bracket stalled with {len(left)} players left and no playable match")
             return

@@ -41,7 +41,7 @@ DEFAULT_INVINCIBILITY_DURATION = 4.0  # Seconds of invincibility at round start
 DEFAULT_MIN_ROUNDS = 10  # Minimum rounds before game can end
 COUNTDOWN_BEEPS = 3  # Beeps in last 3 seconds of round
 FC_INTRO_DURATION_S = 2.0  # Intro length; the stream is drained meanwhile (UC-025 A2 step 1)
-# Fight Club's instructions: the plain id follows menu_voice; every voice profile has the line (UC-025 A5, #2164).
+# Fight Club's instructions: the plain id follows menu_voice; every voice profile has the line (UC-025 A5).
 FIGHT_CLUB_INSTRUCTIONS = "Fightclub-instructions"
 ROUND_PAUSE_SECONDS = 1.0  # Pause between a round's kill and the next round
 
@@ -141,14 +141,14 @@ class FightClubGame(StreamedIntroGameMode):
         self.round_end_time: float = 0.0
         self.round_task: asyncio.Task | None = None
         # The round timer task while it handles its timeout and seats the next
-        # round: a kill deciding that round must not cancel it (#2025 S4).
+        # round: a kill deciding that round must not cancel it.
         self._round_change_task: asyncio.Task | None = None
         self.game_over: bool = False
         # True while the current round is a face-off (UC-025 A2 step 3).
         self.face_off_mode: bool = False
-        # The tied leaders the next round pairs (set by _should_end_game, #1345).
+        # The tied leaders the next round pairs (set by _should_end_game).
         self._face_off_pair: tuple[str, str] | None = None
-        # The winner, latched when the game decides to end (UC-025 BR-005, #1343).
+        # The winner, latched when the game decides to end (UC-025 BR-005).
         self._win_latched: bool = False
         self._latched_winner: str | None = None
         # Serials whose controller disconnected: out of the rotation for good (A4).
@@ -160,10 +160,10 @@ class FightClubGame(StreamedIntroGameMode):
         # they forfeit that round when their kill path is done (A4 step 5).
         self._deferred_disconnects: set[str] = set()
         # The other combatant's disconnect while such a forfeit waits: it is handled
-        # once the forfeit is applied, so the leaver never wins that round (#2015).
+        # once the forfeit is applied, so the leaver never wins that round.
         self._disconnects_after_forfeit: list[str] = []
         # The id of the seated round, and the round each kill in flight entered in:
-        # a kill never decides a later round than its own (BR-006, #2015).
+        # a kill never decides a later round than its own (BR-006).
         self._round_id: int = 0
         self._kill_round_ids: dict[str, int] = {}
         self.game_span: trace.Span | None = None
@@ -171,7 +171,7 @@ class FightClubGame(StreamedIntroGameMode):
         self._invincibility_duration: float = invincibility_seconds
         self._min_rounds: int = min_rounds
 
-        # #766 F2: round duration promoted to ``game.fight_club.round_seconds``.
+        # round duration promoted to ``game.fight_club.round_seconds``.
         # Read ONCE here (init-frozen); a non-positive/malformed value falls back
         # to the ROUND_DURATION module constant (a 0s round would break play).
         self.mode_flags = FightClubInitFlags.from_raw(
@@ -306,7 +306,7 @@ class FightClubGame(StreamedIntroGameMode):
             if self.current_defender is None and self.queue:
                 self.current_defender = self.queue.pop(0)
 
-            # Never pair a player with itself (#1345)
+            # Never pair a player with itself
             while self.queue and self.queue[0] == self.current_defender:
                 self.queue.pop(0)
 
@@ -348,7 +348,7 @@ class FightClubGame(StreamedIntroGameMode):
         )
 
         # Announce the round before its first other await: a forfeit (A4) that
-        # decides it during the colour writes comes after its round_start (#2025 S4).
+        # decides it during the colour writes comes after its round_start.
         seated = (self._round_id, self.current_defender, self.current_fighter)
         await self.event_publisher(
             "round_start",
@@ -414,7 +414,7 @@ class FightClubGame(StreamedIntroGameMode):
                 # Time's up - both players lose
                 logger.info("Round time expired - both players lose")
                 # From here this task changes the round; a kill that decides the
-                # next round during its start does not cancel it (#2025 S4).
+                # next round during its start does not cancel it.
                 self._round_change_task = asyncio.current_task()
                 try:
                     await self._handle_timeout()
@@ -517,7 +517,7 @@ class FightClubGame(StreamedIntroGameMode):
         if len(scores) >= 2 and scores[0][1] == scores[1][1]:
             # The top is tied: the next round is a face-off between the first two
             # connected tied leaders. Only the pair is stored; _start_round seats
-            # it, so the current round's combatants stay in the rotation (#1345).
+            # it, so the current round's combatants stay in the rotation.
             tied = [s for s, score in scores if score == scores[0][1] and s not in self._disconnected]
             if len(tied) < 2:
                 # A tied leader left: no face-off is possible, the game ends
@@ -601,13 +601,13 @@ class FightClubGame(StreamedIntroGameMode):
             return False
         # A seated combatant's disconnect waits for its round-loss kill: the round
         # is its forfeit, so the other combatant cannot lose it meanwhile, not even
-        # by its own disconnect (A4 step 5, #2015).
+        # by its own disconnect (A4 step 5).
         if self._other_combatant_forfeit_pending(serial):
             return False
         if serial in self._disconnected:
             return player.alive
         # A kill that entered during an earlier round (still awaiting its explosion
-        # when the next round was seated) never decides this one (#2015).
+        # when the next round was seated) never decides this one.
         if self._kill_round_ids.get(serial, self._round_id) != self._round_id:
             return False
         return self._fights_current_round(serial) and not self.is_in_grace(player)
@@ -641,7 +641,7 @@ class FightClubGame(StreamedIntroGameMode):
             return
         if self._other_combatant_forfeit_pending(serial):
             # The opponent's forfeit comes first (it wins this round); this
-            # disconnect is handled right after it (A4 step 5, #2015).
+            # disconnect is handled right after it (A4 step 5).
             logger.info(f"Combatant {serial} disconnected while its opponent's forfeit waits: handled after it")
             self._disconnects_after_forfeit.append(serial)
             return
@@ -755,7 +755,7 @@ class FightClubGame(StreamedIntroGameMode):
         # (the combatant slot is cleared below, before the first await).
         fc_player.alive = False
 
-        # Cancel round timer, unless it is the task seating this round (#2025 S4)
+        # Cancel round timer, unless it is the task seating this round
         if self.round_task and not self.round_task.done() and self.round_task is not self._round_change_task:
             self.round_task.cancel()
 
@@ -805,7 +805,7 @@ class FightClubGame(StreamedIntroGameMode):
         winner = self.players[winner_serial]
         loser = self.players[loser_serial]
 
-        # The face-off round (if this was one) is over (#1345).
+        # The face-off round (if this was one) is over.
         self.face_off_mode = False
 
         logger.info(f"Score update: {winner_serial}={winner.score}, {loser_serial}={loser.score}")

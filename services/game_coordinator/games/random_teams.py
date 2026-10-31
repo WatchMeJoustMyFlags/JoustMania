@@ -114,7 +114,7 @@ class RandomTeamsGame(TeamsGameBase):
             Dictionary mapping serial to team number
         """
         # Shuffle the players (a copy), then deal round-robin: sizes differ by
-        # at most one and no team is empty while players >= teams (#1354).
+        # at most one and no team is empty while players >= teams.
         shuffled = list(player_serials)
         self._rng.shuffle(shuffled)
 

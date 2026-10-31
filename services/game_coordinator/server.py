@@ -18,7 +18,7 @@ import sys
 
 # Configure logging early, before any logging calls
 # This must happen before any logging.warning/info/etc to ensure INFO level is shown
-# Bootstrap level only: flagd is not reachable yet; the log_level flag takes over once synced (lib/log_level.py, #1788)
+# Bootstrap level only: flagd is not reachable yet; the log_level flag takes over once synced (lib/log_level.py)
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, log_level, logging.INFO),
@@ -67,7 +67,7 @@ async def serve(port=50053):
     # to ensure INFO level is enabled before any logging calls
 
     # Initialize OTEL push metrics
-    # Export interval read from flagd with per-service targeting (Issue #479)
+    # Export interval read from flagd with per-service targeting
     init_metrics()
     init_logging()
 

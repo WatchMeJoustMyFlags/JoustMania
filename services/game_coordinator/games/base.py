@@ -104,7 +104,7 @@ COUNTDOWN_BEEP_COUNT = 3  # Number of beeps (Red/Yellow/Green)
 SLOW_MUSIC_SPEED = 1.0  # Normal playback
 FAST_MUSIC_SPEED = 1.3  # 30% faster
 
-# #1833: the tempo INTENSITY ramp (UC-031 step 3, BR-005). Each game owns one
+# the tempo INTENSITY ramp (UC-031 step 3, BR-005). Each game owns one
 # intensity i in [0, 1] (0 = slow table / 1.0x, 1 = fast table / 1.3x) that moves
 # toward its target at a bounded rate: a full swing takes ``tempo.ramp_up_seconds``
 # going up and ``tempo.ramp_down_seconds`` going down (game flags, read at each
@@ -117,12 +117,12 @@ AUDIO_TEMPO_RPC_TIMEOUT_SECONDS = 0.5
 # Back-off between resends after a ChangeTempo error (doubles per failure).
 AUDIO_TEMPO_RETRY_MIN_SECONDS = 0.5
 AUDIO_TEMPO_RETRY_MAX_SECONDS = 5.0
-# A persistent failing music-loop tick logs once, then at most this often (#1841).
+# A persistent failing music-loop tick logs once, then at most this often.
 MUSIC_TICK_LOG_INTERVAL_SECONDS = 5.0
 # Track id the audio service returns for PlayMusic while play_audio is off (UC-031 A1).
 MUTED_TRACK_ID = "muted"
 
-# #1117 (#1103 MVP action 2): ``ramp_tempo`` — a scheduled tempo CURVE that fills
+# ``ramp_tempo`` — a scheduled tempo CURVE that fills
 # the #1114 ``agent``-mode seam. The agent emits a single string directive
 # ``"<target>:<seconds>:<curve>"`` (e.g. ``"1.3:8:linear"``); the game-side records
 # a RampDescriptor and ``_check_music_speed`` interpolates the live tempo toward
@@ -137,7 +137,7 @@ MUTED_TRACK_ID = "muted"
 RAMP_CURVE_LINEAR = "linear"
 RAMP_CURVE_EASE = "ease"
 _VALID_RAMP_CURVES = (RAMP_CURVE_LINEAR, RAMP_CURVE_EASE)
-# Upper bound on a single ramp's duration (seconds, #1840). A Free-for-All game lasts
+# Upper bound on a single ramp's duration (seconds). A Free-for-All game lasts
 # 2 to 3 minutes, so a longer curve would hold the pacing for too much of it; a
 # malformed huge value is capped here too.
 RAMP_TEMPO_MAX_SECONDS = 15.0
@@ -146,7 +146,7 @@ RAMP_TEMPO_MAX_SECONDS = 15.0
 # applies a small tempo step every ~100ms loop tick, so each step's ChangeTempo
 # glides over roughly one tick rather than a full ramp — otherwise every tick
 # stacks an overlapping long transition chasing a stale target. A ``linear`` ramp
-# is one intensity segment with one glide instead (#1833).
+# is one intensity segment with one glide instead.
 RAMP_TEMPO_STEP_TRANSITION = 0.12
 
 
@@ -370,7 +370,7 @@ _MSG_COUNTDOWN_INTERRUPTED = "Countdown interrupted - game no longer running"
 # This allows fine-tuned per-sensitivity-level behavior as music tempo changes.
 #
 # Formula: threshold = lerp(SLOW[sens], FAST[sens], intensity)
-# Where intensity is the game's tempo intensity in [0, 1] (#1833, UC-031 BR-005);
+# Where intensity is the game's tempo intensity in [0, 1] (UC-031 BR-005);
 # the music ratio is derived from it: 1.0 + 0.3 * intensity.
 #
 # Example at MEDIUM (sens=2), music at 1.15x (50% between slow/fast):
@@ -387,7 +387,7 @@ COUNTDOWN_MUSIC_VOLUME = 0.15  # Soft background music during countdown
 MAX_INSTRUCTIONS_WAIT_SECONDS = 60.0
 # How often the instruction wait checks for a force-end.
 INSTRUCTIONS_POLL_SECONDS = 0.1
-# Deadline for StopSound after a force-end, so a wedged audio service cannot stall teardown (#1586).
+# Deadline for StopSound after a force-end, so a wedged audio service cannot stall teardown.
 STOP_SOUND_TIMEOUT_SECONDS = 2.0
 
 
@@ -437,8 +437,8 @@ class Player:
     last_accel_mag: float = 0.0
     # Latest battery percentage (0-100) seen on this player's gameplay frames,
     # or None until the first frame carrying a battery reading arrives. Sourced
-    # from GameplayData.battery and normalized via lib.controller_constants
-    # (#798). Read by the InterventionManager battery guard.
+    # from GameplayData.battery and normalized via lib.controller_constants.
+    # Read by the InterventionManager battery guard.
     battery_pct: float | None = None
     # Exponential moving average of acceleration (from original JoustMania)
     # EMA smooths sensor noise and prevents false positives from single-frame spikes
@@ -464,7 +464,7 @@ class Player:
     # _compute_effective_thresholds. 1.0 = neutral (no effect). Shadow-game-only
     # initially via the interventions_allowed allow-list gate.
     handicap_factor: float = 1.0
-    # Time-boxed toughness boost (#1129, #1103 Phase 2). When ``toughness_boost_until``
+    # Time-boxed toughness boost. When ``toughness_boost_until``
     # is in the future, ``toughness_boost_factor`` acts as a TEMPORARY handicap
     # override that COMPOSES with ``handicap_factor`` by taking the MAX of the two
     # (so a standing set_player_handicap is never weakened, only strengthened for
@@ -476,7 +476,7 @@ class Player:
     # deadline = inactive (no effect). Shadow-game-only via the allow-list gate.
     toughness_boost_until: float = 0.0
     toughness_boost_factor: float = 1.0
-    # Time-boxed SOFT-PENALTY tighten (#1134, #1103 Phase 3). The deliberate
+    # Time-boxed SOFT-PENALTY tighten. The deliberate
     # MIRROR of toughness_boost: where toughness_boost STRENGTHENS protection (max,
     # factor >= 1.0), a tighten WEAKENS it for a short window (factor < 1.0),
     # making the player TEMPORARILY EASIER to eliminate — graduated pressure, not
@@ -490,7 +490,7 @@ class Player:
     # allow-list gate. See ``_compute_effective_thresholds`` for the precedence.
     soft_penalty_until: float = 0.0
     soft_penalty_factor: float = 1.0
-    # Time-boxed AUTO-RUBBERBAND boost (#1143, #1103 Phase 3). A SINGLE agent
+    # Time-boxed AUTO-RUBBERBAND boost. A SINGLE agent
     # decision (auto_rubberband=gentle|strong) is expanded by the coordinator
     # across players based on the LIVE skill gap: the trailing player(s) — those
     # closest to their death threshold — receive a temporary handicap BOOST that
@@ -505,7 +505,7 @@ class Player:
     # inactive. Shadow-game-only via the allow-list gate.
     rubberband_until: float = 0.0
     rubberband_boost: float = 1.0
-    # Shield charge (#1837, UC-040 A30-A32, BR-020): at most one per player.
+    # Shield charge (UC-040 A30-A32, BR-020): at most one per player.
     # ``shield_charge_seconds`` > 0 means a charge is held; it becomes the shield
     # duration on activation. The expiry is fixed at grant time (0 = never).
     # ``shield_charge_layer_until`` is when the last SHIELD_CHARGE LED command runs
@@ -520,7 +520,7 @@ class Player:
     # or latched from the lobby is never a press).
     trigger_prev: bool = False
     trigger_armed: bool = False
-    # Shield hold (#2096, UC-030 A7, UC-040 BR-024): only used in a game latched to
+    # Shield hold (UC-030 A7, UC-040 BR-024): only used in a game latched to
     # hold. The energy is a function of time, so nothing ticks: ``hold_energy`` is
     # the stored value at ``hold_energy_at`` (0 = the recharge clock has not
     # started). While an activation runs (``hold_started_at`` > 0) the energy and
@@ -596,7 +596,7 @@ class GameState(Enum):
     ENDED = "ended"
 
 
-# The shield code (#2360) lives in games/shields.py and imports the constants
+# The shield code lives in games/shields.py and imports the constants
 # above back from this module, so this import stays below them.
 from services.game_coordinator.games.shields import ShieldMixin  # noqa: E402
 
@@ -628,7 +628,7 @@ class BaseGameMode(ShieldMixin, ABC):
     # instant path.
     SHIELD_TRIGGER_ALLOWED: bool = False
 
-    # The runtime config snapshot of the frame being processed (#2361): read once
+    # The runtime config snapshot of the frame being processed: read once
     # per frame, not twice per player. The config is event-refreshed (flags.md), so
     # a refresh applies from the next frame. None outside a frame: a call outside
     # the frame loop reads the live snapshot.
@@ -665,7 +665,7 @@ class BaseGameMode(ShieldMixin, ABC):
         self.event_publisher = event_publisher
         self.audio_client = audio_client
 
-        # Per-instance RNG (#1003 — the load-bearing CRN isolation). Shadow games
+        # Per-instance RNG (the load-bearing CRN isolation). Shadow games
         # run concurrently in ONE game_coordinator interpreter, so global
         # random.seed() would corrupt a concurrent game's in-flight sequence.
         # Every random draw in this game (and its subclasses) MUST go through
@@ -683,30 +683,30 @@ class BaseGameMode(ShieldMixin, ABC):
             game_id = f"{mode_prefix}_{int(time.time())}"
         self.game_id = game_id
 
-        # Multi-session bookkeeping (#775). The servicer overrides these on the
+        # Multi-session bookkeeping. The servicer overrides these on the
         # game instance after construction based on the owning GameSession. They
         # default to the single-game/primary values so a standalone game (and
         # every existing test) behaves exactly as before:
         #   game_kind: "primary" or "shadow" — labels lifecycle metrics.
-        #   experiment_id / arm: experiment attribution within a shadow session
-        #     (#975); empty for a non-experiment game. The servicer overrides
+        #   experiment_id / arm: experiment attribution within a shadow session;
+        # empty for a non-experiment game. The servicer overrides
         #     these from the owning GameSession (set by #976's spawn binding).
         self.game_kind = "primary"
         self.experiment_id = ""
         self.arm = ""
-        # UC-046 BR-018 / UC-040 BR-019 (#2096): set by the session for a shadow game
+        # UC-046 BR-018 / UC-040 BR-019: set by the session for a shadow game
         # whose archetype presses the trigger; such a game honours trigger and hold.
         self.pattern_trigger_policy = False
         # The flag transaction context _set_flag_eval_context set for this game's
-        # run; intervention handlers resolve flags in it (flag_eval_context, #1970).
+        # run; intervention handlers resolve flags in it (flag_eval_context).
         self._flag_eval_context: EvaluationContext | None = None
         # Callback the owning GameSession sets so the game can publish its
-        # gameplay_phase span_id to the trace-correlation gauge (#1195) when that
+        # gameplay_phase span_id to the trace-correlation gauge when that
         # span opens — letting the agent re-parent its in-game decision chain under
         # gameplay_phase. Defaults to a no-op so a standalone game / every existing
         # test runs unchanged.
         self.on_gameplay_phase_open: Callable[[str], None] = lambda _span_id: None
-        # Same for the game_cycle span (#1325): the agent's preferred parent for its
+        # Same for the game_cycle span: the agent's preferred parent for its
         # in-game spans (UC-040 BR-013). No-op by default.
         self.on_game_cycle_open: Callable[[str], None] = lambda _span_id: None
 
@@ -717,7 +717,7 @@ class BaseGameMode(ShieldMixin, ABC):
         self.start_time = None
         self.running = False
         # Disconnects seen by _warmup_ema(); _game_loop() runs them through the
-        # death path before its first frame (UC-020 A2, #1582).
+        # death path before its first frame (UC-020 A2).
         self._warmup_disconnects: list[str] = []
         # Early stream drain (UC-021 A1, D-G10): a mode that opens its stream before
         # its additional phases reads and discards frames until the start.
@@ -725,18 +725,18 @@ class BaseGameMode(ShieldMixin, ABC):
         self._early_drain_stop = asyncio.Event()
         self._early_drain_disconnects: dict[str, None] = {}
         # Set by force_end(): the reason the game was stopped from outside, or
-        # None for a game that ended on its own win condition (#1328).
+        # None for a game that ended on its own win condition.
         self.force_end_reason: str | None = None
         # The outcome, frozen once the game loop ends (win condition met, or the
         # loop stopped). A force-end that lands later (e.g. during the winner
-        # rainbow) must not turn a real win into force_ended (#1328).
+        # rainbow) must not turn a real win into force_ended.
         self._latched_outcome: dict | None = None
         self._outcome_recorded = False
         # Set when run() exits by an exception: the run-end cleanup labels the
-        # player spans it ends ``error`` (UC-030 BR-007, #1997).
+        # player spans it ends ``error`` (UC-030 BR-007).
         self._run_failed = False
         # Set once the base run() published game_error, so its session does not
-        # publish it a second time (#2025 S2).
+        # publish it a second time.
         self.game_error_published = False
         # The game root span (current when run() starts); the outcome lands on it.
         self._game_root_span: trace.Span | None = None
@@ -744,13 +744,13 @@ class BaseGameMode(ShieldMixin, ABC):
         # Shield feedback still running per serial: wall-clock end time (#1301,
         # UC-040 A16/A17). Only a record for the game-end clear; no task.
         self._shield_feedback_until: dict[str, float] = {}
-        # Agent shields per serial in this game (#2044, UC-040 BR-022): grants
+        # Agent shields per serial in this game (UC-040 BR-022): grants
         # counted and the end of the last agent shield (grant time + seconds; in
         # trigger mode from the charge grant). Per game-mode instance, so a new
         # game starts fresh; keyed by serial, so a revive does not reset them.
         self._agent_shield_grants: dict[str, int] = {}
         self._agent_shield_last_end: dict[str, float] = {}
-        # Shield hold (#2096, UC-040 BR-027): latched once, at the start of the game
+        # Shield hold (UC-040 BR-027): latched once, at the start of the game
         # loop or at the first grant, whichever comes first. None = not a hold game.
         self._shield_hold: ShieldHoldParams | None = None
         self._shield_hold_latched = False
@@ -763,7 +763,7 @@ class BaseGameMode(ShieldMixin, ABC):
         # The game_shield_activation_mode / game_shield_hold_setting series this game set (removed at game end).
         self._shield_metric_mode: str | None = None
         self._shield_metric_settings: tuple[str, ...] = ()
-        # Hold feedback (#2096, UC-040 BR-026): the cue values latched with the hold values,
+        # Hold feedback (UC-040 BR-026): the cue values latched with the hold values,
         # and one ordered outbound task per game. The frame path only marks a player
         # (serial -> strongest pending cue); the task sends the player's state when it runs.
         self._shield_hold_cues: ShieldHoldCues | None = None
@@ -783,7 +783,7 @@ class BaseGameMode(ShieldMixin, ABC):
 
         # Settings - sensitivity is now passed via StartGameConfig.
         #
-        # Sensitivity arbitration (#816, M9 ownership model — epic #814):
+        # Sensitivity arbitration (M9 ownership model):
         #   - ``baseline_sensitivity`` is the ADMIN's source of truth (pre-game
         #     lobby intent). The admin may update it mid-game via
         #     ``set_baseline_sensitivity`` (which invalidates any active agent
@@ -804,15 +804,15 @@ class BaseGameMode(ShieldMixin, ABC):
         # No agent override at game start; effective == baseline.
         self._sensitivity_override: Sensitivity | None = None
 
-        # Init-latched flags (#2359): every read below happens once, here, and the raw
+        # Init-latched flags: every read below happens once, here, and the raw
         # values are validated and frozen into ``init_flags`` (GameInitFlags.from_raw).
         # The attributes after it start from the snapshot. The readers are called as
         # ``read_*_flag`` / ``get_config_manager`` in this module, so tests patch them here.
         #
-        # #766 F1: death/warning threshold tables, the ``game.thresholds`` object flag
+        # death/warning threshold tables, the ``game.thresholds`` object flag
         # (init-frozen; malformed/missing values fall back to the module constants).
         #
-        # EMA filter weight (#766 F4, agent-domain `perception.ema_weight`).
+        # EMA filter weight (agent-domain `perception.ema_weight`).
         # READ ONCE HERE AT GAME INIT and frozen for the life of the game. It is
         # intentionally never re-evaluated mid-game: changing the smoothing
         # weight while running would invalidate the per-player movement variance
@@ -824,13 +824,13 @@ class BaseGameMode(ShieldMixin, ABC):
         # post-respawn/conversion invincibility window for RESPAWN modes only
         # (zombie conversion + respawn, swapper team-swap; they set
         # ``player.grace_until = game_clock.now() + self.death_grace_period``). FFA has
-        # no respawn, so it has NO effect on FFA (#1090). Init-frozen; malformed or
+        # no respawn, so it has NO effect on FFA. Init-frozen; malformed or
         # negative values fall back to DEATH_GRACE_PERIOD.
         #
-        # #766 F3: ``game.windows`` music tempo-change windows (init-frozen calibration;
+        # ``game.windows`` music tempo-change windows (init-frozen calibration;
         # the ``pacing_profile`` presets are named variants).
         #
-        # F7, #766: per-channel volumes from the user domain (init-frozen). Defaults
+        # per-channel volumes from the user domain (init-frozen). Defaults
         # reproduce the original constants; malformed values fall back to them.
         self.init_flags = GameInitFlags.from_raw(
             thresholds=read_object_flag("game", "thresholds", {}, game_id=self.game_id),
@@ -849,14 +849,14 @@ class BaseGameMode(ShieldMixin, ABC):
         self.fast_max = list(self.init_flags.fast_max)
         self._ema_weight = self.init_flags.ema_weight
         self.death_grace_period = self.init_flags.death_grace_period_seconds
-        # F6 (#766): the live ``pacing_profile`` intervention swaps ``self.music_windows``
+        # F6: the live ``pacing_profile`` intervention swaps ``self.music_windows``
         # atomically; ``init_music_windows`` is the restore target, never reassigned.
         self.music_windows = self.init_flags.music_windows
         self.init_music_windows = self.music_windows
         self.game_volume = self.init_flags.game_volume
         self.countdown_music_volume = self.init_flags.countdown_music_volume
 
-        # #1117 (#1103 MVP action 2): active ramp_tempo CURVE descriptor, or None
+        # active ramp_tempo CURVE descriptor, or None
         # for no ramp (the default-safe state — behavior unchanged). When set, the
         # single tempo owner (``_check_music_speed``) interpolates the live tempo
         # toward the descriptor's target over its duration and holds there. Set by
@@ -864,7 +864,7 @@ class BaseGameMode(ShieldMixin, ABC):
         # game object (bounded delta — never persisted to game.json, ownership §1).
         self.tempo_ramp: RampDescriptor | None = None
 
-        # #766 F6: live global difficulty factor (analogue of per-player
+        # live global difficulty factor (analogue of per-player
         # ``sensitivity_factor``). Combined with the per-player factor in
         # ``_compute_effective_thresholds``; 1.0 is neutral (baseline behavior).
         # Set/cleared by the global_difficulty_factor intervention handler and
@@ -873,7 +873,7 @@ class BaseGameMode(ShieldMixin, ABC):
 
         # Phase 70: Music tempo control state
         self.music_track_id = None
-        # #1833: the tempo intensity (UC-031 BR-005) is the source; music_speed is
+        # the tempo intensity (UC-031 BR-005) is the source; music_speed is
         # derived from it (property below). Starts held at 0 (1.0x, slow table).
         self._intensity = IntensityRamp.hold(0.0)
         # False while the audio service has not accepted the current glide; the
@@ -881,7 +881,7 @@ class BaseGameMode(ShieldMixin, ABC):
         self._audio_synced = True
         self._audio_retry_at = 0.0
         self._audio_retry_backoff = AUDIO_TEMPO_RETRY_MIN_SECONDS
-        # Rate limit for the failing-tick warning of _music_loop (#1841).
+        # Rate limit for the failing-tick warning of _music_loop.
         self._tick_error_text: str | None = None
         self._tick_error_logged_at = 0.0
         self._tick_error_suppressed = 0
@@ -897,20 +897,20 @@ class BaseGameMode(ShieldMixin, ABC):
         self.speed_up = True  # True = next change will speed up, False = slow down
         self.change_time = 0.0  # Time of next tempo change
         self.music_loop_task = None
-        # Agent tempo override (#730 PR C). When set to a float (1.0-1.3), the
+        # Agent tempo override. When set to a float (1.0-1.3), the
         # music loop adopts this tempo and SUSPENDS its own speed-up/slow-down
         # schedule (resolves the E1 race in 722-intervention-surface §3.1).
         # None = no override; the natural schedule runs. Set/cleared by the
         # music_tempo_override intervention handler; consumed in _check_music_speed.
         self.tempo_override: float | None = None
-        # Backwards-compatible alias kept for any external reader (#730 PR C).
+        # Backwards-compatible alias kept for any external reader.
         # The reverted global_sensitivity_override now restores the CURRENT admin
-        # baseline (#816), so this is no longer the restore target — but the
+        # baseline, so this is no longer the restore target — but the
         # game-start snapshot is still useful telemetry, so expose it as a
         # property mirroring the baseline at construction time.
         self._configured_sensitivity = self._baseline_sensitivity
         self.dead_count = 0  # Track deaths for tempo timing
-        # Elimination ordering for game_player_elimination_order metric (#730).
+        # Elimination ordering for game_player_elimination_order metric.
         # Incremented on each kill; the value at kill time is the player's order
         # index (1 = first eliminated). In respawn modes this counts each death.
         self._elimination_count = 0
@@ -931,7 +931,7 @@ class BaseGameMode(ShieldMixin, ABC):
         logger.info(f"{self.get_game_name()} game initialized: {self.game_id}")
 
     # ========================================================================
-    # Sensitivity arbitration (#816, M9 ownership model — epic #814)
+    # Sensitivity arbitration (M9 ownership model)
     # ========================================================================
     # ``sensitivity`` is the EFFECTIVE level: the agent override if one is
     # active, otherwise the admin baseline. Every reader (the per-frame
@@ -1299,7 +1299,7 @@ class BaseGameMode(ShieldMixin, ABC):
         from proto import controller_manager_pb2
 
         # Get phase duration from runtime config (controlled via flagd game_settings)
-        # phase_duration_ms == 0 means skip countdown entirely (Issue #464)
+        # phase_duration_ms == 0 means skip countdown entirely
         config = get_config_manager().get_config()
         phase_duration_ms = config.countdown_phase_duration_ms
 
@@ -1678,7 +1678,7 @@ class BaseGameMode(ShieldMixin, ABC):
         """
         with self._frame_config_scope():
             # UC-020 BR-001: win check after every disconnect and every controller sample.
-            # Handle disconnects first (#580)
+            # Handle disconnects first
             for disconnect in gameplay_update.disconnects:
                 await self._handle_disconnect(disconnect.serial)
                 if await self._check_win_condition():
@@ -1874,20 +1874,20 @@ class BaseGameMode(ShieldMixin, ABC):
 
     _RECONNECT_BACKOFF_S = 1.0
 
-    # Real waits a test can shorten (#2361): production keeps these values.
+    # Real waits a test can shorten: production keeps these values.
     # Poll step of the countdown beep wait (one step per 50 ms of beep interval).
     _COUNTDOWN_BEEP_POLL_S: float = 0.05
     # Factor on the wait for the instruction clip to finish (1.0 = the clip's length).
     _INSTRUCTIONS_WAIT_SCALE: float = 1.0
     # Errors of the gameplay call itself, raised by a read or by a write on it
     # (UC-030 BR-006): the game loop reconnects on these. Any other error while a
-    # frame is processed ends the game with game_error (UC-020 BR-003, #2001).
+    # frame is processed ends the game with game_error (UC-020 BR-003).
     _STREAM_CALL_ERRORS = (grpc.aio.AioRpcError, asyncio.InvalidStateError)
     # A reopened stream counts as healthy, and the reconnect count starts again, after
-    # this many frames (about 1 s at the default 60 Hz; UC-030 BR-006, #1931).
+    # this many frames (about 1 s at the default 60 Hz; UC-030 BR-006).
     _RECONNECT_HEALTHY_FRAMES = 60
 
-    # The win hold; a class attribute so tests shorten it (#2361). Production keeps 1 s.
+    # The win hold; a class attribute so tests shorten it. Production keeps 1 s.
     _WIN_HOLD_S: float = 1.0
 
     async def _hold_win_display(self) -> None:
@@ -1944,7 +1944,7 @@ class BaseGameMode(ShieldMixin, ABC):
             loop_iterations = 0
             last_iteration_time = loop_start_time
 
-            # Track frame consistency (Issue #183)
+            # Track frame consistency
             target_frame_time_ms = 1000.0 / update_frequency_hz
             recent_frame_times: list[float] = []  # Store recent frame times for jitter calculation
             frames_on_target = 0  # Frames within 50% of target time
@@ -1964,7 +1964,7 @@ class BaseGameMode(ShieldMixin, ABC):
                             self.start_time = game_clock.now()
 
                         # The count starts again only after a healthy run, not after
-                        # one frame (UC-030 BR-006, #1931).
+                        # one frame (UC-030 BR-006).
                         if reconnect_attempt:
                             frames_since_reconnect += 1
                             if frames_since_reconnect >= self._RECONNECT_HEALTHY_FRAMES:
@@ -1978,7 +1978,7 @@ class BaseGameMode(ShieldMixin, ABC):
                         # Process controllers and check for game over, then update the
                         # alive filter if players changed. An error here that is not a
                         # gRPC error of the call (a mode's kill handler, its win check)
-                        # ends the game, no reconnect (UC-030 BR-006, #2001).
+                        # ends the game, no reconnect (UC-030 BR-006).
                         try:
                             game_over = await self._process_gameplay_update(gameplay_update)
                             if not game_over:
@@ -2010,7 +2010,7 @@ class BaseGameMode(ShieldMixin, ABC):
                         last_iteration_time = iteration_end
 
                     # A call that ended with an error status is dead, not finished: an
-                    # exhausted grpc.aio reader ends the loop silently (UC-030 BR-006, #1913).
+                    # exhausted grpc.aio reader ends the loop silently (UC-030 BR-006).
                     if self.running and await self._gameplay_call_failed():
                         raise RuntimeError("gameplay call ended with an error status")
 
@@ -2105,12 +2105,12 @@ class BaseGameMode(ShieldMixin, ABC):
         # Tempo intensity now (0.0 = slow table, 1.0 = fast table), clamped to [0, 1].
         speed_percent = self._intensity.value_at(now)
 
-        # LERP between slow and fast thresholds (instance tables, #766 F1)
+        # LERP between slow and fast thresholds (instance tables)
         base_warn = self._lerp(self.slow_warning[sens_idx], self.fast_warning[sens_idx], speed_percent)
         base_death = self._lerp(self.slow_max[sens_idx], self.fast_max[sens_idx], speed_percent)
 
         # Apply per-player sensitivity factor combined with the live global
-        # difficulty factor (#766 F6). Both are multiplied, then the COMBINED
+        # difficulty factor. Both are multiplied, then the COMBINED
         # factor is clamped to [0.5, 2.0] for safety before dividing thresholds.
         # Higher combined factor = lower threshold = easier to die. At the
         # neutral 1.0/1.0 this preserves the prior behavior exactly.
@@ -2119,14 +2119,14 @@ class BaseGameMode(ShieldMixin, ABC):
         warn = base_warn / clamped_factor
         death = base_death / clamped_factor
 
-        # Apply the per-player agent handicap (#1107) as a SEPARATE multiplicative
+        # Apply the per-player agent handicap as a SEPARATE multiplicative
         # knob that composes with — does not replace — the sensitivity/difficulty
         # factor above. It is clamped independently to [0.5, 2.0] and MULTIPLIES
         # the threshold (intent-framed, opposite direction to sensitivity_factor):
         # >1.0 raises the threshold (harder to die / "help"); <1.0 lowers it
         # (easier / "rein in"). At the neutral 1.0 this is a no-op, preserving the
         # prior behavior exactly.
-        # A time-boxed toughness boost (#1129) takes the MAX with the standing
+        # A time-boxed toughness boost takes the MAX with the standing
         # handicap (it can only ever STRENGTHEN protection for its window, never
         # weaken a standing set_player_handicap delta). Precedence: while the
         # deadline is in the future the effective handicap is
@@ -2136,10 +2136,10 @@ class BaseGameMode(ShieldMixin, ABC):
         # never truly immune (the deliberate distinction from grant_shield).
         #
         # Composition precedence (last-applied wins by intent):
-        #   1. standing handicap_factor (set_player_handicap, #1107)
-        #   2. toughness boost (#1129) — STRENGTHENS via max (protection)
-        #   2b. auto_rubberband boost (#1143) — STRENGTHENS via max (gap-compression)
-        #   3. soft_penalty tighten (#1134) — WEAKENS via min (pressure)
+        #   1. standing handicap_factor (set_player_handicap)
+        #   2. toughness boost — STRENGTHENS via max (protection)
+        #   2b. auto_rubberband boost — STRENGTHENS via max (gap-compression)
+        #   3. soft_penalty tighten — WEAKENS via min (pressure)
         # The two STRENGTHENING boosts (toughness_boost, auto_rubberband) both
         # compose by MAX so the strongest active protection wins; the soft_penalty
         # MIN is applied AFTER, so an active tighten can cut through either boost:
@@ -2196,14 +2196,14 @@ class BaseGameMode(ShieldMixin, ABC):
             metrics.player_playstyle.labels(serial=serial, game_id=self.game_id).set(
                 player.analytics.get_playstyle().value
             )
-            # Intervention observability signals (#730 / #722 §7)
+            # Intervention observability signals
             metrics.player_movement_variance.labels(serial=serial, game_id=self.game_id).set(
                 player.analytics.windowed_variance
             )
             metrics.player_skill_level.labels(serial=serial, game_id=self.game_id).set(
                 player.analytics.get_skill_level()
             )
-            # Whole-game RETAINED movement-variance aggregate (#1024). Emitted
+            # Whole-game RETAINED movement-variance aggregate. Emitted
             # while alive like skill_level; the agent retains it into the
             # conclusion snapshot so balanced-fitness spike-survival is meaningful
             # post-game (vs. the frozen-last-sample game_player_movement_variance).
@@ -2318,10 +2318,10 @@ class BaseGameMode(ShieldMixin, ABC):
                 player.span.update_name(f"player: {player.name}")
                 player.span.set_attribute("player.name", player.name)
 
-        # Process controller health counters (#571)
+        # Process controller health counters
         self._process_health(player, serial, controller_state)
 
-        # Capture the latest battery reading (#798) so the intervention battery
+        # Capture the latest battery reading so the intervention battery
         # guard has a live in-process source. GameplayData.battery is the same
         # signal that feeds controller_battery_pct; normalize identically.
         player.battery_pct = battery_to_pct(controller_state.battery)
@@ -2386,13 +2386,13 @@ class BaseGameMode(ShieldMixin, ABC):
 
         # Check grace period first - no death or warning during grace period
         # Matches original JoustMania: if game_clock.now() > no_rumble. Uses the unified
-        # effective-grace rule (#817): max(agent shield grace_until, admin
+        # effective-grace rule: max(agent shield grace_until, admin
         # invincible_until) so the agent shield and admin baseline compose here too.
         if current_time < self.effective_grace_until(player):
             # During grace, reset the EMA so it re-primes from the first
             # post-grace frame. Invincibility must *forget* the death spike:
             # otherwise the EMA still holds it when grace expires and the
-            # player is instantly re-killed by stale filter memory (#757).
+            # player is instantly re-killed by stale filter memory.
             # Same re-prime pattern as NonStop revive (nonstop_joust.py).
             player.smoothed_accel = 0.0
             player.last_accel_mag = accel_mag
@@ -2535,7 +2535,7 @@ class BaseGameMode(ShieldMixin, ABC):
             now = game_clock.now()
         return now < self.effective_grace_until(player)
 
-    # Toughness boost defaults (#1129, #1103 Phase 2). Boost is clamped to the same
+    # Toughness boost defaults. Boost is clamped to the same
     # upper bound as handicap_factor so a toughness boost is "much harder to die"
     # but never immune; seconds are capped so a single arming can't last forever.
     TOUGHNESS_BOOST_DEFAULT_FACTOR = 2.0
@@ -2612,7 +2612,7 @@ class BaseGameMode(ShieldMixin, ABC):
             )
 
         # Weaker perceptible feedback, only when the arming changed the window or
-        # the boost (#1301, UC-040 A16, BR-009/BR-010).
+        # the boost (UC-040 A16, BR-009/BR-010).
         if changed:
             await self._send_shield_feedback(
                 player, new_until - game_clock.now(), kind="toughness_boost", sound=not was_protected
@@ -2620,7 +2620,7 @@ class BaseGameMode(ShieldMixin, ABC):
 
         return True
 
-    # Soft-penalty defaults (#1134, #1103 Phase 3). The tighten factor is the
+    # Soft-penalty defaults. The tighten factor is the
     # MIRROR of the toughness boost: a factor BELOW 1.0 weakens the player's
     # threshold for a short window (easier to die). It is clamped to the same
     # lower handicap bound (0.5) so even a fully-tightened threshold stays finite
@@ -2723,7 +2723,7 @@ class BaseGameMode(ShieldMixin, ABC):
 
         return True
 
-    # Auto-rubberband defaults (#1143, #1103 Phase 3). A SINGLE agent decision is
+    # Auto-rubberband defaults. A SINGLE agent decision is
     # expanded across players by the coordinator from the live skill gap. The
     # boost is TIME-BOXED (re-applied each agent cycle while the decision holds)
     # and BOUNDED: ``RUBBERBAND_MAX_BOOST_GENTLE``/``_STRONG`` cap the per-player
@@ -2860,7 +2860,7 @@ class BaseGameMode(ShieldMixin, ABC):
         return boosted
 
     # Spawn grace applied to a revived player so they don't instantly re-die
-    # before they can stop moving (#730, N5). Mirrors Nonstop/Zombie respawn grace.
+    # before they can stop moving (N5). Mirrors Nonstop/Zombie respawn grace.
     REVIVE_SPAWN_GRACE = 2.0
 
     async def revive_player(self, serial: str, spawn_grace: float | None = None) -> bool:
@@ -3075,7 +3075,7 @@ class BaseGameMode(ShieldMixin, ABC):
 
         # The gate again, synchronous with the bookkeeping and the mode's handler: a
         # mode's state may have changed during the awaits above (Swapper latched its
-        # win, the game was force-ended), and a declined kill counts no death (#1988).
+        # win, the game was force-ended), and a declined kill counts no death.
         if not self._kill_gate_open(serial):
             return False
         # Again after the awaits: energy granted while the kill awaited is dropped too.
@@ -3093,10 +3093,10 @@ class BaseGameMode(ShieldMixin, ABC):
 
         # Extract trace context BEFORE _kill_player_impl() which may close the span.
         # This ensures the death effect and sound are parented to the player_lifecycle
-        # span even after the subclass impl ends it. (#456)
+        # span even after the subclass impl ends it.
         trace_parent, trace_state = inject_trace_context(player.span)
 
-        # The ONE player_death span event per death, for every mode (#1327): modes
+        # The ONE player_death span event per death, for every mode: modes
         # add their own attributes through _player_death_event_attributes() and
         # must not emit a second player_death from _kill_player_impl().
         if player.span:
@@ -3122,14 +3122,14 @@ class BaseGameMode(ShieldMixin, ABC):
         await self._kill_player_impl(serial, accel_mag)
 
         # The aggregate counts the state AFTER the mode's handler: it flips alive to
-        # False for a death, keeps it True for a Zombies conversion (#1943).
+        # False for a death, keeps it True for a Zombies conversion.
         # A kill finishing after the game stopped must not overwrite the end-of-game 0.
         if self.running:
             self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
 
         # Send death effect via stream (red + vibrate, no restore)
         # Use pre-extracted trace context so effect appears under player_lifecycle
-        # in traces, even though _kill_player_impl may have closed the span. (#456)
+        # in traces, even though _kill_player_impl may have closed the span.
         from proto import controller_manager_pb2
 
         if self.gameplay_stream and self._sends_death_effect(serial):
@@ -3337,8 +3337,8 @@ class BaseGameMode(ShieldMixin, ABC):
             self.gameplay_span_context = otel_context.get_current()
 
             # Publish the gameplay_phase span_id to the trace-correlation gauge
-            # (#1195) so the agent re-parents its in-game decision chain under
-            # THIS span instead of the game root (#1187). gameplay_phase is the
+            # so the agent re-parents its in-game decision chain under
+            # THIS span instead of the game root. gameplay_phase is the
             # stable active-play window; a span_ctx with a zero/invalid span_id
             # (unsampled) yields an empty hex id, which the session treats as a
             # no-op so the agent keeps falling back to the game root span.
@@ -3361,7 +3361,7 @@ class BaseGameMode(ShieldMixin, ABC):
                 attributes={"game.id": self.game_id},
             )
             self.game_cycle_context = trace.set_span_in_context(self._game_cycle_span)
-            # Publish the game_cycle span_id (#1325, UC-041 BR-004): the agent
+            # Publish the game_cycle span_id (UC-041 BR-004): the agent
             # parents its in-game spans under game_cycle (UC-040 BR-013). An
             # unsampled span has a zero id; publishing nothing keeps the agent on
             # its gameplay_phase / game-root fallback.
@@ -3391,7 +3391,7 @@ class BaseGameMode(ShieldMixin, ABC):
                     player._countdown_span.end()
                     player._countdown_span = None
 
-            # Ramp music volume up to game level after countdown (a shadow game is silent, #1835)
+            # Ramp music volume up to game level after countdown (a shadow game is silent)
             if self.audio_client and not self._is_shadow_game():
                 try:
                     from proto import audio_pb2
@@ -3441,13 +3441,13 @@ class BaseGameMode(ShieldMixin, ABC):
         intervention handlers resolve flags in the same context (#1970).
         """
         # Set transaction context for flag evaluations during this game.
-        # Map the session kind ("primary"/"shadow", #775) to the eval-context
+        # Map the session kind ("primary"/"shadow") to the eval-context
         # game_kind the agent's experiment writer scopes on ("real"/"shadow",
         # targeting.go #932): only a SHADOW session resolves experiments;
         # every primary (menu-driven, player-facing) game is protected as
         # "real". This runs inside the per-session game loop, so the override
         # is scoped to this session's async context (contextvars).
-        # Experiment attribution (#975) rides the same transaction context
+        # Experiment attribution rides the same transaction context
         # as game_kind so an experiment-scoped flag override resolves for
         # this session. Pass them only when set (a non-experiment game
         # leaves them absent, so its experiment targeting is false by
@@ -3469,17 +3469,17 @@ class BaseGameMode(ShieldMixin, ABC):
         still open and clears this session's analytics, on every exit path
         (natural end, force-end, error).
         """
-        # An error teardown skips _end_shield_feedback: end open charge spans (#1837).
+        # An error teardown skips _end_shield_feedback: end open charge spans.
         # Before cleanup, so a raising cleanup leaves no span open.
         self._close_shield_charge_spans()
         # Always call cleanup to cancel tracked tasks
         try:
             await self.cleanup()
         finally:
-            # A grant arriving while cleanup awaits can open a span after the first close (#1868).
+            # A grant arriving while cleanup awaits can open a span after the first close.
             self._close_shield_charge_spans()
             # An early return (force-end after the intro, countdown or warm-up) or an
-            # error skips the end step that closes the player spans (#1997). Guarded
+            # error skips the end step that closes the player spans. Guarded
             # so a failure here neither masks the run's own error nor skips the
             # analytics clear below.
             try:
@@ -3491,7 +3491,7 @@ class BaseGameMode(ShieldMixin, ABC):
             except Exception:
                 logger.exception(f"Closing the grouping spans failed: {self.game_id}")
         # Ensure this session's analytics are always cleared, even on error
-        # (#775) — per-session targeted cleanup, never a global wipe.
+        # — per-session targeted cleanup, never a global wipe.
         self._clear_shield_metrics()
         metrics.clear_session_player_analytics(
             list(self.players.keys()),
@@ -3512,7 +3512,7 @@ class BaseGameMode(ShieldMixin, ABC):
         await self._stop_game_music()
         progress.music_stopped = True
 
-        # Shield LEDs end with the game, before the winner effects (#1301).
+        # Shield LEDs end with the game, before the winner effects.
         await self._end_shield_feedback()
         progress.shield_feedback_ended = True
 
@@ -3544,7 +3544,7 @@ class BaseGameMode(ShieldMixin, ABC):
         failure postcondition, #2357).
         """
         progress = _RunProgress()
-        # The session game root span carries the outcome (#1328).
+        # The session game root span carries the outcome.
         self._capture_game_root_span()
         with self._run_span_scope() as game_span:
             try:
@@ -3663,8 +3663,8 @@ class BaseGameMode(ShieldMixin, ABC):
         self._release_gameplay_stream()
 
         # Clear THIS session's analytics so dashboards show no data when
-        # the game is over, without clobbering other concurrent sessions
-        # (#775). Game-state gauges are per game_id, so each session
+        # the game is over, without clobbering other concurrent sessions.
+        # Game-state gauges are per game_id, so each session
         # removes only its own series (FR-041).
         self._clear_shield_metrics()
         metrics.clear_session_player_analytics(
@@ -3745,7 +3745,7 @@ class BaseGameMode(ShieldMixin, ABC):
                 "player.team": player.team,
                 "player.color": str(player.color),
                 GAME_MODE_ATTR: self.get_game_name(),
-                # #845: stamp game identity so the agent can attribute a
+                # stamp game identity so the agent can attribute a
                 # player_lifecycle span to its game (mirrors game.id/game.kind on
                 # the parent game-session span in game_session.py).
                 "game.id": self.game_id,
@@ -3971,7 +3971,7 @@ class BaseGameMode(ShieldMixin, ABC):
         self._emit_threshold_metrics()
 
         if self._is_shadow_game():
-            # Shadow games are silent (#1835, UC-031 BR-006): PlayMusic on the shared audio
+            # Shadow games are silent (UC-031 BR-006): PlayMusic on the shared audio
             # service would replace the real game's track. The schedule above still runs (D1).
             trace.get_current_span().set_attribute("game.music", "shadow")
             logger.info(f"Shadow game {self.game_id}: no music, tempo schedule runs silently")
@@ -4256,7 +4256,7 @@ class BaseGameMode(ShieldMixin, ABC):
         now = game_clock.now()
 
         if self.tempo_override is not None:
-            # Agent tempo override (#730 PR C): ramp to the override at the bounded
+            # Agent tempo override: ramp to the override at the bounded
             # rate and hold; the natural schedule is suspended (speed_up and
             # change_time untouched), and resumes from the held intensity when the
             # override clears. A new override value restarts from i(now).

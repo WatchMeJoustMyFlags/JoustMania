@@ -89,11 +89,11 @@ class EventBus:
         # subscriber_id -> (queue, the loop that owns the queue).
         self._subscribers: dict[str, tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = {}
         # Guards _subscribers and the state-sync call. A threading.Lock, not an
-        # asyncio.Lock: the bus is used from several event loops (#1300). Never
+        # asyncio.Lock: the bus is used from several event loops. Never
         # await while holding it.
         self._event_lock = threading.Lock()
         self._state_sync_callback = state_sync_callback
-        # game_id stamped onto every published GameEvent (#776). MUTABLE because
+        # game_id stamped onto every published GameEvent. MUTABLE because
         # the persistent primary bus outlives sessions: the primary session sets
         # this when it binds and the servicer clears it on retire, so a game_id
         # fixed at construction would be wrong for the long-lived primary bus.
@@ -181,8 +181,8 @@ class EventBus:
         if "tracestate" in carrier:
             string_data["_tracestate"] = carrier["tracestate"]
 
-        # Create protobuf event, stamped with the game_id this bus is bound to
-        # (#776). Empty when no game is bound (e.g. primary bus while idle).
+        # Create protobuf event, stamped with the game_id this bus is bound to.
+        # Empty when no game is bound (e.g. primary bus while idle).
         event = game_coordinator_pb2.GameEvent(
             event_type=event_type,
             data=string_data,
