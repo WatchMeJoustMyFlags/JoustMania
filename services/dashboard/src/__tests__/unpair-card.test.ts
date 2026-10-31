@@ -102,6 +102,20 @@ describe("UC-005: Unpair a Controller (dashboard card)", () => {
     await vi.waitFor(() => expect(button.disabled).toBe(false));
   });
 
+  it("UC-005/main step 1 a real controller's bare 12-hex serial shows the button and posts the colon form; a mock serial hides it", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, { removed: 1, adapters: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { button } = await newCard("E0AE5EE112E4");
+    expect(button.hidden).toBe(false);
+    expect((await newCard("MOCK0001")).button.hidden).toBe(true);
+
+    button.click();
+    await settle();
+
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(JSON.parse(String(init.body))).toEqual({ address: "E0:AE:5E:E1:12:E4" });
+  });
+
   it("UC-005/main step 1 a declined confirmation sends nothing and re-enables the button", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

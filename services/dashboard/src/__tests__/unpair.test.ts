@@ -2,7 +2,7 @@
  * Unpair a controller from its dashboard card (UC-005).
  */
 import { describe, expect, it, vi } from "vitest";
-import { canUnpair, requestUnpair, unpairConfirmMessage } from "../unpair.js";
+import { canUnpair, requestUnpair, toBluetoothAddress, unpairConfirmMessage } from "../unpair.js";
 
 const SERIAL = "00:06:F7:AA:BB:CC";
 
@@ -105,6 +105,21 @@ describe("UC-005: Unpair a Controller", () => {
     expect(outcome.kind).toBe("failed");
     expect(confirm).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("UC-005/main a bare 12-hex serial (as real controllers report it) can be unpaired and is sent with colons", async () => {
+    const bare = "E0AE5EE112E4";
+    expect(canUnpair(bare)).toBe(true);
+    expect(canUnpair("e0ae5ee112e4")).toBe(true);
+    expect(canUnpair("E0AE5EE112E")).toBe(false);
+    expect(canUnpair("E0AE5EE112E4F")).toBe(false);
+    expect(toBluetoothAddress("e0-ae-5e-e1-12-e4")).toBe("E0:AE:5E:E1:12:E4");
+    const fetchMock = vi.fn(async () => jsonResponse(200, { removed: 1 }));
+
+    await requestUnpair(bare, { confirm: () => true, fetch: fetchMock as typeof fetch });
+
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(JSON.parse(init.body as string)).toEqual({ address: "E0:AE:5E:E1:12:E4" });
   });
 
   it("UC-005/A6 shows the 'being paired' refusal", async () => {
