@@ -40,6 +40,7 @@ from services.game_coordinator.interventions import (
 )
 from services.game_coordinator.lifecycle_handlers import handle_shield_seconds, register_lifecycle_handlers
 from services.game_coordinator.servicer import GameCoordinatorServicer
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
@@ -153,59 +154,6 @@ class AgentStub:
         return default
 
 
-class FakePlayer:
-    def __init__(self, serial):
-        self.serial = serial
-        self.alive = True
-
-
-class FakeGame:
-    """Records every lifecycle / grant effect the handlers apply."""
-
-    def __init__(self, serials=("p1", "p2")):
-        self.players = {s: FakePlayer(s) for s in serials}
-        self.killed: list[str] = []
-        self.revived: list[str] = []
-        self.shields: list[tuple[str, float]] = []
-        self.toughness_boosts: list[tuple[str, float, float]] = []
-        self.warned: list[str] = []
-        self.tightened: list[str] = []
-
-    def get_game_name(self):
-        return "Joust Free-for-All"
-
-    async def _kill_player(self, serial, _accel, reason=None):
-        self.killed.append(serial)
-        self.players[serial].alive = False
-
-    async def revive_player(self, serial):
-        self.revived.append(serial)
-        self.players[serial].alive = True
-        return True
-
-    async def grant_shield(self, serial, seconds):
-        self.shields.append((serial, seconds))
-        return True
-
-    async def grant_toughness_boost(self, serial, seconds, boost):
-        self.toughness_boosts.append((serial, seconds, boost))
-        return True
-
-    async def warn_player(self, serial):
-        self.warned.append(serial)
-
-    async def apply_soft_penalty(self, serial, seconds, factor):
-        self.tightened.append(serial)
-
-    def grants(self, flag_key) -> list[str]:
-        """Serials granted by ``flag_key``, in order."""
-        if flag_key == "shield_seconds":
-            return [s for s, _ in self.shields]
-        if flag_key == "toughness_boost_seconds":
-            return [s for s, _, _ in self.toughness_boosts]
-        return self.warned + self.tightened
-
-
 class Harness:
     """A manager over a mutable set of live sessions, mimicking the servicer."""
 
@@ -235,9 +183,9 @@ class Harness:
 
         return publish
 
-    def start_game(self, game_id, *, real, serials=("p1", "p2")) -> FakeGame:
+    def start_game(self, game_id, *, real, serials=("p1", "p2")) -> FakeInterventionGame:
         """Admit a game like the servicer and let it go live."""
-        game = FakeGame(serials)
+        game = FakeInterventionGame(serials=serials)
         self.views.append(SessionView(game_id=game_id, game=game, publish=self._publisher(game_id), is_real=real))
         return game
 
@@ -407,7 +355,7 @@ async def _servicer_with_games(*kinds: bool, flag_values=None, per_serial=None):
         for real in kinds:
             ok, game_id = await servicer._start_game_from_config(_start_config(real), _MockSpan())
             assert ok, game_id
-            game = FakeGame()
+            game = FakeInterventionGame()
             servicer.sessions[game_id].current_game = game  # the game thread built it
             games[game_id] = game
     return servicer, flags, games
@@ -597,7 +545,7 @@ async def test_grant_handler_applies_only_the_dispatched_serial():
     """The shield handler grants ``ctx.target_serial`` only, even while the
     ladder still holds other players' grants."""
     h = Harness()
-    game = FakeGame()
+    game = FakeInterventionGame()
     _grant(h, "shield_seconds", "p1", "1")
     _grant(h, "shield_seconds", "p2", "2", 3.0)
     ctx = InterventionContext(

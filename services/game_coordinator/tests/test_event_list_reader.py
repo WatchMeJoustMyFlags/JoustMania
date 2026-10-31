@@ -26,6 +26,7 @@ from services.game_coordinator.interventions import (
     SessionView,
 )
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
 BASELINE = {"epoch": "", "seq": 0, "events": []}
@@ -87,30 +88,6 @@ class AgentStub:
         return default
 
 
-class FakePlayer:
-    def __init__(self, serial):
-        self.serial = serial
-        self.alive = True
-        self.sensitivity_factor = 1.0
-
-
-class FakeGame:
-    def __init__(self, serials=("MOCK0001", "MOCK0002", "MOCK0003")):
-        self.players = {s: FakePlayer(s) for s in serials}
-        self.killed: list[str] = []
-        self.sounds: list[str] = []
-
-    def get_game_name(self):
-        return "Joust Free-for-All"
-
-    async def _kill_player(self, serial, _accel, reason=None):
-        self.killed.append(serial)
-        self.players[serial].alive = False
-
-    async def _play_sound(self, sound_id, priority=0):
-        self.sounds.append(sound_id)
-
-
 class Harness:
     def __init__(self):
         self.flags = PerGameFlagClient()
@@ -138,8 +115,8 @@ class Harness:
 
         return publish
 
-    def start_game(self, game_id, real=True) -> FakeGame:
-        game = FakeGame()
+    def start_game(self, game_id, real=True) -> FakeInterventionGame:
+        game = FakeInterventionGame(serials=("MOCK0001", "MOCK0002", "MOCK0003"))
         self.views.append(SessionView(game_id=game_id, game=game, publish=self._publisher(game_id), is_real=real))
         return game
 
@@ -193,21 +170,21 @@ async def test_failed_read_applies_nothing_and_does_not_replay():
     game = h.start_game("game_a")
     h.flags.put_events("audio_cue", "game_a", "e1", [ev(1, sound="agent_cue")])
     await h.flag_change()
-    assert game.sounds == ["agent_cue"]
+    assert game.sounds == [("agent_cue", 2)]
     # Step 1: flagd errors on the next read
     h.flags.failing.add("audio_cue")
     await h.flag_change()
-    assert game.sounds == ["agent_cue"]
+    assert game.sounds == [("agent_cue", 2)]
     assert h.mgr._last_event["game_a"]["audio_cue"] == ("e1", 1)
     # Step 2: flagd recovers with the same list: nothing replays
     h.flags.failing.clear()
     await h.flag_change()
-    assert game.sounds == ["agent_cue"], "the event was applied again after a failed read"
+    assert game.sounds == [("agent_cue", 2)], "the event was applied again after a failed read"
     assert h.mgr._last_event["game_a"]["audio_cue"] == ("e1", 1)
     # Step 3: a new event after the recovery applies once
     h.flags.put_events("audio_cue", "game_a", "e1", [ev(1, sound="agent_cue"), ev(2, sound="agent_cue")])
     await h.flag_change()
-    assert game.sounds == ["agent_cue", "agent_cue"]
+    assert game.sounds == [("agent_cue", 2), ("agent_cue", 2)]
 
 
 @pytest.mark.uc("UC-053", flow="A9", br=["BR-006"], tc="TC-019")
@@ -277,7 +254,7 @@ async def test_events_apply_only_in_their_game():
     h.flags.put_events("audio_cue", "game_b", "e1", [ev(1, sound="agent_cue")])
     h.flags.put_events("end_game", "game_b", "e1", [ev(1)])
     await h.flag_change()
-    assert game_a.sounds == [] and game_b.sounds == ["agent_cue"]
+    assert game_a.sounds == [] and game_b.sounds == [("agent_cue", 2)]
     h.end_game_fn.assert_awaited_once_with("game_b", "agent_intervention")
     assert h.applied("game_a", "end_game") == []
 

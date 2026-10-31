@@ -24,11 +24,13 @@ from openfeature.flag_evaluation import FlagEvaluationDetails
 
 from lib.types import GameEvent
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
+from services.game_coordinator.games.base import Player
 from services.game_coordinator.interventions import (
     INTERVENTION_SPECS,
     InterventionManager,
     SessionView,
 )
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 from services.game_coordinator.tests.event_list_helpers import BASELINE, edge_event, object_details
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
@@ -114,22 +116,6 @@ class AgentStub:
         return default
 
 
-class FakePlayer:
-    def __init__(self, serial, alive=True):
-        self.serial = serial
-        self.alive = alive
-        self.sensitivity_factor = 1.0
-
-
-class FakeGame:
-    def __init__(self, name="Nonstop Joust", players=None):
-        self._name = name
-        self.players = players or {}
-
-    def get_game_name(self):
-        return self._name
-
-
 def _mono():
     counter = itertools.count()
 
@@ -187,8 +173,8 @@ def _applied(events, type_id):
 async def test_gameid_targeted_edge_applies_only_to_matching_session():
     """An eliminate_player rule targeting gameId=shadow fires ONLY for shadow;
     the primary (and its bus) is provably untouched."""
-    primary_game = FakeGame(players={"p1": FakePlayer("p1")})
-    shadow_game = FakeGame(players={"s1": FakePlayer("s1")})
+    primary_game = FakeInterventionGame(players={"p1": Player("p1")})
+    shadow_game = FakeInterventionGame(players={"s1": Player("s1")})
     mgr, events = make_multisession_manager(
         sessions=[("game_primary", primary_game), ("game_shadow", shadow_game)],
     )
@@ -212,8 +198,8 @@ async def test_gameid_targeted_edge_applies_only_to_matching_session():
 async def test_untargeted_intervention_applies_to_primary_only():
     """An un-targeted state flag (no gameId rule) moves the primary and leaves
     every shadow at the default no-op — today's least-surprise semantics."""
-    primary_game = FakeGame()
-    shadow_game = FakeGame()
+    primary_game = FakeInterventionGame(players={})
+    shadow_game = FakeInterventionGame(players={})
     mgr, events = make_multisession_manager(
         sessions=[("game_primary", primary_game), ("game_shadow", shadow_game)],
     )
@@ -238,8 +224,8 @@ async def test_per_player_and_per_game_compose_in_one_rule():
     """player_sensitivity_factor with a rule matching BOTH gameId==shadow AND
     targetingKey==s1 resolves the experiment value only for that serial in that
     game; the same serial name in the primary game is unaffected."""
-    primary_game = FakeGame(players={"s1": FakePlayer("s1")})
-    shadow_game = FakeGame(players={"s1": FakePlayer("s1"), "s2": FakePlayer("s2")})
+    primary_game = FakeInterventionGame(players={"s1": Player("s1")})
+    shadow_game = FakeInterventionGame(players={"s1": Player("s1"), "s2": Player("s2")})
     mgr, events = make_multisession_manager(
         sessions=[("game_primary", primary_game), ("game_shadow", shadow_game)],
     )
@@ -268,8 +254,8 @@ async def test_per_player_and_per_game_compose_in_one_rule():
 async def test_change_detection_is_per_session_independent():
     """Two shadows targeted by the same edge flag each fire once; re-evaluating
     does not re-fire either (per-(game_id,flag) last applied (epoch, seq))."""
-    a = FakeGame(players={"a1": FakePlayer("a1")})
-    b = FakeGame(players={"b1": FakePlayer("b1")})
+    a = FakeInterventionGame(players={"a1": Player("a1")})
+    b = FakeInterventionGame(players={"b1": Player("b1")})
     mgr, events = make_multisession_manager(sessions=[("game_a", a), ("game_b", b)])
     mgr._interventions_client.set_rule(
         "eliminate_player",
@@ -291,7 +277,7 @@ async def test_change_detection_is_per_session_independent():
 async def test_legacy_get_game_path_unchanged():
     """A manager wired with the legacy get_game callback still evaluates a single
     primary-only session (empty game_id) and publishes on the primary bus."""
-    game = FakeGame()
+    game = FakeInterventionGame(players={})
     events = []
 
     async def publisher(event_type, data):
