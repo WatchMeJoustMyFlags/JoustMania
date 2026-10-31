@@ -14,7 +14,8 @@
 #                   "enum a|b", "int lo hi", "float lo hi"; one list per alternative
 #          free_string: true any string up to 512 characters
 #          payload: {field: rule} event payload; rules: serial, serial_or_empty,
-#                   sound, "enum a|b"
+#                   serial_set (2 to 6 distinct serials of the game, comma-separated),
+#                   sound, "enum a|b", "float lo hi" (a plain decimal string)
 #          fraction: [lo, hi] fraction_percent range of a fraction write
 #          shape: true    an object with the keys and value kinds of the default variant
 # persist: true = an admin setting a write MAY persist with "persist": true
@@ -77,6 +78,10 @@ flags:
   - {set: agent, key: policy.coordinator_backstop_per_minute, kind: overlay, scope: [stack], bounds: {range: [1, 100], integer: true}}
   - {set: agent, key: policy.max_shields_per_player_per_game, kind: overlay, scope: [stack], bounds: {range: [0, 20], integer: true}}
   - {set: agent, key: policy.shield_cooldown_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 120], integer: true}}
+  - {set: agent, key: policy.group_grant.enabled, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
+  - {set: agent, key: policy.group_grant.real_games, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
+  - {set: agent, key: policy.group_grant.max_per_game, kind: overlay, scope: [stack], bounds: {range: [0, 3], integer: true}}
+  - {set: agent, key: policy.group_grant.max_targets, kind: overlay, scope: [stack], bounds: {range: [2, 6], integer: true}}
   - {set: agent, key: fitness.accelerate.target_session_seconds, kind: overlay, scope: [stack]}
   - {set: agent, key: verdict_min_n, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
   - {set: agent, key: verdict_min_pairs, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
