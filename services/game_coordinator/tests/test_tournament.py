@@ -34,14 +34,6 @@ from services.game_coordinator.games.tournament import (
 )
 
 
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
-
-
 class TestTournamentGameMode:
     """Test Tournament game mechanics."""
 

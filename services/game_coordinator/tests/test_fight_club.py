@@ -28,7 +28,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream
 
 from lib.types import Sound
 from proto import controller_manager_pb2
@@ -42,14 +42,6 @@ from services.game_coordinator.games.fight_club import (
     FightClubGame,
     FightState,
 )
-
-
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
 
 
 class TestFightClubGameMode:

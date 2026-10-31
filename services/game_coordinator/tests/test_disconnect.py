@@ -21,21 +21,11 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream
 
 from proto import controller_manager_pb2
 from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.ffa import FFAGame
-
-
-class MockGameplayStream:
-    """Mock bidirectional stream for testing."""
-
-    def __init__(self):
-        self.messages = []
-
-    async def write(self, message):
-        self.messages.append(message)
 
 
 class TestHandleDisconnect:

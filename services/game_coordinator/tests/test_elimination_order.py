@@ -19,16 +19,9 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream
 
 from services.game_coordinator.games.ffa import FFAGame
-
-
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        pass
 
 
 @pytest_asyncio.fixture
