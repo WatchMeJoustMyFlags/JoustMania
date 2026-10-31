@@ -557,7 +557,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             return None
         return self.backend.pattern_stream_rate(current_filter)
 
-    async def StreamGameplayData(self, request_iterator, context):
+    async def StreamGameplayData(self, request_iterator, context):  # noqa: C901
         """
         Stream gameplay data with dynamic filtering via bidirectional communication (Phase 45).
 

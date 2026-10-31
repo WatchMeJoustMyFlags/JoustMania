@@ -24,6 +24,8 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
+from services.controller_manager.tests.backend_doubles import autospec_backend  # noqa: E402
+
 
 class FakeSpan:
     """Records attributes and events set on a span for assertions."""
@@ -61,7 +63,7 @@ def _make_loop(backend=None):
     from services.controller_manager.discovery_loop import DiscoveryLoop
 
     return DiscoveryLoop(
-        backend=backend or MagicMock(),
+        backend=backend or autospec_backend(),
         tracked_controllers={},
         controller_states={},
         button_detector=MagicMock(),
@@ -183,7 +185,7 @@ class TestSpanEmission:
     @patch("services.controller_manager.metrics.controller_bluetooth_event_gap_seconds")
     @patch("services.controller_manager.metrics.controller_state_update_hz")
     def test_span_attributes_and_events(self, _hz, _gap, _ratio_w, _ratio, _mhz):
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_adapter_type.return_value = "unstable"
         backend.rollout_summary.return_value = ("unstable", 3)
         backend.rollout_strategy.return_value = "progressive"
@@ -225,7 +227,7 @@ class TestSpanEmission:
         """#1489: a failed rollout read omits target/count and flags the error."""
         from services.controller_manager.multiplexer.rollout_router import RolloutReadError
 
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_adapter_type.return_value = "python"
         backend.rollout_summary.side_effect = RolloutReadError("flagd down")
         # The strategy read falls back to its "off" default on the same error.
@@ -254,7 +256,7 @@ class TestSpanEmission:
         """#1489: a persistent read error warns once, recovery logs info once."""
         from services.controller_manager.multiplexer.rollout_router import RolloutReadError
 
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_adapter_type.return_value = "python"
         backend.rollout_strategy.return_value = "off"
         loop = _make_loop(backend)
@@ -286,7 +288,7 @@ class TestSpanEmission:
     @patch("services.controller_manager.metrics.controller_bluetooth_event_gap_seconds")
     @patch("services.controller_manager.metrics.controller_state_update_hz")
     def test_rollout_off_has_empty_target_and_no_read_error(self, *_metrics):
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_adapter_type.return_value = "python"
         backend.rollout_summary.return_value = ("", 0)
         backend.rollout_strategy.return_value = "off"

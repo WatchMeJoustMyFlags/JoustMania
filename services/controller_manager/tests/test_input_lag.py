@@ -65,7 +65,7 @@ class TestSampleAge:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @pytest.mark.asyncio
     async def test_fresh_sample_age_counts_from_poll_pickup(self):
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_controller_state = AsyncMock(side_effect=lambda _serial: {"accel": (0, 0, 1)})
         loop = _make_loop(backend)
 
@@ -81,7 +81,7 @@ class TestSampleAge:
     async def test_stale_replay_keeps_aging(self):
         """Same frame object returned again (stalled backend) is not a new sample."""
         frame = {"accel": (0, 0, 1)}
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_controller_state = AsyncMock(return_value=frame)
         loop = _make_loop(backend)
 

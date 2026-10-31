@@ -143,7 +143,7 @@ class HidStreamMixin:
         if thread is not None and thread is not threading.current_thread() and thread.is_alive():
             thread.join(timeout=STOP_JOIN_TIMEOUT_S)
 
-    def _stream_loop(self, generation: int | None = None) -> None:
+    def _stream_loop(self, generation: int | None = None) -> None:  # noqa: C901
         """Background thread: read one StreamIO call until it ends or is cancelled."""
         if generation is None:
             generation = self._stream_generation

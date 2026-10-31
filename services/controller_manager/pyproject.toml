@@ -57,7 +57,7 @@ line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "N", "UP", "ASYNC", "B", "C4", "RET", "SIM", "ARG"]
+select = ["E", "W", "F", "I", "N", "UP", "ASYNC", "B", "C4", "RET", "SIM", "ARG", "C901"]
 ignore = ["ANN"]
 
 [tool.ruff.lint.per-file-ignores]
@@ -68,6 +68,9 @@ ignore = ["ANN"]
 "server.py" = ["E402"]  # sys.path manipulation before imports
 "tests/*.py" = ["ARG002", "E402"]  # Test fixtures, sys.path manipulation
 "tests/conftest.py" = ["N802", "E402", "ARG002"]  # Mock gRPC classes use PascalCase
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15  # #2354: new code stays simple; existing offenders carry a noqa
 
 [tool.ruff.lint.isort]
 known-first-party = ["lib", "proto", "services"]

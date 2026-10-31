@@ -20,7 +20,7 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-from services.controller_manager.tests.backend_doubles import inert_hooks
+from services.controller_manager.tests.backend_doubles import autospec_backend
 
 
 def _make_adapter(adapter_type="mock", serials=None):
@@ -39,7 +39,7 @@ def _make_adapter(adapter_type="mock", serials=None):
 def _create_discovery_loop(**overrides):
     """Create a DiscoveryLoop with mocked dependencies."""
     defaults = {
-        "backend": inert_hooks(MagicMock(spec=[])),
+        "backend": autospec_backend(),
         "tracked_controllers": {},
         "controller_states": {},
         "button_detector": MagicMock(),
@@ -98,7 +98,7 @@ class TestDrainHealthCounters:
     """Tests for drain_health_counters() drain-and-reset semantics."""
 
     def test_drain_returns_accumulated_counts(self):
-        backend = inert_hooks(MagicMock(spec=[]))
+        backend = autospec_backend()
         loop = _create_discovery_loop(backend=backend)
         loop._record("S1").poll_drops = 5
         loop._record("S1").poll_errors = 2
@@ -109,7 +109,7 @@ class TestDrainHealthCounters:
         assert led == 0
 
     def test_drain_resets_counters(self):
-        backend = inert_hooks(MagicMock(spec=[]))
+        backend = autospec_backend()
         loop = _create_discovery_loop(backend=backend)
         loop._record("S1").poll_drops = 5
         loop._record("S1").poll_errors = 2
@@ -123,7 +123,7 @@ class TestDrainHealthCounters:
         assert led == 0
 
     def test_drain_unknown_serial_returns_zeros(self):
-        backend = inert_hooks(MagicMock(spec=[]))
+        backend = autospec_backend()
         loop = _create_discovery_loop(backend=backend)
         drops, errors, led = loop.drain_health_counters("UNKNOWN")
         assert drops == 0
@@ -132,7 +132,7 @@ class TestDrainHealthCounters:
 
     def test_drain_includes_led_failures_from_backend(self):
         """The backend's drained LED failure count is included."""
-        backend = inert_hooks(MagicMock(spec=[]))
+        backend = autospec_backend()
         backend.take_led_failures.return_value = 3
         loop = _create_discovery_loop(backend=backend)
         loop._record("S1").poll_drops = 1
@@ -145,7 +145,7 @@ class TestDrainHealthCounters:
 
     def test_drain_without_led_failures_attribute(self):
         """A backend that counts no LED failures (non-multiplexer) returns 0."""
-        backend = inert_hooks(MagicMock(spec=[]))
+        backend = autospec_backend()
         loop = _create_discovery_loop(backend=backend)
         loop._record("S1").poll_drops = 1
 

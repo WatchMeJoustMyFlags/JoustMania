@@ -26,7 +26,7 @@ from services.controller_manager.connection_quality import (
     percentile_nearest_rank,
 )
 from services.controller_manager.discovery_loop import DiscoveryLoop
-from services.controller_manager.tests.backend_doubles import autospec_backend, inert_hooks
+from services.controller_manager.tests.backend_doubles import autospec_backend
 
 SERIAL = "00:06:F7:AA:BB:CC"
 TIME_FN = "services.controller_manager.discovery_loop.time.time"
@@ -212,7 +212,7 @@ async def _poll_at(loop: DiscoveryLoop, now: float) -> None:
 class TestDiscoveryLoopExport:
     @pytest.fixture
     def loop(self):
-        backend = inert_hooks(MagicMock(spec=["get_controller_state", "get_connected_controllers"]))
+        backend = autospec_backend()
         # A new dict per poll: every poll is a fresh frame.
         backend.get_controller_state = AsyncMock(side_effect=lambda _serial: {"accel": (0, 0, 1)})
         return _make_loop(backend)

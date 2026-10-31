@@ -538,7 +538,7 @@ class DiscoveryLoop:
         except Exception as e:
             logger.error(f"Error discovering controllers: {e}", exc_info=True)
 
-    async def _update_controller_states(self) -> None:
+    async def _update_controller_states(self) -> None:  # noqa: C901
         """
         Update states for all tracked controllers from backend.
 

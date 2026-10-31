@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
+from services.controller_manager.tests.backend_doubles import autospec_backend
 
 
 class TestActivityTracking:
@@ -21,7 +22,7 @@ class TestActivityTracking:
         from services.controller_manager.discovery_loop import DiscoveryLoop
 
         # Mock all dependencies
-        backend = MagicMock()
+        backend = autospec_backend()
         tracked_controllers = {}
         controller_states = {}
         button_detector = MagicMock()
@@ -188,7 +189,7 @@ class TestAdaptivePollingLogic:
         """Create a DiscoveryLoop instance with mocked dependencies."""
         from services.controller_manager.discovery_loop import DiscoveryLoop
 
-        backend = MagicMock()
+        backend = autospec_backend()
         tracked_controllers = {}
         controller_states = {}
         button_detector = MagicMock()
@@ -273,7 +274,7 @@ class TestDiscoveryLoopLifecycle:
         """Create a DiscoveryLoop instance with mocked dependencies."""
         from services.controller_manager.discovery_loop import DiscoveryLoop
 
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.initialize = MagicMock(return_value=False)  # Prevent actual init
         tracked_controllers = {}
         controller_states = {}
@@ -323,7 +324,7 @@ class TestPollingStateCleanup:
         """Create a DiscoveryLoop instance with mocked dependencies."""
         from services.controller_manager.discovery_loop import DiscoveryLoop
 
-        backend = MagicMock()
+        backend = autospec_backend()
         tracked_controllers = {}
         controller_states = {}
         button_detector = MagicMock()
@@ -386,7 +387,7 @@ class TestAccelerometerMovementCalculation:
         """Create a DiscoveryLoop instance with mocked dependencies."""
         from services.controller_manager.discovery_loop import DiscoveryLoop
 
-        backend = MagicMock()
+        backend = autospec_backend()
         tracked_controllers = {}
         controller_states = {}
         button_detector = MagicMock()

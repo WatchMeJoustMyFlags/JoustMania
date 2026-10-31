@@ -18,12 +18,13 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
 from services.controller_manager.discovery_loop import DiscoveryLoop
+from services.controller_manager.tests.backend_doubles import autospec_backend
 
 
 def _create_discovery_loop(**overrides):
     """Create a DiscoveryLoop with mocked dependencies."""
     defaults = {
-        "backend": MagicMock(spec=[]),
+        "backend": autospec_backend(),
         "tracked_controllers": {},
         "controller_states": {},
         "button_detector": MagicMock(),
