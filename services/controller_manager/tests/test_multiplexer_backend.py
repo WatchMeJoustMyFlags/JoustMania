@@ -19,11 +19,12 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
+from services.controller_manager.tests.backend_doubles import autospec_adapter
 
 
 def _make_adapter(adapter_type="mock", serials=None):
     """Create a mock ControllerIOAdapter."""
-    adapter = MagicMock()
+    adapter = autospec_adapter()
     adapter.adapter_type = adapter_type
     adapter.discover = MagicMock(return_value=serials or [])
     adapter.open = MagicMock(return_value=True)

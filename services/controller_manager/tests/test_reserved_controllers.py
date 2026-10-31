@@ -31,6 +31,11 @@ from services.controller_manager.discovery_loop import visible_serials
 from services.controller_manager.mock_control_service import MockControllerService
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
+from services.controller_manager.tests.backend_doubles import (
+    autospec_feedback_manager,
+    autospec_monitoring,
+    autospec_publisher,
+)
 
 
 def _make_service() -> tuple[MockControllerService, MockAdapter]:
@@ -256,12 +261,12 @@ def _make_discovery_loop(tracked, backend, button_detector):
         tracked_controllers=tracked,
         controller_states={},
         button_detector=button_detector,
-        feedback_manager=MagicMock(),
-        monitoring=MagicMock(),
+        feedback_manager=autospec_feedback_manager(),
+        monitoring=autospec_monitoring(),
         rescan_timer=MagicMock(should_force_rescan=MagicMock(return_value=False)),
         paired_serials=[],
         base_colors={},
-        event_publisher=MagicMock(),
+        event_publisher=autospec_publisher(),
     )
     loop.backend_initialized = True
     return loop

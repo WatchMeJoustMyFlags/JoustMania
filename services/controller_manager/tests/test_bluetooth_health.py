@@ -24,7 +24,13 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
-from services.controller_manager.tests.backend_doubles import autospec_backend  # noqa: E402
+from services.controller_manager.tests.backend_doubles import (
+    autospec_backend,  # noqa: E402
+    autospec_button_detector,
+    autospec_feedback_manager,
+    autospec_monitoring,
+    autospec_publisher,
+)
 
 
 class FakeSpan:
@@ -66,13 +72,13 @@ def _make_loop(backend=None):
         backend=backend or autospec_backend(),
         tracked_controllers={},
         controller_states={},
-        button_detector=MagicMock(),
-        feedback_manager=MagicMock(),
-        monitoring=MagicMock(),
+        button_detector=autospec_button_detector(),
+        feedback_manager=autospec_feedback_manager(),
+        monitoring=autospec_monitoring(),
         rescan_timer=MagicMock(),
         paired_serials=[],
         base_colors={},
-        event_publisher=MagicMock(),
+        event_publisher=autospec_publisher(),
     )
 
 
@@ -361,7 +367,7 @@ class TestUpdateControllerStatesWiring:
         loop.tracked_controllers = {"AA": {}}
         loop.controller_states = {}
         loop._cached_serials = ["AA"]
-        loop.button_detector = MagicMock()
+        loop.button_detector = autospec_button_detector()
 
         fresh1 = {"serial": "AA", "accel": {"x": 0.0, "y": 0.0, "z": 1.0}}
         stale = fresh1  # same object -> stale replay
