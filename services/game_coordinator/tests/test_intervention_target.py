@@ -40,9 +40,6 @@ from services.game_coordinator.interventions import (
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
 from services.game_coordinator.tests.conftest import FakeInterventionGame, MockGameplayStream, async_noop
 
-# Attributes a mode only sets once its game starts (BaseGameMode.on_music_start), not in __init__.
-SET_AT_GAME_START = frozenset({"music_speed"})
-
 TARGET_MEMBERS = sorted(typing.get_protocol_members(InterventionTarget))
 METHOD_MEMBERS = [m for m in TARGET_MEMBERS if inspect.isfunction(inspect.getattr_static(InterventionTarget, m, None))]
 
@@ -62,11 +59,9 @@ def _all_mode_names() -> set[str]:
     return {_build_mode(mode).get_game_name() for mode in _GAME_CLASSES}
 
 
-def _check_target(game, *, skip=frozenset()):
+def _check_target(game):
     """Every Protocol member exists on ``game`` and each method takes the Protocol's parameters."""
     for name in TARGET_MEMBERS:
-        if name in skip:
-            continue
         assert hasattr(game, name), f"{type(game).__name__} lacks {name}"
     for name in METHOD_MEMBERS:
         assert callable(getattr(game, name, None)), f"{type(game).__name__}.{name} is not callable"
@@ -84,7 +79,7 @@ def _check_target(game, *, skip=frozenset()):
 @pytest.mark.parametrize("mode", list(_GAME_CLASSES), ids=lambda m: m.name)
 def test_every_game_mode_implements_the_intervention_target(mode):
     game = _build_mode(mode)
-    _check_target(game, skip=SET_AT_GAME_START)
+    _check_target(game)
     # The deny matrix is keyed by get_game_name(): a key no mode reports would silently never deny.
     names = _all_mode_names()
     assert set(MODE_CAPABILITY_DENY) <= names, sorted(set(MODE_CAPABILITY_DENY) - names)
