@@ -90,6 +90,9 @@ class MockFeedbackManager:
     async def set_controller_color(self, serial, color):
         pass
 
+    def clear_controller(self, serial):
+        """A disconnect ends the controller's feedback (UC-002 A1 step 4, #2471)."""
+
 
 class MockMonitoring:
     """Mock controller monitoring."""

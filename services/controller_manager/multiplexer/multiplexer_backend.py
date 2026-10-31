@@ -94,6 +94,13 @@ class MultiplexerBackend(ControllerBackend):
         # Centralized state
         self._led_colors: dict[str, tuple[int, int, int]] = {}
         self._rumble: dict[str, int] = {}
+        # Serials whose desired output was written while they had no route (a
+        # disconnect): the stale-state cleanup keeps that output, and the LED batch
+        # skips the serial, and a write to it is held too, until it registers again
+        # (``force_led_resend``, called before the owner's colour), so a kept output
+        # never goes out ahead of the owner's (UC-002 BR-008, #2471).
+        # Written under _routing_lock, like the cleanup that reads it.
+        self._unrouted_output: set[str] = set()
         # Last output (colour + rumble) a write accepted, and when (#2355).
         # Only a successful write updates them, so the batch resends a
         # changed or failed output on its next tick.
@@ -216,6 +223,7 @@ class MultiplexerBackend(ControllerBackend):
         with self._led_lock, self._routing_lock:
             self._serial_to_adapter = {}
             self._led_colors.clear()
+            self._unrouted_output.clear()
             self._rumble.clear()
             self._last_sent_color.clear()
             self._last_sent_rumble.clear()
@@ -509,8 +517,9 @@ class MultiplexerBackend(ControllerBackend):
         tracked = set(self._led_colors) | set(self._rumble) | set(self._last_backend) | set(self._last_adapter)
         stale = tracked - set(seen)
         for serial in stale:
-            self._led_colors.pop(serial, None)
-            self._rumble.pop(serial, None)
+            if serial not in self._unrouted_output:
+                self._led_colors.pop(serial, None)
+                self._rumble.pop(serial, None)
             self._last_sent_color.pop(serial, None)
             self._last_sent_rumble.pop(serial, None)
             self._last_led_update.pop(serial, None)
@@ -594,7 +603,7 @@ class MultiplexerBackend(ControllerBackend):
         # Every serial with any desired output: a rumble set before any colour
         # is retried like a colour (#2365).
         for serial in list({*self._led_colors, *self._rumble}):  # NOSONAR(S7504)
-            if serial in self._effect_active:
+            if serial in self._effect_active or serial in self._unrouted_output:
                 continue
 
             output = None
@@ -638,21 +647,37 @@ class MultiplexerBackend(ControllerBackend):
         return updated_count
 
     def force_led_resend(self, serial: str) -> None:
-        """Send the serial's output on the next LED batch even if unchanged (UC-002 BR-008, #2466)."""
+        """Send the serial's output on the next LED batch even if unchanged (UC-002 BR-008, #2466).
+
+        Called when the controller (re)registers, before the owner's colour: a write kept
+        from the disconnect may go out from now on (#2471).
+        """
         self._force_led_resend.add(serial)
+        self._release_unrouted_output(serial)
+
+    def _release_unrouted_output(self, serial: str) -> None:
+        """Let the LED batch send the serial's output again (#2471)."""
+        if serial in self._unrouted_output:
+            with self._routing_lock:
+                self._unrouted_output.discard(serial)
 
     def clear_led_output(self, serial: str) -> None:
         """Forget a silently dropped controller's desired colour and rumble (UC-002 BR-007, #2466).
 
         The backend still lists it, so discovery's stale-state cleanup never runs for it; without
         this the forced resend of its next registration would replay a stale game or death colour.
-        Single dict operations from the event loop, as in ``set_led_color``: no lock needed.
+        Under the same locks as the discovery swap's cleanup (_led_lock, then
+        _routing_lock), so a running LED batch never re-sends the dropped output (#2471).
         """
-        self._led_colors.pop(serial, None)
-        self._rumble.pop(serial, None)
-        self._last_sent_color.pop(serial, None)
-        self._last_sent_rumble.pop(serial, None)
-        self._last_led_update.pop(serial, None)
+        with self._led_lock, self._routing_lock:
+            self._led_colors.pop(serial, None)
+            self._rumble.pop(serial, None)
+            self._last_sent_color.pop(serial, None)
+            self._last_sent_rumble.pop(serial, None)
+            self._last_led_update.pop(serial, None)
+            self._force_led_resend.discard(serial)
+            self._effect_active.discard(serial)
+            self._unrouted_output.discard(serial)
 
     # -- Per-controller methods -----------------------------------------------
 
@@ -709,10 +734,34 @@ class MultiplexerBackend(ControllerBackend):
         for adapter in self._adapters:
             adapter.release_pattern_stream(subscriber_id)
 
+    def _store_unrouted_output(
+        self, serial: str, color: tuple[int, int, int] | None = None, rumble: int | None = None
+    ) -> ControllerIOAdapter | None:
+        """Keep a write for a serial with no route, or one routed again but not registered yet.
+
+        Returns the adapter when the serial is routed and not marked (write it now).
+        A write during a disconnect is held, never sent, until the controller registers
+        again: ``force_led_resend`` (called before the owner's colour) releases it, and the
+        owner's colour then replaces it (UC-002 BR-008, #2471). Under _routing_lock, so the
+        discovery swap's stale-state cleanup either sees the mark or runs before the write.
+        """
+        with self._routing_lock:
+            adapter = self._serial_to_adapter.get(serial)
+            if self._closed or (adapter is not None and serial not in self._unrouted_output):
+                return adapter
+            if color is not None:
+                self._led_colors[serial] = color
+            if rumble is not None:
+                self._rumble[serial] = rumble
+            self._unrouted_output.add(serial)
+            return None
+
     async def set_led_color(self, serial: str, r: int, g: int, b: int) -> bool:
         adapter = self._serial_to_adapter.get(serial)
-        if adapter is None:
-            return False
+        if adapter is None or serial in self._unrouted_output:
+            adapter = self._store_unrouted_output(serial, color=(r, g, b))
+            if adapter is None:
+                return False  # held until the registration (#2471)
         self._led_colors[serial] = (r, g, b)
         rumble = self._rumble.get(serial, 0)
         # Non-blocking lock: if update_all_leds() batch is in progress, skip
@@ -732,8 +781,10 @@ class MultiplexerBackend(ControllerBackend):
 
     async def set_rumble(self, serial: str, intensity: int) -> bool:
         adapter = self._serial_to_adapter.get(serial)
-        if adapter is None:
-            return False
+        if adapter is None or serial in self._unrouted_output:
+            adapter = self._store_unrouted_output(serial, rumble=intensity)
+            if adapter is None:
+                return False  # held until the registration (#2471)
         self._rumble[serial] = intensity
         r, g, b = self._led_colors.get(serial, (0, 0, 0))
         # Non-blocking lock: same pattern as set_led_color() — skip direct

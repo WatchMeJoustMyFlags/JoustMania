@@ -95,6 +95,9 @@ if TYPE_CHECKING:
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
 
+# A dead player's colour in a (re)opened stream's config: off (UC-030 step 9, BR-006).
+DEAD_PLAYER_COLOR = (0, 0, 0)
+
 # Game constants (Phase 43: Now uses runtime config for dynamic adjustment)
 # Phase 72: Increased from 30Hz to 60Hz for better responsiveness
 UPDATE_FREQUENCY = 60  # Hz - default, overridden by runtime config
@@ -744,6 +747,8 @@ class BaseGameMode(ShieldMixin, ABC):
         # The game root span (current when run() starts); the outcome lands on it.
         self._game_root_span: trace.Span | None = None
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
+        # Deaths whose PLAYER_DEATH write failed on a dying call: the next stream sends it (UC-030 BR-006, #2471).
+        self._undelivered_deaths: set[str] = set()
         # Shield feedback still running per serial: wall-clock end time (#1301,
         # UC-040 A16/A17). Only a record for the game-end clear; no task.
         self._shield_feedback_until: dict[str, float] = {}
@@ -1382,12 +1387,14 @@ class BaseGameMode(ShieldMixin, ABC):
         self.gameplay_stream = self.controller_client.StreamGameplayData()
 
         # Build player colors for stream init
+        # A dead player's LED is off (UC-030 step 9): the config never lights it again (BR-006, #2471).
         player_colors = []
         for serial, player in self.players.items():
+            r, g, b = player.color if player.alive else DEAD_PLAYER_COLOR
             player_colors.append(
                 controller_manager_pb2.ControllerColorConfig(
                     serial=serial,
-                    color=controller_manager_pb2.RGB(r=player.color[0], g=player.color[1], b=player.color[2]),
+                    color=controller_manager_pb2.RGB(r=r, g=g, b=b),
                 )
             )
 
@@ -1413,6 +1420,38 @@ class BaseGameMode(ShieldMixin, ABC):
         # UC-040 BR-021: after a reconnect, re-send every held charge and running
         # shield with the time left, so the new stream owns the layers again.
         await self._resend_shield_layers()
+        await self._resend_dead_player_state()
+
+    async def _resend_dead_player_state(self) -> None:
+        """End a dead player's feedback on a (re)created stream (UC-030 BR-006, #2471).
+
+        A death whose ``PLAYER_DEATH`` write failed on the dying call gets it now; every other dead
+        player gets ``GAME_EFFECT_SHIELD`` 0, which ends any shield, charge or hold
+        layer the old stream left running. The first stream of a game has no dead player.
+        """
+        from proto import controller_manager_pb2
+
+        for serial, player in self.players.items():
+            if player.alive:
+                continue
+            if serial in self._undelivered_deaths:
+                effect, duration_ms = controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH, 0
+            else:
+                effect, duration_ms = controller_manager_pb2.GAME_EFFECT_SHIELD, 0
+            trace_parent, trace_state = inject_trace_context(player.span)
+            await serialized_write(
+                self.gameplay_stream,
+                controller_manager_pb2.GameplayStreamControl(
+                    game_effect=controller_manager_pb2.GameEffectCommand(
+                        serial=serial,
+                        effect=effect,
+                        duration_ms=duration_ms,
+                        trace_parent=trace_parent,
+                        trace_state=trace_state,
+                    )
+                ),
+            )
+        self._undelivered_deaths.clear()
 
     async def _start_gameplay_stream(self):
         """
@@ -3135,16 +3174,24 @@ class BaseGameMode(ShieldMixin, ABC):
         # in traces, even though _kill_player_impl may have closed the span.
         from proto import controller_manager_pb2
 
-        if self.gameplay_stream and self._sends_death_effect(serial):
-            effect_cmd = controller_manager_pb2.GameplayStreamControl(
-                game_effect=controller_manager_pb2.GameEffectCommand(
-                    serial=serial,
-                    effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
-                    trace_parent=trace_parent,
-                    trace_state=trace_state,
-                )
+        if not self._sends_death_effect(serial):
+            return True
+        if not self.gameplay_stream:
+            return True
+        effect_cmd = controller_manager_pb2.GameplayStreamControl(
+            game_effect=controller_manager_pb2.GameEffectCommand(
+                serial=serial,
+                effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
+                trace_parent=trace_parent,
+                trace_state=trace_state,
             )
+        )
+        try:
             await serialized_write(self.gameplay_stream, effect_cmd)
+        except self._STREAM_CALL_ERRORS:
+            # The call died under the write (a reopen follows): the next stream sends it (UC-030 BR-006, #2471).
+            self._undelivered_deaths.add(serial)
+            raise
         return True
 
     async def _wait_for_rainbow_effect(self) -> bool:
