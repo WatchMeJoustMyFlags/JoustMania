@@ -65,6 +65,9 @@ type FitnessThresholds struct {
 	// live per-cycle source; shieldDangerParams clamps them at use time.
 	ShieldDangerRatio   float64
 	ShieldDangerSamples int
+	// ShieldDangerOff (policy.shield_danger_enabled = off) disables the danger path;
+	// the zero value keeps it on.
+	ShieldDangerOff bool
 }
 
 // Danger-shield bounds and defaults (UC-040 A43, BR-032; flags.md

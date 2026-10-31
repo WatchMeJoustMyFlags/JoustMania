@@ -233,7 +233,7 @@ func balancedCandidates(c gamecontext.GameContext, fit FitnessThresholds) []cand
 // data). Urgency is the window's lowest ratio, at most 1. The candidates are
 // shieldCatch, so they pass the same filters and rotation as the elimination path.
 func dangerShieldCandidates(c gamecontext.GameContext, active []*gamecontext.PlayerSignals, fit FitnessThresholds) []candidate {
-	if len(active) < 2 {
+	if len(active) < 2 || fit.ShieldDangerOff {
 		return nil
 	}
 	level, n := shieldDangerParams(fit)

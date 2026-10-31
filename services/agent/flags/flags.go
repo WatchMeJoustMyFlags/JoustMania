@@ -41,6 +41,9 @@ const (
 	// operator flags the agent reads and never writes (C-034); the rules clamp them.
 	keyShieldDangerRatio   = "policy.shield_danger_ratio"
 	keyShieldDangerSamples = "policy.shield_danger_samples"
+	// keyShieldDangerEnabled switches the danger path off on its own (on by default;
+	// an unreadable value reads on, like the other two).
+	keyShieldDangerEnabled = "policy.shield_danger_enabled"
 
 	// LLM call gate (#847): the flag-controlled gate in FRONT of every remote
 	// decide call (#1226) and post-game retro. Both are read EVERY cycle (never
@@ -343,6 +346,10 @@ type Policy struct {
 	// rules' default; the rules clamp both.
 	ShieldDangerRatio   float64
 	ShieldDangerSamples int
+	// ShieldDangerOff is policy.shield_danger_enabled = off: R4's danger path
+	// proposes nothing (UC-040 A43, BR-032). Inverted so the zero value (a
+	// hand-built Snapshot) keeps the path on, like the flag's default.
+	ShieldDangerOff bool
 }
 
 // LLMGate is the call gate in FRONT of every remote decide call and retro (#847,
@@ -809,6 +816,7 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			ShieldCooldownSeconds: f.nonNegativeIntFlag(ctx, keyShieldCooldownSeconds, DefaultShieldCooldownSeconds),
 			ShieldDangerRatio:     f.floatFlag(ctx, keyShieldDangerRatio, DefaultShieldDangerRatio),
 			ShieldDangerSamples:   f.intFlag(ctx, keyShieldDangerSamples, DefaultShieldDangerSamples),
+			ShieldDangerOff:       !f.boolFlag(ctx, keyShieldDangerEnabled, true),
 		},
 		LLMGate: f.llmGate(ctx),
 		Fitness: Fitness{

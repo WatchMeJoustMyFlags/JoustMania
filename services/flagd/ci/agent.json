@@ -127,6 +127,14 @@
       },
       "defaultVariant": "default"
     },
+    "policy.shield_danger_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
     "policy.shield_danger_ratio": {
       "state": "ENABLED",
       "variants": {

@@ -213,8 +213,10 @@ const (
 // fallback when the track has no earlier value). now is the context's UpdatedAt.
 //
 // Fail closed (false): n < 1, a non-finite or non-positive level, fewer than n
-// readings, a newest reading older than DangerSampleStaleAfter (or after now), a
-// gap longer than DangerMaxSampleGap, a reading below the level, or a reading or
+// readings, a newest reading after now, a newest value that was last new more than
+// DangerSampleStaleAfter ago (a frozen gauge), a gap longer than
+// DangerMaxSampleGap, a window longer than n x DangerMaxSampleGap in total, a
+// reading below the level, or a reading or
 // threshold that is unknown, non-finite or not positive. A reading equal to the
 // one before it is the same coordinator sample seen in two buckets and counts
 // once. minRatio is the lowest reading / threshold ratio of the window.
@@ -223,14 +225,25 @@ func SustainedDanger(samples []gamecontext.MovementSample, track []gamecontext.S
 		return 0, false
 	}
 	newest := samples[len(samples)-1]
-	if age := now.Sub(newest.At); age < 0 || age > DangerSampleStaleAfter {
+	// The gauge is re-exported with its last value, so a frozen reading keeps
+	// arriving with a fresh time: the reading is as old as the first sample of
+	// the newest run of identical values (when the value was last new).
+	lastNew := newest.At
+	for i := len(samples) - 2; i >= 0 && samples[i].Intensity == newest.Intensity; i-- {
+		lastNew = samples[i].At
+	}
+	if age := now.Sub(newest.At); age < 0 || now.Sub(lastNew) > DangerSampleStaleAfter {
 		return 0, false
 	}
+	maxSpan := time.Duration(n) * DangerMaxSampleGap
 	count := 0
 	var prev *gamecontext.MovementSample
 	for i := len(samples) - 1; i >= 0; i-- {
 		s := samples[i]
 		if prev != nil && prev.At.Sub(s.At) > DangerMaxSampleGap {
+			return 0, false
+		}
+		if newest.At.Sub(s.At) > maxSpan {
 			return 0, false
 		}
 		thr := gamecontext.ThresholdAt(track, threshold, s.At)

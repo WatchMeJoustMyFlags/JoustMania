@@ -33,3 +33,25 @@ func TestEvaluate_ShieldDanger(t *testing.T) {
 		})
 	}
 }
+
+// UC: UC-040 A43 BR-032
+func TestEvaluate_ShieldDangerEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		bools   map[string]bool
+		errs    map[string]error
+		wantOff bool
+	}{
+		{"UC-040/A43 BR-032 off disables the danger path", map[string]bool{keyShieldDangerEnabled: false}, nil, true},
+		{"UC-040/A43 BR-032 on keeps it", map[string]bool{keyShieldDangerEnabled: true}, nil, false},
+		{"UC-040/A43 BR-032 a missing flag reads on", nil, nil, false},
+		{"UC-040/A43 BR-032 a read error reads on", nil, map[string]error{keyShieldDangerEnabled: errors.New("boom")}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := New(stubEvaluator{booleans: tc.bools, errs: tc.errs}, nil).Evaluate(context.Background()).Policy
+			if got.ShieldDangerOff != tc.wantOff {
+				t.Fatalf("ShieldDangerOff = %v, want %v", got.ShieldDangerOff, tc.wantOff)
+			}
+		})
+	}
+}

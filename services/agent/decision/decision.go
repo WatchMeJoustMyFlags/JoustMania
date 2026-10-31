@@ -1468,6 +1468,7 @@ func rulesThresholds(s flags.Snapshot) FitnessThresholds {
 	t := fitnessThresholds(s.Fitness)
 	t.ShieldDangerRatio = s.Policy.ShieldDangerRatio
 	t.ShieldDangerSamples = s.Policy.ShieldDangerSamples
+	t.ShieldDangerOff = s.Policy.ShieldDangerOff
 	return t
 }
 

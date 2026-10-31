@@ -168,6 +168,9 @@ func TestDangerShield_FailClosed(t *testing.T) {
 		{"no movement track (an agent restart)", func(c *gamecontext.GameContext) { c.Players["A"].History = nil }},
 		{"a non-finite reading", func(c *gamecontext.GameContext) { c.Players["A"].History[1].Intensity = math.NaN() }},
 		{"no context time", func(c *gamecontext.GameContext) { c.UpdatedAt = time.Time{} }},
+		{"a frozen gauge: the newest reading re-exported for 5 s", func(c *gamecontext.GameContext) {
+			withTrack(c, "A", 0, 1.8, 1.9, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0)
+		}},
 		{"the other player is gone: one alive player", func(c *gamecontext.GameContext) { c.Players["B"].Active = bptr(false) }},
 	} {
 		t.Run("UC-040/A43 BR-032 "+tc.name+": no danger shield", func(t *testing.T) {
@@ -298,6 +301,29 @@ func TestDangerShield_FlagsClamped(t *testing.T) {
 		runDangerCycles(l, clock, c, 1, time.Second)
 		if got := shieldWriteOrder(sink); !equalStrings(got, []string{"A"}) {
 			t.Fatalf("shield writes = %v, want [A] with 2 readings", got)
+		}
+	})
+}
+
+// UC: UC-040 A43 BR-032
+func TestDangerShield_OffSwitch(t *testing.T) {
+	t.Run("UC-040/A43 BR-032 policy.shield_danger_enabled off: no danger shield in a duel in danger", func(t *testing.T) {
+		l, sink, clock := dangerLoop(t, flags.Policy{MaxInterventionsPerMinute: 50, ShieldDangerOff: true})
+		runDangerCycles(l, clock, duelCtx(), 3, 5*time.Second)
+		if got := shieldWriteOrder(sink); len(got) != 0 {
+			t.Fatalf("shield writes = %v, want none with the danger path off", got)
+		}
+	})
+	t.Run("UC-040/A43 A41 policy.shield_danger_enabled off: the elimination path still shields", func(t *testing.T) {
+		off := defaultFit()
+		off.ShieldDangerOff = true
+		c := gameCtx(30, []string{"GONE"}, map[string]testPlayer{
+			"WEAK":   {skill: fptr(0.1), active: true},
+			"MID":    {skill: fptr(0.3), active: true},
+			"STRONG": {skill: fptr(0.9), active: true},
+		})
+		if want, got := balancedCandidates(c, defaultFit()), balancedCandidates(c, off); !reflect.DeepEqual(got, want) || len(shieldTargets(decisionsOf(got))) == 0 {
+			t.Fatalf("candidates with the danger path off = %v, want the elimination path's %v", decisionsOf(got), decisionsOf(want))
 		}
 	})
 }
