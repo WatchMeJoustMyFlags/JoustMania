@@ -25,14 +25,15 @@ Jaeger and VictoriaMetrics are queried on the loopback-only ports that
 import json
 import subprocess
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 
 import pytest
 
 from proto import game_coordinator_pb2
+from tests.integration import jaeger_v3
 from tests.integration.helpers import (
+    COORDINATOR_SERVICE,
     JAEGER_API,
     async_poll_until,
     build_start_config,
@@ -106,27 +107,23 @@ def _loop_rate_ratio(game_id: str) -> float:
 
 
 def _trace_spans(trace_id: str) -> list:
-    """Spans of one trace fetched by its id; an unknown trace counts as empty."""
-    try:
-        data = _get_json(f"{JAEGER_API}/traces/{trace_id}")["data"]
-    except urllib.error.HTTPError as err:
-        if err.code == 404:
-            return []
-        raise
-    return [span for trace in data for span in trace["spans"]]
+    """Spans of one trace fetched by its id (query API v3); an unknown trace counts as empty."""
+    return jaeger_v3.get_trace(JAEGER_API, trace_id).get("spans", [])
 
 
-def _agent_spans_since(start_s: float) -> list:
-    """Agent spans Jaeger holds from ``start_s`` on; an unknown service counts as empty."""
-    params = urllib.parse.urlencode(
-        {"service": "agent", "start": str(int(start_s * 1e6)), "limit": "20"}
-    )
-    try:
-        return _get_json(f"{JAEGER_API}/traces?{params}")["data"]
-    except urllib.error.HTTPError as err:
-        if err.code in (400, 404):
-            return []
-        raise
+def _spans_since(service: str, start_s: float) -> list:
+    """``service`` spans Jaeger holds that started at or after ``start_s`` (query API v3).
+
+    ``jaeger_v3`` answers ``[]`` only for v3's "No traces found"; any other error
+    status raises, so an unreachable or failing store never reads as "no spans".
+    """
+    traces = jaeger_v3.find_traces(JAEGER_API, service, limit=100)
+    return [
+        span
+        for trace in traces
+        for span in trace["spans"]
+        if span["startTime"] >= int(start_s * 1e6)
+    ]
 
 
 @pytest.fixture
@@ -158,6 +155,7 @@ async def test_agent_down_collector_still_delivers_to_jaeger_and_victoria_metric
     )
     game_client, channel = await get_game_client(docker_compose)
     collector = None
+    test_start_s = time.time()
     try:
         game_id, collector = await start_game_headless(
             game_client, build_start_config(GAME_MODE, serials)
@@ -201,6 +199,15 @@ async def test_agent_down_collector_still_delivers_to_jaeger_and_victoria_metric
         interval=1.0,
     ), f"Jaeger has no root span for game {game_id} while the agent is down"
 
+    # Positive control for the "no new agent spans" check below: the same reader
+    # sees the coordinator's spans from this run, so an empty agent result is real.
+    assert _spans_since(COORDINATOR_SERVICE, test_start_s), (
+        "the span reader finds no coordinator spans of this run"
+    )
+    assert _spans_since("agent", test_start_s) == [], (
+        "the agent is down: Jaeger must hold no new agent spans"
+    )
+
     assert _container_running(docker_compose, "otel-collector"), (
         "the collector must survive the agent outage"
     )
@@ -222,7 +229,7 @@ def test_agent_down_no_new_agent_spans_reach_jaeger(docker_compose, agent_down):
         "precondition: the agent must be down"
     )
     down_since = time.time()
-    # Jaeger answers (so an empty result means no spans, not an unreachable store).
-    assert _get_json(f"{JAEGER_API}/services")["data"] is not None
+    # Jaeger answers (raises on any error status), so an empty result means no spans.
+    assert isinstance(jaeger_v3.services(JAEGER_API), list)
     time.sleep(5)
-    assert _agent_spans_since(down_since) == []
+    assert _spans_since("agent", down_since) == []
