@@ -1,6 +1,9 @@
 package decision
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Config source interfaces for the rules engine. These are the seam where
 // issue #727 plugs in OpenFeature/flagd-backed implementations; until then the
@@ -56,6 +59,40 @@ type FitnessThresholds struct {
 	// AccelerateTargetSessionSeconds: sessions running longer trigger
 	// accelerate rules (fitness.accelerate.target_session_seconds, default 60).
 	AccelerateTargetSessionSeconds float64
+	// ShieldDangerRatio and ShieldDangerSamples are R4's danger-shield thresholds
+	// (policy.shield_danger_ratio / policy.shield_danger_samples, UC-040 A43,
+	// BR-032). They are policy flags, carried here because this is the engine's
+	// live per-cycle source; shieldDangerParams clamps them at use time.
+	ShieldDangerRatio   float64
+	ShieldDangerSamples int
+}
+
+// Danger-shield bounds and defaults (UC-040 A43, BR-032; flags.md
+// policy.shield_danger_*). The bounds keep a single reading from ever qualifying.
+const (
+	DefaultShieldDangerRatio   = 0.85
+	DefaultShieldDangerSamples = 3
+	minShieldDangerRatio       = 0.7
+	maxShieldDangerRatio       = 1.0
+	minShieldDangerSamples     = 2
+	maxShieldDangerSamples     = 10
+)
+
+// shieldDangerParams returns the clamped danger-shield level and sample count: a
+// non-positive or non-finite value gives the default, the rest is clamped to the
+// bounds (BR-032).
+func shieldDangerParams(fit FitnessThresholds) (level float64, samples int) {
+	level = fit.ShieldDangerRatio
+	if math.IsNaN(level) || math.IsInf(level, 0) || level <= 0 {
+		level = DefaultShieldDangerRatio
+	}
+	level = min(max(level, minShieldDangerRatio), maxShieldDangerRatio)
+	samples = fit.ShieldDangerSamples
+	if samples <= 0 {
+		samples = DefaultShieldDangerSamples
+	}
+	samples = min(max(samples, minShieldDangerSamples), maxShieldDangerSamples)
+	return level, samples
 }
 
 // Objective names (keys of the objectives weight map).
@@ -130,6 +167,8 @@ func DefaultStaticConfig() StaticConfig {
 			BalancedMaxSkillGap:            0.4,
 			BalancedSpikeSurvivalThreshold: 0.8,
 			AccelerateTargetSessionSeconds: 60,
+			ShieldDangerRatio:              DefaultShieldDangerRatio,
+			ShieldDangerSamples:            DefaultShieldDangerSamples,
 		},
 	}
 }

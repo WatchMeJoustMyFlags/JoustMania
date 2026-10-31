@@ -193,3 +193,64 @@ func (s State) RankedCount() int {
 	}
 	return n
 }
+
+// Sustained-danger window limits (UC-040 A43, BR-032, #2461).
+const (
+	// DangerSampleStaleAfter is the oldest the newest movement reading may be,
+	// against the context's UpdatedAt, for the window to count.
+	DangerSampleStaleAfter = 3 * time.Second
+	// DangerMaxSampleGap is the longest gap between two readings of one window:
+	// the track holds about one reading per second, so a longer gap means
+	// readings are missing and the window is not consecutive.
+	DangerMaxSampleGap = 2500 * time.Millisecond
+)
+
+// SustainedDanger reports whether a player's newest n movement readings are each
+// at or above level x the death threshold in force at that reading (UC-040 A43,
+// BR-032): a sustained near-threshold signal, never a single spike. samples is the
+// player's oldest-first track (gamecontext.PlayerSignals.History), track the
+// session's death-threshold track and threshold the last observed scalar (the
+// fallback when the track has no earlier value). now is the context's UpdatedAt.
+//
+// Fail closed (false): n < 1, a non-finite or non-positive level, fewer than n
+// readings, a newest reading older than DangerSampleStaleAfter (or after now), a
+// gap longer than DangerMaxSampleGap, a reading below the level, or a reading or
+// threshold that is unknown, non-finite or not positive. A reading equal to the
+// one before it is the same coordinator sample seen in two buckets and counts
+// once. minRatio is the lowest reading / threshold ratio of the window.
+func SustainedDanger(samples []gamecontext.MovementSample, track []gamecontext.SpeedSample, threshold *float64, now time.Time, level float64, n int) (minRatio float64, ok bool) {
+	if n < 1 || !finite(level) || level <= 0 || len(samples) == 0 {
+		return 0, false
+	}
+	newest := samples[len(samples)-1]
+	if age := now.Sub(newest.At); age < 0 || age > DangerSampleStaleAfter {
+		return 0, false
+	}
+	count := 0
+	var prev *gamecontext.MovementSample
+	for i := len(samples) - 1; i >= 0; i-- {
+		s := samples[i]
+		if prev != nil && prev.At.Sub(s.At) > DangerMaxSampleGap {
+			return 0, false
+		}
+		thr := gamecontext.ThresholdAt(track, threshold, s.At)
+		if thr == nil || !finite(*thr) || *thr <= 0 || !finite(s.Intensity) {
+			return 0, false
+		}
+		ratio := s.Intensity / *thr
+		if ratio < level {
+			return 0, false
+		}
+		if prev == nil || ratio < minRatio {
+			minRatio = ratio
+		}
+		if prev == nil || s.Intensity != prev.Intensity {
+			count++
+		}
+		if count >= n {
+			return minRatio, true
+		}
+		prev = &samples[i]
+	}
+	return 0, false
+}

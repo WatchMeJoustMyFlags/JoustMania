@@ -618,7 +618,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	// values. Per-cycle publication is what makes a mid-session flag change take
 	// effect on the very next decision.
 	if pub, ok := rules.(fitnessPublisher); ok {
-		pub.SetFitness(fitnessThresholds(snapshot.Fitness))
+		pub.SetFitness(rulesThresholds(snapshot))
 	}
 
 	// The evaluate log line is throttled to at most one per throttle interval.
@@ -1459,6 +1459,16 @@ func fitnessThresholds(f flags.Fitness) FitnessThresholds {
 		BalancedSpikeSurvivalThreshold: f.BalancedSpikeSurvivalThreshold,
 		AccelerateTargetSessionSeconds: float64(f.AccelerateTargetSessionSeconds),
 	}
+}
+
+// rulesThresholds is what the loop publishes into the rules engine each cycle: the
+// fitness thresholds plus R4's danger-shield policy (UC-040 A43, BR-032), which
+// the engine clamps at use time.
+func rulesThresholds(s flags.Snapshot) FitnessThresholds {
+	t := fitnessThresholds(s.Fitness)
+	t.ShieldDangerRatio = s.Policy.ShieldDangerRatio
+	t.ShieldDangerSamples = s.Policy.ShieldDangerSamples
+	return t
 }
 
 func derefStr(p *string) string {
