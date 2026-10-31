@@ -81,6 +81,8 @@ class Flags:
             "shield.ending_rumble_seconds": 1.5,
             "shield.hold_rumble_intensity": 90,
             "shield.empty_pulse_ms": 500,
+            "shield.hold_rumble_max_intensity": 180,
+            "shield.hold_led_floor_percent": 15,
         }
         self.reads: list[str] = []
 
@@ -186,7 +188,10 @@ class TestUC040HoldFeedbackCommands:
                 state.cues.ending_lead_ms,
                 state.cues.hold_rumble_intensity,
                 state.cues.empty_pulse_ms,
-            ) == (200, 120, 1500, 90, 500)
+                state.cues.hold_rumble_max_intensity,
+                state.cues.hold_led_floor_pct,
+            ) == (200, 120, 1500, 90, 500, 180, 15)
+            assert state.activation_ms == 0  # only a running activation carries it (#2463)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-008"])
@@ -292,6 +297,34 @@ class TestUC040HoldFeedbackCommands:
         assert 2950 <= duration_ms <= 3000
         assert state.cue == pb.SHIELD_HOLD_CUE_TOP_UP
         game._play_sound.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A36", br=["BR-026"])
+    async def test_shield_hold_carries_the_activation_energy_and_a_grant_raises_it(self, game, clock):
+        """UC-040 BR-026 (#2463): SHIELD_HOLD ships the activation energy, the ramp's reference; a grant adds to it."""
+        await start_holding(game, clock, energy=2.0)
+        await drain()
+        player = game.players["p1"]
+        ((_, duration_ms, state),) = game.gameplay_stream.effects("p1")[-1:]
+        assert state.activation_ms == 2000 == round(player.hold_usable_start * 1000)
+        assert duration_ms == 2000
+
+        for _ in range(30):  # hold for 0.5 s
+            await step(game, clock, "p1", True)
+        game.gameplay_stream.writes.clear()
+        assert await game.grant_shield("p1", 1.0)
+        await drain()
+
+        ((name, duration_ms, state),) = game.gameplay_stream.effects("p1")
+        assert name == "GAME_EFFECT_SHIELD_HOLD"
+        assert state.activation_ms == 3000 == round(player.hold_usable_start * 1000)
+        assert 2450 <= duration_ms <= 2500  # 3 s activation energy minus the 0.5 s held
+
+        for _ in range(3):  # released: the end of the activation goes out as SHIELD_ENERGY without it
+            await step(game, clock, "p1", False, dt=0.25)
+        await drain()
+        assert game.gameplay_stream.effects("p1")[-1][0] == "GAME_EFFECT_SHIELD_ENERGY"
+        assert game.gameplay_stream.effects("p1")[-1][2].activation_ms == 0
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A38", br=["BR-026"])
@@ -472,10 +505,13 @@ class TestUC040HoldCueLatch:
         cue_keys = set(base_module.SHIELD_HOLD_CUE_FLAGS)
         assert sorted(k for k in flags.reads if k in cue_keys) == sorted(cue_keys)
         flags.values["shield.hold_rumble_intensity"] = 10
+        flags.values["shield.hold_rumble_max_intensity"] = 0
+        flags.values["shield.hold_led_floor_percent"] = 100
         await start_holding(game, clock, energy=3.0)
         await drain()
         _, _, state = game.gameplay_stream.effects("p1")[-1]
         assert state.cues.hold_rumble_intensity == 90
+        assert (state.cues.hold_rumble_max_intensity, state.cues.hold_led_floor_pct) == (180, 15)
         assert sorted(k for k in flags.reads if k in cue_keys) == sorted(cue_keys)
 
     @pytest.mark.uc("UC-040", br=["BR-026"])
@@ -487,6 +523,10 @@ class TestUC040HoldCueLatch:
             ("shield.empty_pulse_ms", 10, "empty_pulse_ms", 100),
             ("shield.ending_rumble_seconds", 2.25, "ending_lead_ms", 2250),
             ("shield.charge_rumble_intensity", -5, "rumble_intensity", 0),
+            ("shield.hold_rumble_max_intensity", 999, "hold_rumble_max_intensity", 230),
+            ("shield.hold_rumble_max_intensity", "loud", "hold_rumble_max_intensity", 200),
+            ("shield.hold_led_floor_percent", 0, "hold_led_floor_pct", 10),
+            ("shield.hold_led_floor_percent", float("nan"), "hold_led_floor_pct", 20),
         ],
     )
     def test_cue_values_are_validated(self, clock, flags, key, raw, field, want):  # noqa: ARG002

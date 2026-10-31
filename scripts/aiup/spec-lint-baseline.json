@@ -1,12 +1,4 @@
 {
   "version": 1,
-  "findings": [
-    {
-      "fingerprint": "01442d2a42f35a91d0e42c6a129d67315b911fe3",
-      "code": "RULE_NUMBERING",
-      "path": "use_cases/UC-040.md",
-      "element": "UC-040",
-      "message": "business rule ids are not BR-001..BR-033 without gaps (ids restart per document; Studio renumbers on save)"
-    }
-  ]
+  "findings": []
 }

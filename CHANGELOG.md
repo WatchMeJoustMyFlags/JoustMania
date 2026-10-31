@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.11.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.10.0...joustmania-v0.11.0) (2026-10-31)
+
+
+### Features
+
+* **agent:** rules R4 shields a player in sustained danger before the first elimination ([#2461](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2461)) ([#2469](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2469)) ([19fb8d1](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/19fb8d14fc1ccd0f6bb70775ebefff0e5bf300f8))
+* **ci:** SHA-bound "Reviewed head" gate and safe-merge --arm/--revoke ([#1809](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/1809)) ([#2439](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2439)) ([94ded08](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/94ded080c9fa76e0be8b9ec076b9a0ea1ddd7626))
+* **flag-service:** make the hold-mode shield energy keys persistable ([#2452](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2452)) ([#2454](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2454)) ([241b348](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/241b348399eef5667241eabb336ae023fde57803))
+
+
+### Bug Fixes
+
+* **controller-manager:** a death ends the hold state even with no shield layer left ([#2462](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2462)) ([#2470](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2470)) ([46e1f56](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/46e1f560f4a62d242f109c7456e1e3dde9eb0241))
+* **controller-manager:** a silent link is a disconnect; LED restored by its owner on reconnect ([#2466](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2466)) ([#2472](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2472)) ([ae208c0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/ae208c0d88d6eb747a6e228581c0ad5807f80e1b))
+* **dashboard:** show Unpair for bare 12-hex controller serials ([#2465](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2465)) ([#2468](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2468)) ([203269e](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/203269ef68d43fb5571bc5e0537678e37c101089))
+* **menu:** StartMenu during a game, no auto start on a stopped menu, game_ended on coordinator loss ([#2449](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2449), [#2450](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2450)) ([#2459](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2459)) ([595930f](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/595930f12160d13892606bcfe28629efa63d1da6))
+* **menu:** StopMenu during a game sticks; unreachable coordinator publishes game_start_cancelled ([#2379](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2379)) ([#2448](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2448)) ([cc21a36](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/cc21a3632fed2fcc4270712d7ad4b846117b0d9e))
+
+
+### Performance
+
+* **game-coordinator:** one config read per frame, accel histogram bound once ([#2361](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2361)) ([#2457](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2457)) ([a3d1fc2](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/a3d1fc29861fc193bb03ca6f9396df2d2c26c551))
+
+
+### Refactoring
+
+* **controller-manager:** split the four C901 offenders ([#2354](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2354)) ([#2455](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2455)) ([6e6d06d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6e6d06d11a8c2deeeee2307a3b583c780efa91cd))
+* **game-coordinator:** delete the dead agent tempo mode ([#2361](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2361)) ([#2447](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2447)) ([ccc61b6](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/ccc61b692c536419fbc13a04d9f28893b0c9a8fa))
+* **game-coordinator:** prune issue-history comments ([#2361](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2361)) ([#2474](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2474)) ([a9de68a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/a9de68a9f4ba8dba5ba9dd202150e3d8fc55db4e))
+* **game-coordinator:** remaining mode waits use game_clock.sleep ([#2361](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2361)) ([#2438](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2438)) ([590d771](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/590d771300ccaaa61ad6eddf7c5f95696017e804))
+* **game-coordinator:** type the intervention target ([#2361](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2361)) ([#2456](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2456)) ([56617f3](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/56617f3839091a7642cfc60e8dc18a68c118d424))
+
+
+### Tests
+
+* **ci:** deterministic multi-poll case in test-safe-merge ([#2443](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2443)) ([#2445](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2445)) ([91be1de](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/91be1de7b5145826ec527644340ee3523d9da3f1))
+* **controller-manager:** autospec backend doubles, overlay guard test, C901 limit ([#2354](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2354)) ([#2437](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2437)) ([479a859](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/479a85952a71359477547c0c0d1e675cea16af64))
+* **controller-manager:** autospec collaborator doubles ([#2354](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2354)) ([#2441](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2441)) ([0a8a964](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/0a8a964fdc89a74057a9e9616e93fa7b11d8288b))
+* **controller-manager:** real protos and autospec stubs for leftover bare doubles ([#2354](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2354)) ([#2458](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2458)) ([f391e09](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f391e09e798f88ab729442801e5c88a9a3b4732b))
+* **game-coordinator:** clock-relative deadlines under the 10x test clock ([#2443](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2443)) ([#2444](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2444)) ([1d7b4cf](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1d7b4cf120cdf1b7f49e67bbc7bf7f0674802b4c))
+* **game-coordinator:** instructions waits asserted via recorded sleeps ([#2443](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2443)) ([#2446](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2446)) ([f624461](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f6244615c7ad97b3f23e6c49f7f6fcc384a2e9fe))
+* **game-coordinator:** music change time measured on the game clock ([#2443](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2443)) ([#2473](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2473)) ([3dd7c72](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3dd7c72cc315204421226bed7d5b5068c612dbef))
+* **game-coordinator:** one shared intervention-target fake ([#2361](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2361)) ([#2453](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2453)) ([7c390e1](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/7c390e176f08bbbb71e099c679e033c889f94192))
+* **game-coordinator:** share MockGameplayStream via conftest ([#2361](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2361)) ([#2442](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2442)) ([063703a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/063703a4b369ea01a2561db213a4129c507f0798))
+
 ## [0.10.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.9.1...joustmania-v0.10.0) (2026-10-30)
 
 

@@ -141,7 +141,7 @@ tooling only) still answers the Default.
   is possible); its text asks what the model expects to happen if its answer is applied, and its confidence is the probability
   that it happens. The model answers it in the existing answers array, so **`AnswerSchema()` is unchanged**. jev never gets
   the ask. **Under v1 (the talk profile) the flag is off and the system prompt, the user message and the schema are
-  byte-identical to today's**; a golden test pins that (UC-040 BR-035).
+  byte-identical to today's**; a golden test pins that (UC-040 BR-034).
 
 - `AnswerSchema()` is static (cacheable), `additionalProperties:false` everywhere,
   all properties required: `{answers:[{id, choice, score, probabilities:[{option,p}], confidence}], rationale}` (`services/agent/decide/llmio/llmio.go:AnswerSchema`).
@@ -264,7 +264,7 @@ and rules decide on the **current** context.
   and in [0,1], a target template comes with a target, and the prediction is consistent with the chosen intervention.
   A passing one becomes `Response.Prediction` with `Source=model`; any failure sets `Response.PredictionDropped` and
   nothing else (no `invalid_answer`, no fallback). A prediction can therefore never invalidate or delay a decision
-  (UC-040 A47, BR-035). Without the ask a stray `ffa.prediction` answer is ignored the same way.
+  (UC-040 A45, BR-034). Without the ask a stray `ffa.prediction` answer is ignored the same way.
 
 ### 4.2 `decide.Validate`, `services/agent/decide/validate.go:Validate`
 
@@ -423,7 +423,7 @@ v1 (maintainer decision 2026-10-31; no restraint calibration). The prediction is
 and the intervention was applied; a held, blocked or discarded one is kept as a counterfactual (`acted=false`) and reported
 apart. An identical (backend, rule or lever, template, target) prediction that is still pending is counted `merged` and not
 registered again. Registration, scoring and the controls are observation only: they never reach the permission chain, the
-allow-list, the budgets or the writer (UC-040 BR-035). Details: §14.3.
+allow-list, the budgets or the writer (UC-040 BR-034). Details: §14.3.
 
 ## 7. Fallback reasons
 
@@ -689,6 +689,15 @@ reads is logged and counted (`game_intervention_event_gaps_total`)
 `end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`, the same path as
 `ForceEndGame` with a `game_id`) ([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for), #1310).
 
+**Group shield event** (planned, #2467 PR 3; the flag and its registry row land with the coordinator handler): `group_shield` is a sixth event flag with the payload
+`{"serials":"A,B,C","seconds":"5"}` (`serials` 2 to 6 distinct players of the game, `seconds` 1 to 10; the flag service
+checks both, [flags.md §13.1](flags.md#131-interventions-all-writes-are-game-scoped)). Like every event it is applied at
+most once per event seq: the seq advances before dispatch, so a failed dispatch is not retried, and an agent restart
+resets the agent's own counter, which is why the coordinator keeps its own per-game count
+([UC-040 BR-033](../use_cases/UC-040.md)). No `interventions_allowed` variant names `grant_group_shield` and no agent code
+writes the event until the PRs that add them; `tests/contract/test_flagd_resolution.py`
+`test_allow_list_variants_only_name_coordinator_types` keeps a type the coordinator cannot apply out of every variant.
+
 Per-serial **grant** flags (`shield_seconds`, `toughness_boost_seconds`,
 `soft_penalty_action`) are one-shot per decision: every write gets a fresh variant from the
 flag service. The coordinator (`InterventionManager._evaluate_targeted_grant`) reads each
@@ -795,7 +804,7 @@ The contract tests live in `decide/*_test.go`, the backend tests `decide/backend
 > Status `Open`: no code on `main` yet. Delivered in slices (characteristics and rules predictions, summary and retro,
 > model ask, goal profiles). The maintainer decisions of 2026-10-31: `activity` is the movement intensity relative to the
 > death threshold (always present, not the optional variance); noop predictions are not scored in v1; arm calibration is
-> report-only. Requirements: FR-200, FR-201. Rules: UC-040 A46, A47, BR-035.
+> report-only. Requirements: FR-200, FR-201. Rules: UC-040 A44, A45, BR-034.
 
 The agent observes the game only through telemetry (OTel-only observation) and acts only through flags. One small set of
 **measurable characteristics** is the shared vocabulary of (a) predictions the agent makes about what its intervention

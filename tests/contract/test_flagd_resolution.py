@@ -925,6 +925,89 @@ def test_shield_limit_flags_carry_no_targeting(flag_dir):
     assert not failures, "\n".join(failures)
 
 
+# The group-grant policy flags (#2467, UC-040 BR-033, flags.md §3): the agent reads them
+# with an empty context and the coordinator in the game's, so, like the shield limits,
+# any targeting could give the two sides different values.
+GROUP_GRANT_FLAGS = (
+    "policy.group_grant.enabled",
+    "policy.group_grant.real_games",
+    "policy.group_grant.max_per_game",
+    "policy.group_grant.max_targets",
+)
+
+
+@pytest.mark.uc("UC-040", br=["BR-033"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_group_grant_flags_carry_no_targeting(flag_dir):
+    """Static: the four group-grant flags exist in agent.json with no targeting; the switches default off or 0."""
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    flags = json.loads((root / "agent.json").read_text())["flags"]
+    failures = []
+    for key in GROUP_GRANT_FLAGS:
+        flag = flags.get(key)
+        if flag is None:
+            failures.append(f"{flag_dir}/agent.json has no {key}")
+            continue
+        if flag.get("targeting"):
+            failures.append(f"{flag_dir}/agent.json {key} has targeting")
+        default = flag["variants"].get(flag["defaultVariant"])
+        if key == "policy.group_grant.max_targets":
+            if default != 4:
+                failures.append(
+                    f"{flag_dir}/agent.json {key} defaults to {default!r}, not 4"
+                )
+        elif default not in (False, 0):
+            failures.append(
+                f"{flag_dir}/agent.json {key} defaults to {default!r}, not off or 0"
+            )
+    assert not failures, "\n".join(failures)
+
+
+INTERVENTION_SPEC_SOURCE = COORDINATOR_DIR / "interventions.py"
+
+
+def _coordinator_type_ids() -> set[str]:
+    """Every ``InterventionSpec(type_id=...)`` literal in the coordinator, parsed with ast."""
+    tree = ast.parse(INTERVENTION_SPEC_SOURCE.read_text())
+    type_ids = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "InterventionSpec"
+        ):
+            for kw in node.keywords:
+                if kw.arg == "type_id" and isinstance(kw.value, ast.Constant):
+                    type_ids.add(kw.value.value)
+    return type_ids
+
+
+@pytest.mark.uc("UC-040", br=["BR-033"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_allow_list_variants_only_name_coordinator_types(flag_dir):
+    """Static: no ``interventions_allowed`` variant names a type the coordinator has no spec for.
+
+    The coordinator refuses such a type as ``not_allowed`` at the earliest, but the agent would
+    still offer and decide it. A lever enters a variant only with its coordinator handler.
+    """
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    variants = json.loads((root / "agent.json").read_text())["flags"][
+        "interventions_allowed"
+    ]["variants"]
+    known = _coordinator_type_ids() | {
+        "noop"
+    }  # noop is the decide contract's "do nothing", never dispatched
+    assert "grant_shield" in known and "end_game" in known, (
+        "type_id parse found no specs"
+    )
+    failures = [
+        f"{flag_dir}/agent.json interventions_allowed.{name} names {type_id!r}, which has no InterventionSpec"
+        for name, ids in variants.items()
+        for type_id in (t.strip() for t in ids.split(","))
+        if type_id and type_id not in known
+    ]
+    assert not failures, "\n".join(failures)
+
+
 # Every flag an intervention handler reads (#1872, flags.md section 1.2). Since #1970 the
 # handler runs in the game's flag transaction context (targetingKey = game_mode, game_mode,
 # controller_count, sensitivity, game_kind, experiment_id, arm), with the read's own keys

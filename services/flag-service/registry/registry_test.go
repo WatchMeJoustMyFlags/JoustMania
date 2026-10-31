@@ -310,6 +310,55 @@ func TestPayloadCheck(t *testing.T) {
 	}
 }
 
+// UC: UC-040 BR-033
+func TestPayloadCheckGroupShield(t *testing.T) {
+	game := map[string]bool{"A": true, "B": true, "C": true, "D": true, "E": true, "F": true, "G": true}
+	inGame := func(s string) bool { return game[s] }
+	p := &Policy{Key: "group_shield", Kind: KindEvent, Scopes: []string{ScopeGame},
+		Bounds: Bounds{Payload: map[string]string{"serials": "serial_set", "seconds": "float 1 10"}}}
+	cases := []struct {
+		name    string
+		payload map[string]any
+		reason  string
+	}{
+		{"UC-040/BR-033 two serials", map[string]any{"serials": "A,B", "seconds": "5"}, ""},
+		{"UC-040/BR-033 six serials", map[string]any{"serials": "A,B,C,D,E,F", "seconds": "2.5"}, ""},
+		{"UC-040/BR-033 duplicate serial", map[string]any{"serials": "A,A,B", "seconds": "5"}, fserr.OutOfBounds},
+		{"UC-040/BR-033 single serial", map[string]any{"serials": "A", "seconds": "5"}, fserr.OutOfBounds},
+		{"UC-040/BR-033 seven serials", map[string]any{"serials": "A,B,C,D,E,F,G", "seconds": "5"}, fserr.OutOfBounds},
+		{"UC-040/BR-033 foreign serial", map[string]any{"serials": "A,Z", "seconds": "5"}, fserr.SerialNotInGame},
+		{"UC-040/BR-033 whitespace entry", map[string]any{"serials": "A, B", "seconds": "5"}, fserr.SerialNotInGame},
+		{"UC-040/BR-033 lower-case entry", map[string]any{"serials": "A,b", "seconds": "5"}, fserr.SerialNotInGame},
+		{"UC-040/BR-033 empty set", map[string]any{"serials": "", "seconds": "5"}, fserr.Malformed},
+		{"UC-040/BR-033 missing set", map[string]any{"seconds": "5"}, fserr.Malformed},
+		{"UC-040/BR-033 empty entry", map[string]any{"serials": "A,,B", "seconds": "5"}, fserr.OutOfBounds},
+		{"UC-040/BR-033 seconds below range", map[string]any{"serials": "A,B", "seconds": "0"}, fserr.OutOfBounds},
+		{"UC-040/BR-033 seconds above range", map[string]any{"serials": "A,B", "seconds": "11"}, fserr.OutOfBounds},
+		{"UC-040/BR-033 seconds not a number", map[string]any{"serials": "A,B", "seconds": "abc"}, fserr.OutOfBounds},
+		{"UC-040/BR-033 seconds hex float", map[string]any{"serials": "A,B", "seconds": "0x1p2"}, fserr.OutOfBounds},
+		{"UC-040/BR-033 seconds missing", map[string]any{"serials": "A,B"}, fserr.OutOfBounds},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := PayloadCheck(p, c.payload, inGame)
+			if (err == nil) != (c.reason == "") || (err != nil && err.Reason != c.reason) {
+				t.Fatalf("got %v, want %q", err, c.reason)
+			}
+		})
+	}
+}
+
+// UC: UC-040 BR-033
+func TestPayloadRulesAreValidated(t *testing.T) {
+	for rule, ok := range map[string]bool{
+		"serial_set": true, "float 1 10": true, "float 10 1": false, "float 1": false, "float a b": false,
+	} {
+		if got := validPayloadRule(rule) == nil; got != ok {
+			t.Errorf("validPayloadRule(%q) accepted=%v, want %v", rule, got, ok)
+		}
+	}
+}
+
 func TestParseRejectsBadRows(t *testing.T) {
 	b, err := baseline.Load(filepath.Join(root(t), "..", "flagd", "ci"), baseline.DefaultFiles)
 	if err != nil {
