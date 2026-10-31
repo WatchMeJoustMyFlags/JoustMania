@@ -81,8 +81,10 @@ func TestBuildSummary_Predictions(t *testing.T) {
 
 	t.Run("UC-042/A12 the span counts split hit, miss and unscorable", func(t *testing.T) {
 		n := CountPredictions(s.Predictions)
-		if n.Scored != 5 || n.Hit != 4 || n.Miss != 1 || n.Unscorable != 1 {
-			t.Errorf("counts = %+v, want scored 5, hit 4, miss 1, unscorable 1", n)
+		// Acted decisions only: r1 hit, r2 miss, r3 unscorable. m1 and r4 are
+		// counterfactuals, c1 is a control.
+		if n != (PredictionCounts{Scored: 2, Hit: 1, Miss: 1, Unscorable: 1, Counterfactual: 2, Controls: 1}) {
+			t.Errorf("counts = %+v, want acted scored 2 (1 hit, 1 miss), unscorable 1, counterfactual 2, controls 1", n)
 		}
 	})
 }
@@ -124,8 +126,9 @@ func TestCoordinator_PredictionsOnSpan(t *testing.T) {
 		t.Fatalf("%d summary spans, want 1", len(spans))
 	}
 	for key, want := range map[string]int64{
-		"summary.predictions.scored": 5, "summary.predictions.hit": 4,
+		"summary.predictions.scored": 2, "summary.predictions.hit": 1,
 		"summary.predictions.miss": 1, "summary.predictions.unscorable": 1,
+		"summary.predictions.counterfactual": 2, "summary.predictions.controls": 1,
 	} {
 		v, ok := spanAttr(spans[0], key)
 		if !ok || v.AsInt64() != want {

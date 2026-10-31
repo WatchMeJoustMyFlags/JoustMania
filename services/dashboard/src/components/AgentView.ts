@@ -622,7 +622,12 @@ export function renderDecideRow(row: DecideRow, isNew = false): string {
 
 function predictionHtml(p: DecidePrediction | null): SafeHtml {
   if (!p) return html``;
-  const reason = p.outcome === "unscorable" && p.unscorableReason ? html` title="${p.unscorableReason}"` : "";
+  const reason =
+    p.outcome === "unscorable" && p.unscorableReason
+      ? html` title="${p.unscorableReason}"`
+      : p.outcome === "unknown"
+        ? html` title="no outcome span was fetched before the query window moved on"`
+        : "";
   return html`<div class="decide-prediction decide-prediction-${p.outcome}"><span class="decide-prediction-label">expects:</span> ${predictionText(p)} <span class="decide-arrow">→</span> <span class="decide-prediction-outcome"${reason}>${p.outcome}</span>${
     p.merged ? html` <span class="decide-strip-dim" title="an identical prediction was already pending">(same as pending)</span>` : ""
   }</div>`;

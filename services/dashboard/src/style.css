@@ -1442,6 +1442,7 @@ body {
 .decide-prediction-hit .decide-prediction-outcome { color: #7ee2b8; }
 .decide-prediction-miss .decide-prediction-outcome { color: var(--accent-primary); }
 .decide-prediction-pending .decide-prediction-outcome,
+.decide-prediction-unknown .decide-prediction-outcome,
 .decide-prediction-unscorable .decide-prediction-outcome { color: var(--text-secondary); font-style: italic; }
 .decide-prediction-source { margin-right: 12px; }
 .decide-prediction-lift { color: var(--text-secondary); }

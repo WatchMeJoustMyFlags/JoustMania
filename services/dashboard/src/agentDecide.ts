@@ -221,8 +221,13 @@ export interface DecideRow {
 /** Jaeger operation of a scored prediction (decide-contract §14, UC-040 A44). */
 export const PREDICTION_OUTCOME_OPERATION = "agent.prediction.outcome";
 
-/** hit / miss / unscorable come from the outcome span; pending = no outcome span yet. */
-export type PredictionState = "hit" | "miss" | "unscorable" | "pending";
+/**
+ * hit / miss / unscorable come from the outcome span; pending = no outcome span yet;
+ * unknown = still no outcome span although the decide query window has moved
+ * DECIDE_OVERLAP_MS past the row, so it will not be fetched again (a long-horizon or
+ * game-end outcome exported after the window settled).
+ */
+export type PredictionState = "hit" | "miss" | "unscorable" | "pending" | "unknown";
 
 /** The prediction a decision carried (decide.prediction.* tags) and its scored state. */
 export interface DecidePrediction {
@@ -751,13 +756,20 @@ export class DecideStore {
   }
 
   feed(): DecideFeed {
-    const rows = this.sorted();
+    const rows = this.sorted().map((r) => this.settlePrediction(r));
     const current = currentFrom(rows, this.follow);
     return {
       rows,
       current,
       predictionStrip: current ? predictionStripFrom(this.outcomes.values(), current.gameId) : null,
     };
+  }
+
+  /** A pending prediction the query window has left behind reads unknown, never pending forever. */
+  private settlePrediction(row: DecideRow): DecideRow {
+    if (row.prediction?.outcome !== "pending" || this.newestMs === null) return row;
+    if (row.tsMs >= this.newestMs - DECIDE_OVERLAP_MS) return row;
+    return { ...row, prediction: { ...row.prediction, outcome: "unknown" } };
   }
 
   private window(lane: string): QueryWindow {

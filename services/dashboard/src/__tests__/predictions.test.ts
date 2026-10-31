@@ -4,7 +4,7 @@
  * agent.prediction.outcome span sits in the same game trace and is joined by id.
  */
 import { describe, expect, it } from "vitest";
-import { DecideStore, parseDecideTraces, predictionStripFrom } from "../agent.js";
+import { DECIDE_OVERLAP_MS, DecideStore, parseDecideTraces, predictionStripFrom } from "../agent.js";
 import type { DecideRow, JaegerTracesResponse } from "../agent.js";
 import { predictionText, renderDecideRow, renderPredictionStrip } from "../components/AgentView.js";
 import actFixture from "./fixtures/jaeger-decide-remote-act.json";
@@ -138,6 +138,27 @@ describe("UC-040 A44 BR-034: a decision's prediction and its scored outcome", ()
     store.merge(parseDecideTraces(trace(R4_TAGS, [{ id: "pred-1", tags: scored("miss") }])).rows);
     expect(store.feed().rows).toHaveLength(1);
     expect(store.feed().rows[0].prediction?.outcome).toBe("miss");
+  });
+});
+
+describe("UC-040 A44: a pending prediction the query window left behind reads unknown", () => {
+  it("UC-040/A44 pending stays pending while the window is near, then reads unknown", () => {
+    const store = new DecideStore();
+    const old = only(trace(R4_TAGS));
+    store.merge([old]);
+    expect(store.feed().rows[0].prediction?.outcome).toBe("pending");
+    // A decide DECIDE_OVERLAP_MS + 1 ms newer arrives (another trace, no outcome for the old one).
+    store.merge([{ ...old, spanId: "later", tsMs: old.tsMs + DECIDE_OVERLAP_MS + 1, prediction: null }]);
+    const rows = store.feed().rows;
+    expect(rows.find((r) => r.spanId === old.spanId)?.prediction?.outcome).toBe("unknown");
+    expect(renderDecideRow(rows.find((r) => r.spanId === old.spanId)!)).toMatch(/decide-prediction-outcome[^>]*>unknown</);
+  });
+
+  it("UC-040/A44 a scored prediction is never turned into unknown", () => {
+    const store = new DecideStore();
+    const old = only(trace(R4_TAGS, [{ id: "pred-1", tags: scored("hit") }]));
+    store.merge([old, { ...old, spanId: "later", tsMs: old.tsMs + DECIDE_OVERLAP_MS + 1, prediction: null }]);
+    expect(store.feed().rows.find((r) => r.spanId === old.spanId)?.prediction?.outcome).toBe("hit");
   });
 });
 

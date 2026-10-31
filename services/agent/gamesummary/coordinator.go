@@ -55,6 +55,9 @@ const (
 	attrPredictionsHit        = "summary.predictions.hit"
 	attrPredictionsMiss       = "summary.predictions.miss"
 	attrPredictionsUnscorable = "summary.predictions.unscorable"
+	// counterfactual and controls are kept out of the four above (BR-034).
+	attrPredictionsCounterfactual = "summary.predictions.counterfactual"
+	attrPredictionsControls       = "summary.predictions.controls"
 	// attrGameTraceID / attrGameTraceSpanID are the canonical game-session-trace Link
 	// attribute keys (#1133/#1157), matching decision.AttrGameTraceID /
 	// AttrGameTraceSpanID verbatim so the summary's hub Link (#1174) carries the SAME
@@ -238,6 +241,8 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 			attribute.Int(attrPredictionsHit, n.Hit),
 			attribute.Int(attrPredictionsMiss, n.Miss),
 			attribute.Int(attrPredictionsUnscorable, n.Unscorable),
+			attribute.Int(attrPredictionsCounterfactual, n.Counterfactual),
+			attribute.Int(attrPredictionsControls, n.Controls),
 		)
 	}
 
@@ -252,7 +257,9 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 		"predictions_scored", CountPredictions(summary.Predictions).Scored,
 		"predictions_hit", CountPredictions(summary.Predictions).Hit,
 		"predictions_miss", CountPredictions(summary.Predictions).Miss,
-		"predictions_unscorable", CountPredictions(summary.Predictions).Unscorable)
+		"predictions_unscorable", CountPredictions(summary.Predictions).Unscorable,
+		"predictions_counterfactual", CountPredictions(summary.Predictions).Counterfactual,
+		"predictions_controls", CountPredictions(summary.Predictions).Controls)
 }
 
 // claimGame records gameID as summarized and reports whether THIS call won the
