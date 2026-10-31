@@ -951,7 +951,12 @@ def test_group_grant_flags_carry_no_targeting(flag_dir):
         if flag.get("targeting"):
             failures.append(f"{flag_dir}/agent.json {key} has targeting")
         default = flag["variants"].get(flag["defaultVariant"])
-        if key != "policy.group_grant.max_targets" and default not in (False, 0):
+        if key == "policy.group_grant.max_targets":
+            if default != 4:
+                failures.append(
+                    f"{flag_dir}/agent.json {key} defaults to {default!r}, not 4"
+                )
+        elif default not in (False, 0):
             failures.append(
                 f"{flag_dir}/agent.json {key} defaults to {default!r}, not off or 0"
             )

@@ -327,6 +327,8 @@ func TestPayloadCheckGroupShield(t *testing.T) {
 		{"UC-040/BR-033 single serial", map[string]any{"serials": "A", "seconds": "5"}, fserr.OutOfBounds},
 		{"UC-040/BR-033 seven serials", map[string]any{"serials": "A,B,C,D,E,F,G", "seconds": "5"}, fserr.OutOfBounds},
 		{"UC-040/BR-033 foreign serial", map[string]any{"serials": "A,Z", "seconds": "5"}, fserr.SerialNotInGame},
+		{"UC-040/BR-033 whitespace entry", map[string]any{"serials": "A, B", "seconds": "5"}, fserr.SerialNotInGame},
+		{"UC-040/BR-033 lower-case entry", map[string]any{"serials": "A,b", "seconds": "5"}, fserr.SerialNotInGame},
 		{"UC-040/BR-033 empty set", map[string]any{"serials": "", "seconds": "5"}, fserr.Malformed},
 		{"UC-040/BR-033 missing set", map[string]any{"seconds": "5"}, fserr.Malformed},
 		{"UC-040/BR-033 empty entry", map[string]any{"serials": "A,,B", "seconds": "5"}, fserr.OutOfBounds},
