@@ -888,6 +888,9 @@ func (c *components) buildGameEnd() {
 	// (chainGameEnd) on the single store hook. The aggregation is itself an
 	// agent.game.summary span.
 	c.summaries = gamesummary.NewCoordinator(c.logger)
+	// #2479: the prediction Book finalizes a game's results earlier in the game-end
+	// chain, so the summary and the retro read them from its lookup (UC-042 A12).
+	wirePredictionLookups(c.predictions, c.summaries, c.retro)
 	// Advance the M7-2 rolling window on every game end (#929): the coordinator
 	// Records each freshly-built Summary into the shared window, which reduces a game to
 	// its aggregates: a real game goes to the real-game window, a shadow game to its

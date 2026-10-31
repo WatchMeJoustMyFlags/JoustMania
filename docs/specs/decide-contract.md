@@ -801,8 +801,8 @@ The contract tests live in `decide/*_test.go`, the backend tests `decide/backend
 
 ## 14. Characteristics, predictions, goals (planned, #2479)
 
-> Status `Open`: no code on `main` yet. Delivered in slices (characteristics and rules predictions, summary and retro,
-> model ask, goal profiles). The maintainer decisions of 2026-10-31: `activity` is the movement intensity relative to the
+> Status `Open`. Delivered in slices (characteristics and rules predictions and the Book, #2485; the game summary, the
+> retro block and the dashboard Agent tab, #2479 PR C; model ask; goal profiles). The maintainer decisions of 2026-10-31: `activity` is the movement intensity relative to the
 > death threshold (always present, not the optional variance); noop predictions are not scored in v1; arm calibration is
 > report-only. Requirements: FR-200, FR-201. Rules: UC-040 A44, A45, BR-034.
 
