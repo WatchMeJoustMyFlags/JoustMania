@@ -39,7 +39,6 @@ from lib.feature_flags import (
     read_float_flag,
     read_int_flag,  # noqa: F401  games/shields.py reads it as base.read_int_flag (tests patch it here)
     read_object_flag,
-    read_string_flag,
     set_game_transaction_context,
 )
 from lib.telemetry import inject_trace_context
@@ -73,9 +72,6 @@ from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-ex
     SHIELD_HOLD_FLAGS,
     SLOW_MAX,
     SLOW_WARNING,
-    TEMPO_MODE_AGENT,
-    TEMPO_MODE_RULE,
-    TEMPO_SCHEDULE_MODE_DEFAULT,
     GameInitFlags,
     MusicWindows,
     _read_volume_flag,
@@ -88,7 +84,6 @@ from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-ex
     resolve_ramp_seconds,
     resolve_shield_activation,
     resolve_shield_limit,
-    resolve_tempo_schedule_mode,
 )
 from services.game_coordinator.runtime_config import get_config_manager
 from services.game_coordinator.stream_writes import serialized_write
@@ -822,10 +817,6 @@ class BaseGameMode(ShieldMixin, ABC):
         # #766 F3: ``game.windows`` music tempo-change windows (init-frozen calibration;
         # the ``pacing_profile`` presets are named variants).
         #
-        # #1109: ``game.tempo_schedule_mode``: read ONCE here for the initial value, then
-        # kept LIVE by the PROVIDER_CONFIGURATION_CHANGED listener (TempoScheduleManager),
-        # which swaps ``self.tempo_schedule_mode`` mid-game.
-        #
         # F7, #766: per-channel volumes from the user domain (init-frozen). Defaults
         # reproduce the original constants; malformed values fall back to them.
         self.init_flags = GameInitFlags.from_raw(
@@ -836,9 +827,6 @@ class BaseGameMode(ShieldMixin, ABC):
             ),
             death_grace_default=DEATH_GRACE_PERIOD,
             windows=read_object_flag("game", "windows", {}, game_id=self.game_id),
-            tempo_schedule_mode=read_string_flag(
-                "game", "tempo_schedule_mode", TEMPO_SCHEDULE_MODE_DEFAULT, game_id=self.game_id
-            ),
             game_volume=_read_volume_flag("audio_volume.game", GAME_VOLUME),
             countdown_music_volume=_read_volume_flag("audio_volume.countdown_music", COUNTDOWN_MUSIC_VOLUME),
         )
@@ -852,15 +840,9 @@ class BaseGameMode(ShieldMixin, ABC):
         # atomically; ``init_music_windows`` is the restore target, never reassigned.
         self.music_windows = self.init_flags.music_windows
         self.init_music_windows = self.music_windows
-        self.tempo_schedule_mode = self.init_flags.tempo_schedule_mode
         self.game_volume = self.init_flags.game_volume
         self.countdown_music_volume = self.init_flags.countdown_music_volume
 
-        # #1109 agent-mode seam (#1103 follow-up): the next-change delay an agent
-        # tempo directive (ramp_tempo) wants the schedule to honor. ``None`` =>
-        # no directive present => "agent" mode falls back to the default rule.
-        # Set by the agent primitive in a follow-up PR; never set in this PR.
-        self.agent_tempo_next_delay: float | None = None
         # #1117 (#1103 MVP action 2): active ramp_tempo CURVE descriptor, or None
         # for no ramp (the default-safe state — behavior unchanged). When set, the
         # single tempo owner (``_check_music_speed``) interpolates the live tempo
@@ -4009,53 +3991,16 @@ class BaseGameMode(ShieldMixin, ABC):
 
         As more players die, tempo changes become more frequent.
         Returns absolute time (game_clock.now() + delay).
-
-        #1109: this is the SINGLE pacing pathway. The delay is produced by the
-        pacing-policy seam (:meth:`_decide_next_change_delay`), which dispatches
-        on the live ``self.tempo_schedule_mode``. There is no separate legacy RNG
-        branch beside the seam — the historical random-window timing is folded in
-        as the rule engine's default rule (:meth:`_default_rule_delay`).
         """
         return game_clock.now() + self._decide_next_change_delay()
 
     def _decide_next_change_delay(self) -> float:
-        """Pacing-policy seam: produce the delay (seconds) until the next change.
+        """Pacing rule: the random-window schedule (relative delay in seconds).
 
-        Dispatches on ``self.tempo_schedule_mode`` (read fresh every call, so the
-        PROVIDER_CONFIGURATION_CHANGED listener's live swap takes effect on the
-        next tempo decision):
-
-        * ``rule`` (default / back-compat) — run the rule engine. The default
-          rule is :meth:`_default_rule_delay`, the windowed RNG that reproduces
-          today's timing exactly.
-        * ``agent`` — yield to an agent tempo directive
-          (``self.agent_tempo_next_delay``, set by the #1103 follow-up). STUB for
-          Phase 1: with no directive present, fall back to the default rule so
-          pacing never freezes when ``agent`` is selected before the primitive
-          ships.
-
-        Any unexpected mode falls through to the default rule (fail-safe).
-        """
-        mode = self.tempo_schedule_mode
-        if mode == TEMPO_MODE_AGENT:
-            directive = self.agent_tempo_next_delay
-            if directive is not None and directive >= 0:
-                return float(directive)
-            # No directive yet (#1103 not shipped) -> hold the established pacing
-            # by falling back to the default rule. (A future variant could hold
-            # the current tempo instead; falling back keeps pacing alive today.)
-            return self._default_rule_delay()
-        # mode == "rule" (and any unknown value): the rule engine's default rule.
-        return self._default_rule_delay()
-
-    def _default_rule_delay(self) -> float:
-        """Default pacing rule: the historical random-window schedule.
-
-        Folds the former ``_get_music_change_time`` body in verbatim so the
-        ``rule`` mode's default policy is byte-for-byte the pre-#1109 timing:
-        a ``_rng.uniform`` draw within the (game-progression-lerped, F6-swappable)
-        ``self.music_windows``. Randomness survives here as a RULE, not a mode.
-        Returns a relative delay in seconds.
+        A ``_rng.uniform`` draw within the (game-progression-lerped, F6-swappable)
+        ``self.music_windows``. The only pacing source since the dead "agent"
+        tempo mode was removed (#2361); the agent shapes tempo through the
+        ``music_tempo_override`` and ``tempo_ramp`` interventions instead.
         """
         # Calculate game progression (0.0 = start, 1.0 = near end)
         min_moves = len(self.players) - 2
@@ -4077,21 +4022,6 @@ class BaseGameMode(ShieldMixin, ABC):
             max_t = self._lerp(windows.fast_max, windows.end_fast_max, game_percent)
 
         return self._rng.uniform(min_t, max_t)
-
-    def apply_tempo_schedule_mode(self, value: object) -> None:
-        """Atomically swap the live tempo-schedule SOURCE mode (#1109).
-
-        Called by the PROVIDER_CONFIGURATION_CHANGED listener
-        (TempoScheduleManager) with the freshly-resolved ``game.tempo_schedule_mode``
-        flag value for THIS game's ``gameId``. The value is validated and stored
-        in a single attribute store (like the F6 ``music_windows`` swap), so the
-        100ms music loop / ``_decide_next_change_delay`` picks up the new source
-        on its next decision without tearing — live mid-game mode switching.
-        """
-        new_mode = resolve_tempo_schedule_mode(value)
-        if new_mode != self.tempo_schedule_mode:
-            logger.info(f"tempo_schedule_mode: {self.tempo_schedule_mode} -> {new_mode}")
-        self.tempo_schedule_mode = new_mode  # atomic single-store swap
 
     def _read_ramp_seconds(self, rising: bool) -> float:
         """Seconds for a full 0 -> 1 (``rising``) or 1 -> 0 swing (#1833).

@@ -1,6 +1,6 @@
 """
 Unit tests for ramp_tempo (#1117, #1103 MVP action 2): a scheduled tempo CURVE
-that fills the #1114 ``agent``-mode tempo seam.
+that fills the tempo seam (#1103).
 
 Covers:
 - parse_ramp_tempo_value: valid parse + bounds (target clamp, seconds cap, curve
@@ -13,7 +13,7 @@ Covers:
   owner (ChangeTempo), holds at target, and suspends the natural schedule while a
   ramp is active (no second writer).
 - handle_ramp_tempo_revert: drops the descriptor so the natural schedule resumes.
-- Agent-mode integration: with tempo_schedule_mode=agent the ramp drives pacing.
+- Integration: an armed ramp drives pacing.
 - interventions.json / agent.json flag JSON is well-formed.
 
 Telemetry is disabled via conftest.
@@ -45,7 +45,6 @@ from services.game_coordinator.games.base import (
     RAMP_CURVE_LINEAR,
     RAMP_TEMPO_MAX_SECONDS,
     SLOW_MUSIC_SPEED,
-    TEMPO_MODE_AGENT,
     Player,
     RampDescriptor,
     parse_ramp_tempo_value,
@@ -312,15 +311,14 @@ async def test_override_wins_over_ramp():
 
 
 # --------------------------------------------------------------------------- #
-# Agent-mode integration (#1114 seam)
+# Ramp drives pacing (single tempo owner)
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_ramp_drives_pacing_in_agent_mode():
-    """With tempo_schedule_mode=agent the ramp drives the live tempo curve."""
+async def test_ramp_drives_pacing():
+    """An armed ramp drives the live tempo curve."""
     game = make_game()
-    game.tempo_schedule_mode = TEMPO_MODE_AGENT
     game.music_speed = 1.0
     base = 3000.0
     with patch("services.game_coordinator.game_clock.now", return_value=base):

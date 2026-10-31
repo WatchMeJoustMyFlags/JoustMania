@@ -9,7 +9,6 @@ MOVED = [
     "resolve_mode_thresholds",
     "resolve_non_negative_duration",
     "resolve_music_windows",
-    "resolve_tempo_schedule_mode",
     "resolve_ramp_seconds",
     "resolve_shield_activation",
     "resolve_charge_expiry",

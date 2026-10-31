@@ -220,20 +220,6 @@ def _set_permission() -> None:
 
 
 # =============================================================================
-# game-set game-scoped write — ramp_tempo needs ``game.tempo_schedule_mode``
-# switched to ``agent`` so the armed curve drives the schedule. That flag lives
-# in the GAME set and is read with a gameId context
-# (tempo_schedule.py resolve_tempo_schedule_mode); the registry lets a test set
-# it for one game (flags.md §13.3), and the value dies with the game.
-# =============================================================================
-
-
-def _set_tempo_schedule_mode_for_game(game_id: str, mode: str) -> None:
-    """Scope ``game.tempo_schedule_mode`` to ``mode`` for one game only."""
-    flag_service_default().put("game", "tempo_schedule_mode", variant=mode, scope={"game_id": game_id})
-
-
-# =============================================================================
 # Per-action scenarios. Each: own tagged mock controllers + own headless shadow
 # game + gameId-scoped flag write + ONE focused apply assertion. Cleans up in a
 # finally. Raising tags the failure with the scenario name in the batch runner.
@@ -395,8 +381,7 @@ async def _scenario_soft_penalty_warn(docker_compose, tag: str) -> None:
 
 async def _scenario_ramp_tempo(docker_compose, tag: str) -> None:
     """#1122 ``ramp_tempo``: a scheduled tempo CURVE arms on the live game and the
-    apply path runs unblocked, with ``game.tempo_schedule_mode=agent`` so the
-    curve drives the schedule.
+    apply path runs unblocked.
 
     The tempo curve / music_speed is not on GetGameState, so the apply-proof is
     the ``ramp_tempo`` ``blocked="false"`` event (session-scoped, empty target):
@@ -411,23 +396,6 @@ async def _scenario_ramp_tempo(docker_compose, tag: str) -> None:
         game_id, collector = await _start_headless_with_retry(game_client, build_start_config("JoustFFA", serials))
         await _await_running(game_client, game_id)
         await _wait_for_game_colors(mock_client, serials)
-
-        # Flip THIS game's tempo SOURCE to agent so the curve drives the schedule,
-        # and wait for the coordinator to actually serve+swap it before arming.
-        _set_tempo_schedule_mode_for_game(game_id, "agent")
-        with flagd_probe_client(docker_compose, "game") as flag_client:
-            from openfeature.evaluation_context import EvaluationContext
-
-            assert await async_poll_until(
-                lambda: (
-                    flag_client.get_string_value(
-                        "tempo_schedule_mode",
-                        "rule",
-                        EvaluationContext(attributes={"gameId": game_id}),
-                    )
-                    == "agent"
-                ),
-            ), "flagd did not serve tempo_schedule_mode=agent for this game"
 
         # Arm a ramp toward 1.3x over 8s (linear), session-scoped to this game.
         set_game_value("tempo_ramp", game_id, "1.3:8:linear")

@@ -422,7 +422,7 @@ func TestRealWriteAttribute(t *testing.T) {
 	}
 	bad := []struct{ name, row string }{
 		{"an unknown value", `{set: game, key: sensitivity, kind: overlay, scope: [stack, real], real_write: always}`},
-		{"a kind other than overlay", `{set: game, key: tempo_schedule_mode, kind: state, scope: [game], real_write: no_live_real_game}`},
+		{"a kind other than overlay", `{set: game, key: num_teams, kind: state, scope: [game], real_write: no_live_real_game}`},
 	}
 	for _, c := range bad {
 		t.Run("UC-043/A17 the registry refuses real_write with "+c.name, func(t *testing.T) {

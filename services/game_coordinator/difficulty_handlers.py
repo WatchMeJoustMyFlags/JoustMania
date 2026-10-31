@@ -439,8 +439,7 @@ async def handle_ramp_tempo(ctx: InterventionContext) -> None:
     dispatched). On a valid value the descriptor's interpolation origin is anchored
     to the live music_speed + now and stored on ``game.tempo_ramp``; the game's
     100ms ``_check_music_speed`` loop then interpolates toward the target via the
-    SINGLE tempo-owner seam (no second writer). When ``tempo_schedule_mode==agent``
-    this curve drives the schedule. The neutral value ("none") never reaches here;
+    SINGLE tempo-owner seam (no second writer). The neutral value ("none") never reaches here;
     reverting drops the descriptor via :func:`handle_ramp_tempo_revert`.
     """
     game = ctx.game

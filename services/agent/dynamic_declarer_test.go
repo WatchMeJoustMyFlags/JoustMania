@@ -620,7 +620,7 @@ func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 // UC: UC-070 A9 BR-008
 func TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags(t *testing.T) {
 	plumbing := []string{
-		"shadow_policy", "max_concurrent_games", "max_shadow_games", "tempo_schedule_mode",
+		"shadow_policy", "max_concurrent_games", "max_shadow_games",
 		"force_all_start", "force_all_start_seconds", "countdown_phase_duration_ms",
 		"winner_rainbow_duration_ms",
 	}
