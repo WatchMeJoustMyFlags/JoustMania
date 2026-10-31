@@ -35,7 +35,8 @@ Part of #
 <!--
 Read by scripts/ci/merge-sweep.sh after the merge queue merged this PR (#1809). One line each,
 outside this comment; {MERGE} becomes the short merge SHA. Leave empty when nothing applies.
-  close #N: <what was delivered>   closes issue N with this comment (skipped when already closed)
+Only issues on the "Part of #N" line above are closed or noted (never a PR number).
+  close #N: <what was delivered>   closes issue N with this comment, once (a reopened issue stays open)
   note #N: <text>                  comments on issue N once
 Do not also pass --close / --note-issue to safe-merge for the same issue.
 -->

@@ -71,8 +71,9 @@ persisted value surviving a reset), #1796 (over-claimed tags).
   Edit / Write / Bash starts with your own `<main>/.worktrees/<slug>/` (`<main>` = first `worktree` line of
   `git worktree list --porcelain`);
 - `git stash` in any form; `git reset --hard` or `git clean` outside your own worktree;
-- merge, run `scripts/ci/safe-merge.sh` (only exception: `--revoke` before a fixer push to an armed or queued PR,
-  implement-issue fixer step 2), `gh run watch`, or wait on CI;
+- merge, run `scripts/ci/safe-merge.sh`, `gh run watch`, or wait on CI. Only exception, implement-issue fixer step 2
+  before a push to a reviewed, armed or queued PR: `safe-merge.sh <PR> <head> --revoke`, `gh pr merge <PR> --disable-auto`
+  and the GraphQL `dequeuePullRequest` mutation for that PR;
 - add or remove labels unless the brief asks for them (name the labels the PR needs in the report instead);
 - renumber or delete a UC step, flow, BR, FR or NFR id; retire with `Obsolete` / `Rejected`;
 - decide a product question yourself (below);

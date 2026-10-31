@@ -59,11 +59,14 @@ scripts/ci/merge-sweep.sh [PR ...]
 It only touches PRs authored by `SWEEP_AUTHORS` (default aepfli) and prints one line per PR,
 `#<n> <STATE>: <detail>; next: <step>`, then a `SWEEP:` line:
 - an UNMERGEABLE queue entry (a merge-group check failed; GitHub leaves it in the queue for minutes) is dequeued;
-- a dequeued or ejected PR is re-armed (`safe-merge.sh --arm --depth rearm`) at most ONCE per head, and only when
+- a dequeued or ejected PR is re-armed (`safe-merge.sh --rearm`: posts no status and re-reads the newest one right
+  before arming, so a revoke always wins) at most ONCE per head, and only when
   the newest "Reviewed head" status on its current head is success by an approver, it does not conflict, and it
-  was not dequeued by hand. GitHub clears auto-merge when it queues a PR, so after any ejection nothing is armed:
+  was not dequeued by hand (a sweep marks its own dequeues). GitHub clears auto-merge when it queues a PR, so after any ejection nothing is armed:
   re-arming is the normal path, the once-per-head marker stops a loop on a real failure;
-- `MERGED` lines name the branch of each recently merged PR and the `## Merge notes` issues it closed or noted.
+- `MERGED` lines name the branch of each recently merged PR and the `## Merge notes` issues it closed or noted (only
+  issues on the PR's `Part of #N` line, never a PR; a reopened issue is not closed again);
+- `SWEEP BUSY` means another sweep holds the lock: report it, do not retry;
 Then, for every `MERGED` line, run the step-3 cleanup for that branch (worktree only; main fast-forwarded once at
 the end). Exit 1 means an action or read failed: relay the lines, never rerun the sweep in the same brief.
 

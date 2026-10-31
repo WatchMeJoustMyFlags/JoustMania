@@ -9,40 +9,51 @@
 # check leaves the entry sitting UNMERGEABLE for minutes; and a queued branch
 # rejects pushes (GH006). This pass:
 #   1. Open PRs authored by SWEEP_AUTHORS ("ours"; others are never touched):
-#      - queue entry UNMERGEABLE: dequeue it (GraphQL dequeuePullRequest), then
-#        treat it as ejected (below);
+#      - queue entry UNMERGEABLE: post a `<!-- merge-sweep dequeued <sha> -->`
+#        PR comment, dequeue the entry (GraphQL dequeuePullRequest), then treat
+#        it as ejected (below);
 #      - queued (any other entry state) or auto-merge armed: report, no action;
 #      - not queued, not armed, with a RemovedFromMergeQueueEvent (dequeued or
-#        ejected): re-arm with `safe-merge.sh <PR> <head> --arm --depth rearm`
-#        only when ALL hold:
+#        ejected): re-arm with `safe-merge.sh <PR> <head> --rearm` only when ALL
+#        hold:
 #          * not CONFLICTING and the last removal reason is not a conflict;
 #          * the NEWEST "Reviewed head" status on the current head is success,
-#            posted by a login in REVIEW_APPROVERS (never a `[bot]`);
-#          * the last removal was not a hand dequeue (reason `manual`), unless
-#            this pass made it;
+#            posted by an approver (never a `[bot]`);
+#          * the last removal was not a hand dequeue: reason `manual` counts as
+#            a sweep dequeue only with the dequeued marker for this head;
 #          * no re-arm marker for this head yet: at most ONE re-arm per head.
 #            The marker is a PR comment `<!-- merge-sweep rearm <sha> -->`,
 #            posted BEFORE arming (a crash never allows a second re-arm).
+#        `--rearm` posts no status and re-reads the newest status right before
+#        arming, so a `--revoke` that lands after this pass's read still wins.
 #        Otherwise it reports why and names the next step.
 #      - never queued (no removal event): not part of the flow, no line.
-#   2. Our PRs merged in the last SWEEP_MERGED_HOURS: a `MERGED` line with the
-#      branch (the caller removes its worktree), then the PR body's
-#      `## Merge notes` lines (HTML comments ignored):
-#        close #N: <text>   close issue N with <text> (once: skipped when closed)
-#        note #N: <text>    comment <text> on issue N (once per PR: marker)
-#      `{MERGE}` in <text> becomes the short merge SHA.
-# Fails CLOSED: an unreadable status or marker list never re-arms.
+#   2. Our PRs merged in the last SWEEP_MERGED_HOURS (search, all pages): a
+#      `MERGED` line with the branch (the caller removes its worktree), then the
+#      PR body's `## Merge notes` lines (HTML comments ignored):
+#        close #N: <text>   close issue N with <text>, once (marker on the issue;
+#                           skipped when closed or already closed by this sweep,
+#                           so a reopened issue stays open)
+#        note #N: <text>    comment <text> on issue N, once per PR (marker)
+#      Only issues named on the body's `Part of #N` line(s) are targets, and
+#      never a pull request. `{MERGE}` in <text> becomes the short merge SHA.
+# Fails CLOSED: an unreadable status, marker list or issue never acts. A result
+# list that may be truncated is a failure (exit 1), not a silent skip.
+# One sweep at a time: an flock on SWEEP_LOCK (default <git common dir>/merge-sweep.lock).
 #
 # --dry-run: read everything, change nothing (lines say "would ...").
 # PR ...:    restrict the pass to these numbers (still only ours).
 #
 # Output: one line per PR, `#<n> <STATE>: <detail>; next: <step>`, then a
 # `SWEEP:` summary. Exit 0 pass completed (lines may still name a next step),
-# 1 the PR list could not be read or an action failed, 2 usage.
+# 1 a read failed, a list may be truncated, an action failed or another sweep
+# holds the lock; 2 usage.
 #
-# Env: SWEEP_AUTHORS (default aepfli), REVIEW_APPROVERS (default aepfli),
-#      SWEEP_MERGED_HOURS (default 48), SWEEP_SAFE_MERGE (default the sibling
-#      safe-merge.sh; tests only), GH_REPO for gh.
+# Env: SWEEP_AUTHORS (default aepfli); REVIEW_APPROVERS (default: the repo
+#      variable REVIEW_APPROVERS via `gh variable get`, which review-gate.yml
+#      reads too, else aepfli; set it locally only to the same list);
+#      SWEEP_MERGED_HOURS (default 48); SWEEP_LOCK; SWEEP_SAFE_MERGE (default
+#      the sibling safe-merge.sh; tests only); GH_REPO for gh.
 set -uo pipefail
 
 CONTEXT="Reviewed head"
@@ -58,13 +69,24 @@ for a in "$@"; do
   esac
 done
 
-AUTHORS="${SWEEP_AUTHORS:-}"
-[[ -n "${AUTHORS//[[:space:],]/}" ]] || AUTHORS="aepfli"
-APPROVERS="${REVIEW_APPROVERS:-}"
-[[ -n "${APPROVERS//[[:space:],]/}" ]] || APPROVERS="aepfli"
 HOURS="${SWEEP_MERGED_HOURS:-48}"
 [[ "$HOURS" =~ ^[0-9]+$ ]] || { echo "SWEEP_MERGED_HOURS must be a number: '$HOURS'" >&2; exit 2; }
 SAFE_MERGE="${SWEEP_SAFE_MERGE:-$(cd "$(dirname "$0")" && pwd)/safe-merge.sh}"
+
+LOCK="${SWEEP_LOCK:-}"
+if [[ -z "$LOCK" ]]; then
+  gitdir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  LOCK="${gitdir:-${TMPDIR:-/tmp}}/merge-sweep.lock"
+fi
+exec 9>>"$LOCK" || { echo "SWEEP ERROR: cannot open the lock $LOCK"; exit 1; }
+flock -n 9 || { echo "SWEEP BUSY: another merge sweep holds $LOCK; nothing done"; exit 1; }
+
+split_list() { local -a l; IFS=$' \t\n,' read -r -a l <<<"$1"; printf '%s\n' "${l[@]}"; }
+AUTHORS="${SWEEP_AUTHORS:-}"
+[[ -n "${AUTHORS//[[:space:],]/}" ]] || AUTHORS="aepfli"
+APPROVERS="${REVIEW_APPROVERS:-}"
+[[ -n "${APPROVERS//[[:space:],]/}" ]] || APPROVERS="$(gh variable get REVIEW_APPROVERS 2>/dev/null || true)"
+[[ -n "${APPROVERS//[[:space:],]/}" ]] || APPROVERS="aepfli"
 
 failures=0 attention=0 lines=0
 emit() {  # number state detail next
@@ -72,12 +94,9 @@ emit() {  # number state detail next
   [[ "$4" != none ]] && attention=$((attention + 1))
   echo "#$1 $2: $3; next: $4"
 }
-
-in_list() {  # word list(comma/space separated)
+in_list() {  # word list: exact match, no glob
   local w
-  set -f
-  for w in ${2//,/ }; do [[ "$1" == "$w" ]] && { set +f; return 0; }; done
-  set +f
+  while IFS= read -r w; do [[ -n "$w" && "$1" == "$w" ]] && return 0; done < <(split_list "$2")
   return 1
 }
 selected() {
@@ -87,20 +106,56 @@ selected() {
   return 1
 }
 
-GQL='query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){
-  open: pullRequests(states:OPEN, first:100){nodes{number id author{login} headRefOid mergeable
+GQL_OPEN='query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){
+  pullRequests(states:OPEN, first:100){pageInfo{hasNextPage} nodes{number id author{login} headRefOid mergeable
     autoMergeRequest{enabledAt} mergeQueueEntry{state}
-    timelineItems(last:1, itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{reason}}}}}
-  merged: pullRequests(states:MERGED, first:30, orderBy:{field:UPDATED_AT, direction:DESC}){nodes{number author{login}
-    headRefName mergedAt mergeCommit{oid} body}}}}'
+    timelineItems(last:1, itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{reason}}}}}}}'
+GQL_MERGED='query($q:String!,$after:String){search(query:$q, type:ISSUE, first:50, after:$after){
+  pageInfo{hasNextPage endCursor} nodes{... on PullRequest{number author{login} headRefName mergedAt mergeCommit{oid} body}}}}'
 
-data="$(gh api graphql -F owner='{owner}' -F repo='{repo}' -f query="$GQL" 2>/dev/null)" \
-  && jq -e '.data.repository.open.nodes and .data.repository.merged.nodes' >/dev/null 2>&1 <<<"$data" \
-  || { echo "SWEEP ERROR: cannot read the open and merged PRs (API error); nothing done"; exit 1; }
+open_data="$(gh api graphql -F owner='{owner}' -F repo='{repo}' -f query="$GQL_OPEN" 2>/dev/null)" \
+  && jq -e '.data.repository.pullRequests.nodes' >/dev/null 2>&1 <<<"$open_data" \
+  || { echo "SWEEP ERROR: cannot read the open PRs (API error); nothing done"; exit 1; }
+
+# Our merged PRs since the cutoff: one search per author, every page (at most 10).
+repo_full="$(gh api 'repos/{owner}/{repo}' --jq .full_name 2>/dev/null)" && [[ "$repo_full" == */* ]] \
+  || { echo "SWEEP ERROR: cannot read the repository name (API error); nothing done"; exit 1; }
+cutoff=$(( $(date -u +%s) - HOURS * 3600 ))
+since="$(date -u -d "@$cutoff" +%Y-%m-%dT%H:%M:%SZ)"
+merged_nodes=""
+merged_ok=true
+while IFS= read -r who; do
+  [[ -n "$who" ]] || continue
+  after="" page=0
+  while :; do
+    page=$((page + 1))
+    args=(-f query="$GQL_MERGED" -f q="repo:$repo_full is:pr is:merged author:$who merged:>=$since")
+    [[ -n "$after" ]] && args+=(-f after="$after")
+    if ! res="$(gh api graphql "${args[@]}" 2>/dev/null)" || ! jq -e '.data.search.nodes' >/dev/null 2>&1 <<<"$res"; then
+      merged_ok=false; failures=$((failures + 1))
+      echo "SWEEP WARNING: cannot read the PRs merged by $who since $since (API error); merged PRs skipped"
+      break
+    fi
+    merged_nodes+="$(jq -c '.data.search.nodes[] | select(.number)' <<<"$res")"$'\n'
+    [[ "$(jq -r '.data.search.pageInfo.hasNextPage' <<<"$res")" == true ]] || break
+    if (( page >= 10 )); then
+      failures=$((failures + 1))
+      echo "SWEEP WARNING: more than $((page * 50)) PRs merged by $who since $since; the rest was not read"
+      break
+    fi
+    after="$(jq -r '.data.search.pageInfo.endCursor // ""' <<<"$res")"
+    [[ -n "$after" ]] || break
+  done
+done < <(split_list "$AUTHORS")
+
+if [[ "$(jq -r '.data.repository.pullRequests.pageInfo.hasNextPage' <<<"$open_data")" == true ]]; then
+  failures=$((failures + 1))
+  echo "SWEEP WARNING: more than 100 open PRs; only the first 100 were swept"
+fi
 
 # Newest "Reviewed head" status on a SHA: "<state> <creator>", "none", or exit 1 (API error).
 newest_review() {
-  local entries newest
+  local entries newest st by
   entries="$(gh api "repos/{owner}/{repo}/commits/$1/statuses?per_page=100" --paginate \
     --jq ".[] | select(.context == \"$CONTEXT\") | \"\(.id) \(.state) \(.creator.login // \"-\")\"" 2>/dev/null)" || return 1
   newest="$(sort -k1,1nr <<<"$entries" | sed -n '1p')"
@@ -118,7 +173,7 @@ dequeue() {  # PR node id
 }
 
 sweep_open() {  # one open-PR JSON object
-  local pr="$1" n id author head mergeable auto qstate reason
+  local pr="$1" n id author head mergeable auto qstate reason short bodies
   n="$(jq -r .number <<<"$pr")"
   selected "$n" || return 0
   author="$(jq -r '.author.login // ""' <<<"$pr")"
@@ -132,11 +187,20 @@ sweep_open() {  # one open-PR JSON object
   auto="$(jq -r 'if .autoMergeRequest then "yes" else "no" end' <<<"$pr")"
   qstate="$(jq -r '.mergeQueueEntry.state // ""' <<<"$pr")"
   reason="$(jq -r '.timelineItems.nodes[-1].reason // ""' <<<"$pr")"
-  local short="${head:0:8}"
+  short="${head:0:8}"
+  local dq_marker="<!-- merge-sweep dequeued $head -->"
 
   if [[ "$qstate" == UNMERGEABLE ]]; then
     if $DRY; then
-      emit "$n" UNMERGEABLE "would dequeue (head $short)" "none"
+      emit "$n" UNMERGEABLE "would dequeue (head $short)" none
+      return 0
+    fi
+    # Marker first: the next pass reads this dequeue as reason `manual` and
+    # must still know it was ours.
+    if ! gh pr comment "$n" --body "Merge sweep: dequeued at ${short}: the queue entry was UNMERGEABLE (a merge-group check failed).
+$dq_marker" >/dev/null 2>&1; then
+      failures=$((failures + 1))
+      emit "$n" "DEQUEUE FAILED" "queue entry UNMERGEABLE (head $short), could not post the dequeue marker; not dequeued" "re-check later"
       return 0
     fi
     if ! dequeue "$id"; then
@@ -181,16 +245,20 @@ sweep_open() {  # one open-PR JSON object
     emit "$n" EJECTED "$what; \"$CONTEXT\" on $short is by $by, not an approver; not re-armed" "delta review"
     return 0
   fi
-  if [[ "$reason" == manual ]]; then
-    emit "$n" DEQUEUED "dequeued by hand (head $short); not re-armed" "re-arm with --arm if still wanted"
-    return 0
-  fi
-  local marker="<!-- merge-sweep rearm $head -->" bodies
   if ! bodies="$(comments "$n")"; then
     failures=$((failures + 1))
     emit "$n" EJECTED "$what; cannot read the PR comments (API error); not re-armed" "re-check later"
     return 0
   fi
+  if [[ "$reason" == manual ]]; then
+    if grep -qF "$dq_marker" <<<"$bodies"; then
+      what="dequeued by an earlier sweep (UNMERGEABLE)"
+    else
+      emit "$n" DEQUEUED "dequeued by hand (head $short); not re-armed" "re-arm with --arm if still wanted"
+      return 0
+    fi
+  fi
+  local marker="<!-- merge-sweep rearm $head -->"
   if grep -qF "$marker" <<<"$bodies"; then
     emit "$n" EJECTED "$what again; already re-armed once at $short; not re-armed" "fix the failing test"
     return 0
@@ -206,13 +274,13 @@ $marker" >/dev/null 2>&1; then
     return 0
   fi
   local out rc=0
-  out="$("$SAFE_MERGE" "$n" "$head" --arm --depth rearm 2>/dev/null)" || rc=$?
+  out="$("$SAFE_MERGE" "$n" "$head" --rearm 2>/dev/null)" || rc=$?
   out="$(tail -n 1 <<<"$out")"
   case "$rc" in
     8) emit "$n" RE-ARMED "$what; $out" none ;;
     0) emit "$n" MERGED "$out" none ;;
     *) failures=$((failures + 1))
-       emit "$n" "RE-ARM FAILED" "$what; safe-merge --arm exit $rc: $out" "re-brief" ;;
+       emit "$n" "RE-ARM FAILED" "$what; safe-merge --rearm exit $rc: $out" "check review comments" ;;
   esac
 }
 
@@ -229,42 +297,53 @@ merge_notes() {
                out = out substr(line, 1, i - 1); line = substr(line, i + 4); incom = 1 } }
       print out }'
 }
+# Issue numbers on the body's `Part of #N[, #M]` line(s), HTML comments removed.
+part_of() {
+  tr -d '\r' | awk '{ while ((i = index($0, "<!--"))) { j = index(substr($0, i), "-->"); if (!j) { $0 = substr($0, 1, i - 1); break }
+                       $0 = substr($0, 1, i - 1) substr($0, i + j + 2) } print }' \
+    | grep -E '^[[:space:]]*Part of #' | grep -oE '#[0-9]+' | tr -d '#'
+}
 
 sweep_merged() {  # one merged-PR JSON object
-  local pr="$1" n author merged_at branch merge msha cutoff
+  local pr="$1" n author merged_at branch merge msha
   n="$(jq -r .number <<<"$pr")"
   selected "$n" || return 0
   author="$(jq -r '.author.login // ""' <<<"$pr")"
   in_list "$author" "$AUTHORS" || return 0
   merged_at="$(jq -r '.mergedAt // ""' <<<"$pr")"
-  cutoff=$(( $(date -u +%s) - HOURS * 3600 ))
   [[ -n "$merged_at" ]] && (( $(date -u -d "$merged_at" +%s 2>/dev/null || echo 0) >= cutoff )) || return 0
   branch="$(jq -r '.headRefName // ""' <<<"$pr")"
   merge="$(jq -r '.mergeCommit.oid // ""' <<<"$pr")"
   msha="${merge:0:8}"
-  local done_notes=() line kind issue text
+  local targets
+  targets=" $(jq -r '.body // ""' <<<"$pr" | part_of | tr '\n' ' ')"
+  local done_notes=() line kind issue text info state ispr bodies
   while IFS= read -r line; do
     [[ "$line" =~ ^[[:space:]]*(-[[:space:]]+)?(close|note)[[:space:]]+#([0-9]+):[[:space:]]*(.+[^[:space:]])[[:space:]]*$ ]] || continue
     kind="${BASH_REMATCH[2]}" issue="${BASH_REMATCH[3]}" text="${BASH_REMATCH[4]//\{MERGE\}/$msha}"
+    if [[ "$targets" != *" $issue "* ]]; then
+      done_notes+=("#$issue refused (not on the Part of line)"); continue
+    fi
+    if ! info="$(gh api "repos/{owner}/{repo}/issues/$issue" --jq '"\(.state) \(.pull_request != null)"' 2>/dev/null)"; then
+      failures=$((failures + 1)); done_notes+=("$kind #$issue: read failed"); continue
+    fi
+    read -r state ispr <<<"$info"
+    if [[ "$ispr" != false ]]; then done_notes+=("#$issue refused (a pull request)"); continue; fi
+    if ! bodies="$(comments "$issue")"; then
+      failures=$((failures + 1)); done_notes+=("$kind #$issue: read failed"); continue
+    fi
     local marker="<!-- merge-sweep $kind PR#$n -->"
     local body="$text
 
 (#$n, merge $msha)
 $marker"
     if [[ "$kind" == close ]]; then
-      local state
-      if ! state="$(gh issue view "$issue" --json state --jq .state 2>/dev/null)"; then
-        failures=$((failures + 1)); done_notes+=("close #$issue: read failed"); continue
-      fi
-      if [[ "$state" != OPEN ]]; then done_notes+=("#$issue already closed"); continue; fi
+      if grep -qF "$marker" <<<"$bodies"; then done_notes+=("#$issue already closed by the sweep"); continue; fi
+      if [[ "$state" != open ]]; then done_notes+=("#$issue already closed"); continue; fi
       if $DRY; then done_notes+=("would close #$issue"); continue; fi
       if gh issue close "$issue" --comment "$body" >/dev/null 2>&1; then done_notes+=("closed #$issue")
       else failures=$((failures + 1)); done_notes+=("close #$issue FAILED"); fi
     else
-      local bodies
-      if ! bodies="$(comments "$issue")"; then
-        failures=$((failures + 1)); done_notes+=("note #$issue: read failed"); continue
-      fi
       if grep -qF "$marker" <<<"$bodies"; then done_notes+=("#$issue already noted"); continue; fi
       if $DRY; then done_notes+=("would note #$issue"); continue; fi
       if gh issue comment "$issue" --body "$body" >/dev/null 2>&1; then done_notes+=("noted #$issue")
@@ -277,12 +356,21 @@ $marker"
   fi
   local next=none
   [[ "$notes" == *FAILED* || "$notes" == *"read failed"* ]] && next="re-check later"
+  [[ "$notes" == *refused* && "$next" == none ]] && next="check the merge notes"
   emit "$n" MERGED "merge $msha, branch $branch; $notes" "$next"
 }
 
-while IFS= read -r pr; do sweep_open "$pr"; done < <(jq -c '.data.repository.open.nodes[]' <<<"$data")
-while IFS= read -r pr; do sweep_merged "$pr"; done < <(jq -c '.data.repository.merged.nodes[]' <<<"$data")
+while IFS= read -r pr; do sweep_open "$pr"; done < <(jq -c '.data.repository.pullRequests.nodes[]' <<<"$open_data")
+# One line per merged PR even when two author searches overlap.
+declare -A seen=()
+while IFS= read -r pr; do
+  [[ -n "$pr" ]] || continue
+  num="$(jq -r .number <<<"$pr")"
+  [[ -n "${seen[$num]:-}" ]] && continue
+  seen[$num]=1
+  sweep_merged "$pr"
+done <<<"$merged_nodes"
 
-echo "SWEEP: $lines PR line(s), $attention with a next step, $failures failed action(s)$($DRY && echo ' (dry run)')"
+echo "SWEEP: $lines PR line(s), $attention with a next step, $failures failed action(s)$($DRY && echo ' (dry run)')$($merged_ok || echo '; merged PRs not fully read')"
 (( failures == 0 )) || exit 1
 exit 0

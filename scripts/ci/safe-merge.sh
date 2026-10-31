@@ -22,6 +22,13 @@
 #                             ruleset requires the "Reviewed head" check, and
 #                             with --wait-ci, --wait-queue, --rerun-failed-once,
 #                             --close / --comment-file and --note-*.
+#   --rearm                   #1809, used by merge-sweep.sh: re-arm auto-merge on
+#                             the full SHA WITHOUT posting a status: right before
+#                             `gh pr merge --auto` it re-reads the newest "Reviewed
+#                             head" status on the SHA and arms only when it is
+#                             success by a REVIEW_APPROVERS login (never a bot), so
+#                             a --revoke that landed after the sweep's read wins.
+#                             Same guards and refusals as --arm.
 #   --review-url U            --arm / --revoke: target_url of the status (verdict)
 #   --depth D                 --arm: review depth named in the status description
 #   --revoke                  #1809: withdraw the review of the full SHA: post a
@@ -82,14 +89,18 @@
 #       2 usage, 3 head mismatch, 4 timeout, 5 CONFLICTING (needs rebase),
 #       6 QUEUED (in the merge queue, not merged yet; no issue changes),
 #       7 EJECTED (left the merge queue unmerged; no issue changes),
-#       8 ARMED (--arm: review recorded, auto-merge enabled; nothing waited for).
+#       8 ARMED (--arm: review recorded, auto-merge enabled; --rearm: auto-merge
+#         enabled on a still-reviewed SHA; nothing waited for). --rearm on a SHA
+#         whose newest status is not an approver success: 1 (NOT RE-ARMED).
 #       --revoke: 0 revoked, 1 the status post failed.
 #
 # Env: SAFE_MERGE_POLL (75), SAFE_MERGE_MAX_WAIT (seconds, 7200),
 #      SAFE_MERGE_QUEUE_WAIT (seconds to wait in the queue with --wait-queue, 3600),
 #      SAFE_MERGE_SETTLE (seconds before re-reading the merged state, 5),
 #      SAFE_MERGE_CONFIRM (seconds between the reads confirming an ejection, 10),
-#      SAFE_MERGE_TEST (1 lifts the 60 s poll floor; tests only).
+#      SAFE_MERGE_TEST (1 lifts the 60 s poll floor; tests only),
+#      REVIEW_APPROVERS (--rearm; default: the repo variable REVIEW_APPROVERS
+#      via `gh variable get`, which review-gate.yml reads too, else aepfli).
 set -uo pipefail
 
 usage() { sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
@@ -100,7 +111,7 @@ PR="$1"; WANT="$2"; shift 2
 # --close takes 7 or 7,8 (digits and commas only); --note-issue one number.
 bad_number() { echo "$1 takes issue numbers like 7 or 7,8 (--note-issue: one): '$2'" >&2; exit 2; }
 WAIT_ONLY=false RERUN=false WAIT_QUEUE=false CLOSE="" CFILE="" NOTE_ISSUE="" NFILE=""
-ARM=false REVOKE=false REVIEW_URL="" DEPTH=""
+ARM=false REVOKE=false REARM=false REVIEW_URL="" DEPTH=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wait-ci) WAIT_ONLY=true ;;
@@ -112,6 +123,7 @@ while [[ $# -gt 0 ]]; do
     --note-file) [[ $# -ge 2 ]] || usage; NFILE="$2"; shift ;;
     --arm) ARM=true ;;
     --revoke) REVOKE=true ;;
+    --rearm) REARM=true ;;
     --review-url) [[ $# -ge 2 && "$2" =~ ^https://[^[:space:]]+$ ]] || { echo "--review-url takes an https:// URL: '${2-}'" >&2; exit 2; }
       REVIEW_URL="$2"; shift ;;
     --depth) [[ $# -ge 2 && "$2" =~ ^[a-z][a-z-]{0,19}$ ]] || { echo "--depth takes a word like full or delta: '${2-}'" >&2; exit 2; }
@@ -126,11 +138,12 @@ done
 [[ -n "$NFILE" && -z "$NOTE_ISSUE" ]] && { echo "--note-file needs --note-issue" >&2; exit 2; }
 for f in "$CFILE" "$NFILE"; do [[ -z "$f" || -r "$f" ]] || { echo "cannot read $f" >&2; exit 2; }; done
 # #1809: --arm / --revoke act on one exact SHA and never wait or touch issues.
-if $ARM && $REVOKE; then echo "--arm and --revoke exclude each other" >&2; exit 2; fi
-if $ARM || $REVOKE; then
-  [[ "$WANT" =~ ^[0-9a-f]{40}$ ]] || { echo "--arm / --revoke need the full 40-hex head SHA, not '$WANT'" >&2; exit 2; }
+modes=0; for m in $ARM $REVOKE $REARM; do $m && modes=$((modes + 1)); done
+(( modes <= 1 )) || { echo "--arm, --revoke and --rearm exclude each other" >&2; exit 2; }
+if $ARM || $REVOKE || $REARM; then
+  [[ "$WANT" =~ ^[0-9a-f]{40}$ ]] || { echo "--arm / --revoke / --rearm need the full 40-hex head SHA, not '$WANT'" >&2; exit 2; }
   if $WAIT_ONLY || $WAIT_QUEUE || $RERUN || [[ -n "$CLOSE$CFILE$NOTE_ISSUE$NFILE" ]]; then
-    echo "--arm / --revoke take no --wait-ci, --wait-queue, --rerun-failed-once, --close, --comment-file or --note-*" >&2; exit 2
+    echo "--arm / --revoke / --rearm take no --wait-ci, --wait-queue, --rerun-failed-once, --close, --comment-file or --note-*" >&2; exit 2
   fi
 fi
 [[ -n "$DEPTH" ]] && ! $ARM && { echo "--depth needs --arm" >&2; exit 2; }
@@ -311,13 +324,38 @@ review_required() {
   grep -qxF "ctx:$REVIEW_CONTEXT" <<<"$lines" && grep -qxF "grouping:ALLGREEN" <<<"$lines"
 }
 
+# --rearm: is the NEWEST "Reviewed head" status on a SHA success by an approver?
+# Prints the reason when not; exit 1 also on an API error (fail closed).
+approver_list() {
+  local a="${REVIEW_APPROVERS:-}"
+  [[ -n "${a//[[:space:],]/}" ]] || a="$(gh variable get REVIEW_APPROVERS 2>/dev/null || true)"
+  [[ -n "${a//[[:space:],]/}" ]] || a="aepfli"
+  echo "$a"
+}
+still_reviewed() {  # sha
+  local entries newest st by w
+  entries="$(gh api "repos/{owner}/{repo}/commits/$1/statuses?per_page=100" --paginate \
+    --jq ".[] | select(.context == \"$REVIEW_CONTEXT\") | \"\(.id) \(.state) \(.creator.login // \"-\")\"" 2>/dev/null)" \
+    || { echo "cannot read the statuses (API error)"; return 1; }
+  newest="$(sort -k1,1nr <<<"$entries" | sed -n '1p')"
+  [[ -n "$newest" ]] || { echo "no \"$REVIEW_CONTEXT\" status"; return 1; }
+  read -r _ st by <<<"$newest"
+  [[ "$st" == success ]] || { echo "newest \"$REVIEW_CONTEXT\" is $st (by $by)"; return 1; }
+  [[ "$by" != *"[bot]" ]] || { echo "\"$REVIEW_CONTEXT\" by a bot ($by)"; return 1; }
+  local -a list
+  IFS=$' \t\n,' read -r -a list <<<"$(approver_list)"
+  for w in "${list[@]}"; do [[ "$by" == "$w" ]] && return 0; done  # exact match, no glob
+  echo "\"$REVIEW_CONTEXT\" by $by, not an approver"
+  return 1
+}
+
 if $REVOKE; then
   post_review_status "$WANT" failure "revoked ${WANT:0:8}" \
     || done_line "REVOKE FAILED: could not post the \"$REVIEW_CONTEXT\" failure status on ${WANT:0:8}" 1
   done_line "REVOKED review of ${WANT:0:8} (\"$REVIEW_CONTEXT\" = failure)" 0
 fi
 
-if $ARM; then
+if $ARM || $REARM; then
   review_required \
     || done_line "NOT ARMED: \"$REVIEW_CONTEXT\" is not enforced (not a required check in the main ruleset, merge queue grouping is not ALLGREEN, or the rules read failed); nothing posted" 2
   fetch_view || done_line "ERROR: GitHub API unavailable after retries" 1
@@ -330,10 +368,16 @@ if $ARM; then
   if [[ "$(jq -r '.mergeable // ""' <<<"$VIEW")" == CONFLICTING ]]; then
     done_line "NOT ARMED: CONFLICTING (head $short); needs a rebase on main" 5
   fi
-  # Posted before arming on purpose: a failed arm leaves a reviewed SHA, harmless.
-  post_review_status "$head" success "review-pr${DEPTH:+ $DEPTH} $short" \
-    || done_line "NOT ARMED: could not post the \"$REVIEW_CONTEXT\" status on $short" 1
-  log "review recorded on $head; arming auto-merge"
+  if $REARM; then
+    # Re-read right before arming: a --revoke after the caller's read wins.
+    why="$(still_reviewed "$head")" || done_line "NOT RE-ARMED (head $short): $why" 1
+    log "newest review of $head is still an approver success; re-arming auto-merge"
+  else
+    # Posted before arming on purpose: a failed arm leaves a reviewed SHA, harmless.
+    post_review_status "$head" success "review-pr${DEPTH:+ $DEPTH} $short" \
+      || done_line "NOT ARMED: could not post the \"$REVIEW_CONTEXT\" status on $short" 1
+    log "review recorded on $head; arming auto-merge"
+  fi
   merge_rc=0
   gh pr merge "$PR" --auto --squash --match-head-commit "$head" >&2 || merge_rc=$?
   if ! queue_read; then
