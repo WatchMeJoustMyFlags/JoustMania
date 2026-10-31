@@ -54,7 +54,7 @@ GAME_KIND_PRIMARY = "primary"
 GAME_KIND_SHADOW = "shadow"
 
 # games_completed_total{outcome} values: the game.outcome span attribute values
-# (UC-020 BR-003, #1328) plus "error" for a session that published game_error
+# (UC-020 BR-003) plus "error" for a session that published game_error
 # (no gRPC clients, mode creation failed, game.run() raised). An unknown game
 # outcome is recorded as "completed", so the label never grows past these five
 # series per (mode, game_kind).
@@ -64,8 +64,8 @@ OUTCOME_ERROR = "error"
 GAME_OUTCOMES = frozenset({"winner", "tie", OUTCOME_COMPLETED, OUTCOME_FORCE_ENDED, OUTCOME_ERROR})
 
 
-# Trace shape of an experiment shadow game (#2223, flags.md §10). ``child`` nests the
-# game root under the agent's long-lived ``agent.experiment`` span (#1182), so one
+# Trace shape of an experiment shadow game (flags.md §10). ``child`` nests the
+# game root under the agent's long-lived ``agent.experiment`` span, so one
 # experiment trace grows with every shadow game; ``link`` roots each game as its own
 # trace with a Link back to the experiment. The code default matches the flag
 # default: the game root starts before the readiness wait, and ``observability`` is
@@ -99,17 +99,17 @@ def completed_game_outcome(game) -> str:
     return outcome if outcome in GAME_OUTCOMES else OUTCOME_COMPLETED
 
 
-# How often game_duration_seconds is refreshed while a game is RUNNING (#1305).
+# How often game_duration_seconds is refreshed while a game is RUNNING.
 DURATION_GAUGE_INTERVAL_S = 1.0
 
 # UC-027 step 3: a force-end waits up to this long for the game loop, in total:
-# for the loop to take the mode's force_end (#2149) and then for its thread to finish.
+# for the loop to take the mode's force_end and then for its thread to finish.
 FORCE_END_WAIT_S = 2.0
 # How often that wait checks whether the game loop closed or its thread ended.
 FORCE_END_POLL_S = 0.05
 
 # Retire keeps a game's zeroed series for this many metric export intervals
-# before it removes them (#1311): the agent detects a game's end only from a
+# before it removes them: the agent detects a game's end only from a
 # game_active 1 -> 0 datapoint, so the 0 must be exported (at least twice)
 # before the series goes.
 RETIRE_REMOVAL_EXPORT_INTERVALS = 3
@@ -155,32 +155,32 @@ class GameSession:
         self.game_config = game_config
         self.event_bus = event_bus
         self.game_kind = game_kind
-        # SpanContext of the inbound StreamGameEvents/StartGame RPC span (#1157).
+        # SpanContext of the inbound StreamGameEvents/StartGame RPC span.
         # The game-lifecycle span is rooted as its OWN trace (a NEW root, not a
         # child of the long-lived stream), and this is added back as an OTel Link
         # so the inbound call stays navigable in Jaeger. None when there is no
         # recordable inbound span (telemetry off / unsampled) — handled gracefully.
         self.stream_span_context = stream_span_context
         # SpanContext of the SPAWNING agent EXPERIMENT span, propagated as the
-        # incoming traceparent on the shadow-game spawn RPC (#1182, epic #1181).
+        # incoming traceparent on the shadow-game spawn RPC.
         # For a SHADOW + experiment-bound game this becomes the game-lifecycle
         # span's PARENT (causal parent-child, not a Link) so the game span is a
         # CHILD of its long-lived experiment span in the same trace. None for a
         # real game, an unbound shadow game, or when no traceparent was injected
-        # — those keep the own-root model (#1157/#1164), handled gracefully.
+        # — those keep the own-root model, handled gracefully.
         self.experiment_parent_span_context = experiment_parent_span_context
-        # Experiment attribution within a shadow session (#975, epic #982). Empty
+        # Experiment attribution within a shadow session. Empty
         # for a non-experiment game; set by #976's spawn binding. These are finer-
         # grained labels WITHIN game_kind=shadow, never a replacement for it.
         self.experiment_id = experiment_id
         self.arm = arm
-        # Paired CRN seed (#1003): the deterministic per-instance RNG seed for a
+        # Paired CRN seed: the deterministic per-instance RNG seed for a
         # shadow game in an experiment pair. 0 means entropy (today's behavior).
         # The servicer already zeroed this for a real (primary) session, so a
         # primary game is structurally unable to be seeded — same real-protection
         # guard as experiment_id/arm.
         self.rng_seed = rng_seed
-        # UC-046 BR-018 / UC-040 BR-019 (#2096): the shadow game's pattern controllers
+        # UC-046 BR-018 / UC-040 BR-019: the shadow game's pattern controllers
         # press the trigger by themselves, so it honours trigger and hold. The
         # servicer forces False for a real (primary) session, like rng_seed.
         self.pattern_trigger_policy = pattern_trigger_policy
@@ -188,21 +188,21 @@ class GameSession:
         self.game_start_time = time.time()
         self.game_state = game_coordinator_pb2.GameState.STARTING
         self.current_game = None
-        # Hex trace_id of this session's root game span (#1133). Captured once the
+        # Hex trace_id of this session's root game span. Captured once the
         # span exists in _run_game and exposed as the game_trace_correlation gauge's
         # game_trace_id label so the agent can link agent.decision -> this game trace.
         # Empty until the span opens; used at retire to remove the exact gauge series.
         self.game_trace_id = ""
-        # Hex span_id of this session's root game span (#1157). Carried alongside
+        # Hex span_id of this session's root game span. Carried alongside
         # game_trace_id on the correlation gauge so the agent's Link references the
         # actual game-start span (Jaeger highlights it via uiFind) rather than an
         # all-zero span id under the trace. Captured/cleared in lockstep with
         # game_trace_id.
         self.game_trace_span_id = ""
-        # Hex span_id of this session's gameplay_phase span (#1195). gameplay_phase
+        # Hex span_id of this session's gameplay_phase span. gameplay_phase
         # is the stable active-play sub-span within the game trace; the agent
         # re-parents its in-game decision chain under THIS span instead of the game
-        # root (#1187). Empty until the gameplay_phase span opens (base.py calls
+        # root. Empty until the gameplay_phase span opens (base.py calls
         # publish_gameplay_phase_span_id); carried as the gameplay_phase_span_id
         # label on the correlation gauge alongside game_trace_span_id (same trace).
         # Captured/cleared in lockstep with game_trace_id so retire removes the
@@ -213,7 +213,7 @@ class GameSession:
         # get_game_name(), the same value as the game.mode span attribute. "" until
         # the game is built (publish_game_mode) and again once the series is removed.
         self.game_mode = ""
-        # Hex span_id of this session's game_cycle span (#1325, UC-041 BR-004).
+        # Hex span_id of this session's game_cycle span (UC-041 BR-004).
         # game_cycle is the child of gameplay_phase the agent parents its in-game
         # spans under (UC-040 BR-013). Empty until base.py opens game_cycle and
         # calls publish_game_cycle_span_id; modes with their own run() never open
@@ -225,26 +225,26 @@ class GameSession:
         self.game_thread: threading.Thread | None = None
         # The game thread's event loop, set when the thread starts. The clients
         # above belong to it, so intervention side effects are dispatched onto
-        # it (UC-040 BR-018, #1250). None until the thread runs.
+        # it (UC-040 BR-018). None until the thread runs.
         self.game_loop: asyncio.AbstractEventLoop | None = None
         self.game_running = False
         # Called once from the game thread when its game has ended (natural end,
         # error or force end), after the state reached ENDED. The servicer queues
-        # the flag-service end here (UC-053 step 7, #1847). Must not block.
+        # the flag-service end here (UC-053 step 7). Must not block.
         self.on_game_ended: Callable[[GameSession], None] | None = None
         # True once the servicer queued this game's flag-service end; guarded by
-        # the servicer's _sessions_lock so the end is queued exactly once (#1847).
+        # the servicer's _sessions_lock so the end is queued exactly once.
         self.flag_service_end_queued = False
 
         # Protects game_state, current_game, players for this session.
         self._state_lock = threading.Lock()
-        # True once a force end has begun (UC-027 BR-003, #1827); guarded by
+        # True once a force end has begun (UC-027 BR-003); guarded by
         # _state_lock. A second force end during the join is refused instead of
         # joining and publishing again. Reset only when the mode's force_end
         # raised, so a later caller can retry.
         self._force_ending = False
 
-        # Retire guard for this session's per-game series (#1311). clear_metrics
+        # Retire guard for this session's per-game series. clear_metrics
         # sets _metrics_retired under _metrics_lock, and every per-game gauge
         # write from the session checks it under the same lock, so a game-thread
         # teardown that runs after retire cannot re-create a removed series.
@@ -312,7 +312,7 @@ class GameSession:
             with suppress(KeyError, ValueError):
                 gauge.remove(*labels)
 
-        # The trace-correlation gauge (#1133/#1157/#1195) carries a different label
+        # The trace-correlation gauge carries a different label
         # tuple (game_kind, game_id, game_trace_id, game_trace_span_id,
         # gameplay_phase_span_id, game_cycle_span_id) and was only set when the span
         # was sampled (game_trace_id non-empty), so remove it separately and only
@@ -540,7 +540,7 @@ class GameSession:
         await self.clients.connect()
 
         # Establish the shadow/real eval-context split for THIS session's async
-        # context BEFORE the game is constructed (#932). GameFactory.create_game()
+        # context BEFORE the game is constructed. GameFactory.create_game()
         # below runs the game mode's __init__, which reads init-frozen calibration
         # flags (thresholds, grace period, per-mode config). Those reads happen in
         # this contextvars context, so the game_kind must already be set here —
@@ -549,7 +549,7 @@ class GameSession:
         # later re-sets the full transaction context with game_mode/sensitivity,
         # carrying the same game_kind.) This is contextvars-scoped, so it never
         # leaks across sessions.
-        # Carry the experiment identity (#975) on the same session boundary as
+        # Carry the experiment identity on the same session boundary as
         # game_kind so an experiment-scoped flag override is in place before the
         # game mode's init-frozen reads. Pass them only when set (absent ⇒ not in
         # any experiment), preserving real-by-default.
@@ -562,7 +562,7 @@ class GameSession:
         # Get the display name for the game span
         game_span_name = get_game_display_name(self.game_name)
 
-        # Root the game-lifecycle span as its OWN trace (#1157), NOT as a child of
+        # Root the game-lifecycle span as its OWN trace, NOT as a child of
         # the long-lived StreamGameEvents stream span. Following the agent's
         # trace-correlation Link then lands on the game itself, and a single bidi
         # stream no longer parents (and bloats) every game's trace. We pass an
@@ -574,18 +574,18 @@ class GameSession:
         if self.stream_span_context is not None and self.stream_span_context.trace_id != 0:
             links.append(trace.Link(self.stream_span_context))
 
-        # Choose the game-span PARENT context (#1182, epic #1181).
+        # Choose the game-span PARENT context.
         #
         # A real (primary) game — and any shadow game NOT bound to an experiment —
-        # is rooted as its OWN trace (#1157/#1164): we pass an explicit empty
+        # is rooted as its OWN trace: we pass an explicit empty
         # Context so neither the inbound stream span nor any ambient span parents
         # it. The inbound call stays navigable via the Link above.
         #
         # A SHADOW + experiment-bound game whose spawn carried the agent's
-        # experiment traceparent follows telemetry.experiment_game_parent (#2223),
+        # experiment traceparent follows telemetry.experiment_game_parent,
         # read once here: ``link`` (default) keeps it its own trace and adds a Link
         # ``link.kind=experiment`` to the experiment span, so a trace holds one game;
-        # ``child`` makes it a CHILD of that span (#1182), nesting every shadow game
+        # ``child`` makes it a CHILD of that span, nesting every shadow game
         # in the experiment trace. The gate is STRICT (shadow AND experiment_id AND
         # a valid injected parent) so the real-game own-root structure is never
         # touched. The stream Link above is kept either way, unless it names the
@@ -618,7 +618,7 @@ class GameSession:
             game_span.set_attribute("game.name", self.game_name)
             game_span.set_attribute("game.id", self.game_id)
             game_span.set_attribute("game.kind", self.game_kind)
-            # Experiment attribution (#975). Spans are the PRIMARY attribution
+            # Experiment attribution. Spans are the PRIMARY attribution
             # channel — unbounded-cardinality experiment ids are fine here (each
             # is one trace). Emitted always (empty when not in an experiment),
             # mirroring game.kind; the agent reads them off the span attributes.
@@ -626,7 +626,7 @@ class GameSession:
             game_span.set_attribute("experiment.arm", self.arm)
             game_span.set_attribute("player.count", len(self.players))
 
-            # Trace-correlation signal (#1133): capture THIS game span's trace_id and
+            # Trace-correlation signal: capture THIS game span's trace_id and
             # publish it as the game_trace_correlation gauge so the agent can read it
             # off the metric stream and link agent.decision -> this game trace. A
             # non-recording span (sampler dropped it, or telemetry off) reports the
@@ -635,11 +635,11 @@ class GameSession:
             span_ctx = game_span.get_span_context()
             if span_ctx.trace_id != 0:
                 self.game_trace_id = trace.format_trace_id(span_ctx.trace_id)
-                # Carry the root span's span_id too (#1157) so the agent's Link
+                # Carry the root span's span_id too so the agent's Link
                 # references the actual game-start span (Jaeger uiFind highlight)
                 # rather than an all-zero span id under that trace.
                 self.game_trace_span_id = trace.format_span_id(span_ctx.span_id)
-                # gameplay_phase_span_id (#1195) is empty here: the gameplay_phase
+                # gameplay_phase_span_id is empty here: the gameplay_phase
                 # span has not opened yet (it opens inside game.run()). Early
                 # correlation is preserved via game_trace_span_id; the agent's
                 # two-tier fallback uses the game root span until gameplay_phase
@@ -664,15 +664,14 @@ class GameSession:
                     await self.clients.close()
                     return
 
-                # UC-010 A5 / BR-004 (#1329): no game reads its start flags from a
+                # UC-010 A5 / BR-004: no game reads its start flags from a
                 # provider that is not READY yet: wait (bounded), else record the
                 # code-default fallback on this root span.
                 admitted = self.game_running
                 await await_flag_providers_ready(game_span)
 
                 # A force-end during the wait (game_running flipped to False) retired
-                # this session: do not create and run an orphan game behind its back
-                # (#1329).
+                # this session: do not create and run an orphan game behind its back.
                 if admitted and not self.game_running:
                     logger.info(f"Game {self.game_id} was force-ended while waiting for flag providers")
                     session_outcome = OUTCOME_FORCE_ENDED
@@ -707,25 +706,25 @@ class GameSession:
                 # FR-041).
                 game.game_kind = self.game_kind
                 # Thread experiment attribution onto the game so its in-loop
-                # set_game_transaction_context carries it for flag evaluation (#975).
+                # set_game_transaction_context carries it for flag evaluation.
                 game.experiment_id = self.experiment_id
                 game.arm = self.arm
                 game.pattern_trigger_policy = self.pattern_trigger_policy
                 # Let the game publish its gameplay_phase span_id back to the
-                # correlation gauge (#1195) when that span opens, so the agent can
+                # correlation gauge when that span opens, so the agent can
                 # re-parent its in-game decision chain under gameplay_phase. The
                 # game holds only this callback (not the session), mirroring how the
                 # session sets game_kind/experiment_id on the game.
                 game.on_gameplay_phase_open = self.publish_gameplay_phase_span_id
-                # Same for game_cycle (#1325): the agent's preferred parent.
+                # Same for game_cycle: the agent's preferred parent.
                 game.on_game_cycle_open = self.publish_game_cycle_span_id
 
                 # Store reference and run game. The duration ticker shares this
                 # session's event loop (no extra thread/loop) and keeps
-                # game_duration_seconds live while RUNNING (#1305); it is stopped
+                # game_duration_seconds live while RUNNING; it is stopped
                 # before the final value is set below so a late tick cannot
                 # overwrite it.
-                # Publish the game atomically with force_end's check (#2025 S1): a
+                # Publish the game atomically with force_end's check: a
                 # force-end that already ran found no game to stop and reported
                 # ENDED, so this game must not run; one that runs later finds it.
                 with self._state_lock:
@@ -757,7 +756,7 @@ class GameSession:
                 with self._state_lock:
                     self.game_state = game_coordinator_pb2.GameState.ENDED
                 session_outcome = OUTCOME_ERROR
-                # A base-run mode already published it before re-raising (#2025 S2).
+                # A base-run mode already published it before re-raising.
                 if getattr(game, "game_error_published", False) is not True:
                     await self.event_bus.publish("game_error", {"error": str(e)})
             finally:
@@ -773,7 +772,7 @@ class GameSession:
                     self.game_state = game_coordinator_pb2.GameState.ENDED
 
                 # Report the end now, not at the next start's sweep or the next
-                # reconcile (UC-053 step 7, #1847). Outside _state_lock.
+                # reconcile (UC-053 step 7). Outside _state_lock.
                 if self.on_game_ended is not None:
                     try:
                         self.on_game_ended(self)
@@ -785,24 +784,24 @@ class GameSession:
                 with self._metrics_lock:
                     self._remove_game_mode()
 
-                # Update lifecycle metrics for THIS session's kind (#775) +
-                # experiment attribution (#975). experiment_id/arm are "" for a
+                # Update lifecycle metrics for THIS session's kind +
+                # experiment attribution. experiment_id/arm are "" for a
                 # non-experiment game. Skipped when retire already removed the
-                # series (#1311): the zero would re-create a series nothing
+                # series: the zero would re-create a series nothing
                 # removes again.
                 self._set_gauges_unless_retired(self._zero_lifecycle_gauges)
                 if self.is_primary:
                     # players_alive is a single global gauge (not yet per-kind);
                     # only the primary session resets it, and only while its own
                     # game wrote it last: a force-ended session ending after the
-                    # next game started leaves that game's count alone (#2244).
+                    # next game started leaves that game's count alone.
                     metrics.reset_players_alive_if_owner(self.game_id)
                 if self.game_name:
                     # games_completed_total is a CUMULATIVE counter: it deliberately
                     # does NOT carry experiment_id/arm (a label on a cumulative
                     # counter is one permanent series per experiment, forever).
-                    # Per-experiment counts come from the span attributes (#975).
-                    # outcome is one of the five GAME_OUTCOMES (#1427).
+                    # Per-experiment counts come from the span attributes.
+                    # outcome is one of the five GAME_OUTCOMES.
                     metrics.games_completed_total.labels(
                         mode=self.game_name,
                         game_kind=self.game_kind,

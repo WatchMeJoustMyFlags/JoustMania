@@ -165,19 +165,19 @@ class ZombieGame(StreamedIntroGameMode):
             rng_seed=rng_seed,
         )
 
-        # The side that won, latched once in _check_win_condition (UC-023 BR-003, #1343).
+        # The side that won, latched once in _check_win_condition (UC-023 BR-003).
         # None = no winner (force-ended before a win, or the stream ended without one).
         self._winner_side: str | None = None
 
-        # Pending zombie respawn timers by serial (#1342): a revive cancels the
+        # Pending zombie respawn timers by serial: a revive cancels the
         # timer, a new death replaces it. Also tracked via _track_task for cleanup.
         self._respawn_tasks: dict[str, asyncio.Task] = {}
 
-        # Pending zombie-colour writes after a conversion's death flash, by serial
-        # (#2023): the delay runs off the game loop. Also tracked via _track_task.
+        # Pending zombie-colour writes after a conversion's death flash, by serial:
+        # the delay runs off the game loop. Also tracked via _track_task.
         self._conversion_colour_tasks: dict[str, asyncio.Task] = {}
 
-        # #766 F1: zombie threshold overrides promoted to ``game.zombie.thresholds``.
+        # zombie threshold overrides promoted to ``game.zombie.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to ZOMBIE_THRESHOLDS.
         self.mode_flags = ZombieInitFlags.from_raw(
             thresholds=read_object_flag("game", "zombie.thresholds", {}, game_id=self.game_id),
@@ -191,7 +191,7 @@ class ZombieGame(StreamedIntroGameMode):
         )
         self.zombie_thresholds = dict(self.mode_flags.thresholds)
 
-        # #766 F2: initial zombie count and respawn delay window promoted to game
+        # initial zombie count and respawn delay window promoted to game
         # flags. Read ONCE here (init-frozen); malformed values fall back to the
         # module constants. ``initial_count`` must be a positive int; respawn
         # bounds are non-negative and the min must not exceed the max (else both
@@ -480,7 +480,7 @@ class ZombieGame(StreamedIntroGameMode):
 
             # A zombie-colour write still pending from its conversion is dropped: the
             # death effect keeps the LED off, and the respawn sets the colour itself
-            # (UC-023 steps 3 and 4, #2023).
+            # (UC-023 steps 3 and 4).
             pending_colour = self._conversion_colour_tasks.pop(serial, None)
             if pending_colour is not None:
                 pending_colour.cancel()
@@ -505,8 +505,8 @@ class ZombieGame(StreamedIntroGameMode):
             zombie_player.color = ZOMBIE_COLOR
             zombie_player.team = 1
             # Grace period so the death spike that converted the human can't
-            # instantly re-kill the fresh zombie (#757). Sourced from the
-            # ``game.death_grace_period_seconds`` flag (#766 F2 / #1090), frozen per
+            # instantly re-kill the fresh zombie. Sourced from the
+            # ``game.death_grace_period_seconds`` flag, frozen per
             # game at init in BaseGameMode; matches the respawn grace below.
             zombie_player.grace_until = game_clock.now() + self.death_grace_period
 
@@ -529,13 +529,13 @@ class ZombieGame(StreamedIntroGameMode):
 
             # The zombie colour follows the flash after CONVERSION_COLOUR_DELAY, in a
             # tracked task: the kill handler runs inline in the game loop, which must
-            # not stall on the delay (UC-023 step 3, #2023).
+            # not stall on the delay (UC-023 step 3).
             self._conversion_colour_tasks[serial] = self._track_task(
                 asyncio.create_task(self._show_zombie_colour_after_flash(serial))
             )
 
             # The base kill path set the per-player gauge to 0; the converted
-            # zombie is still in the game (#1342). Skipped after a force end, which
+            # zombie is still in the game. Skipped after a force end, which
             # cleared the player analytics (no gauge series recreated).
             if self.running:
                 self._mark_alive_in_metrics(serial)
@@ -644,8 +644,8 @@ class ZombieGame(StreamedIntroGameMode):
         player.respawn_until = 0.0
         player.warning_until = 0.0
         player.smoothed_accel = 0.0
-        # Grace period after respawn, sourced from ``game.death_grace_period_seconds``
-        # (#766 F2 / #1090), frozen per game at init in BaseGameMode.
+        # Grace period after respawn, sourced from ``game.death_grace_period_seconds``,
+        # frozen per game at init in BaseGameMode.
         player.grace_until = game_clock.now() + self.death_grace_period
         self._mark_alive_in_metrics(serial)
 
@@ -655,7 +655,7 @@ class ZombieGame(StreamedIntroGameMode):
             player.span.add_event("zombie_respawned", {"respawn.cause": cause})
 
         # Zombie colour FIRST, then the flash: the flash restores to the current
-        # base colour, which the death effect left black (#1342). Guarded writes: the
+        # base colour, which the death effect left black. Guarded writes: the
         # respawn timer is a background task, and a write on a dead call is skipped
         # (the reopened stream restores the zombie colour, UC-030 BR-006).
         if self.gameplay_stream:
@@ -689,7 +689,7 @@ class ZombieGame(StreamedIntroGameMode):
             self.timer_task.cancel()
 
         # The winner was latched when the win condition fired. A force-end declares
-        # no winner (UC-023 BR-003, #1343); a stream end without a win has none either.
+        # no winner (UC-023 BR-003); a stream end without a win has none either.
         force_ended = self.game_outcome() == "force_ended"
         winner_side = None if force_ended else self._winner_side
         winner = winner_side or "none"

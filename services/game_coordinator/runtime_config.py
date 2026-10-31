@@ -32,7 +32,7 @@ class AnalyticsConfig:
     enabled: bool = True
 
     # Zone thresholds (in g-force units, ~4096 raw = 1g). Defaults promoted to
-    # the agent domain `perception.zone_*` flags (#766 F4); the values here are
+    # the agent domain `perception.zone_*` flags; the values here are
     # the behavior-neutral fallbacks used when flagd is unavailable/malformed.
     # These define movement intensity zones for activity classification.
     zone_still_max: float = 1.1  # < 1.1g = still
@@ -41,7 +41,7 @@ class AnalyticsConfig:
     # > 2.0g = danger zone
 
     # Playstyle classification thresholds (percentages of time-in-zone).
-    # Promoted to agent-domain `perception.playstyle.*` flags (#766 F4); the
+    # Promoted to agent-domain `perception.playstyle.*` flags; the
     # defaults below reproduce the previously hardcoded analytics.py literals.
     # Consumed by PlayerAnalytics.get_playstyle (see games/analytics.py).
     playstyle_aggressive_warning_danger_min: float = 30.0  # > this => AGGRESSIVE
@@ -67,12 +67,12 @@ class GamePerformanceConfig:
     update_frequency_hz: int = 60  # Game loop frequency
 
     # Winner rainbow effect duration (milliseconds)
-    # Controlled via flagd game domain (Issue #464)
+    # Controlled via flagd game domain
     winner_rainbow_duration_ms: int = 3000
 
     # Countdown phase duration (milliseconds) - each LED phase (red/yellow/green)
     # This value is shared between game_coordinator (beep timing) and controller_manager (LED timing)
-    # Controlled via flagd game domain (Issue #464)
+    # Controlled via flagd game domain
     # Set to 0 (the "skip" variant) to skip countdown entirely
     countdown_phase_duration_ms: int = 750
 
@@ -84,7 +84,7 @@ class GamePerformanceConfig:
     # controller_poll_degraded span. Evaluated over a 2-second window.
     poll_drop_threshold: int = 10
 
-    # EMA filter weight for acceleration smoothing (#766 F4, agent domain flag
+    # EMA filter weight for acceleration smoothing (agent domain flag
     # `perception.ema_weight`). Formula: smoothed = (smoothed * W + raw) / (W + 1).
     # W=4 gives 80% weight to the previous value (the historical default).
     #
@@ -246,7 +246,7 @@ class RuntimeConfigManager:
         if not self.system_client:
             return
 
-        # Read and swapped in as one new snapshot under one hold of the lock (#2357),
+        # Read and swapped in as one new snapshot under one hold of the lock,
         # so an older concurrent refresh (one sync thread per domain provider) cannot
         # swap its values in over a newer one. A read that fails part-way keeps the
         # values read before it, as before.

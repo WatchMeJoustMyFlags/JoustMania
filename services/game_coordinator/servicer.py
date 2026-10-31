@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 # Lazy telemetry initialization - defers OTLP setup until first span
 tracer = get_tracer(__name__)
 
-# Total concurrency cap (#775). The hard ceiling on TOTAL live sessions
+# Total concurrency cap. The hard ceiling on TOTAL live sessions
 # (primary + every shadow) the coordinator will register at once — a runaway
 # safety net, NOT the single-game guard. Default 8 leaves room for one real
 # game plus several concurrent shadow games; tune via GAME_MAX_CONCURRENT_GAMES.
@@ -106,7 +106,7 @@ def _max_concurrent_games() -> int:
     return max(1, value)
 
 
-# Concurrent-shadow cap (#1018, option b). Shadow games are headless and
+# Concurrent-shadow cap (option b). Shadow games are headless and
 # game_id-isolated (own EventBus/state), so N may run AT THE SAME TIME — this is
 # what realizes the registry's K×N capacity (effective concurrency was 1 under
 # #998's backpressure). This caps how many shadow sessions run concurrently,
@@ -135,7 +135,7 @@ def _max_shadow_games() -> int:
     return max(1, min(value, _max_concurrent_games()))
 
 
-# Shadow game resource policy (#837). ``block`` (prod default) rejects shadow
+# Shadow game resource policy. ``block`` (prod default) rejects shadow
 # starts while a real game is live; ``allow`` (CI) permits concurrent shadow +
 # real games (the #779 isolation test + #826 parallel batches need this).
 DEFAULT_SHADOW_POLICY = "block"
@@ -173,7 +173,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         self._sessions_lock = threading.Lock()
         # game_id of the active primary session, or None when no primary is live.
         self._primary_game_id: str | None = None
-        # Session ends under way, game_id -> (session, task) (#1816, #1827): a
+        # Session ends under way, game_id -> (session, task): a
         # force end (ForceEndGame, end_game) or a preemption. Each runs as its own
         # task so a cancelled caller cannot stop it halfway; the dict holds the
         # strong reference and lets a second caller wait for the end under way
@@ -189,36 +189,36 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         # Random game history
         self.random_history: list[str] = []
 
-        # Agent intervention manager (#730): subscribes to the flagd
+        # Agent intervention manager: subscribes to the flagd
         # `interventions` domain and applies agent interventions to the live
-        # games via the enforcement chain. Per-session evaluation (#838):
+        # games via the enforcement chain. Per-session evaluation:
         # get_intervention_sessions() returns one SessionView per LIVE game
         # (primary + every shadow), each carrying its game_id (-> gameId context),
         # its running BaseGameMode, and its own EventBus publish, so a
         # gameId-targeted intervention applies only to the matching session and
         # publishes on that session's stream. An un-targeted intervention (the
         # agent writes no gameId targeting) resolves to the same value for every
-        # live session, primary and shadow alike (decide-contract §11, #1269).
+        # live session, primary and shadow alike (decide-contract §11).
         self.intervention_manager = InterventionManager(
             event_publisher=self.primary_event_bus.publish,
             get_sessions=self.get_intervention_sessions,
             battery_provider=self._battery_pct_for_serial,
             # end_game ends exactly the session it was evaluated for, never
-            # "the current game" (UC-040 BR-011, #1310).
+            # "the current game" (UC-040 BR-011).
             end_game_fn=self._force_end_session,
         )
         # PR E: register the ambient/session handlers (audio cue, volume,
         # controller effect, end game).
         self.intervention_manager.register_ambient_handlers()
-        # Register difficulty intervention handlers (#730 PR C): music tempo
+        # Register difficulty intervention handlers: music tempo
         # override, global sensitivity override, per-player sensitivity factor.
         register_difficulty_handlers(self.intervention_manager)
-        # Register shield + lifecycle intervention handlers (#730 PR D):
+        # Register shield + lifecycle intervention handlers:
         # shield_seconds (per-player grace shield), eliminate_player, revive_player.
         register_lifecycle_handlers(self.intervention_manager)
         self.intervention_manager.start()
 
-        # Flag service game lifecycle (FR-135, #1410): register each game before
+        # Flag service game lifecycle (FR-135): register each game before
         # it runs (bounded 200 ms, outside _sessions_lock), report its end, and
         # reconcile this instance's live games at start and after a failure.
         # Disabled when FLAG_SERVICE_URL is unset.
@@ -304,7 +304,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     publish=session.event_bus.publish,
                     is_real=session.is_primary,
                     # Handler side effects run on this game's own loop, where
-                    # its gRPC clients live (UC-040 BR-018, #1250).
+                    # its gRPC clients live (UC-040 BR-018).
                     loop=session.game_loop,
                 )
             )
@@ -509,7 +509,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         safety net.
         """
         with self._sessions_lock:
-            # Retire sessions whose games already ENDED (#775). A natural
+            # Retire sessions whose games already ENDED. A natural
             # game end (win condition) leaves the session registered so
             # GetGameState keeps reporting ENDED until the next start —
             # mirroring the legacy single-game behavior — but an ended
@@ -522,22 +522,22 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 ended_session = self.sessions.pop(ended_id, None)
                 self.intervention_manager.forget_session(ended_id)
                 # Queued, not sent: no network call under the lock. Usually the
-                # game thread already queued it at its end (#1847).
+                # game thread already queued it at its end.
                 self._queue_flag_service_end_locked(ended_id, ended_session)
                 if ended_session is not None:
                     # Mirror _retire_session: drop this session's game_id-labeled
-                    # gauge series so naturally-ended shadows don't leak series
-                    # (#1018). Idempotent / missing-series safe.
+                    # gauge series so naturally-ended shadows don't leak series.
+                    # Idempotent / missing-series safe.
                     ended_session.clear_metrics()
                 if self._primary_game_id == ended_id:
                     self._primary_game_id = None
                     # Mirror _retire_session: the persistent primary bus
-                    # must not keep stamping the retired game's id (#776).
+                    # must not keep stamping the retired game's id.
                     # A new primary re-stamps it below; this covers the
                     # cap-rejected early return.
                     self.primary_event_bus.current_game_id = ""
 
-            # Decide kind + bus (#837). ONLY a real (menu-origin) game with no
+            # Decide kind + bus. ONLY a real (menu-origin) game with no
             # live primary claims the primary slot + persistent primary bus.
             # Everything else is a shadow session with its own EventBus, even
             # when idle.
@@ -548,7 +548,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 game_kind = GAME_KIND_SHADOW
                 event_bus = EventBus()
 
-            # Per-kind concurrency guards (#1018, option b).
+            # Per-kind concurrency guards (option b).
             #
             # REAL single-game guard: a real (menu-origin) start with a primary
             # already live was classified SHADOW above (the primary slot is
@@ -574,34 +574,34 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 return None, True
 
             game_id = f"game_{uuid.uuid4().hex[:12]}"
-            # The game-lifecycle span is rooted as its OWN trace (#1157), not as a
+            # The game-lifecycle span is rooted as its OWN trace, not as a
             # child of the long-lived StreamGameEvents stream span. We capture the
             # inbound stream/start-RPC span's SpanContext here so the session can
             # add an OTel Link back to it (keeping the inbound call navigable in
             # Jaeger) without inheriting the stream's trace_id as the game's root.
             stream_span_context = parent_span.get_span_context() if parent_span is not None else None
 
-            # Spawn-traceparent propagation (#1182, epic #1181). When the agent
+            # Spawn-traceparent propagation. When the agent
             # spawns a shadow game it injects its long-lived EXPERIMENT span's
             # traceparent into the StreamGameEvents call; the server interceptor
             # extracts it (lib/grpc_tracing.py). We capture the INJECTED context
             # itself (the agent.experiment span), not the coordinator's own SERVER
             # span the interceptor starts under it when grpc_rpc_spans is on, as
             # the experiment target of a shadow + experiment-bound game: its Link
-            # (``link``) or its parent (``child``), telemetry.experiment_game_parent
-            # (#2223). The strict shadow+experiment gate in GameSession keeps a
-            # real game own-rooted (#1157/#1164).
+            # (``link``) or its parent (``child``), telemetry.experiment_game_parent.
+            # The strict shadow+experiment gate in GameSession keeps a
+            # real game own-rooted.
             experiment_parent_span_context = injected_parent_span_context(parent_span)
 
-            # Experiment/cohort spawn binding (#976, epic #982). The caller
+            # Experiment/cohort spawn binding. The caller
             # provides (experiment_id, arm) on StartGameConfig; the registry
-            # (#978) will decide+supply them later — #976 is only the plumbing
+            # will decide+supply them later — #976 is only the plumbing
             # that applies+propagates them. They bind AT SPAWN so the session's
             # eval-context (targeting #977) and telemetry (attribution #975)
             # carry them from the start.
             #
             # UC-043 BR-001 (shadow-only).
-            # HARD INVARIANT (#982): experiment_id/arm only SUBDIVIDE a shadow
+            # HARD INVARIANT: experiment_id/arm only SUBDIVIDE a shadow
             # game; they MUST NOT make a real (primary) game part of an
             # experiment. We therefore apply them ONLY when this session is a
             # shadow session, dropping any experiment fields a real-origin start
@@ -609,12 +609,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # guarantee structurally intact: a primary GameSession can never be
             # constructed with a non-empty experiment_id/arm.
             #
-            # Paired CRN seed (#1003) rides the SAME guard: rng_seed makes a
+            # Paired CRN seed rides the SAME guard: rng_seed makes a
             # shadow session deterministic for Common-Random-Numbers pairing, but
             # a real game MUST get entropy (0) so its behavior is byte-unchanged.
             # Same invariant — never seed a primary session from a caller value.
             #
-            # pattern_trigger_policy (#2096, UC-046 BR-018, UC-040 BR-019) rides it
+            # pattern_trigger_policy (UC-046 BR-018, UC-040 BR-019) rides it
             # too: it lets a shadow game honour shield.activation trigger/hold
             # because its pattern controllers press the trigger; a real start's
             # value is dropped so it can never change a real game.
@@ -643,15 +643,15 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 rng_seed=rng_seed,
                 pattern_trigger_policy=pattern_trigger_policy,
             )
-            # The game thread reports the end to the flag service (#1847).
+            # The game thread reports the end to the flag service.
             session.on_game_ended = self._on_session_game_ended
             # Shadow sessions own their bus; bind its state-sync to the
             # session so the bus updates that session's state directly.
             if game_kind == GAME_KIND_SHADOW:
                 event_bus._state_sync_callback = session.on_event_state_sync
 
-            # Stamp every event published on this bus with this game's id
-            # (#776). The primary bus is persistent, so this mutable field is
+            # Stamp every event published on this bus with this game's id.
+            # The primary bus is persistent, so this mutable field is
             # set on bind and cleared on retire (see _retire_session).
             event_bus.current_game_id = game_id
 
@@ -699,7 +699,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
             is_real = self._is_real_origin(config)
 
-            # Resource gate (#837): a shadow must not run while a real game is
+            # Resource gate: a shadow must not run while a real game is
             # live when policy=block. A DISTINCT message (not the legacy
             # "Game already in progress") so agent runners can tell the
             # difference between "capacity full" and "blocked by real game".
@@ -710,7 +710,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
             # The real game always wins resources: evict running shadows BEFORE
             # the cap check so freed slots count and the real game is never
-            # rejected because shadows filled the cap (#837). Preemption runs
+            # rejected because shadows filled the cap. Preemption runs
             # outside the lock (force_end joins the game thread), so a shadow
             # can slip in between preemption and the lock — the retry preempts
             # again and re-admits, guaranteeing the real game wins that race.
@@ -732,18 +732,18 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                     # the lock) registered before the primary slot was live, so neither
                     # the preemption pass nor the shadow_policy=block gate saw it.
                     # Preempt it now: no shadow outlives a real start (UC-043 A2,
-                    # UC-046 A8, #1404). From here on the live primary blocks new
+                    # UC-046 A8). From here on the live primary blocks new
                     # shadows under policy block. Inside the try: a cancel or an error
                     # in this pass retires the admitted session (UC-010 BR-007).
                     await self._preempt_shadow_sessions()
                 return await self._run_admitted_start(session, game_kind, game_id, on_admitted)
             except asyncio.CancelledError:
-                # UC-010 BR-007 (#1791): a client cancel after admission retires
+                # UC-010 BR-007: a client cancel after admission retires
                 # the session like a normal end; the cancel propagates.
                 self._abort_admitted_session(session, "cancelled")
                 raise
             except BaseException:
-                # UC-010 BR-007 (#1791): an error after admission retires the
+                # UC-010 BR-007: an error after admission retires the
                 # session like a normal end, so it holds no primary slot,
                 # controllers or shadow-cap slot; it becomes the (False, error)
                 # answer below.
@@ -796,8 +796,8 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
         await self.flag_service.register(self._game_record(session))
 
-        # Update lifecycle metrics for this session's kind (#775) + experiment
-        # attribution (#975). experiment_id/arm are "" for a non-experiment
+        # Update lifecycle metrics for this session's kind + experiment
+        # attribution. experiment_id/arm are "" for a non-experiment
         # game; #976's spawn binding sets them on the session.
         # Written under the session's metrics lock and skipped once retired:
         # a retire during the register await above already exported the 0,
@@ -829,7 +829,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         try:
             session.start_thread()
         except Exception as e:
-            # UC-010 A7 (#1791): observers of this bus already saw game_start
+            # UC-010 A7: observers of this bus already saw game_start
             # (the dashboard shows Running); game_start_error moves them off it.
             # The caller then retires the session.
             await session.event_bus.publish(
@@ -844,7 +844,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         # games_started_total is a CUMULATIVE counter: it deliberately does
         # NOT carry experiment_id/arm (a label on a cumulative counter is one
         # permanent series per experiment, forever). Per-experiment counts
-        # come from the game span's experiment.id/arm attributes (#975).
+        # come from the game span's experiment.id/arm attributes.
         metrics.games_started_total.labels(
             mode=session.game_name,
             game_kind=game_kind,
@@ -884,7 +884,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
 
         # UC-027 A4 / BR-003: one end per session, shared with a preemption or
         # another force end under way; it completes even if this caller is
-        # cancelled during the join (#1827).
+        # cancelled during the join.
         return await asyncio.shield(self._session_ending_task(session, reason))
 
     @staticmethod
@@ -941,13 +941,13 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             if session is not None:
                 # Remove this session's game_id-labeled gauge series so the
                 # zeroed-but-persistent series don't accumulate as shadows churn
-                # short-lived game_ids (#1018). Idempotent / missing-series safe.
+                # short-lived game_ids. Idempotent / missing-series safe.
                 session.clear_metrics()
             if self._primary_game_id == game_id:
                 self._primary_game_id = None
                 # The primary bus is persistent and outlives the session; clear
                 # its game_id stamp so post-retire idle events carry empty
-                # game_id (#776). Shadow buses are discarded, no cleanup needed.
+                # game_id. Shadow buses are discarded, no cleanup needed.
                 self.primary_event_bus.current_game_id = ""
 
     async def ForceEndGame(self, request, _context):
@@ -1006,7 +1006,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             span.set_attribute("game.start_via_stream", True)
 
             # Subscribe to the new session's bus BEFORE game_start is published
-            # and the game thread starts (#1783): the starter receives every
+            # and the game thread starts: the starter receives every
             # event of its own game, beginning with game_start (which carries
             # the game_id). Subscribing after start_thread() lost the events the
             # thread published first (EventBus has no replay).
@@ -1026,12 +1026,12 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             except BaseException:
                 # A client cancel mid-start (CancelledError, e.g. during the
                 # flag-service register) skips the paths below: drop the
-                # starter's subscriber here so it does not leak (#1783).
+                # starter's subscriber here so it does not leak.
                 await _unsubscribe_starter()
                 raise
 
             if not success:
-                # No leaked subscriber on a failed start (#1783).
+                # No leaked subscriber on a failed start.
                 await _unsubscribe_starter()
                 # Yield error event and close stream
                 logger.error(f"Failed to start game via stream: {result}")
@@ -1050,7 +1050,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 event_bus = subscribed_bus[0]
 
         elif request.game_id:
-            # Subscribe-by-game_id (#776): route to that session's bus.
+            # Subscribe-by-game_id: route to that session's bus.
             span.set_attribute("game.id", request.game_id)
             session = self._resolve_session(request.game_id)
             if session is None:
@@ -1070,7 +1070,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             event_queue = await event_bus.subscribe(subscriber_id)
 
         try:
-            # Headers now = "subscriber registered" (#1613); inside the try so a client that leaves
+            # Headers now = "subscriber registered"; inside the try so a client that leaves
             # during the send still runs the unsubscribe below.
             await context.send_initial_metadata(())
             while not context.cancelled():
@@ -1217,7 +1217,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         if pending_endings:
             await asyncio.wait(pending_endings, timeout=3)
 
-        # Stop intervention flag subscription (#730)
+        # Stop intervention flag subscription
         try:
             self.intervention_manager.stop()
         except Exception as e:
@@ -1234,7 +1234,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 logger.debug(f"Session {session.game_id} join failed: {e}")
 
         # Last: the joined sessions' end hooks have queued their flag-service
-        # ends; give them a bounded chance to be sent, then stop (#1849).
+        # ends; give them a bounded chance to be sent, then stop.
         try:
             await self.flag_service.flush()
         except Exception as e:

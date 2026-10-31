@@ -142,7 +142,7 @@ class WerewolfGame(StreamedIntroGameMode):
             rng_seed=rng_seed,
         )
 
-        # #766 F1: werewolf threshold overrides promoted to ``game.werewolf.thresholds``.
+        # werewolf threshold overrides promoted to ``game.werewolf.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to WEREWOLF_THRESHOLDS.
         self.mode_flags = WerewolfInitFlags.from_raw(
             thresholds=read_object_flag("game", "werewolf.thresholds", {}, game_id=self.game_id),
@@ -152,12 +152,12 @@ class WerewolfGame(StreamedIntroGameMode):
         )
         self.werewolf_thresholds = dict(self.mode_flags.thresholds)
 
-        # #766 F2: werewolf population fraction promoted to ``game.werewolf.werewolf_fraction``.
+        # werewolf population fraction promoted to ``game.werewolf.werewolf_fraction``.
         # Read once at init (init-frozen); out-of-range values fall back to WEREWOLF_FRACTION.
         self.werewolf_fraction = self.mode_flags.werewolf_fraction
 
         # The result, latched once in _check_win_condition together with the outcome
-        # (UC-022 BR-004, #1343, #2009): "humans" / "werewolves" / "tie". None = no
+        # (UC-022 BR-004): "humans" / "werewolves" / "tie". None = no
         # result (force-ended before a win, or the stream ended without one).
         self._winner_side: str | None = None
 
@@ -337,7 +337,7 @@ class WerewolfGame(StreamedIntroGameMode):
         # Wait for reveal time (configurable via werewolf_reveal_time setting)
         await game_clock.sleep(self._reveal_time)
 
-        # Nothing is revealed once a side has won (the win hold, UC-022 BR-006, #2022).
+        # Nothing is revealed once a side has won (the win hold, UC-022 BR-006).
         if not self._reveal_allowed():
             return
 
@@ -351,7 +351,7 @@ class WerewolfGame(StreamedIntroGameMode):
 
         # Change werewolf colors to blue. Guarded writes: a write on a dead call is
         # skipped and the other werewolves are still revealed; the reopened stream
-        # restores the colour (UC-030 BR-006, #2022). The check runs again before each
+        # restores the colour (UC-030 BR-006). The check runs again before each
         # werewolf: a win latched during the publish, the voice or an earlier
         # werewolf's flash stops the reveal there (UC-022 BR-006).
         revealed_serials = []
@@ -440,7 +440,7 @@ class WerewolfGame(StreamedIntroGameMode):
                 winner = "humans"
                 winners = alive_humans
             else:
-                # Both sides eliminated at once: a tie, not a werewolf_winner (UC-022 A2, #1354)
+                # Both sides eliminated at once: a tie, not a werewolf_winner (UC-022 A2)
                 logger.info("Tie: no humans and no werewolves survive")
                 if not self._latch_win("tie"):
                     return False
@@ -502,7 +502,7 @@ class WerewolfGame(StreamedIntroGameMode):
 
         # End the lifecycle span. The player_death event (with is_werewolf /
         # was_revealed, via _player_death_event_attributes) was recorded by the
-        # base kill path (#1327).
+        # base kill path.
         if player.span:
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
@@ -518,7 +518,7 @@ class WerewolfGame(StreamedIntroGameMode):
             self.reveal_task.cancel()
 
         # The result was latched with the outcome when the win condition fired. A
-        # force-end declares no winner (UC-022 BR-004, #1343, #2009); a stream end
+        # force-end declares no winner (UC-022 BR-004); a stream end
         # without a win has none either.
         force_ended = self.game_outcome() == "force_ended"
         winner_side = None if force_ended else self._winner_side

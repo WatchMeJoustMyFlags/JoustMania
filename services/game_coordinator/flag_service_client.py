@@ -55,10 +55,10 @@ RECONCILE_RETRY_SECONDS = 2.0
 RECONCILE_PERIOD_SECONDS = 15.0
 # A repeated identical failure (e.g. the flag service rejecting this coordinator
 # at its game cap) is retried every RECONCILE_RETRY_SECONDS; it logs once, then
-# at most this often, with the count of suppressed repeats (#1479).
+# at most this often, with the count of suppressed repeats.
 FAILURE_LOG_INTERVAL_SECONDS = 60.0
 # Shutdown gives the queued ends this long to reach the flag service before the
-# worker is stopped (#1849); an unreachable service costs at most this.
+# worker is stopped; an unreachable service costs at most this.
 FLUSH_TIMEOUT_SECONDS = 2.0
 
 
@@ -67,7 +67,7 @@ class GameRecord:
     """One live game as the flag service registers it (entity GAME_SCOPE)."""
 
     game_id: str
-    game_kind: str  # flag vocabulary: "real" | "shadow" (FR-041, #1249)
+    game_kind: str  # flag vocabulary: "real" | "shadow" (FR-041)
     serials: tuple[str, ...] = field(default_factory=tuple)
     experiment_id: str = ""
     arm: str = ""

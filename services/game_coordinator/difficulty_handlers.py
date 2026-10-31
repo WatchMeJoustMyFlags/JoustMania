@@ -59,7 +59,7 @@ from .interventions import InterventionContext, InterventionManager
 if TYPE_CHECKING:
     from .intervention_target import InterventionPlayer, InterventionTarget
 
-# UC-043 BR-005 (#1970): the game's experiment sets other windows than the preset.
+# UC-043 BR-005: the game's experiment sets other windows than the preset.
 BLOCK_EXPERIMENT_OVERRIDE = "experiment_override"
 
 logger = logging.getLogger(__name__)
@@ -69,13 +69,13 @@ SENSITIVITY_FACTOR_MIN = 0.5
 SENSITIVITY_FACTOR_MAX = 2.0
 SENSITIVITY_FACTOR_DEFAULT = 1.0
 
-# Global difficulty factor clamp + neutral (#766 F6). Mirrors the combined-factor
+# Global difficulty factor clamp + neutral. Mirrors the combined-factor
 # clamp in base.py _compute_effective_thresholds.
 GLOBAL_DIFFICULTY_FACTOR_MIN = 0.5
 GLOBAL_DIFFICULTY_FACTOR_MAX = 2.0
 GLOBAL_DIFFICULTY_FACTOR_DEFAULT = 1.0
 
-# Per-player handicap factor clamp + neutral (#1107). Mirrors the independent
+# Per-player handicap factor clamp + neutral. Mirrors the independent
 # handicap clamp in base.py _compute_effective_thresholds. A SEPARATE knob that
 # composes multiplicatively with sensitivity_factor (>1 harder to die, <1 easier).
 HANDICAP_FACTOR_MIN = 0.5
@@ -103,7 +103,7 @@ async def handle_music_tempo_override(ctx: InterventionContext) -> None:
 
     tempo = float(ctx.value)
     if tempo > 0.0:
-        # Clamp to the music range the intensity maps onto (UC-031 BR-005, #1833).
+        # Clamp to the music range the intensity maps onto (UC-031 BR-005).
         tempo = max(SLOW_MUSIC_SPEED, min(FAST_MUSIC_SPEED, tempo))
         game.tempo_override = tempo
         logger.info(f"music_tempo_override: override active at {tempo:.2f}x (schedule suspended)")
@@ -490,7 +490,7 @@ def register_difficulty_handlers(manager: InterventionManager) -> None:
     per-flag so the parallel ambience PR (E) appends rather than conflicts.
     """
     manager.register_handler("music_tempo_override", handle_music_tempo_override)
-    # music_tempo_override needs an explicit revert handler (#922): the manager
+    # music_tempo_override needs an explicit revert handler: the manager
     # routes a flag's revert-to-neutral (value 0) to _revert_handlers, NOT back
     # to the apply-handler, so the apply-handler's "value 0 -> clear" branch never
     # runs on revert. Without this entry game.tempo_override stays pinned at the
@@ -504,24 +504,24 @@ def register_difficulty_handlers(manager: InterventionManager) -> None:
         "player_sensitivity_factor",
         lambda ctx: handle_player_sensitivity_factor(ctx, manager),
     )
-    # player_handicap_factor (#1107) mirrors player_sensitivity_factor exactly.
+    # player_handicap_factor mirrors player_sensitivity_factor exactly.
     # A PARTIAL revert of either level is handled inside the apply handler
     # (unmatched serials resolve to the neutral 1.0 default). The transition to
     # every player neutral dispatches nothing through the apply handler, so the
-    # targeted-state path runs these revert handlers instead (UC-040 A24, #1317).
+    # targeted-state path runs these revert handlers instead (UC-040 A24).
     manager.register_handler(
         "player_handicap_factor",
         lambda ctx: handle_player_handicap_factor(ctx, manager),
     )
     manager._revert_handlers["player_sensitivity_factor"] = handle_player_sensitivity_factor_revert
     manager._revert_handlers["player_handicap_factor"] = handle_player_handicap_factor_revert
-    # #766 F6: two new state-shaped levers. Both restore their baseline on revert.
+    # two new state-shaped levers. Both restore their baseline on revert.
     manager.register_handler("global_difficulty_factor", handle_global_difficulty_factor)
     manager._revert_handlers["global_difficulty_factor"] = handle_global_difficulty_factor_revert
     manager.register_handler("pacing_profile", handle_pacing_profile)
     manager._revert_handlers["pacing_profile"] = handle_pacing_profile_revert
     # #1117 ramp_tempo: session-scoped string state flag (scheduled tempo curve).
-    # Like music_tempo_override it needs an explicit revert handler (#922): the
+    # Like music_tempo_override it needs an explicit revert handler: the
     # manager routes the revert-to-neutral ("none") to _revert_handlers, NOT the
     # apply handler, so the descriptor must be dropped there or it stays pinned.
     manager.register_handler("tempo_ramp", handle_ramp_tempo)

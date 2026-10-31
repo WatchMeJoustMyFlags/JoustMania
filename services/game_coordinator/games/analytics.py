@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from services.game_coordinator import game_clock
 
-# Rolling-window size for windowed movement variance (#730 / #722 §7).
+# Rolling-window size for windowed movement variance.
 # Fixed (the unused policy.movement_variance_window flag was removed in #1322).
 # At ~60Hz this is roughly the last ~1s of motion, enough to
 # distinguish steady jostling from someone gaming the EMA by holding still.
@@ -84,7 +84,7 @@ class PlayerAnalytics:
     _mean: float = 0.0
     _m2: float = 0.0  # Sum of squared differences from mean
 
-    # Rolling window of recent accel magnitudes for windowed variance (#730).
+    # Rolling window of recent accel magnitudes for windowed variance.
     # Kept separate from the cumulative Welford stats above: the cumulative
     # variance is a whole-game summary, while this reflects only recent motion.
     _accel_window: deque[float] = field(default_factory=lambda: deque(maxlen=MOVEMENT_VARIANCE_WINDOW))
@@ -93,7 +93,7 @@ class PlayerAnalytics:
     _last_zone: MovementZone = MovementZone.STILL
 
     # Playstyle classification thresholds (percentages). Promoted to the agent
-    # domain `perception.playstyle.*` flags (#766 F4) and populated from
+    # domain `perception.playstyle.*` flags and populated from
     # AnalyticsConfig when the tracker is created (see games that instantiate
     # PlayerAnalytics). Defaults reproduce the previously hardcoded literals so
     # callers that do not pass them keep the historical behavior.

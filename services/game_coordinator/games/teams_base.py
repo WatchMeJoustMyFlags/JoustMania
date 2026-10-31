@@ -119,7 +119,7 @@ class TeamsGameBase(BaseGameMode):
         self.team_colors = TEAM_COLORS[:num_teams]
 
         # The result, latched once in the step that decides it (UC-021 BR-003,
-        # UC-022 BR-005, #2003). ``_latched_team`` None with ``_win_latched`` is a tie;
+        # UC-022 BR-005). ``_latched_team`` None with ``_win_latched`` is a tie;
         # nothing latched (force-end, stream end) means no winner.
         self._win_latched = False
         self._latched_team: int | None = None
@@ -431,7 +431,7 @@ class TeamsGameBase(BaseGameMode):
         )
 
         # End the lifecycle span. The player_death event (with team_eliminated, via
-        # _player_death_event_attributes) was recorded by the base kill path (#1327).
+        # _player_death_event_attributes) was recorded by the base kill path.
         if player.span:
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()

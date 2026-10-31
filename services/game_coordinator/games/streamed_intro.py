@@ -68,7 +68,7 @@ class StreamedIntroGameMode(BaseGameMode):
             await self._initialize_players()
             if len(self.players) < 2:
                 raise ValueError(f"Need at least 2 players, got {len(self.players)}")
-            # Before any task is created: tasks copy the context (#1273).
+            # Before any task is created: tasks copy the context.
             self._set_flag_eval_context()
             self._create_player_spans(None)
             # The intro goes over the stream, so it opens first; a drain discards
@@ -112,7 +112,7 @@ class StreamedIntroGameMode(BaseGameMode):
         return True
 
     async def _teardown_before_end(self, teardown_span: trace.Span, progress: _RunProgress) -> None:  # noqa: ARG002
-        # Shield LEDs end with the game, before the winner effects (#1301).
+        # Shield LEDs end with the game, before the winner effects.
         await self._end_shield_feedback()
         progress.shield_feedback_ended = True
 

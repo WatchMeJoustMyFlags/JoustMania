@@ -40,10 +40,10 @@ class FFAGame(BaseGameMode):
     - Players stay dead permanently (spans end on death)
     """
 
-    # UC-040 BR-019: the only mode where shield.activation=trigger applies (#1837).
+    # UC-040 BR-019: the only mode where shield.activation=trigger applies.
     SHIELD_TRIGGER_ALLOWED = True
 
-    # Set by the win check that publishes the result (UC-020 BR-003, #2020).
+    # Set by the win check that publishes the result (UC-020 BR-003).
     _win_latched: bool = False
 
     def get_game_name(self) -> str:
@@ -153,7 +153,7 @@ class FFAGame(BaseGameMode):
         await self.event_publisher(GameEvent.PLAYER_DEATH, {"serial": serial, "alive_remaining": str(alive_count)})
 
         # End the lifecycle span. The player_death SPAN event was already recorded by
-        # the base kill path (_kill_player); emitting another here doubled it (#1327).
+        # the base kill path (_kill_player); emitting another here doubled it.
         if player.span:
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
@@ -227,7 +227,7 @@ class FFAGame(BaseGameMode):
 
         for serial, player in self.players.items():
             if player.span:
-                # Finalize health spans and summary attributes (#571)
+                # Finalize health spans and summary attributes
                 self._finalize_player_health(player)
 
                 # Build attributes including analytics summary if available
@@ -279,7 +279,7 @@ class FFAGame(BaseGameMode):
                     trace_state=trace_state,
                 )
             )
-            # Skipped with a warning when the server already ended the stream (UC-020 BR-003, #1956)
+            # Skipped with a warning when the server already ended the stream (UC-020 BR-003)
             if await self._write_end_effect(effect_cmd):
                 logger.info(f"WINNER_RAINBOW effect sent for {winner_serial}")
             await self._play_sound(Sound.VOX_CONGRATULATIONS, priority=2)

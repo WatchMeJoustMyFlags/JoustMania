@@ -41,13 +41,13 @@ def resolve_ramp_seconds(value: object, default: float) -> float:
     return max(RAMP_SECONDS_MIN, min(RAMP_SECONDS_MAX, seconds))
 
 
-# Player-activated shield charge (#1837, FR-160; UC-040 A30-A32, BR-019-BR-021;
+# Player-activated shield charge (FR-160; UC-040 A30-A32, BR-019-BR-021;
 # UC-030 A6, BR-005). The game flag ``shield.activation`` picks how a grant_shield
 # lands: ``instant`` (today's shield) or ``trigger`` (a charge the player activates
 # with the trigger). Both flags are read per grant, never per frame.
 SHIELD_ACTIVATION_INSTANT = "instant"
 SHIELD_ACTIVATION_TRIGGER = "trigger"
-# Hold mode (#2096, FR-161; UC-030 A7, UC-040 A36-A39, BR-024-BR-027): a pool of
+# Hold mode (FR-161; UC-030 A7, UC-040 A36-A39, BR-024-BR-027): a pool of
 # shield energy that protects while the trigger is held. Latched per game.
 SHIELD_ACTIVATION_HOLD = "hold"
 DEFAULT_SHIELD_ACTIVATION = SHIELD_ACTIVATION_INSTANT
@@ -111,7 +111,7 @@ SHIELD_HOLD_CUE_FLAGS: dict[str, tuple[float, float, float]] = {
 }
 
 
-# Agent shield limits per player per game (#2044, UC-040 A34, BR-022): the
+# Agent shield limits per player per game (UC-040 A34, BR-022): the
 # coordinator's backstop. Operator flags in the `agent` set, read per grant.
 DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME = 3
 DEFAULT_SHIELD_COOLDOWN_SECONDS = 15

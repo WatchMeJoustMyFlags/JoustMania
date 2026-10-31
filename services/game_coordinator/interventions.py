@@ -87,7 +87,7 @@ WEIGHT_HARD = 2.0  # state-changing, player-visible as unfair if wrong
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 # ---------------------------------------------------------------------------- #
-# Defense-in-depth budget contract (#919)
+# Defense-in-depth budget contract
 # ---------------------------------------------------------------------------- #
 # Intervention rate limiting is enforced in TWO layers, in two languages. They
 # have DISTINCT, non-overlapping roles — they are NOT two copies of the same
@@ -148,7 +148,7 @@ class _ReadFailed:
 
 _UNKNOWN = _ReadFailed()
 
-# Cross-set consistency (UC-053 A9, #1552). The flag service stamps every flag of
+# Cross-set consistency (UC-053 A9). The flag service stamps every flag of
 # the ``interventions`` set and ``agent/interventions_allowed`` with the snapshot
 # it rendered them from. The two sets arrive on separate in-process sync streams
 # that reconnect in no fixed order after a flagd restart, so the coordinator
@@ -236,7 +236,7 @@ class InterventionSpec:
     # Player-targeted state only: a one-shot, time-boxed GRANT (shield, toughness boost,
     # soft penalty), not a level. Change-detected per serial on the
     # resolved (variant, value) and dispatched only for the serials whose grant
-    # changed (UC-040 BR-012, #1313).
+    # changed (UC-040 BR-012).
     per_serial_grant: bool = False
 
 
@@ -304,7 +304,7 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         weight=WEIGHT_MEDIUM,
         edge_triggered=False,
         player_targeted=True,
-        # STRING value "<seconds>" or "<seconds>:<boost>" (#1129, #1103 Phase 2):
+        # STRING value "<seconds>" or "<seconds>:<boost>":
         # a TIME-BOXED handicap boost (much harder to die, but NOT immune — vs
         # grant_shield's total grace_until immunity). The handler parses both
         # forms; malformed values are a safe no-op. "0" (and "none"/empty) means
@@ -322,7 +322,7 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         edge_triggered=False,
         player_targeted=True,
         # STRING value "warn" (default) | "tighten" | "tighten:<seconds>:<factor>"
-        # (#1134, #1103 Phase 3): a graduated, RECOVERABLE alternative to the
+        #: a graduated, RECOVERABLE alternative to the
         # permanent eliminate_player. "warn" fires the visible warning feedback
         # (no threshold change). "tighten" applies a short EXPIRING handicap
         # REDUCTION (factor < 1.0, the MIRROR of toughness_boost) making the player
@@ -335,7 +335,7 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         none_value="none",
         per_serial_grant=True,
     ),
-    # #1143 (#1103 Phase 3) — auto_rubberband: a SINGLE global decision the
+    # #1143 — auto_rubberband: a SINGLE global decision the
     # COORDINATOR expands across players from the live skill gap. STRING value
     # "off" (default / neutral) | "gentle" | "strong" (compression strength). The
     # handler ranks alive players by headroom to their death threshold and applies
@@ -386,7 +386,7 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         # "none" (and "default") mean the neutral init-resolved windows.
         none_value="none",
     ),
-    # #1117 (#1103 MVP action 2) — ramp_tempo: a scheduled tempo CURVE that fills
+    # #1117 — ramp_tempo: a scheduled tempo CURVE that fills
     # the #1114 ``agent``-mode tempo seam. Session-scoped STRING state flag whose
     # value is "<target>:<seconds>:<curve>" (e.g. "1.3:8:linear"); the handler
     # records a RampDescriptor and the game's 100ms _check_music_speed loop
@@ -441,7 +441,7 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         weight=WEIGHT_HARD,
         edge_triggered=True,
         player_targeted=False,
-        # the event alone ends the game whose list carries it (#1310)
+        # the event alone ends the game whose list carries it
         payload_required=False,
     ),
 )
@@ -452,7 +452,7 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
 # in hidden-role modes because LED effects can leak roles; ``revive_player`` is
 # gated where reviving breaks the mode; ``adjust_global_sensitivity`` is gated
 # where it interacts with per-role threshold overrides. ``adjust_global_difficulty``
-# (#766 F6) inherits the ``adjust_global_sensitivity`` row (same role-threshold
+# inherits the ``adjust_global_sensitivity`` row (same role-threshold
 # interaction); ``set_pacing_profile`` inherits ``adjust_music_tempo`` (allowed
 # everywhere — no deny rows).
 MODE_CAPABILITY_DENY: dict[str, frozenset[str]] = {
@@ -540,7 +540,7 @@ class _RateLimiter:
     def __init__(self, budget: float, time_fn: Callable[[], float] = time.monotonic):
         self._budget = budget
         self._time_fn = time_fn
-        # (timestamp, cost, reservation token); tokens are unique per reservation (#1868).
+        # (timestamp, cost, reservation token); tokens are unique per reservation.
         self._events: deque[tuple[float, float, int]] = deque()
         self._next_token = 0
         self._lock = threading.Lock()
@@ -596,17 +596,17 @@ BLOCK_LOW_BATTERY = "low_battery"
 BLOCK_MODE_UNSUPPORTED = "mode_unsupported"
 BLOCK_NO_GAME = "no_game"
 # The handler applied nothing on purpose (InterventionNotApplied): a grant_shield to
-# a player who already holds a shield charge (#1837, UC-040 A31, BR-020).
+# a player who already holds a shield charge (UC-040 A31, BR-020).
 BLOCK_ALREADY_CHARGED = "already_charged"
-# A grant_shield refused by the shield limits per player per game (#2044, UC-040 A34,
+# A grant_shield refused by the shield limits per player per game (UC-040 A34,
 # BR-022): raised by games/base.py grant_shield as InterventionNotApplied.
 BLOCK_SHIELD_CAP_REACHED = "shield_cap_reached"
 BLOCK_SHIELD_COOLDOWN = "shield_cooldown"
-# A grant_shield in a hold game that could add nothing (#2096, UC-040 A37).
+# A grant_shield in a hold game that could add nothing (UC-040 A37).
 BLOCK_SHIELD_POOL_FULL = "shield_pool_full"
 BLOCK_SHIELD_BUDGET_EXHAUSTED = "shield_budget_exhausted"
 # A grant_shield that lands once the game is ending (outcome latched, force-ended,
-# ENDING / ENDED): no layer, no cue over the winner effect (#2395, UC-040 A42 step 3).
+# ENDING / ENDED): no layer, no cue over the winner effect (UC-040 A42 step 3).
 BLOCK_GAME_ENDING = "game_ending"
 # A revive_player the mode refused (decided game, unknown or already-alive player; #1948).
 BLOCK_REVIVE_REFUSED = "revive_refused"
@@ -617,7 +617,7 @@ BLOCK_ELIMINATE_REFUSED = "eliminate_refused"
 # Sentinel game_id for the synthesized primary-only session when the manager is
 # wired with the legacy ``get_game`` callback (no session registry). An empty
 # game_id adds NO ``gameId`` attribute to the EvaluationContext, so un-targeted
-# flags resolve exactly as before (today's primary-only semantics, #838).
+# flags resolve exactly as before (today's primary-only semantics).
 _PRIMARY_SENTINEL_GAME_ID = ""
 
 
@@ -748,25 +748,25 @@ class InterventionManager:
 
         self._interventions_client = None  # interventions domain
         self._agent_client = None  # agent domain (backstop reads)
-        # Cross-set consistency gate (#1552): the allow-list stamp last read in
+        # Cross-set consistency gate: the allow-list stamp last read in
         # this pass (the allow-list only moves forward, so a cached stamp that
         # covers the probe needs no re-read), and the current deferral episode.
         self._pass_allow_snapshot: tuple[str, int] | None = None
         self._deferral_since: float | None = None
         self._deferral_last_warned: float | None = None
         self._deferral_recheck = None  # asyncio.TimerHandle while a re-check is pending
-        # Strong references to the tasks this manager creates: the loop keeps only a weak one (#2357).
+        # Strong references to the tasks this manager creates: the loop keeps only a weak one.
         self._background_tasks: set[asyncio.Task] = set()
-        self._user_client = None  # user domain (on-device cue gate, #818)
+        self._user_client = None  # user domain (on-device cue gate)
 
         # Per-session, per-flag last-applied state value (state-shaped change
         # detection; per-serial maps for levels and grants). Keyed
         # ``game_id -> flag_key -> value`` so each live session tracks its own
-        # baseline independently (#838). The legacy single-primary path uses the
+        # baseline independently. The legacy single-primary path uses the
         # ``_PRIMARY_SENTINEL_GAME_ID`` ("") bucket.
         self._last_state_value: dict[str, dict[str, object]] = {}
 
-        # Global BACKSTOP limiter (#919): generous, process-global, NOT the
+        # Global BACKSTOP limiter: generous, process-global, NOT the
         # per-game governor (that is the agent's). See the defense-in-depth
         # contract block at the top of this module.
         self._rate_limiter = _RateLimiter(budget=DEFAULT_COORDINATOR_BACKSTOP_BUDGET, time_fn=time_fn)
@@ -778,7 +778,7 @@ class InterventionManager:
         # neutral value (e.g. volume_override -> default game volume). Additive;
         # absence means "do nothing on revert" (the default for all flags).
         #
-        # IMPORTANT (#922): a revert-to-neutral is routed HERE, not back to the
+        # IMPORTANT: a revert-to-neutral is routed HERE, not back to the
         # flag's apply-handler. So a state flag that mutates live game state on
         # apply MUST register a revert handler to undo it — the apply-handler's
         # own "neutral value" branch is never reached on revert. music_tempo_override
@@ -794,7 +794,7 @@ class InterventionManager:
         # joins the game's thread, so running it on that thread would deadlock.
         self._main_loop_flags: set[str] = set()
         # Per-session dispatchers that run handler side effects on the owning
-        # game's loop, in decision order (UC-040 BR-018, #1250). Keyed by game_id.
+        # game's loop, in decision order (UC-040 BR-018). Keyed by game_id.
         self._dispatchers: dict[str, GameLoopDispatcher] = {}
         self._dispatch_timeout_s = DEFAULT_DISPATCH_TIMEOUT_S
 
@@ -857,7 +857,7 @@ class InterventionManager:
         )
 
     # ------------------------------------------------------------------ #
-    # Ambient + session intervention handlers (#730, PR E)
+    # Ambient + session intervention handlers (PR E)
     #
     # These reuse the exact audio/effect paths the games already use; they do
     # NOT touch the audio/controller services. Registered via
@@ -974,7 +974,7 @@ class InterventionManager:
                 )
             )
             # Re-read the stream per write: a reopen swaps in a new call and closes the
-            # old one, and a game end drops it (UC-030 BR-006, #1913).
+            # old one, and a game end drops it (UC-030 BR-006).
             stream = game.gameplay_stream
             if stream is None:
                 logger.debug("controller_effect: the gameplay stream closed, stopping")
@@ -1044,7 +1044,7 @@ class InterventionManager:
             init_flag_domain("agent")
             self._agent_client = get_flag_client("agent")
 
-            # User domain holds the operator-facing cue mute toggle (#818).
+            # User domain holds the operator-facing cue mute toggle.
             init_flag_domain("user")
             self._user_client = get_flag_client("user")
 
@@ -1089,7 +1089,7 @@ class InterventionManager:
             self._last_event.pop(game_id, None)
 
     # ------------------------------------------------------------------ #
-    # Session resolution + per-session change-detection buckets (#838)
+    # Session resolution + per-session change-detection buckets
     # ------------------------------------------------------------------ #
     def _live_sessions(self) -> list["SessionView"]:
         """Resolve the live sessions to evaluate (#838).
@@ -1113,7 +1113,7 @@ class InterventionManager:
         return self._last_state_value.setdefault(game_id, {})
 
     # Mid-pass accessor: never (re)creates a bucket. ``None`` means the session
-    # was forgotten (retired) while evaluate_all was suspended in it (#1299).
+    # was forgotten (retired) while evaluate_all was suspended in it.
     def _existing_state_bucket(self, game_id: str) -> dict[str, object] | None:
         return self._last_state_value.get(game_id)
 
@@ -1215,7 +1215,7 @@ class InterventionManager:
             # Inside the pass they are only read with .get(): if the servicer
             # retires the session while a handler is awaited (forget_session),
             # the remaining specs see no bucket and skip instead of firing into
-            # a retired game (#1299).
+            # a retired game.
             with self._lock:
                 self._state_bucket(session.game_id)
                 self._last_event.setdefault(session.game_id, {})
@@ -1263,7 +1263,7 @@ class InterventionManager:
         if _is_none_value(spec, raw):
             # Reverting to neutral is not an enforced intervention, but some
             # state flags need to actively restore a default on revert (e.g.
-            # volume_override -> configured game volume, #730 PR E). Such
+            # volume_override -> configured game volume). Such
             # flags register a revert handler; it runs without enforcement
             # (restoring a default is always safe / not rate-limited).
             # Only fire when the PREVIOUS value was a real (non-none)
@@ -1401,7 +1401,7 @@ class InterventionManager:
         # (float getter, value_kind="float" for both levels): a flagd error
         # reads as ``_UNKNOWN`` instead of the neutral default, so it can never
         # look like "level reverted" nor move the baseline (fail closed, as for
-        # grants, #1313).
+        # grants).
         default = _spec_default(spec)
         reads = self._read_levels(spec, session.game_id, _active_player_serials(game))
         if self._allow_list_lags(spec):
@@ -1432,7 +1432,7 @@ class InterventionManager:
         # level left over from an earlier game is never applied (UC-040 BR-017).
         # A move to neutral is a revert: it bypasses the permission chain and the
         # backstop, so a blocked chain (kill switch, exhausted budget) can never
-        # leave a factor stuck after the baseline moved (UC-040 A24, #1317).
+        # leave a factor stuck after the baseline moved (UC-040 A24).
         to_neutral = {s: v for s, v in changed.items() if _is_none_value(spec, v)}
         applied = {s: v for s, v in changed.items() if s not in to_neutral}
         if to_neutral:
@@ -1614,7 +1614,7 @@ class InterventionManager:
 
         await self._record(spec, target, objective, session, blocked=False, block_reason="")
 
-        # On-device visibility cue (#818): surface HARD-class agent actions at the
+        # On-device visibility cue: surface HARD-class agent actions at the
         # controller so an operator can tell agent activity from a malfunction.
         # Gated behind a user.json mute toggle so it can be silenced for demos.
         #
@@ -1627,7 +1627,7 @@ class InterventionManager:
                 await self._run_on_game_loop(session, spec, self._emit_agent_cue, spec, target, game, quiet=True)
 
     # ------------------------------------------------------------------ #
-    # Game-loop dispatch (UC-040 BR-018, #1250)
+    # Game-loop dispatch (UC-040 BR-018)
     # ------------------------------------------------------------------ #
     def _dispatcher_for(self, session: "SessionView") -> GameLoopDispatcher:
         """Return the session's dispatcher, bound to its current game loop.
@@ -1715,10 +1715,10 @@ class InterventionManager:
 
             from proto import controller_manager_pb2
 
-            red, green, blue = Colors.Magenta.value  # same magenta as the shield help cue (#2395)
+            red, green, blue = Colors.Magenta.value  # same magenta as the shield help cue
             # Distinct magenta pulse = "agent acted" — not a game event color.
-            # One write after the other: grpc.aio allows one write in flight per call
-            # (#2096), and a sequential loop never queues N writes ahead of a frame's
+            # One write after the other: grpc.aio allows one write in flight per call,
+            # and a sequential loop never queues N writes ahead of a frame's
             # warning or kill (each waits for at most one cue write). Best-effort: a
             # failed write is logged and never raised into the intervention path.
             for target_serial in targets:
@@ -1776,7 +1776,7 @@ class InterventionManager:
             if pct is not None and pct < self._battery_threshold():
                 return BLOCK_LOW_BATTERY, None
 
-        # (b) weighted rate limit — the GENEROUS GLOBAL BACKSTOP (#919), NOT the
+        # (b) weighted rate limit — the GENEROUS GLOBAL BACKSTOP, NOT the
         # per-game governor (that is the agent's). Reserves budget; do last so
         # the reservation only happens for otherwise-allowed interventions. A
         # block here means a process-wide flood across ALL games, not a single
@@ -1815,8 +1815,8 @@ class InterventionManager:
         from lib.types import GameEvent
 
         # Publish on THIS session's bus so the effect/blocked event lands on the
-        # stream the owning game's subscribers (and the agent runner) are reading
-        # (#838). The session's game_id is stamped onto the event by the bus.
+        # stream the owning game's subscribers (and the agent runner) are reading.
+        # The session's game_id is stamped onto the event by the bus.
         await session.publish(
             GameEvent.AGENT_INTERVENTION,
             {
@@ -1929,7 +1929,7 @@ class InterventionManager:
                     if value_kind == "int":
                         value = float(client.get_integer_value(flag_key, int(default), ctx))
                     elif value_kind == "string":
-                        # Raw string returned for the handler to parse (#1129).
+                        # Raw string returned for the handler to parse.
                         value = str(client.get_string_value(flag_key, str(default), ctx))
                     else:
                         value = float(client.get_float_value(flag_key, float(default), ctx))
@@ -2077,7 +2077,7 @@ class InterventionManager:
         # flag, but the agent's flagd RPC resolver silently TYPE_MISMATCHes
         # get_object_value on a top-level LIST flag and falls back to its empty
         # default, blocking EVERY intervention even with a non-`none` variant
-        # active (#1127). Both sides now read a string and parse it identically;
+        # active. Both sides now read a string and parse it identically;
         # the coordinator's in-process resolver reads the string cleanly too.
         if self._agent_client is None:
             return set()

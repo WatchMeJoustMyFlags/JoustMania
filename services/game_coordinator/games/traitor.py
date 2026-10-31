@@ -28,7 +28,7 @@ from services.game_coordinator.stream_writes import serialized_write
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-# Traitor count tiers (source-of-truth defaults, #766 F2).
+# Traitor count tiers (source-of-truth defaults).
 # Ordered ascending by ``max_players``: the first tier whose ``max_players`` is
 # >= the player count decides the traitor count; beyond the last tier the count
 # is ``num_players // fallback_divisor``.
@@ -167,7 +167,7 @@ class TraitorGame(TeamsGameBase):
 
         self.traitor_serials: list[str] = []
 
-        # #766 F2: traitor count tiers promoted to ``game.traitor.count_tiers``.
+        # traitor count tiers promoted to ``game.traitor.count_tiers``.
         # Read ONCE here (init-frozen); malformed values fall back to the module
         # defaults (the source of truth).
         self.mode_flags = TraitorInitFlags.from_raw(
@@ -206,7 +206,7 @@ class TraitorGame(TeamsGameBase):
             if num_players <= tier["max_players"]:
                 raw = tier["count"]
                 break
-        # Loyal players must outnumber traitors (UC-022 step 1, #1346): a
+        # Loyal players must outnumber traitors (UC-022 step 1): a
         # 2-player game has no traitor, from 3 players at least one.
         if num_players < 3:
             return 0
@@ -477,7 +477,7 @@ class TraitorGame(TeamsGameBase):
 
         # End the lifecycle span. The player_death event (with the traitor
         # attributes, via _player_death_event_attributes) was recorded by the
-        # base kill path (#1327).
+        # base kill path.
         if player.span:
             player.span.set_status(Status(StatusCode.OK))
             player.span.end()
