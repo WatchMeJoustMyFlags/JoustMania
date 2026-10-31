@@ -125,6 +125,15 @@ class ReportGapWindow:
         max_ms = max(values[-1], open_gap_ms)
         return GapStats(p95_ms=p95_ms, max_ms=max_ms, quality=classify(p95_ms, max_ms), samples=len(values))
 
+    def silent_seconds(self, serial: str, now: float) -> float | None:
+        """Seconds since the last fresh frame of ``serial`` up to ``now``, loop stalls excluded (UC-002 BR-007).
+
+        None while the controller has not delivered a fresh frame yet.
+        """
+        if serial not in self._last_fresh:
+            return None
+        return self._link_gap_ms(serial, now) / 1000.0
+
     def serials(self) -> list[str]:
         return list(self._last_fresh)
 

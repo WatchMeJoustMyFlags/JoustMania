@@ -54,6 +54,34 @@ tracer = get_tracer(__name__)
 # Minimum seconds between error lines of one failing periodic step (#1447).
 _STEP_ERROR_LOG_INTERVAL = 10.0
 
+# Silent link (UC-002 BR-007, #2466): a tracked controller with no fresh frame for
+# `silent_disconnect_seconds` (controller flag set) counts as disconnected. The
+# normal report gap is 20-50 ms (p95), so the 1 s floor is far above it.
+SILENT_DISCONNECT_DEFAULT_S = 3.0
+SILENT_DISCONNECT_MIN_S = 1.0
+SILENT_DISCONNECT_MAX_S = 10.0
+
+# A (re)registered controller's LED output is sent again this long after the
+# registration, so a first write the device dropped while it was not ready yet
+# is repeated (UC-002 BR-008, #2466).
+LED_RESEND_DELAY_S = 0.5
+
+
+def resolve_silent_disconnect_seconds(value: object) -> float:
+    """The silent-link threshold from a flag value: a non-number or non-finite value gives 3 s, clamped to 1-10 s."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return SILENT_DISCONNECT_DEFAULT_S
+    return min(SILENT_DISCONNECT_MAX_S, max(SILENT_DISCONNECT_MIN_S, float(value)))
+
+
+def read_silent_disconnect_seconds() -> float:
+    """Read `silent_disconnect_seconds` (controller set) live; any failure gives the 3 s default (flags.md §6)."""
+    from lib.feature_flags import read_float_flag
+
+    return resolve_silent_disconnect_seconds(
+        read_float_flag("controller", "silent_disconnect_seconds", SILENT_DISCONNECT_DEFAULT_S)
+    )
+
 
 def visible_serials(tracked_controllers: dict[str, dict]) -> list[str]:
     """Return serials that button-stream consumers (the menu) may learn about.
@@ -139,6 +167,7 @@ class DiscoveryLoop:
         base_colors: dict[str, tuple[int, int, int]],
         event_publisher: "EventPublisher",
         name_manager: "NameManager | None" = None,
+        reconnect_color: "Callable[[str], tuple[int, int, int] | None] | None" = None,
     ):
         """
         Initialize the discovery loop.
@@ -155,6 +184,8 @@ class DiscoveryLoop:
             base_colors: Dict of serial -> base LED color
             event_publisher: Event publisher for cross-thread communication
             name_manager: Name manager for human-readable controller names (Issue #7)
+            reconnect_color: Colour the LED gets when a controller (re)registers, asked from
+                the current owner (UC-002 BR-008); None = the cached base colour
         """
         self.backend = backend
         self.tracked_controllers = tracked_controllers
@@ -167,6 +198,7 @@ class DiscoveryLoop:
         self.base_colors = base_colors
         self.event_publisher = event_publisher
         self.name_manager = name_manager
+        self._reconnect_color = reconnect_color
 
         # Discovery task state
         self.running = True
@@ -225,6 +257,13 @@ class DiscoveryLoop:
         # Gameplay disconnect events: accumulated between stream frames, drained by servicer (#580)
         self._gameplay_disconnects: list[str] = []
 
+        # Controllers dropped for a silent link (UC-002 BR-007) that the backend still lists,
+        # with the last sample they served: they register again once a poll returns another one.
+        self._silent_serials: dict[str, object] = {}
+        self._led_resend_delay = LED_RESEND_DELAY_S
+        # Pending delayed LED resends (UC-002 BR-008), cancelled on disconnect and stop.
+        self._led_resend_handles: dict[str, asyncio.TimerHandle] = {}
+
     def start(self) -> None:
         """Start the discovery task.
 
@@ -255,6 +294,9 @@ class DiscoveryLoop:
     def stop(self) -> None:
         """Stop the discovery loop."""
         self.running = False
+        for handle in self._led_resend_handles.values():
+            handle.cancel()
+        self._led_resend_handles.clear()
         if self._task and not self._task.done():
             self._task.cancel()
 
@@ -451,92 +493,171 @@ class DiscoveryLoop:
 
                 connected_serials = await asyncio.to_thread(_discover_with_context, force_rescan)
             connected_set = set(connected_serials)
+            # A silenced controller the backend no longer lists left for real: it registers
+            # through the normal path when it comes back.
+            for serial in [s for s in self._silent_serials if s not in connected_set]:
+                del self._silent_serials[serial]
 
-            # Check for disconnected controllers (in tracked but not in connected)
-            tracked_serials = set(self.tracked_controllers.keys())
-
-            disconnected_serials = tracked_serials - connected_set
-            for serial in disconnected_serials:
-                logger.info(f"Controller {serial} disconnected - cleaning up server tracking")
-                # Invalidate cached serial list
-                self._cached_serials = None
-                # Capture name + reservation before removing from tracked_controllers
-                name = ""
-                reserved = False
-                if serial in self.tracked_controllers:
-                    name = self.tracked_controllers[serial].get(ControllerInfoKey.NAME, "")
-                    reserved = self.tracked_controllers[serial].get(ControllerInfoKey.RESERVED, False)
-                    del self.tracked_controllers[serial]
-                if serial in self.controller_states:
-                    del self.controller_states[serial]
-                self.button_detector.clear_controller(serial)
-                # Note: Keep base_colors[serial] so we can restore on reconnect!
-                # Activity, poll counters, health window and connection quality
-                # all live in the record.
-                self._records.pop(serial, None)
-                self._gap_window.forget(serial)
-                # Clear per-serial health metric labels so disconnected
-                # controllers don't linger in dashboards.
-                metrics.controller_bluetooth_dropped_events_ratio.remove(serial)
-                metrics.controller_bluetooth_movement_update_hz.remove(serial)
-                _remove_quality_series(serial)
-                # #1295: an untracked controller no longer exports its name.
-                metrics.remove_controller_info(serial, name)
-                # Publish disconnect event to button event stream subscribers —
-                # but never announce reserved controllers to the menu (#777).
-                # UC-002 BR-002: a reserved mock controller's disconnect is not published.
-                if not reserved:
-                    self.button_detector.publish_connection_event(
-                        serial,
-                        is_connect=False,
-                        name=name,
-                        connected_serials=visible_serials(self.tracked_controllers),
-                    )
-                # Queue disconnect for gameplay stream subscribers (#580)
-                self._gameplay_disconnects.append(serial)
-                metrics.controller_disconnect_total.labels(serial=serial).inc()
-                metrics.controller_connected.labels(serial=serial).set(0)
+            # Disconnected: gone from the backend, or listed but silent (UC-002 A1, BR-007)
+            silent = self._find_silent_links() & connected_set
+            for serial in (set(self.tracked_controllers) - connected_set) | silent:
+                if serial in silent:
+                    state = self.controller_states.get(serial)
+                    self._silent_serials[serial] = getattr(state, "sample", state)
+                    logger.warning(f"Controller {serial} sent no report for its silent-link limit - disconnecting")
+                    # Its route stays (the backend still lists it): drop the stale output (BR-008).
+                    self.backend.clear_led_output(serial)
+                else:
+                    logger.info(f"Controller {serial} disconnected - cleaning up server tracking")
+                self._drop_controller(serial)
 
             # Check for new controllers
             for serial in connected_serials:
-                if serial not in self.tracked_controllers:
-                    # Invalidate cached serial list
-                    self._cached_serials = None
-                    # New controller found - create event span
-                    with tracer.start_as_current_span("controller_connected") as span:
-                        span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
-                        span.set_attribute("controller.count_total", len(connected_serials))
-
-                        logger.info(f"Discovered new controller: {serial}")
-
-                        # Spawn tracking process
-                        with tracer.start_as_current_span("spawn_controller_process") as spawn_span:
-                            spawn_span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
-                            await self._spawn_controller_process(serial)
-
-                        # Publish connect event to button event stream subscribers —
-                        # but never announce reserved controllers to the menu (#777).
-                        info = self.tracked_controllers.get(serial, {})
-                        battery = info.get(ControllerInfoKey.BATTERY, 0)
-                        name = info.get(ControllerInfoKey.NAME, "")
-                        # UC-002 BR-002: a reserved mock controller's connect is not published.
-                        if not info.get(ControllerInfoKey.RESERVED, False):
-                            self.button_detector.publish_connection_event(
-                                serial,
-                                is_connect=True,
-                                battery=battery,
-                                name=name,
-                                connected_serials=visible_serials(self.tracked_controllers),
-                            )
-
-                        # Restore base color if we had one before (reconnection case)
-                        if serial in self.base_colors:
-                            color = self.base_colors[serial]
-                            logger.info(f"Restoring base color for reconnected controller {serial}: {color}")
-                            await self.feedback_manager.set_controller_color(serial, color)
+                if serial in self.tracked_controllers:
+                    continue
+                if serial in self._silent_serials and not await self._reports_resumed(serial):
+                    continue
+                await self._register_controller(serial, len(connected_serials))
 
         except Exception as e:
             logger.error(f"Error discovering controllers: {e}", exc_info=True)
+
+    def _drop_controller(self, serial: str) -> None:
+        """Forget a disconnected controller and publish its disconnect (UC-002 A1)."""
+        # Invalidate cached serial list
+        self._cached_serials = None
+        # Capture name + reservation before removing from tracked_controllers
+        name = ""
+        reserved = False
+        if serial in self.tracked_controllers:
+            name = self.tracked_controllers[serial].get(ControllerInfoKey.NAME, "")
+            reserved = self.tracked_controllers[serial].get(ControllerInfoKey.RESERVED, False)
+            del self.tracked_controllers[serial]
+        if serial in self.controller_states:
+            del self.controller_states[serial]
+        self.button_detector.clear_controller(serial)
+        resend = self._led_resend_handles.pop(serial, None)
+        if resend is not None:
+            resend.cancel()
+        # base_colors[serial] is kept; the owner decides the colour on reconnect (UC-002 BR-008).
+        # Activity, poll counters, health window and connection quality
+        # all live in the record.
+        self._records.pop(serial, None)
+        self._gap_window.forget(serial)
+        # Clear per-serial health metric labels so disconnected
+        # controllers don't linger in dashboards.
+        metrics.controller_bluetooth_dropped_events_ratio.remove(serial)
+        metrics.controller_bluetooth_movement_update_hz.remove(serial)
+        _remove_quality_series(serial)
+        # #1295: an untracked controller no longer exports its name.
+        metrics.remove_controller_info(serial, name)
+        # Publish disconnect event to button event stream subscribers —
+        # but never announce reserved controllers to the menu (#777).
+        # UC-002 BR-002: a reserved mock controller's disconnect is not published.
+        if not reserved:
+            self.button_detector.publish_connection_event(
+                serial,
+                is_connect=False,
+                name=name,
+                connected_serials=visible_serials(self.tracked_controllers),
+            )
+        # Queue disconnect for gameplay stream subscribers (#580)
+        self._gameplay_disconnects.append(serial)
+        metrics.controller_disconnect_total.labels(serial=serial).inc()
+        metrics.controller_connected.labels(serial=serial).set(0)
+
+    def _find_silent_links(self) -> set[str]:
+        """Tracked controllers with no fresh frame for the silent-link limit (UC-002 BR-007, #2466).
+
+        Measured up to the last poll batch, not to now, and with the loop's own stalls
+        subtracted: a poll loop that is late or stalled never makes a link look silent.
+        Runs in the 1 Hz discovery step, so the 100 Hz poll pays nothing for it.
+        """
+        pickup = self._last_pickup_mono
+        if pickup is None or not self.tracked_controllers:
+            return set()
+        limit = read_silent_disconnect_seconds()
+        silent = set()
+        for serial in self.tracked_controllers:
+            age = self._gap_window.silent_seconds(serial, pickup)
+            if age is not None and age >= limit:
+                silent.add(serial)
+        return silent
+
+    async def _reports_resumed(self, serial: str) -> bool:
+        """Whether a silenced controller serves a new sample again, so it registers again (UC-002 BR-007)."""
+        state = await self.backend.get_controller_state(serial)
+        if not state or getattr(state, "sample", state) is self._silent_serials[serial]:
+            return False
+        del self._silent_serials[serial]
+        logger.info(f"Controller {serial} sends reports again - registering it")
+        return True
+
+    async def _register_controller(self, serial: str, connected_count: int) -> None:
+        """Track a new or returning controller, publish its connect event and write its LED (UC-002 steps 3-5, A4)."""
+        # Invalidate cached serial list
+        self._cached_serials = None
+        # New controller found - create event span
+        with tracer.start_as_current_span("controller_connected") as span:
+            span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
+            span.set_attribute("controller.count_total", connected_count)
+
+            logger.info(f"Discovered new controller: {serial}")
+
+            # Spawn tracking process
+            with tracer.start_as_current_span("spawn_controller_process") as spawn_span:
+                spawn_span.set_attribute(SpanAttr.CONTROLLER_SERIAL, serial)
+                await self._spawn_controller_process(serial)
+
+            # Publish connect event to button event stream subscribers —
+            # but never announce reserved controllers to the menu (#777).
+            info = self.tracked_controllers.get(serial, {})
+            battery = info.get(ControllerInfoKey.BATTERY, 0)
+            name = info.get(ControllerInfoKey.NAME, "")
+            # UC-002 BR-002: a reserved mock controller's connect is not published.
+            if not info.get(ControllerInfoKey.RESERVED, False):
+                self.button_detector.publish_connection_event(
+                    serial,
+                    is_connect=True,
+                    battery=battery,
+                    name=name,
+                    connected_serials=visible_serials(self.tracked_controllers),
+                )
+
+            await self._restore_led(serial)
+
+    async def _restore_led(self, serial: str) -> None:
+        """Write a (re)registered controller's LED, never skipped as unchanged (UC-002 A4, BR-008, #2466).
+
+        The colour comes from the current owner (``reconnect_color``: the game's view for
+        its players, the cached lobby colour otherwise). The backend sends the output again
+        on its next LED tick and once more after ``LED_RESEND_DELAY_S``, so a first write
+        the re-opened device dropped is repeated.
+        """
+        if serial not in self.tracked_controllers:
+            return  # the spawn failed; the next discovery pass retries
+        self.backend.force_led_resend(serial)
+        owner = self._reconnect_color
+        color = owner(serial) if owner is not None else self.base_colors.get(serial)
+        if color is not None:
+            logger.info(f"Restoring LED colour for (re)registered controller {serial}: {color}")
+            await self.feedback_manager.set_controller_color(serial, color)
+        previous = self._led_resend_handles.pop(serial, None)
+        if previous is not None:
+            previous.cancel()
+        self._led_resend_handles[serial] = asyncio.get_running_loop().call_later(
+            self._led_resend_delay, self._resend_led_if_tracked, serial
+        )
+
+    def _resend_led_if_tracked(self, serial: str) -> None:
+        """The delayed second LED send of ``_restore_led`` (UC-002 BR-008)."""
+        self._led_resend_handles.pop(serial, None)
+        if serial not in self.tracked_controllers:
+            return
+        try:
+            self.backend.force_led_resend(serial)
+        except Exception as e:
+            logger.warning(f"Delayed LED resend for {serial} failed: {e}")
 
     async def _update_controller_states(self) -> None:
         """
