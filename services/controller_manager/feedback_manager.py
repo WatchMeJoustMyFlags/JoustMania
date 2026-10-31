@@ -480,6 +480,9 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
             # Cancel any active effect (e.g., warning flash) and the agent shield
             # immediately for a clean transition (#1301, UC-040 A17)
             span.add_event("cancel_existing_effect")
+            # The player is out from the first moment: a reconnect during the effect
+            # restores off, never the game colour (UC-002 BR-008, #2471).
+            self.base_colors[serial] = Colors.Black.value
             await self.end_shield_effect(serial, restore=False)
             await self.cancel_effect(serial)
 
@@ -897,6 +900,8 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
         if serial in self.active_effects:
             self.active_effects[serial].task.cancel()
             del self.active_effects[serial]
+        # The cancelled effect and shield renderer no longer own the LED (#2471).
+        self.backend.set_effect_active(serial, False)
         # A stale stop timer must not cut the rumble of a reconnected controller (#1832: 1 s window)
         vibration_task = self.vibration_tasks.pop(serial, None)
         if vibration_task is not None:

@@ -536,6 +536,9 @@ class DiscoveryLoop:
         if serial in self.controller_states:
             del self.controller_states[serial]
         self.button_detector.clear_controller(serial)
+        # Effects, shield layers, cues, background rumble and stop timers end with the
+        # link; the reconnect rebuilds the LED from the owner (UC-002 A1, BR-008, #2471).
+        self.feedback_manager.clear_controller(serial)
         resend = self._led_resend_handles.pop(serial, None)
         if resend is not None:
             resend.cancel()
