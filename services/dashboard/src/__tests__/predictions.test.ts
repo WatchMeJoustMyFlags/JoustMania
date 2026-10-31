@@ -167,6 +167,7 @@ describe("UC-040 A44 BR-034: hit rate against the control base rate per game", (
         span("c1", "control", "survives", "hit"),
         span("c2", "control", "survives", "miss"),
         span("c3", "control", "game_ends", "hit"),
+        span("c4", "control", "survives", "unscorable"),
       ],
       "game_abc",
     )!;
@@ -174,7 +175,7 @@ describe("UC-040 A44 BR-034: hit rate against the control base rate per game", (
     const rules = strip.sources[0];
     expect(rules).toMatchObject({ source: "rules", hits: 2, misses: 1, unscorable: 1 });
     expect(rules.hitRate).toBeCloseTo(2 / 3);
-    // Only the survives controls count for a source that predicted survives.
+    // Only the scored survives controls count for a source that predicted survives.
     expect(rules.baseRate).toBeCloseTo(0.5);
   });
 
