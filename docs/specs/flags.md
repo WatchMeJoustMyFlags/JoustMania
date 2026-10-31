@@ -169,6 +169,10 @@ The agent's governor: existence (`enabled`), actuation gates, allow-list, policy
 | `decision.min_gap_after_answer_ms` | int | off=0, default=1000, slow=3000 (#2123) | `default` = 1000 | N | agent: services/agent/flags/decision_backend.go:nonNegativeMsFlag -> services/agent/decision/decide_hook.go:gateRemoteDecide (per game, from when the previous remote call RETURNED: answer, timeout or failure, recorded by noteDecideEnded before the flag re-read and the action write; a call needs this gap AND `decision.min_interval_ms`; gated cycles count `agent_llm_gated_total{reason=decide_interval}`); negative = default | manual edit only | live (per cycle) |
 | `decision.max_state_age_ms` | int | off=0, tight=6000, default=10000 (#2123) | `default` = 10000 | N | agent: services/agent/flags/decision_backend.go:nonNegativeMsFlag -> services/agent/decision/decide_hook.go:stateTooOld (read from the live flags when a remote answer that would act lands: fire-time state older than the bound -> `discarded/state_too_old`, decide-contract §4.4); negative = default | manual edit only | live (per landing) |
 | `decision.probe_decisions` | bool | on=true, off=false | `off` = false | N | agent: services/agent/flags/tuning.go `probeDecisions` -> `Snapshot.ProbeDecisions` (every Evaluate, i.e. every decision cycle) -> services/agent/decision/probe_select.go `rulesFor` (decide_hook.go `rulesDecide` / `decideRemoteFallback`, decision.go objective / fitness publication); false while unresolved (compiled fallback in `probeDecisions`, #1810, #1907) | operator overlay via the flag service (§13.2) | live (per decision cycle; ignored in pattern games) |
+| `decision.predictions_enabled` | bool | on=true, off=false | `on` = true | N | planned (#2479, Open): agent only, read at use time at registration and per timer; unreadable = on (it only observes); off stops registration, timers and `agent.prediction.outcome` spans; decide-contract §14.5 | manual edit only | live |
+| `decision.predictions.ask_model` | bool | on=true, off=false | `off` = false | N | planned (#2479, Open): agent only, read per remote request in `Render`; claude and openai only, never jev; unreadable = off, so the request bytes stay v1; decide-contract §3, §4.1 | manual edit only (the experiment operator script turns it on for runs) | live |
+| `goal.profile` | object | `from_objectives` (default), `long_running_game`, `lively_finale`, `balanced_contest`, `quick_game`; schema in §3.2 | `from_objectives` | Y (`game_kind`, `experiment_id`, `arm` allowed, none shipped) | planned (#2479, Open): agent only, read per game and at game end; an invalid value falls back to `from_objectives`; decide-contract §14.4 | manual edit only | live (per game) |
+| `decision.goal_in_prompt` | bool | on=true, off=false | `off` = false | N | planned (#2479, Open): agent only, read per remote request in `Render`; also implied by `decision.prompt_profile` = `neutral`; unreadable = off; decide-contract §14.4 | manual edit only | live |
 | `inference.backend` | string | stub="stub", claude="claude" | `stub` = "stub" | N | agent: services/agent/flags/tuning.go `InferenceBackend` <- services/agent/inference_backends.go `textBackends.Select` (resolved per use: once per retro in `RetroCoordinator.OnGameEnd`, once per `Proposer.ProposeOnce`), `stub` while unresolved (#1810 B2, #1907: no env fallback). `claude` takes effect only with `ANTHROPIC_API_KEY` and a valid `AGENT_INFERENCE_BASE_URL` (the env ceilings); otherwise the stub serves and a WARN is logged once per change | operator overlay via the flag service (§13.2), persisted like `decision.backend` (#1682) | live (per retro and per propose cycle) |
 | `inference.model` | string | default="claude-opus-5-5" | `default` = "claude-opus-5-5" | N | agent: services/agent/flags/tuning.go:46 <- services/agent/tuning.go `agentTuning.Inference` <- services/agent/inference/claude.go:181 `settings` (every Infer of the proposer/retro text backend; the compiled default while unresolved, #1907) | operator overlay via the flag service (§13.2) | live (per Infer call) |
 | `inference.effort` | string | low="low", medium="medium", high="high", xhigh="xhigh", max="max" | `medium` = "medium" | N | agent: services/agent/flags/tuning.go:55 <- services/agent/inference/claude.go:181 (an unknown level sends no effort; the compiled default while unresolved, #1907) | operator overlay via the flag service (§13.2) | live (per Infer call) |
@@ -194,6 +198,21 @@ Semantics: every shadow experiment runs on archetypes (maintainer decision on #1
 
 **Traceability:** FR-101, FR-102, FR-105, FR-106, FR-110, FR-111, C-019, C-020 / UC-046, UC-043 A7 / `services/agent/experiment/registry_pattern.go`, `services/agent/gamerunner/`, `services/agent/patterngame/`, `services/agent/flags/pattern.go` / `services/agent/patterngame/patterngame_test.go`, `services/agent/flags/pattern_test.go`, `services/controller_manager/tests/test_motion_patterns.py` (`TestUC046ArchetypeFlags`).
 
+
+### 3.2 `goal.profile` schema (planned, #2479)
+
+Each variant is an object `{"terms": [ {"characteristic": <name>, "min": <number|null>, "max": <number|null>, "phase": "whole"|"endgame", "weight": <number>} ]}`:
+
+| Field | Rule |
+|---|---|
+| `characteristic` | One of `duration`, `activity`, `change`, `elimination_pace`, `survival`, `closeness` (decide-contract §14.1); anything else invalidates the variant |
+| `min`, `max` | Finite numbers inside the characteristic's hard bounds (`duration` seconds, `activity` and `closeness` and `change` as fractions of the death threshold, `elimination_pace` per minute); `null` = open; `min` <= `max` |
+| `phase` | `whole` (default) or `endgame` (at most 2 players alive) |
+| `weight` | Finite, > 0; the attainment is the weighted mean |
+| terms | 1 to 4 per variant |
+
+`from_objectives` is a sentinel without terms: the profile is derived from the active `objectives` variant (decide-contract §14.4). A value that fails any rule
+falls back to `from_objectives` (WARN once, and a metric). A contract test checks every variant in both `agent.json` files (`services/flagd/`, `ci/`). The flag is human-owned and never written by the agent (C-034).
 ## 4. `game`
 
 File: [`services/flagd/game.json`](../../services/flagd/game.json).
