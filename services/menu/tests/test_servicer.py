@@ -75,6 +75,7 @@ class FakeMenuServicer:
     def __init__(self):
         self.state = menu_pb2.MenuState.STOPPED
         self.current_selection = Games.JoustFFA
+        self._lobby_restore_started = False
 
         # Mocked dependencies (autospec'd: a misspelt method fails here, not in production, #1272)
         self.led = create_autospec(LedController, instance=True)
@@ -3484,3 +3485,158 @@ class TestCoordinatorUnreachableAtStart:
         assert restored_before_publish == [True]
         assert real_servicer.state == menu_pb2.MenuState.RUNNING
         real_servicer.idle_monitor.start.assert_called()
+
+
+class _FailingStartStub:
+    """A coordinator stub whose start stream raises ``error`` before its first event."""
+
+    def __init__(self, error: Exception):
+        self.error = error
+        self.requests = []
+
+    def __call__(self, _channel):
+        return self
+
+    def StreamGameEvents(self, request, metadata=None):  # noqa: N802 - gRPC stub name
+        self.requests.append(request)
+        error = self.error
+
+        class Broken:
+            def cancel(self):
+                pass
+
+            async def _events(self):
+                raise error
+                yield  # pragma: no cover - makes this an async generator
+
+            def __aiter__(self):
+                return self._events()
+
+        return Broken()
+
+
+class TestStartFailureReason:
+    """UC-010 A3 (#2379): only an unreachable coordinator is `coordinator_unreachable`; the rest is `start_failed`."""
+
+    @staticmethod
+    async def _start(real_servicer, stub) -> None:
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        with patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", stub):
+            await _ready_up(real_servicer, "s1", "s2")
+            await asyncio.wait_for(_await_lifecycle(real_servicer), timeout=5)
+
+    @staticmethod
+    def _cancel_reasons(servicer) -> list[str]:
+        return [d.get("reason") for e, d in _published(servicer) if e == "game_start_cancelled"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2])
+    @pytest.mark.parametrize(
+        ("error", "reason"),
+        [
+            (
+                grpc.aio.AioRpcError(
+                    grpc.StatusCode.DEADLINE_EXCEEDED, grpc.aio.Metadata(), grpc.aio.Metadata(), "deadline"
+                ),
+                "coordinator_unreachable",
+            ),
+            (ConnectionError("refused"), "coordinator_unreachable"),
+            (
+                grpc.aio.AioRpcError(grpc.StatusCode.INTERNAL, grpc.aio.Metadata(), grpc.aio.Metadata(), "boom"),
+                "start_failed",
+            ),
+            (RuntimeError("bug"), "start_failed"),
+        ],
+    )
+    async def test_reason_by_failure(self, real_servicer, error, reason):
+        await self._start(real_servicer, _FailingStartStub(error))
+
+        assert self._cancel_reasons(real_servicer) == [reason]
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        real_servicer.controller_events.start.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2])
+    async def test_failed_restore_after_start_error_is_not_repeated(self, real_servicer):
+        """game_start_error, then the lobby restore itself raises: the restore runs once and the
+        event says `start_failed`, not `coordinator_unreachable`."""
+        real_servicer.audio.start_lobby_music.side_effect = RuntimeError("audio broke")
+        stub = _GatedStartStub("game_start_error")
+        stub.release.set()
+
+        await self._start(real_servicer, stub)
+
+        real_servicer.controller_events.start.assert_awaited_once()
+        assert self._cancel_reasons(real_servicer) == ["start_failed"]
+
+
+class TestStartedGameStreamLossPublishesNoCancel:
+    """UC-010 A3 (#2379): a game that started and then lost its coordinator is not a failed start."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1])
+    async def test_reconnects_exhausted_after_game_start_publish_no_cancel(self, real_servicer):
+        stub = _ReconnectStub(state=0, game_id="g1", failed_reconnects=3)
+
+        await TestReconnectChecksFollowedGame._run(real_servicer, stub)
+
+        assert len(stub.requests) == 4  # the start plus three reconnects, all failed
+        assert not [e for e, _d in _published(real_servicer) if e == "game_start_cancelled"]
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+
+
+class TestStopMenuDuringRestoreOrPrep:
+    """UC-010 A11 step 3 (#2379): a StopMenu during the lobby restore or the start preparation sticks."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11", steps=[3])
+    async def test_stop_during_restore_gets_no_idle_monitor(self, real_servicer):
+        """Reviewer probe: StopMenu inside the restore's button-monitor step leaves the menu STOPPED."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        stub = _GatedStartStub("game_start")
+        with patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", stub):
+            await _ready_up(real_servicer, "s1", "s2")
+            await asyncio.wait_for(stub.started.wait(), timeout=5)
+
+            async def stop_inside_restore(*_args, **_kwargs):
+                response = await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+                assert response.success is True
+
+            real_servicer.controller_events.start.side_effect = stop_inside_restore
+            real_servicer.idle_monitor.start.reset_mock()
+            stub.release.set()
+            await asyncio.wait_for(_await_lifecycle(real_servicer), timeout=5)
+
+        real_servicer.controller_events.start.assert_awaited_once()
+        assert real_servicer.state == menu_pb2.MenuState.STOPPED
+        real_servicer.idle_monitor.start.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A11", steps=[3])
+    async def test_stop_during_prep_aborts_start(self, real_servicer):
+        """StopMenu while the lobby music stops for the start: no game is requested, the menu stays
+        STOPPED and gets its button stream back without the idle monitor."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1", "s2")
+        stub = _FailingStartStub(RuntimeError("must not be called"))
+        stops = []
+
+        async def stop_during_prep(*_args, **_kwargs):
+            if not stops:
+                stops.append(await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock()))
+
+        real_servicer.audio.stop_lobby_music.side_effect = stop_during_prep
+        real_servicer.idle_monitor.start.reset_mock()
+        real_servicer.controller_events.start.reset_mock()
+        with patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", stub):
+            await _ready_up(real_servicer, "s1", "s2")
+            await asyncio.wait_for(_await_lifecycle(real_servicer), timeout=5)
+
+        assert [r.success for r in stops] == [True]
+        assert stub.requests == []
+        assert real_servicer.state == menu_pb2.MenuState.STOPPED
+        real_servicer.controller_events.start.assert_awaited_once()
+        real_servicer.idle_monitor.start.assert_not_called()
+        assert not [e for e, _d in _published(real_servicer) if e == "game_start_cancelled"]

@@ -86,6 +86,8 @@ class MenuServicer(GameLifecycleMixin, menu_pb2_grpc.MenuServiceServicer):
         self._game_lifecycle_task = None
         # True while the lifecycle task restores the lobby after a game (UC-010 A8 lobby-restart window).
         self._lobby_restarting = False
+        # Set when a lobby restore begins; a failed start never restores twice (UC-010 A3, #2379).
+        self._lobby_restore_started = False
         # game_id of the game the lifecycle follows once its start is confirmed; None before (UC-010 BR-009).
         self._followed_game_id: str | None = None
 

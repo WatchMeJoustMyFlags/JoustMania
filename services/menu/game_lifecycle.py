@@ -11,6 +11,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+import grpc
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
@@ -53,6 +54,22 @@ async def _bounded_restore_step(step: str, run) -> None:
         span.set_attribute("menu.restore.deadline_seconds", bound)
         span.add_event("restore_step_timeout", {"menu.restore.step": step, "menu.restore.deadline_seconds": bound})
         span.set_status(trace.Status(trace.StatusCode.ERROR, f"lobby restore step '{step}' timed out after {bound}s"))
+
+
+_UNREACHABLE_STATUS_CODES = (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED)
+
+
+def _start_failure_reason(error: Exception) -> str:
+    """The `game_start_cancelled` reason for a start that failed before the first event (UC-010 A3).
+
+    `coordinator_unreachable` only when the coordinator could not be reached (gRPC UNAVAILABLE or
+    DEADLINE_EXCEEDED, a connection error or a timeout); any other failure is `start_failed`.
+    """
+    if isinstance(error, grpc.RpcError) and hasattr(error, "code"):
+        return "coordinator_unreachable" if error.code() in _UNREACHABLE_STATUS_CODES else "start_failed"
+    if isinstance(error, (ConnectionError, TimeoutError)):
+        return "coordinator_unreachable"
+    return "start_failed"
 
 
 @dataclass
@@ -200,7 +217,8 @@ class GameLifecycleMixin:
                 await self.state_manager.reset()
                 return
 
-            await self._prepare_game_start()
+            if not await self._prepare_game_start():
+                return
 
             # _prepare_game_start() has already set state=GAME_STARTING and torn
             # down the lobby (button monitor + lobby music). If anything in the
@@ -233,12 +251,24 @@ class GameLifecycleMixin:
                 logger.error(f"Game start failed during preparation: {e}", exc_info=True)
                 span.record_exception(e)
                 # UC-010 A11 (#2379): a menu stopped meanwhile still needs its button stream back.
-                if self.state in (menu_pb2.MenuState.GAME_STARTING, menu_pb2.MenuState.STOPPED):
+                # A restore that already ran (and failed) is not repeated (UC-010 A3).
+                if not self._lobby_restore_started and self.state in (
+                    menu_pb2.MenuState.GAME_STARTING,
+                    menu_pb2.MenuState.STOPPED,
+                ):
                     await self._restart_lobby()
                 raise
 
-    async def _prepare_game_start(self) -> None:
-        """Stop lobby services in preparation for game start."""
+    async def _prepare_game_start(self) -> bool:
+        """Stop lobby services in preparation for game start.
+
+        Returns False when the menu was stopped meanwhile (UC-010 A11 step 3, #2379): the start is
+        aborted, the lobby is restored with the menu left STOPPED, and no game is requested.
+        """
+        self._lobby_restore_started = False
+        # A start on a menu that was already STOPPED is #2449 (out of scope here); only a StopMenu
+        # that lands during the awaits below aborts the start.
+        stopped_before = self.state == menu_pb2.MenuState.STOPPED
         self.idle_monitor.stop()
 
         with tracer.start_as_current_span("stop_lobby_music"):
@@ -250,7 +280,14 @@ class GameLifecycleMixin:
         metrics.player_ready.clear()
         logger.info("Button monitor and lobby music stopped for game start")
 
+        if not stopped_before and self.state == menu_pb2.MenuState.STOPPED:
+            # StopMenu landed during the awaits above: GAME_STARTING must not overwrite it.
+            logger.info("Menu stopped during game start preparation; start aborted")
+            await self._restart_lobby()
+            return False
+
         self.state = menu_pb2.MenuState.GAME_STARTING
+        return True
 
     def _build_trace_metadata(self) -> list[tuple[str, str]]:
         """Build gRPC metadata with trace context propagation."""
@@ -311,12 +348,14 @@ class GameLifecycleMixin:
         except Exception as e:
             logger.error(f"Game stream error: {e}", exc_info=True)
             span.record_exception(e)
-            await self._restart_lobby()
+            # A restore that already ran (and raised) is not repeated (UC-010 A3).
+            if not self._lobby_restore_started:
+                await self._restart_lobby()
             if self._followed_game_id is None:
-                # UC-010 A3 (#2379): the start stream failed before the coordinator answered.
+                # UC-010 A3 (#2379): the start failed before the coordinator's first event.
                 await self.event_publisher.publish(
                     "game_start_cancelled",
-                    {"game_name": request.start_config.game_name, "reason": "coordinator_unreachable"},
+                    {"game_name": request.start_config.game_name, "reason": _start_failure_reason(e)},
                 )
         finally:
             self._cancel_stream(stream)
@@ -494,9 +533,9 @@ class GameLifecycleMixin:
 
         # UC-010 A8: a start refused in this window beeps (the players are back in the lobby).
         self._lobby_restarting = True
-        menu_stopped = self.state == menu_pb2.MenuState.STOPPED
+        self._lobby_restore_started = True
         try:
-            if not menu_stopped:
+            if self.state != menu_pb2.MenuState.STOPPED:
                 self.state = menu_pb2.MenuState.RUNNING
 
             # Start button monitor with fresh trace context (not chained to game trace)
@@ -511,7 +550,9 @@ class GameLifecycleMixin:
             with tracer.start_as_current_span("restart_lobby_music"):
                 await _bounded_restore_step("lobby music", self.audio.start_lobby_music)
 
-            # Restart idle monitor with fresh timer (StopMenu stopped it for a stopped menu)
+            # Restart idle monitor with fresh timer. The state is read here, not at the start: a
+            # StopMenu during the restore steps above must stick too (UC-010 A11 step 3, BR-010).
+            menu_stopped = self.state == menu_pb2.MenuState.STOPPED
             if not menu_stopped:
                 self.idle_monitor.start()
         finally:
