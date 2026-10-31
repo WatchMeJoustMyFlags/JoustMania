@@ -348,15 +348,18 @@ class GameLifecycleMixin:
         except Exception as e:
             logger.error(f"Game stream error: {e}", exc_info=True)
             span.record_exception(e)
-            # A restore that already ran (and raised) is not repeated (UC-010 A3).
-            if not self._lobby_restore_started:
-                await self._restart_lobby()
-            if self._followed_game_id is None:
-                # UC-010 A3 (#2379): the start failed before the coordinator's first event.
-                await self.event_publisher.publish(
-                    "game_start_cancelled",
-                    {"game_name": request.start_config.game_name, "reason": _start_failure_reason(e)},
-                )
+            try:
+                # A restore that already ran (and raised) is not repeated (UC-010 A3).
+                if not self._lobby_restore_started:
+                    await self._restart_lobby()
+            finally:
+                if self._followed_game_id is None:
+                    # UC-010 A3 (#2379): the start failed before the coordinator's first event; the
+                    # cancel goes out even when the restore raises (the exception still propagates).
+                    await self.event_publisher.publish(
+                        "game_start_cancelled",
+                        {"game_name": request.start_config.game_name, "reason": _start_failure_reason(e)},
+                    )
         finally:
             self._cancel_stream(stream)
 

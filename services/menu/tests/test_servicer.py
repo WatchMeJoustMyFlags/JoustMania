@@ -3570,6 +3570,27 @@ class TestStartFailureReason:
         real_servicer.controller_events.start.assert_awaited_once()
         assert self._cancel_reasons(real_servicer) == ["start_failed"]
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A3", steps=[1, 2])
+    async def test_cancel_published_when_restore_raises(self, real_servicer):
+        """Unreachable coordinator, then the lobby restore raises (and a StopMenu lands in it): the
+        cancel still goes out, the restore runs once (no second restore from the lifecycle's own
+        recovery) and the error propagates."""
+
+        async def stop_then_raise(*_args, **_kwargs):
+            await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+            raise RuntimeError("audio broke")
+
+        real_servicer.audio.start_lobby_music.side_effect = stop_then_raise
+
+        with pytest.raises(RuntimeError, match="audio broke"):
+            await self._start(real_servicer, _FailingStartStub(ConnectionError("refused")))
+
+        real_servicer.controller_events.start.assert_awaited_once()
+        real_servicer.audio.start_lobby_music.assert_awaited_once()
+        assert self._cancel_reasons(real_servicer) == ["coordinator_unreachable"]
+        assert real_servicer.state == menu_pb2.MenuState.STOPPED
+
 
 class TestStartedGameStreamLossPublishesNoCancel:
     """UC-010 A3 (#2379): a game that started and then lost its coordinator is not a failed start."""
