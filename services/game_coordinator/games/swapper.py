@@ -311,6 +311,14 @@ class SwapperGame(TeamsGameBase):
         if not self._swap_cut_short():
             await self._play_sound(Sound.SFX_BEEP, priority=1)
 
+    def _is_mid_swap(self, serial: str) -> bool:
+        """A player not alive and not eliminated is between the swap's start and its repaint (#2484).
+
+        Swapper never kills a player for good: ``alive`` is False only across the swap
+        (``_swap_pause``) or for a player who left (``_eliminated``).
+        """
+        return serial not in self._eliminated and not self.players[serial].alive
+
     def _swap_cut_short(self) -> bool:
         """True once the win is latched or the game stopped: a swap in flight ends quietly."""
         return self._win_latched or not self.running

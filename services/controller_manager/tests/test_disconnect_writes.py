@@ -394,3 +394,27 @@ class TestUC002D3DeadPlayerStaysOff:
 
 class _Span:
     def set_attribute(self, key, value): ...
+
+
+# --- #2484: a silent drop cancels the effect without a write-back -----------------------
+
+
+class TestUC002SilentDropEffectRestore:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A1", br=["BR-007", "BR-008"])
+    async def test_a_cancelled_effect_does_not_write_the_game_colour_back_on_a_silent_drop(self):
+        """Silent drop: clear_led_output, the drop, then the effect's finally. No colour reaches the backend after."""
+        backend = autospec_backend()
+        tracked = {SERIAL: {}}
+        feedback = FeedbackManager(backend=backend, tracked_controllers=tracked)
+        feedback.base_colors[SERIAL] = (0, 255, 0)
+        await feedback.play_effect_with_restore(SERIAL, "pulse", (255, 0, 0), 10_000, 5, (0, 255, 0))
+        await asyncio.sleep(0.05)
+
+        backend.clear_led_output(SERIAL)
+        del tracked[SERIAL]  # DiscoveryLoop._drop_controller
+        feedback.clear_controller(SERIAL)
+        backend.set_led_color.reset_mock()
+        await asyncio.sleep(0.05)  # the cancelled effect's finally runs
+
+        backend.set_led_color.assert_not_called()

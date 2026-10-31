@@ -1422,6 +1422,13 @@ class BaseGameMode(ShieldMixin, ABC):
         await self._resend_shield_layers()
         await self._resend_dead_player_state()
 
+    def _is_mid_swap(self, serial: str) -> bool:  # noqa: ARG002
+        """True for a player whose ``alive`` is False only while a swap repaints it (Swapper, #2484).
+
+        Such a player is alive in the game: a reopened stream sends it no ``SHIELD`` 0.
+        """
+        return False
+
     async def _resend_dead_player_state(self) -> None:
         """End a dead player's feedback on a (re)created stream (UC-030 BR-006, #2471).
 
@@ -1432,7 +1439,7 @@ class BaseGameMode(ShieldMixin, ABC):
         from proto import controller_manager_pb2
 
         for serial, player in self.players.items():
-            if player.alive:
+            if player.alive or self._is_mid_swap(serial):
                 continue
             if serial in self._undelivered_deaths:
                 effect, duration_ms = controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH, 0
