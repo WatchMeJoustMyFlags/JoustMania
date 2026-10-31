@@ -27,12 +27,10 @@ def _make_adapter(adapter_type="mock", serials=None):
     """Create a mock ControllerIOAdapter."""
     adapter = autospec_adapter()
     adapter.adapter_type = adapter_type
-    adapter.discover = MagicMock(return_value=serials or [])
-    adapter.open = MagicMock(return_value=True)
-    adapter.poll = MagicMock(return_value=None)
-    adapter.set_output = MagicMock(return_value=True)
-    adapter.close = MagicMock()
-    adapter.close_all = MagicMock()
+    adapter.discover.return_value = serials or []
+    adapter.open.return_value = True
+    adapter.poll.return_value = None
+    adapter.set_output.return_value = True
     return adapter
 
 
@@ -220,7 +218,7 @@ class TestLedFailureTracking:
     def test_no_failure_on_success(self):
         """Successful set_output() should NOT increment failure counter."""
         adapter = _make_adapter()
-        adapter.set_output = MagicMock(return_value=True)
+        adapter.set_output.return_value = True
         mux = MultiplexerBackend(adapters=[adapter])
 
         serial = "S1"

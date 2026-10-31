@@ -25,7 +25,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
 from services.controller_manager.tests.backend_doubles import (
-    autospec_backend,  # noqa: E402
+    autospec_backend,
     autospec_button_detector,
     autospec_feedback_manager,
     autospec_monitoring,
