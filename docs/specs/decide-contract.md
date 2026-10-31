@@ -857,12 +857,12 @@ as a prior and not a claim; the value is in the table):
 
 | Rule | Prediction |
 |---|---|
-| R1 slow music | none: the tempo effect on eliminations is confounded with the threshold change (the death threshold slides from SLOW_MAX to FAST_MAX with the tempo, so slowing makes the same motion more deadly); see the follow-up |
+| R1 slow music | none: the tempo effect on eliminations is confounded with the threshold change (the death threshold slides from SLOW_MAX to FAST_MAX with the tempo, so slowing makes the same motion more deadly); see #2487 |
 | R2 calming cue | `no_elimination` 15, P 0.55 |
 | R3 handicap outlier | `closeness_rises` 15, P 0.55 |
 | R4 catch-up shield | `survives` 15, P 0.7 |
 | R4d danger shield | `survives` 10, P 0.7 |
-| R5 speed up | `elimination` 30, P 0.6 |
+| R5 speed up | `elimination` 30, P 0.6 (kept as a prior, but the tempo-threshold confound applies here too: a faster tempo raises the death threshold, so eliminations can get rarer; scored by lift against the control, see #2487) |
 | R6 eliminate least-moving | `game_ends` 60, P 0.5, only when at least 3 players stay alive after the action, otherwise none (trivially true) |
 | R7 end game | none (the action is the outcome) |
 | R8 statue rumble | `activity_rises` target 10, P 0.6 |
@@ -877,7 +877,7 @@ apart. Every lever default is scored by lift against the control:
 | `grant_shield`, `toughness_boost` (with a target) | `survives` 15 |
 | `adjust_player_sensitivity` with a value < 1 (easing), with a target | `survives` 15 |
 | `set_player_handicap` with a value > 1 (help; `rein_in` < 1 gets none), with a target | `survives` 15 |
-| `adjust_music_tempo` (either direction) | none: the tempo effect on eliminations is confounded with the threshold change, and `activity` (intensity / threshold) moves with the threshold too; see the follow-up |
+| `adjust_music_tempo` (either direction) | none: the tempo effect on eliminations is confounded with the threshold change, and `activity` (intensity / threshold) moves with the threshold too; see #2487 |
 | `send_controller_effect` | `activity_rises` target 10 |
 | `adjust_global_difficulty` < 1; `adjust_global_sensitivity` > 2; `set_pacing_profile` `calm` | `no_elimination` 15 (sensitivity is read against the middle level 2, the context has no current level) |
 | `adjust_global_difficulty` > 1; `adjust_global_sensitivity` < 2; `set_pacing_profile` `frantic` | `elimination` 30 |
