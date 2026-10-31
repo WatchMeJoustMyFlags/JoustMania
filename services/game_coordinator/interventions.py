@@ -321,9 +321,9 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         weight=WEIGHT_MEDIUM,
         edge_triggered=False,
         player_targeted=True,
-        # STRING value "warn" (default) | "tighten" | "tighten:<seconds>:<factor>"
-        #: a graduated, RECOVERABLE alternative to the
-        # permanent eliminate_player. "warn" fires the visible warning feedback
+        # STRING value "warn" (default) | "tighten" | "tighten:<seconds>:<factor>":
+        # a graduated, RECOVERABLE alternative to the permanent eliminate_player.
+        # "warn" fires the visible warning feedback
         # (no threshold change). "tighten" applies a short EXPIRING handicap
         # REDUCTION (factor < 1.0, the MIRROR of toughness_boost) making the player
         # temporarily EASIER to die — still clamped [0.5, 2.0], never instant-
