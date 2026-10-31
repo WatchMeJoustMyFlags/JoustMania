@@ -2699,13 +2699,13 @@ class TestRunGameLifecycleMidStartFailure:
         return s
 
     async def _run(self, servicer):
-        """Call the real _run_game_lifecycle bound to the fake servicer."""
+        """Call the real lifecycle steps (_run_game_lifecycle_steps) bound to the fake servicer."""
         from unittest.mock import patch
 
         from services.menu.servicer import MenuServicer
 
         with patch("services.menu.game_lifecycle.metrics"):
-            await MenuServicer._run_game_lifecycle(servicer, "s1", source="web")
+            await MenuServicer._run_game_lifecycle_steps(servicer, "s1", source="web")
 
     @pytest.mark.asyncio
     async def test_build_config_exception_restores_lobby(self, servicer):
@@ -2781,7 +2781,7 @@ class TestRunGameLifecycleMidStartFailure:
 class TestRunGameLifecycleRosterAbort:
     """UC-010 A3: a start aborted for a short roster publishes game_start_cancelled.
 
-    Calls the real MenuServicer._run_game_lifecycle bound to the fake servicer.
+    Calls the real MenuServicer._run_game_lifecycle_steps bound to the fake servicer.
     """
 
     @pytest.fixture
@@ -2797,7 +2797,7 @@ class TestRunGameLifecycleRosterAbort:
         from services.menu.servicer import MenuServicer
 
         with patch("services.menu.game_lifecycle.metrics"), patch("services.menu.servicer.asyncio.sleep", AsyncMock()):
-            await MenuServicer._run_game_lifecycle(servicer, "s1", source="controller", controllers=controllers)
+            await MenuServicer._run_game_lifecycle_steps(servicer, "s1", source="controller", controllers=controllers)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A3")

@@ -130,6 +130,8 @@ class GameLifecycleMixin:
         if self.state != menu_pb2.MenuState.STOPPED:
             return False
         self.state = menu_pb2.MenuState.RUNNING if self._lobby_restarting else menu_pb2.MenuState.GAME_STARTING
+        # The lifecycle's end settles a GAME_STARTING this leaves behind (_run_game_lifecycle).
+        self._start_menu_deferred = True
         return True
 
     async def _start_game(
@@ -189,10 +191,11 @@ class GameLifecycleMixin:
         """Run the game lifecycle (`_run_game_lifecycle_steps`) and settle the menu state afterwards.
 
         UC-010 A12 (#2449): however the lifecycle ends (game end, failed start, roster abort), no game
-        runs any more, so a GAME_STARTING left behind (a StartMenu that undid a StopMenu after the last
-        state change) becomes RUNNING with the idle monitor. A cancel (reset_menu, shutdown) is left to
-        its canceller.
+        runs any more, so a GAME_STARTING left behind by a StartMenu that undid a StopMenu after the
+        last state change becomes RUNNING with the idle monitor. A cancel (reset_menu, shutdown) is left
+        to its canceller.
         """
+        self._start_menu_deferred = False
         cancelled = False
         try:
             await self._run_game_lifecycle_steps(
@@ -202,7 +205,7 @@ class GameLifecycleMixin:
             cancelled = True
             raise
         finally:
-            if not cancelled and self.state == menu_pb2.MenuState.GAME_STARTING:
+            if not cancelled and self._start_menu_deferred and self.state == menu_pb2.MenuState.GAME_STARTING:
                 logger.info("Game lifecycle ended with the menu in GAME_STARTING; menu set RUNNING")
                 self.state = menu_pb2.MenuState.RUNNING
                 self.idle_monitor.start()
