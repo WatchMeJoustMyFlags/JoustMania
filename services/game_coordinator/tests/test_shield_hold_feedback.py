@@ -523,7 +523,7 @@ class TestUC040HoldCueLatch:
             ("shield.empty_pulse_ms", 10, "empty_pulse_ms", 100),
             ("shield.ending_rumble_seconds", 2.25, "ending_lead_ms", 2250),
             ("shield.charge_rumble_intensity", -5, "rumble_intensity", 0),
-            ("shield.hold_rumble_max_intensity", 999, "hold_rumble_max_intensity", 255),
+            ("shield.hold_rumble_max_intensity", 999, "hold_rumble_max_intensity", 230),
             ("shield.hold_rumble_max_intensity", "loud", "hold_rumble_max_intensity", 200),
             ("shield.hold_led_floor_percent", 0, "hold_led_floor_pct", 10),
             ("shield.hold_led_floor_percent", float("nan"), "hold_led_floor_pct", 20),

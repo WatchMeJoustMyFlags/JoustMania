@@ -19,6 +19,7 @@ from services.controller_manager import feedback_manager as fm_module
 from services.controller_manager import shield_effects as shield_module
 from services.controller_manager.effects_base import (
     ChargeCues,
+    HoldCues,
     hold_active_frame,
     hold_fill,
     hold_ramp_intensity,
@@ -158,6 +159,8 @@ class TestUC040HoldRampPure:
         assert hold_ramp_intensity(0.0, 70, 200) == 200
         assert hold_ramp_intensity(0.0, 70, 70) == 70
         assert hold_ramp_intensity(0.0, 70, 0) == 70
+        assert hold_ramp_intensity(0.0, 0, 200) == 0  # hold rumble off stays silent
+        assert not HoldCues(hold_rumble=0, ramp_max=200).ramp
         levels = [hold_ramp_intensity(f / 20, 70, 200) for f in range(20, -1, -1)]
         assert levels == sorted(levels)
 
@@ -180,7 +183,7 @@ class TestUC040HoldRampPure:
 
     @pytest.mark.uc("UC-040", br=["BR-026"])
     @pytest.mark.parametrize(
-        ("raw", "want"), [(999, 255), (-1, 200), ("loud", 200), (float("nan"), 200), (0, 0), (180, 180)]
+        ("raw", "want"), [(999, 230), (255, 230), (-1, 0), ("loud", 200), (float("nan"), 200), (0, 0), (180, 180)]
     )
     def test_ramp_top_is_validated(self, raw, want):
         assert resolve_hold_rumble_max_intensity(raw) == want
@@ -290,6 +293,47 @@ class TestUC040HoldRampRenderer:
         stop_at = backend.rumble[-1][0]
         assert START + 2.0 - 1e-6 <= stop_at <= START + 2.05 + 1e-6
         assert 255 not in levels  # no ending or empty pulse
+        await _finish(manager, clock)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", br=["BR-026"])
+    async def test_hold_rumble_off_stays_silent_and_keeps_the_flat_cues(self, manager, backend, clock):
+        """UC-040 BR-026 (#2463 review): hold rumble 0 means no hold rumble; the ramp top changes nothing."""
+        off = _ramp_cues(hold_rumble_intensity=0)
+        await _effect(manager, HOLD, 2000, _state(energy=2000, activation=4000, cues=off))
+        assert manager._hold_cues[SERIAL].ramp is False
+        assert SERIAL in manager._hold_ending_tasks  # flat cues: the ending pulse as before #2463
+        manager._hold_ending_tasks.pop(SERIAL).cancel()
+        for _ in range(400):
+            await asyncio.sleep(0)
+            if clock.time() > START + 2.5:
+                break
+
+        assert _levels(backend) == []  # no background level and no ramp write, mid-ramp re-send included
+        await _finish(manager, clock)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    async def test_no_ramp_write_after_shield_hold_0_while_the_energy_layer_renders(self, manager, backend, clock):
+        """UC-040 A39 (#2463 review probe): a release ends the ramp for good while the energy layer still renders."""
+        await _effect(manager, ENERGY, 5000, _state(energy=3000, activation=0))
+        await _effect(manager, HOLD, 3000, _state(energy=3000, activation=3000))
+        for _ in range(400):
+            await asyncio.sleep(0)
+            if clock.time() >= START + 1.0:
+                break
+        assert max(_levels(backend)) > 70  # the ramp ran
+        await _effect(manager, HOLD, 0)
+        written = len(backend.rumble)
+        for _ in range(400):
+            await asyncio.sleep(0)
+            if clock.time() >= START + 2.0:
+                break
+
+        after = _levels(backend)[written:]
+        assert all(level == 0 for level in after), after
+        assert SERIAL not in manager._background_rumble
+        assert manager.shield_active(SERIAL)  # the energy layer still renders
         await _finish(manager, clock)
 
     @pytest.mark.asyncio

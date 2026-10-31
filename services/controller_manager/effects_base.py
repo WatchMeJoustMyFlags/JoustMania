@@ -91,6 +91,7 @@ EMPTY_PULSE_MS_RANGE = (100, 800)
 # Hold rumble ramp and LED dimming (#2463, UC-040 BR-026): the rumble rises from hold_rumble to
 # the ramp top as the energy drains; at or below hold_rumble the rumble is flat (the cues before #2463).
 DEFAULT_HOLD_RUMBLE_MAX_INTENSITY = 200
+HOLD_RUMBLE_RAMP_TOP_MAX = 230  # below the death rumble (255): the end of a ramp never feels like a death
 DEFAULT_HOLD_LED_FLOOR_PCT = 20
 HOLD_LED_FLOOR_PCT_RANGE = (10, 100)  # never below 10 %: an LED that looks off means death
 # The ramp writes the motor only on a step this big and this far apart (HID budget, #2462).
@@ -164,8 +165,11 @@ class HoldCues:
 
     @property
     def ramp(self) -> bool:
-        """Ramp mode (#2463): the rumble rises to ``ramp_max``; no ending and no empty pulse."""
-        return self.ramp_max > self.hold_rumble
+        """Ramp mode (#2463): the rumble rises to ``ramp_max``; no ending and no empty pulse.
+
+        A hold rumble of 0 (``off``, "no hold rumble") stays silent and keeps the flat cues.
+        """
+        return self.hold_rumble > 0 and self.ramp_max > self.hold_rumble
 
     @property
     def led_floor(self) -> float:
@@ -189,11 +193,11 @@ def resolve_empty_pulse_ms(value: object) -> int:
 
 
 def resolve_hold_rumble_max_intensity(value: object) -> int:
-    """Validate ``shield.hold_rumble_max_intensity`` (flags.md §4): bad -> 200, clamped to 0..255."""
+    """Validate ``shield.hold_rumble_max_intensity`` (flags.md §4): bad -> 200, clamped to 0..230."""
     level = _finite_number(value)
-    if level is None or level < 0:
+    if level is None:
         return DEFAULT_HOLD_RUMBLE_MAX_INTENSITY
-    return int(min(255.0, level))
+    return int(max(0.0, min(float(HOLD_RUMBLE_RAMP_TOP_MAX), level)))  # as the coordinator's resolve_hold_value
 
 
 def resolve_hold_led_floor_pct(value: object) -> int:
@@ -215,9 +219,9 @@ def hold_ramp_intensity(fill: float, base: int, top: int) -> int:
     """Rumble of a held activation with ``fill`` of its energy left (#2463, UC-040 BR-026).
 
     ``base`` at a full activation, ``top`` when the energy runs out; flat ``base`` when
-    ``top`` is not above it.
+    ``top`` is not above it, or when ``base`` is 0 (the hold rumble is off, so it stays silent).
     """
-    if top <= base:
+    if base <= 0 or top <= base:
         return base
     fill = max(0.0, min(1.0, fill))
     return int(round(base + (top - base) * (1.0 - fill)))

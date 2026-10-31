@@ -185,7 +185,7 @@
       "variants": {
         "off": 0,
         "default": 200,
-        "strong": 255
+        "strong": 230
       },
       "defaultVariant": "default"
     },

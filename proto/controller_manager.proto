@@ -288,7 +288,7 @@ message ShieldCueParams {
   optional int32 ending_lead_ms = 3;         // shield.ending_rumble_seconds
   optional int32 hold_rumble_intensity = 4;  // shield.hold_rumble_intensity (background while active)
   optional int32 empty_pulse_ms = 5;         // shield.empty_pulse_ms (flat mode only)
-  optional int32 hold_rumble_max_intensity = 6;  // shield.hold_rumble_max_intensity (#2463; <= field 4 = flat)
+  optional int32 hold_rumble_max_intensity = 6;  // shield.hold_rumble_max_intensity (#2463; <= field 4 or field 4 = 0: flat; <= 230)
   optional int32 hold_led_floor_pct = 7;     // shield.hold_led_floor_percent (#2463; 100 = no dimming)
 }
 
