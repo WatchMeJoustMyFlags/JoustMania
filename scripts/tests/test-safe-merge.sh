@@ -64,7 +64,11 @@ case "$1 $2" in
     for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
     [[ -f "$STUB_DIR/statuses.json" ]] || exit 1
     jq -r "$jqexpr" "$STUB_DIR/statuses.json" ;;
-  "variable get") [[ -f "$STUB_DIR/approvers-var" ]] || exit 1; cat "$STUB_DIR/approvers-var" ;;
+  "variable get")
+    if [[ -f "$STUB_DIR/approvers-var" ]]; then cat "$STUB_DIR/approvers-var"; exit 0; fi
+    if [[ -f "$STUB_DIR/var-error" ]]; then echo "HTTP 403: Resource not accessible" >&2
+    else echo "variable REVIEW_APPROVERS was not found" >&2; fi
+    exit 1 ;;
   "pr merge") exit "$(cat "$STUB_DIR/merge-rc" 2>/dev/null || echo 0)" ;;
   "run view") cat "$STUB_DIR/log.txt" 2>/dev/null ;;
   "run rerun") echo x >>"$STUB_DIR/reruns"; [[ -f "$STUB_DIR/view-after-rerun.json" ]] && mv "$STUB_DIR/view-after-rerun.json" "$STUB_DIR/view.json"; exit 0 ;;
@@ -652,10 +656,14 @@ reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""; rst
 echo "alice,bob" >"${STUB_DIR}/approvers-var"
 OUT="$(env -u REVIEW_APPROVERS timeout 20 "${HELPER}" 42 "$HEAD" --rearm 2>/dev/null)" && RC=0 || RC=$?
 [[ $RC -eq 8 ]] || fail "repo-variable approver: rc=$RC $OUT"
-# The repo variable cannot be read: default aepfli, with a warning on stderr.
+# The repo variable is not set: default aepfli, silently (review-gate.yml defaults the same).
 reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""; rstatuses "$(rst 2 success aepfli)"
 OUT="$(env -u REVIEW_APPROVERS timeout 20 "${HELPER}" 42 "$HEAD" --rearm 2>"${WORK}/stderr")" && RC=0 || RC=$?
-[[ $RC -eq 8 ]] && grep -q 'WARNING: cannot read the repo variable REVIEW_APPROVERS' "${WORK}/stderr" || fail "approver-variable warning: rc=$RC"
+[[ $RC -eq 8 ]] && ! grep -q 'WARNING' "${WORK}/stderr" || fail "unset approver variable: rc=$RC $(cat "${WORK}/stderr")"
+# A real read error: default aepfli, with a warning on stderr.
+reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""; rstatuses "$(rst 2 success aepfli)"; touch "${STUB_DIR}/var-error"
+OUT="$(env -u REVIEW_APPROVERS timeout 20 "${HELPER}" 42 "$HEAD" --rearm 2>"${WORK}/stderr")" && RC=0 || RC=$?
+[[ $RC -eq 8 ]] && grep -q 'WARNING: cannot read the repo variable REVIEW_APPROVERS (HTTP 403' "${WORK}/stderr" || fail "approver-variable warning: rc=$RC"
 # Statuses unreadable: fail closed. Unenforced ruleset: refused like --arm.
 reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""
 run 42 "$HEAD" --rearm

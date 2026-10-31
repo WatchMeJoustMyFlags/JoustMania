@@ -326,12 +326,22 @@ review_required() {
 
 # --rearm: is the NEWEST "Reviewed head" status on a SHA success by an approver?
 # Prints the reason when not; exit 1 also on an API error (fail closed).
+# The repo variable REVIEW_APPROVERS (what review-gate.yml reads). Not set ->
+# empty, silently (the gate then defaults to aepfli too); a real read error ->
+# empty plus a WARNING on stderr.
+repo_approvers() {
+  local out err rc=0
+  err="$(mktemp)"
+  out="$(gh variable get REVIEW_APPROVERS 2>"$err")" || rc=$?
+  if (( rc == 0 )); then echo "$out"
+  elif ! grep -qi 'not found' "$err"; then
+    echo "WARNING: cannot read the repo variable REVIEW_APPROVERS ($(head -n 1 "$err")); using the default aepfli (review-gate.yml may use another list)" >&2
+  fi
+  rm -f "$err"
+}
 approver_list() {
   local a="${REVIEW_APPROVERS:-}"
-  if [[ -z "${a//[[:space:],]/}" ]]; then
-    a="$(gh variable get REVIEW_APPROVERS 2>/dev/null)" \
-      || echo "WARNING: cannot read the repo variable REVIEW_APPROVERS; using the default aepfli (review-gate.yml may use another list)" >&2
-  fi
+  [[ -n "${a//[[:space:],]/}" ]] || a="$(repo_approvers)"
   [[ -n "${a//[[:space:],]/}" ]] || a="aepfli"
   echo "$a"
 }

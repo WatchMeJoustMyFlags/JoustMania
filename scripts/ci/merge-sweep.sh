@@ -91,14 +91,26 @@ split_list() { local -a l; IFS=$' \t\n,' read -r -a l <<<"$1"; printf '%s\n' "${
 AUTHORS="${SWEEP_AUTHORS:-}"
 [[ -n "${AUTHORS//[[:space:],]/}" ]] || AUTHORS="aepfli"
 APPROVERS="${REVIEW_APPROVERS:-}"
-if [[ -z "${APPROVERS//[[:space:],]/}" ]]; then
-  APPROVERS="$(gh variable get REVIEW_APPROVERS 2>/dev/null)" \
-    || echo "WARNING: cannot read the repo variable REVIEW_APPROVERS; using the default aepfli (review-gate.yml may use another list)" >&2
-fi
+# The repo variable REVIEW_APPROVERS (what review-gate.yml reads). Not set ->
+# empty, silently (the gate then defaults to aepfli too); a real read error ->
+# empty plus a WARNING on stderr.
+repo_approvers() {
+  local out err rc=0
+  err="$(mktemp)"
+  out="$(gh variable get REVIEW_APPROVERS 2>"$err")" || rc=$?
+  if (( rc == 0 )); then echo "$out"
+  elif ! grep -qi 'not found' "$err"; then
+    echo "WARNING: cannot read the repo variable REVIEW_APPROVERS ($(head -n 1 "$err")); using the default aepfli (review-gate.yml may use another list)" >&2
+  fi
+  rm -f "$err"
+}
+[[ -n "${APPROVERS//[[:space:],]/}" ]] || APPROVERS="$(repo_approvers)"
 [[ -n "${APPROVERS//[[:space:],]/}" ]] || APPROVERS="aepfli"
 # Marker comments count only when written by the sweep's own identity or an
 # approver: the repo is public and anyone can comment a forged marker.
+# Without it the sweep would ignore its own once-only markers (fail open): stop.
 ME="$(gh api user --jq .login 2>/dev/null || true)"
+[[ -n "$ME" ]] || { echo "SWEEP ERROR: cannot read the sweep's own login (gh api user); nothing done"; exit 1; }
 TRUSTED="$APPROVERS${ME:+,$ME}"
 
 failures=0 attention=0 lines=0
@@ -232,15 +244,21 @@ sweep_open() {  # one open-PR JSON object
     fi
     # Marker first: the next pass reads this dequeue as reason `manual` and
     # must still know it was ours.
-    if ! gh pr comment "$n" --body "Merge sweep: dequeued at ${short}: the queue entry was UNMERGEABLE (a merge-group check failed).
-$dq_marker" >/dev/null 2>&1; then
+    local dq_id
+    dq_id="$(gh api "repos/{owner}/{repo}/issues/$n/comments" -f body="Merge sweep: dequeued at ${short}: the queue entry was UNMERGEABLE (a merge-group check failed).
+$dq_marker" --jq .id 2>/dev/null)"
+    if [[ ! "$dq_id" =~ ^[0-9]+$ ]]; then
       failures=$((failures + 1))
       emit "$n" "DEQUEUE FAILED" "queue entry UNMERGEABLE (head $short), could not post the dequeue marker; not dequeued" "re-check later"
       return 0
     fi
     if ! dequeue "$id"; then
       failures=$((failures + 1))
-      emit "$n" "DEQUEUE FAILED" "queue entry UNMERGEABLE (head $short), dequeuePullRequest failed" "re-check later"
+      # Withdraw the marker: left behind, it would make a later hand dequeue read as ours.
+      local left="dequeue marker removed"
+      gh api -X DELETE "repos/{owner}/{repo}/issues/comments/$dq_id" >/dev/null 2>&1 \
+        || left="dequeue marker comment $dq_id NOT removed (delete failed): delete it by hand"
+      emit "$n" "DEQUEUE FAILED" "queue entry UNMERGEABLE (head $short), dequeuePullRequest failed; $left" "re-check later"
       return 0
     fi
     echo "#$n dequeued (was UNMERGEABLE, head $short)" >&2

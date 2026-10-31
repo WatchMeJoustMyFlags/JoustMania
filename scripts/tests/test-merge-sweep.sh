@@ -76,15 +76,23 @@ case "$1 $2" in
     json_or "$f" '[]' ;;
   "api repos/{owner}/{repo}/issues/"*)
     rest="${2#repos/\{owner\}/\{repo\}/issues/}"; n="${rest%%/*}"
-    if [[ "$rest" == */comments* ]]; then
+    if [[ "$rest" == */comments* && "$*" == *" body="* ]]; then   # POST a comment
+      [[ -f "$STUB_DIR/fail-comment" ]] && exit 1
+      echo 555
+    elif [[ "$rest" == */comments* ]]; then
       [[ -f "$STUB_DIR/fail-comments-$n" ]] && exit 1
       json_or "$STUB_DIR/comments-$n.json" '[]'
     else
       [[ -f "$STUB_DIR/fail-issue-$n" ]] && exit 1
       json_or "$STUB_DIR/issue-$n.json" "{\"number\":$n,\"state\":\"open\"}"
     fi ;;
-  "variable get") exit 1 ;;
-  "api user") echo sweeper ;;
+  "variable get")
+    if [[ -f "$STUB_DIR/var-error" ]]; then echo "HTTP 403: Resource not accessible" >&2
+    else echo "variable REVIEW_APPROVERS was not found" >&2; fi
+    exit 1 ;;
+  "api user") [[ -f "$STUB_DIR/fail-user" ]] && exit 1; echo sweeper ;;
+  "api -X")   # DELETE of a comment
+    [[ -f "$STUB_DIR/fail-delete" ]] && exit 1; exit 0 ;;
   "pr comment") [[ -f "$STUB_DIR/fail-comment" ]] && exit 1; exit 0 ;;
   "pr view") cat "$STUB_DIR/view.json" ;;
   "pr merge") exit 0 ;;
@@ -161,8 +169,12 @@ ok
 # 1b. dequeue fails, or its marker cannot be posted: reported, exit 1, no re-arm.
 reset; prs "$(opr 42 aepfli $H1 UNMERGEABLE)"; statuses $H1 "$(st 900 success aepfli)"; touch "${STUB_DIR}/fail-dequeue"
 run
-[[ $RC -eq 1 && "$OUT" == *"#42 DEQUEUE FAILED"* ]] || fail "dequeue failure: rc=$RC"
+[[ $RC -eq 1 && "$OUT" == *"#42 DEQUEUE FAILED"*"dequeue marker removed"* ]] || fail "dequeue failure: rc=$RC"
+calls | grep -qF 'api -X DELETE repos/{owner}/{repo}/issues/comments/555' || fail "marker not deleted after a failed dequeue"
 calls | grep -q '^safe-merge' && fail "re-armed after a failed dequeue"
+touch "${STUB_DIR}/fail-delete"; rm -f "${STUB_DIR}/calls"; run
+[[ $RC -eq 1 && "$OUT" == *"dequeue marker comment 555 NOT removed"* ]] || fail "failed marker delete not reported"
+rm -f "${STUB_DIR}/fail-delete"
 rm -f "${STUB_DIR}/fail-dequeue" "${STUB_DIR}/calls"; touch "${STUB_DIR}/fail-comment"
 run
 [[ $RC -eq 1 && "$OUT" == *"could not post the dequeue marker"* ]] || fail "dequeue marker failure: rc=$RC"
@@ -197,7 +209,17 @@ calls | grep -q '^safe-merge' && fail "stale marker re-armed"
 comments_fx 42 "$(cm sweeper 2026-10-31T12:59:58Z "<!-- merge-sweep dequeued $H1 -->")"
 rm -f "${STUB_DIR}/calls"; run
 [[ "$OUT" == *"#42 RE-ARMED"* ]] || fail "marker between removals not accepted"
-grep -q 'WARNING: cannot read the repo variable REVIEW_APPROVERS' "${WORK}/stderr" || fail "no approver-variable warning"
+grep -q 'WARNING' "${WORK}/stderr" && fail "warning for an unset repo variable"
+touch "${STUB_DIR}/var-error"; rm -f "${STUB_DIR}/calls"; run
+grep -q 'WARNING: cannot read the repo variable REVIEW_APPROVERS (HTTP 403' "${WORK}/stderr" || fail "no warning for a variable read error"
+[[ "$OUT" == *"#42 RE-ARMED"* ]] || fail "default approvers after a variable read error"
+rm -f "${STUB_DIR}/var-error"
+# Upper bound: a marker newer than the latest removal (e.g. left by a pass whose
+# dequeue failed) never covers that removal.
+comments_fx 42 "$(cm sweeper 2026-10-31T13:00:05Z "<!-- merge-sweep dequeued $H1 -->")"
+rm -f "${STUB_DIR}/calls"; run
+[[ "$OUT" == *"#42 DEQUEUED: dequeued by hand"* ]] || fail "marker after the latest removal accepted"
+calls | grep -q '^safe-merge' && fail "marker after the latest removal re-armed"
 ok
 
 # 2. Ejected (failed_checks), success by approver: re-armed once ...
@@ -413,13 +435,24 @@ ok
 
 # 13b. Without SWEEP_LOCK the lock lives in the SCRIPT's repo, whatever the cwd.
 reset; prs ""
-REPO_LOCK="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/merge-sweep.lock"
+# A throwaway repo holding a copy of the script: never the real clone's lock.
+mkdir -p "$WORK/repo/scripts/ci" "$WORK/elsewhere"
+git init -q "$WORK/repo"
+cp "$SWEEP" "$WORK/repo/scripts/ci/merge-sweep.sh"
+REPO_LOCK="$(git -C "$WORK/repo" rev-parse --path-format=absolute --git-common-dir)/merge-sweep.lock"
 exec 8>>"$REPO_LOCK"; flock -n 8
 set +e
-OUT="$(cd "$WORK" && env -u SWEEP_LOCK -u SWEEP_AUTHORS -u REVIEW_APPROVERS timeout 30 "${SWEEP}" 2>/dev/null)"; RC=$?
+OUT="$(cd "$WORK/elsewhere" && env -u SWEEP_LOCK -u SWEEP_AUTHORS -u REVIEW_APPROVERS timeout 30 "$WORK/repo/scripts/ci/merge-sweep.sh" 2>/dev/null)"; RC=$?
 set -e
 exec 8>&-
 [[ $RC -eq 1 && "$OUT" == "SWEEP BUSY: another merge sweep holds $REPO_LOCK"* ]] || fail "lock from another cwd: rc=$RC"
+ok
+
+# 14. The sweep's own login cannot be read: fail closed, nothing touched.
+reset; prs "$(opr 42 aepfli $H1 UNMERGEABLE)"; touch "${STUB_DIR}/fail-user"
+run
+[[ $RC -eq 1 && "$OUT" == "SWEEP ERROR: cannot read the sweep's own login"* ]] || fail "own login: rc=$RC"
+calls | grep -qE 'graphql|comments|^safe-merge' && fail "acted without its own login"
 ok
 
 echo "test-merge-sweep.sh: ${pass} groups passed"
