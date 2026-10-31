@@ -152,6 +152,42 @@
       },
       "defaultVariant": "default"
     },
+    "policy.group_grant.enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "policy.group_grant.real_games": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "policy.group_grant.max_per_game": {
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "default": 1,
+        "two": 2,
+        "three": 3
+      },
+      "defaultVariant": "off"
+    },
+    "policy.group_grant.max_targets": {
+      "state": "ENABLED",
+      "variants": {
+        "two": 2,
+        "three": 3,
+        "default": 4,
+        "all": 6
+      },
+      "defaultVariant": "default"
+    },
     "fitness.endurance.min_session_seconds": {
       "state": "ENABLED",
       "variants": {

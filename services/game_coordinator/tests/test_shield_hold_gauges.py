@@ -96,6 +96,8 @@ class TestUC040A37AgentView:
         assert settings.get(setting="shield.min_burst_seconds", **GAME) == 0.3
         assert settings.get(setting="shield.hold_rumble_intensity", **GAME) == 70.0
         assert settings.get(setting="shield.ending_rumble_seconds", **GAME) == 1.0
+        assert settings.get(setting="shield.hold_rumble_max_intensity", **GAME) == 200.0  # #2463
+        assert settings.get(setting="shield.hold_led_floor_percent", **GAME) == 20.0
 
     @pytest.mark.uc("UC-040", flow="A37")
     def test_a_trigger_game_publishes_its_mode_and_no_hold_value(self, clock, flags, events, gauges):  # noqa: F811

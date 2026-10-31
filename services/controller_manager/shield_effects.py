@@ -30,9 +30,13 @@ from services.controller_manager.effects_base import (
     DEFAULT_CHARGE_RUMBLE_INTENSITY,
     DEFAULT_CHARGE_RUMBLE_PULSE_MS,
     DEFAULT_EMPTY_PULSE_MS,
+    DEFAULT_HOLD_LED_FLOOR_PCT,
     DEFAULT_HOLD_RUMBLE_INTENSITY,
+    DEFAULT_HOLD_RUMBLE_MAX_INTENSITY,
     DEFAULT_SHIELD_ENDING_LEAD_S,
     HOLD_COLOR,
+    HOLD_RAMP_MIN_INTERVAL_S,
+    HOLD_RAMP_MIN_STEP,
     SHIELD_BLINK_WINDOW_S,
     SHIELD_ENDING_PULSES,
     SWELL_MS,
@@ -44,9 +48,13 @@ from services.controller_manager.effects_base import (
     hold_active_frame,
     hold_energy_frame,
     hold_energy_state,
+    hold_fill,
+    hold_ramp_intensity,
     resolve_charge_cues,
     resolve_empty_pulse_ms,
+    resolve_hold_led_floor_pct,
     resolve_hold_rumble_intensity,
+    resolve_hold_rumble_max_intensity,
     resolve_shield_ending_lead,
     shield_frame,
     swell_intensity,
@@ -101,10 +109,24 @@ def read_hold_cues() -> HoldCues:
             read_int_flag("game", "shield.hold_rumble_intensity", DEFAULT_HOLD_RUMBLE_INTENSITY)
         ),
         empty_pulse_ms=resolve_empty_pulse_ms(read_int_flag("game", "shield.empty_pulse_ms", DEFAULT_EMPTY_PULSE_MS)),
+        ramp_max=resolve_hold_rumble_max_intensity(
+            read_int_flag("game", "shield.hold_rumble_max_intensity", DEFAULT_HOLD_RUMBLE_MAX_INTENSITY)
+        ),
+        led_floor_pct=resolve_hold_led_floor_pct(
+            read_int_flag("game", "shield.hold_led_floor_percent", DEFAULT_HOLD_LED_FLOOR_PCT)
+        ),
     )
 
 
-_HOLD_CUE_FIELDS = ("rumble_intensity", "pulse_ms", "ending_lead_ms", "hold_rumble_intensity", "empty_pulse_ms")
+_HOLD_CUE_FIELDS = (
+    "rumble_intensity",
+    "pulse_ms",
+    "ending_lead_ms",
+    "hold_rumble_intensity",
+    "empty_pulse_ms",
+    "hold_rumble_max_intensity",
+    "hold_led_floor_pct",
+)
 
 
 def hold_cues_from(state) -> HoldCues:
@@ -123,6 +145,8 @@ def hold_cues_from(state) -> HoldCues:
         ending_lead_s=resolve_shield_ending_lead(shipped.get("ending_lead_ms", fallback.ending_lead_s * 1000) / 1000.0),
         hold_rumble=resolve_hold_rumble_intensity(shipped.get("hold_rumble_intensity", fallback.hold_rumble)),
         empty_pulse_ms=resolve_empty_pulse_ms(shipped.get("empty_pulse_ms", fallback.empty_pulse_ms)),
+        ramp_max=resolve_hold_rumble_max_intensity(shipped.get("hold_rumble_max_intensity", fallback.ramp_max)),
+        led_floor_pct=resolve_hold_led_floor_pct(shipped.get("hold_led_floor_pct", fallback.led_floor_pct)),
     )
 
 
@@ -140,7 +164,8 @@ class ShieldLayer:
     color: tuple[int, int, int]
     kind: str = "full"  # "full" | "toughness_boost" | "charge" (#1837) | "hold" | "energy" (#2096)
     blink_reported: bool = False
-    cap_s: float = 0.0  # hold: the energy cap, for the brightness by energy left
+    ref_s: float = 0.0  # hold: the activation energy, the reference of the dimming and the rumble ramp (#2463)
+    ramp_at: float = -math.inf  # hold: controller time of the last ramp write (#2463)
 
     @property
     def toughness_boost(self) -> bool:
@@ -290,6 +315,9 @@ class ShieldEffectsMixin:
                     if serial in self._background_rumble and "hold" not in self._shield_layers.get(serial, {}):
                         # The activation ran out without its end command: its rumble stops too (#2096).
                         await self._set_background_rumble(serial, 0)
+                    else:
+                        # Before the overlay check: the ramp keeps rising under a warning flash (#2463).
+                        await self._step_hold_ramp(serial, now)
                     if layer is None:
                         end_reason = "expired"
                         break
@@ -341,7 +369,8 @@ class ShieldEffectsMixin:
             state = hold_energy_state(level, energy.cap_s, energy.full_s, energy.min_burst_s)
             return hold_energy_frame(elapsed, state, base)
         if layer.kind == "hold":
-            return hold_active_frame(layer.remaining(now), layer.cap_s)
+            cues = self._hold_cues.get(serial) or HoldCues()
+            return hold_active_frame(layer.remaining(now), layer.ref_s, cues.led_floor)
         return shield_frame(elapsed, layer.total_s, layer.color, layer.toughness_boost)
 
     async def end_shield_effect(
@@ -454,8 +483,10 @@ class ShieldEffectsMixin:
     async def _start_hold_layer(self, serial: str, duration_ms: int, state, trace_context: Context | None) -> None:
         """Start or restart the hold activation layer: white by the energy left, background rumble, ending pulse.
 
-        A restart (a grant during the hold) moves the end and the "ending soon" pulse and
-        plays the grant's cue; the background rumble starts only with a new activation.
+        A restart (a grant during the hold) moves the end (and, in flat mode, the "ending soon"
+        pulse) and plays the grant's cue; the background rumble starts only with a new activation.
+        Ramp mode (#2463): the background starts at the ramp level of the time left (a re-send
+        after a reconnect lands mid-ramp) and the renderer raises it; no ending pulse.
         """
         now = self._clock.time()
         cues = hold_cues_from(state)
@@ -463,17 +494,28 @@ class ShieldEffectsMixin:
         layers = self._shield_layers.setdefault(serial, {})
         running = layers.get("hold")
         newly = running is None or running.remaining(now) <= 0
-        cap_s = state.cap_ms / 1000.0 if state is not None and state.cap_ms > 0 else duration_ms / 1000.0
-        layers["hold"] = ShieldLayer(
-            start=now, total_s=duration_ms / 1000.0, color=HOLD_COLOR, kind="hold", cap_s=cap_s
-        )
+        total_s = duration_ms / 1000.0
+        if state is not None and state.activation_ms > 0:
+            ref_s = state.activation_ms / 1000.0
+        elif not newly:
+            ref_s = max(running.ref_s, total_s)  # an older coordinator: the longest end of this activation
+        else:
+            ref_s = total_s
+        layer = ShieldLayer(start=now, total_s=total_s, color=HOLD_COLOR, kind="hold", ref_s=ref_s)
+        if not newly:
+            layer.ramp_at = running.ramp_at
+        layers["hold"] = layer
         self._ensure_shield_renderer(serial, "hold", trace_context, duration_ms)
         if newly:
             # The idle pool does not recharge during an activation: its cues wait for the next SHIELD_ENERGY.
             await self._stop_hold_cues(serial)
-            await self._set_background_rumble(serial, cues.hold_rumble)
+            layer.ramp_at = now
+            await self._set_background_rumble(
+                serial, hold_ramp_intensity(hold_fill(total_s, ref_s), cues.hold_rumble, cues.ramp_max)
+            )
         await self._stop_shield_pulses(serial, self._hold_ending_tasks, HOLD_PULSE_TASK_NAME)
-        self._hold_ending_tasks[serial] = asyncio.create_task(self._hold_ending_loop(serial))
+        if not cues.ramp:
+            self._hold_ending_tasks[serial] = asyncio.create_task(self._hold_ending_loop(serial))
         cue = state.cue if state is not None else controller_manager_pb2.SHIELD_HOLD_CUE_NONE
         if cue in (controller_manager_pb2.SHIELD_HOLD_CUE_FULL, controller_manager_pb2.SHIELD_HOLD_CUE_TOP_UP):
             await self._stop_hold_cues(serial)
@@ -503,6 +545,31 @@ class ShieldEffectsMixin:
         cue = state.cue if state is not None else controller_manager_pb2.SHIELD_HOLD_CUE_NONE
         self._hold_cue_tasks[serial] = asyncio.create_task(self._hold_cue_loop(serial, cue, "energy"))
 
+    async def _step_hold_ramp(self, serial: str, now: float) -> None:
+        """One renderer tick of the hold rumble ramp (#2463, UC-040 BR-026).
+
+        Reads only the live hold layer, so an ended layer (death, game end, ``SHIELD_HOLD`` 0)
+        never brings the rumble back. Writes through the background level, so a one-shot rumble
+        keeps the slot and ``_motor_off`` restores the current ramp level; quantised to steps of
+        ``HOLD_RAMP_MIN_STEP`` at least ``HOLD_RAMP_MIN_INTERVAL_S`` apart (the last step to the
+        top included).
+        """
+        layer = self._shield_layers.get(serial, {}).get("hold")
+        cues = self._hold_cues.get(serial)
+        if layer is None or cues is None or not cues.ramp:
+            return
+        remaining = layer.remaining(now)
+        if remaining <= 0:
+            return
+        level = hold_ramp_intensity(hold_fill(remaining, layer.ref_s), cues.hold_rumble, cues.ramp_max)
+        current = self._background_rumble.get(serial, 0)
+        if level == current or (abs(level - current) < HOLD_RAMP_MIN_STEP and level != cues.ramp_max):
+            return
+        if now - layer.ramp_at < HOLD_RAMP_MIN_INTERVAL_S - _CUE_EPSILON_S:
+            return
+        layer.ramp_at = now
+        await self._set_background_rumble(serial, level)
+
     async def _end_hold_activation(self, serial: str) -> None:
         """The activation layer ended: its ending pulse and its background rumble stop."""
         await self._stop_shield_pulses(serial, self._hold_ending_tasks, HOLD_PULSE_TASK_NAME)
@@ -514,7 +581,8 @@ class ShieldEffectsMixin:
     async def _hold_cue_loop(self, serial: str, cue: int, kind: str) -> None:
         """Play the command's cue, then, on the energy layer, the grant pattern when the recharge fills the pool.
 
-        Full: the #2094 grant pattern; top-up: one pulse; empty: one pulse of ``empty_pulse_ms``.
+        Full: the #2094 grant pattern; top-up: one pulse; empty: one pulse of ``empty_pulse_ms``
+        (flat mode only, #2463).
         The recharge-to-full pattern plays once per fill, detected from the level and rate the
         coordinator sent, so a recharge needs no command (UC-040 A38 step 3).
         """
@@ -528,7 +596,8 @@ class ShieldEffectsMixin:
                     )
                 elif cue == controller_manager_pb2.SHIELD_HOLD_CUE_TOP_UP:
                     await self._play_charge_cue(serial, 1, cues.pulses, kind=kind, task_name=HOLD_PULSE_TASK_NAME)
-                elif cue == controller_manager_pb2.SHIELD_HOLD_CUE_EMPTY:
+                elif cue == controller_manager_pb2.SHIELD_HOLD_CUE_EMPTY and not cues.ramp:
+                    # Ramp mode (#2463): the ramp was the warning; the end is a clean stop, no pulse.
                     await self._play_charge_cue(serial, 1, cues.empty_pulse, kind=kind, task_name=HOLD_PULSE_TASK_NAME)
             energy = self._hold_energy.get(serial)
             full_at = energy.full_at() if kind == "energy" and energy is not None else None

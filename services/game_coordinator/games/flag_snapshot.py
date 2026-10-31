@@ -108,6 +108,10 @@ SHIELD_HOLD_CUE_FLAGS: dict[str, tuple[float, float, float]] = {
     "shield.ending_rumble_seconds": (1.0, 0.0, 3.0),
     "shield.hold_rumble_intensity": (70.0, 0.0, 150.0),
     "shield.empty_pulse_ms": (400.0, 100.0, 800.0),
+    # #2463: the ramp top (at or below hold_rumble_intensity = flat; below the death rumble's 255)
+    # and the LED dimming floor.
+    "shield.hold_rumble_max_intensity": (200.0, 0.0, 230.0),
+    "shield.hold_led_floor_percent": (20.0, 10.0, 100.0),
 }
 
 
