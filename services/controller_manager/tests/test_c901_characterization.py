@@ -13,8 +13,9 @@ import sys
 import threading
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
+import grpc
 import pytest
 
 test_dir = Path(__file__).parent
@@ -24,7 +25,12 @@ sys.path.insert(0, str(test_dir))
 from test_identify_controller import SERIAL, _game_config, servicer  # noqa: F401  (pytest fixture)
 
 from proto import controller_manager_pb2
+from services.controller_manager import servicer as servicer_module
+from services.controller_manager.discovery import PeriodicRescanTimer
 from services.controller_manager.discovery_loop import DiscoveryLoop
+from services.controller_manager.event_publisher import EventPublisher
+from services.controller_manager.feedback_manager import FeedbackManager
+from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.multiplexer import motion_patterns as mp
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
 from services.controller_manager.tests.backend_doubles import autospec_backend, autospec_button_detector
@@ -40,17 +46,19 @@ SERVICER_LOGGER = "services.controller_manager.servicer"
 
 
 def _loop(serials):
+    monitoring = create_autospec(ControllerMonitoring, instance=True)
+    monitoring.last_battery_check = 0  # instance attribute: not on the class, so not in the autospec
     loop = DiscoveryLoop(
         backend=autospec_backend(),
         tracked_controllers={s: {} for s in serials},
         controller_states={},
         button_detector=autospec_button_detector(),
-        feedback_manager=MagicMock(),
-        monitoring=MagicMock(last_battery_check=0),
-        rescan_timer=MagicMock(),
+        feedback_manager=create_autospec(FeedbackManager, instance=True),
+        monitoring=monitoring,
+        rescan_timer=create_autospec(PeriodicRescanTimer, instance=True),
         paired_serials=[],
         base_colors={},
-        event_publisher=MagicMock(),
+        event_publisher=create_autospec(EventPublisher, instance=True),
     )
     loop.backend_initialized = True
     loop._cached_serials = list(serials)
@@ -132,8 +140,8 @@ class TestUpdateControllerStatesCharacterization:
 def _bare_hid():
     adapter = RustServiceAdapter.__new__(RustServiceAdapter)
     adapter._init_stream_state()
-    adapter._channel = MagicMock()
-    adapter._stub = MagicMock()
+    adapter._channel = create_autospec(grpc.Channel, instance=True)
+    adapter._stub = MagicMock(spec_set=["StreamIO"])  # the stub's attributes are set per instance: no class to autospec
     adapter._latest_data = {}
     adapter._last_state = {}
     adapter._trigger_latch = set()
@@ -173,6 +181,26 @@ class TestStreamLoopCharacterization:
         assert not other.cancelled
         assert adapter._stream_call is other
         assert adapter._stream_running is False
+
+    def test_stream_stopped_while_opening_cancels_the_call_and_reads_nothing(self):
+        """A stop that lands while StreamIO is being opened cancels that call; none of its frames is read."""
+        adapter = _bare_hid()
+        sensor = MagicMock()
+        sensor.serial = SERIAL
+        call = FakeStreamCall([sensor])
+
+        def open_then_stop(_commands):
+            adapter._stream_running = False  # the stop lands between the open and the registration
+            return call
+
+        adapter._stub.StreamIO.side_effect = open_then_stop
+        adapter._stream_running = True
+
+        adapter._stream_loop()
+
+        assert call.cancelled
+        assert adapter._latest_data == {}
+        assert adapter._stream_call is None
 
 
 # --------------------------------------------------------------------------
@@ -295,6 +323,26 @@ class TestStreamGameplayDataCharacterization:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", flow="main", steps=[2])
+    @pytest.mark.parametrize("hz", [10, 60])
+    async def test_config_rate_reaches_the_frame_loop(self, stream_servicer, hz):
+        """A config's update_frequency_hz is the rate the frame loop asks _stream_rate_hz for."""
+        svc = stream_servicer
+        config = controller_manager_pb2.GameplayStreamConfig(update_frequency_hz=hz)
+
+        async def requests():
+            yield controller_manager_pb2.GameplayStreamControl(config=config)
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(servicer_module, "_frequency_override", None),
+            patch.object(servicer_module, "_stream_rate_hz", wraps=servicer_module._stream_rate_hz) as rate,
+        ):
+            await _run_frames(svc, requests(), frames=5)
+
+        assert rate.call_args.args[0] == hz
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", flow="main", steps=[2])
     async def test_reader_error_is_logged_and_frames_continue(self, stream_servicer, caplog):
         """A failing request iterator is logged; the frame loop keeps streaming."""
 
@@ -326,7 +374,7 @@ class TestStreamGameplayDataCharacterization:
         with (
             patch.object(svc, "_pattern_stream_rate", return_value=15),
             patch.object(svc, "_build_gameplay_update", side_effect=slow_build),
-            patch.object(svc.backend, "record_pattern_overrun") as overrun,
+            patch.object(svc.backend, "record_pattern_overrun", autospec=True) as overrun,
             caplog.at_level(logging.INFO, logger=SERVICER_LOGGER),
         ):
             await _run_frames(svc, requests(), frames=2)

@@ -70,7 +70,7 @@ ignore = ["ANN"]
 "tests/conftest.py" = ["N802", "E402", "ARG002"]  # Mock gRPC classes use PascalCase
 
 [tool.ruff.lint.mccabe]
-max-complexity = 15  # #2354: new code stays simple; existing offenders carry a noqa
+max-complexity = 15  # #2354: new code stays simple; no C901 noqa is left in this service
 
 [tool.ruff.lint.isort]
 known-first-party = ["lib", "proto", "services"]
