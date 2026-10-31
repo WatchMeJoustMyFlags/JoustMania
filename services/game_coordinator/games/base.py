@@ -633,9 +633,12 @@ class BaseGameMode(ShieldMixin, ABC):
     # a refresh applies from the next frame. None outside a frame: a call outside
     # the frame loop reads the live snapshot.
     _frame_config: GamePerformanceConfig | None = None
-    # The bound ``accel_distribution`` child of this game, with the metric it was
-    # bound from (a test may patch the metric): the label lookup runs once per game.
-    _accel_distribution_child: tuple[Any, Any] | None = None
+    # The snapshots of the scopes still open, oldest first (immutable, so the class
+    # default is never shared state); ``_frame_config`` is the newest of them.
+    _frame_configs: tuple[GamePerformanceConfig, ...] = ()
+    # The bound ``accel_distribution`` child of this game: the label lookup runs
+    # once per game (``get_game_name()`` is constant per mode class).
+    _accel_distribution_child: Any = None
 
     def __init__(
         self,
@@ -1691,12 +1694,21 @@ class BaseGameMode(ShieldMixin, ABC):
     @contextlib.contextmanager
     def _frame_config_scope(self) -> Iterator[GamePerformanceConfig]:
         """Read the runtime config once for one frame; every player of the frame uses it."""
-        previous = self._frame_config
-        self._frame_config = get_config_manager().get_config()
+        snapshot = get_config_manager().get_config()
+        self._frame_configs = (*self._frame_configs, snapshot)
+        self._frame_config = snapshot
         try:
-            yield self._frame_config
+            yield snapshot
         finally:
-            self._frame_config = previous
+            # Drop only this scope's own entry, so scopes that overlap and exit out
+            # of order never leave a closed scope's snapshot in place.
+            active = list(self._frame_configs)
+            for index in range(len(active) - 1, -1, -1):
+                if active[index] is snapshot:
+                    del active[index]
+                    break
+            self._frame_configs = tuple(active)
+            self._frame_config = active[-1] if active else None
 
     def _runtime_config(self) -> GamePerformanceConfig:
         """The frame's config snapshot inside a frame, otherwise the live one."""
@@ -1705,11 +1717,10 @@ class BaseGameMode(ShieldMixin, ABC):
 
     def _accel_distribution(self) -> Any:
         """The ``accel_distribution`` child for this game's mode, bound once per game."""
-        cached = self._accel_distribution_child
-        if cached is None or cached[0] is not metrics.accel_distribution:
-            child = metrics.accel_distribution.labels(game_mode=self.get_game_name())
-            cached = self._accel_distribution_child = (metrics.accel_distribution, child)
-        return cached[1]
+        child = self._accel_distribution_child
+        if child is None:
+            child = self._accel_distribution_child = metrics.accel_distribution.labels(game_mode=self.get_game_name())
+        return child
 
     async def _handle_warmup_disconnects(self) -> bool:
         """Run disconnects buffered by ``_warmup_ema()`` through the death path.

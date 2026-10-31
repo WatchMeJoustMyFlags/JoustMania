@@ -116,3 +116,24 @@ async def test_accel_distribution_labels_bound_once_per_game():
 
     histogram.labels.assert_called_once_with(game_mode="FFA")
     assert histogram.labels.return_value.observe.call_count == FRAMES * len(SERIALS)
+
+
+@pytest.mark.uc("UC-030", flow="main")
+def test_overlapping_frame_scopes_never_pin_a_closed_snapshot():
+    """Scopes that exit out of order leave the open one's snapshot, then the live read."""
+    game = _make_ffa()
+    first, second = GamePerformanceConfig(), GamePerformanceConfig()
+    manager = _config_manager()
+    manager.get_config.side_effect = [first, second]
+    with patch("services.game_coordinator.games.base.get_config_manager", return_value=manager):
+        scope_a = game._frame_config_scope()
+        scope_b = game._frame_config_scope()
+        scope_a.__enter__()
+        scope_b.__enter__()
+        assert game._runtime_config() is second
+        scope_a.__exit__(None, None, None)  # A closes first: B's snapshot stays
+        assert game._runtime_config() is second
+        scope_b.__exit__(None, None, None)
+
+    assert game._frame_config is None
+    assert game._frame_configs == ()
