@@ -518,6 +518,8 @@ var c034HumanOnlyGameKeys = []string{
 	"shield.charge_rumble_intensity", "shield.charge_rumble_pulse_ms",
 	"shield.charge_reminder_seconds", "shield.charge_pre_expiry_seconds",
 	"shield.ending_rumble_seconds",
+	// The hold feedback flags of #2463 (UC-040 BR-026).
+	"shield.hold_rumble_max_intensity", "shield.hold_led_floor_percent",
 }
 
 // c034HoldKeyCeilings are the eight hold keys FR-162 makes agent-writable as

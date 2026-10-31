@@ -163,6 +163,10 @@ flags:
   # Hold feedback (#2096, UC-040 BR-026): latched per hold game and shipped to the controller.
   - {set: game, key: shield.hold_rumble_intensity, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [0, 150]}, real_write: no_live_real_game, description: "hold mode: rumble strength while a player holds the shield, 0 = none"}
   - {set: game, key: shield.empty_pulse_ms, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [100, 800]}, real_write: no_live_real_game, description: "hold mode: length in ms of the pulse when a held shield runs out"}
+  # Hold feedback of #2463 (UC-040 BR-026): stack-only and human-only, outside the eight
+  # agent-writable hold keys (C-034, TestC034_HoldKeysCeilings).
+  - {set: game, key: shield.hold_rumble_max_intensity, kind: overlay, scope: [stack], bounds: {range: [0, 230]}}
+  - {set: game, key: shield.hold_led_floor_percent, kind: overlay, scope: [stack], bounds: {range: [10, 100]}}
 
   # --- user, controller, rollout (flags.md §13.4) ------------------------------
   - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}
