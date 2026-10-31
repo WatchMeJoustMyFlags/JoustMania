@@ -365,6 +365,8 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 
 **Per-mode in-game colours (`games/`).** Werewolf: everyone Yellow until the reveal, then werewolves LightBlue (0,100,255). Zombie: humans White, zombies ZombieGray (80,80,120). FightClub: defender Red, challenger Green, waiting players White20 (50,50,50).
 
+**Shield end with no layer left (#2462, UC-040 A39, BR-026).** A full shield end (`PLAYER_DEATH`, the winner rainbow, `SHIELD` 0, the closed-stream cleanup) always stops the shield state of the controller: the hold background level, the charge, ending and hold cue pulses, and the idle energy and cue values, also when no shield layer is left to end, so the death rumble's stop never restores a hold rumble. A partial end (`SHIELD_CHARGE` 0, `TOUGHNESS_BOOST` 0, `SHIELD_HOLD` 0, `SHIELD_ENERGY` 0) that finds no layer changes nothing (`shield_effects.py` `end_shield_effect`, `_stop_shield_state`).
+
 **Update path.** Colours are written to the backend by the LED batch loop (20 Hz, when the colour or the rumble changed, after a failed write, or every 2 s keep-alive, #2355); every colour written is mirrored in `ControllerState.color`. A new base colour while an effect runs is stored and applied when the effect ends (cancellable effects are cancelled).
 
 **Troubleshooting.** A controller stuck dim is CONNECTED, not READY: the trigger has not been pressed. A controller that stays White after admin mode keeps White as its base colour until the menu sends a lobby colour.

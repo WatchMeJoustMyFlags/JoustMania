@@ -436,6 +436,67 @@ class TestUC040HoldFeedbackOrdering:
         assert [n for n, _, _ in game.gameplay_stream.effects("p2")] == ["GAME_EFFECT_SHIELD_ENERGY"]
 
 
+class YieldingStream(RecordingStream):
+    """A write that suspends, as a grpc write does, so the outbound task and the kill path interleave."""
+
+    async def write(self, message):
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.writes.append(message)
+
+
+JOLT = (20.0, 20.0, 20.0)
+
+
+class TestUC040HoldEmptyThenDeath:
+    """#2462: the trigger held past empty, then a death in the next frames."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    @pytest.mark.parametrize("frames_before_death", [0, 1, 6])
+    async def test_nothing_of_the_hold_follows_the_death_effect(self, game, clock, frames_before_death):
+        """UC-040 A39 step 4: SHIELD_HOLD 0 and the empty pulse (when sent) come before the death effect, none after."""
+        game.gameplay_stream = YieldingStream()
+        await start_holding(game, clock, energy=0.5)
+        await drain()
+        game.gameplay_stream.writes.clear()
+        while game.players["p1"].hold_started_at:
+            await step(game, clock, "p1", True)
+        for _ in range(frames_before_death):
+            await drain(3)
+            await step(game, clock, "p1", True)  # still held, nothing restarts (BR-008)
+        clock.t += DT
+        await game._process_controller_state(frame("p1", True, accel=JOLT))
+        await drain(100)
+
+        assert not game.players["p1"].alive
+        names = [n for n, _, _ in game.gameplay_stream.effects("p1")]
+        assert names[-1] == "GAME_EFFECT_PLAYER_DEATH"
+        assert names.count("GAME_EFFECT_PLAYER_DEATH") == 1
+        assert set(names[:-1]) <= {"GAME_EFFECT_SHIELD_HOLD", "GAME_EFFECT_SHIELD_ENERGY"}
+        hold_starts = [d for n, d, _ in game.gameplay_stream.effects("p1") if n == "GAME_EFFECT_SHIELD_HOLD" and d > 0]
+        assert hold_starts == []  # the held trigger never restarts an activation after empty
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    async def test_the_game_end_still_ends_the_dead_players_hold_layers(self, game, clock):
+        """UC-040 A39 / BR-026: SHIELD 0 at the game end reaches a player who died after a hold, and nothing else."""
+        await start_holding(game, clock, energy=0.5)
+        await drain()
+        while game.players["p1"].hold_started_at:
+            await step(game, clock, "p1", True)
+        await drain()
+        clock.t += DT
+        await game._process_controller_state(frame("p1", True, accel=JOLT))
+        await drain()
+        game.gameplay_stream.writes.clear()
+
+        await game._end_shield_feedback()
+        await drain()
+
+        assert [(n, d) for n, d, _ in game.gameplay_stream.effects("p1")] == [("GAME_EFFECT_SHIELD", 0)]
+
+
 class TestUC040HoldCueLatch:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", br=["BR-026", "BR-027"])
