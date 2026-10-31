@@ -143,8 +143,8 @@ class TestDrainHealthCounters:
         assert led == 3
         backend.take_led_failures.assert_called_once_with("S1")
 
-    def test_drain_without_led_failures_attribute(self):
-        """A backend that counts no LED failures (non-multiplexer) returns 0."""
+    def test_drain_reports_zero_led_failures_by_default(self):
+        """A backend with the inert take_led_failures default reports 0 LED failures."""
         backend = autospec_backend()
         loop = _create_discovery_loop(backend=backend)
         loop._record("S1").poll_drops = 1
