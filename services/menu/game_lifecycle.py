@@ -186,6 +186,35 @@ class GameLifecycleMixin:
         game_mode: Games | None = None,
         ready_start: bool = False,
     ):
+        """Run the game lifecycle (`_run_game_lifecycle_steps`) and settle the menu state afterwards.
+
+        UC-010 A12 (#2449): however the lifecycle ends (game end, failed start, roster abort), no game
+        runs any more, so a GAME_STARTING left behind (a StartMenu that undid a StopMenu after the last
+        state change) becomes RUNNING with the idle monitor. A cancel (reset_menu, shutdown) is left to
+        its canceller.
+        """
+        cancelled = False
+        try:
+            await self._run_game_lifecycle_steps(
+                serial, source, controllers, game_mode=game_mode, ready_start=ready_start
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            if not cancelled and self.state == menu_pb2.MenuState.GAME_STARTING:
+                logger.info("Game lifecycle ended with the menu in GAME_STARTING; menu set RUNNING")
+                self.state = menu_pb2.MenuState.RUNNING
+                self.idle_monitor.start()
+
+    async def _run_game_lifecycle_steps(
+        self,
+        serial: str,
+        source: str = "controller",
+        controllers: list[str] | None = None,
+        game_mode: Games | None = None,
+        ready_start: bool = False,
+    ):
         """
         Run the full game lifecycle via StreamGameEvents.
 
@@ -376,7 +405,10 @@ class GameLifecycleMixin:
                     # A stream that breaks mid-iteration never returns its result: the confirmed
                     # start (BR-006) is what makes the break eligible for a reconnect.
                     game_started = game_started or self._followed_game_id is not None
-                    coordinator_lost = game_started and attempt >= max_reconnect_attempts
+                    # A restore that already ran (the game ended, then its restore raised) is no lost coordinator.
+                    coordinator_lost = (
+                        game_started and attempt >= max_reconnect_attempts and not self._lobby_restore_started
+                    )
                     game_started = self._check_retry_eligible(e, game_started, attempt, max_reconnect_attempts)
                     backoff = attempt + 1
                     logger.warning(f"Game event stream error: {e}. Reconnecting in {backoff}s...")

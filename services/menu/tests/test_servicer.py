@@ -19,6 +19,7 @@ Issue #209: Improve test coverage for critical game flow
 import asyncio
 import contextlib
 import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
@@ -3668,24 +3669,36 @@ class TestStoppedMenuNeverAutoStarts:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-010", flow="A11", steps=[4], br=["BR-014"])
-    async def test_all_ready_on_stopped_menu_starts_nothing_until_start_menu(self, real_servicer):
-        assert real_servicer.state == menu_pb2.MenuState.STOPPED
+    async def test_stop_menu_during_the_ready_feedback_delay_drops_the_start(self, real_servicer):
+        """StopMenu lands during the ReadyHandler's 0.3 s feedback delay: nothing is scheduled or published;
+        StartMenu re-enables the auto start."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
         await _connect(real_servicer, "s1", "s2")
         stub = _FailingStartStub(RuntimeError("start refused"))
-        with patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", stub):
-            await _ready_up(real_servicer, "s1", "s2")
+        real_sleep = asyncio.sleep
 
-            # The button stream is live: both are READY, but no start was scheduled or published.
-            assert real_servicer.state_manager.ready_controllers == {"s1", "s2"}
+        async def stop_during_feedback_delay(_delay, *_args, **_kwargs):
+            response = await real_servicer.StopMenu(menu_pb2.StopMenuRequest(), MagicMock())
+            assert response.success is True
+            await real_sleep(0)
+
+        with patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", stub):
+            with patch("services.menu.handlers.ready.asyncio.sleep", stop_during_feedback_delay):
+                await _ready_up(real_servicer, "s1", "s2")
+
             assert real_servicer._game_lifecycle_task is None
             assert real_servicer.state == menu_pb2.MenuState.STOPPED
             assert real_servicer.ready_handler._game_start_in_progress is False
-            assert _published(real_servicer) == []
+            assert [e for e, _d in _published(real_servicer)] == ["menu_stopped"]
 
             # StartMenu re-enables the auto start.
             response = await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock())
             assert response.success is True
-            await _ready_up(real_servicer, "s1", "s2")
+            # Fresh presses past the trigger debounce window (the first presses were milliseconds ago).
+            later = time.time() + 60
+            for serial in ("s1", "s2"):
+                await real_servicer.on_button(serial, "trigger", True, later)
+                await real_servicer.on_button(serial, "trigger", False, later + 0.1)
             await asyncio.wait_for(_await_lifecycle(real_servicer), timeout=5)
 
         assert len(stub.requests) == 1
@@ -3818,6 +3831,72 @@ class TestStartMenuDuringGame:
         real_servicer.idle_monitor.start.assert_called_once()
         real_servicer.audio.start_lobby_music.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A12", steps=[1, 3])
+    async def test_start_menu_inside_the_restore_of_a_running_menu_answers_success(self, real_servicer):
+        """The lifecycle is live and the restore already set RUNNING: StartMenu still answers success."""
+        stub = _GatedStartStub("game_start")
+        responses = []
+        with patch("proto.game_coordinator_pb2_grpc.GameCoordinatorServiceStub", stub):
+            real_servicer.state = menu_pb2.MenuState.RUNNING
+            await _connect(real_servicer, "s1", "s2")
+            await _ready_up(real_servicer, "s1", "s2")
+            await asyncio.wait_for(stub.started.wait(), timeout=5)
+
+            async def start_inside_restore(*_args, **_kwargs):
+                responses.append(await real_servicer.StartMenu(menu_pb2.StartMenuRequest(), MagicMock()))
+
+            real_servicer.controller_events.start.side_effect = start_inside_restore
+            self._reset_lobby_mocks(real_servicer)
+            stub.release.set()
+            await asyncio.wait_for(_await_lifecycle(real_servicer), timeout=5)
+
+        assert [(r.success, r.error) for r in responses] == [(True, "")]
+        assert "menu_started" not in [e for e, _d in _published(real_servicer)]
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A12", steps=[2])
+    async def test_stop_and_start_menu_during_the_roster_abort_tail_end_running(self, real_servicer):
+        """Reviewer probe: StopMenu then StartMenu during the roster abort's voice line; the lifecycle ends
+        with the menu RUNNING and the idle monitor on, not stuck in GAME_STARTING."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1")
+
+        async def stop_then_start(*_args, **_kwargs):
+            await self._call(real_servicer.StopMenu, menu_pb2.StopMenuRequest())
+            await self._call(real_servicer.StartMenu, menu_pb2.StartMenuRequest())
+
+        real_servicer.audio.play_voice.side_effect = stop_then_start
+        assert await real_servicer._start_game("web", source="web") is True
+        real_servicer.idle_monitor.start.reset_mock()
+        await asyncio.wait_for(_await_lifecycle(real_servicer), timeout=5)
+
+        real_servicer.audio.play_voice.assert_awaited()
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        real_servicer.idle_monitor.start.assert_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A12", steps=[2], br=["BR-001"])
+    async def test_stop_and_start_menu_before_a_roster_abort_start_the_idle_monitor(self, real_servicer):
+        """StopMenu then StartMenu during the lifecycle's 0.1 s delay, roster below the minimum: the
+        abort sets RUNNING and starts the idle monitor."""
+        real_servicer.state = menu_pb2.MenuState.RUNNING
+        await _connect(real_servicer, "s1")
+        assert await real_servicer._start_game("web", source="web") is True
+        await self._call(real_servicer.StopMenu, menu_pb2.StopMenuRequest())
+        await self._call(real_servicer.StartMenu, menu_pb2.StartMenuRequest())
+        assert real_servicer.state == menu_pb2.MenuState.GAME_STARTING
+        real_servicer.idle_monitor.start.reset_mock()
+
+        await asyncio.wait_for(_await_lifecycle(real_servicer), timeout=5)
+
+        assert real_servicer.state == menu_pb2.MenuState.RUNNING
+        real_servicer.idle_monitor.start.assert_called()
+        assert ("game_start_cancelled", {"game_name": "JoustFFA", "player_count": 0, "minimum_players": 2}) in (
+            _published(real_servicer)
+        )
+
 
 class TestCoordinatorLostAfterStart:
     """UC-010 A13 (#2450): reconnects used up after a confirmed start publish game_ended(coordinator_lost)."""
@@ -3855,3 +3934,20 @@ class TestCoordinatorLostAfterStart:
             await TestReconnectChecksFollowedGame._run(real_servicer, stub)
 
         assert _published(real_servicer).count(self.LOST) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-010", flow="A13", steps=[2], br=["BR-009"])
+    async def test_game_end_on_the_last_reconnect_whose_restore_raises_is_not_a_lost_coordinator(self, real_servicer):
+        """The last reconnect delivers game_ended and the restore then raises: one game_ended only."""
+        from proto import game_coordinator_pb2
+
+        stub = _ReconnectStub(
+            state=game_coordinator_pb2.GameState.RUNNING, game_id="g1", failed_reconnects=2, ended_after_check=True
+        )
+        # The restore's error ends the stream; the lifecycle logs it and does not restore a second time.
+        with patch.object(real_servicer.state_manager, "reset", AsyncMock(side_effect=RuntimeError("restore broke"))):
+            await TestReconnectChecksFollowedGame._run(real_servicer, stub)
+
+        assert len(stub.requests) == 4
+        ended = [d for e, d in _published(real_servicer) if e == "game_ended"]
+        assert ended == [{"winner": "s1"}]

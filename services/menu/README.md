@@ -36,8 +36,8 @@ rpc StartMenu(StartMenuRequest) returns (StartMenuResponse);
 - `error`: Error message if failed (e.g., "Menu already running")
 
 During a game (starting, running or restoring the lobby) `StartMenu` answers `success` but does not enter
-the lobby; the lobby restore after the game leaves the menu RUNNING (UC-010 A12). A STOPPED menu never
-auto starts a game, even when every controller is ready (UC-010 BR-014).
+the lobby; when the game lifecycle ends the menu is RUNNING (UC-010 A12). A STOPPED menu ignores button
+presses, and a ready auto start already under way when `StopMenu` lands is dropped (UC-010 BR-014).
 
 ### StopMenu
 
