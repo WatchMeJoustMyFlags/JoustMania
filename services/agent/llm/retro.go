@@ -70,7 +70,7 @@ type RetroInput struct {
 func BuildRetro(in RetroInput) RetroPrompt {
 	mode := stringOrUnknown(in.Context.Session.GameMode)
 	return RetroPrompt{
-		System: buildRetroSystem(mode, in.Snapshot.InterventionsAllowed),
+		System: buildRetroSystem(mode, in.Snapshot.InterventionsAllowed, len(in.Summary.Predictions) > 0),
 		User:   buildRetroUser(in.Context, in.Summary, in.Now),
 	}
 }
@@ -198,7 +198,11 @@ func DecodeRetro(raw string) (RetroResponse, error) {
 // NOT the game's opening configuration. Under that framing the whole allow-list,
 // reactive actions included, reads coherently. Still advisory / recorded-only /
 // human-reviewed.
-func buildRetroSystem(mode string, allowed []string) string {
+//
+// #2479: a game with scored predictions adds one closing sentence asking for a
+// comment on calibration (UC-042 A12); a game without any gets the prompt it always
+// had. The in-game prompt is not touched.
+func buildRetroSystem(mode string, allowed []string, withPredictions bool) string {
 	var b strings.Builder
 	b.WriteString(`You are the JoustMania post-game analyst. A physical movement party game has just
 ended. You receive a full session summary and must suggest how the agent should TUNE
@@ -246,6 +250,13 @@ RESPONSE CONTRACT — reply with EXACTLY ONE JSON object, no prose, matching:
   "session_focus": "<one of: endurance, balanced, accelerate, chaos — the goal the next session should lean toward>"
 }
 If no tuning is warranted, return "suggestions": [].`)
+	if withPredictions {
+		b.WriteString(`
+
+The session also lists the agent's predictions against what happened. In
+"session_assessment", say briefly whether they were well calibrated: compare each hit
+rate with its base rate from the controls and ignore unscorable ones.`)
+	}
 	return b.String()
 }
 
@@ -299,7 +310,6 @@ func buildRetroUser(ctx gamecontext.GameContext, summary gamesummary.Summary, no
 	b.WriteString("\nPlayer arcs (sorted by serial; offsets relative to game start; \"unknown\" = never observed):\n")
 	if len(summary.PlayerArcs) == 0 {
 		b.WriteString("  (none)")
-		return b.String()
 	}
 	for i, arc := range summary.PlayerArcs {
 		if i > 0 {
@@ -307,7 +317,86 @@ func buildRetroUser(ctx gamecontext.GameContext, summary gamesummary.Summary, no
 		}
 		writePlayerArc(&b, arc, ctx.Session.EliminationSequence)
 	}
+	writePredictions(&b, summary)
 	return b.String()
+}
+
+// maxRetroPredictionLines bounds the per-prediction lines of the retro prompt.
+const maxRetroPredictionLines = 40
+
+// writePredictions renders the "Predictions vs outcomes" block (UC-042 A12, #2479):
+// one line per scored prediction, then the per-template base rates of the controls.
+// Nothing for a game without predictions, so every other retro prompt is unchanged.
+func writePredictions(b *strings.Builder, summary gamesummary.Summary) {
+	if len(summary.Predictions) == 0 {
+		return
+	}
+	b.WriteString("\n\nPredictions vs outcomes (p = stated probability that it comes true; unscorable is neither a hit nor a miss; acted=false is a counterfactual, never applied):\n")
+	for i, p := range summary.Predictions {
+		if i == maxRetroPredictionLines {
+			fmt.Fprintf(b, "  ... %d more not shown\n", len(summary.Predictions)-maxRetroPredictionLines)
+			break
+		}
+		fmt.Fprintf(b, "  +%.0fs %s/%s %s", p.OffsetSeconds, p.Backend, p.Source, p.Template)
+		if p.Rule != "" {
+			fmt.Fprintf(b, " rule=%s", p.Rule)
+		}
+		if p.Target != "" {
+			fmt.Fprintf(b, " target=%s", p.Target)
+		}
+		fmt.Fprintf(b, " horizon=%ds p=%.2f -> %s", p.HorizonS, p.P, p.Outcome)
+		if p.UnscorableReason != "" {
+			fmt.Fprintf(b, " (%s)", p.UnscorableReason)
+		}
+		if p.Source != gamesummary.PredictionSourceControl {
+			fmt.Fprintf(b, " acted=%t", p.Acted)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("Base rates from the controls (a control predicts the same template at a random moment; hit rate over scored ones):\n")
+	rates := controlBaseRates(summary.PredictionTally)
+	if len(rates) == 0 {
+		b.WriteString("  (no control was scored)")
+		return
+	}
+	for i, r := range rates {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(b, "  %s: %.2f (%d scored, %d unscorable)", r.template, float64(r.hits)/float64(r.hits+r.misses), r.hits+r.misses, r.unscorable)
+	}
+}
+
+type controlRate struct {
+	template                 string
+	hits, misses, unscorable int
+}
+
+// controlBaseRates sums the control tallies per template (template order) and
+// drops templates with no scored control.
+func controlBaseRates(tally []gamesummary.PredictionTally) []controlRate {
+	byTemplate := map[string]*controlRate{}
+	for _, t := range tally {
+		if t.Source != gamesummary.PredictionSourceControl {
+			continue
+		}
+		r, ok := byTemplate[t.Template]
+		if !ok {
+			r = &controlRate{template: t.Template}
+			byTemplate[t.Template] = r
+		}
+		r.hits += t.Hits
+		r.misses += t.Misses
+		r.unscorable += t.Unscorable
+	}
+	out := make([]controlRate, 0, len(byTemplate))
+	for _, r := range byTemplate {
+		if r.hits+r.misses > 0 {
+			out = append(out, *r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].template < out[j].template })
+	return out
 }
 
 // writeEngagementTrend renders the room-level engagement series the Summary

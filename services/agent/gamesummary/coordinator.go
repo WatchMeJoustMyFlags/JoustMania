@@ -49,6 +49,12 @@ const (
 	attrInterventionsBlocked = "summary.interventions_blocked"
 	attrEngagementPoints     = "summary.engagement_points"
 	attrDominated            = "summary.dominated"
+	// summary.predictions.* (UC-042 A12, #2479): set only when the game had scored
+	// predictions.
+	attrPredictionsScored     = "summary.predictions.scored"
+	attrPredictionsHit        = "summary.predictions.hit"
+	attrPredictionsMiss       = "summary.predictions.miss"
+	attrPredictionsUnscorable = "summary.predictions.unscorable"
 	// attrGameTraceID / attrGameTraceSpanID are the canonical game-session-trace Link
 	// attribute keys (#1133/#1157), matching decision.AttrGameTraceID /
 	// AttrGameTraceSpanID verbatim so the summary's hub Link (#1174) carries the SAME
@@ -102,6 +108,9 @@ type Coordinator struct {
 	// now is injectable for tests; nil uses time.Now. It stamps Summary.GeneratedAt
 	// only — the aggregation itself is clock-free.
 	now func() time.Time
+	// predictions returns the game's finalized scored predictions (the Book's
+	// lookup, #2479). Set once at construction via SetPredictionLookup; nil = none.
+	predictions func(gameID string) []PredictionOutcome
 
 	mu sync.Mutex
 	// claimed is the set of recently summarized game ids; claimedOrder is the LRU
@@ -130,6 +139,14 @@ func NewCoordinator(log *slog.Logger) *Coordinator {
 // observer is exactly the M7-1 behavior. Set during construction, before the
 // store fires OnGameEnd, so the field read in OnGameEnd needs no lock.
 func (c *Coordinator) SetObserver(o Observer) { c.observer = o }
+
+// SetPredictionLookup wires the scored-prediction lookup (#2479, UC-042 A12). The
+// prediction Book finalizes a game's results BEFORE this coordinator runs (it sits
+// earlier in the game-end chain). Set during construction, before the store fires
+// OnGameEnd, so the field read needs no lock.
+func (c *Coordinator) SetPredictionLookup(f func(gameID string) []PredictionOutcome) {
+	c.predictions = f
+}
 
 // SetExperimentParent wires the experiment ROOT-span SpanContext lookup seam (#1188):
 // a func returning the agent.experiment span's SpanContext for an experiment_id
@@ -193,7 +210,11 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 	_, span := c.tracer.Start(parent, SpanGameSummary, startOpts...)
 	defer span.End()
 
-	summary := BuildSummary(gc, BuildOptions{Now: now()})
+	opts := BuildOptions{Now: now()}
+	if c.predictions != nil {
+		opts.Predictions = c.predictions(gc.SessionID)
+	}
+	summary := BuildSummary(gc, opts)
 
 	// Advance the M7-2 rolling context window (#929); skipped when no observer is wired.
 	if c.observer != nil {
@@ -210,6 +231,15 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 		attribute.Int(attrEngagementPoints, len(summary.EngagementTrend)),
 		attribute.Bool(attrDominated, summary.Dominance.Dominated),
 	)
+	if len(summary.Predictions) > 0 {
+		n := CountPredictions(summary.Predictions)
+		span.SetAttributes(
+			attribute.Int(attrPredictionsScored, n.Scored),
+			attribute.Int(attrPredictionsHit, n.Hit),
+			attribute.Int(attrPredictionsMiss, n.Miss),
+			attribute.Int(attrPredictionsUnscorable, n.Unscorable),
+		)
+	}
 
 	c.log.Info("agent.game.summary_built",
 		"game_id", summary.GameID,
@@ -218,7 +248,11 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 		"eliminations", summary.EliminationCount,
 		"interventions_applied", summary.InterventionsApplied,
 		"interventions_blocked", summary.InterventionsBlocked,
-		"dominated", summary.Dominance.Dominated)
+		"dominated", summary.Dominance.Dominated,
+		"predictions_scored", CountPredictions(summary.Predictions).Scored,
+		"predictions_hit", CountPredictions(summary.Predictions).Hit,
+		"predictions_miss", CountPredictions(summary.Predictions).Miss,
+		"predictions_unscorable", CountPredictions(summary.Predictions).Unscorable)
 }
 
 // claimGame records gameID as summarized and reports whether THIS call won the
