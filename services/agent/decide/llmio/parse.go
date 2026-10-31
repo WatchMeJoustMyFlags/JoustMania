@@ -88,11 +88,11 @@ type wireOutput struct {
 //     1-sum) is rescaled to sum to 1: the omitted options keep probability 0
 //     and the listed ones keep their ranking.
 //
-// The ffa.prediction answer is removed before decide.Validate (#2479). With
-// req.PredictionAsk set it is checked by decide.ValidatePrediction: a passing one
-// becomes resp.Prediction (Source model), anything else sets
-// resp.PredictionDropped; the decision is valid or invalid exactly as without
-// it. Without the ask it is ignored.
+// With req.PredictionAsk set (#2479) the ffa.prediction answer is removed before
+// decide.Validate and checked by decide.ValidatePrediction: a passing one becomes
+// resp.Prediction (Source model), anything else sets resp.PredictionDropped; the
+// decision is valid or invalid exactly as without it. Without the ask Parse is
+// unchanged from v1: an ffa.prediction answer is an unknown question and invalid.
 //
 // Everything else (unknown question ids, duplicate answers, out-of-range
 // numbers, a choice that is not the most probable option) is left for
@@ -133,9 +133,10 @@ func Parse(req decide.Request, raw []byte, backend string) (decide.Response, err
 		Rationale: SanitizeRationale(out.Rationale),
 		Answers:   make([]decide.Answer, 0, len(out.Answers)),
 	}
-	// The prediction answer is split off BEFORE anything else looks at it
-	// (#2479, UC-040 A45, BR-034): it is checked on its own below and can never
-	// make the decision malformed or invalid.
+	// With the ask, the prediction answer is split off BEFORE anything else looks
+	// at it (#2479, UC-040 A45, BR-034): it is checked on its own below and can
+	// never make the decision malformed or invalid. Without the ask it stays an
+	// ordinary (unknown, so invalid) answer, exactly as in v1.
 	var predictions []json.RawMessage
 	for i, raw := range out.Answers {
 		var id struct {
@@ -144,7 +145,7 @@ func Parse(req decide.Request, raw []byte, backend string) (decide.Response, err
 		if err := json.Unmarshal(raw, &id); err != nil {
 			return decide.Response{}, fmt.Errorf("%w: answer %d: %v", ErrMalformed, i, clipErr(err))
 		}
-		if id.ID == decide.QuestionFFAPrediction {
+		if req.PredictionAsk != nil && id.ID == decide.QuestionFFAPrediction {
 			predictions = append(predictions, raw)
 			continue
 		}
@@ -170,8 +171,7 @@ func Parse(req decide.Request, raw []byte, backend string) (decide.Response, err
 // splitPrediction checks the model's answers to the prediction ask against the
 // validated decision in resp: exactly one answer, decodable, with a choice and
 // a numeric confidence, passing decide.ValidatePrediction. Only the choice and the
-// confidence are read. Without the ask (Parse's caller) a stray ffa.prediction
-// answer is ignored.
+// confidence are read. Parse calls it only when the ask was sent.
 func splitPrediction(ask decide.Question, answers []json.RawMessage, resp decide.Response) (*decide.Prediction, string) {
 	switch {
 	case len(answers) == 0:

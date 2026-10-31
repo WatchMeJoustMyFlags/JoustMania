@@ -36,9 +36,14 @@ func parsedAnswer(backend, prediction string) func(decide.Request) (decide.Respo
 }
 
 func askSnapshot(backend string, ask bool) flags.Snapshot {
+	return askSnapshotWith(backend, ask, false)
+}
+
+func askSnapshotWith(backend string, ask, predictionsOff bool) flags.Snapshot {
 	s := remoteSnapshot(time.Hour)
 	s.Decision.Backend = backend
 	s.Decision.PredictionsAskModel = ask
+	s.Decision.PredictionsOff = predictionsOff
 	cfg := flags.RemoteBackendConfig{Model: "m", Timeout: time.Hour}
 	s.Decision.OpenAI, s.Decision.Jev = cfg, cfg
 	return s
@@ -75,17 +80,19 @@ func TestPredictionAsk_FlagAndBackend(t *testing.T) {
 		backend string
 		ask     bool
 		want    bool
+		predOff bool
 	}{
-		{"UC-040/A45 BR-034 claude flag on asks", flags.DecisionBackendClaude, true, true},
-		{"UC-040/A45 BR-034 openai flag on asks", flags.DecisionBackendOpenAI, true, true},
-		{"UC-040/A45 BR-034 claude flag off does not ask", flags.DecisionBackendClaude, false, false},
-		{"UC-040/A45 BR-034 openai flag off does not ask", flags.DecisionBackendOpenAI, false, false},
-		{"UC-040/A45 BR-034 jev never asks", flags.DecisionBackendJev, true, false},
+		{"UC-040/A45 BR-034 claude flag on asks", flags.DecisionBackendClaude, true, true, false},
+		{"UC-040/A45 BR-034 openai flag on asks", flags.DecisionBackendOpenAI, true, true, false},
+		{"UC-040/A45 BR-034 claude flag off does not ask", flags.DecisionBackendClaude, false, false, false},
+		{"UC-040/A45 BR-034 openai flag off does not ask", flags.DecisionBackendOpenAI, false, false, false},
+		{"UC-040/A45 BR-034 jev never asks", flags.DecisionBackendJev, true, false, false},
+		{"UC-040/A45 BR-034 predictions_enabled off does not ask", flags.DecisionBackendClaude, true, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			be := newFakeDecideBackend(ffaAnswer("noop", 0.9, "none", 0, "calm"))
 			be.name = tc.backend
-			h := newRemoteHarness(t, askSnapshot(tc.backend, tc.ask), be)
+			h := newRemoteHarness(t, askSnapshotWith(tc.backend, tc.ask, tc.predOff), be)
 			h.run(t)
 			if len(be.reqs) != 1 {
 				t.Fatalf("calls = %d", len(be.reqs))

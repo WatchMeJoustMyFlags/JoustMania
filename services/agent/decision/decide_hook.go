@@ -618,7 +618,8 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		stateAt:   c.UpdatedAt,
 	}
 	// The prediction ask (#2479, UC-040 A45): only with decision.predictions.ask_model
-	// on and a claude or openai backend; otherwise the request stays v1.
+	// and decision.predictions_enabled on (fire-time flags) and a claude or openai
+	// backend; otherwise the request stays v1.
 	if askModelPrediction(fired, rec.used) {
 		rec.req.PredictionAsk = decide.PredictionQuestion(rec.req.State)
 	}

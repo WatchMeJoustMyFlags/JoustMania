@@ -2,6 +2,7 @@ package llmio
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -150,12 +151,18 @@ func TestParse_ModelPrediction(t *testing.T) {
 			t.Fatalf("resp = %+v err = %v", resp, err)
 		}
 	})
-	t.Run("UC-040/A45 BR-034 without the ask a stray prediction is ignored", func(t *testing.T) {
-		resp, err := Parse(testRequest(), answerWith(predictionEntry("survives_15s", "0.7")), "claude")
-		if err != nil || resp.Prediction != nil || resp.PredictionDropped != "" {
-			t.Fatalf("resp = %+v err = %v", resp, err)
-		}
-	})
+	// Without the ask Parse is v1: an ffa.prediction answer is an unknown question.
+	for _, stray := range []struct{ name, entry string }{
+		{"valid entry", predictionEntry("survives_15s", "0.7")},
+		{"string confidence", `{"id": "ffa.prediction", "choice": "survives_15s", "score": 0, "probabilities": [], "confidence": "x"}`},
+		{"bare id", `{"id": "ffa.prediction"}`},
+	} {
+		t.Run("UC-040/A45 BR-034 without the ask a stray prediction is invalid as in v1: "+stray.name, func(t *testing.T) {
+			if _, err := Parse(testRequest(), answerWith(stray.entry), "claude"); !errors.Is(err, decide.ErrInvalid) {
+				t.Fatalf("err = %v, want one wrapping decide.ErrInvalid", err)
+			}
+		})
+	}
 	t.Run("UC-040/A45 BR-034 without the ask nothing is dropped", func(t *testing.T) {
 		resp, err := Parse(testRequest(), answerWith(), "claude")
 		if err != nil || resp.PredictionDropped != "" {

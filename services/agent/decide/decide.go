@@ -209,7 +209,7 @@ type Request struct {
 	// attribute, the digest and jev never see it. The decision loop sets it only
 	// when decision.predictions.ask_model is on and the backend is claude or
 	// openai; nil (the default) leaves the rendered prompt byte-identical to v1.
-	PredictionAsk *Question `json:",omitempty"`
+	PredictionAsk *Question `json:"prediction_ask,omitempty"`
 }
 
 // Response is a backend's answers to a Request.
