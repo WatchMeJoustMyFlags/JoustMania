@@ -65,7 +65,8 @@ One pass over our PRs in the review-gated merge flow (#1809): dequeues UNMERGEAB
 re-arms a dequeued or ejected PR (`safe-merge.sh --rearm`, which posts no status and re-checks it right before
 arming) at most once per head and only when the newest `Reviewed head` status on its head is success by an
 approver, and posts the `## Merge notes` close/note lines of recently merged PRs (targets: the `Part of #N`
-issues only). Never touches PRs by other authors; one sweep at a time (flock); `--dry-run` changes nothing.
+issues only). Its marker comments count only when written by the sweep's own login or an approver (the
+repo is public). Never touches PRs by other authors; one sweep at a time (flock); `--dry-run` changes nothing.
 Approvers: `REVIEW_APPROVERS` from the env, else the repo variable of that name (`gh variable get`), else aepfli,
 the same list `review-gate.yml` reads from `vars.REVIEW_APPROVERS`; a local override must match it. Run by the pr-merger
 agent's sweep mode. Usage in the script header. Test: `scripts/tests/test-merge-sweep.sh`.

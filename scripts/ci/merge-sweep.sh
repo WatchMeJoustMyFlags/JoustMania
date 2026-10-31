@@ -20,7 +20,9 @@
 #          * the NEWEST "Reviewed head" status on the current head is success,
 #            posted by an approver (never a `[bot]`);
 #          * the last removal was not a hand dequeue: reason `manual` counts as
-#            a sweep dequeue only with the dequeued marker for this head;
+#            a sweep dequeue only with the dequeued marker for this head, written
+#            by the sweep's own login or an approver, between the previous
+#            removal and this one;
 #          * no re-arm marker for this head yet: at most ONE re-arm per head.
 #            The marker is a PR comment `<!-- merge-sweep rearm <sha> -->`,
 #            posted BEFORE arming (a crash never allows a second re-arm).
@@ -35,8 +37,11 @@
 #                           skipped when closed or already closed by this sweep,
 #                           so a reopened issue stays open)
 #        note #N: <text>    comment <text> on issue N, once per PR (marker)
-#      Only issues named on the body's `Part of #N` line(s) are targets, and
+#      Only issues in the body's `Part of #A[, #B]` list(s) are targets, and
 #      never a pull request. `{MERGE}` in <text> becomes the short merge SHA.
+# Markers count only from the sweep's own login (`gh api user`) or an approver
+# (the repo is public: anyone can comment). A close marker on an open issue is
+# reported ("check issue"), never re-closed.
 # Fails CLOSED: an unreadable status, marker list or issue never acts. A result
 # list that may be truncated is a failure (exit 1), not a silent skip.
 # One sweep at a time: an flock on SWEEP_LOCK (default <git common dir>/merge-sweep.lock).
@@ -75,7 +80,8 @@ SAFE_MERGE="${SWEEP_SAFE_MERGE:-$(cd "$(dirname "$0")" && pwd)/safe-merge.sh}"
 
 LOCK="${SWEEP_LOCK:-}"
 if [[ -z "$LOCK" ]]; then
-  gitdir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  # The script's own repo, not the caller's cwd: every sweep of this clone shares one lock.
+  gitdir="$(git -C "$(dirname "$0")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
   LOCK="${gitdir:-${TMPDIR:-/tmp}}/merge-sweep.lock"
 fi
 exec 9>>"$LOCK" || { echo "SWEEP ERROR: cannot open the lock $LOCK"; exit 1; }
@@ -85,8 +91,15 @@ split_list() { local -a l; IFS=$' \t\n,' read -r -a l <<<"$1"; printf '%s\n' "${
 AUTHORS="${SWEEP_AUTHORS:-}"
 [[ -n "${AUTHORS//[[:space:],]/}" ]] || AUTHORS="aepfli"
 APPROVERS="${REVIEW_APPROVERS:-}"
-[[ -n "${APPROVERS//[[:space:],]/}" ]] || APPROVERS="$(gh variable get REVIEW_APPROVERS 2>/dev/null || true)"
+if [[ -z "${APPROVERS//[[:space:],]/}" ]]; then
+  APPROVERS="$(gh variable get REVIEW_APPROVERS 2>/dev/null)" \
+    || echo "WARNING: cannot read the repo variable REVIEW_APPROVERS; using the default aepfli (review-gate.yml may use another list)" >&2
+fi
 [[ -n "${APPROVERS//[[:space:],]/}" ]] || APPROVERS="aepfli"
+# Marker comments count only when written by the sweep's own identity or an
+# approver: the repo is public and anyone can comment a forged marker.
+ME="$(gh api user --jq .login 2>/dev/null || true)"
+TRUSTED="$APPROVERS${ME:+,$ME}"
 
 failures=0 attention=0 lines=0
 emit() {  # number state detail next
@@ -109,7 +122,7 @@ selected() {
 GQL_OPEN='query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){
   pullRequests(states:OPEN, first:100){pageInfo{hasNextPage} nodes{number id author{login} headRefOid mergeable
     autoMergeRequest{enabledAt} mergeQueueEntry{state}
-    timelineItems(last:1, itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{reason}}}}}}}'
+    timelineItems(last:2, itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{reason createdAt}}}}}}}'
 GQL_MERGED='query($q:String!,$after:String){search(query:$q, type:ISSUE, first:50, after:$after){
   pageInfo{hasNextPage endCursor} nodes{... on PullRequest{number author{login} headRefName mergedAt mergeCommit{oid} body}}}}'
 
@@ -165,7 +178,26 @@ newest_review() {
 }
 
 # All comment bodies of an issue or PR (exit 1 on API error).
-comments() { gh api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" --paginate --jq '.[].body' 2>/dev/null; }
+# Comments of an issue or PR as JSON lines {u, at, b} (exit 1 on API error).
+comments() {
+  gh api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" --paginate \
+    --jq '.[] | {u: (.user.login // ""), at: (.created_at // ""), b: (.body // "")} | tojson' 2>/dev/null
+}
+# has_marker <comments> <marker> [after] [until]: a comment by a TRUSTED login
+# holds the marker (created after <after> and not after <until>, ISO-8601 UTC).
+has_marker() {
+  local c u at
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    jq -e --arg m "$2" '.b | contains($m)' >/dev/null 2>&1 <<<"$c" || continue
+    u="$(jq -r .u <<<"$c")"; at="$(jq -r .at <<<"$c")"
+    in_list "$u" "$TRUSTED" || continue
+    [[ -n "${3:-}" && ! "$at" > "$3" ]] && continue
+    [[ -n "${4:-}" && "$at" > "$4" ]] && continue
+    return 0
+  done <<<"$1"
+  return 1
+}
 
 dequeue() {  # PR node id
   gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' \
@@ -187,6 +219,9 @@ sweep_open() {  # one open-PR JSON object
   auto="$(jq -r 'if .autoMergeRequest then "yes" else "no" end' <<<"$pr")"
   qstate="$(jq -r '.mergeQueueEntry.state // ""' <<<"$pr")"
   reason="$(jq -r '.timelineItems.nodes[-1].reason // ""' <<<"$pr")"
+  local removed_at prev_removed_at
+  removed_at="$(jq -r '.timelineItems.nodes[-1].createdAt // ""' <<<"$pr")"
+  prev_removed_at="$(jq -r 'if (.timelineItems.nodes | length) >= 2 then .timelineItems.nodes[-2].createdAt // "" else "" end' <<<"$pr")"
   short="${head:0:8}"
   local dq_marker="<!-- merge-sweep dequeued $head -->"
 
@@ -251,7 +286,10 @@ $dq_marker" >/dev/null 2>&1; then
     return 0
   fi
   if [[ "$reason" == manual ]]; then
-    if grep -qF "$dq_marker" <<<"$bodies"; then
+    # Our own dequeue: the marker is posted right BEFORE dequeuePullRequest, so
+    # it must sit between the previous removal and this one (a marker from an
+    # older sweep dequeue never covers a later hand dequeue).
+    if has_marker "$bodies" "$dq_marker" "$prev_removed_at" "$removed_at"; then
       what="dequeued by an earlier sweep (UNMERGEABLE)"
     else
       emit "$n" DEQUEUED "dequeued by hand (head $short); not re-armed" "re-arm with --arm if still wanted"
@@ -259,7 +297,7 @@ $dq_marker" >/dev/null 2>&1; then
     fi
   fi
   local marker="<!-- merge-sweep rearm $head -->"
-  if grep -qF "$marker" <<<"$bodies"; then
+  if has_marker "$bodies" "$marker"; then
     emit "$n" EJECTED "$what again; already re-armed once at $short; not re-armed" "fix the failing test"
     return 0
   fi
@@ -301,7 +339,7 @@ merge_notes() {
 part_of() {
   tr -d '\r' | awk '{ while ((i = index($0, "<!--"))) { j = index(substr($0, i), "-->"); if (!j) { $0 = substr($0, 1, i - 1); break }
                        $0 = substr($0, 1, i - 1) substr($0, i + j + 2) } print }' \
-    | grep -E '^[[:space:]]*Part of #' | grep -oE '#[0-9]+' | tr -d '#'
+    | grep -oE '^[[:space:]]*Part of #[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*' | grep -oE '#[0-9]+' | tr -d '#'
 }
 
 sweep_merged() {  # one merged-PR JSON object
@@ -317,7 +355,7 @@ sweep_merged() {  # one merged-PR JSON object
   msha="${merge:0:8}"
   local targets
   targets=" $(jq -r '.body // ""' <<<"$pr" | part_of | tr '\n' ' ')"
-  local done_notes=() line kind issue text info state ispr bodies
+  local done_notes=() line kind issue text info state ispr bodies check_issue=false
   while IFS= read -r line; do
     [[ "$line" =~ ^[[:space:]]*(-[[:space:]]+)?(close|note)[[:space:]]+#([0-9]+):[[:space:]]*(.+[^[:space:]])[[:space:]]*$ ]] || continue
     kind="${BASH_REMATCH[2]}" issue="${BASH_REMATCH[3]}" text="${BASH_REMATCH[4]//\{MERGE\}/$msha}"
@@ -338,13 +376,20 @@ sweep_merged() {  # one merged-PR JSON object
 (#$n, merge $msha)
 $marker"
     if [[ "$kind" == close ]]; then
-      if grep -qF "$marker" <<<"$bodies"; then done_notes+=("#$issue already closed by the sweep"); continue; fi
+      if has_marker "$bodies" "$marker"; then
+        if [[ "$state" == open ]]; then
+          done_notes+=("#$issue has the sweep's close comment but is open (reopened, or the close failed)"); check_issue=true
+        else
+          done_notes+=("#$issue already closed by the sweep")
+        fi
+        continue
+      fi
       if [[ "$state" != open ]]; then done_notes+=("#$issue already closed"); continue; fi
       if $DRY; then done_notes+=("would close #$issue"); continue; fi
       if gh issue close "$issue" --comment "$body" >/dev/null 2>&1; then done_notes+=("closed #$issue")
       else failures=$((failures + 1)); done_notes+=("close #$issue FAILED"); fi
     else
-      if grep -qF "$marker" <<<"$bodies"; then done_notes+=("#$issue already noted"); continue; fi
+      if has_marker "$bodies" "$marker"; then done_notes+=("#$issue already noted"); continue; fi
       if $DRY; then done_notes+=("would note #$issue"); continue; fi
       if gh issue comment "$issue" --body "$body" >/dev/null 2>&1; then done_notes+=("noted #$issue")
       else failures=$((failures + 1)); done_notes+=("note #$issue FAILED"); fi
@@ -357,6 +402,7 @@ $marker"
   local next=none
   [[ "$notes" == *FAILED* || "$notes" == *"read failed"* ]] && next="re-check later"
   [[ "$notes" == *refused* && "$next" == none ]] && next="check the merge notes"
+  $check_issue && [[ "$next" == none ]] && next="check issue"
   emit "$n" MERGED "merge $msha, branch $branch; $notes" "$next"
 }
 

@@ -652,6 +652,10 @@ reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""; rst
 echo "alice,bob" >"${STUB_DIR}/approvers-var"
 OUT="$(env -u REVIEW_APPROVERS timeout 20 "${HELPER}" 42 "$HEAD" --rearm 2>/dev/null)" && RC=0 || RC=$?
 [[ $RC -eq 8 ]] || fail "repo-variable approver: rc=$RC $OUT"
+# The repo variable cannot be read: default aepfli, with a warning on stderr.
+reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""; rstatuses "$(rst 2 success aepfli)"
+OUT="$(env -u REVIEW_APPROVERS timeout 20 "${HELPER}" 42 "$HEAD" --rearm 2>"${WORK}/stderr")" && RC=0 || RC=$?
+[[ $RC -eq 8 ]] && grep -q 'WARNING: cannot read the repo variable REVIEW_APPROVERS' "${WORK}/stderr" || fail "approver-variable warning: rc=$RC"
 # Statuses unreadable: fail closed. Unenforced ruleset: refused like --arm.
 reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""
 run 42 "$HEAD" --rearm

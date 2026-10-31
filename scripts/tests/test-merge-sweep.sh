@@ -84,6 +84,7 @@ case "$1 $2" in
       json_or "$STUB_DIR/issue-$n.json" "{\"number\":$n,\"state\":\"open\"}"
     fi ;;
   "variable get") exit 1 ;;
+  "api user") echo sweeper ;;
   "pr comment") [[ -f "$STUB_DIR/fail-comment" ]] && exit 1; exit 0 ;;
   "pr view") cat "$STUB_DIR/view.json" ;;
   "pr merge") exit 0 ;;
@@ -114,7 +115,8 @@ opr() {
   local q="null" auto="null" tl="[]"
   [[ -n "${4:-}" ]] && q="{\"state\":\"$4\"}"
   [[ "${5:-no}" == yes ]] && auto='{"enabledAt":"2026-10-31T20:00:00Z"}'
-  [[ -n "${6:-}" ]] && tl="[{\"reason\":\"$6\"}]"
+  [[ -n "${6:-}" ]] && tl="[{\"reason\":\"$6\",\"createdAt\":\"${REMOVED_AT:-2026-10-31T12:00:00Z}\"}]"
+  [[ -n "${6:-}" && -n "${8:-}" ]] && tl="[{\"reason\":\"manual\",\"createdAt\":\"$8\"},${tl:1}"
   printf '{"number":%s,"id":"PR_%s","author":{"login":"%s"},"headRefOid":"%s","mergeable":"%s","autoMergeRequest":%s,"mergeQueueEntry":%s,"timelineItems":{"nodes":%s}}' \
     "$1" "$1" "$2" "$3" "${7:-MERGEABLE}" "$auto" "$q" "$tl"
 }
@@ -129,6 +131,8 @@ prs() {  # open-nodes (comma-joined) [has-next-page]
 merged() {  # nodes [has-next] [file]
   printf '{"data":{"search":{"pageInfo":{"hasNextPage":%s,"endCursor":"C1"},"nodes":[%s]}}}' "${2:-false}" "$1" >"${STUB_DIR}/${3:-merged.json}"
 }
+cm() { printf '{"user":{"login":"%s"},"created_at":"%s","body":"%s"}' "$1" "$2" "$3"; }  # author at body
+comments_fx() { local n="$1"; shift; local IFS=,; printf '[%s]' "$*" >"${STUB_DIR}/comments-$n.json"; }
 st() { printf '{"id":%s,"state":"%s","context":"%s","creator":{"login":"%s"}}' "$1" "$2" "${4:-Reviewed head}" "$3"; }
 statuses() { local sha="$1"; shift; local IFS=,; printf '[%s]' "$*" >"${STUB_DIR}/statuses-$sha.json"; }
 reset() { rm -f "${STUB_DIR}"/* "${STUB_DIR}"/.default; }
@@ -168,13 +172,32 @@ ok
 # 1c. Next pass after a sweep dequeue whose re-arm did not happen: reason manual
 #     + the dequeued marker = a sweep dequeue -> re-armable; without it: by hand.
 reset; prs "$(opr 42 aepfli $H1 '' no manual)"; statuses $H1 "$(st 900 success aepfli)"
-printf '[{"body":"x\\n<!-- merge-sweep dequeued %s -->"}]' "$H1" >"${STUB_DIR}/comments-42.json"
+comments_fx 42 "$(cm sweeper 2026-10-31T11:59:58Z "x <!-- merge-sweep dequeued $H1 -->")"
 run
 [[ "$OUT" == *"#42 RE-ARMED: dequeued by an earlier sweep"* ]] || fail "manual + marker not re-armed"
-printf '[{"body":"<!-- merge-sweep dequeued %s -->"}]' "$H2" >"${STUB_DIR}/comments-42.json"
+comments_fx 42 "$(cm aepfli 2026-10-31T11:59:58Z "<!-- merge-sweep dequeued $H1 -->")"
+rm -f "${STUB_DIR}/calls"; run
+[[ "$OUT" == *"#42 RE-ARMED"* ]] || fail "approver-written marker not accepted"
+comments_fx 42 "$(cm sweeper 2026-10-31T11:59:58Z "<!-- merge-sweep dequeued $H2 -->")"
 rm -f "${STUB_DIR}/calls"; run
 [[ "$OUT" == *"#42 DEQUEUED: dequeued by hand"* ]] || fail "marker of another head counted"
 calls | grep -q '^safe-merge' && fail "hand dequeue re-armed"
+# Forged: the repo is public, a marker by anyone else never counts.
+comments_fx 42 "$(cm mallory 2026-10-31T11:59:58Z "<!-- merge-sweep dequeued $H1 -->")"
+rm -f "${STUB_DIR}/calls"; run
+[[ "$OUT" == *"#42 DEQUEUED: dequeued by hand"* ]] || fail "forged-author marker accepted"
+calls | grep -q '^safe-merge' && fail "forged marker re-armed"
+# Stale: a sweep marker from before an EARLIER removal does not cover a later hand dequeue.
+prs "$(REMOVED_AT=2026-10-31T13:00:00Z opr 42 aepfli $H1 '' no manual MERGEABLE 2026-10-31T12:00:00Z)"
+comments_fx 42 "$(cm sweeper 2026-10-31T11:59:58Z "<!-- merge-sweep dequeued $H1 -->")"
+rm -f "${STUB_DIR}/calls"; run
+[[ "$OUT" == *"#42 DEQUEUED: dequeued by hand"* ]] || fail "stale marker accepted"
+calls | grep -q '^safe-merge' && fail "stale marker re-armed"
+# ... while a marker between the two removals (the latest removal was ours) counts.
+comments_fx 42 "$(cm sweeper 2026-10-31T12:59:58Z "<!-- merge-sweep dequeued $H1 -->")"
+rm -f "${STUB_DIR}/calls"; run
+[[ "$OUT" == *"#42 RE-ARMED"* ]] || fail "marker between removals not accepted"
+grep -q 'WARNING: cannot read the repo variable REVIEW_APPROVERS' "${WORK}/stderr" || fail "no approver-variable warning"
 ok
 
 # 2. Ejected (failed_checks), success by approver: re-armed once ...
@@ -183,17 +206,22 @@ run
 [[ $RC -eq 0 && "$OUT" == *"#43 RE-ARMED: removed from the queue (failed_checks)"* ]] || fail "ejected re-arm: rc=$RC"
 calls | grep -qxF "safe-merge 43 $H2 --rearm" || fail "no re-arm of 43"
 # ... and not a second time when the marker for this head exists.
-printf '[{"body":"Merge sweep: re-armed\\n<!-- merge-sweep rearm %s -->"}]' "$H2" >"${STUB_DIR}/comments-43.json"
+comments_fx 43 "$(cm sweeper 2026-10-31T12:01:00Z "Merge sweep: re-armed <!-- merge-sweep rearm $H2 -->")"
 rm -f "${STUB_DIR}/calls"
 run
 [[ "$OUT" == *"#43 EJECTED: removed from the queue (failed_checks) again; already re-armed once"*"next: fix the failing test"* ]] || fail "second re-arm line"
 calls | grep -q '^safe-merge' && fail "re-armed twice at one head"
 calls | grep -q 'pr comment' && fail "second marker posted"
 # A marker for an older head does not block the new head.
-printf '[{"body":"<!-- merge-sweep rearm %s -->"}]' "$H1" >"${STUB_DIR}/comments-43.json"
+comments_fx 43 "$(cm sweeper 2026-10-31T12:01:00Z "<!-- merge-sweep rearm $H1 -->")"
 rm -f "${STUB_DIR}/calls"
 run
 calls | grep -qxF "safe-merge 43 $H2 --rearm" || fail "old-head marker blocked the new head"
+# Markers count only from trusted logins (consistent with the dequeue marker).
+comments_fx 43 "$(cm mallory 2026-10-31T12:01:00Z "<!-- merge-sweep rearm $H2 -->")"
+rm -f "${STUB_DIR}/calls"
+run
+calls | grep -qxF "safe-merge 43 $H2 --rearm" || fail "untrusted rearm marker counted"
 ok
 
 # 3. No re-arm when the newest status is failure (revoke), even with an older success.
@@ -327,23 +355,33 @@ calls | grep -qF 'issue comment 8 --body follow-up lands in PR3' || fail "note #
 calls | grep -qE 'issue (close|comment) (1|99|5)( |$)|issues/(1|99|5)( |/|$)' && fail "acted outside the section or on an old merge"
 # Second pass: #8 carries the note marker -> no second note; #7 closed -> skipped.
 echo '{"number":7,"state":"closed"}' >"${STUB_DIR}/issue-7.json"
-printf '[{"body":"x\\n<!-- merge-sweep note PR#100 -->"}]' >"${STUB_DIR}/comments-8.json"
+comments_fx 8 "$(cm sweeper 2026-10-31T12:00:00Z "x <!-- merge-sweep note PR#100 -->")"
 rm -f "${STUB_DIR}/calls"; run
 [[ "$OUT" == *"#7 already closed,#8 already noted"* ]] || fail "idempotent merged line"
 calls | grep -qE 'issue close|issue comment' && fail "merge notes acted twice"
 ok
 
-# 11b. A reopened issue (close marker present, state open) stays open.
+# 11b. A reopened issue (or a failed close after its comment) stays open and is
+#      reported: close marker present + state open -> "check issue".
 echo '{"number":7,"state":"open"}' >"${STUB_DIR}/issue-7.json"
-printf '[{"body":"Delivered\\n<!-- merge-sweep close PR#100 -->"},{"body":"reopened: not done"}]' >"${STUB_DIR}/comments-7.json"
+comments_fx 7 "$(cm sweeper 2026-10-31T12:00:00Z "Delivered <!-- merge-sweep close PR#100 -->")" "$(cm aepfli 2026-10-31T13:00:00Z "reopened: not done")"
 rm -f "${STUB_DIR}/calls"; run
-[[ "$OUT" == *"#7 already closed by the sweep"* ]] || fail "reopened line"
+[[ "$OUT" == *"#7 has the sweep's close comment but is open"*"next: check issue"* ]] || fail "reopened line"
+[[ "$OUT" != *"#7 already closed"* ]] || fail "open issue reported as closed"
 calls | grep -q 'issue close 7' && fail "re-closed a reopened issue"
+# Closed + marker: already closed by the sweep. A forged close marker is ignored (closes normally).
+echo '{"number":7,"state":"closed"}' >"${STUB_DIR}/issue-7.json"
+rm -f "${STUB_DIR}/calls"; run
+[[ "$OUT" == *"#7 already closed by the sweep"* ]] || fail "closed + marker line"
+echo '{"number":7,"state":"open"}' >"${STUB_DIR}/issue-7.json"
+comments_fx 7 "$(cm mallory 2026-10-31T12:00:00Z "<!-- merge-sweep close PR#100 -->")"
+rm -f "${STUB_DIR}/calls"; run
+calls | grep -qF 'issue close 7 --comment' || fail "forged close marker blocked the close"
 ok
 
 # 11c. Targets: only issues on the Part of line, never a pull request.
 reset; prs ""
-merged "$(mpr 110 aepfli '"Part of #7\n## Merge notes\nclose #9: not on the Part of line\nclose #7: done"')"
+merged "$(mpr 110 aepfli '"Part of #7 (follow-up of #9)\n## Merge notes\nclose #9: not on the Part of line\nclose #7: done"')"
 echo '{"number":7,"state":"open","pull_request":{"url":"x"}}' >"${STUB_DIR}/issue-7.json"
 run
 [[ "$OUT" == *"#9 refused (not on the Part of line)"* && "$OUT" == *"#7 refused (a pull request)"*"next: check the merge notes"* ]] || fail "target refusal lines"
@@ -371,6 +409,17 @@ run
 exec 8>&-
 [[ $RC -eq 1 && "$OUT" == "SWEEP BUSY"* ]] || fail "lock: rc=$RC"
 [[ -z "$(calls)" ]] || fail "busy sweep called gh"
+ok
+
+# 13b. Without SWEEP_LOCK the lock lives in the SCRIPT's repo, whatever the cwd.
+reset; prs ""
+REPO_LOCK="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/merge-sweep.lock"
+exec 8>>"$REPO_LOCK"; flock -n 8
+set +e
+OUT="$(cd "$WORK" && env -u SWEEP_LOCK -u SWEEP_AUTHORS -u REVIEW_APPROVERS timeout 30 "${SWEEP}" 2>/dev/null)"; RC=$?
+set -e
+exec 8>&-
+[[ $RC -eq 1 && "$OUT" == "SWEEP BUSY: another merge sweep holds $REPO_LOCK"* ]] || fail "lock from another cwd: rc=$RC"
 ok
 
 echo "test-merge-sweep.sh: ${pass} groups passed"

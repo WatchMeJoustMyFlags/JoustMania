@@ -328,7 +328,10 @@ review_required() {
 # Prints the reason when not; exit 1 also on an API error (fail closed).
 approver_list() {
   local a="${REVIEW_APPROVERS:-}"
-  [[ -n "${a//[[:space:],]/}" ]] || a="$(gh variable get REVIEW_APPROVERS 2>/dev/null || true)"
+  if [[ -z "${a//[[:space:],]/}" ]]; then
+    a="$(gh variable get REVIEW_APPROVERS 2>/dev/null)" \
+      || echo "WARNING: cannot read the repo variable REVIEW_APPROVERS; using the default aepfli (review-gate.yml may use another list)" >&2
+  fi
   [[ -n "${a//[[:space:],]/}" ]] || a="aepfli"
   echo "$a"
 }
