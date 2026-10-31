@@ -465,9 +465,11 @@ class NonstopJoustGame(BaseGameMode):
                 # this frame respawns on the next one at the earliest (UC-026 step 2)
                 await self._update_respawn_timers()
 
-                # Motion; the time limit is checked once per frame below
-                for gameplay_data in gameplay_update.controllers:
-                    await self._process_controller_state(gameplay_data)
+                # Motion; the time limit is checked once per frame below. The
+                # runtime config is read once for the frame (#2361).
+                with self._frame_config_scope():
+                    for gameplay_data in gameplay_update.controllers:
+                        await self._process_controller_state(gameplay_data)
 
                 # Check if alive players changed (Phase 45 - dynamic filtering)
                 # Note: Nonstop has frequent changes due to respawns

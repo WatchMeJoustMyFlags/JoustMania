@@ -1653,6 +1653,29 @@ class TestNonstopRespawnClock:
         assert call.frames == 0, "every frame was processed"
         assert sleeps == [], f"the game loop slept between frames: {sleeps[:3]}"
 
+    @pytest.mark.uc("UC-026", flow="main")
+    @pytest.mark.asyncio
+    async def test_the_loop_reads_the_runtime_config_once_per_frame(self):
+        """#2361: the controller pass of a frame shares one config read (was two per player)."""
+
+        async def config_reads(frames: int) -> int:
+            game, _ = await self._game()
+            frame = controller_manager_pb2.GameplayDataUpdate(
+                controllers=[
+                    controller_manager_pb2.GameplayData(serial=serial, accel=controller_manager_pb2.Vector3(z=1.0))
+                    for serial in game.players
+                ]
+            )
+            call = _FiniteFrameCall(frames=frames, frame=frame)
+            game.controller_client = SimpleNamespace(StreamGameplayData=lambda: call)
+            config = GamePerformanceConfig(update_frequency_hz=30)
+            with patch.object(get_config_manager(), "get_config", return_value=config) as get_config:
+                await asyncio.wait_for(game._game_loop(), timeout=5)
+            assert len(game.players) >= 2
+            return get_config.call_count
+
+        assert await config_reads(20) - await config_reads(0) == 20
+
     @pytest.mark.asyncio
     async def test_the_loop_records_the_frame_metrics(self):
         game, _ = await self._game()

@@ -21,7 +21,7 @@ import random
 import statistics
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -86,7 +86,7 @@ from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-ex
     resolve_shield_activation,
     resolve_shield_limit,
 )
-from services.game_coordinator.runtime_config import get_config_manager
+from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
 from services.game_coordinator.stream_writes import serialized_write
 
 if TYPE_CHECKING:
@@ -627,6 +627,15 @@ class BaseGameMode(ShieldMixin, ABC):
     # trigger (no ``pattern_trigger_policy``, UC-046 BR-018), always takes the
     # instant path.
     SHIELD_TRIGGER_ALLOWED: bool = False
+
+    # The runtime config snapshot of the frame being processed (#2361): read once
+    # per frame, not twice per player. The config is event-refreshed (flags.md), so
+    # a refresh applies from the next frame. None outside a frame: a call outside
+    # the frame loop reads the live snapshot.
+    _frame_config: GamePerformanceConfig | None = None
+    # The bound ``accel_distribution`` child of this game, with the metric it was
+    # bound from (a test may patch the metric): the label lookup runs once per game.
+    _accel_distribution_child: tuple[Any, Any] | None = None
 
     def __init__(
         self,
@@ -1664,19 +1673,43 @@ class BaseGameMode(ShieldMixin, ABC):
         Returns:
             True if game is over (win condition met), False otherwise
         """
-        # UC-020 BR-001: win check after every disconnect and every controller sample.
-        # Handle disconnects first (#580)
-        for disconnect in gameplay_update.disconnects:
-            await self._handle_disconnect(disconnect.serial)
-            if await self._check_win_condition():
-                return True
+        with self._frame_config_scope():
+            # UC-020 BR-001: win check after every disconnect and every controller sample.
+            # Handle disconnects first (#580)
+            for disconnect in gameplay_update.disconnects:
+                await self._handle_disconnect(disconnect.serial)
+                if await self._check_win_condition():
+                    return True
 
-        for gameplay_data in gameplay_update.controllers:
-            await self._process_controller_state(gameplay_data)
+            for gameplay_data in gameplay_update.controllers:
+                await self._process_controller_state(gameplay_data)
 
-            if await self._check_win_condition():
-                return True
-        return False
+                if await self._check_win_condition():
+                    return True
+            return False
+
+    @contextlib.contextmanager
+    def _frame_config_scope(self) -> Iterator[GamePerformanceConfig]:
+        """Read the runtime config once for one frame; every player of the frame uses it."""
+        previous = self._frame_config
+        self._frame_config = get_config_manager().get_config()
+        try:
+            yield self._frame_config
+        finally:
+            self._frame_config = previous
+
+    def _runtime_config(self) -> GamePerformanceConfig:
+        """The frame's config snapshot inside a frame, otherwise the live one."""
+        frame_config = self._frame_config
+        return frame_config if frame_config is not None else get_config_manager().get_config()
+
+    def _accel_distribution(self) -> Any:
+        """The ``accel_distribution`` child for this game's mode, bound once per game."""
+        cached = self._accel_distribution_child
+        if cached is None or cached[0] is not metrics.accel_distribution:
+            child = metrics.accel_distribution.labels(game_mode=self.get_game_name())
+            cached = self._accel_distribution_child = (metrics.accel_distribution, child)
+        return cached[1]
 
     async def _handle_warmup_disconnects(self) -> bool:
         """Run disconnects buffered by ``_warmup_ema()`` through the death path.
@@ -2131,7 +2164,7 @@ class BaseGameMode(ShieldMixin, ABC):
             smoothed: Smoothed acceleration value
             effective_death: Current effective death threshold
         """
-        config = get_config_manager().get_config()
+        config = self._runtime_config()
         if not config.analytics.enabled or player.analytics is None:
             return
 
@@ -2168,7 +2201,7 @@ class BaseGameMode(ShieldMixin, ABC):
             )
 
         # Record to histogram for distribution analysis
-        metrics.accel_distribution.labels(game_mode=self.get_game_name()).observe(accel_mag)
+        self._accel_distribution().observe(accel_mag)
 
     def _process_health(self, player: Player, serial: str, controller_state) -> None:
         """Process controller health counters and manage degradation child spans.
@@ -2184,7 +2217,7 @@ class BaseGameMode(ShieldMixin, ABC):
             controller_state: GameplayData protobuf (may have .health field)
         """
         health = controller_state.health if controller_state.HasField("health") else None
-        config = get_config_manager().get_config()
+        config = self._runtime_config()
         threshold = config.poll_drop_threshold
         has_led_issues = health and health.led_failures
 
