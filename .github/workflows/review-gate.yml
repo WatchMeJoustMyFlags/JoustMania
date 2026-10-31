@@ -14,8 +14,9 @@ name: Review gate
 # A PR that edits this workflow, review-gate.sh, or adds a job named
 # "Reviewed head" can satisfy the check itself. Accepted for now: the threat is a
 # push after the review, not a hostile PR (every agent runs as the maintainer).
-# Defence in depth: the script is checked out at merge_group.base_sha (stops a
-# script edit, not a yml edit). Reviewers must flag any diff touching
+# Defence in depth: the script is checked out at merge_group.base_sha, the base
+# of the queue entry (main's tip, or the merge-group commit of the entry ahead;
+# stops a script edit, not a yml edit). Reviewers must flag any diff touching
 # `.github/workflows/**` or `scripts/ci/review-gate.sh` (review-pr guidance, PR2).
 # Real fix (follow-up): a reviewer GitHub App posting both statuses, with the
 # required check pinned to its integration id.

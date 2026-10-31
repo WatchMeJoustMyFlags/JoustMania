@@ -535,6 +535,19 @@ reset; view "$GREEN"; RULES_GROUPING=HEADGREEN rules "Reviewed head"
 run 42 "$HEAD" --arm
 [[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "HEADGREEN grouping: rc=$RC $OUT"
 calls | grep -qE 'api -X|pr merge|pr view' && fail "HEADGREEN must not post or arm: $(calls)"
+# No grouping_strategy on the merge_queue rule, or no merge_queue rule at all: refuse (fail closed).
+reset; view "$GREEN"
+printf '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Reviewed head"}]}},{"type":"merge_queue","parameters":{}}]' \
+  >"${STUB_DIR}/rules.json"
+run 42 "$HEAD" --arm
+[[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "missing grouping_strategy: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge|pr view' && fail "missing grouping must not post or arm: $(calls)"
+reset; view "$GREEN"
+printf '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Reviewed head"}]}}]' \
+  >"${STUB_DIR}/rules.json"
+run 42 "$HEAD" --arm
+[[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "no merge_queue rule: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge|pr view' && fail "no merge_queue rule must not post or arm: $(calls)"
 reset; view "$GREEN"; rules "CI Complete" "Reviewed head (old)"
 run 42 "$HEAD" --arm
 [[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "ruleset without context: rc=$RC $OUT"
@@ -584,6 +597,14 @@ run 42 abcdef1
 SAFE_MERGE_MAX_WAIT=5
 calls | grep -q "api -X POST repos/{owner}/{repo}/statuses/$HEAD -f state=success -f context=Reviewed head" \
   || fail "status must be posted before the CI wait (rc=$RC $OUT): $(calls)"
+# ... and only once: several pending polls produce exactly one POST.
+reset; SAFE_MERGE_MAX_WAIT=1
+view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'CI Complete' QUEUED '' 100)"
+run 42 abcdef1
+SAFE_MERGE_MAX_WAIT=5
+[[ $RC -eq 4 ]] || fail "pending CI times out (multi-poll): rc=$RC $OUT"
+(( $(grep -c 'statusCheckRollup' "${STUB_DIR}/calls") >= 2 )) || fail "expected at least two polls: $(calls)"
+(( $(grep -c 'api -X POST' "${STUB_DIR}/calls") == 1 )) || fail "status must be posted exactly once: $(calls)"
 reset; view "$GREEN"; touch "${STUB_DIR}/status-fail"
 run 42 abcdef1
 [[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "failed status post must not block the merge: rc=$RC $OUT"
