@@ -47,7 +47,6 @@ The totals (the number of names, of names without a consumer and of names never 
 | `controller_discovery_check_duration_seconds` | histogram | (none) | controller-manager | yes | (none) |  |
 | `controller_discovery_checks_total` | counter | (none) | controller-manager | yes | (none) |  |
 | `controller_discovery_full_enumerate_total` | counter | (none) | controller-manager | yes | (none) |  |
-| `controller_discovery_verify_only_total` | counter | (none) | controller-manager | yes | (none) |  |
 | `controller_identify_requests_total` | counter | `outcome` | controller-manager | yes | (none) |  |
 | `controller_info` | gauge | `serial`, `name` | controller-manager | yes | agent, grafana |  |
 | `controller_input_lag_seconds` | histogram | `serial` | controller-manager | yes | grafana | #1376; game streams only |
@@ -130,6 +129,8 @@ The totals (the number of names, of names without a consumer and of names never 
 | `grpc_client_request_duration_seconds` | histogram | `service`, `method` | lib (`lib/grpc_metrics.py`) | yes | grafana | #1426; a stream is timed once, at its end |
 | `grpc_request_duration_seconds` | histogram | `method` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in audio, controller-manager, game-coordinator | (none) |  |
 | `grpc_requests_total` | counter | `method`, `status` | audio, controller-manager, game-coordinator, menu | emitted by menu; defined but never recorded in audio, controller-manager, game-coordinator | (none) |  |
+| `menu_audio_rpc_failures_total` | counter | `rpc`, `reason` | menu | yes | (none) |  |
+| `menu_button_dispatch_seconds` | histogram | `event_type` | menu | yes | (none) |  |
 | `menu_button_event_errors_total` | counter | `event_type` | menu | yes | (none) |  |
 | `menu_button_frames_processed_total` | counter | (none) | menu | yes | (none) |  |
 | `menu_button_presses_total` | counter | `button`, `action` | menu | yes | (none) |  |

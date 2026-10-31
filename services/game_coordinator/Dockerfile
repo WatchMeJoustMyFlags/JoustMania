@@ -7,12 +7,13 @@
 FROM python:3.14-slim AS builder
 
 # uv: fast Python package installer
-RUN pip install --no-cache-dir uv==0.5.11
+# uv >= 0.8 reads the lockfile (revision 3); keep near the uv CI runs (#2266)
+RUN pip install --no-cache-dir uv==0.11.6
 
 WORKDIR /app
 
 # Copy workspace configuration
-COPY pyproject.toml /app/
+COPY pyproject.toml uv.lock /app/
 
 # Copy proto package (shared protocol buffer contracts)
 COPY proto/pyproject.toml /app/proto/
@@ -29,7 +30,12 @@ COPY services/game_coordinator/pyproject.toml /app/services/game_coordinator/
 
 # Install workspace packages and service dependencies
 WORKDIR /app
-RUN uv pip install --system -e proto/ -e lib/ -e services/game_coordinator/
+# #2266: third-party dependencies come from uv.lock (the versions the unit tests
+# ran), never from a fresh resolve; the workspace packages then install editable
+# with --no-deps. A partial workspace is enough for `uv export --frozen`.
+RUN uv export --frozen --no-dev --no-emit-workspace --package joustmania-game-coordinator -o /tmp/requirements.txt \
+    && uv pip install --system -r /tmp/requirements.txt \
+    && uv pip install --system --no-deps -e proto/ -e lib/ -e services/game_coordinator/
 
 # Runtime stage - Chainguard distroless-style image, minimal size and attack surface
 #

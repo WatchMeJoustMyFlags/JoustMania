@@ -16,6 +16,10 @@ import (
 // so the underlying coordinator message is preserved for the debug log.
 var ErrSpawnBackpressure = errors.New("shadow spawn backpressure: coordinator at capacity")
 
+// ErrShuttingDown refuses a declare or start once the agent's graceful stop has
+// begun (UC-043 A20, #2332): no experiment starts after the shutdown AbortAll.
+var ErrShuttingDown = errors.New("agent shutting down: no new experiment")
+
 // registry_seams.go defines the INJECTED boundaries of the experiment registry
 // (design §7). The registry owns ONLY the lifecycle + capacity + book-keeping
 // logic; every consequential effect — spawning a shadow game, computing a
@@ -130,12 +134,22 @@ const (
 	PromotionApplied   = "applied"
 	PromotionDiscarded = "discarded"
 	PromotionReverted  = "reverted"
+	// PromotionDeferred: the real write of a hold key waits until no real game runs
+	// (UC-043 A17 step 3); its later outcome is journaled through RecordPromotion.
+	PromotionDeferred = "deferred"
 )
 
+// PromotionReasonShutdown is the reason of the `discarded` promotion event a
+// conclusion journals when it lands after the graceful stop began (UC-043 A20);
+// the same value as promote.ReasonShutdown, the reason of a deferred write dropped
+// at shutdown (A17 step 3).
+const PromotionReasonShutdown = "shutdown"
+
 // promotionActed reports whether a promotion acted (applied, or applied and then
-// reverted by the watch); anything else, an unknown outcome included, did not.
+// reverted by the watch, or deferred: the promoter's queue carries the write,
+// UC-043 A17); anything else, an unknown outcome included, did not.
 func promotionActed(res PromotionResult) bool {
-	return res.Outcome == PromotionApplied || res.Outcome == PromotionReverted
+	return res.Outcome == PromotionApplied || res.Outcome == PromotionReverted || res.Outcome == PromotionDeferred
 }
 
 // TargetingWriter scopes / un-scopes the experiment's shadow targeting branch on

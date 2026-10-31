@@ -3,7 +3,7 @@
 The Go agent's unit tests and the Python services' unit tests evaluate jsonlogic
 in-process or mock the provider. What only the real flagd server shows is
 checked here, against ONE flagd container (the image docker-compose.yml runs,
-v0.16.0) serving a temporary copy of ``services/flagd/ci`` (see flagd_harness):
+v0.18.1) serving a temporary copy of ``services/flagd/ci`` (see flagd_harness):
 
 - typed resolution: every flag the game coordinator reads resolves, through the
   RPC and the in-process resolver, with the SAME typed getter the coordinator
@@ -124,7 +124,7 @@ _READ_HELPERS = {
 
 # Coordinator wrappers that take the flag key as a parameter:
 # name -> (flag set, getter, key parameter name).
-# games/base.py _read_volume_flag: get_flag_client("user").get_float_value(flag_name).
+# games/flag_snapshot.py _read_volume_flag: get_flag_client("user").get_float_value(flag_name).
 _WRAPPERS = {"_read_volume_flag": ("user", "float", "flag_name")}
 
 # Getter call sites with a non-literal key that are covered another way, as
@@ -139,7 +139,7 @@ _COVERED_NON_LITERAL = {
         "resolve_player_targets",
         "flag_key",
     ): "targeted_value_kinds()",
-    ("base.py", "_read_volume_flag", "flag_name"): "_WRAPPERS",
+    ("flag_snapshot.py", "_read_volume_flag", "flag_name"): "_WRAPPERS",
 }
 
 # Per-serial reads: the caller passes value_kind, which must match the spec's.
@@ -183,14 +183,15 @@ def _client_domains(tree: ast.AST) -> dict[str, str]:
     """``<receiver source> -> flag set`` from ``X = get_flag_client("set")``."""
     domains = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-            if (
-                _call_name(node.value.func) == "get_flag_client"
-                and node.value.args
-                and _literal(node.value.args[0])
-            ):
-                for target in node.targets:
-                    domains[ast.unparse(target)] = _literal(node.value.args[0])
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and _call_name(node.value.func) == "get_flag_client"
+            and node.value.args
+            and _literal(node.value.args[0])
+        ):
+            for target in node.targets:
+                domains[ast.unparse(target)] = _literal(node.value.args[0])
     return domains
 
 
@@ -790,24 +791,42 @@ def test_every_coordinator_flag_resolves_with_its_typed_getter(flagd, resolver):
 # --------------------------------------------------------------------------- #
 # The agent's charge ledger reads shield.activation and shield.charge_expiry_seconds
 # from the game set (services/agent/flags/game.go:ShieldCharge) with a SUBSET of the
-# coordinator's evaluation context on the grant path: game_kind=real and gameId, for a
-# real game only. The coordinator reads both flags inside grant_shield, which the
+# coordinator's evaluation context on the grant path: gameId, the game's game_kind and,
+# for a shadow game of an experiment, experiment_id and arm (#2096, UC-043 A17). The coordinator reads both flags inside grant_shield, which the
 # InterventionManager dispatches through GameLoopDispatcher.run in the game's flag
 # transaction context (interventions.py run_in_game_flag_context, #1970): the API-level
 # attributes, the game's context (targetingKey = game_mode, controller_count,
 # sensitivity, game_kind) and gameId (pinned by
 # services/game_coordinator/tests/test_shield_charge_flag_context.py). flags.md §4
-# limits targeting on these two flags to gameId and game_kind, so both resolve the same
-# value.
+# limits targeting on these two flags to gameId and game_kind (plus experiment_id and
+# arm on shield.activation, which is in the experiment catalog since FR-162), so both
+# resolve the same value.
 SHIELD_LEDGER_FLAGS = {
     "shield.activation": "string",
     "shield.charge_expiry_seconds": "float",
 }
-SHIELD_TARGETING_VARS = {"gameId", "game_kind"}
+SHIELD_TARGETING_VARS = {
+    "shield.activation": {"gameId", "game_kind", "experiment_id", "arm"},
+    "shield.charge_expiry_seconds": {"gameId", "game_kind"},
+}
+# The eight hold keys of FR-162 (UC-043 A17): the only shield keys in the experiment
+# catalog. The agent's hold gate reads their effective default as what real games and
+# shadow games outside an arm resolve, which holds only while they have no baseline
+# targeting.
+HOLD_KEYS = {
+    "shield.activation",
+    "shield.energy_max_seconds",
+    "shield.energy_budget_seconds",
+    "shield.energy_initial_seconds",
+    "shield.recharge_per_second",
+    "shield.min_burst_seconds",
+    "shield.hold_rumble_intensity",
+    "shield.empty_pulse_ms",
+}
 _CONTRACT_GAME_ID = "g-contract-1837"
 
 
-def _coordinator_context() -> "EvaluationContext":
+def _coordinator_context() -> EvaluationContext:
     """lib/feature_flags on the grant path of a real FFA game: API-level attributes, the
     game's transaction context and gameId (see the comment above)."""
     return EvaluationContext(
@@ -827,15 +846,18 @@ def _coordinator_context() -> "EvaluationContext":
     )
 
 
-def _agent_context() -> "EvaluationContext":
+def _agent_context(
+    game_kind: str = "real", experiment_id: str | None = None, arm: str | None = None
+) -> EvaluationContext:
     """Keep in sync with shieldChargeContext in services/agent/flags/game.go (its unit
-    test TestShieldCharge_CoordinatorContext pins the Go side)."""
-    return EvaluationContext(
-        attributes={
-            "game_kind": "real",
-            "gameId": _CONTRACT_GAME_ID,
-        },
-    )
+    tests TestShieldCharge_CoordinatorContext and TestShieldCharge_ExperimentArmContext
+    pin the Go side)."""
+    attributes = {"game_kind": game_kind, "gameId": _CONTRACT_GAME_ID}
+    if experiment_id:
+        attributes["experiment_id"] = experiment_id
+    if arm:
+        attributes["arm"] = arm
+    return EvaluationContext(attributes=attributes)
 
 
 def _json_vars(node) -> set[str]:
@@ -857,9 +879,9 @@ def _json_vars(node) -> set[str]:
 @pytest.mark.uc("UC-040", flow="A31", steps=[1])
 @pytest.mark.parametrize("flag_dir", ["ci", "base"])
 def test_shield_flag_targeting_uses_only_the_agents_context(flag_dir):
-    """Static: targeting on the two shield flags may reference only gameId and game_kind
-    (or flagd's own $flagd.* values), so the agent's narrower context resolves
-    what the coordinator's does (flags.md §4)."""
+    """Static: targeting on the two shield flags may reference only the variables the
+    agent's context carries (or flagd's own $flagd.* values), so the agent's narrower
+    context resolves what the coordinator's does (flags.md §4)."""
     root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
     flags = json.loads((root / "game.json").read_text())["flags"]
     failures = []
@@ -870,7 +892,7 @@ def test_shield_flag_targeting_uses_only_the_agents_context(flag_dir):
         extra = {
             v
             for v in _json_vars(flags[key].get("targeting", {}))
-            if v not in SHIELD_TARGETING_VARS and not v.startswith("$flagd.")
+            if v not in SHIELD_TARGETING_VARS[key] and not v.startswith("$flagd.")
         }
         if extra:
             failures.append(
@@ -1028,6 +1050,7 @@ def test_handler_read_checks_report_a_violation():
     """Negative fixture: a game_mode rung, a missing flag and an undeclared scope are reported."""
     registry = {
         ("game", "shield.activation"): {"targeting": ["gameId"]},
+        ("game", "shield.charge_rumble_intensity"): {"targeting": []},
         ("game", "windows"): {
             "targeting": ["targetingKey", "experiment_id", "arm"],
             "experiment_rung": "applies",
@@ -1041,6 +1064,7 @@ def test_handler_read_checks_report_a_violation():
                     "if": [{"==": [{"var": "game_mode"}, "FFA"]}, "trigger", "instant"]
                 }
             },
+            "shield.charge_rumble_intensity": {},
             "windows": {
                 "targeting": {
                     "if": [{"==": [{"var": "targetingKey"}, "calm"]}, "calm", "default"]
@@ -1056,7 +1080,12 @@ def test_handler_read_checks_report_a_violation():
     scope_failures = handler_read_scope_failures(
         registry,
         [
-            {"set": "game", "key": "shield.activation", "scope": ["experiment+arm"]},
+            {"set": "game", "key": "shield.activation", "scope": ["stack"]},
+            {
+                "set": "game",
+                "key": "shield.charge_rumble_intensity",
+                "scope": ["experiment+arm"],
+            },
             {"set": "game", "key": "windows", "scope": ["stack"]},
             {"set": "game", "key": "ghost", "scope": ["game"]},
         ],
@@ -1064,16 +1093,61 @@ def test_handler_read_checks_report_a_violation():
     assert len(scope_failures) == 4
     assert "ghost" in scope_failures[0] and "does not pass gameId" in scope_failures[0]
     assert (
-        "shield.activation" in scope_failures[1]
+        "shield.charge_rumble_intensity" in scope_failures[1]
         and "not declared experiment_rung applies" in scope_failures[1]
     )
     assert (
-        "shield.activation" in scope_failures[2]
+        "shield.charge_rumble_intensity" in scope_failures[2]
         and "does not declare experiment_id and arm" in scope_failures[2]
     )
     assert (
         "windows" in scope_failures[3]
         and "no experiment+arm scope" in scope_failures[3]
+    )
+
+
+@pytest.mark.uc("UC-043", flow="A17", steps=[1])
+@pytest.mark.uc("UC-040", br=["BR-019", "BR-027"])
+def test_hold_keys_are_the_only_shield_keys_in_the_experiment_catalog():
+    """Static (FR-162, C-034): exactly the eight hold keys have the experiment+arm and
+    real scopes, each is declared experiment_rung applies with experiment_id and arm in
+    its handler targeting; charge_expiry and the #2094 cue flags stay stack-only with no
+    rung."""
+    registry = handler_flag_reads()
+    writer_flags = ic.load_yaml(FLAG_SERVICE_REGISTRY)["flags"]
+    shield_rows = {
+        f["key"]: set(f.get("scope", []))
+        for f in writer_flags
+        if f["set"] == "game" and f["key"].startswith("shield.")
+    }
+    widened = {k for k, scope in shield_rows.items() if "experiment+arm" in scope}
+    assert widened == HOLD_KEYS
+    for key in HOLD_KEYS:
+        assert shield_rows[key] == {"stack", "experiment+arm", "real"}, key
+        entry = registry[("game", key)]
+        assert entry.get("experiment_rung") == "applies", key
+        assert {"gameId", "experiment_id", "arm"} <= set(entry["targeting"]), key
+    for key in set(shield_rows) - HOLD_KEYS:
+        assert shield_rows[key] == {"stack"}, key
+        entry = registry.get(("game", key))
+        if entry is not None:
+            assert "experiment_rung" not in entry, key
+
+
+@pytest.mark.uc("UC-043", flow="A17", steps=[1])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_hold_keys_have_no_baseline_targeting(flag_dir):
+    """Static: the agent's hold gate reads a hold key's effective default as the value
+    real games and shadow games outside an arm resolve (UC-043 A17 step 1); that is
+    true only while the key has no baseline targeting."""
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    flags = json.loads((root / "game.json").read_text())["flags"]
+    with_targeting = sorted(
+        k for k in HOLD_KEYS if k in flags and flags[k].get("targeting")
+    )
+    assert not with_targeting, f"{flag_dir}/game.json: {with_targeting}"
+    assert HOLD_KEYS <= set(flags), (
+        f"{flag_dir}/game.json misses {HOLD_KEYS - set(flags)}"
     )
 
 
@@ -1108,7 +1182,7 @@ def test_agent_reads_the_shield_flags_like_the_coordinator(flagd, resolver):
 # 2b. Agent tuning flags migrated from env (#1788, flags.md §15)
 # --------------------------------------------------------------------------- #
 AGENT_TUNING_GO = ic.REPO_ROOT / "services" / "agent" / "flags" / "tuning.go"
-_GO_KEY_CONST = re.compile(r'^\s*(key\w+)\s*=\s*"([^"]+)"', re.M)
+_GO_KEY_CONST = re.compile(r'^\s*(key\w+)\s*=\s*"([^"]+)"', re.MULTILINE)
 # The flags.Flags helper each getter calls -> the typed OpenFeature getter behind it
 # (secondsFlag -> intFlag -> IntValue; durationFlag -> floatFlag -> FloatValue).
 _GO_HELPERS = {
@@ -1348,6 +1422,54 @@ def test_windows_experiment_rung_reaches_only_the_experimental_arm(
         fh.dump_in_place(path, original)
 
 
+@pytest.mark.uc("UC-043", flow="A17", steps=[1])
+@pytest.mark.uc("UC-040", flow="A31", steps=[1])
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_agent_reads_the_activation_arm_like_the_coordinator(flagd, resolver):
+    """Live (#2096): with a render.go-shaped experiment rung for shield.activation=hold,
+    the coordinator's grant read in a shadow game (game context + gameId) and the agent's
+    context for that game (game_kind, experiment_id, arm, gameId) resolve the same value
+    in each arm: hold in the experimental arm, the effective default in the control arm
+    and in a real game."""
+    path = flagd.file("game")
+    original = fh.load(path)
+    doc = json.loads(json.dumps(original))
+    activation = doc["flags"]["shield.activation"]
+    baseline = activation["defaultVariant"]
+    activation["targeting"] = {
+        "if": [_experiment_rung(_EXPERIMENT_ID, "experimental"), "hold", None]
+    }
+    fh.dump_in_place(path, doc)
+    gid = EvaluationContext(attributes={"gameId": _CONTRACT_GAME_ID})
+    try:
+        with _ready_client(flagd, "game", resolver=resolver) as client:
+
+            def read(ctx) -> str:
+                details = client.get_string_details("shield.activation", "", ctx)
+                assert details.error_code is None, f"{resolver}: {details.error_code}"
+                return details.value
+
+            def coordinator(game: str) -> str:
+                return read(_handler_read(_GAMES[game], gid))
+
+            assert fh.poll_until(lambda: coordinator("experimental-arm") == "hold"), (
+                f"{resolver}: the experiment rung never served"
+            )
+            arms = {
+                "experimental-arm": ("shadow", _EXPERIMENT_ID, "experimental"),
+                "control-arm": ("shadow", _EXPERIMENT_ID, "control"),
+                "real": ("real", None, None),
+            }
+            for game, (kind, exp, arm) in arms.items():
+                agent = read(_agent_context(kind, exp, arm))
+                assert agent == coordinator(game), f"{resolver} {game}: agent {agent!r}"
+            want = activation["variants"][baseline]
+            assert coordinator("control-arm") == want
+            assert coordinator("real") == want
+    finally:
+        fh.dump_in_place(path, original)
+
+
 def _getter_for(value) -> str:
     if isinstance(value, bool):
         return "boolean"
@@ -1488,9 +1610,11 @@ def test_gameid_and_serial_scoped_targeting_resolves_on_both_resolvers(flagd, re
                 )
 
             assert fh.poll_until(
-                lambda: player("SER_A", "game_a").value == 1.5
-                and player("SER_B", "game_a").value == 0.7
-                and game("game_a").value == 3
+                lambda: (
+                    player("SER_A", "game_a").value == 1.5
+                    and player("SER_B", "game_a").value == 0.7
+                    and game("game_a").value == 3
+                )
             ), (
                 f"{resolver}: targeting never served: "
                 f"{player('SER_A', 'game_a')} {player('SER_B', 'game_a')}"

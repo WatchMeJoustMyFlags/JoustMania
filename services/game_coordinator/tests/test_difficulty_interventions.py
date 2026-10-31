@@ -170,7 +170,7 @@ class TestMusicTempoOverride:
         # Make the natural schedule "due" so without an override it would fire.
         game.change_time = 0.0
         game.tempo_override = 1.15
-        with patch("services.game_coordinator.games.base.time.time", return_value=1_000.0) as clock:
+        with patch("services.game_coordinator.game_clock.now", return_value=1_000.0) as clock:
             game.music_speed = 1.0
             await game._check_music_speed()
             game.audio_client.ChangeTempo.assert_called_once()
@@ -189,7 +189,7 @@ class TestMusicTempoOverride:
         """Clearing the override (value 0) lets the natural schedule run again."""
         game = make_game()
         game.tempo_override = 1.3
-        with patch("services.game_coordinator.games.base.time.time", return_value=1_000.0) as clock:
+        with patch("services.game_coordinator.game_clock.now", return_value=1_000.0) as clock:
             game.music_speed = 1.0
             await game._check_music_speed()
             clock.return_value = 1_100.0

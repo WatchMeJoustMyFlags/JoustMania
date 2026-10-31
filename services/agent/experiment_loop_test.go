@@ -318,7 +318,7 @@ func TestExperimentLoop_EndToEnd_SafeDefault_NoRealWrite(t *testing.T) {
 	loop := buildLoopForTest(t, spawner, resolve, realDef, github, armFitness())
 
 	id, err := loop.registry.Declare(experiment.Intent{
-		FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 	})
 	if err != nil {
 		t.Fatalf("declare: %v", err)
@@ -362,7 +362,7 @@ func TestExperimentLoop_EndToEnd_Autonomous_RealWriteGated(t *testing.T) {
 	loop := buildLoopForTest(t, spawner, resolve, realDef, github, armFitness())
 
 	id, err := loop.registry.Declare(experiment.Intent{
-		FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 	})
 	if err != nil {
 		t.Fatalf("declare: %v", err)
@@ -379,8 +379,8 @@ func TestExperimentLoop_EndToEnd_Autonomous_RealWriteGated(t *testing.T) {
 	if got := realDef.count(); got != 1 {
 		t.Fatalf("autonomous (kill-switch off) should perform exactly 1 real-default write, got %d", got)
 	}
-	if got := realDef.calls[0]; got.flagKey != "invincibility_seconds" || got.value != 6.0 {
-		t.Fatalf("real-default write = %+v, want invincibility_seconds=6.0", got)
+	if got := realDef.calls[0]; got.flagKey != "nonstop.respawn_seconds" || got.value != 6.0 {
+		t.Fatalf("real-default write = %+v, want nonstop.respawn_seconds=6.0", got)
 	}
 }
 
@@ -401,7 +401,7 @@ func TestExperimentLoop_EndToEnd_Autonomous_KillSwitchBlocksRealWrite(t *testing
 	loop := buildLoopForTest(t, spawner, resolve, realDef, github, armFitness())
 
 	id, _ := loop.registry.Declare(experiment.Intent{
-		FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+		FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 	})
 	if err := loop.registry.Start(context.Background(), id); err != nil {
 		t.Fatalf("start: %v", err)
@@ -948,21 +948,10 @@ func TestBuildExperimentLoop_DisabledByDefault(t *testing.T) {
 // and returns), leaving no survivor — the #923 contract applied to the experiment
 // loop's own goroutine.
 func TestExperimentLoop_RunShutdownNoLeak(t *testing.T) {
-	// Ignore the process-global singletons this loop does NOT own: the OpenFeature
-	// event executor (a package singleton started transitively when the flags/
-	// promote packages touch the SDK), the gRPC balancer watcher, and the
-	// opencensus stats worker. IgnoreAnyFunction matches the executor regardless of
-	// the exact creating-frame symbol (which varies by SDK version), so this stays
-	// robust where the static leakIgnores() top-function string can drift.
-	// The executor's creating-frame symbol differs between the plain and -race
-	// builds (the compiler inlines newEventExecutor differently), so BOTH variants
-	// are listed; one always matches.
-	defer goleak.VerifyNone(t,
-		goleak.IgnoreAnyFunction("github.com/open-feature/go-sdk/openfeature.(*eventExecutor).startEventListener.func1.1"),
-		goleak.IgnoreAnyFunction("github.com/open-feature/go-sdk/openfeature.newEventExecutor.(*eventExecutor).startEventListener.func1.1"),
-		goleak.IgnoreAnyFunction("google.golang.org/grpc.(*ccBalancerWrapper).watcher"),
-		goleak.IgnoreAnyFunction("go.opencensus.io/stats/view.(*worker).start"),
-	)
+	// The package's shared goleak list (leakOptions, #2323): the process-global
+	// singletons this loop does NOT own (OpenFeature event executor, gRPC balancer
+	// watcher, opencensus stats worker) plus the goroutines running before the test.
+	defer goleak.VerifyNone(t, leakOptions()...)
 
 	spawner := &recordingSpawner{}
 	resolve := func(context.Context) promote.Config {
@@ -1123,7 +1112,7 @@ func TestExperimentLoop_ProposalSinkDeclaresWithinTheBudget(t *testing.T) {
 	sink := loop.proposalSink()
 
 	ctx := context.Background()
-	if err := sink.Review(ctx, experiment.Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Rationale: "r"}); err != nil {
+	if err := sink.Review(ctx, experiment.Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Rationale: "r"}); err != nil {
 		t.Fatalf("first proposal: %v", err)
 	}
 	if live := loop.registry.Live(); len(live) != 1 {

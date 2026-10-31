@@ -18,6 +18,7 @@ import pytest
 from openfeature.flag_evaluation import FlagEvaluationDetails
 
 from lib.types import GameEvent
+from services.game_coordinator.games.base import Player
 from services.game_coordinator.interventions import (
     BLOCK_LOW_BATTERY,
     BLOCK_MODE_UNSUPPORTED,
@@ -32,6 +33,7 @@ from services.game_coordinator.interventions import (
     _is_none_value,
     _RateLimiter,
 )
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
@@ -71,24 +73,6 @@ class FakeFlagClient:
 
     def get_object_value(self, key, default, _ctx=None):
         return self.values.get(key, default)
-
-
-class FakePlayer:
-    def __init__(self, serial, alive=True):
-        self.serial = serial
-        self.alive = alive
-        self.sensitivity_factor = 1.0
-
-
-class FakeGame:
-    def __init__(self, name, players=None):
-        self._name = name
-        # Player-targeted state flags (shield_seconds, player_sensitivity_factor)
-        # are resolved per active serial, so tests exercising them need players.
-        self.players = players or {}
-
-    def get_game_name(self):
-        return self._name
 
 
 def make_manager(
@@ -576,7 +560,7 @@ async def test_battery_guard_missing_does_not_block():
 async def test_mode_matrix_blocks_revive_in_ffa():
     mgr, events = make_manager(
         interventions={"revive_player": edge_event("revive_player", "ctrl_a")},
-        game=FakeGame("FFA"),
+        game=FakeInterventionGame("FFA", players={}),
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -590,7 +574,7 @@ async def test_mode_matrix_blocks_revive_in_ffa():
 async def test_mode_matrix_blocks_led_effect_in_werewolf():
     mgr, events = make_manager(
         interventions={"controller_effect": edge_event("controller_effect", "ctrl_a:pulse")},
-        game=FakeGame("Werewolf"),
+        game=FakeInterventionGame("Werewolf", players={}),
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -598,11 +582,33 @@ async def test_mode_matrix_blocks_led_effect_in_werewolf():
     assert eff[0]["block_reason"] == BLOCK_MODE_UNSUPPORTED
 
 
+class _NamelessGame(FakeInterventionGame):
+    """A game whose get_game_name() raises (#2361 review)."""
+
+    def get_game_name(self):
+        raise RuntimeError("mode name unavailable")
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-040", flow="A22")
+async def test_mode_matrix_fails_open_when_the_mode_name_raises():
+    """A raising get_game_name() reads as mode "" (no denial): revive, denied in FFA, still applies."""
+    mgr, events = make_manager(
+        interventions={"revive_player": edge_event("revive_player", "ctrl_a")},
+        game=_NamelessGame("FFA", serials=("ctrl_a",)),
+    )
+    with patch("services.game_coordinator.metrics.interventions_total"):
+        await mgr.evaluate_all()
+    rev = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "revive_player"]
+    assert rev[0]["blocked"] == "false"
+    assert rev[0]["block_reason"] == ""
+
+
 @pytest.mark.asyncio
 async def test_mode_matrix_allows_revive_in_nonstop():
     mgr, events = make_manager(
         interventions={"revive_player": edge_event("revive_player", "ctrl_a")},
-        game=FakeGame("Nonstop Joust"),
+        game=FakeInterventionGame("Nonstop Joust", players={}),
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -694,7 +700,7 @@ async def test_multiple_flags_evaluated_in_one_pass():
         },
         # shield_seconds is player-targeted: it resolves per active serial, so a
         # live game with at least one player is required for it to apply.
-        game=FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")}),
+        game=FakeInterventionGame("Nonstop Joust", players={"p1": Player("p1")}),
         backstop=10,
     )
     with patch("services.game_coordinator.metrics.interventions_total"):
@@ -722,7 +728,7 @@ def _applied(events, type_id):
 async def test_player_targeted_state_dispatches_on_resolved_change():
     """A player-targeted state flag dispatches when its per-serial resolved value
     moves off neutral, even though the global defaultVariant never changes."""
-    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    game = FakeInterventionGame("Nonstop Joust", players={"p1": Player("p1")})
     mgr, events = make_manager(interventions={"player_sensitivity_factor": 1.0}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # neutral 1.0 -> no dispatch
@@ -738,7 +744,7 @@ async def test_player_targeted_state_dispatches_on_resolved_change():
 async def test_player_targeted_state_no_redispatch_when_unchanged():
     """Re-evaluating an unchanged resolved map does not re-fire (no spurious
     metric/event or rate-limit consumption)."""
-    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    game = FakeInterventionGame("Nonstop Joust", players={"p1": Player("p1")})
     mgr, events = make_manager(interventions={"player_sensitivity_factor": 1.5}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -759,7 +765,7 @@ async def test_player_targeted_state_no_game_is_noop():
 async def test_player_targeted_state_revert_to_neutral_does_not_fire():
     """Reverting all serials back to neutral collapses the change key to empty
     and dispatches nothing (shields/factors simply expire/reset)."""
-    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    game = FakeInterventionGame("Nonstop Joust", players={"p1": Player("p1")})
     mgr, events = make_manager(interventions={"shield_seconds": 5}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # 5 -> applied
@@ -785,7 +791,7 @@ async def test_string_targeted_state_dispatches_and_reverts():
     string neutral ("none") IS change-detected — the revert collapses the change
     key to empty so no further enforced intervention fires. A float read would
     coerce-fail to the default and never see either transition."""
-    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    game = FakeInterventionGame("Nonstop Joust", players={"p1": Player("p1")})
     mgr, events = make_manager(interventions={"soft_penalty_action": "none"}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # neutral "none" -> no dispatch
@@ -812,7 +818,7 @@ async def test_string_targeted_state_dispatches_and_reverts():
 async def test_toughness_boost_string_value_change_detected():
     """toughness_boost_seconds ("5:2.0") is also string-valued: its real value is
     seen by change detection (not coerce-failed to the default)."""
-    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    game = FakeInterventionGame("Nonstop Joust", players={"p1": Player("p1")})
     mgr, events = make_manager(interventions={"toughness_boost_seconds": "0"}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # neutral "0" -> no dispatch
@@ -827,7 +833,7 @@ async def test_toughness_boost_string_value_change_detected():
 async def test_float_targeted_state_still_works_with_string_fix():
     """The float-typed targeted flag (player_handicap_factor) is unaffected by
     the string-getter fix: it still reads as a float and change-detects."""
-    game = FakeGame("Nonstop Joust", players={"p1": FakePlayer("p1")})
+    game = FakeInterventionGame("Nonstop Joust", players={"p1": Player("p1")})
     mgr, events = make_manager(interventions={"player_handicap_factor": 1.0}, game=game, backstop=10)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # neutral 1.0 -> no dispatch
@@ -851,7 +857,9 @@ async def test_float_targeted_state_still_works_with_string_fix():
     [("send_controller_effect", "controller_effect", "ctrl_a:pulse"), ("revive_player", "revive_player", "ctrl_a")],
 )
 async def test_mode_matrix_blocks_effect_and_revive_in_traitor(type_id, flag_key, value):
-    mgr, events = make_manager(interventions={flag_key: edge_event(flag_key, value)}, game=FakeGame("Traitor"))
+    mgr, events = make_manager(
+        interventions={flag_key: edge_event(flag_key, value)}, game=FakeInterventionGame("Traitor", players={})
+    )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     sent = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == type_id]
@@ -864,7 +872,9 @@ async def test_mode_matrix_blocks_effect_and_revive_in_traitor(type_id, flag_key
 @pytest.mark.parametrize("mode_name", ["Traitor", "Werewolf"])
 async def test_mode_matrix_blocks_global_sensitivity_in_hidden_role_modes(mode_name):
     """BR-002: adjust_global_sensitivity is denied in both hidden-role modes (it fights the role thresholds)."""
-    mgr, events = make_manager(interventions={"global_sensitivity_override": 3}, game=FakeGame(mode_name))
+    mgr, events = make_manager(
+        interventions={"global_sensitivity_override": 3}, game=FakeInterventionGame(mode_name, players={})
+    )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
     sent = [d for et, d in events if et == GameEvent.AGENT_INTERVENTION and d["type"] == "adjust_global_sensitivity"]

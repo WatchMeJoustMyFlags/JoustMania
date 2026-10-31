@@ -70,6 +70,10 @@ message StartGameConfig {
   // (attribution #975) carry them from the start. Empty (the default) means
   // "not in any experiment" — a real game or an unbound shadow game.
   //
+  // Shadow-only (experiment_id, arm, rng_seed, pattern_trigger_policy): the
+  // browser proxy clears them, see stripShadowOnlyFields in
+  // services/connect-proxy/main.go (#2214). Add new shadow-only fields there.
+  //
   // HARD INVARIANT (#982): these only SUBDIVIDE a shadow game; they NEVER make
   // a real game part of an experiment. A real (menu-origin/primary) start
   // ignores them — see game_coordinator's spawn binding, which only applies
@@ -88,6 +92,17 @@ message StartGameConfig {
   // (menu-origin/primary) start ignores it — see game_coordinator's spawn
   // binding, which only honors rng_seed for a shadow session.
   uint64 rng_seed = 7;
+
+  // Simulated trigger policy (#2096, UC-046 BR-018, UC-040 BR-019). True when
+  // the motion archetype installed on this game's pattern controllers carries a
+  // trigger_policy, so the controllers press the trigger by themselves: the
+  // shadow game then honours shield.activation trigger and hold instead of
+  // forcing instant. The agent derives it and the installed archetype from the
+  // same pinned archetype.
+  //
+  // HARD INVARIANT (#982): like rng_seed, only a SHADOW session honours it; a
+  // real (menu-origin/primary) start ignores it in the spawn binding.
+  bool pattern_trigger_policy = 8;
 
   // Mode-specific configuration
   oneof game_config {

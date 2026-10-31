@@ -209,7 +209,7 @@ from proto import game_coordinator_pb2
 from proto import game_coordinator_pb2_grpc
 
 # Create a gRPC channel
-channel = grpc.insecure_channel('localhost:50053')
+channel = grpc.insecure_channel("localhost:50053")
 stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(channel)
 
 # Make RPC calls
@@ -320,7 +320,7 @@ grpcurl -plaintext -d '{}' \
 import grpc
 from proto import game_coordinator_pb2, game_coordinator_pb2_grpc
 
-channel = grpc.insecure_channel('localhost:50053')
+channel = grpc.insecure_channel("localhost:50053")
 stub = game_coordinator_pb2_grpc.GameCoordinatorServiceStub(channel)
 
 request = game_coordinator_pb2.GetGameStateRequest()

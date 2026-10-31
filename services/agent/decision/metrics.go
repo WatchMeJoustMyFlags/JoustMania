@@ -94,7 +94,7 @@ func defaultEvaluationsCounter() otelmetric.Int64Counter {
 // meter provider (#790). It is incremented once per decision the rules/llm engine
 // returns, INCLUDING the ones a permission gate blocks, so the demo dashboard's
 // applied-vs-blocked panel (#789/#1113) can break decisions down by outcome.
-// Labels: action=<intervention id or "noop">, blocked=<bool>, block_reason=<""
+// Labels: game_kind=<primary|shadow>, action=<intervention id or "noop">, blocked=<bool>, block_reason=<""
 // when applied; not_allowed|battery_threshold|already_charged|shield_cap_reached|shield_cooldown|rate_limit when blocked>. The
 // block_reason set is the closed set of decision.BlockReason values, so
 // cardinality stays bounded. An instrument-creation error yields a no-op counter
@@ -103,7 +103,7 @@ func defaultEvaluationsCounter() otelmetric.Int64Counter {
 func newDecisionsCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
 	c, err := mp.Meter(decisionMeterName).Int64Counter(
 		"agent_decisions_total",
-		otelmetric.WithDescription("Total decisions returned by the agent engine, labeled by action, blocked (bool), and block_reason (empty when applied; not_allowed|battery_threshold|already_charged|shield_cap_reached|shield_cooldown|rate_limit when blocked) (#790)"),
+		otelmetric.WithDescription("Total decisions returned by the agent engine, labeled by game_kind (primary|shadow, #2294), action, blocked (bool), and block_reason (empty when applied; not_allowed|battery_threshold|already_charged|shield_cap_reached|shield_cooldown|rate_limit when blocked) (#790)"),
 	)
 	if err != nil {
 		c, _ = metricnoop.NewMeterProvider().Meter(decisionMeterName).Int64Counter("agent_decisions_total")

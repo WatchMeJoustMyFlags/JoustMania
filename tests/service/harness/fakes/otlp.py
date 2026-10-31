@@ -50,6 +50,13 @@ class SpanEventRecord:
 
 
 @dataclass(frozen=True)
+class SpanLinkRecord:
+    trace_id: str  # hex
+    span_id: str  # hex
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class SpanRecord:
     name: str
     service: str  # resource service.name
@@ -60,6 +67,7 @@ class SpanRecord:
     events: tuple[SpanEventRecord, ...] = ()
     resource: dict[str, Any] = field(default_factory=dict)
     start_time_unix_nano: int = 0
+    links: tuple[SpanLinkRecord, ...] = ()
 
     @property
     def is_root(self) -> bool:
@@ -135,6 +143,10 @@ def _decode_spans(request) -> list[SpanRecord]:
                         events=tuple(SpanEventRecord(e.name, _attributes(e.attributes)) for e in span.events),
                         resource=resource,
                         start_time_unix_nano=span.start_time_unix_nano,
+                        links=tuple(
+                            SpanLinkRecord(link.trace_id.hex(), link.span_id.hex(), _attributes(link.attributes))
+                            for link in span.links
+                        ),
                     )
                 )
     return spans

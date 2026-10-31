@@ -14,7 +14,7 @@ Built with TypeScript and Vite, served in production by [static-web-server](http
 - **Game controls** -- mode selector dropdown, start/stop buttons
 - **Game event log** -- recent events (game start, player deaths, winner) in the status bar
 - **Embedded observability** -- tabbed Grafana dashboard and Jaeger trace views via iframes
-- **Agent decisions** -- the Agent tab polls Jaeger (`/jaeger/api/traces?service=agent&operation=agent.decide`) every 1.5s and shows one row per `agent.decide` span: backend (requested vs used), model, answer, confidence against the act threshold, outcome, rationale and a trace link, plus a current-backend strip
+- **Agent decisions** -- the Agent tab polls Jaeger's query API v3 (`/jaeger/api/v3/traces?query.serviceName=agent&query.operationName=agent.decide`, #2283) every 1.5s and shows one row per `agent.decide` span: backend (requested vs used), model, answer, confidence against the act threshold, outcome, rationale and a trace link, plus a current-backend strip
 
 ## Configuration
 
@@ -46,14 +46,27 @@ services/dashboard/
 ├── vite.config.ts        # Dev proxy to connect-proxy
 └── src/
     ├── index.html        # SPA shell with tabs, controls, status bar
-    ├── main.ts           # Entry point, streaming loops, event handling
+    ├── main.ts           # Entry point: component wiring, streams and pollers
     ├── style.css
     ├── client.ts         # Connect protocol client (fetch-based)
+    ├── connect.ts        # Connect streaming framing
+    ├── controllerStream.ts / stream.ts   # Reconnecting controller / game-event streams
+    ├── poller.ts / pageGate.ts           # Single-chain pollers (backoff) and tab / page-visibility gate
+    ├── jaeger.ts / vm.ts                 # Jaeger and VictoriaMetrics readers (no browser clock)
+    ├── agent.ts          # agent.decide / flag_state / rollout spans and intervention counts
+    ├── experiments.ts    # experiment.progress snapshots (ExperimentStore)
+    ├── follow.ts         # Followed game (real, else live shadow)
+    ├── degrade.ts        # Per-source degraded-state messages
+    ├── adapters.ts / stageSettings.ts    # Adapter badges and stage settings strip (VictoriaMetrics)
+    ├── shield.ts / gameEvents.ts / identify.ts / unpair.ts / modes.ts / motion.ts / quality.ts
     ├── components/
     │   ├── ControllerCard.ts  # Single controller card (LED, battery, accel dot)
     │   ├── ControllerGrid.ts  # Grid layout managing controller cards
     │   ├── Controls.ts        # Game mode selector and start/stop buttons
-    │   └── GameStatus.ts      # Status bar (state, counts, event log)
+    │   ├── GameStatus.ts      # Status bar (state, counts, event log)
+    │   ├── StageSettings.ts   # Stage settings strip
+    │   ├── AgentView.ts       # Agent tab: decide feed, flag panel, overlay
+    │   └── ExperimentsView.ts # Experiments tab cards
     └── gen/                   # Hand-written TS mirrors of the proto messages the client uses
 ```
 

@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from services.game_coordinator import game_clock
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -28,7 +30,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, async_noop
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream, async_noop
 
 from lib.types import Sound
 from proto import controller_manager_pb2
@@ -45,17 +47,6 @@ from services.game_coordinator.games.base import (
     Player,
 )
 from services.game_coordinator.games.ffa import FFAGame
-
-
-class MockGameplayStream:
-    """Mock bidirectional stream for testing."""
-
-    def __init__(self):
-        self.messages = []
-
-    async def write(self, message):
-        self.messages.append(message)
-
 
 # ========================================================================
 # _compute_accel_magnitude
@@ -365,7 +356,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=2.0,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -384,7 +375,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() - 1.0,  # already past
+            toughness_boost_until=game_clock.now() - 1.0,  # already past
             toughness_boost_factor=2.0,
         )
         assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
@@ -402,7 +393,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.8,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=1.2,
         )
         ref = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.8)
@@ -419,7 +410,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=2.0,
         )
         _, death = game._compute_effective_thresholds(p)
@@ -438,7 +429,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.6,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -458,7 +449,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            soft_penalty_until=time.time() - 1.0,  # already past
+            soft_penalty_until=game_clock.now() - 1.0,  # already past
             soft_penalty_factor=0.6,
         )
         assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
@@ -475,7 +466,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.5,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -497,9 +488,9 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=2.0,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.6,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -519,7 +510,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.8,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.6,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -539,7 +530,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            rubberband_until=time.time() + 5.0,
+            rubberband_until=game_clock.now() + 5.0,
             rubberband_boost=1.4,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -558,7 +549,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            rubberband_until=time.time() - 1.0,  # already past
+            rubberband_until=game_clock.now() - 1.0,  # already past
             rubberband_boost=1.4,
         )
         assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
@@ -575,9 +566,9 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=1.2,
-            rubberband_until=time.time() + 5.0,
+            rubberband_until=game_clock.now() + 5.0,
             rubberband_boost=1.4,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -597,9 +588,9 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            rubberband_until=time.time() + 5.0,
+            rubberband_until=game_clock.now() + 5.0,
             rubberband_boost=1.4,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.6,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -616,7 +607,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            rubberband_until=time.time() + 5.0,
+            rubberband_until=game_clock.now() + 5.0,
             rubberband_boost=2.0,
         )
         _, death = game._compute_effective_thresholds(p)
@@ -649,7 +640,7 @@ class TestGrantToughnessBoost:
         assert ok is True
         p = game.players["AA"]
         assert p.toughness_boost_factor == pytest.approx(1.8)
-        assert p.toughness_boost_until > time.time()
+        assert p.toughness_boost_until > game_clock.now()
 
     @pytest.mark.asyncio
     async def test_default_boost_when_omitted(self, game):
@@ -667,7 +658,7 @@ class TestGrantToughnessBoost:
     @pytest.mark.asyncio
     async def test_seconds_capped(self, game):
         await game.grant_toughness_boost("AA", 9999.0)
-        assert game.players["AA"].toughness_boost_until <= time.time() + game.TOUGHNESS_BOOST_MAX_SECONDS + 1.0
+        assert game.players["AA"].toughness_boost_until <= game_clock.now() + game.TOUGHNESS_BOOST_MAX_SECONDS + 1.0
 
     @pytest.mark.uc("UC-040", flow="main", steps=[13])
     @pytest.mark.asyncio
@@ -679,14 +670,15 @@ class TestGrantToughnessBoost:
         await game.grant_toughness_boost("BB", 5.0, 9.0)
         assert game.players["BB"].toughness_boost_factor == pytest.approx(2.0)
 
+    @pytest.mark.real_game_time
     @pytest.mark.uc("UC-040", flow="main", steps=[13])
     @pytest.mark.asyncio
     async def test_uc040_step13_toughness_boost_lasts_at_most_30_s(self, game):
         """UC-040 step 13: a toughness boost lasts at most 30 s, however long the grant asks."""
-        before = time.time()
+        before = game_clock.now()
         await game.grant_toughness_boost("AA", 9999.0, 1.5)
         until = game.players["AA"].toughness_boost_until
-        assert before + 29.0 <= until <= time.time() + 30.0
+        assert before + 29.0 <= until <= game_clock.now() + 30.0
 
     @pytest.mark.asyncio
     async def test_nonpositive_seconds_noop(self, game):
@@ -741,7 +733,7 @@ class TestSoftPenaltyPrimitives:
         ok = await game.warn_player("AA")
         assert ok is True
         # warn is purely visual/haptic: warning_until set, thresholds untouched.
-        assert game.players["AA"].warning_until > time.time()
+        assert game.players["AA"].warning_until > game_clock.now()
         assert game.players["AA"].soft_penalty_until == 0.0
         after = game._compute_effective_thresholds(game.players["AA"])
         assert before == pytest.approx(after)
@@ -760,7 +752,7 @@ class TestSoftPenaltyPrimitives:
         assert ok is True
         p = game.players["AA"]
         assert p.soft_penalty_factor == pytest.approx(0.6)
-        assert p.soft_penalty_until > time.time()
+        assert p.soft_penalty_until > game_clock.now()
 
     @pytest.mark.asyncio
     async def test_tighten_default_factor_when_omitted(self, game):
@@ -780,7 +772,7 @@ class TestSoftPenaltyPrimitives:
     @pytest.mark.asyncio
     async def test_tighten_seconds_capped(self, game):
         await game.apply_soft_penalty("AA", 9999.0)
-        assert game.players["AA"].soft_penalty_until <= time.time() + game.SOFT_PENALTY_MAX_SECONDS + 1.0
+        assert game.players["AA"].soft_penalty_until <= game_clock.now() + game.SOFT_PENALTY_MAX_SECONDS + 1.0
 
     @pytest.mark.asyncio
     async def test_tighten_nonpositive_seconds_noop(self, game):
@@ -853,10 +845,10 @@ class TestApplyAutoRubberband:
         lag = game.players["LAG"]
         lead = game.players["LEAD"]
         # The laggard (most behind) gets the boost.
-        assert lag.rubberband_until > time.time()
+        assert lag.rubberband_until > game_clock.now()
         assert lag.rubberband_boost > 1.0
         # The leader gets (close to) nothing — never penalized.
-        assert lead.rubberband_boost == pytest.approx(1.0) or lead.rubberband_until <= time.time()
+        assert lead.rubberband_boost == pytest.approx(1.0) or lead.rubberband_until <= game_clock.now()
 
     @pytest.mark.asyncio
     async def test_strong_boosts_more_than_gentle(self, game):
@@ -910,7 +902,7 @@ class TestApplyAutoRubberband:
     @pytest.mark.asyncio
     async def test_seconds_capped(self, game):
         await game.apply_auto_rubberband("strong", seconds=9999.0)
-        assert game.players["LAG"].rubberband_until <= time.time() + game.RUBBERBAND_MAX_SECONDS + 1.0
+        assert game.players["LAG"].rubberband_until <= game_clock.now() + game.RUBBERBAND_MAX_SECONDS + 1.0
 
     @pytest.mark.asyncio
     async def test_nonpositive_seconds_noop(self, game):
@@ -950,7 +942,7 @@ class TestPlayerNameCapture:
         game.gameplay_stream = MockGameplayStream()
         game.running = True
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.players["p1"] = Player(
             serial="p1",
             alive=True,
@@ -1041,7 +1033,7 @@ class TestProcessGameplayUpdate:
         game.gameplay_stream = MockGameplayStream()
         game.running = True
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         for i in range(3):
             game.players[f"player_{i}"] = Player(
@@ -1198,7 +1190,7 @@ class TestUpdateFrameMetrics:
             recent_frame_times=recent,
             frames_on_target=0,
             loop_iterations=1,
-            loop_start_time=time.time() - 1.0,
+            loop_start_time=game_clock.now() - 1.0,
         )
         assert result == 1
 
@@ -1212,7 +1204,7 @@ class TestUpdateFrameMetrics:
             recent_frame_times=recent,
             frames_on_target=5,
             loop_iterations=1,
-            loop_start_time=time.time() - 1.0,
+            loop_start_time=game_clock.now() - 1.0,
         )
         assert result == 5  # unchanged
 
@@ -1226,7 +1218,7 @@ class TestUpdateFrameMetrics:
             recent_frame_times=recent,
             frames_on_target=0,
             loop_iterations=1,
-            loop_start_time=time.time() - 1.0,
+            loop_start_time=game_clock.now() - 1.0,
         )
         assert len(recent) == 60
         assert recent[-1] == 17.0  # New value at end
@@ -1241,7 +1233,7 @@ class TestUpdateFrameMetrics:
             recent_frame_times=recent,
             frames_on_target=0,
             loop_iterations=1,
-            loop_start_time=time.time() - 1.0,
+            loop_start_time=game_clock.now() - 1.0,
         )
         assert len(recent) == 1
         assert recent[0] == 16.0
@@ -1258,7 +1250,7 @@ class TestUpdateFrameMetrics:
                 recent_frame_times=recent,
                 frames_on_target=count,
                 loop_iterations=1,
-                loop_start_time=time.time() - 1.0,
+                loop_start_time=game_clock.now() - 1.0,
             )
         assert count == 5
 
@@ -1330,7 +1322,7 @@ class TestStartIntensityRamp:
 
     @pytest.fixture
     def clock(self):
-        with patch("services.game_coordinator.games.base.time.time", return_value=TEMPO_T0) as fake:
+        with patch("services.game_coordinator.game_clock.now", return_value=TEMPO_T0) as fake:
             yield fake
 
     @pytest.fixture

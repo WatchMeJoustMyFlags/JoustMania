@@ -33,6 +33,19 @@ class MockGrpcContext:
         return not self.cancelled_flag
 
 
+@pytest.fixture(autouse=True)
+def _no_real_flagd_provider(monkeypatch):
+    """Keep a real FlagdProvider out of the unit tests (#2226).
+
+    ``AudioServiceServicer()`` reads ``menu_voice`` through ``init_flag_domain("user")``.
+    Unpatched, that installed an in-process FlagdProvider whose gRPC sync worker kept
+    retrying ``flagd:8015`` for the rest of the session, next to the ``grpc.aio`` servers
+    of other tests; CI died with a segfault in a gRPC channel thread. Without a provider,
+    flag reads return their defaults, as they did when flagd was unreachable.
+    """
+    monkeypatch.setattr("lib.feature_flags.init_flag_domain", lambda _domain: None)
+
+
 @pytest.fixture
 def mock_grpc_context():
     return MockGrpcContext()

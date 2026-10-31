@@ -11,61 +11,61 @@ const NOW = 1_760_000_000_000;
 function shielded(serial: string, kind: string, untilMs: number) {
   return {
     eventType: "player_shielded",
-    data: { serial, kind, seconds: "5.0", until_ms: String(untilMs) },
+    data: { serial, kind, seconds: String((untilMs - NOW) / 1000), until_ms: String(untilMs) },
   };
 }
 
 describe("UC-040: A16 shield badge on the controller tile", () => {
   it("UC-040/A16 shows a full shield with its remaining time", () => {
     const store = new ShieldStore();
-    expect(store.apply(shielded("MOCK0001", "full", NOW + 5000))).toBe(true);
+    expect(store.apply(shielded("MOCK0001", "full", NOW + 5000), NOW, NOW)).toBe(true);
 
-    const badge = shieldBadge(store.get("MOCK0001", NOW), NOW);
+    const badge = shieldBadge(store.get("MOCK0001", NOW, NOW), NOW, NOW);
     expect(badge).toEqual({ text: "Shield 5.0s", className: "shield-badge shield-full" });
-    expect(store.get("MOCK0002", NOW)).toBeNull();
+    expect(store.get("MOCK0002", NOW, NOW)).toBeNull();
   });
 
   it("UC-040/A16 BR-009 shows the toughness boost as the weaker badge", () => {
     const store = new ShieldStore();
-    store.apply(shielded("MOCK0002", "toughness_boost", NOW + 3000));
+    store.apply(shielded("MOCK0002", "toughness_boost", NOW + 3000), NOW, NOW);
 
-    const badge = shieldBadge(store.get("MOCK0002", NOW), NOW);
+    const badge = shieldBadge(store.get("MOCK0002", NOW, NOW), NOW, NOW);
     expect(badge?.text).toBe("Boost 3.0s");
     expect(badge?.className).toContain("shield-toughness_boost");
   });
 
   it("UC-040/A16 an older coordinator's kind partial still renders as the boost badge, never a full shield", () => {
     const store = new ShieldStore();
-    store.apply(shielded("MOCK0002", "partial", NOW + 3000));
+    store.apply(shielded("MOCK0002", "partial", NOW + 3000), NOW, NOW);
 
-    const badge = shieldBadge(store.get("MOCK0002", NOW), NOW);
+    const badge = shieldBadge(store.get("MOCK0002", NOW, NOW), NOW, NOW);
     expect(badge?.text).toBe("Boost 3.0s");
     expect(badge?.className).toContain("shield-toughness_boost");
   });
 
   it("UC-040/A16 BR-008 marks the last second as ending (the LED blinks)", () => {
     const store = new ShieldStore();
-    store.apply(shielded("MOCK0001", "full", NOW + 5000));
+    store.apply(shielded("MOCK0001", "full", NOW + 5000), NOW, NOW);
 
-    expect(shieldBadge(store.get("MOCK0001", NOW + 2500), NOW + 2500)?.className).not.toContain("shield-ending");
-    const ending = shieldBadge(store.get("MOCK0001", NOW + 4200), NOW + 4200);
+    expect(shieldBadge(store.get("MOCK0001", NOW + 2500, NOW + 2500), NOW + 2500, NOW + 2500)?.className).not.toContain("shield-ending");
+    const ending = shieldBadge(store.get("MOCK0001", NOW + 4200, NOW + 4200), NOW + 4200, NOW + 4200);
     expect(ending?.text).toBe("Shield 0.8s");
     expect(ending?.className).toContain("shield-ending");
   });
 
   it("UC-040/A16 BR-010 an extension replaces the shield and restarts the countdown", () => {
     const store = new ShieldStore();
-    store.apply(shielded("MOCK0001", "full", NOW + 2000));
-    store.apply(shielded("MOCK0001", "full", NOW + 8000));
+    store.apply(shielded("MOCK0001", "full", NOW + 2000), NOW, NOW);
+    store.apply(shielded("MOCK0001", "full", NOW + 8000), NOW, NOW);
 
-    expect(shieldBadge(store.get("MOCK0001", NOW + 1000), NOW + 1000)?.text).toBe("Shield 7.0s");
+    expect(shieldBadge(store.get("MOCK0001", NOW + 1000, NOW + 1000), NOW + 1000, NOW + 1000)?.text).toBe("Shield 7.0s");
   });
 
   it("UC-040/A16 the badge disappears when the protection ends", () => {
     const store = new ShieldStore();
-    store.apply(shielded("MOCK0001", "full", NOW + 5000));
+    store.apply(shielded("MOCK0001", "full", NOW + 5000), NOW, NOW);
 
-    expect(store.get("MOCK0001", NOW + 5000)).toBeNull();
+    expect(store.get("MOCK0001", NOW + 5000, NOW + 5000)).toBeNull();
     expect(shieldBadge(null, NOW)).toBeNull();
   });
 
@@ -73,29 +73,49 @@ describe("UC-040: A16 shield badge on the controller tile", () => {
     const store = new ShieldStore();
     expect(store.apply({ eventType: "player_shielded", data: { serial: "MOCK0001", until_ms: "soon" } })).toBe(false);
     expect(store.apply({ eventType: "game_started", data: {} })).toBe(false);
-    expect(store.get("MOCK0001", NOW)).toBeNull();
+    expect(store.get("MOCK0001", NOW, NOW)).toBeNull();
+  });
+});
+
+describe("UC-040: A16 shield badge under Pi/browser clock skew (#2387)", () => {
+  it.each([-3_600_000, 3_600_000])("UC-040/A16 counts down `seconds` on the monotonic clock with a Pi %i ms off", (skewMs) => {
+    const store = new ShieldStore();
+    // The Pi's until_ms is an hour off the browser's wall clock; seconds is skew-free.
+    const event = { eventType: "player_shielded", data: { serial: "MOCK0001", kind: "full", seconds: "5.0", until_ms: String(NOW + skewMs + 5000) } };
+    store.apply(event, NOW, 1000);
+
+    expect(shieldBadge(store.get("MOCK0001", NOW, 1000), NOW, 1000)?.text).toBe("Shield 5.0s");
+    // 2 s later on the monotonic clock (the wall clock may even jump)
+    expect(shieldBadge(store.get("MOCK0001", NOW + 99, 3000), NOW + 99, 3000)?.text).toBe("Shield 3.0s");
+    expect(store.get("MOCK0001", NOW, 6001)).toBeNull();
+  });
+
+  it("UC-040/A16 falls back to until_ms against the browser clock when the event has no seconds", () => {
+    const store = new ShieldStore();
+    store.apply({ eventType: "player_shielded", data: { serial: "MOCK0001", kind: "full", until_ms: String(NOW + 5000) } }, NOW, 1000);
+    expect(shieldBadge(store.get("MOCK0001", NOW + 1000, 9999), NOW + 1000, 9999)?.text).toBe("Shield 4.0s");
   });
 });
 
 describe("UC-040: A17 shield badge ends early", () => {
   it("UC-040/A17 clears a player's badge on player_death", () => {
     const store = new ShieldStore();
-    store.apply(shielded("MOCK0001", "full", NOW + 5000));
-    store.apply(shielded("MOCK0002", "full", NOW + 5000));
+    store.apply(shielded("MOCK0001", "full", NOW + 5000), NOW, NOW);
+    store.apply(shielded("MOCK0002", "full", NOW + 5000), NOW, NOW);
 
     expect(store.apply({ eventType: "player_death", data: { serial: "MOCK0001" } })).toBe(true);
-    expect(store.get("MOCK0001", NOW)).toBeNull();
-    expect(store.get("MOCK0002", NOW)).not.toBeNull();
+    expect(store.get("MOCK0001", NOW, NOW)).toBeNull();
+    expect(store.get("MOCK0002", NOW, NOW)).not.toBeNull();
   });
 
   it.each(["game_ended", "game_force_ended"])("UC-040/A17 clears every badge on %s", (eventType) => {
     const store = new ShieldStore();
-    store.apply(shielded("MOCK0001", "full", NOW + 5000));
-    store.apply(shielded("MOCK0002", "toughness_boost", NOW + 5000));
+    store.apply(shielded("MOCK0001", "full", NOW + 5000), NOW, NOW);
+    store.apply(shielded("MOCK0002", "toughness_boost", NOW + 5000), NOW, NOW);
 
     expect(store.apply({ eventType, data: {} })).toBe(true);
-    expect(store.get("MOCK0001", NOW)).toBeNull();
-    expect(store.get("MOCK0002", NOW)).toBeNull();
+    expect(store.get("MOCK0001", NOW, NOW)).toBeNull();
+    expect(store.get("MOCK0002", NOW, NOW)).toBeNull();
   });
 });
 

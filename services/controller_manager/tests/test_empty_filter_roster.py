@@ -54,7 +54,20 @@ def rig():
     def drain_health(serial):
         return health.pop(serial, (0, 0, 0))
 
-    backend = MagicMock(spec=["consume_death_frame", "consume_trigger_press"])
+    backend = MagicMock(
+        spec=[
+            "consume_death_frame",
+            "consume_trigger_press",
+            "pattern_serials",
+            "pattern_frame",
+            "pattern_stream_rate",
+            "record_pattern_overrun",
+            "release_pattern_stream",
+        ]
+    )
+    backend.pattern_serials.return_value = set()
+    backend.pattern_frame.return_value = None
+    backend.pattern_stream_rate.return_value = None
     backend.consume_death_frame.side_effect = consume_death
     backend.consume_trigger_press.side_effect = consume_trigger
 

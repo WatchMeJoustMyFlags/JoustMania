@@ -508,31 +508,75 @@ func TestExpireGames(t *testing.T) {
 	})
 }
 
+// UC: UC-053 A11
+func TestExpireGames_LastSeen(t *testing.T) {
+	t.Run("UC-053/A11 a game reconciled every few minutes never expires", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.register("game_long", "c/1", "S1")
+		registeredAt := f.state.Game("game_long").RegisteredAt
+		for i := 0; i < 30; i++ { // 2.5 h in 5 min steps
+			f.clock.Advance(5 * time.Minute)
+			if _, err := f.state.Reconcile("c/1", []Game{{ID: "game_long", Serials: []string{"S1"}}}); err != nil {
+				t.Fatal(err)
+			}
+			if ends := f.state.ExpireGames(); len(ends) != 0 {
+				t.Fatalf("step %d: a reconciled game expired: %+v", i, ends)
+			}
+		}
+		if !f.state.Game("game_long").RegisteredAt.Equal(registeredAt) {
+			t.Fatal("registered_at changed")
+		}
+	})
+
+	t.Run("UC-053/A11 a re-registration refreshes last-seen", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.register("game_a", "c/1", "S1")
+		f.clock.Advance(50 * time.Minute)
+		f.register("game_a", "c/1", "S1")
+		f.clock.Advance(50 * time.Minute)
+		if ends := f.state.ExpireGames(); len(ends) != 0 {
+			t.Fatalf("expired %+v", ends)
+		}
+	})
+
+	t.Run("UC-053/A11 a game not seen for the maximum age expires", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.register("game_a", "c/1", "S1")
+		f.clock.Advance(30 * time.Minute)
+		f.register("game_a", "c/1", "S1")
+		f.clock.Advance(61 * time.Minute)
+		ends := f.state.ExpireGames()
+		if len(ends) != 1 || ends[0].Reason != EndReasonExpired {
+			t.Fatalf("ends %+v", ends)
+		}
+	})
+}
+
 // UC: UC-053 A3
 func TestExperimentArm_NeverResolvesForReal(t *testing.T) {
 	t.Run("UC-053/A3 an arm value resolves only for non-real games of that experiment and arm", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
 		// The registry declares no experiment+arm row before #1415; give one flag the scope for the test.
-		f.state.flags["tempo_schedule_mode"].policy.Scopes = append(f.state.flags["tempo_schedule_mode"].policy.Scopes, "experiment+arm")
-		res := f.put(WriteRequest{Set: "game", Flag: "tempo_schedule_mode", Variant: "agent", Scope: Scope{ExperimentID: "exp_42", Arm: "experimental"}})
+		f.state.flags["shadow_policy"].policy.Scopes = append(f.state.flags["shadow_policy"].policy.Scopes, "experiment+arm")
+		res := f.put(WriteRequest{Set: "game", Flag: "shadow_policy", Variant: "block", Scope: Scope{ExperimentID: "exp_42", Arm: "experimental"}})
 		cases := []struct {
 			ctx  map[string]any
 			want string
 		}{
 			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_42", "arm": "experimental"}, res.Variant},
-			{map[string]any{"game_kind": "real", "experiment_id": "exp_42", "arm": "experimental"}, "rule"},
-			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_42", "arm": "control"}, "rule"},
-			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_7", "arm": "experimental"}, "rule"},
+			{map[string]any{"game_kind": "real", "experiment_id": "exp_42", "arm": "experimental"}, "allow"},
+			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_42", "arm": "control"}, "allow"},
+			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_7", "arm": "experimental"}, "allow"},
 		}
 		for _, c := range cases {
-			if v, _ := f.resolve("tempo_schedule_mode", c.ctx); v != c.want {
+			if v, _ := f.resolve("shadow_policy", c.ctx); v != c.want {
 				t.Errorf("context %v resolved %s, want %s", c.ctx, v, c.want)
 			}
 		}
-		if _, err := f.state.Clear(ClearRequest{Set: "game", Flag: "tempo_schedule_mode", Scope: Scope{ExperimentID: "exp_42", Arm: "experimental"}}); err != nil {
+		if _, err := f.state.Clear(ClearRequest{Set: "game", Flag: "shadow_policy", Scope: Scope{ExperimentID: "exp_42", Arm: "experimental"}}); err != nil {
 			t.Fatal(err)
 		}
-		if v, _ := f.resolve("tempo_schedule_mode", cases[0].ctx); v != "rule" {
+		if v, _ := f.resolve("shadow_policy", cases[0].ctx); v != "allow" {
 			t.Fatal("the cleared arm value still resolves")
 		}
 	})
@@ -630,9 +674,9 @@ func TestAdminPersistence(t *testing.T) {
 			t.Fatalf("the corrupt file was not moved aside: %v", err)
 		}
 	})
-	t.Run("UC-053/A12 a state file with an unsupported version is moved aside as corrupt", func(t *testing.T) {
+	t.Run("UC-053/A12 a state file with a version below the supported one is moved aside as corrupt", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "admin.json")
-		doc := `{"version":2,"values":[{"flag_set":"game","flag":"sensitivity","variant":"slow","written_at":"2026-10-16T12:00:00Z"}]}`
+		doc := `{"version":0,"values":[{"flag_set":"game","flag":"sensitivity","variant":"slow","written_at":"2026-10-16T12:00:00Z"}]}`
 		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -703,21 +747,147 @@ func TestAdminPersistence(t *testing.T) {
 			t.Fatalf("report %+v, want 2 restored and 2 dropped", report)
 		}
 	})
-	t.Run("UC-053/A2 an unwritable state file is counted; the value applies in memory", func(t *testing.T) {
+	t.Run("UC-053/A2 an unwritable state file refuses the persisted write and rolls it back (#2368)", func(t *testing.T) {
 		dir := t.TempDir()
 		blocker := filepath.Join(dir, "file")
 		if err := os.WriteFile(blocker, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		f := newPersisting(t, filepath.Join(blocker, "admin.json"), "e1") // parent is a file
-		res := f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true})
-		if res.Persisted || f.state.PersistErrors() != 1 {
-			t.Fatalf("persisted %v errors %d", res.Persisted, f.state.PersistErrors())
+		_, err := f.state.Put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true})
+		if err == nil || err.Status != 500 || err.Reason != fserr.ReasonPersistFailed {
+			t.Fatalf("err = %v, want 500 persist_failed", err)
 		}
-		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v != "four" {
-			t.Fatalf("in-memory value %v", v)
+		if f.state.PersistErrors() != 1 {
+			t.Fatalf("persist errors %d, want 1", f.state.PersistErrors())
+		}
+		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v == "four" {
+			t.Fatalf("the refused write still applies in memory: %v", v)
 		}
 	})
+	t.Run("UC-053/A2 a persisted write that fails to save keeps the earlier admin value and overlay (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "two", Persist: true, Writer: "menu"})
+		f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "three", Writer: "stage"}) // stack overlay
+		breakStateFile(t, path)
+		_, err := f.state.Put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true, Writer: "menu"})
+		if err == nil || err.Status != 500 {
+			t.Fatalf("err = %v, want 500", err)
+		}
+		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v != "three" {
+			t.Fatalf("got %v, want the stage overlay back", v)
+		}
+		if _, cerr := f.state.ClearWriter("game", "stage"); cerr != nil {
+			t.Fatal(cerr)
+		}
+		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v != "two" {
+			t.Fatalf("got %v, want the earlier admin value two", v)
+		}
+	})
+	t.Run("UC-053/A2 a persisted clear that fails to save keeps the admin value and is not counted persisted (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true, Writer: "menu"})
+		breakStateFile(t, path)
+		res, err := f.state.Clear(ClearRequest{Set: "game", Flag: "num_teams", Persist: true})
+		if err == nil || err.Status != 500 || err.Reason != fserr.ReasonPersistFailed {
+			t.Fatalf("err = %v, want 500 persist_failed", err)
+		}
+		if res.Persisted || res.Cleared != 0 {
+			t.Fatalf("result %+v reports a persisted clear", res)
+		}
+		if f.state.PersistErrors() != 1 {
+			t.Fatalf("persist errors %d, want 1", f.state.PersistErrors())
+		}
+		if v := f.snapshotFlag("num_teams")["defaultVariant"]; v != "four" {
+			t.Fatalf("got %v: the memory must keep what the file still holds", v)
+		}
+	})
+	t.Run("UC-053/A2 a kill switch's persisted write applies despite a failing save and reports persisted false (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "full", Persist: true, Writer: "menu"})
+		breakStateFile(t, path)
+		res, err := f.state.Put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "none", Persist: true, Writer: "menu"})
+		if err != nil {
+			t.Fatalf("err = %v: a kill switch must not be refused on a failed save", err)
+		}
+		if res.Persisted {
+			t.Fatal("reported persisted although the save failed")
+		}
+		if f.state.PersistErrors() != 1 {
+			t.Fatalf("persist errors %d, want 1", f.state.PersistErrors())
+		}
+		if v := f.snapshotFlag("interventions_allowed")["defaultVariant"]; v != "none" {
+			t.Fatalf("got %v, want the kill switch none applied in memory", v)
+		}
+		if st := f.state.Stats(); st.PersistedValues != 0 || st.OverlaysBySet["agent"] != 1 {
+			t.Fatalf("persisted overlays %d, agent in-memory overlays %d: an in-memory kill switch must not count as persisted", st.PersistedValues, st.OverlaysBySet["agent"])
+		}
+	})
+	t.Run("UC-053/A2 a kill switch's persisted clear applies despite a failing save and is flagged not persisted (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "full", Persist: true, Writer: "menu"})
+		breakStateFile(t, path)
+		res, err := f.state.Clear(ClearRequest{Set: "agent", Flag: "interventions_allowed", Persist: true})
+		if err != nil {
+			t.Fatalf("err = %v: a kill switch clear must not be refused on a failed save", err)
+		}
+		if res.Cleared != 1 || res.Persisted || !res.PersistFailed {
+			t.Fatalf("result %+v, want cleared 1, persisted false, persist failed", res)
+		}
+		if f.state.PersistErrors() != 1 {
+			t.Fatalf("persist errors %d, want 1", f.state.PersistErrors())
+		}
+		if v := f.snapshotFlag("interventions_allowed")["defaultVariant"]; v == "full" {
+			t.Fatalf("got %v: the cleared kill switch value still applies", v)
+		}
+	})
+	t.Run("UC-053/A2 a later successful save marks an in-memory kill switch persisted again (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		f := newPersisting(t, path, "e1")
+		f.put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "full", Persist: true, Writer: "menu"})
+		breakStateFile(t, path)
+		if res, err := f.state.Put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "none", Persist: true, Writer: "menu"}); err != nil || res.Persisted {
+			t.Fatalf("res %+v err %v, want the kill switch applied in memory, not persisted", res, err)
+		}
+		if st := f.state.Stats(); st.PersistedValues != 0 {
+			t.Fatalf("persisted overlays %d before the repair, want 0", st.PersistedValues)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
+		if res := f.put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "slow", Persist: true, Writer: "menu"}); !res.Persisted {
+			t.Fatal("the later write was not persisted")
+		}
+		if st := f.state.Stats(); st.PersistedValues != 2 {
+			t.Fatalf("persisted overlays %d, want 2: the save wrote the kill switch too", st.PersistedValues)
+		}
+	})
+	t.Run("UC-053/A2 with persistence disabled a persisted write is not an error and reports persisted false", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		res := f.put(WriteRequest{Set: "game", Flag: "num_teams", Variant: "four", Persist: true})
+		if res.Persisted {
+			t.Fatal("reported persisted without a state file")
+		}
+	})
+}
+
+// breakStateFile makes the next state-file save fail: the file path becomes a
+// non-empty directory, so the atomic rename onto it fails.
+func breakStateFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(path, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "x", "y"), []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // UC: UC-052 main
@@ -733,6 +903,55 @@ func TestFraction_RendersAFractionalElse(t *testing.T) {
 	})
 }
 
+// fillGameToTheBound registers a game with the given serials and writes the
+// widest realistic set of values and events into it; it returns the bytes the
+// game adds to the snapshot.
+func fillGameToTheBound(t *testing.T, f *fixture, gameID string, serials []string) int {
+	t.Helper()
+	f.register(gameID, "c/1", serials...)
+	before, _, _ := f.state.Snapshot("")
+	for _, s := range serials {
+		for _, w := range []WriteRequest{
+			{Flag: "player_sensitivity_factor", Value: raw("1.2")},
+			{Flag: "player_handicap_factor", Value: raw("1.25")},
+			{Flag: "shield_seconds", Value: raw("5")},
+			{Flag: "toughness_boost_seconds", Value: raw(`"5:2.0"`)},
+			{Flag: "soft_penalty_action", Value: raw(`"tighten:5:0.5"`)},
+		} {
+			w.Set, w.Scope = "interventions", Scope{GameID: gameID, Serial: s}
+			f.put(w)
+		}
+	}
+	for _, w := range []WriteRequest{
+		{Flag: "music_tempo_override", Value: raw("1.15")}, {Flag: "global_sensitivity_override", Value: raw("3")},
+		{Flag: "global_difficulty_factor", Value: raw("1.5")}, {Flag: "volume_override", Value: raw("0.5")},
+		{Flag: "pacing_profile", Variant: "calm"}, {Flag: "tempo_ramp", Value: raw(`"1.3:8:linear"`)},
+		{Flag: "auto_rubberband", Variant: "gentle"},
+	} {
+		w.Set, w.Scope = "interventions", Scope{GameID: gameID}
+		f.put(w)
+	}
+	for i := 0; i < 20; i++ {
+		for _, flag := range []string{"eliminate_player", "revive_player"} {
+			if _, err := f.state.Append(AppendRequest{Set: "interventions", Flag: flag, Scope: Scope{GameID: gameID}, Payload: map[string]any{"serial": serials[i%len(serials)]}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, a := range []AppendRequest{
+			{Flag: "audio_cue", Payload: map[string]any{"sound": "agent_cue"}},
+			{Flag: "controller_effect", Payload: map[string]any{"serial": serials[i%len(serials)], "effect": "rumble"}},
+			{Flag: "end_game"},
+		} {
+			a.Set, a.Scope = "interventions", Scope{GameID: gameID}
+			if _, err := f.state.Append(a); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	after, _, _ := f.state.Snapshot("")
+	return len(after) - len(before)
+}
+
 // UC: UC-053 main
 // NFR: NFR-051
 func TestNFR051_SnapshotBounded(t *testing.T) {
@@ -745,48 +964,7 @@ func TestNFR051_SnapshotBounded(t *testing.T) {
 			for p := range serials {
 				serials[p] = fmt.Sprintf("MOCK%04d", g*16+p)
 			}
-			f.register(gameID, "c/1", serials...)
-			before, _, _ := f.state.Snapshot("")
-			for _, s := range serials {
-				for _, w := range []WriteRequest{
-					{Flag: "player_sensitivity_factor", Value: raw("1.2")},
-					{Flag: "player_handicap_factor", Value: raw("1.25")},
-					{Flag: "shield_seconds", Value: raw("5")},
-					{Flag: "toughness_boost_seconds", Value: raw(`"5:2.0"`)},
-					{Flag: "soft_penalty_action", Value: raw(`"tighten:5:0.5"`)},
-				} {
-					w.Set, w.Scope = "interventions", Scope{GameID: gameID, Serial: s}
-					f.put(w)
-				}
-			}
-			for _, w := range []WriteRequest{
-				{Flag: "music_tempo_override", Value: raw("1.15")}, {Flag: "global_sensitivity_override", Value: raw("3")},
-				{Flag: "global_difficulty_factor", Value: raw("1.5")}, {Flag: "volume_override", Value: raw("0.5")},
-				{Flag: "pacing_profile", Variant: "calm"}, {Flag: "tempo_ramp", Value: raw(`"1.3:8:linear"`)},
-				{Flag: "auto_rubberband", Variant: "gentle"},
-			} {
-				w.Set, w.Scope = "interventions", Scope{GameID: gameID}
-				f.put(w)
-			}
-			for i := 0; i < 20; i++ {
-				for _, flag := range []string{"eliminate_player", "revive_player"} {
-					if _, err := f.state.Append(AppendRequest{Set: "interventions", Flag: flag, Scope: Scope{GameID: gameID}, Payload: map[string]any{"serial": serials[i%16]}}); err != nil {
-						t.Fatal(err)
-					}
-				}
-				for _, a := range []AppendRequest{
-					{Flag: "audio_cue", Payload: map[string]any{"sound": "agent_cue"}},
-					{Flag: "controller_effect", Payload: map[string]any{"serial": serials[i%16], "effect": "rumble"}},
-					{Flag: "end_game"},
-				} {
-					a.Set, a.Scope = "interventions", Scope{GameID: gameID}
-					if _, err := f.state.Append(a); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			after, _, _ := f.state.Snapshot("")
-			if perGame := len(after) - len(before); perGame > 64<<10 {
+			if perGame := fillGameToTheBound(t, f, gameID, serials); perGame > 64<<10 {
 				t.Fatalf("game %d adds %d bytes, over 64 KiB", g, perGame)
 			}
 		}
@@ -794,6 +972,18 @@ func TestNFR051_SnapshotBounded(t *testing.T) {
 		t.Logf("snapshot: %d bytes empty, %d bytes with 8 full games", len(empty), len(full))
 		if len(full) > 1<<20 {
 			t.Fatalf("snapshot %d bytes, over 1 MiB", len(full))
+		}
+	})
+	t.Run("UC-053/main one game with the 64-serial cap stays within 64 KiB (NFR-051)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		serials := make([]string, MaxSerialsPerGame)
+		for p := range serials {
+			serials[p] = fmt.Sprintf("MOCK%04d", p)
+		}
+		perGame := fillGameToTheBound(t, f, "game_000000000000", serials)
+		t.Logf("64 players add %d bytes", perGame)
+		if perGame > 64<<10 {
+			t.Fatalf("a 64-player game adds %d bytes, over 64 KiB", perGame)
 		}
 	})
 }
@@ -839,6 +1029,21 @@ func TestGameScopeBounds(t *testing.T) {
 			t.Fatalf("re-registering a live game must not count against the cap: %v", err)
 		}
 	})
+	t.Run("UC-053/A6 a registration above 64 serials is 400 and registers nothing (NFR-051)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		serials := make([]string, MaxSerialsPerGame+1)
+		for p := range serials {
+			serials[p] = fmt.Sprintf("MOCK%04d", p)
+		}
+		_, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1", Serials: serials})
+		wantReason(t, err, http.StatusBadRequest, fserr.Malformed)
+		if f.state.Game("game_a") != nil {
+			t.Fatal("a rejected registration left a game scope")
+		}
+		if _, err := f.state.RegisterGame(Game{ID: "game_a", CoordinatorInstance: "c/1", Serials: serials[:MaxSerialsPerGame]}); err != nil {
+			t.Fatalf("exactly 64 serials must be accepted: %v", err)
+		}
+	})
 	t.Run("UC-053/A10 a reconcile over the cap is rejected whole (NFR-051)", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{maxGames: 3})
 		f.register("game_x", "other/1")
@@ -882,7 +1087,7 @@ func TestDryRunRendersWithoutApplying(t *testing.T) {
 		}
 		version := f.state.Version()
 		before, _, _ := f.state.Snapshot("")
-		res := f.put(WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"),
+		res := f.put(WriteRequest{Set: "game", Flag: "nonstop.respawn_seconds", Value: raw("4"),
 			Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, DryRun: true})
 		if !res.DryRun || len(res.RenderedBefore) == 0 || len(res.Rendered) == 0 {
 			t.Fatalf("dry run result incomplete: %+v", res)
@@ -902,9 +1107,9 @@ func TestDryRunRendersWithoutApplying(t *testing.T) {
 	})
 	t.Run("UC-042/main a dry run over an existing value restores it", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
-		f.put(WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}})
+		f.put(WriteRequest{Set: "game", Flag: "nonstop.respawn_seconds", Value: raw("4"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}})
 		before, _, _ := f.state.Snapshot("")
-		f.put(WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("6"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, DryRun: true})
+		f.put(WriteRequest{Set: "game", Flag: "nonstop.respawn_seconds", Value: raw("6"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, DryRun: true})
 		after, _, _ := f.state.Snapshot("")
 		if string(before) != string(after) {
 			t.Fatal("the dry run did not restore the previous value")
@@ -921,7 +1126,7 @@ func TestDryRunRendersWithoutApplying(t *testing.T) {
 // NFR: NFR-051
 func TestExpireExperiments(t *testing.T) {
 	arm := func(id string) WriteRequest {
-		return WriteRequest{Set: "game", Flag: "invincibility_seconds", Value: raw("4"), Scope: Scope{ExperimentID: id, Arm: "experimental"}}
+		return WriteRequest{Set: "game", Flag: "nonstop.respawn_seconds", Value: raw("4"), Scope: Scope{ExperimentID: id, Arm: "experimental"}}
 	}
 	t.Run("UC-053/A3 an experiment no game references is dropped after the idle time (NFR-051)", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
@@ -1007,16 +1212,15 @@ func TestStateFileCorruptCopiesAreCapped(t *testing.T) {
 
 // UC: UC-053 A12
 func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
-	t.Run("UC-053/A12 a read error keeps the file and applies admin values in memory only", func(t *testing.T) {
+	t.Run("UC-053/A12 a read error keeps the file and refuses persisted admin writes", func(t *testing.T) {
 		// A directory at the state-file path: ReadFile fails with an I/O error, not "not exist".
 		path := filepath.Join(t.TempDir(), "admin.json")
 		if err := os.Mkdir(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		f := newFixture(t, fixtureOpts{stateFile: path})
-		res := f.put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "slow", Persist: true, Writer: "menu"})
-		if res.Persisted {
-			t.Fatal("reported persisted while persistence is blocked")
+		if _, err := f.state.Put(WriteRequest{Set: "game", Flag: "sensitivity", Variant: "slow", Persist: true, Writer: "menu"}); err == nil || err.Status != 500 {
+			t.Fatalf("err = %v, want 500 while persistence is blocked", err)
 		}
 		if f.state.PersistErrors() != 1 {
 			t.Fatalf("persist errors = %d, want 1", f.state.PersistErrors())
@@ -1027,8 +1231,125 @@ func TestUnreadableStateFileBlocksPersistence(t *testing.T) {
 		if m, _ := filepath.Glob(path + ".corrupt-*"); len(m) != 0 {
 			t.Fatalf("an unreadable file was moved aside as corrupt: %v", m)
 		}
-		if got := f.snapshotFlag("sensitivity")["defaultVariant"]; got != "slow" {
-			t.Fatalf("defaultVariant = %v, want the in-memory admin value slow", got)
+		if got := f.snapshotFlag("sensitivity")["defaultVariant"]; got == "slow" {
+			t.Fatalf("defaultVariant = %v: the refused write still applies", got)
 		}
 	})
+	t.Run("UC-053/A12 a read error still lets the kill switch apply in memory (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{stateFile: path})
+		res, err := f.state.Put(WriteRequest{Set: "agent", Flag: "interventions_allowed", Variant: "none", Persist: true, Writer: "menu"})
+		if err != nil {
+			t.Fatalf("err = %v: the kill switch must work while persistence is blocked", err)
+		}
+		if res.Persisted || f.state.PersistErrors() != 1 {
+			t.Fatalf("persisted %v errors %d, want false and 1", res.Persisted, f.state.PersistErrors())
+		}
+		if got := f.snapshotFlag("interventions_allowed")["defaultVariant"]; got != "none" {
+			t.Fatalf("defaultVariant = %v, want the kill switch none", got)
+		}
+		if st := f.state.Stats(); st.PersistedValues != 0 {
+			t.Fatalf("persisted overlays %d: the kill switch lives in memory only", st.PersistedValues)
+		}
+	})
+	t.Run("UC-053/A12 a read error refuses a persisted clear with nothing in memory (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{stateFile: path})
+		res, err := f.state.Clear(ClearRequest{Set: "game", Flag: "sensitivity", Persist: true})
+		if err == nil || err.Status != 500 || err.Reason != fserr.ReasonPersistFailed {
+			t.Fatalf("err = %v, want 500 persist_failed: the unreadable file may still hold the value", err)
+		}
+		if res.Persisted || res.Cleared != 0 || f.state.PersistErrors() != 1 {
+			t.Fatalf("result %+v errors %d, want nothing persisted and 1 error", res, f.state.PersistErrors())
+		}
+	})
+	t.Run("UC-053/A12 a read error leaves a persisted clear of a flag without persist at 204 (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{stateFile: path})
+		res, err := f.state.Clear(ClearRequest{Set: "agent", Flag: "enabled", Persist: true})
+		if err != nil {
+			t.Fatalf("err = %v: a flag that takes no persisted value cannot be in the file", err)
+		}
+		if res.Persisted || res.PersistFailed || f.state.PersistErrors() != 0 {
+			t.Fatalf("result %+v errors %d, want a plain clear and no counted error", res, f.state.PersistErrors())
+		}
+	})
+	t.Run("UC-053/A12 a read error answers a kill switch's persisted clear as not persisted (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f := newFixture(t, fixtureOpts{stateFile: path})
+		res, err := f.state.Clear(ClearRequest{Set: "agent", Flag: "interventions_allowed", Persist: true})
+		if err != nil {
+			t.Fatalf("err = %v: a kill switch clear is never refused", err)
+		}
+		if res.Persisted || !res.PersistFailed || f.state.PersistErrors() != 1 {
+			t.Fatalf("result %+v errors %d, want persist failed and 1 error", res, f.state.PersistErrors())
+		}
+	})
+}
+
+// UC: UC-053 A2 UC-015 BR-018
+func TestHoldShieldKeysPersist(t *testing.T) {
+	holdKeys := map[string]string{
+		"shield.energy_max_seconds":     "7",
+		"shield.energy_budget_seconds":  "12",
+		"shield.energy_initial_seconds": "3",
+		"shield.recharge_per_second":    "0.4",
+		"shield.min_burst_seconds":      "0.6",
+		"shield.hold_rumble_intensity":  "90",
+		"shield.empty_pulse_ms":         "300",
+	}
+	for key, value := range holdKeys {
+		t.Run("UC-053/A2 "+key+" persisted write survives a restart (#2452)", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "admin.json")
+			f := newFixture(t, fixtureOpts{stateFile: path, epoch: "e1"})
+			res := f.put(WriteRequest{Set: "game", Flag: key, Value: raw(value), Persist: true, Writer: "operator"})
+			if !res.Persisted {
+				t.Fatal("the result does not say persisted")
+			}
+			g := newFixture(t, fixtureOpts{stateFile: path, epoch: "e2"})
+			var want any
+			if err := json.Unmarshal([]byte(value), &want); err != nil {
+				t.Fatal(err)
+			}
+			if _, got := g.resolve(key, map[string]any{}); got != want {
+				t.Fatalf("%s after restart %v, want %v", key, got, want)
+			}
+		})
+	}
+}
+
+// UC: UC-053 A2 UC-043 A17
+func TestHoldShieldKeysPersistRungs(t *testing.T) {
+	const key = "shield.energy_max_seconds"
+	t.Run("UC-053/A2 a persisted stack value outranks a real overlay (#2452)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{stateFile: filepath.Join(t.TempDir(), "admin.json"), epoch: "e1"})
+		f.put(WriteRequest{Set: "game", Flag: key, Value: raw("7"), Persist: true, Writer: "operator"})
+		f.put(WriteRequest{Set: "game", Flag: key, Value: raw("4"), Scope: Scope{GameKind: "real"}, Writer: "agent"})
+		if _, got := f.resolve(key, map[string]any{}); got != float64(7) {
+			t.Fatalf("%s = %v, want the persisted 7 over the real overlay", key, got)
+		}
+	})
+	refused := map[string]WriteRequest{
+		"experiment+arm": {Set: "game", Flag: key, Value: raw("4"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, Persist: true, Writer: "agent"},
+		"real":           {Set: "game", Flag: key, Value: raw("4"), Scope: Scope{GameKind: "real"}, Persist: true, Writer: "agent"},
+	}
+	for name, req := range refused {
+		t.Run("UC-053/A5 a persisted "+name+" write is refused (#2452)", func(t *testing.T) {
+			f := newFixture(t, fixtureOpts{stateFile: filepath.Join(t.TempDir(), "admin.json"), epoch: "e1"})
+			_, err := f.state.Put(req)
+			wantReason(t, err, http.StatusBadRequest, fserr.Malformed)
+		})
+	}
 }

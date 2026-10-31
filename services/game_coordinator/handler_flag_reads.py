@@ -15,9 +15,11 @@
 #   (always allowed on top: the API-level attributes above and $flagd.*). The contract
 #   test fails the build when game.json or ci/game.json uses any other variable. The
 #   game's context is available, but a flag keeps its list narrow on purpose when
-#   another reader resolves it with less: the agent reads the shield flags with only
-#   gameId and game_kind=real (services/agent/flags/game.go ShieldCharge), so their
-#   targeting must not use targetingKey (now the game mode there) or game_mode.
+#   another reader resolves it with less: the agent reads the shield flags with gameId,
+#   the game's game_kind and, in an experiment, experiment_id and arm
+#   (services/agent/flags/game.go shieldChargeContext), so their targeting must not use
+#   targetingKey (now the game mode there) or game_mode. game_kind is not listed: it is
+#   an API-level attribute, always allowed (the experiment rung tests it).
 # - "experiment_rung": "applies" when the flag is in the experiment catalog (registry.yaml
 #   scope experiment+arm): the handler read sees the game's game_kind, experiment_id and
 #   arm, so in an experimental-arm game the experiment's value wins (UC-043 BR-005).
@@ -25,11 +27,11 @@
 #
 # tests/test_handler_flag_reads.py drives every registered handler and fails when one
 # reads a flag that is not listed here, or when a handler has no census case.
-# tempo_schedule_mode is read on the flagd event thread (tempo_schedule.py), not in a
-# handler, so it is not listed.
 HANDLER_FLAG_READS = {
+    # Agent-tunable since FR-162 (#2096, UC-043 A17): an experiment arm reaches the read.
     ("game", "shield.activation"): {
-        "targeting": ["gameId"],
+        "targeting": ["gameId", "experiment_id", "arm"],
+        "experiment_rung": "applies",
         "readers": "games/base.py _shield_activation_mode, _latch_shield_hold <- grant_shield <- handle_shield_seconds",
     },
     ("game", "shield.charge_expiry_seconds"): {
@@ -37,35 +39,43 @@ HANDLER_FLAG_READS = {
         "readers": "games/base.py _read_charge_expiry <- grant_shield <- handle_shield_seconds",
     },
     # Hold mode (#2096, UC-040 BR-027): latched once per game, at the start of the game
-    # loop or by the first grant, whichever is first; stack-only until FR-162.
+    # loop or by the first grant, whichever is first, in the game's flag context, so an
+    # experiment arm resolves (FR-162, UC-043 A17).
     ("game", "shield.energy_max_seconds"): {
-        "targeting": ["gameId"],
+        "targeting": ["gameId", "experiment_id", "arm"],
+        "experiment_rung": "applies",
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
     ("game", "shield.energy_budget_seconds"): {
-        "targeting": ["gameId"],
+        "targeting": ["gameId", "experiment_id", "arm"],
+        "experiment_rung": "applies",
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
     ("game", "shield.energy_initial_seconds"): {
-        "targeting": ["gameId"],
+        "targeting": ["gameId", "experiment_id", "arm"],
+        "experiment_rung": "applies",
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
     ("game", "shield.recharge_per_second"): {
-        "targeting": ["gameId"],
+        "targeting": ["gameId", "experiment_id", "arm"],
+        "experiment_rung": "applies",
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
     ("game", "shield.min_burst_seconds"): {
-        "targeting": ["gameId"],
+        "targeting": ["gameId", "experiment_id", "arm"],
+        "experiment_rung": "applies",
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
     # Hold feedback cue values (#2096, UC-040 BR-026): latched with the hold values and
     # shipped to the controller manager with every hold command.
     ("game", "shield.hold_rumble_intensity"): {
-        "targeting": ["gameId"],
+        "targeting": ["gameId", "experiment_id", "arm"],
+        "experiment_rung": "applies",
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
     ("game", "shield.empty_pulse_ms"): {
-        "targeting": ["gameId"],
+        "targeting": ["gameId", "experiment_id", "arm"],
+        "experiment_rung": "applies",
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
     ("game", "shield.charge_rumble_intensity"): {

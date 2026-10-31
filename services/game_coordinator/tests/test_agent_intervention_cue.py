@@ -10,11 +10,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from services.game_coordinator.games.base import Player
 from services.game_coordinator.interventions import (
     INTERVENTION_SPECS,
     WEIGHT_HARD,
     InterventionManager,
 )
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 
 
 class FakeFlagClient:
@@ -25,24 +27,12 @@ class FakeFlagClient:
         return bool(self.values.get(key, default))
 
 
-class FakePlayer:
-    def __init__(self, serial, alive=True):
-        self.serial = serial
-        self.alive = alive
-
-
 class FakeStream:
     def __init__(self):
         self.writes = []
 
     async def write(self, cmd):
         self.writes.append(cmd)
-
-
-class FakeGame:
-    def __init__(self, players=None, stream=None):
-        self.players = players or {}
-        self.gameplay_stream = stream
 
 
 def _spec(type_id):
@@ -82,9 +72,9 @@ async def test_broadcast_cue_pulses_all_alive_players():
     from proto import controller_manager_pb2
 
     stream = FakeStream()
-    game = FakeGame(
-        players={"A": FakePlayer("A"), "B": FakePlayer("B"), "C": FakePlayer("C", alive=False)},
-        stream=stream,
+    game = FakeInterventionGame(
+        players={"A": Player("A"), "B": Player("B"), "C": Player("C", alive=False)},
+        gameplay_stream=stream,
     )
     mgr = _manager({"agent_intervention_cue": True})
 
@@ -97,10 +87,26 @@ async def test_broadcast_cue_pulses_all_alive_players():
 
 
 @pytest.mark.uc("UC-040", flow="main", steps=[13])
+@pytest.mark.uc("UC-031", flow="main", br=["BR-002"])
+@pytest.mark.asyncio
+async def test_cue_pulse_is_magenta():
+    """#2426: the #818 cue carries magenta (255,0,192), same as the shield help cue, not the default white."""
+    stream = FakeStream()
+    game = FakeInterventionGame(players={"A": Player("A")}, gameplay_stream=stream)
+    mgr = _manager({"agent_intervention_cue": True})
+
+    await mgr._emit_agent_cue(_spec("end_game"), None, game)
+
+    assert len(stream.writes) == 1
+    color = stream.writes[0].game_effect.color
+    assert (color.r, color.g, color.b) == (255, 0, 192)
+
+
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
 async def test_player_targeted_cue_pulses_only_target():
     stream = FakeStream()
-    game = FakeGame(players={"A": FakePlayer("A"), "B": FakePlayer("B")}, stream=stream)
+    game = FakeInterventionGame(players={"A": Player("A"), "B": Player("B")}, gameplay_stream=stream)
     mgr = _manager({"agent_intervention_cue": True})
 
     # eliminate_player is HARD and player-targeted.
@@ -113,7 +119,7 @@ async def test_player_targeted_cue_pulses_only_target():
 @pytest.mark.asyncio
 async def test_cue_suppressed_when_muted():
     stream = FakeStream()
-    game = FakeGame(players={"A": FakePlayer("A")}, stream=stream)
+    game = FakeInterventionGame(players={"A": Player("A")}, gameplay_stream=stream)
     mgr = _manager({"agent_intervention_cue": False})
 
     await mgr._emit_agent_cue(_spec("end_game"), None, game)
@@ -124,7 +130,7 @@ async def test_cue_suppressed_when_muted():
 @pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
 async def test_cue_no_stream_is_safe():
-    game = FakeGame(players={"A": FakePlayer("A")}, stream=None)
+    game = FakeInterventionGame(players={"A": Player("A")}, gameplay_stream=None)
     mgr = _manager({"agent_intervention_cue": True})
     # Should not raise.
     await mgr._emit_agent_cue(_spec("end_game"), None, game)
@@ -134,7 +140,7 @@ async def test_cue_no_stream_is_safe():
 @pytest.mark.asyncio
 async def test_cue_targeted_dead_serial_no_pulse():
     stream = FakeStream()
-    game = FakeGame(players={"A": FakePlayer("A", alive=False)}, stream=stream)
+    game = FakeInterventionGame(players={"A": Player("A", alive=False)}, gameplay_stream=stream)
     mgr = _manager({"agent_intervention_cue": True})
 
     await mgr._emit_agent_cue(_spec("eliminate_player"), "A", game)

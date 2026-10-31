@@ -12,7 +12,6 @@ and NonStop's winner, computed from the deaths, cannot flip (UC-026 BR-003).
 """
 
 import sys
-import time
 from pathlib import Path
 from unittest.mock import create_autospec, patch
 
@@ -26,6 +25,7 @@ from conftest import EventCollector, MockControllerManagerService
 
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import GameState, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
@@ -319,7 +319,7 @@ async def test_nonstop_deaths_after_the_time_limit_latch_do_not_flip_the_winner(
     game.gameplay_stream = _RecordingStream()
     game.running = True
     game.state = GameState.RUNNING
-    game.start_time = time.time()
+    game.start_time = game_clock.now()
     game._time_limit_reached = True
     game._latch_game_outcome()  # the loop latches at the time limit (UC-026 step 3)
 

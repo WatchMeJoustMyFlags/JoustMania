@@ -8,8 +8,10 @@ controller access while maintaining a consistent API.
 
 from abc import ABC, abstractmethod
 
+from services.controller_manager.mock_hooks import MockFeatureHooks
 
-class ControllerBackend(ABC):
+
+class ControllerBackend(MockFeatureHooks, ABC):
     """
     Abstract interface for controller backends.
 
@@ -29,20 +31,6 @@ class ControllerBackend(ABC):
 
         Returns:
             bool: True if initialization successful, False otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def scan_controllers(self) -> list[dict]:
-        """
-        Scan for available controllers.
-
-        Returns:
-            List of controller info dicts with keys:
-            - address: Bluetooth MAC address
-            - serial: Controller serial number
-            - name: Device name
-            - paired: Whether already paired (optional)
         """
         pass
 
@@ -154,3 +142,7 @@ class ControllerBackend(ABC):
             Number of controllers updated
         """
         return 0
+
+    def pattern_serials(self) -> set[str]:
+        """Serials that carry a motion pattern (cheap per-frame check). Default: none."""
+        return set()

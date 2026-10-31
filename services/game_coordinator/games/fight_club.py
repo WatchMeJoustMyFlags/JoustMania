@@ -10,9 +10,9 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -20,16 +20,16 @@ from opentelemetry.trace import Status, StatusCode
 from lib.colors import Colors
 from lib.feature_flags import read_float_flag
 from lib.telemetry import inject_trace_context
-from lib.types import GameEvent, Sound
+from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator import metrics
+from services.game_coordinator import game_clock, metrics
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
-    BaseGameMode,
     Phase,
     Player,
     resolve_non_negative_duration,
 )
+from services.game_coordinator.games.streamed_intro import StreamedIntroGameMode
 from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,20 @@ class FightClubPlayer(Player):
     invincible_until: float = 0.0
 
 
-class FightClubGame(BaseGameMode):
+@dataclass(frozen=True)
+class FightClubInitFlags:
+    """The fight club flags latched at game init, validated and immutable (#2359)."""
+
+    round_seconds: float
+
+    @classmethod
+    def from_raw(cls, *, round_seconds: Any) -> "FightClubInitFlags":
+        """Validate the raw flag value. A 0 s round would break play, so a non-positive value falls back."""
+        seconds = resolve_non_negative_duration(round_seconds, ROUND_DURATION)
+        return cls(round_seconds=seconds if seconds > 0 else ROUND_DURATION)
+
+
+class FightClubGame(StreamedIntroGameMode):
     """
     Fight Club game mode using gRPC communication.
 
@@ -83,6 +96,8 @@ class FightClubGame(BaseGameMode):
 
     Special: Face-off mode for tied scores (no time limit).
     """
+
+    RUN_SPAN_NAME = "fight_club_game"
 
     def __init__(
         self,
@@ -125,6 +140,9 @@ class FightClubGame(BaseGameMode):
         self.round_number: int = 0
         self.round_end_time: float = 0.0
         self.round_task: asyncio.Task | None = None
+        # The round timer task while it handles its timeout and seats the next
+        # round: a kill deciding that round must not cancel it (#2025 S4).
+        self._round_change_task: asyncio.Task | None = None
         self.game_over: bool = False
         # True while the current round is a face-off (UC-025 A2 step 3).
         self.face_off_mode: bool = False
@@ -156,11 +174,10 @@ class FightClubGame(BaseGameMode):
         # #766 F2: round duration promoted to ``game.fight_club.round_seconds``.
         # Read ONCE here (init-frozen); a non-positive/malformed value falls back
         # to the ROUND_DURATION module constant (a 0s round would break play).
-        round_seconds = resolve_non_negative_duration(
-            read_float_flag("game", "fight_club.round_seconds", ROUND_DURATION, game_id=self.game_id),
-            ROUND_DURATION,
+        self.mode_flags = FightClubInitFlags.from_raw(
+            round_seconds=read_float_flag("game", "fight_club.round_seconds", ROUND_DURATION, game_id=self.game_id)
         )
-        self._round_duration: float = round_seconds if round_seconds > 0 else ROUND_DURATION
+        self._round_duration: float = self.mode_flags.round_seconds
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -264,7 +281,7 @@ class FightClubGame(BaseGameMode):
         for _ in range(round(FC_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         logger.info("Fight Club intro complete")
 
@@ -311,16 +328,16 @@ class FightClubGame(BaseGameMode):
         defender.state = FightState.DEFENDER
         defender.color = DEFENDER_COLOR
         defender.alive = True
-        defender.invincible_until = time.time() + self._invincibility_duration
+        defender.invincible_until = game_clock.now() + self._invincibility_duration
 
         fighter.state = FightState.FIGHTER
         fighter.color = FIGHTER_COLOR
         fighter.alive = True
-        fighter.invincible_until = time.time() + self._invincibility_duration
+        fighter.invincible_until = game_clock.now() + self._invincibility_duration
 
         # Set round end time
         if not self.face_off_mode:
-            self.round_end_time = time.time() + self._round_duration
+            self.round_end_time = game_clock.now() + self._round_duration
         else:
             self.round_end_time = float("inf")  # No time limit in face-off
 
@@ -330,12 +347,9 @@ class FightClubGame(BaseGameMode):
             f"{' [FACE-OFF]' if self.face_off_mode else ''}"
         )
 
-        # Update colors
-        await self._update_player_colors()
-
-        # Play round start sound
-        await self._play_sound(Sound.SFX_BEEP, priority=2)
-
+        # Announce the round before its first other await: a forfeit (A4) that
+        # decides it during the colour writes comes after its round_start (#2025 S4).
+        seated = (self._round_id, self.current_defender, self.current_fighter)
         await self.event_publisher(
             "round_start",
             {
@@ -348,9 +362,21 @@ class FightClubGame(BaseGameMode):
             },
         )
 
-        # Start round timer task (unless face-off)
-        if not self.face_off_mode:
+        # Update colors
+        await self._update_player_colors()
+
+        # Play round start sound
+        if not self._round_still_seated(seated):
+            return
+        await self._play_sound(Sound.SFX_BEEP, priority=2)
+
+        # Start round timer task (unless face-off) for a round nothing decided yet
+        if not self.face_off_mode and self._round_still_seated(seated):
             self.round_task = self._track_task(asyncio.create_task(self._round_timer()))
+
+    def _round_still_seated(self, seated: tuple[int, str | None, str | None]) -> bool:
+        """Whether the round seated as ``seated`` is still undecided and current (#2025 S4)."""
+        return self.running and (self._round_id, self.current_defender, self.current_fighter) == seated
 
     def _seat_face_off_pair(self, pair: tuple[str, str]) -> None:
         """Seat the tied leaders as this round's defender and fighter (UC-025 A2 step 3).
@@ -382,19 +408,25 @@ class FightClubGame(BaseGameMode):
         Track round time and play countdown beeps.
         """
         while self.running:
-            remaining = self.round_end_time - time.time()
+            remaining = self.round_end_time - game_clock.now()
 
             if remaining <= 0:
                 # Time's up - both players lose
                 logger.info("Round time expired - both players lose")
-                await self._handle_timeout()
+                # From here this task changes the round; a kill that decides the
+                # next round during its start does not cancel it (#2025 S4).
+                self._round_change_task = asyncio.current_task()
+                try:
+                    await self._handle_timeout()
+                finally:
+                    self._round_change_task = None
                 break
 
             # Play beeps in last 3 seconds
             if remaining <= COUNTDOWN_BEEPS and remaining > 0:
                 await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)
 
-            await asyncio.sleep(1.0)
+            await game_clock.sleep(1.0)
 
     async def _handle_timeout(self):
         """
@@ -723,8 +755,8 @@ class FightClubGame(BaseGameMode):
         # (the combatant slot is cleared below, before the first await).
         fc_player.alive = False
 
-        # Cancel round timer
-        if self.round_task and not self.round_task.done():
+        # Cancel round timer, unless it is the task seating this round (#2025 S4)
+        if self.round_task and not self.round_task.done() and self.round_task is not self._round_change_task:
             self.round_task.cancel()
 
         # Determine winner
@@ -824,9 +856,10 @@ class FightClubGame(BaseGameMode):
     async def _pause_between_rounds(self) -> None:
         """Brief pause between a round's kill and the next round.
 
-        A seam: tests replace it on the instance instead of patching ``asyncio.sleep``.
+        A seam: tests replace it on the instance to skip or hold the pause.
+        test_game_clock_waits.py pins the duration.
         """
-        await asyncio.sleep(ROUND_PAUSE_SECONDS)
+        await game_clock.sleep(ROUND_PAUSE_SECONDS)
 
     def _sends_death_effect(self, serial: str) -> bool:  # noqa: ARG002
         """No base death effect: a Fight Club loser stays in the game (D-G32, #1342 class).
@@ -914,7 +947,7 @@ class FightClubGame(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winner": winner_serial or "none",
             "winner_score": winner_score,
             "total_rounds": self.round_number,
@@ -938,115 +971,33 @@ class FightClubGame(BaseGameMode):
         self.game_over = True
         await super().on_force_end()
 
-    async def run(self):
-        """
-        Run the Fight Club game.
+    def _log_run_config(self) -> None:
+        # invincibility and min_rounds are set in __init__ from StartGameConfig
+        logger.info(f"Fight Club config: invincibility={self._invincibility_duration}s, min_rounds={self._min_rounds}")
 
-        Override to manage round-based gameplay.
-        """
-        from services.game_coordinator.games.base import GameState
+    async def _run_streamed_gameplay(self) -> bool:
+        """Seat round 1 after the warm-up, then gameplay_phase (UC-025 A2, A4)."""
+        if not self.running:
+            return False
 
-        # The session game root span carries the outcome (#1328).
-        self._capture_game_root_span()
-        with tracer.start_as_current_span("fight_club_game") as game_span:
-            self.game_span = game_span
-            game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
+        # Disconnects buffered during the intro, the countdown and the warm-up
+        # leave the rotation before round 1 is seated: no forfeit point, no
+        # round pause; fewer than two connected players end the game (A4).
+        ended_before_round_one = await self._handle_warmup_disconnects()
+        if not self.running:
+            return False
 
-            try:
-                self.running = True
-                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
+        # The first round (and its timer) starts after the warm-up
+        if not ended_before_round_one:
+            await self._start_round()
 
-                # Initialization phase
-                with tracer.start_as_current_span("initialization_phase") as init_span:
-                    # invincibility and min_rounds are now set in __init__ from StartGameConfig
-                    logger.info(
-                        f"Fight Club config: invincibility={self._invincibility_duration}s, "
-                        f"min_rounds={self._min_rounds}"
-                    )
-                    await self._initialize_players()
-                    if len(self.players) < 2:
-                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
-                    # Before any task is created: tasks copy the context (#1273).
-                    self._set_flag_eval_context()
-                    self._create_player_spans(None)
-                    # The intro colours go over the stream, so it opens first; a drain
-                    # discards the intro's frames and keeps disconnects (UC-025 A2 step 1).
-                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
-                    await self._run_streamed_intro_and_instructions(init_span)
-
-                if not self.running:
-                    return
-
-                # Countdown
-                with tracer.start_as_current_span("countdown_phase"):
-                    await self._countdown()
-
-                if not self.running:
-                    return
-
-                # Start gameplay
-                self.state = GameState.RUNNING
-                self.start_time = time.time()
-
-                # Fight Club publishes game_started after the countdown (UC-025 A2 step 1).
-                await self.event_publisher(
-                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
-                )
-
-                # Start music (no tempo loop by design, UC-025 BR-002)
-                await self._start_game_music()
-
-                # Prime the EMA filters before death detection (UC-030 BR-003)
-                await self._warmup_ema()
-
-                if not self.running:
-                    return
-
-                # Disconnects buffered during the intro, the countdown and the warm-up
-                # leave the rotation before round 1 is seated: no forfeit point, no
-                # round pause; fewer than two connected players end the game (A4).
-                ended_before_round_one = await self._handle_warmup_disconnects()
-                if not self.running:
-                    return
-
-                # The first round (and its timer) starts after the warm-up
-                if not ended_before_round_one:
-                    await self._start_round()
-
-                # Game loop (gameplay stream already started before intro)
-                with tracer.start_as_current_span("gameplay_phase"):
-                    if ended_before_round_one:
-                        await self._hold_win_display()
-                    else:
-                        await self._game_loop()
-                self._latch_game_outcome()
-
-                # End game
-                with tracer.start_as_current_span("teardown_phase") as teardown_span:
-                    # Shield LEDs end with the game, before the winner effects (#1301).
-                    await self._end_shield_feedback()
-                    await self._end_game_impl()
-                    self._record_game_outcome(teardown_span)
-                    # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
-                    self._release_gameplay_stream()
-
-                game_span.set_status(Status(StatusCode.OK))
-
-            except Exception as e:
-                self._run_failed = True
-                logger.error(f"Game error: {e}", exc_info=True)
-                game_span.record_exception(e)
-                game_span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-            finally:
-                self._record_force_ended_outcome_if_unrecorded()
-                force_ended = not self.running
-                self.running = False
-                await self._stop_game_music()
-                if force_ended:
-                    await self.on_force_end()
-                await self._cleanup_after_run()
+        # Game loop (gameplay stream already started before intro)
+        with tracer.start_as_current_span("gameplay_phase"):
+            if ended_before_round_one:
+                await self._hold_win_display()
+            else:
+                await self._game_loop()
+        return True
 
     async def _process_controller_state(self, state):
         """

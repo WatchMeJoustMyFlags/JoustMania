@@ -6,8 +6,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchDecideFeed, fetchFlagStates, fetchInterventionCounts, fetchRollouts, RolloutStore } from "../agent.js";
-import { fetchExperiments } from "../experiments.js";
+import { DecideStore, pollDecides, fetchFlagStates, fetchInterventionCounts, fetchRollouts, RolloutStore } from "../agent.js";
+import { ExperimentStore, pollExperiments } from "../experiments.js";
 import { JaegerUnavailableError } from "../jaeger.js";
 import { keepGameEventStreamOpen } from "../stream.js";
 import { ShieldStore, shieldBadge } from "../shield.js";
@@ -33,8 +33,9 @@ function stubBackends(down: { vm?: boolean; grafana?: boolean; jaeger?: "reject"
     if (url.includes("/jaeger/")) {
       if (down.jaeger === "reject") throw new TypeError("Failed to fetch");
       if (down.jaeger === "503") return new Response("no healthy upstream", { status: 503 });
-      if (down.jaeger === "errors") return json(200, { data: null, errors: [{ code: 500, msg: "badger: closed" }] });
-      return json(200, { data: [] });
+      if (down.jaeger === "errors") return json(500, { error: { httpCode: 500, message: "badger: closed" } });
+      // Jaeger v3 answers "nothing matched" with 404 No traces found (#2283): data, not an outage.
+      return json(404, { error: { httpCode: 404, message: "No traces found" } });
     }
     if (url.includes("/loki/")) throw new Error(`the dashboard must not read Loki: ${url}`);
     throw new Error(`unexpected URL ${url}`);
@@ -59,6 +60,9 @@ describe("UC-035: A3 VictoriaMetrics down", () => {
     expect(overlay.blockedByReason).toEqual([]);
     expect(overlay.appliedOk).toBeNull();
     expect(overlay.appliedError).toBeNull();
+    expect(overlay.shadowAppliedOk).toBeNull();
+    expect(overlay.shadowAppliedError).toBeNull();
+    expect(overlay.shadowBlocked).toBeNull();
   });
 });
 
@@ -82,17 +86,17 @@ describe("UC-035: A3 Jaeger down vs no data", () => {
   for (const mode of ["reject", "503", "errors"] as const) {
     it(`UC-035/A3 Jaeger down (${mode}) fails every agent and experiment search`, async () => {
       stubBackends({ jaeger: mode });
-      await expect(fetchDecideFeed(null)).rejects.toBeInstanceOf(JaegerUnavailableError);
+      await expect(pollDecides(new DecideStore(), 0)).rejects.toBeInstanceOf(JaegerUnavailableError);
       await expect(fetchFlagStates()).rejects.toBeInstanceOf(JaegerUnavailableError);
       await expect(fetchRollouts(new RolloutStore())).rejects.toBeInstanceOf(JaegerUnavailableError);
-      await expect(fetchExperiments()).rejects.toBeInstanceOf(JaegerUnavailableError);
+      await expect(pollExperiments(new ExperimentStore())).rejects.toBeInstanceOf(JaegerUnavailableError);
     });
   }
 
   it("UC-035/A3 Jaeger up without spans (agent or collector down, or an old agent image) is data, not an error", async () => {
     stubBackends({});
     await expect(fetchFlagStates()).resolves.toEqual([]);
-    await expect(fetchExperiments()).resolves.toEqual([]);
+    await expect(pollExperiments(new ExperimentStore())).resolves.toEqual([]);
     const store = new RolloutStore();
     await fetchRollouts(store);
     expect(store.list()).toEqual([]);
@@ -120,8 +124,8 @@ describe("UC-035: A3 Grafana down", () => {
 
     await expect(fetchInterventionCounts()).resolves.toBeDefined();
     await expect(fetchFlagStates()).resolves.toBeDefined();
-    await expect(fetchExperiments()).resolves.toBeDefined();
-    await expect(fetchDecideFeed(null)).resolves.toBeDefined();
+    await expect(pollExperiments(new ExperimentStore())).resolves.toBeDefined();
+    await expect(pollDecides(new DecideStore(), 0)).resolves.toBeDefined();
 
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.filter((u) => u.includes("/grafana"))).toEqual([]);
@@ -156,10 +160,10 @@ describe("UC-035: A4 the game event stream is lost", () => {
     }
     let reopen: (() => void) | undefined;
 
-    await keepGameEventStreamOpen(failing, (e) => store.apply(e), (fn) => (reopen = fn));
+    await keepGameEventStreamOpen(failing, (e) => store.apply(e, now, now), (fn) => (reopen = fn));
 
     // The badge from before the loss keeps counting down on its own; nothing new arrives.
-    expect(shieldBadge(store.get("MOCK0001", now + 1000), now + 1000)?.text).toBe("Shield 4.0s");
+    expect(shieldBadge(store.get("MOCK0001", now + 1000, now + 1000), now + 1000, now + 1000)?.text).toBe("Shield 4.0s");
     expect(store.get("MOCK0002", now + 1000)).toBeNull();
     expect(reopen).toBeTypeOf("function");
   });

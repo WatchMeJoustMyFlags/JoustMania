@@ -271,6 +271,22 @@
    "duration_s": 13.39,
    "lufs": -20.48
   },
+  "Menu/vox/gen_female/admin_agent.ogg": {
+   "line": "Menu/admin_agent",
+   "input_sha256": "a5a3e8ac88a7034137051ed5073d3d30a8d010fa24cc5241b04f505a365d2c27",
+   "text_sha256": "34aa6e1d0b406b7d72d67ad812e0d2e3f7db2137050cf522f83e02cc239bfed9",
+   "sha256": "75b0b74cecbb9d5bb161d80cddfeff9a3e3ed2b867789aa2006c655786c72a10",
+   "duration_s": 0.71,
+   "lufs": -20.47
+  },
+  "Menu/vox/gen_female/admin_not_saved.ogg": {
+   "line": "Menu/admin_not_saved",
+   "input_sha256": "0eeda157bcd654750f7025bba3e6b77a14b599ca6a55737af6f9f3eba7095ac9",
+   "text_sha256": "9b1b1f85a08918c0e0fca4c95513e77c1925f5a4ae95ebc48fdcb173850a69eb",
+   "sha256": "4c97d62eddb9a314264a117a5f68eb7c260c43186db9c430274863eb247c0f3e",
+   "duration_s": 0.91,
+   "lufs": -20.46
+  },
   "Menu/vox/gen_female/adminop_1.ogg": {
    "line": "Menu/adminop_1",
    "input_sha256": "22eefff9ea002b5abf3bcf114b8a9e27813044846ec606f4ae8dbc594cca823c",
@@ -447,6 +463,14 @@
    "lufs": -20.62,
    "text_sha256": "32fa1433fdfcfcd6505decc467cce7fc63bd6d5a735ad3c99b48f14c30949aca"
   },
+  "Menu/vox/gen_female/label_shield_mode.ogg": {
+   "line": "Menu/label_shield_mode",
+   "input_sha256": "976fcb8639dd0f1e2a6c832a2e7d51a6a13148166fe3ccf5d1b92687df100f9f",
+   "text_sha256": "98ed41a1fedeaeb0f444f4f540bffd1b8be7b752e4ddd4c8831cf18eea511a4e",
+   "sha256": "193a9773dca4590069fa3c59bb9008a716b3ce45e2486c1196157bafc5f89596",
+   "duration_s": 0.945,
+   "lufs": -20.41
+  },
   "Menu/vox/gen_female/label_teams.ogg": {
    "line": "Menu/label_teams",
    "input_sha256": "6312a9fc5b589e961634a8bc4c7a24a3a2a4f9729e91fcea60e629dcb3e16411",
@@ -583,6 +607,38 @@
    "lufs": -20.19,
    "text_sha256": "0b99103141b5dee31c0dc177797d7d7a3e6391317b5e858d0d4cf9f0dbd1024b"
   },
+  "Menu/vox/gen_female/shield_automatic.ogg": {
+   "line": "Menu/shield_automatic",
+   "input_sha256": "84351f56407e73d08b0454a9daf2eee56b09744f13df51d60e2fa26d691839ba",
+   "text_sha256": "8242460e3de0746163c44651f94af80200a352202f2869f9e89d7a07563ae9fd",
+   "sha256": "bb7a7353a1e9df5dc8c666958326760e4d05ceb6828d6d3649f909adccf756de",
+   "duration_s": 0.805,
+   "lufs": -20.41
+  },
+  "Menu/vox/gen_female/shield_hold.ogg": {
+   "line": "Menu/shield_hold",
+   "input_sha256": "a05f87433a6b7156651d6ce568ffebc5743ad3c81a08a1afa14b52b8e661579a",
+   "text_sha256": "a11a6a624bfeb50ab4ac46193fe0931818e5f6719cc982f9ecaa23ab674dabe3",
+   "sha256": "b14c243c0705d37ba6899ea56903282282e9037bc8d2ae7b087a2f79746809fc",
+   "duration_s": 0.636,
+   "lufs": -20.38
+  },
+  "Menu/vox/gen_female/shield_instant.ogg": {
+   "line": "Menu/shield_instant",
+   "input_sha256": "8c8ee92d1fb29ec7cb0891415764457223d07d8e90708651534680ca99cc4fd2",
+   "text_sha256": "5cb61b2b732f20d6bc93104554ca16ca87421b5b102da284303df449d38ad7e3",
+   "sha256": "fd095d900bd1655066d7cd627e855b034e642c72db9b8dbb0b9366a162ca7240",
+   "duration_s": 0.815,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_female/shield_trigger.ogg": {
+   "line": "Menu/shield_trigger",
+   "input_sha256": "fa6fca3b6e838ceeb25789ffe4460a0c0cc4386eb7a0ef501431dde03725e436",
+   "text_sha256": "f3b35734409d103afd68819f5e2d26f28b22ce9cbc635ae1d6ec65aa16a3ae54",
+   "sha256": "2eabe531d997a3172d9b0adf719c4d5281d099dc998222eb98d79b8b3c8cad3e",
+   "duration_s": 0.586,
+   "lufs": -20.41
+  },
   "Menu/vox/gen_female/status_cancelled.ogg": {
    "line": "Menu/status_cancelled",
    "input_sha256": "74acc63537b02aed548507832ec6dc8f765a924cc6924e274e8568aeb7359b42",
@@ -702,6 +758,22 @@
    "sha256": "2529af6dd574f30d3d483460dbdc5608e56c538cb1622ab7cfda17e3a0d7f200",
    "duration_s": 14.667,
    "lufs": -20.5
+  },
+  "Menu/vox/gen_male/admin_agent.ogg": {
+   "line": "Menu/admin_agent",
+   "input_sha256": "2345f116567fe0cfd396430ec47a730c68735b44d99068a94ccbb9f2d86a2bf3",
+   "text_sha256": "34aa6e1d0b406b7d72d67ad812e0d2e3f7db2137050cf522f83e02cc239bfed9",
+   "sha256": "7fdf7ef77f57d2cd6574d4f5c74da688c66a5508a6c810a695e2947b5fe869cc",
+   "duration_s": 1.49,
+   "lufs": -20.51
+  },
+  "Menu/vox/gen_male/admin_not_saved.ogg": {
+   "line": "Menu/admin_not_saved",
+   "input_sha256": "cedffc261c6ff73e3bf9bf75b4289221bd17a8d552a6e130f3fee45f092f48ca",
+   "text_sha256": "9b1b1f85a08918c0e0fca4c95513e77c1925f5a4ae95ebc48fdcb173850a69eb",
+   "sha256": "b8b78ba3aa35c9ee2b6da659723b0563dd1512429a595580eabd2b5822aba28e",
+   "duration_s": 0.995,
+   "lufs": -20.55
   },
   "Menu/vox/gen_male/adminop_1.ogg": {
    "line": "Menu/adminop_1",
@@ -879,6 +951,14 @@
    "lufs": -20.48,
    "text_sha256": "32fa1433fdfcfcd6505decc467cce7fc63bd6d5a735ad3c99b48f14c30949aca"
   },
+  "Menu/vox/gen_male/label_shield_mode.ogg": {
+   "line": "Menu/label_shield_mode",
+   "input_sha256": "af47732ec480b387a07f6bea0a58d4f6409765f3593a6fe0c1ac0f0bb1f15ffa",
+   "text_sha256": "98ed41a1fedeaeb0f444f4f540bffd1b8be7b752e4ddd4c8831cf18eea511a4e",
+   "sha256": "870c26003d9a4a17905d03a4d2322a0b3bbcd701ebcf4558a1dc73c151c1d7b2",
+   "duration_s": 1.118,
+   "lufs": -20.49
+  },
   "Menu/vox/gen_male/label_teams.ogg": {
    "line": "Menu/label_teams",
    "input_sha256": "e036d78a9322b2a114c782740387718efdf2b481eb28cffcb69af2d89e0a7c03",
@@ -1014,6 +1094,38 @@
    "duration_s": 1.167,
    "lufs": -20.64,
    "text_sha256": "0b99103141b5dee31c0dc177797d7d7a3e6391317b5e858d0d4cf9f0dbd1024b"
+  },
+  "Menu/vox/gen_male/shield_automatic.ogg": {
+   "line": "Menu/shield_automatic",
+   "input_sha256": "9fe3ee34f3add35ef177ab715166800c0c9422a26099329ecf99bc6f532e3866",
+   "text_sha256": "8242460e3de0746163c44651f94af80200a352202f2869f9e89d7a07563ae9fd",
+   "sha256": "3e978ee29e81c623666d2b2481a6078ba87e6d3d0b2a74abdce97d4796d541ad",
+   "duration_s": 0.925,
+   "lufs": -20.53
+  },
+  "Menu/vox/gen_male/shield_hold.ogg": {
+   "line": "Menu/shield_hold",
+   "input_sha256": "1916efed7ff9743685b3d8cf4ee92577f598c7b00121ce36ae6c324180a2f22e",
+   "text_sha256": "a11a6a624bfeb50ab4ac46193fe0931818e5f6719cc982f9ecaa23ab674dabe3",
+   "sha256": "0b314d4432bdadfe4ddd6f2df7b285d746250f33dc094689469d05f3004298e7",
+   "duration_s": 0.536,
+   "lufs": -20.45
+  },
+  "Menu/vox/gen_male/shield_instant.ogg": {
+   "line": "Menu/shield_instant",
+   "input_sha256": "ae6a8dd5bac2b20139b0c94ff578bbd9d9c087ae81ef41d2f45720a780799776",
+   "text_sha256": "5cb61b2b732f20d6bc93104554ca16ca87421b5b102da284303df449d38ad7e3",
+   "sha256": "7cdb57602c276ff889aafc02d045a75b571780ef8bd42d76442b3ad5023add6b",
+   "duration_s": 1.137,
+   "lufs": -20.44
+  },
+  "Menu/vox/gen_male/shield_trigger.ogg": {
+   "line": "Menu/shield_trigger",
+   "input_sha256": "000d08f2e45f545cf71520b28909bb2fbb99a14d6ad0a94ec8ddbb63e07face7",
+   "text_sha256": "f3b35734409d103afd68819f5e2d26f28b22ce9cbc635ae1d6ec65aa16a3ae54",
+   "sha256": "6aaa6de4330cd4f799603998da4a8165461491acffda51f8cee3f7c22ffe1065",
+   "duration_s": 0.4,
+   "lufs": -20.41
   },
   "Menu/vox/gen_male/status_cancelled.ogg": {
    "line": "Menu/status_cancelled",

@@ -6,6 +6,7 @@ last frame delivered to a game stream", so a press that starts and ends between 
 frames (15/30 Hz) is not lost. Only game streams clear the latch (like the death latch).
 """
 
+import queue
 import sys
 import threading
 from pathlib import Path
@@ -25,6 +26,8 @@ from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
+from services.controller_manager.tests.backend_doubles import autospec_channel, inert_hooks
+from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 HID_SERIAL = normalize_serial("AA:BB:CC:DD:EE:01")
 
@@ -36,7 +39,22 @@ def _frames(servicer, subscriber_id="game", flt=None):
 
 def _wire(servicer, latched: list[bool], level: bool = False):
     """Servicer whose backend latch is a queue of consume results and whose state level is fixed."""
-    backend = MagicMock(spec=["consume_trigger_press"])
+    backend = inert_hooks(
+        MagicMock(
+            spec=[
+                "consume_death_frame",
+                "consume_trigger_press",
+                "pattern_serials",
+                "pattern_frame",
+                "pattern_stream_rate",
+                "record_pattern_overrun",
+                "release_pattern_stream",
+            ]
+        )
+    )
+    backend.pattern_serials.return_value = set()
+    backend.pattern_frame.return_value = None
+    backend.pattern_stream_rate.return_value = None
     backend.consume_trigger_press.side_effect = lambda _serial: latched.pop(0) if latched else False
     servicer.backend = backend
     state = servicer.state_builder.build_state.return_value
@@ -131,13 +149,15 @@ class TestUC030MockTriggerLatch:
 
 def _bare_hid(adapter_cls):
     adapter = adapter_cls.__new__(adapter_cls)
-    adapter._channel = MagicMock()
+    adapter._init_stream_state()
+    adapter._channel = autospec_channel()
     adapter._stub = MagicMock()
     adapter._latest_data = {}
     adapter._last_state = {}
     adapter._trigger_latch = set()
     adapter._data_lock = threading.Lock()
     adapter._closed = set()
+    adapter._command_queue = queue.Queue(maxsize=256)
     adapter._stream_running = True
     adapter._adapter_names = {}
     return adapter
@@ -147,9 +167,9 @@ def _bare_hid(adapter_cls):
 class TestUC030HidTriggerLatch:
     @pytest.mark.uc("UC-030", flow="A6", br=["BR-005"])
     def test_press_and_release_between_polls_is_latched(self, adapter_cls):
-        """UC-030 BR-005: poll() only sees the last sample (released), the latch remembers the press."""
+        """UC-030 BR-005: the game-frame latch remembers the press after the release, independent of poll()."""
         adapter = _bare_hid(adapter_cls)
-        adapter._stub.StreamIO.return_value = iter(
+        adapter._stub.StreamIO.return_value = FakeStreamCall(
             [
                 psmove_hid_pb2.SensorData(serial=HID_SERIAL, button_trigger=False),
                 psmove_hid_pb2.SensorData(serial=HID_SERIAL, button_trigger=True),
@@ -160,14 +180,17 @@ class TestUC030HidTriggerLatch:
 
         adapter._stream_loop()
 
+        # The poll path has its own press latch since #2312 (UC-010 BR-012): one poll pressed, then the real level.
+        assert adapter.poll(HID_SERIAL)[ButtonKey.TRIGGER] is True
         assert adapter.poll(HID_SERIAL)[ButtonKey.TRIGGER] is False
+        # A poll never drains the game-frame latch.
         assert adapter.consume_trigger_press(HID_SERIAL) is True
         assert adapter.consume_trigger_press(HID_SERIAL) is False  # a hold is one press
 
     @pytest.mark.uc("UC-030", flow="A6", br=["BR-005"])
     def test_no_press_no_latch_and_close_clears_it(self, adapter_cls):
         adapter = _bare_hid(adapter_cls)
-        adapter._stub.StreamIO.return_value = iter([psmove_hid_pb2.SensorData(serial=HID_SERIAL)])
+        adapter._stub.StreamIO.return_value = FakeStreamCall([psmove_hid_pb2.SensorData(serial=HID_SERIAL)])
         adapter._stream_loop()
         assert adapter.consume_trigger_press(HID_SERIAL) is False
 

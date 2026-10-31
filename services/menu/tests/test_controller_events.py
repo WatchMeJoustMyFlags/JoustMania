@@ -7,20 +7,15 @@ import pytest
 
 from proto import controller_manager_pb2
 from services.menu import metrics as menu_metrics
-from services.menu.controller_events import BUTTON_TYPE_NAMES, ControllerEventLoop
+from services.menu.controller_events import BUTTON_TYPE_NAMES, ControllerEventCallbacks, ControllerEventLoop
 
 
 @pytest.fixture
 def mock_callbacks():
     """Create mock ControllerEventCallbacks."""
-    callbacks = MagicMock()
-    callbacks.on_connect = AsyncMock()
-    callbacks.on_disconnect = AsyncMock()
-    callbacks.on_button = AsyncMock()
-    callbacks.update_battery = MagicMock()
-    callbacks.get_menu_state = MagicMock(return_value=1)  # RUNNING
-    callbacks.get_connected_serials = MagicMock(return_value=set())
-    callbacks.on_stream_reconnected = AsyncMock()
+    callbacks = create_autospec(ControllerEventCallbacks, instance=True)
+    callbacks.get_menu_state.return_value = 1  # RUNNING
+    callbacks.get_connected_serials.return_value = set()
     return callbacks
 
 
@@ -183,14 +178,22 @@ class TestButtonTypeNames:
 class TestHandleConnectionError:
     """Tests for _handle_connection_error extracted helper."""
 
+    @pytest.fixture(autouse=True)
+    def sleep(self, monkeypatch):
+        """The retry back-off is real wall-clock time (up to 20 s per test); record it instead."""
+        fake_sleep = AsyncMock()
+        monkeypatch.setattr("services.menu.controller_events.asyncio.sleep", fake_sleep)
+        return fake_sleep
+
     @pytest.mark.asyncio
-    async def test_returns_doubled_delay(self, event_loop_instance):
+    async def test_returns_doubled_delay(self, event_loop_instance, sleep):
         """Should return doubled retry delay after sleeping."""
         event_loop_instance._running = True
         result = await event_loop_instance._handle_connection_error(
             RuntimeError("test"), retry_delay=2.0, max_retry_delay=30.0
         )
         assert result == 4.0
+        sleep.assert_awaited_once_with(2.0)
 
     @pytest.mark.asyncio
     async def test_caps_at_max_delay(self, event_loop_instance):
@@ -202,13 +205,14 @@ class TestHandleConnectionError:
         assert result == 30.0
 
     @pytest.mark.asyncio
-    async def test_returns_unchanged_when_not_running(self, event_loop_instance):
+    async def test_returns_unchanged_when_not_running(self, event_loop_instance, sleep):
         """Should return unchanged delay when loop is not running."""
         event_loop_instance._running = False
         result = await event_loop_instance._handle_connection_error(
             RuntimeError("test"), retry_delay=5.0, max_retry_delay=30.0
         )
         assert result == 5.0
+        sleep.assert_not_awaited()
 
 
 class TestClearStreamState:
@@ -493,3 +497,44 @@ class TestHandlerErrorIsolation:
         assert state_manager.ready_controllers == {"ready1"}
         assert state_manager.get_controller_state("lobby1") == ControllerState.CONNECTED
         mock_metrics.button_event_errors_total.labels.assert_called_once_with(event_type="button")
+
+
+class TestButtonTelemetry:
+    """#2380: presses, frames and dispatch latency count what their names say."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", br=["BR-003"])
+    async def test_press_counted_by_button_but_release_not(self, event_loop_instance, mock_callbacks, mock_metrics):
+        press = _button_event("serial1", controller_manager_pb2.BUTTON_SELECT)
+        release = _button_event("serial1", controller_manager_pb2.BUTTON_SELECT)
+        release.action = controller_manager_pb2.ACTION_RELEASE
+
+        await event_loop_instance._dispatch_event_safely(press)
+        await event_loop_instance._dispatch_event_safely(release)
+
+        mock_metrics.button_presses_total.labels.assert_called_once_with(button="select", action="press")
+        mock_metrics.button_presses_total.labels.return_value.inc.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A1")
+    async def test_every_event_is_a_frame_and_timed_by_type(self, event_loop_instance, mock_callbacks, mock_metrics):
+        connect = MagicMock(serial="s1", event_type=controller_manager_pb2.EVENT_CONNECT, battery=0)
+        connect.connected_serials = []
+
+        await event_loop_instance._dispatch_event_safely(connect)
+        await event_loop_instance._dispatch_event_safely(_button_event("s1", controller_manager_pb2.BUTTON_MOVE))
+
+        assert mock_metrics.button_frames_processed_total.inc.call_count == 2
+        timed = [c.kwargs["event_type"] for c in mock_metrics.button_dispatch_seconds.labels.call_args_list]
+        assert timed == ["connect", "button"]
+        assert mock_metrics.button_dispatch_seconds.labels.return_value.observe.call_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-011", flow="main", br=["BR-003"])
+    async def test_failed_dispatch_is_still_timed(self, event_loop_instance, mock_callbacks, mock_metrics):
+        mock_callbacks.on_button.side_effect = AttributeError("boom")
+
+        await event_loop_instance._dispatch_event_safely(_button_event("s1", controller_manager_pb2.BUTTON_MOVE))
+
+        mock_metrics.button_dispatch_seconds.labels.assert_called_once_with(event_type="button")
+        mock_metrics.button_dispatch_seconds.labels.return_value.observe.assert_called_once()

@@ -129,7 +129,9 @@ Cut-off runs (power loss, ssh hang-up) and manual recovery:
 - An upgrade cut off after its checkout leaves HEAD at the target but `.joustmania-release` naming the version
   before; `--status` WARNs `HEAD ... is neither recorded version` and `--rollback` refuses. Re-run the same
   upgrade command: it repairs the record (current = HEAD, previous = the recorded current) without a restart;
-  then run `sudo systemctl restart joustmania`, or `--rollback` to go back.
+  then run `sudo systemctl restart joustmania`, or `--rollback` to go back. The same holds when a cut-off
+  rollback came first (its marker still in the record): HEAD is then neither recorded version, the marker is
+  stale, and the repair makes the version that rollback was moving to the previous one.
 - The unit's start limit (3 starts in 15 minutes, UC-060 A5) guards boot crash loops only: every restart the
   upgrade command does runs `sudo systemctl reset-failed joustmania` first (UC-060 BR-006), so upgrades and
   rollbacks in quick succession still start. A start systemd refuses anyway is reported as `refused by systemd
@@ -139,7 +141,7 @@ Cut-off runs (power loss, ssh hang-up) and manual recovery:
   `git checkout main && sudo systemctl restart joustmania` (the branch takes `IMAGE_TAG` from `.env.local`
   again), then repeat the migration.
 
-One-time migration of a Pi still on the `main` branch (once the first pinnable release, `MIN_PINNABLE`, exists):
+One-time migration of a Pi still on the `main` branch (the first pinnable release, `MIN_PINNABLE`, is 0.8.0):
 
 ```bash
 cd ~/JoustMania
@@ -174,6 +176,11 @@ release tag is the first thing to check when a stack runs old code.
 docker compose pull              # fetch images from GHCR
 docker compose up -d --build     # build from your checkout instead
 ```
+
+Python service images install their dependencies from `uv.lock` (C-046, #2266): the builder stage runs
+`uv export --frozen --package <member>` and installs that list, then the workspace packages with `--no-deps`.
+To move a dependency, change the range in the member's `pyproject.toml` if needed and run `uv lock` (or
+`uv lock --upgrade-package <name>`); the lock diff is the review, and the next build of every Python image picks it up.
 
 CI builds each service image separately, tags it with the commit SHA and the branch, and pushes to GHCR
 (`.github/workflows/`). Public images pull without login; for a private fork, authenticate once:

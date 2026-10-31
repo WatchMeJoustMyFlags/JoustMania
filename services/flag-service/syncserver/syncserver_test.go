@@ -59,7 +59,7 @@ func newHarness(t *testing.T, served []string) *harness {
 	}
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(ServerOptions()...)
-	(&Server{State: st, Metrics: metrics, Tracer: tracenoop.NewTracerProvider().Tracer("t"), Links: &Links{}}).Register(srv)
+	(&Server{State: st, Metrics: metrics, Tracer: tracenoop.NewTracerProvider().Tracer("t"), Links: &telemetry.Links{}}).Register(srv)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 	conn, err := grpc.NewClient("passthrough:///bufnet",

@@ -8,10 +8,11 @@ with their secret team.
 Original JoustMania behavior preserved.
 """
 
-import asyncio
 import logging
-import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -19,6 +20,7 @@ from opentelemetry.trace import Status, StatusCode
 from lib.feature_flags import read_object_flag
 from lib.types import Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.teams_base import TeamsGameBase
 from services.game_coordinator.stream_writes import serialized_write
@@ -87,6 +89,23 @@ class TraitorPlayer(Player):
     secret_team: int = -1  # The team the traitor actually wins with (-1 = not a traitor)
 
 
+@dataclass(frozen=True)
+class TraitorInitFlags:
+    """The traitor flags latched at game init, validated and immutable (#2359)."""
+
+    count_tiers: tuple[Mapping[str, int], ...]
+    count_fallback_divisor: int
+
+    @classmethod
+    def from_raw(cls, *, count_tiers: Any) -> "TraitorInitFlags":
+        """Validate the raw flag value; any malformed component gives the module defaults (fail closed)."""
+        tiers, divisor = resolve_count_tiers(count_tiers, DEFAULT_TRAITOR_COUNT_TIERS, DEFAULT_TRAITOR_FALLBACK_DIVISOR)
+        return cls(
+            count_tiers=tuple(MappingProxyType(dict(tier)) for tier in tiers),
+            count_fallback_divisor=divisor,
+        )
+
+
 class TraitorGame(TeamsGameBase):
     """
     Traitor game mode using gRPC communication.
@@ -151,11 +170,11 @@ class TraitorGame(TeamsGameBase):
         # #766 F2: traitor count tiers promoted to ``game.traitor.count_tiers``.
         # Read ONCE here (init-frozen); malformed values fall back to the module
         # defaults (the source of truth).
-        self._count_tiers, self._count_fallback_divisor = resolve_count_tiers(
-            read_object_flag("game", "traitor.count_tiers", {}, game_id=self.game_id),
-            DEFAULT_TRAITOR_COUNT_TIERS,
-            DEFAULT_TRAITOR_FALLBACK_DIVISOR,
+        self.mode_flags = TraitorInitFlags.from_raw(
+            count_tiers=read_object_flag("game", "traitor.count_tiers", {}, game_id=self.game_id)
         )
+        self._count_tiers = [dict(tier) for tier in self.mode_flags.count_tiers]
+        self._count_fallback_divisor = self.mode_flags.count_fallback_divisor
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -332,7 +351,7 @@ class TraitorGame(TeamsGameBase):
             if not self.running:
                 logger.info("Traitor signal interrupted")
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         # Set persistent team colors
         await self._set_team_colors(pulse_effect=False)
@@ -539,7 +558,7 @@ class TraitorGame(TeamsGameBase):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winning_team": winning_team if winning_team is not None else "none",
             "traitor_count": len(self.traitor_serials),
             "outcome": self.game_outcome(),

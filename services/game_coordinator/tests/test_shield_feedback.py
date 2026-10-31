@@ -8,7 +8,6 @@ grant (no LED stream, no task), play the shield sound and publish
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, create_autospec, patch
 
@@ -23,6 +22,7 @@ from conftest import MockControllerManagerService
 
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import BaseGameMode, Player
 from services.game_coordinator.games.ffa import FFAGame
 
@@ -48,10 +48,14 @@ class RecordingStream:
         self.writes.append(message)
 
     def effects(self):
+        """(serial, effect, duration_ms) per game effect, without the help cue PULSE.
+
+        The cue (UC-040 A42, BR-031) is pinned in test_shield_help_cue.py.
+        """
         return [
             (m.game_effect.serial, m.game_effect.effect, m.game_effect.duration_ms)
             for m in self.writes
-            if m.HasField("game_effect")
+            if m.HasField("game_effect") and m.game_effect.effect != controller_manager_pb2.GAME_EFFECT_PULSE
         ]
 
 
@@ -78,6 +82,7 @@ class TestUC040ShieldFeedback:
     """UC-040 A16: one effect, the shield sound and a player_shielded event per grant."""
 
     @pytest.mark.asyncio
+    @pytest.mark.real_game_time  # until_ms is wall-clock ms, grace_until is game time
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-007", "BR-008"])
     @pytest.mark.uc("UC-031", flow="main", steps=[4])
     async def test_grant_sends_shield_effect_sound_and_event(self, game):
@@ -141,14 +146,14 @@ class TestUC040ShieldFeedback:
     async def test_admin_invincibility_composition_holds(self, game):
         """UC-040 BR-010 / #817: effective grace = max; a covered grant is kept with no feedback."""
         player = game.players["p1"]
-        player.invincible_until = time.time() + 10.0  # admin baseline (Tournament / Fight Club)
+        player.invincible_until = game_clock.now() + 10.0  # admin baseline (Tournament / Fight Club)
 
         with patch.object(game, "_play_sound", new_callable=AsyncMock):
             assert await game.grant_shield("p1", 4.0) is True  # kept
         assert player.grace_until == 0.0  # agent never shortens or overwrites the admin baseline
         assert game.gameplay_stream.effects() == []
 
-        player.invincible_until = time.time() + 2.0
+        player.invincible_until = game_clock.now() + 2.0
         with patch.object(game, "_play_sound", new_callable=AsyncMock):
             await game.grant_shield("p1", 6.0)
         assert game.effective_grace_until(player) == pytest.approx(player.grace_until)
@@ -160,7 +165,7 @@ class TestUC040ShieldFeedback:
     async def test_feedback_failure_never_fails_the_shield(self, game):
         """UC-040 BR-010: a broken stream loses the feedback, not the protection."""
         game.gameplay_stream = RecordingStream(fail=True)
-        before = time.time()
+        before = game_clock.now()
         with patch.object(game, "_play_sound", new_callable=AsyncMock):
             assert await game.grant_shield("p1", 5.0) is True
         assert game.players["p1"].grace_until >= before + 4.5
@@ -197,7 +202,7 @@ class TestUC040ShieldFeedbackChannels:
     async def test_sound_again_after_the_protection_lapsed(self, game):
         """UC-040 BR-010: a grant after the previous shield expired is a new transition."""
         player = game.players["p1"]
-        player.grace_until = time.time() - 1  # an earlier shield has expired
+        player.grace_until = game_clock.now() - 1  # an earlier shield has expired
         with patch.object(game, "_play_sound", new_callable=AsyncMock) as play:
             await game.grant_shield("p1", 3.0)
         play.assert_awaited_once()
@@ -242,7 +247,7 @@ class TestUC040ShieldFeedbackEnds:
         with patch.object(game, "_play_sound", new_callable=AsyncMock):
             await game.grant_shield("p1", 5.0)
             await game.grant_toughness_boost("p2", 5.0)
-        game._shield_feedback_until["p2"] = time.time() - 1  # already expired
+        game._shield_feedback_until["p2"] = game_clock.now() - 1  # already expired
         game.gameplay_stream.writes.clear()
 
         await game._end_shield_feedback()
@@ -256,7 +261,7 @@ class TestUC040ShieldFeedbackEnds:
         """UC-040 A17: a short toughness boost grant after a long full one must not drop the full one from the clear."""
         clock = [1000.0]
         with (
-            patch("services.game_coordinator.games.base.time.time", side_effect=lambda: clock[0]),
+            patch("services.game_coordinator.game_clock.now", side_effect=lambda: clock[0]),
             patch.object(game, "_play_sound", new_callable=AsyncMock),
         ):
             await game.grant_shield("p1", 10.0)
@@ -281,7 +286,7 @@ class TestUC040ShieldFeedbackEnds:
     @pytest.mark.uc("UC-040", flow="A17", br=["BR-010"])
     async def test_game_end_clear_survives_a_closed_stream(self, game):
         """UC-040 A17: the clear is best-effort and never raises into the teardown."""
-        game._shield_feedback_until["p1"] = time.time() + 5
+        game._shield_feedback_until["p1"] = game_clock.now() + 5
         game.gameplay_stream = RecordingStream(fail=True)
         await game._end_shield_feedback()
         assert game._shield_feedback_until == {}

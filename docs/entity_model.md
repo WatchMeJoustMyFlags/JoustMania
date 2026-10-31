@@ -188,11 +188,14 @@ A player as the decision backends see it (`decide.PlayerState`, `services/agent/
 | danger | Intensity / session death threshold: `safe` < 0.60 ≤ `elevated` < 0.85 ≤ `near_threshold`; empty when unknown | String | 14 | Optional, Values: safe, elevated, near_threshold |
 | shielded | A grant_shield / toughness_boost was dispatched to the player in the last 10 s; a grant_shield to a shield_charged player does not count; in a hold game `shield_active` or a toughness_boost (a grant_shield there is energy, #2096) | Boolean | 1 | Not Null |
 | shield_charged | Alive player with a live entry in the agent's shield-charge ledger when the state is built (trigger mode, UC-040 A31): holds an agent charge or has just used it; never set in a hold game | Boolean | 1 | Not Null |
+| shield_limited | Alive player the agent would refuse another grant_shield for a reason other than already_charged when the state is built (#2066, UC-040 A33, A37): the per-game cap, the cooldown, or in a hold game a full pool or a used-up budget; never set together with shield_charged | Boolean | 1 | Not Null |
+| sensitivity_factor | The per-player sensitivity factor the agent last wrote to this game (`adjust_player_sensitivity`, applied-value ledger, UC-040 A35; #2066), only when not the neutral 1.0 | Decimal | 4,2 | Optional, Min: 0.7, Max: 1.5 |
+| handicap_factor | The per-player handicap factor the agent last wrote to this game (`set_player_handicap`, applied-value ledger; #2066), only when not the neutral 1.0 | Decimal | 4,2 | Optional, Min: 0.75, Max: 1.75 |
 | shield_energy_s | Hold game only (#2096, UC-040 A36): the alive player's shield energy in seconds from `game_player_shield_energy_seconds`, plus the agent's grants in flight, at most the cap | Decimal | 5,2 | Optional, Min: 0 |
 | shield_budget_remaining_s | Hold game only: shield seconds the player has left this game (`game_player_shield_budget_remaining_seconds`) | Decimal | 5,2 | Optional, Min: 0 |
 | shield_active | Hold game only: the player holds the trigger and is protected now (`game_player_shield_active`) | Boolean | 1 | Not Null |
 
-**Constraints:** danger reads the **session** death threshold, so per-player factors and shields are not reflected (`shielded` flags shields separately). `shield_charged` comes from the decision loop's in-memory ledger, not from telemetry, and is lost on an agent restart. Session-level fields on the state: `most_headroom` (alive player with the strictly lowest intensity) and `struggling` (strictly highest intensity when elevated or near_threshold); ties leave them empty.
+**Constraints:** danger reads the **session** death threshold, so per-player factors and shields are not reflected (`shielded` flags shields separately). `shield_charged`, `shield_limited` and the two factors come from the decision loop's in-memory ledgers, not from telemetry, and are lost on an agent restart; the factors are the agent's own writes, not the coordinator's flag value. Session-level fields on the state: `most_headroom` (alive player with the strictly lowest intensity) and `struggling` (strictly highest intensity when elevated or near_threshold); ties leave them empty.
 
 ### TEAM
 
@@ -271,12 +274,13 @@ file is the source). A flag without a policy is read-only baseline. There are no
 | min_value | Inclusive lower bound of a numeric value | Decimal | 10,3 | Optional |
 | max_value | Inclusive upper bound of a numeric value | Decimal | 10,3 | Optional, >= min_value |
 | payload_schema | Format of a composite string value (e.g. `<seconds>:<factor>`), or `free string` | String | 100 | Optional |
+| description | What the flag does, in game terms, in one line; served in the policy and shown to the experiment proposer (#2345, UC-042 BR-008) | String | 120 | Not Null when scope includes experiment+arm, else Optional; one line |
 
 ### GAME_SCOPE
 
 Delivered by #1417 (FR-135). The flag service's record of one live game (`services/flag-service/state/games.go`), registered by the game coordinator
 at admission and dropped at the game's end, by a reconcile call of its coordinator instance, or after the
-maximum game age (1 h). In-memory, lost on restart.
+maximum game age (1 h) since it was last seen (registered or reconciled, #2217). In-memory, lost on restart.
 
 | Attribute | Description | Data Type | Length/Precision | Validation Rules |
 |---|---|---|---|---|
@@ -286,10 +290,11 @@ maximum game age (1 h). In-memory, lost on restart.
 | experiment_id | Experiment of a shadow experiment game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
 | arm | Arm of that game | String | 12 | Optional, Values: experimental, control |
 | coordinator_instance | Coordinator instance that registered it; reconcile calls drop only that instance's scopes | String | 80 | Not Null |
-| registered_at | Registration time | DateTime | | Not Null |
+| registered_at | First registration time (display only) | DateTime | | Not Null |
+| last_seen_at | Time of the latest registration or reconcile entry; the maximum game age counts from it (#2217) | DateTime | | Not Null |
 
 **Constraints:** at most 64 KiB of values per scope (NFR-051); a write naming a game without a scope is rejected
-(`game_not_live`). A second registration of the same game id updates the record and keeps `registered_at`; per-player values of serials it no longer lists are dropped (UC-053 A13).
+(`game_not_live`). A second registration of the same game id updates the record, keeps `registered_at` and refreshes `last_seen_at`; per-player values of serials it no longer lists are dropped (UC-053 A13).
 
 ### FLAG_OVERLAY
 
@@ -398,7 +403,7 @@ A bounded in-game change written for one game to the `interventions` flag set th
 | weight | Rate-limit weight class | String | 6 | Not Null, Values: soft, medium, hard |
 | target_serial | Player targeted (player-scoped types) | String | 17 | Optional, Foreign Key (PLAYER.serial) |
 | value | Resolved magnitude or payload | String | 60 | Optional |
-| blocked_by_coordinator | Coordinator block reason (`block_reason` on `game_intervention_*` metrics and the `agent_intervention` event). `game_loop_late` is recorded as a reason but is not a block: the effect had started and may still apply | String | 23 | Optional, Values: not_allowed, rate_limited, low_battery, mode_unsupported, already_charged, shield_cap_reached, shield_cooldown, shield_pool_full, shield_budget_exhausted, revive_refused, eliminate_refused, experiment_override, handler_error, game_loop_unavailable, game_loop_timeout, game_loop_late |
+| blocked_by_coordinator | Coordinator block reason (`block_reason` on `game_intervention_*` metrics and the `agent_intervention` event). `game_loop_late` is recorded as a reason but is not a block: the effect had started and may still apply | String | 23 | Optional, Values: not_allowed, rate_limited, low_battery, mode_unsupported, already_charged, shield_cap_reached, shield_cooldown, shield_pool_full, shield_budget_exhausted, game_ending, revive_refused, eliminate_refused, experiment_override, handler_error, game_loop_unavailable, game_loop_timeout, game_loop_late |
 
 **Constraints:**
 - The type must be in the live `interventions_allowed` list (checked by the agent and again by the coordinator); writes happen only while `interventions_enabled` is on.
@@ -420,8 +425,8 @@ A hypothesis about one `game.json` flag value, tested in shadow games (`services
 
 **Constraints:** the `chaos` objective is rejected. All running experiments are aborted when `enabled` or `experiments_enabled` is off. Status transitions (`services/agent/experiment/registry.go` `Status`): `proposed` → `running` → `concluded` → `promoting` → `done`, or `promoting` → `discarded`, or `concluded` → `discarded`; `proposed`, `running`, `concluded` or `promoting` → `aborted` when `enabled` or `experiments_enabled` is off (`AbortAll`), at agent shutdown, or when its start fails (`start_failed`, on every declarer path and for a `proposed` experiment restored from the journal, UC-042 A4, UC-043 A8, #1700). `done`, `discarded` and `aborted` are terminal and never overwritten: a `promoting` experiment aborted by `AbortAll` stays `aborted` when its promotion returns (#1701). Only a `concluded` experiment moves to `promoting`, and only once that decision is durable in the journal (UC-043 BR-007, #2042).
 - On an agent restart (`Rehydrate`, UC-043 A15, #2042) a restored experiment is never promoted: `concluded` → `discarded` (`concluded before restart: <outcome>; not promoted`); `concluded` or `promoting` → `done` / `discarded` from a `promotion` event journaled after its last `concluded` decision; `promoting` without one → `aborted` (`promotion_interrupted`).
-- `running` → `discarded` **without any verdict** (`registry_pattern.go` `pinPending`, `Rehydrate`): a pattern experiment is discarded before its first game when its archetype selection cannot be pinned, with the reason `pattern_selection_empty`, `pattern_selection_too_small` (fewer than `verdict_min_pairs` or a duplicate), `pattern_archetype_invalid`, `pattern_mode_unsupported` (UC-046 A1, A2, A4, A13), or after an agent restart when the pin cannot be restored, `pattern_pin_lost` (BR-015). No VERDICT exists for such an experiment.
-- Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` when the promotion outcome is `applied` or `reverted`, `promoting` → `discarded` when it is `discarded` (inert or failed, UC-043 A4, A9, #1701), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard ([UC-043](use_cases/UC-043.md) A3, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`. The final verdict is journaled on the `concluded` decision event and becomes the journal summary's verdict (#2042).
+- `running` → `discarded` **without any verdict** (`registry_pattern.go` `pinPending`, `Rehydrate`): a pattern experiment is discarded before its first game when its archetype selection cannot be pinned, with the reason `pattern_selection_empty`, `pattern_selection_too_small` (fewer than `verdict_min_pairs` or a duplicate), `pattern_archetype_invalid`, `pattern_mode_unsupported` (UC-046 A1, A2, A4, A13), or after an agent restart when the pin cannot be restored, `pattern_pin_lost` (BR-015). An experiment on a hold flag is also discarded at its pin with `pattern_trigger_policy_missing` (UC-046 A17), `hold_not_real_default` or `hold_already_default`, and while running (`discardHoldStale`, every tick) with the latter two (UC-043 A17, #2096). No VERDICT exists for such an experiment.
+- Every conclusion goes through `concluded`; the end state then depends on the verdict outcome: `promote` → `promoting` → `done` when the promotion outcome is `applied`, `reverted` or `deferred` (UC-043 A17), `promoting` → `discarded` when it is `discarded` (inert or failed, UC-043 A4, A9, #1701), `discard` and `inconclusive` → `discarded`. A final `inconclusive` is a verdict like any other: it comes from the give-up guard ([UC-043](use_cases/UC-043.md) A3, `registry.go` `shouldGiveUp`) or from exhausted pattern archetypes (UC-046 A6), and maps to `discarded`. An interim `inconclusive` verdict keeps the experiment `running`. The final verdict is journaled on the `concluded` decision event and becomes the journal summary's verdict (#2042).
 
 ### ARM
 
@@ -458,11 +463,11 @@ What happens to a promote verdict (`services/agent/promote/promote.go:91-105,420
 | experiment_id | Experiment promoted | String | 50 | Primary Key, Foreign Key (EXPERIMENT.experiment_id) |
 | mode | `code_improvement.mode` at promotion | String | 10 | Not Null, Values: issue, pr, autonomous |
 | target | `code_improvement.target` | String | 6 | Not Null, Values: local, github |
-| outcome | What the promotion achieved (`code_improvement.outcome`); a promotion that could not act is `discarded` with a reason | String | 10 | Not Null, Values: applied, discarded, reverted |
+| outcome | What the promotion achieved (`code_improvement.outcome`); a promotion that could not act is `discarded` with a reason | String | 10 | Not Null, Values: applied, discarded, reverted, deferred |
 | reason | Why it was discarded or reverted (`kill_switch` for a kill-switch revert, UC-043 A1) | String | 200 | Optional |
 | reference | Issue / PR URL or commit | String | 200 | Optional |
 
-**Constraints:** the outcome, reason and reference are on the `code_improvement.promote` span and in the experiment journal as a `promotion` event (`journal.Promotion`, `services/agent/experiment/journal/record.go`, #1701); the outcome sets the experiment's end state (`applied`, `reverted` → `done`; `discarded` → `discarded`). A kill-switch revert of an applied autonomous promotion (#1704) after its promotion returned appends a second `promotion` event (`reverted`, reason `kill_switch`) to the ended experiment's journal and does not change the end state; a kill-switch revert during the promotion is that promotion's single event. A failed kill-switch revert appends one `promotion` event (`applied`, reason `kill_switch; revert failed: …`) per promotion; the retries add none, and the retry that succeeds appends the `reverted` event (#1753). A re-watch revert (UC-043 step 7) after the promotion returned appends a `promotion` event with reason prefixed `re-watch: `: `reverted`, or, when the revert fails, one `applied` event with the failure reason. The re-watch tries the revert once; the retry, its first failure event and the final `reverted` event belong to the kill switch (UC-043 A1). It does not change the end state (#1883).
+**Constraints:** the outcome, reason and reference are on the `code_improvement.promote` span and in the experiment journal as a `promotion` event (`journal.Promotion`, `services/agent/experiment/journal/record.go`, #1701); the outcome sets the experiment's end state (`applied`, `reverted`, `deferred` → `done`; `discarded` → `discarded`). `deferred` (UC-043 A17 step 3, #2096): the `real` write of a hold key waits until no real game runs; its later outcome (`applied`, `reverted` or `discarded`) is appended as another `promotion` event. A promotion event may carry `revert_pending` (`journal.Promotion.RevertPending`): a hold-key watch or re-watch revert that waits until no real game runs, journaled write-ahead so a restart re-queues it; a `deferred` write a restart lost is journaled `discarded` with reason `lost_at_restart`. A kill-switch revert of an applied autonomous promotion (#1704) after its promotion returned appends a second `promotion` event (`reverted`, reason `kill_switch`) to the ended experiment's journal and does not change the end state; a kill-switch revert during the promotion is that promotion's single event. A failed kill-switch revert appends one `promotion` event (`applied`, reason `kill_switch; revert failed: …`) per promotion; the retries add none, and the retry that succeeds appends the `reverted` event (#1753). A re-watch revert (UC-043 step 7) after the promotion returned appends a `promotion` event with reason prefixed `re-watch: `: `reverted`, or, when the revert fails, one `applied` event with the failure reason. The re-watch tries the revert once; the retry, its first failure event and the final `reverted` event belong to the kill switch (UC-043 A1). It does not change the end state (#1883).
 
 ### RETRO
 
@@ -524,8 +529,9 @@ A named parameter object that defines the motion function of every player of a p
 | d_drift | Per-slot increment of drift, in g/s | Decimal | 6,4 | Not Null, Min: -1, Max: 1 |
 | d_amp | Per-slot increment of amp, in g | Decimal | 6,3 | Not Null, Min: -1, Max: 1 |
 | d_phase | Per-slot phase offset in cycles | Decimal | 4,3 | Not Null, Min: 0, Max (exclusive): 1 |
+| trigger_policy | How the slots press the trigger by themselves (UC-046 BR-018, #2096): absent or `{"kind":"none"}` = never; `{"kind":"burst"}` = during the burst windows; `{"kind":"threshold","level","reaction_frames","hold_frames"}` = intensity at or above `level` within the last `hold_frames` frames after `reaction_frames` | Object | - | Optional; kind one of none, burst, threshold; burst needs burst_h > 0; level 0..10, reaction_frames whole 0..60, hold_frames whole 2..120; left out of the canonical JSON when none |
 
-**Constraints:** every field is a finite number and no other field is present; base_i and amp_i of every slot stay within 0..10 g; the delivered intensity is clamped to 0..10 g. No rule forces a game to end: its length emerges, bounded only by the safety cap (UC-046 BR-013). The variants are versioned by the flag file's git history (C-019).
+**Constraints:** every numeric field is a finite number and no other field than `trigger_policy` is present; base_i and amp_i of every slot stay within 0..10 g; the delivered intensity is clamped to 0..10 g. No rule forces a game to end: its length emerges, bounded only by the safety cap (UC-046 BR-013). The variants are versioned by the flag file's git history (C-019).
 
 ### PATTERN_PAIR_ASSIGNMENT
 

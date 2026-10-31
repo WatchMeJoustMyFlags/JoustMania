@@ -94,4 +94,10 @@ message GetMenuStatusResponse {
   string audio_volume_master = 16;  // user/audio_volume.master variant name
   string agent_enabled_state = 17;  // "on", "off" or "unknown" (agent/enabled unresolvable; UC-015 BR-013, #2101)
   string agent_interventions_enabled_state = 18;  // agent/interventions_enabled (write gate): "on", "off" or "unknown" (UC-015 BR-002, BR-013, #2093)
+  string shield_activation = 19;   // game/shield.activation variant name, empty when unresolvable (UC-015 BR-018, #2215)
+  reserved 20;  // was shield_activation_operator (#2218), folded into operator_settings
+  // Per setting with an "automatic" rung (sensitivity, num_teams, shield.activation): the operator's persisted
+  // value as a variant name, or "automatic" when none is set (the flag file's default applies). A missing key =
+  // unknown (not read yet or unreadable). UC-015 BR-018, #2222.
+  map<string, string> operator_settings = 21;
 }

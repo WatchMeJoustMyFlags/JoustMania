@@ -29,6 +29,7 @@ from services.controller_manager.feedback_manager import (
     FeedbackManager,
     clamp_identify_duration,
 )
+from services.controller_manager.tests.backend_doubles import InertBackendHooks
 
 WHITE = (255, 255, 255)
 OFF = (0, 0, 0)
@@ -333,7 +334,7 @@ class TestUC004PulseNeverCutsShortAnIdentify:
         assert backend.colors[SERIAL] == NEW_BASE
 
 
-class _ServicerBackend(_Backend):
+class _ServicerBackend(_Backend, InertBackendHooks):
     def initialize(self):
         pass
 

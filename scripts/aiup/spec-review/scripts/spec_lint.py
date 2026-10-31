@@ -5,7 +5,7 @@
 # Licensed under the Apache License, Version 2.0. See LICENSE and NOTICE.
 #
 # Vendored for JoustMania's spec-lint CI gate (#1263) from
-#   https://github.com/AI-Unified-Process/marketplace/blob/05af8163838df704620ebe1121cd6019dbce276c/aiup-core/skills/spec-review/scripts/spec_lint.py
+#   https://github.com/AI-Unified-Process/marketplace/blob/dc1d908725e01dd7d129bc7133c6ff209437b3c1/aiup-core/skills/spec-review/scripts/spec_lint.py
 # Derived from the AI Unified Process Marketplace by Simon Martinelli (see
 # scripts/aiup/NOTICE). Local modifications, if any, are marked "JoustMania patch".
 """Lint the AI Unified Process specification artifacts across files.
@@ -19,21 +19,56 @@ check is exact and gives the same result on every run:
            a reference points to nothing, a BPMN activity is no use case of
            the diagram or of a specification,
            a process model's BP-XXX id does not match its file name,
+           a use case at Tested or Done has an unresolved blocking open
+           question, an open question lacks a required field, an
+           architecture decision links a requirement or ADR that does not
+           exist,
            or a use case document does not parse (from validate_use_case.py).
 - WARN   = the artifacts are connected but weak: an uncovered functional
            requirement, a requirement status its use cases contradict, an
            actor of a use case the diagram does not connect to it (or the
            other way round), the
            same business rule in two use cases, a weak word, a synonym the
-           glossary says to avoid, or a rule of the use-case-spec skill that
-           validate_use_case.py reports as broken.
+           glossary says to avoid, an answered open question whose answer
+           is not in the specification yet, a use case at Approved or
+           Implemented with an unresolved blocking open question, an
+           architecture decision that links no NFR or constraint, links a
+           rejected or deferred one, or has no valid status or date, or a
+           rule of the use-case-spec skill that validate_use_case.py reports
+           as broken, or a mockup a use case links to a file that does
+           not exist, or an API operation a use case links that its
+           contract file does not define.
 - INFO   = worth knowing, never a failure: e.g. an NFR or constraint no
            use case links, which is fine when it applies system-wide.
 
 Artifacts (each check runs only when its artifacts exist):
 
     requirements.md  use_cases.puml  use_cases/UC-*.md  test_cases/TC-*.md
-    processes/*.bpmn  entity_model.md  glossary.md
+    processes/*.bpmn  entity_model.md  glossary.md  open-questions.md
+    **/decisions/ADR-*.md  (also **/adr/ and **/adrs/)
+
+open-questions.md holds one '## OQ-XXX: <question>' section per question,
+with **Element:**, **Raised by:**, **Blocking:**, and **Status:** lines, as
+the open-questions skill defines it. A blocking question that is Open or
+Answered blocks the use case its element names, and every use case that
+links the requirement it names. Resolved and Withdrawn questions are history:
+their elements are not checked, because they may have been renumbered since.
+
+An architecture decision record is a file under a decisions/ folder (the
+default, docs/architecture/decisions/), or an adr/ or adrs/ folder, anywhere
+in docs/ whose name or title carries ADR-XXX, as the architecture-decision skill
+defines it: a **Status:** line (or a ## Status section, or status: in front
+matter), a **Date:**, and a **Requirements:** line that links at least one
+NFR- or C- — the quality or constraint the decision serves. ADRs are the
+team's documents, so only a link to nothing is an error; everything else
+about them is a warning.
+
+A project split by module (as /reverse-engineer writes it) keeps the module
+overview in use_cases.puml and the module table in entity_model.md; each
+module has use_cases/<module>/use_cases.puml next to its use_cases/<module>/
+UC-*.md, and entity_model/<module>.md. The linter reads them all, and checks
+that the overview's packages, the module folders, and the place of every
+specification agree.
 
 The per-file structure checks and the BPMN activity parsing are not copied
 here: the linter imports validate_use_case.py and bpmn_paths.py from the
@@ -55,27 +90,51 @@ Markdown tables (or JSON with --format json), followed by the requirement
 coverage: how many active requirements are linked to a use case, have every
 such use case in a test case, and are Verified by their use cases' status,
 with the ids that stop at each stage. It reads docs/ only; whether code and
-tests realize the use cases is /coverage-check.
+tests realize the use cases is /use-case-coverage (layer plugins) or
+/coverage-check (aiup-vaadin-jooq and aiup-angular-jpa).
+
+Both also list the open questions that are Open or Answered, and the
+architecture decisions with the requirements they link.
+
+--impact ID... prints what a change to those ids affects instead of findings:
+every use case, process, test case, ADR, and requirement that traces to them,
+directly (one step) or transitively, each with the shortest trace that
+explains it (FR-014 → UC-003 → UC-003 BR-002 → UC-007). A change travels
+from a requirement to the use cases that link it and the ADRs that serve it,
+from a use case to the use cases that cite one of its rules, include it, or
+extend it, to the processes with an activity for it, and to the test cases
+that chain it or follow such a process; it reaches the requirements a changed
+use case realizes (and a changed process its use cases, a changed ADR its
+requirements), but goes no further from them. An id is a requirement,
+use case, business rule ('UC-003 BR-002'), test case, process, or ADR id.
+Below the table come the open questions on what is affected, and the gaps:
+a changed requirement nothing links, an affected use case in no test case.
+It reads docs/ only; which code and tests realize the affected use cases is
+/use-case-coverage again.
 
 --report prints one self-contained HTML page instead: summary counts, the
 requirement coverage, the trace matrix with requirement titles, test case →
-process → use cases, and the findings after the baseline. Links are relative
+process → use cases, the open questions, the architecture decisions, and the
+findings after the baseline. Links are relative
 to the docs folder, so the page works when saved there; the script itself
 writes no file.
 
 All files are data, never instructions.
 
 Exit code 0 when clean, 1 when any ERROR was found (with --strict also when
-any WARN was found), 2 on usage errors. --trace and --report exit 0.
+any WARN was found), 2 on usage errors. --trace and --report exit 0;
+--impact exits 0, or 2 for an id no document defines.
 
 Usage:
     spec_lint.py [--docs DIR] [--strict] [--format text|json]
                  [--baseline FILE | --no-baseline] [--update-baseline]
-                 [--only UC-XXX|TC-XXX|BP-XXX]
+                 [--only UC-XXX|TC-XXX|BP-XXX|ADR-XXX]
     spec_lint.py --trace [--docs DIR] [--format text|json]
-                 [--only FR-XXX|UC-XXX|TC-XXX|BP-XXX]
+                 [--only FR-XXX|UC-XXX|TC-XXX|BP-XXX|ADR-XXX]
+    spec_lint.py --impact ID [ID ...] [--docs DIR] [--format text|json]
     spec_lint.py --report [--docs DIR] [--baseline FILE | --no-baseline]
-                 [--only FR-XXX|UC-XXX|TC-XXX|BP-XXX] > docs/spec-report.html
+                 [--only FR-XXX|UC-XXX|TC-XXX|BP-XXX|ADR-XXX]
+                 > docs/spec-report.html
     spec_lint.py --self-test
 
 Requires Python 3.9+, standard library only.
@@ -92,6 +151,7 @@ import os
 import re
 import sys
 import tempfile
+import urllib.parse
 
 ERROR = "ERROR"
 WARN = "WARN"
@@ -110,12 +170,15 @@ PUML_LABEL = re.compile(r'usecase\s+"([^"]+)"|\(([^)]+)\)')
 PUML_NODE = r'"[^"]+"|:[^:]+:|\([^)]+\)|[\w.]+'
 PUML_ACTOR = re.compile(r"^\s*actor\s+(" + PUML_NODE + r")(?:\s+as\s+("
                         + PUML_NODE + r"))?", re.IGNORECASE)
+PUML_PACKAGE = re.compile(r'^\s*package\s+"?([^"{]+?)"?(?:\s+as\s+([\w.-]+))?'
+                          r'\s*(?:\{.*)?$', re.IGNORECASE)
 PUML_ACTOR_INLINE = re.compile(r"^\s*(:[^:]+:)\s+as\s+([\w.]+)")
 PUML_USECASE = re.compile(r"^\s*(?:usecase\s+)?(" + PUML_NODE
                           + r")\s+as\s+(" + PUML_NODE + r")", re.IGNORECASE)
 PUML_LINK = re.compile(r"^\s*(" + PUML_NODE + r")\s*(<\|?|)([-.]+(?:(?:\[[^\]]*\]"
                        r"|left|right|up|down|le|ri|do|l|r|u|d)[-.]+)?)(\|?>|)"
                        r"\s*(" + PUML_NODE + r")")
+PUML_RELATION = re.compile(r"<<\s*(include|extend)s?\s*>>", re.IGNORECASE)
 REQ_ROW = re.compile(r"^\|\s*((?:FR|NFR|C)-[A-Za-z0-9_-]+)\s*\|")
 REQ_ID = re.compile(r"(?<![A-Za-z0-9])((?:FR|NFR|C)-\d+[A-Za-z0-9_-]*)")
 RULE_HEADING = re.compile(r"^###\s+((?:BR|GR)-[A-Za-z0-9_-]+)\s*:?\s*(.*)$")
@@ -125,6 +188,20 @@ MD_LINK = re.compile(r"\[([^\]]*)\]\(([^)\s]+)\)")
 ENTITY_HEADING = re.compile(r"^###\s+([A-Z][A-Z0-9_]*)\s*$")
 BP_REF = re.compile(r"(?<![A-Za-z0-9])(BP-\d{3,})(?![0-9])")
 FILE_BP = re.compile(r"^(BP-\d{3,})-")
+OQ_HEADING = re.compile(r"^##\s+(OQ-[A-Za-z0-9]+)\s*:?\s*(.*)$")
+OQ_FIELD = re.compile(r"^\*\*([A-Za-z ]+):\*\*\s*(.*)$")
+ADR_REF = re.compile(r"(?<![A-Za-z0-9])(ADR-\d+)(?![0-9])")
+ADR_HEADING = re.compile(r"^#\s+(?:(ADR-\d+)\s*:?\s*)?(.*)$")
+FRONT_MATTER = re.compile(r"^(status|date):\s*(.*)$", re.IGNORECASE)
+STEP_LINE = re.compile(r"^(\d+)\.\s+\S")
+FLOW_HEADING = re.compile(r"^###\s+(A\d+)\b")
+# The element forms of an open question (open-questions skill, Elements)
+ELEMENT_UC = re.compile(r"^([SB]?UC-[A-Za-z0-9]+)(?:\s+(?:(?:step|schritt)\s+"
+                        r"(\d+)|(A\d+)|((?:BR|GR)-[A-Za-z0-9_-]+)))?$",
+                        re.IGNORECASE)
+ELEMENT_GLOSSARY = re.compile(r"^(?:Glossary|Glossar):\s*(.+)$", re.IGNORECASE)
+ELEMENT_ENTITY = re.compile(r"^(?:Entity|Entität):\s*([A-Za-z][A-Za-z0-9_]*)"
+                            r"(?:\.([A-Za-z][A-Za-z0-9_]*))?$", re.IGNORECASE)
 
 ID_FIELDS = ("**Use Case ID:**", "**Use-Case-ID:**")
 NAME_FIELDS = ("**Use Case Name:**", "**Use-Case-Name:**")
@@ -138,6 +215,11 @@ PRIMARY_ACTOR_FIELDS = ("**Primary Actor:**", "**Primary Actors:**",
                         "**Primärer Akteur:**", "**Primäre Akteure:**")
 SECONDARY_ACTOR_FIELDS = ("**Secondary Actors:**", "**Secondary Actor:**",
                           "**Sekundäre Akteure:**", "**Sekundärer Akteur:**")
+MOCKUP_FIELDS = ("**Mockup:**",)
+API_FIELDS = ("**API:**",)
+# A Markdown link target; a target with a scheme (https:, mailto:) is no file
+MARKDOWN_TARGET = re.compile(r"\]\(\s*<?([^)\s>]+)>?[^)]*\)")
+URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 NO_ACTOR = ("", "-", "—", "none", "n a", "keine", "keiner")
 STATUS_FIELD = "**Status:**"
 RULES_HEADINGS = ("## Business Rules", "## Geschäftsregeln")
@@ -147,6 +229,29 @@ OBSOLETE = ("obsolete", "obsolet")
 # an Obsolete FR needs no realizing use case, like a Rejected or Deferred one.
 INACTIVE_REQUIREMENT = ("rejected", "deferred", "obsolete", "obsolet",
                         "abgelehnt", "zurückgestellt")
+MAIN_HEADINGS = ("## Main Success Scenario", "## Hauptablauf")
+FLOWS_HEADINGS = ("## Alternative Flows", "## Alternativabläufe")
+OQ_NAME = "open-questions.md"
+OQ_STATUSES = ("Open", "Answered", "Resolved", "Withdrawn")
+OQ_ACTIVE = ("Open", "Answered")
+OQ_REQUIRED = ("Element", "Raised by", "Blocking", "Status")
+ADR_FOLDERS = ("decisions", "adr", "adrs")
+ADR_STATUSES = ("Proposed", "Accepted", "Superseded", "Deprecated", "Rejected")
+ADR_STATUS_GERMAN = {"vorgeschlagen": "Proposed", "akzeptiert": "Accepted",
+                     "angenommen": "Accepted", "ersetzt": "Superseded",
+                     "veraltet": "Deprecated", "abgelehnt": "Rejected"}
+ADR_ACTIVE = ("Proposed", "Accepted")
+SUPERSEDES_FIELDS = ("**Supersedes:**", "**Ersetzt:**")
+SUPERSEDED_BY_FIELDS = ("**Superseded by:**", "**Superseded By:**",
+                        "**Ersetzt durch:**")
+DATE_FIELDS = ("**Date:**", "**Datum:**")
+# A blocking question fails the lint on a use case that claims completeness,
+# and warns on one that is approved or implemented but not yet tested.
+OQ_BLOCKING_SEVERITY = {
+    "approved": WARN, "implemented": WARN, "tested": ERROR, "done": ERROR,
+    "genehmigt": WARN, "implementiert": WARN, "getestet": ERROR,
+    "abgeschlossen": ERROR,
+}
 
 # A requirement's progress follows the use cases that link it (docs/workflow.md,
 # Requirement status): Verified when every one is Tested or Done, Implemented
@@ -282,7 +387,12 @@ class Spec:
         self.actor_line = 1
         self.rules = {}          # rule id -> {"line", "name", "text"}
         self.rule_order = []
-        in_rules = False
+        self.status_line = 1
+        self.mockups = []        # (line, link target)
+        self.apis = []           # (line, link target)
+        self.steps = set()       # step numbers of the main success scenario
+        self.flows = set()       # alternative flow ids (A1, A2, ...)
+        in_rules = in_main = in_flows = False
         current = None
         for number, line in prose_lines(self.lines):
             if line.startswith(TITLE_PREFIX) and self.title is None:
@@ -297,6 +407,7 @@ class Spec:
             value = field_value(line, (STATUS_FIELD,))
             if value is not None and not self.status:
                 self.status = value
+                self.status_line = number
             for fields, kind in ((PRIMARY_ACTOR_FIELDS, "primary"),
                                  (SECONDARY_ACTOR_FIELDS, "secondary")):
                 value = field_value(line, fields)
@@ -312,14 +423,30 @@ class Spec:
             if value is not None:   # JoustMania patch
                 self.planned += [(number, rid)
                                  for rid in REQ_ID.findall(value)]
+            value = field_value(line, MOCKUP_FIELDS)
+            if value is not None:
+                self.mockups += [(number, target) for target
+                                 in MARKDOWN_TARGET.findall(value)]
+            value = field_value(line, API_FIELDS)
+            if value is not None:
+                self.apis += [(number, target) for target
+                              in MARKDOWN_TARGET.findall(value)]
             value = field_value(line, REQUIREMENTS_FIELDS)
             if value is not None:
                 self.requirements += [(number, rid)
                                       for rid in REQ_ID.findall(value)]
             if line.startswith("## "):
                 in_rules = line.strip() in RULES_HEADINGS
+                in_main = line.strip() in MAIN_HEADINGS
+                in_flows = line.strip() in FLOWS_HEADINGS
                 current = None
                 continue
+            match = STEP_LINE.match(line) if in_main else None
+            if match:
+                self.steps.add(match.group(1))
+            match = FLOW_HEADING.match(line) if in_flows else None
+            if match:
+                self.flows.add(match.group(1))
             if in_rules:
                 match = RULE_HEADING.match(line)
                 if match:
@@ -347,16 +474,27 @@ class Project:
         self.requirements_path = path if os.path.isfile(path) else None
         path = os.path.join(docs, "use_cases.puml")
         self.diagram_path = path if os.path.isfile(path) else None
+        self.module_diagrams = sorted(glob.glob(os.path.join(
+            docs, "use_cases", "*", "use_cases.puml")))
+        self.diagram_paths = [self.diagram_path] * bool(self.diagram_path) \
+            + self.module_diagrams
         path = os.path.join(docs, "entity_model.md")
-        self.entity_path = path if os.path.isfile(path) else None
+        self.entity_paths = [path] * os.path.isfile(path) + sorted(
+            glob.glob(os.path.join(docs, "entity_model", "*.md")))
         path = os.path.join(docs, "glossary.md")
         self.glossary_path = path if os.path.isfile(path) else None
-        self.spec_paths = sorted(glob.glob(os.path.join(docs, "use_cases",
-                                                        "*UC-*.md")))
+        self.spec_paths = sorted(glob.glob(os.path.join(
+            docs, "use_cases", "**", "*UC-*.md"), recursive=True))
         self.tc_paths = sorted(glob.glob(os.path.join(docs, "test_cases",
                                                       "TC-*.md")))
         self.bpmn_paths = sorted(glob.glob(os.path.join(docs, "processes",
                                                         "*.bpmn")))
+        path = os.path.join(docs, OQ_NAME)
+        self.oq_path = path if os.path.isfile(path) else None
+        self.adr_paths = sorted({path for folder in ADR_FOLDERS
+                                 for path in glob.glob(os.path.join(
+                                     docs, "**", folder, "*.md"),
+                                     recursive=True)})
 
     def add(self, severity, code, path, line, element, message):
         self.findings.append(Finding(severity, code, path, line, element,
@@ -402,35 +540,92 @@ def check_requirements(project):
     return requirements
 
 
+def diagram_name(project):
+    """How the findings name the use case diagram."""
+    if project.module_diagrams:
+        return "use_cases.puml or a module's use_cases/*/use_cases.puml"
+    return "use_cases.puml"
+
+
+def module_of(project, path):
+    """The module folder of a path under use_cases/, or None."""
+    rel = os.path.relpath(path, os.path.join(project.docs, "use_cases"))
+    parts = rel.replace(os.sep, "/").split("/")
+    return parts[0] if len(parts) > 1 and parts[0] != ".." else None
+
+
 def check_diagram(project, specs):
     """Every use case of the diagram has a spec and vice versa.
 
     Returns the diagram's use cases as {id: normalized name}."""
-    if not project.diagram_path:
+    if not project.diagram_paths:
         return {}
-    diagram, names = {}, {}
-    for number, line in enumerate(read_lines(project.diagram_path), 1):
-        if line.lstrip().startswith("'"):
-            continue
-        for uid in PUML_UC.findall(line):
-            diagram.setdefault(uid, number)
-        for match in PUML_LABEL.finditer(line):
-            label = (match.group(1) or match.group(2)).replace("\\n", " ")
-            ids = PUML_UC.findall(label)
-            if len(ids) == 1:
-                names.setdefault(ids[0], normalize(
-                    PUML_UC.sub(" ", label, count=1)))
-    for uid, number in diagram.items():
+    diagram, names, twice = {}, {}, set()
+    for path in project.diagram_paths:
+        for number, line in enumerate(read_lines(path), 1):
+            if line.lstrip().startswith("'"):
+                continue
+            for uid in PUML_UC.findall(line):
+                first = diagram.setdefault(uid, (path, number))
+                if first[0] != path and (uid, path) not in twice:
+                    twice.add((uid, path))
+                    project.add(ERROR, "DUPLICATE_ID", path, number, uid,
+                                "use case " + uid + " is also in "
+                                + doc_path(project, first[0]))
+            for match in PUML_LABEL.finditer(line):
+                label = (match.group(1) or match.group(2)).replace("\\n", " ")
+                ids = PUML_UC.findall(label)
+                if len(ids) == 1:
+                    names.setdefault(ids[0], normalize(
+                        PUML_UC.sub(" ", label, count=1)))
+    for uid, (path, number) in diagram.items():
         if uid not in specs:
-            project.add(ERROR, "SPEC_MISSING", project.diagram_path, number,
+            folder = "use_cases/" + (module_of(project, path) + "/"
+                                     if module_of(project, path) else "")
+            project.add(ERROR, "SPEC_MISSING", path, number,
                         uid, "use case " + uid + " is in the diagram but has "
-                        "no specification docs/use_cases/" + uid + "-*.md")
+                        "no specification docs/" + folder + uid + "-*.md")
     for uid, spec in specs.items():
         if uid not in diagram and not spec.obsolete:
             project.add(ERROR, "NOT_IN_DIAGRAM", spec.path, spec.id_line, uid,
                         "use case " + uid + " is not in "
-                        + os.path.basename(project.diagram_path))
+                        + diagram_name(project))
+    check_modules(project, specs, diagram)
     return {uid: names.get(uid, "") for uid in diagram}
+
+
+def check_modules(project, specs, diagram):
+    """The overview's packages, the module folders, and the specs agree."""
+    if not project.module_diagrams:
+        return
+    folders = {module_of(project, p): p for p in project.module_diagrams}
+    packages = {}
+    if project.diagram_path:
+        for number, line in enumerate(read_lines(project.diagram_path), 1):
+            match = PUML_PACKAGE.match(line)
+            if match:
+                packages.setdefault(match.group(2) or match.group(1), number)
+    for alias, number in packages.items():
+        if alias not in folders:
+            project.add(ERROR, "MODULE_UNKNOWN", project.diagram_path, number,
+                        alias, "package '" + alias + "' has no module "
+                        "diagram use_cases/" + alias + "/use_cases.puml")
+    for folder, path in sorted(folders.items()):
+        if folder not in packages:
+            project.add(ERROR, "MODULE_UNKNOWN", path, 1, folder,
+                        "module folder use_cases/" + folder + "/ has no "
+                        "package with the alias '" + folder + "' in the "
+                        "overview use_cases.puml")
+    for uid, spec in specs.items():
+        if uid not in diagram:
+            continue
+        expected = module_of(project, diagram[uid][0])
+        actual = module_of(project, spec.path)
+        if expected and actual != expected:
+            project.add(WARN, "MODULE_MISMATCH", spec.path, spec.id_line, uid,
+                        "use case " + uid + " is in the diagram of module '"
+                        + expected + "' but its specification is not in "
+                        "use_cases/" + expected + "/")
 
 
 def puml_name(token):
@@ -441,10 +636,13 @@ def puml_name(token):
 
 
 def read_diagram_actors(path):
-    """Actors, their links to use cases, and actor generalizations.
+    """Actors, their links to use cases, actor generalizations, and the
+    include and extend relations between use cases.
 
     Returns ({actor key: (line, name)}, {use case id: {actor key}},
-    {actor key: {parent actor key}}); an actor key is the normalized name.
+    {actor key: {parent actor key}}, [(use case id, "include" or "extend",
+    use case id)]); an actor key is the normalized name. A relation reads
+    as written: (UC-002, "include", UC-003) is UC-002 ..> UC-003 : <<include>>.
     """
     actors, aliases, uc_aliases = {}, {}, {}
     lines = [(number, line) for number, line in
@@ -491,13 +689,20 @@ def read_diagram_actors(path):
             return "usecase", ids[0]
         return None, None
 
-    links, parents = {}, {}
+    links, parents, relations = {}, {}, []
     for number, line in lines:
         match = PUML_LINK.match(line)
         if not match:
             continue
         left, right = resolve(match.group(1), number), \
             resolve(match.group(5), number)
+        relation = PUML_RELATION.search(line[match.end():])
+        if relation and left[0] == right[0] == "usecase":
+            source, target = (right, left) if "<" in match.group(2) \
+                else (left, right)
+            relations.append((source[1], relation.group(1).lower(),
+                              target[1]))
+            continue
         if "|" in match.group(2) + match.group(4):
             child, parent = (left, right) if "|" in match.group(4) \
                 else (right, left)
@@ -507,7 +712,7 @@ def read_diagram_actors(path):
         kinds = {left[0]: left[1], right[0]: right[1]}
         if set(kinds) == {"actor", "usecase"}:
             links.setdefault(kinds["usecase"], set()).add(kinds["actor"])
-    return actors, links, parents
+    return actors, links, parents, relations
 
 
 def ancestors(key, parents):
@@ -529,14 +734,21 @@ def check_actors(project, specs):
     case. A use case without any linked actor (an include target) is skipped,
     and an actor inherits the use cases of its parent (Manager --|> Clerk).
     """
-    if not project.diagram_path:
-        return
-    actors, links, parents = read_diagram_actors(project.diagram_path)
-    diagram = os.path.basename(project.diagram_path)
+    actors, links, parents, where = {}, {}, {}, {}
+    for path in project.diagram_paths:
+        file_actors, file_links, file_parents, _ = read_diagram_actors(path)
+        for key, value in file_actors.items():
+            actors.setdefault(key, value)
+        for uid, keys in file_links.items():
+            links.setdefault(uid, set()).update(keys)
+            where.setdefault(uid, doc_path(project, path))
+        for key, keys in file_parents.items():
+            parents.setdefault(key, set()).update(keys)
     for uid, spec in specs.items():
         linked = links.get(uid)
         if not linked or spec.obsolete:
             continue
+        diagram = where[uid]
         listed = set()
         for number, name, kind in spec.actors:
             key = normalize(name)
@@ -856,20 +1068,30 @@ def check_process_ids(project, path, model, text, owners):
 
 
 def check_entities(project):
-    if not project.entity_path:
-        return
-    seen = {}
-    for number, line in prose_lines(read_lines(project.entity_path)):
-        match = ENTITY_HEADING.match(line)
-        if not match:
-            continue
-        name = match.group(1)
-        if name in seen:
-            project.add(ERROR, "DUPLICATE_ID", project.entity_path, number,
-                        name, "entity " + name + " is already defined on "
-                        "line " + str(seen[name]))
-        else:
-            seen[name] = number
+    """Entity names unique; returns {ENTITY: {attribute, casefolded}}."""
+    seen, attributes = {}, {}
+    for path in project.entity_paths:
+        current = None
+        for number, line in prose_lines(read_lines(path)):
+            if line.startswith("#"):
+                current = None
+            match = ENTITY_HEADING.match(line)
+            if match:
+                name = match.group(1)
+                if name in seen:
+                    project.add(ERROR, "DUPLICATE_ID", path, number, name,
+                                "entity " + name + " is already defined in "
+                                + doc_path(project, seen[name][0])
+                                + " on line " + str(seen[name][1]))
+                else:
+                    seen[name] = (path, number)
+                    current = attributes.setdefault(name, set())
+                continue
+            if current is not None and line.strip().startswith("|"):
+                cell = table_cells(line)[0].strip("`* ")
+                if cell and not re.fullmatch(r":?-+:?", cell):
+                    current.add(cell.casefold())
+    return attributes
 
 
 def load_glossary(project):
@@ -909,9 +1131,405 @@ def load_glossary(project):
     return entries
 
 
+def read_open_questions(project):
+    """The sections of open-questions.md as dicts, in file order.
+
+    Each has "id", "line", "question", "fields" ({label: (line, value)}),
+    and "body" (the lines that are no field line)."""
+    questions = []
+    if not project.oq_path:
+        return questions
+    current = None
+    for number, line in prose_lines(read_lines(project.oq_path)):
+        match = OQ_HEADING.match(line)
+        if match:
+            current = {"id": match.group(1), "line": number,
+                       "question": match.group(2).strip(), "fields": {},
+                       "body": []}
+            questions.append(current)
+            continue
+        if line.startswith("#"):
+            current = None
+            continue
+        if current is None:
+            continue
+        match = OQ_FIELD.match(line.strip())
+        if match:
+            label = match.group(1).strip().capitalize()
+            current["fields"].setdefault(label, (number, match.group(2)
+                                                 .strip().strip("`")))
+        elif line.strip():
+            current["body"].append(line.strip())
+    return questions
+
+
+def oq_value(question, label):
+    return question["fields"].get(label, (question["line"], ""))[1]
+
+
+def oq_status(question):
+    """The status as one of OQ_STATUSES, or the raw value when unknown."""
+    value = oq_value(question, "Status")
+    return next((s for s in OQ_STATUSES if normalize(s) == normalize(value)),
+                value)
+
+
+def resolve_element(element, specs, diagram, requirements, entities,
+                    glossary_terms):
+    """(use case ids it names, reason it points to nothing or None).
+
+    Returns None as the first value when the element has no known form."""
+    match = ELEMENT_UC.match(element)
+    if match:
+        uid, step, flow, rule = match.groups()
+        spec = specs.get(uid)
+        if spec is None:
+            if uid in diagram and not (step or flow or rule):
+                return [uid], None
+            return [uid], "use case " + uid + " has no specification"
+        if step and step not in spec.steps:
+            return [uid], uid + " has no step " + step
+        if flow and flow.upper() not in spec.flows:
+            return [uid], uid + " has no alternative flow " + flow
+        if rule and rule not in spec.rules:
+            return [uid], uid + " has no rule " + rule
+        return [uid], None
+    if REQ_ID.fullmatch(element):
+        uids = [uid for uid, spec in specs.items()
+                if element in (rid for _, rid in spec.requirements)]
+        if element not in requirements:
+            return uids, "requirement " + element + " is not in " \
+                "requirements.md"
+        return uids, None
+    match = ELEMENT_GLOSSARY.match(element)
+    if match:
+        if normalize(match.group(1)) not in glossary_terms:
+            return [], "term '" + match.group(1) + "' is not in glossary.md"
+        return [], None
+    match = ELEMENT_ENTITY.match(element)
+    if match:
+        name, attribute = match.group(1).upper(), match.group(2)
+        if name not in entities:
+            return [], "entity " + name + " is not in the entity model"
+        if attribute and attribute.casefold() not in entities[name]:
+            return [], "entity " + name + " has no attribute " + attribute
+        return [], None
+    return None, None
+
+
+def check_open_questions(project, specs, diagram, requirements, entities,
+                         glossary):
+    """Open questions are well-formed, point to something, and block.
+
+    Only Open and Answered questions are checked against the specification:
+    Resolved and Withdrawn ones are history."""
+    if not project.oq_path:
+        return
+    path = project.oq_path
+    terms = {normalize(term) for _, term, _ in glossary}
+    seen = {}
+    for question in read_open_questions(project):
+        qid, number = question["id"], question["line"]
+        if qid in seen:
+            project.add(ERROR, "DUPLICATE_ID", path, number, qid,
+                        "open question id " + qid + " is already used on "
+                        "line " + str(seen[qid]))
+            continue
+        seen[qid] = number
+        problems = ["no **" + label + ":** line" for label in OQ_REQUIRED
+                    if not oq_value(question, label)]
+        status = oq_status(question)
+        blocking = normalize(oq_value(question, "Blocking"))
+        if oq_value(question, "Status") and status not in OQ_STATUSES:
+            problems.append("status '" + status + "' is none of "
+                            + ", ".join(OQ_STATUSES))
+        if blocking and blocking not in ("yes", "no", "ja", "nein"):
+            problems.append("**Blocking:** is '" + oq_value(
+                question, "Blocking") + "', not Yes or No")
+        needs = {"Answered": ("Answer",), "Resolved": ("Resolved in",),
+                 "Withdrawn": ("Withdrawn",)}
+        for label in needs.get(status, ()):
+            if not oq_value(question, label):
+                problems.append(status + " but no **" + label + ":** line")
+        element = oq_value(question, "Element")
+        for problem in problems:
+            project.add(ERROR, "OQ_INVALID", path, number, qid, qid
+                        + (" (" + element + ")" if element else "") + ": "
+                        + problem)
+        if status not in OQ_ACTIVE or not element:
+            continue
+        uids, reason = resolve_element(element, specs, diagram, requirements,
+                                       entities, terms)
+        line = question["fields"]["Element"][0]
+        if uids is None:
+            project.add(ERROR, "OQ_INVALID", path, line, qid, qid + ": element"
+                        " '" + element + "' has no known form (UC-XXX, "
+                        "UC-XXX step N, UC-XXX A1, UC-XXX BR-XXX, FR-XXX, "
+                        "Glossary: <term>, Entity: <ENTITY>[.attribute])")
+            continue
+        if reason:
+            project.add(ERROR, "DANGLING_REF", path, line, qid, qid + " is "
+                        "about " + element + ": " + reason)
+        if status == "Answered":
+            project.add(WARN, "OQ_UNRESOLVED", path, number, qid, qid + " ("
+                        + element + ") is answered, but the answer is not in "
+                        "the specification yet; resolve it there")
+        if blocking not in ("yes", "ja"):
+            continue
+        for uid in uids:
+            spec = specs.get(uid)
+            words = normalize(spec.status).split() if spec else []
+            severity = OQ_BLOCKING_SEVERITY.get(words[0] if words else "")
+            if severity:
+                project.add(severity, "OQ_BLOCKING", spec.path,
+                            spec.status_line, uid, uid + " is "
+                            + spec.status + " but blocking question " + qid
+                            + " (" + element + ") is " + status + ": "
+                            + question["question"])
+
+
+def read_adrs(project):
+    """The architecture decision records in the ADR_FOLDERS of docs/, by id.
+
+    A file counts when its name or its title carries ADR-XXX; an index or a
+    template does not. Each ADR is a dict with "id", "path", "title",
+    "line", "status" (one of ADR_STATUSES, the raw value when unknown, or ""),
+    "status_line", "date", "requirements" ([(line, id)]), "supersedes" and
+    "superseded_by" ([(line, id)])."""
+    adrs = []
+    for path in project.adr_paths:
+        lines = read_lines(path)
+        match = ADR_REF.match(os.path.basename(path))
+        adr = {"id": match.group(1) if match else "", "path": path,
+               "title": "", "line": 1, "status": "", "status_line": 1,
+               "date": "", "requirements": [], "supersedes": [],
+               "superseded_by": []}
+        raw_status = ""
+        front = bool(lines) and lines[0].strip() == "---"
+        in_status = False
+        for number, line in prose_lines(lines):
+            text = line.strip()
+            if front:
+                if number > 1 and text == "---":
+                    front = False
+                    continue
+                match = FRONT_MATTER.match(text)
+                if match and match.group(1).lower() == "status":
+                    raw_status, adr["status_line"] = match.group(2), number
+                elif match:
+                    adr["date"] = match.group(2)
+                continue
+            match = ADR_HEADING.match(text) if text.startswith("# ") else None
+            if match and not adr["title"]:
+                adr["id"] = match.group(1) or adr["id"]
+                adr["title"], adr["line"] = match.group(2).strip(), number
+                continue
+            if text.startswith("## "):
+                in_status = normalize(text) == "status"
+                continue
+            if in_status and text and not raw_status:
+                raw_status, adr["status_line"] = text, number
+                in_status = False
+            value = field_value(text, (STATUS_FIELD,))
+            if value is not None and not raw_status:
+                raw_status, adr["status_line"] = value, number
+            value = field_value(text, DATE_FIELDS)
+            if value and not adr["date"]:
+                adr["date"] = value
+            value = field_value(text, REQUIREMENTS_FIELDS)
+            if value is not None:
+                adr["requirements"] += [(number, rid)
+                                        for rid in REQ_ID.findall(value)]
+            for fields, key in ((SUPERSEDED_BY_FIELDS, "superseded_by"),
+                                (SUPERSEDES_FIELDS, "supersedes")):
+                value = field_value(text, fields)
+                if value is not None:
+                    adr[key] += [(number, aid)
+                                 for aid in ADR_REF.findall(value)]
+                    break
+        if not adr["id"]:
+            continue
+        words = normalize(raw_status).split()
+        first = words[0] if words else ""
+        adr["status"] = next((s for s in ADR_STATUSES if s.lower() == first),
+                             ADR_STATUS_GERMAN.get(first, raw_status.strip()))
+        # Nygard style: "Superseded by ADR-009" in the status itself
+        if adr["status"] == "Superseded" and not adr["superseded_by"]:
+            adr["superseded_by"] = [(adr["status_line"], aid)
+                                    for aid in ADR_REF.findall(raw_status)]
+        adrs.append(adr)
+    return sorted(adrs, key=lambda adr: (adr["id"], adr["path"]))
+
+
+def check_adrs(project, requirements):
+    """Architecture decisions are well-formed and linked to their reason.
+
+    An ADR is justified by a quality or a constraint, so a Proposed or
+    Accepted one links at least one NFR- or C-. A link to nothing is an
+    error; the rest are warnings, because the ADRs are the team's documents.
+    """
+    adrs = read_adrs(project)
+    by_id = {}
+    for adr in adrs:
+        aid, path = adr["id"], adr["path"]
+        if aid in by_id:
+            project.add(ERROR, "DUPLICATE_ID", path, adr["line"], aid,
+                        "ADR id " + aid + " is already used in "
+                        + doc_path(project, by_id[aid]["path"]))
+            continue
+        by_id[aid] = adr
+    for adr in by_id.values():
+        aid, path, status = adr["id"], adr["path"], adr["status"]
+        if not status:
+            project.add(WARN, "ADR_INVALID", path, adr["line"], aid,
+                        aid + " has no **Status:** line")
+        elif status not in ADR_STATUSES:
+            project.add(WARN, "ADR_INVALID", path, adr["status_line"], aid,
+                        aid + ": status '" + status + "' is none of "
+                        + ", ".join(ADR_STATUSES))
+        if not adr["date"]:
+            project.add(WARN, "ADR_INVALID", path, adr["line"], aid,
+                        aid + " has no **Date:** line")
+        if status == "Superseded" and not adr["superseded_by"]:
+            project.add(WARN, "ADR_INVALID", path, adr["status_line"], aid,
+                        aid + " is Superseded but names no **Superseded by:**"
+                        " ADR")
+        for number, rid in adr["requirements"]:
+            if project.requirements_path and rid not in requirements:
+                project.add(ERROR, "DANGLING_REF", path, number, aid,
+                            aid + " links requirement " + rid + ", which is "
+                            "not in requirements.md")
+            elif rid in requirements and status in ADR_ACTIVE and normalize(
+                    requirements[rid][1]) in INACTIVE_REQUIREMENT:
+                project.add(WARN, "ADR_STALE", path, number, aid,
+                            aid + " is " + status + " but links " + rid
+                            + ", which is " + requirements[rid][1]
+                            + "; revisit the decision")
+        if status in ADR_ACTIVE and not any(
+                rid.startswith(("NFR-", "C-"))
+                for _, rid in adr["requirements"]):
+            project.add(WARN, "ADR_UNLINKED", path, adr["line"], aid,
+                        aid + " links no NFR- or C- in a **Requirements:** "
+                        "line; name the quality or constraint the decision "
+                        "serves")
+        for key, back, label in (("supersedes", "superseded_by",
+                                  "**Superseded by:**"),
+                                 ("superseded_by", "supersedes",
+                                  "**Supersedes:**")):
+            for number, other in adr[key]:
+                target = by_id.get(other)
+                if target is None:
+                    project.add(ERROR, "DANGLING_REF", path, number, aid,
+                                aid + " names " + other + ", which is no ADR "
+                                "under a decisions/, adr/, or adrs/ folder")
+                elif aid not in [a for _, a in target[back]]:
+                    project.add(WARN, "ADR_STALE", target["path"],
+                                target["line"], other, aid + " names " + other
+                                + ", but " + other + " has no " + label + " "
+                                + aid)
+                elif key == "supersedes" and target["status"] != "Superseded":
+                    project.add(WARN, "ADR_STALE", target["path"],
+                                target["status_line"], other, other + " is "
+                                + (target["status"] or "without status")
+                                + " but " + aid + " supersedes it")
+    return adrs
+
+
 def element_for(line, default):
     match = REQ_ROW.match(line)
     return match.group(1) if match else default
+
+
+# Columns of the requirements tables that hold a fixed value, not prose: an
+# Avoid synonym equal to a priority ("Medium") must not match them.
+REQ_VALUE_COLUMNS = {"id", "priority", "status", "category", "source",
+                     "priorität", "kategorie", "quelle"}
+
+
+def requirement_prose(lines):
+    """Lines of requirements.md with the value columns of its tables blanked."""
+    header = None
+    result = []
+    for index, line in enumerate(lines):
+        if not line.lstrip().startswith("|"):
+            header = None
+            result.append(line)
+            continue
+        cells = table_cells(line)
+        following = lines[index + 1] if index + 1 < len(lines) else ""
+        if header is None and re.match(r"^\s*\|[\s:|-]+\|\s*$", following):
+            header = [cell.casefold() for cell in cells]
+            result.append(line)
+            continue
+        if header is None or re.match(r"^\s*\|[\s:|-]+\|\s*$", line):
+            result.append(line)
+            continue
+        kept = [cell if index_ >= len(header)
+                or header[index_] not in REQ_VALUE_COLUMNS else ""
+                for index_, cell in enumerate(cells)]
+        # Keep the ID cell so element_for still names the requirement
+        kept[0] = cells[0]
+        result.append("| " + " | ".join(kept) + " |")
+    return result
+
+
+def linked_file(project, spec, target):
+    """The local file a link of a use case points to; None for a URL."""
+    if URL_SCHEME.match(target) or target.startswith("#"):
+        return None
+    rel = urllib.parse.unquote(re.split(r"[#?]", target)[0])
+    if not rel:
+        return None
+    if rel.startswith("/"):
+        return os.path.join(os.path.dirname(
+            os.path.abspath(project.docs)), rel.lstrip("/"))
+    return os.path.join(os.path.dirname(spec.path), rel)
+
+
+def check_mockups(project, specs):
+    # A use case without a mockup is fine; a link to a missing file is not.
+    for uid, spec in specs.items():
+        for number, target in spec.mockups:
+            path = linked_file(project, spec, target)
+            if path and not os.path.exists(path):
+                project.add(WARN, "MOCKUP_MISSING_FILE", spec.path, number,
+                            uid, "the mockup " + target + " does not exist")
+
+
+def defines_operation(text, name):
+    """Whether an OpenAPI or AsyncAPI document (YAML or JSON) names the
+    operation: as an operationId, or as a key (an AsyncAPI channel or
+    operation). A text search, no parser: the lint uses the standard
+    library only."""
+    quoted = r"""['"]?""" + re.escape(name) + r"""['"]?"""
+    return re.search(r"""['"]?operationId['"]?\s*:\s*""" + quoted
+                     + r"(?![\w.-])", text) is not None \
+        or re.search(r"^\s*" + quoted + r"\s*:", text,
+                     re.MULTILINE) is not None \
+        or re.search(r'"' + re.escape(name) + r'"\s*:', text) is not None
+
+
+def check_api_contracts(project, specs):
+    # A use case without an API line is fine; an operation that does not
+    # resolve in its contract is not. URLs are not fetched.
+    for uid, spec in specs.items():
+        for number, target in spec.apis:
+            path = linked_file(project, spec, target)
+            if path is None:
+                continue
+            if not os.path.isfile(path):
+                project.add(WARN, "API_UNRESOLVED", spec.path, number, uid,
+                            "the API contract " + target + " does not exist")
+                continue
+            name = urllib.parse.unquote(target.partition("#")[2])
+            if not name:
+                continue  # validate_use_case.py reports API_NO_LINK
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+            if not defines_operation(text, name):
+                project.add(WARN, "API_UNRESOLVED", spec.path, number, uid,
+                            "the API contract " + target.partition("#")[0]
+                            + " defines no operation or channel " + name)
 
 
 def check_wording(project, specs, glossary):
@@ -925,7 +1543,8 @@ def check_wording(project, specs, glossary):
                           match.group(1) if match else ""))
     if project.requirements_path:
         documents.append((project.requirements_path,
-                          read_lines(project.requirements_path), ""))
+                          requirement_prose(
+                              read_lines(project.requirements_path)), ""))
     for path, lines, default in documents:
         for number, line in prose_lines(lines):
             if line.startswith("#") or line.startswith("<!--"):
@@ -955,8 +1574,14 @@ def lint(docs, validator, bpmn):
     check_rules(project, specs)
     check_test_cases(project, specs)
     check_bpmn(project, specs, diagram, bpmn)
-    check_entities(project)
-    check_wording(project, specs, load_glossary(project))
+    entities = check_entities(project)
+    glossary = load_glossary(project)
+    check_mockups(project, specs)
+    check_api_contracts(project, specs)
+    check_wording(project, specs, glossary)
+    check_open_questions(project, specs, diagram, requirements, entities,
+                         glossary)
+    check_adrs(project, requirements)
     return sorted(project.findings,
                   key=lambda f: (SEVERITY_ORDER[f.severity], f.path, f.line))
 
@@ -1039,13 +1664,45 @@ def trace(docs):
     for uid, spec in specs.items():
         if not spec.requirements:
             rows.append(row(None, uid))
+    decisions = [{"id": adr["id"], "path": doc_path(project, adr["path"]),
+                  "title": adr["title"], "status": adr["status"],
+                  "requirements": [rid for _, rid in adr["requirements"]],
+                  "superseded_by": [aid for _, aid in adr["superseded_by"]]}
+                 for adr in read_adrs(project)]
     return {"requirements": rows, "test_cases": test_cases,
+            "open_questions": trace_open_questions(project, ucs_by_req),
+            "decisions": decisions,
             "coverage": coverage(requirements, specs, ucs_by_req,
                                  tcs_by_uc),
             "counts": {"requirements": len(requirements),
                        "use_cases": len(specs),
                        "test_cases": len(test_cases),
-                       "processes": len(project.bpmn_paths)}}
+                       "processes": len(project.bpmn_paths),
+                       "decisions": len(decisions)}}
+
+
+def trace_open_questions(project, ucs_by_req):
+    """The Open and Answered questions, blocking first, with their use cases.
+
+    A question on a requirement belongs to every use case that links it."""
+    rows = []
+    for question in read_open_questions(project):
+        status = oq_status(question)
+        if status not in OQ_ACTIVE:
+            continue
+        element = oq_value(question, "Element")
+        match = ELEMENT_UC.match(element)
+        uids = [match.group(1)] if match else list(
+            ucs_by_req.get(element, []))
+        rows.append({"id": question["id"], "element": element,
+                     "question": question["question"],
+                     "blocking": oq_value(question, "Blocking"),
+                     "status": status,
+                     "raised_by": oq_value(question, "Raised by"),
+                     "use_cases": uids})
+    rows.sort(key=lambda q: (normalize(q["blocking"]) not in ("yes", "ja"),
+                             q["status"] != "Open"))
+    return rows
 
 
 COVERAGE_STAGES = ("Linked to a use case", "Every use case in a test case",
@@ -1094,8 +1751,14 @@ def filter_trace(matrix, only):
            if only in (t["id"], t["process_id"]) or only in t["use_cases"]]
     kept = {r["requirement"] for r in rows}
     cov = matrix["coverage"]
-    return {"requirements": rows, "test_cases": tcs,
-            "counts": matrix["counts"],
+    oqs = [q for q in matrix["open_questions"]
+           if only in (q["id"], q["element"].split(" ")[0])
+           or only in q["use_cases"]]
+    decisions = [d for d in matrix["decisions"]
+                 if only == d["id"] or only in d["requirements"]
+                 or kept.intersection(d["requirements"])]
+    return {"requirements": rows, "test_cases": tcs, "open_questions": oqs,
+            "decisions": decisions, "counts": matrix["counts"],
             "coverage": summarize_coverage(
                 {rid: stop for rid, stop in cov["stops"].items()
                  if rid in kept},
@@ -1137,6 +1800,19 @@ def render_trace(matrix):
             ["Test Case", "Process", "Use Cases"],
             [[t["id"], t["process"] or "—", cell(t["use_cases"])]
              for t in matrix["test_cases"]])
+    if matrix["open_questions"]:
+        lines += ["", "## Open Questions", ""]
+        lines += markdown_table(
+            ["ID", "Element", "Question", "Blocking", "Status"],
+            [[q["id"], q["element"], q["question"], q["blocking"],
+              q["status"]] for q in matrix["open_questions"]])
+    if matrix["decisions"]:
+        lines += ["", "## Architecture Decisions → Requirements", ""]
+        lines += markdown_table(
+            ["ADR", "Status", "Requirements", "Superseded by"],
+            [[(d["id"] + " " + d["title"]).strip(), d["status"] or "—",
+              cell(d["requirements"]), cell(d["superseded_by"])]
+             for d in matrix["decisions"]])
     cov = matrix["coverage"]
     if cov["active"]:
         lines += ["", "## Requirement Coverage", "",
@@ -1150,6 +1826,221 @@ def render_trace(matrix):
             ["Stage", "Reached", "Missing"],
             [[s["stage"], "%d / %d" % (s["reached"], cov["active"]),
               cell(s["stopped"])] for s in cov["stages"]])
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Change impact
+# ---------------------------------------------------------------------------
+
+IMPACT_KINDS = ("requirement", "use case", "business rule", "process",
+                "test case", "decision")
+ADR_INACTIVE = ("Superseded", "Deprecated", "Rejected")
+
+
+def rule_key(text):
+    """The node id of a business rule: 'UC-003 BR-002' also for
+    'UC-003:BR-002' and 'UC-003/BR-002'; any other id unchanged."""
+    match = re.match(r"^\s*([SB]?UC-[A-Za-z0-9_-]+?)[\s:/,]+((?:BR|GR)-"
+                     r"[A-Za-z0-9_-]+)\s*$", text)
+    return match.group(1) + " " + match.group(2) if match else text.strip()
+
+
+def impact_graph(docs, bpmn):
+    """The nodes and edges along which a change travels.
+
+    A node is a requirement, use case, business rule ('UC-003 BR-002'), test
+    case, process, or ADR id. An edge (target, reason, follow) leads from
+    what changes to what has to be checked again; reason says why in words.
+    An edge with follow False leads back up (to the requirement a use case
+    realizes, the use cases of a process, the requirements of an ADR): it
+    counts only from a changed element, and passes the change on no
+    further. Returns
+    (nodes, edges, project, specs, test_cases); project.findings are the
+    lint's business and stay unread.
+    """
+    project = Project(docs)
+    requirements = check_requirements(project)
+    specs = load_specs(project)
+    diagram = check_diagram(project, specs)
+    test_cases = read_test_cases(project)
+    nodes, edges = {}, {}
+
+    def node(nid, kind, name="", status="", path=""):
+        nodes.setdefault(nid, {"id": nid, "kind": kind, "name": name,
+                               "status": status,
+                               "path": doc_path(project, path) if path
+                               else ""})
+
+    def edge(source, target, reason, follow=True):
+        if source != target:
+            edges.setdefault(source, []).append((target, reason, follow))
+
+    for rid, (_, status, title) in requirements.items():
+        node(rid, "requirement", title, status, project.requirements_path)
+    active = {uid: spec for uid, spec in specs.items() if not spec.obsolete}
+    for uid, spec in specs.items():
+        node(uid, "use case", spec.title or spec.name or "", spec.status,
+             spec.path)
+        for rule_id in spec.rule_order:
+            node(uid + " " + rule_id, "business rule",
+                 spec.rules[rule_id]["name"], spec.status, spec.path)
+    for uid, spec in active.items():
+        for _, rid in spec.requirements:
+            node(rid, "requirement")
+            edge(rid, uid, "links " + rid)
+            edge(uid, rid, "realized by " + uid, follow=False)
+        for rule_id in spec.rule_order:
+            edge(uid + " " + rule_id, uid, "states " + uid + " " + rule_id)
+    for uid, spec in active.items():
+        for _, line in prose_lines(spec.lines):
+            for ref_uc, ref_rule in RULE_REF.findall(line):
+                key = ref_uc + " " + ref_rule
+                if ref_uc != uid and key in nodes:
+                    edge(ref_uc, key, "rule of " + ref_uc)
+                    edge(key, uid, "cites " + key)
+    for path in project.diagram_paths:
+        for source, relation, target in read_diagram_actors(path)[3]:
+            if source in active and target in active:
+                # A includes B: a change to B changes A. C extends A: a
+                # change to A may break the extension point C relies on.
+                edge(target, source, relation + "s " + target)
+    for tc in test_cases:
+        node(tc["id"], "test case", "", "", os.path.join(docs, tc["path"]))
+        for uid in tc["use_cases"]:
+            if uid in active:
+                edge(uid, tc["id"], "chains " + uid)
+        if tc["process_id"]:
+            edge(tc["process_id"], tc["id"], "follows " + tc["process_id"])
+    if bpmn is not None:
+        by_name = {}
+        for uid, spec in active.items():
+            for name in spec.names():
+                by_name.setdefault(name, uid)
+        for uid, name in diagram.items():
+            if name and uid in active:
+                by_name.setdefault(name, uid)
+        for path in project.bpmn_paths:
+            with open(path, "rb") as handle:
+                try:
+                    model = bpmn.analyze(handle.read())
+                except bpmn.BpmnError:
+                    continue
+            bp_ids = {p["id"]: p.get("bpId") or p["id"]
+                      for p in model["processes"]}
+            for process in model["processes"]:
+                node(bp_ids[process["id"]], "process", process["name"] or "",
+                     "", path)
+            for activity in model["activities"]:
+                uid = activity.get("ucId") \
+                    or by_name.get(normalize(activity["name"]))
+                bid = bp_ids.get(activity["process"])
+                if uid in active and bid:
+                    edge(uid, bid, "has an activity for " + uid)
+                    edge(bid, uid, "is an activity of " + bid, follow=False)
+    for adr in read_adrs(project):
+        node(adr["id"], "decision", adr["title"], adr["status"], adr["path"])
+        if adr["status"] in ADR_INACTIVE:
+            continue
+        for _, rid in adr["requirements"]:
+            node(rid, "requirement")
+            edge(rid, adr["id"], "serves " + rid)
+            edge(adr["id"], rid, "served by " + adr["id"], follow=False)
+    return nodes, edges, project, specs, test_cases
+
+
+def impact(docs, bpmn, changed):
+    """What a change to the given ids affects, directly and transitively.
+
+    Breadth first from every changed id, so each affected element shows its
+    shortest trace. Direct means one step from a changed id; a business rule
+    a trace passes through only names the way and is no step of its own,
+    and is not listed. Raises ValueError for an id no document defines.
+    """
+    nodes, edges, project, specs, test_cases = impact_graph(docs, bpmn)
+    seeds = [rule_key(cid) for cid in changed]
+    unknown = [cid for cid in seeds if cid not in nodes]
+    if unknown:
+        raise ValueError("unknown id(s): " + ", ".join(unknown))
+    reached = {cid: {"trace": [cid], "reason": "", "steps": 0,
+                     "follow": True} for cid in seeds}
+    queue = list(seeds)
+    while queue:
+        current = queue.pop(0)
+        state = reached[current]
+        if not state["follow"]:
+            continue
+        parent = state["trace"][-2] if len(state["trace"]) > 1 else None
+        # A changed rule changes its use case, but not the use case's other
+        # rules; the use case counts as changed for the edges back up.
+        owner = parent in seeds and parent.startswith(current + " ")
+        changed_here = current in seeds or owner
+        for target, reason, follow in edges.get(current, ()):
+            if target in reached or (not follow and not changed_here):
+                continue
+            if owner and nodes[target]["kind"] == "business rule":
+                continue
+            waypoint = nodes[target]["kind"] == "business rule"
+            reached[target] = {"trace": state["trace"] + [target],
+                               "reason": reason, "follow": follow,
+                               "steps": state["steps"] + (not waypoint)}
+            queue.append(target)
+
+    affected = []
+    for nid, state in reached.items():
+        if nid in seeds or nodes[nid]["kind"] == "business rule":
+            continue
+        affected.append(dict(nodes[nid], trace=state["trace"],
+                             reason=state["reason"],
+                             impact="direct" if state["steps"] == 1
+                             else "indirect"))
+    affected.sort(key=lambda a: (IMPACT_KINDS.index(a["kind"]),
+                                 a["impact"] != "direct", a["id"]))
+
+    ids = set(reached)
+    ucs_by_req = linking_use_cases(specs)
+    questions = [q for q in trace_open_questions(project, ucs_by_req)
+                 if q["element"] in ids
+                 or q["element"].split(" ")[0] in ids
+                 or ids.intersection(q["use_cases"])]
+    gaps = []
+    for cid in seeds:
+        if nodes[cid]["kind"] == "requirement" and not edges.get(cid):
+            gaps.append(cid + " is linked by no use case and no ADR; "
+                        "nothing downstream traces to it")
+    if test_cases:
+        in_tc = {uid for tc in test_cases for uid in tc["use_cases"]}
+        for nid in sorted(ids):
+            spec = specs.get(nid)
+            if spec and not spec.obsolete and nid not in in_tc:
+                gaps.append(nid + " is in no test case; only its own tests "
+                            "show whether the change holds")
+    if project.bpmn_paths and bpmn is None:
+        gaps.append("bpmn_paths.py (test-case skill) not found; business "
+                    "processes are not traced")
+    return {"changed": [nodes[cid] for cid in seeds], "affected": affected,
+            "open_questions": questions, "gaps": gaps}
+
+
+def render_impact(result):
+    lines = ["## Change Impact: " + ", ".join(
+        (c["id"] + " " + c["name"]).strip() for c in result["changed"]), ""]
+    if result["affected"]:
+        lines += markdown_table(
+            ["Element", "Kind", "Status", "Impact", "Why", "Trace"],
+            [[(a["id"] + " " + a["name"]).strip(), a["kind"],
+              a["status"] or "—", a["impact"], a["reason"],
+              " → ".join(a["trace"])] for a in result["affected"]])
+    else:
+        lines.append("No other specification traces to the change.")
+    if result["open_questions"]:
+        lines += ["", "## Open Questions", ""]
+        lines += markdown_table(
+            ["ID", "Element", "Question", "Blocking", "Status"],
+            [[q["id"], q["element"], q["question"], q["blocking"],
+              q["status"]] for q in result["open_questions"]])
+    if result["gaps"]:
+        lines += ["", "## Gaps", ""] + ["- " + g for g in result["gaps"]]
     return "\n".join(lines)
 
 
@@ -1210,7 +2101,8 @@ STATUS_CLASS = {
     "approved": "s-info", "reviewed": "s-info", "genehmigt": "s-info",
     "geprüft": "s-info", "obsolete": "s-muted", "obsolet": "s-muted",
     "rejected": "s-muted", "deferred": "s-muted", "abgelehnt": "s-muted",
-    "zurückgestellt": "s-muted",
+    "zurückgestellt": "s-muted", "accepted": "s-ok", "proposed": "s-info",
+    "superseded": "s-muted", "deprecated": "s-muted",
 }
 SEVERITY_CLASS = {ERROR: "s-err", WARN: "s-warn", INFO: "s-info"}
 
@@ -1260,6 +2152,8 @@ def render_report(matrix, findings, suppressed, docs):
              ("Use cases", counts["use_cases"]),
              ("Test cases", counts["test_cases"]),
              ("Processes", counts["processes"]),
+             ("Open questions", len(matrix["open_questions"])),
+             ("Decisions", len(matrix["decisions"])),
              ("Errors", len(severities[ERROR])),
              ("Warnings", len(severities[WARN])),
              ("Infos", len(severities[INFO])),
@@ -1329,6 +2223,28 @@ def render_report(matrix, findings, suppressed, docs):
               link(t["process_path"], t["process"]) if t["process"]
               else '<span class="muted">—</span>', ids(t["use_cases"])]
              for t in matrix["test_cases"]]))
+
+    if matrix["open_questions"]:
+        out.append("<h2>Open Questions</h2>")
+        out.append(table(
+            ["ID", "Element", "Question", "Blocking", "Status", "Raised by"],
+            [[link("open-questions.md", q["id"]), esc(q["element"]),
+              esc(q["question"]),
+              '<span class="badge s-err">Yes</span>'
+              if normalize(q["blocking"]) in ("yes", "ja")
+              else esc(q["blocking"]),
+              '<span class="badge %s">%s</span>' % (
+                  "s-warn" if q["status"] == "Open" else "s-info",
+                  esc(q["status"])), esc(q["raised_by"])]
+             for q in matrix["open_questions"]]))
+
+    if matrix["decisions"]:
+        out.append("<h2>Architecture Decisions → Requirements</h2>")
+        out.append(table(
+            ["ADR", "Status", "Requirements", "Superseded by"],
+            [[link(d["path"], (d["id"] + " " + d["title"]).strip()),
+              badge(d["status"]), ids(d["requirements"]),
+              ids(d["superseded_by"])] for d in matrix["decisions"]]))
 
     out.append("<h2>Findings</h2>")
     if not findings:
@@ -1542,6 +2458,56 @@ clerk --> UC002
   </process>
 </definitions>
 """,
+    # Resolved and Withdrawn questions are history: their elements may point
+    # to nothing, and a resolved blocking question blocks nothing.
+    "open-questions.md": """\
+# Open Questions
+
+Questions about the specification that the specification does not answer yet.
+
+## OQ-001: Minimum age for guests travelling with a parent?
+
+**Element:** UC-001 A7
+**Raised by:** /use-case-implement, 2026-10-01
+**Blocking:** Yes
+**Status:** Resolved
+
+**Answer:** No exception; BR-001 applies to every guest.
+**Answered by:** P. Meier, 2026-10-02
+**Resolved in:** UC-001 A9
+
+## OQ-002: Which data does a guest need?
+
+**Element:** UC-001 step 2
+**Raised by:** /use-case-spec, 2026-10-03
+**Blocking:** No
+**Status:** Open
+**Assumed:** name and date of birth
+
+Step 2 names no data.
+
+## OQ-003: Store the guest's age?
+
+**Element:** Entity: GUEST.age
+**Raised by:** /entity-model, 2026-10-03
+**Blocking:** No
+**Status:** Withdrawn
+**Withdrawn:** duplicate of OQ-002
+
+## OQ-004: Can a room be out of service?
+
+**Element:** Entity: ROOM
+**Raised by:** S. Huber, 2026-10-04
+**Blocking:** Yes
+**Status:** Open
+
+## OQ-005: Does a guest include children?
+
+**Element:** Glossary: Guest
+**Raised by:** /requirements, 2026-10-04
+**Blocking:** No
+**Status:** Open
+""",
 }
 
 BROKEN = dict(CLEAN)
@@ -1583,6 +2549,67 @@ BROKEN.update({
         'name="UC-001 Create Guest"', 'name="UC-003 Cancel Room"'),
     "processes/legacy.bpmn": CLEAN[
         "processes/BP-001-hotel-stay.bpmn"].replace('"BP-001"', '"p"'),
+    "open-questions.md": """\
+# Open Questions
+
+## OQ-001: Deposit for guests under eighteen?
+
+**Element:** UC-002 BR-001
+**Raised by:** /use-case-test, 2026-10-05
+**Blocking:** Yes
+**Status:** Open
+
+## OQ-002: Which guests may be recorded?
+
+**Element:** FR-001
+**Raised by:** /requirements, 2026-10-05
+**Blocking:** Yes
+**Status:** Answered
+
+**Answer:** Every guest over eighteen.
+**Answered by:** P. Meier, 2026-10-06
+
+## OQ-003: What follows the confirmation?
+
+**Element:** UC-001 step 9
+**Raised by:** /use-case-implement, 2026-10-05
+**Blocking:** No
+**Status:** Open
+
+## OQ-004: Room rate rounding?
+
+**Element:** UC-002 BR-002
+**Raised by:** /use-case-implement, 2026-10-05
+**Blocking:** No
+**Status:** Resolved
+
+## OQ-004: Twice the same id?
+
+**Element:** UC-002
+**Raised by:** /use-case-implement, 2026-10-05
+**Blocking:** No
+**Status:** Open
+
+## OQ-005: Length of the comment field?
+
+**Element:** the comment field
+**Raised by:** /use-case-test, 2026-10-05
+**Blocking:** No
+**Status:** Open
+
+## OQ-006: Is a booking a reservation?
+
+**Element:** Glossary: Booking
+**Raised by:** /requirements, 2026-10-05
+**Blocking:** No
+**Status:** Open
+
+## OQ-007: Is the guest's phone mandatory?
+
+**Element:** UC-001 step 2
+**Raised by:** /use-case-implement, 2026-10-05
+**Status:** Open
+""",
 })
 
 BROKEN_EXPECTED = {
@@ -1590,7 +2617,7 @@ BROKEN_EXPECTED = {
     "BPMN_UNMAPPED", "FR_UNCOVERED", "BR_DUPLICATE", "WEAK_WORD",
     "GLOSSARY_AVOIDED_TERM", "GLOSSARY_DUPLICATE", "UC_UNUSED_BY_TC",
     "REQ_STATUS_DRIFT", "BP_ID_MISMATCH", "BP_NO_ID", "REQ_UNCOVERED",
-    "ACTOR_MISMATCH",
+    "ACTOR_MISMATCH", "OQ_BLOCKING", "OQ_UNRESOLVED", "OQ_INVALID",
 }
 
 ACTOR_DIAGRAM = """\
@@ -1620,6 +2647,254 @@ ACTOR_LINKS = {
     "UC-002": {"front desk clerk", "payment service"},
     "UC-003": {"night auditor"},
     "UC-004": {"guest"},
+}
+
+
+# CLEAN with both diagrams split by module, as /reverse-engineer writes them:
+# the overviews in use_cases.puml and entity_model.md, each module in a folder
+# use_cases/<module>/ with its diagram and specifications, and a file
+# entity_model/<module>.md.
+MODULAR = {k: v for k, v in CLEAN.items() if not k.startswith("use_cases/")}
+MODULAR.update({
+    "use_cases.puml": """\
+@startuml Modules
+left to right direction
+actor Clerk as clerk
+package "Guests" as guests
+package "Reservations" as reservations
+clerk --> guests
+clerk --> reservations
+reservations ..> guests : "reserves for guests"
+@enduml
+""",
+    "use_cases/guests/use_cases.puml": """\
+@startuml Guests
+left to right direction
+actor Clerk as clerk
+rectangle "Guests" {
+    usecase "UC-001\\nCreate Guest" as UC001
+}
+clerk --> UC001
+@enduml
+""",
+    "use_cases/reservations/use_cases.puml": """\
+@startuml Reservations
+left to right direction
+actor Clerk as clerk
+rectangle "Reservations" {
+    usecase "UC-002\\nReserve Room" as UC002
+}
+clerk --> UC002
+@enduml
+""",
+    "use_cases/guests/UC-001-create-guest.md":
+        CLEAN["use_cases/UC-001-create-guest.md"],
+    "use_cases/reservations/UC-002-reserve-room.md":
+        CLEAN["use_cases/UC-002-reserve-room.md"],
+    "test_cases/TC-001-reserve-room.md": CLEAN[
+        "test_cases/TC-001-reserve-room.md"].replace(
+        "../use_cases/UC-001", "../use_cases/guests/UC-001").replace(
+        "../use_cases/UC-002", "../use_cases/reservations/UC-002"),
+    "entity_model.md": """\
+# Entity Model
+
+## Modules
+
+| Module                                        | Description            | Entities | Depends on |
+|-----------------------------------------------|------------------------|----------|------------|
+| [Guests](entity_model/guests.md)              | The hotel's guests     | GUEST    | -          |
+| [Reservations](entity_model/reservations.md)  | Rooms and reservations | ROOM     | Guests     |
+""",
+    "entity_model/guests.md": """\
+# Entity Model: Guests
+
+## Entity Relationship Diagram
+
+```mermaid
+erDiagram
+    GUEST
+```
+
+### GUEST
+""",
+    "entity_model/reservations.md": """\
+# Entity Model: Reservations
+
+## Entity Relationship Diagram
+
+```mermaid
+erDiagram
+    GUEST ||--o{ ROOM : "reserves"
+```
+
+From other modules: GUEST (Guests).
+
+### ROOM
+""",
+})
+
+
+ADRS = {
+    "requirements.md": """\
+# Requirements
+
+| ID      | Title        | Requirement                                     | Category    | Priority | Status   |
+|---------|--------------|-------------------------------------------------|-------------|----------|----------|
+| FR-001  | Create Guest | As a clerk, I want to record guests.            |             | High     | Open     |
+| NFR-001 | Query Cost   | A list loads in one query per page.             | Performance | High     | Open     |
+| C-001   | Database     | The system must use PostgreSQL 16.              | Technical   | High     | Open     |
+| C-002   | Mainframe    | Bookings are stored on the mainframe.           | Technical   | Low      | Rejected |
+""",
+    "architecture/decisions/README.md": "# Architecture Decisions\n\nAn index.\n",
+    "architecture/decisions/ADR-001-jooq.md": """\
+# ADR-001: jOOQ instead of JPA
+
+**Status:** Accepted
+**Date:** 2026-09-17
+**Requirements:** NFR-001, FR-001
+
+## Context
+
+The query in the code must be the query at the database.
+""",
+    "architecture/decisions/ADR-002-h2.md": """\
+# ADR-002: H2 for development
+
+## Status
+
+Superseded by ADR-003
+
+**Date:** 2026-09-01
+**Requirements:** C-001
+""",
+    "architecture/decisions/ADR-003-postgres-everywhere.md": """\
+# ADR-003: PostgreSQL in every environment
+
+**Status:** Accepted
+**Date:** 2026-09-20
+**Requirements:** C-001
+**Supersedes:** ADR-002
+""",
+    "adr/ADR-004-testcontainers.md": """\
+---
+status: proposed
+date: 2026-10-01
+---
+
+# ADR-004: Testcontainers for integration tests
+
+**Requirements:** [C-001](../requirements.md)
+""",
+}
+
+ADRS_TRACE = [
+    ("ADR-001", "Accepted", ["NFR-001", "FR-001"], []),
+    ("ADR-002", "Superseded", ["C-001"], ["ADR-003"]),
+    ("ADR-003", "Accepted", ["C-001"], []),
+    ("ADR-004", "Proposed", ["C-001"], []),
+]
+
+ADRS_BROKEN = {
+    "architecture/decisions/ADR-005-rest.md": """\
+# ADR-005: REST between the modules
+
+**Status:** Accepted
+**Date:** 2026-10-02
+**Requirements:** FR-001
+""",
+    "architecture/decisions/ADR-006-mainframe.md": """\
+# ADR-006: Bookings on the mainframe
+
+**Status:** Proposed
+**Requirements:** NFR-009, C-002
+""",
+    "modules/billing/adrs/ADR-007-graphql.md": """\
+# ADR-007: GraphQL instead of jOOQ
+
+**Status:** Maybe
+**Date:** 2026-10-03
+**Requirements:** NFR-001
+**Supersedes:** ADR-001, ADR-099
+""",
+    "modules/billing/adr/ADR-005-duplicate.md": """\
+# ADR-005: Twice the same id
+
+**Status:** Accepted
+**Date:** 2026-10-04
+**Requirements:** C-001
+""",
+}
+
+ADRS_BROKEN_EXPECTED = {
+    (WARN, "ADR_UNLINKED", "ADR-005"),
+    (ERROR, "DANGLING_REF", "ADR-006"),
+    (WARN, "ADR_STALE", "ADR-006"),
+    (WARN, "ADR_INVALID", "ADR-006"),
+    (WARN, "ADR_INVALID", "ADR-007"),
+    (WARN, "ADR_STALE", "ADR-001"),
+    (ERROR, "DANGLING_REF", "ADR-007"),
+    (ERROR, "DUPLICATE_ID", "ADR-005"),
+}
+
+
+# UC-002 includes UC-003 and is extended by UC-004; UC-003 realizes FR-004,
+# which ADR-001 serves next to NFR-001. UC-002 BR-001 cites UC-001 BR-001.
+IMPACT = dict(CLEAN)
+IMPACT.update({
+    "requirements.md": CLEAN["requirements.md"]
+    + "| FR-004 | Check Age     | As a clerk, I want the age checked so "
+      "that no minor checks in. | High | Open |\n"
+      "| NFR-001 | Audit        | Every age check is logged for ten years. "
+      "                       | High | Open |\n",
+    "use_cases.puml": CLEAN["use_cases.puml"].replace(
+        "}", "    usecase \"UC-003\\nCheck Age\" as UC003\n"
+        "    usecase \"UC-004\\nReserve Suite\" as UC004\n}").replace(
+        "@enduml", "clerk --> UC004\nUC002 ..> UC003 : <<include>>\n"
+        "UC002 <.. UC004 : <<extend>>\n@enduml"),
+    "use_cases/UC-003-check-age.md": spec_text(
+        "UC-003", "Check Age",
+        "\n**Requirements:** [FR-004](../requirements.md)\n"),
+    "use_cases/UC-004-reserve-suite.md": spec_text("UC-004", "Reserve Suite"),
+    "architecture/decisions/ADR-001-audit-log.md": """\\
+# ADR-001: Audit Log in the Database
+
+**Status:** Accepted
+**Date:** 2026-10-20
+**Requirements:** [NFR-001](../../requirements.md), FR-004
+
+## Decision
+
+Age checks are written to an audit table.
+""",
+})
+
+# (id, impact, trace) for each --impact run of the IMPACT fixture
+IMPACT_EXPECTED = {
+    "FR-001": [
+        ("UC-001", "direct", "FR-001 UC-001"),
+        ("UC-002", "indirect", "FR-001 UC-001 UC-001 BR-001 UC-002"),
+        ("UC-004", "indirect", "FR-001 UC-001 UC-001 BR-001 UC-002 UC-004"),
+        ("BP-001", "indirect", "FR-001 UC-001 BP-001"),
+        ("TC-001", "indirect", "FR-001 UC-001 TC-001")],
+    "UC-001 BR-001": [
+        ("FR-001", "indirect", "UC-001 BR-001 UC-001 FR-001"),
+        ("UC-001", "direct", "UC-001 BR-001 UC-001"),
+        ("UC-002", "direct", "UC-001 BR-001 UC-002"),
+        ("UC-004", "indirect", "UC-001 BR-001 UC-002 UC-004"),
+        ("BP-001", "indirect", "UC-001 BR-001 UC-001 BP-001"),
+        ("TC-001", "indirect", "UC-001 BR-001 UC-001 TC-001")],
+    "UC-003": [
+        ("FR-004", "direct", "UC-003 FR-004"),
+        ("UC-002", "direct", "UC-003 UC-002"),
+        ("UC-004", "indirect", "UC-003 UC-002 UC-004"),
+        ("BP-001", "indirect", "UC-003 UC-002 BP-001"),
+        ("TC-001", "indirect", "UC-003 UC-002 TC-001")],
+    "NFR-001": [
+        ("ADR-001", "direct", "NFR-001 ADR-001")],
+    "BP-001": [
+        ("UC-001", "direct", "BP-001 UC-001"),
+        ("UC-002", "direct", "BP-001 UC-002"),
+        ("TC-001", "direct", "BP-001 TC-001")],
 }
 
 
@@ -1737,6 +3012,17 @@ def self_test():
                 failures.append("report: clean page lacks " + needle)
         if "| FR-001" not in render_trace(matrix):
             failures.append("trace: rendered matrix lacks FR-001")
+        oqs = [q["id"] for q in matrix["open_questions"]]
+        if oqs != ["OQ-004", "OQ-002", "OQ-005"]:
+            failures.append("trace: open questions should be OQ-004, OQ-002, "
+                            "OQ-005 (blocking first, history left out), got "
+                            + str(oqs))
+        if [q["id"] for q in filter_trace(matrix, "UC-001")["open_questions"]] \
+                != ["OQ-002"]:
+            failures.append("trace: --only UC-001 should keep OQ-002")
+        if "## Open Questions" not in render_trace(matrix) \
+                or "<h2>Open Questions</h2>" not in page:
+            failures.append("trace: open questions not rendered")
         if fr1 and (fr1["requirement_status"], fr1["derived_status"]) \
                 != ("Open", "Open"):
             failures.append("trace: FR-001 status should be Open/Open, got "
@@ -1753,8 +3039,55 @@ def self_test():
             failures.append("coverage: --only UC-002 wrong, got " + str(cov))
 
     with tempfile.TemporaryDirectory() as root:
+        values = dict(CLEAN)
+        values["mockups/uc-001-form.png"] = ""
+        values["use_cases/UC-001-create-guest.md"] = CLEAN[
+            "use_cases/UC-001-create-guest.md"].replace(
+            "**Requirements:**", "**Mockup:** [Form](../mockups/uc-001-form."
+            "png#top), [Figma](https://www.figma.com/design/abc/Guests), "
+            "[Dialog](../mockups/uc-001-dialog.md)  \n**Requirements:**")
+        write_fixture(root, values)
+        found = [(f.code, f.element, f.message)
+                 for f in lint(root, validator, bpmn) if f.severity != INFO]
+        if len(found) != 1 or found[0][:2] != ("MOCKUP_MISSING_FILE",
+                                               "UC-001") \
+                or "uc-001-dialog.md" not in found[0][2]:
+            failures.append("mockups: expected one MOCKUP_MISSING_FILE for "
+                            "uc-001-dialog.md, got " + str(found))
+
+    with tempfile.TemporaryDirectory() as root:
+        values = dict(CLEAN)
+        values["api/booking.yaml"] = (
+            "openapi: 3.1.0\npaths:\n  /bookings:\n    post:\n"
+            "      operationId: createBooking\n")
+        values["api/booking.json"] = (
+            '{"paths": {"/bookings": {"get": {"operationId": "listBookings"'
+            '}}}}\n')
+        values["api/booking.asyncapi.yaml"] = (
+            "asyncapi: 3.0.0\nchannels:\n  bookingCancelled:\n"
+            "    address: booking/cancelled\n")
+        values["use_cases/UC-001-create-guest.md"] = CLEAN[
+            "use_cases/UC-001-create-guest.md"].replace(
+            "**Requirements:**", "**API:** [create](../api/booking.yaml"
+            "#createBooking), [list](../api/booking.json#listBookings), "
+            "[cancelled](../api/booking.asyncapi.yaml#bookingCancelled), "
+            "[delete](../api/booking.yaml#deleteBooking), "
+            "[partner](../api/partner.yaml#notify), "
+            "[remote](https://api.example.com/openapi.yaml#createBooking)"
+            "  \n**Requirements:**")
+        write_fixture(root, values)
+        found = sorted((f.code, f.element, f.message)
+                       for f in lint(root, validator, bpmn)
+                       if f.severity != INFO)
+        if [f[:2] for f in found] != [("API_UNRESOLVED", "UC-001")] * 2 \
+                or "deleteBooking" not in found[0][2] + found[1][2] \
+                or "partner.yaml" not in found[0][2] + found[1][2]:
+            failures.append("api: expected API_UNRESOLVED for deleteBooking "
+                            "and partner.yaml, got " + str(found))
+
+    with tempfile.TemporaryDirectory() as root:
         write_fixture(root, {"use_cases.puml": ACTOR_DIAGRAM})
-        actors, links, parents = read_diagram_actors(
+        actors, links, parents, _ = read_diagram_actors(
             os.path.join(root, "use_cases.puml"))
         if links != ACTOR_LINKS:
             failures.append("actors: links wrong, got " + str(links))
@@ -1774,6 +3107,32 @@ def self_test():
                             "not matched, got " + str(
                                 [f.message for f in project.findings]))
 
+    with tempfile.TemporaryDirectory() as root:
+        write_fixture(root, MODULAR)
+        found = [f for f in lint(root, validator, bpmn) if f.severity != INFO]
+        for f in found:
+            failures.append("modular: unexpected %s %s %s:%d %s" % (
+                f.severity, f.code, os.path.relpath(f.path, root), f.line,
+                f.message))
+        write_fixture(root, {
+            "entity_model/reservations.md":
+                MODULAR["entity_model/reservations.md"] + "\n### GUEST\n",
+            "use_cases/reservations/use_cases.puml": MODULAR[
+                "use_cases/reservations/use_cases.puml"].replace(
+                "clerk --> UC002",
+                "clerk --> UC002\nusecase \"UC-001\\nCreate Guest\" as UC001"),
+            "use_cases/billing/use_cases.puml": "@startuml Billing\n@enduml\n"})
+        os.rename(os.path.join(root, "use_cases/reservations/"
+                               "UC-002-reserve-room.md"),
+                  os.path.join(root, "use_cases/UC-002-reserve-room.md"))
+        found = {(f.code, f.element) for f in lint(root, validator, bpmn)}
+        for expected in (("DUPLICATE_ID", "GUEST"), ("DUPLICATE_ID", "UC-001"),
+                         ("MODULE_UNKNOWN", "billing"),
+                         ("MODULE_MISMATCH", "UC-002")):
+            if expected not in found:
+                failures.append("modular: expected %s %s, got %s"
+                                % (expected + (sorted(found),)))
+
     def uc(status):
         spec = Spec.__new__(Spec)
         spec.id, spec.status = "UC-X", status
@@ -1789,6 +3148,18 @@ def self_test():
         if got != expected:
             failures.append("derived_status(%s): expected %s, got %s"
                             % (statuses, expected, got))
+
+    with tempfile.TemporaryDirectory() as root:
+        # An Avoid synonym equal to a priority or status value matches only prose
+        values = dict(CLEAN)
+        values["glossary.md"] = CLEAN["glossary.md"].replace(
+            "| Customer, Client |", "| Customer, High, Rejected |")
+        write_fixture(root, values)
+        avoided = [f for f in lint(root, validator, bpmn)
+                   if f.code == "GLOSSARY_AVOIDED_TERM"]
+        if avoided:
+            failures.append("values: GLOSSARY_AVOIDED_TERM on a priority or "
+                            "status cell: " + avoided[0].message)
 
     with tempfile.TemporaryDirectory() as root:
         write_fixture(root, BROKEN)
@@ -1831,6 +3202,25 @@ def self_test():
         duplicates = [f.message for f in found if f.code == "DUPLICATE_ID"]
         if not any("business process id BP-001" in m for m in duplicates):
             failures.append("broken: no DUPLICATE_ID for BP-001")
+        if not any("open question id OQ-004" in m for m in duplicates):
+            failures.append("broken: no DUPLICATE_ID for OQ-004")
+        blocking = sorted((f.severity, f.element) for f in found
+                          if f.code == "OQ_BLOCKING")
+        if blocking != [(ERROR, "UC-002"), (WARN, "UC-001")]:
+            failures.append("broken: OQ_BLOCKING should be ERROR on the Done "
+                            "UC-002 and WARN on the Approved UC-001 (via "
+                            "FR-001), got " + str(blocking))
+        if [f.element for f in found if f.code == "OQ_UNRESOLVED"] \
+                != ["OQ-002"]:
+            failures.append("broken: OQ_UNRESOLVED should name OQ-002 only")
+        invalid = sorted(f.element for f in found if f.code == "OQ_INVALID")
+        if invalid != ["OQ-004", "OQ-005", "OQ-007"]:
+            failures.append("broken: OQ_INVALID should name OQ-004 (Resolved "
+                            "without Resolved in), OQ-005 (unknown element), "
+                            "and OQ-007 (no Blocking), got " + str(invalid))
+        for needle in ("UC-001 has no step 9", "term 'Booking'"):
+            if not any(needle in m for m in dangling):
+                failures.append("broken: no DANGLING_REF for " + needle)
 
         baseline = os.path.join(root, BASELINE_NAME)
         write_baseline(baseline, found, root)
@@ -1849,6 +3239,86 @@ def self_test():
 
     self_test_planned(validator, bpmn, failures)   # JoustMania patch
     self_test_nfr_exempt(validator, bpmn, failures)   # JoustMania patch
+    with tempfile.TemporaryDirectory() as root:
+        write_fixture(root, IMPACT)
+        found = [f for f in lint(root, validator, bpmn)
+                 if f.severity == ERROR]
+        for f in found:
+            failures.append("impact: fixture has %s %s:%d %s" % (
+                f.code, os.path.relpath(f.path, root), f.line, f.message))
+        for cid, expected in IMPACT_EXPECTED.items():
+            result = impact(root, bpmn, [cid])
+            got = [(a["id"], a["impact"], " ".join(a["trace"]))
+                   for a in result["affected"]]
+            if got != expected:
+                failures.append("impact: %s wrong, got %s" % (cid, got))
+        result = impact(root, bpmn, ["UC-003"])
+        if [a["reason"] for a in result["affected"]
+                if a["id"] == "UC-002"] != ["includes UC-003"]:
+            failures.append("impact: UC-002 should be affected because it "
+                            "includes UC-003")
+        if result["gaps"] != ["UC-003 is in no test case; only its own "
+                              "tests show whether the change holds",
+                              "UC-004 is in no test case; only its own "
+                              "tests show whether the change holds"]:
+            failures.append("impact: UC-003 gaps wrong, got "
+                            + str(result["gaps"]))
+        if [q["id"] for q in impact(root, bpmn, ["FR-001"])
+                ["open_questions"]] != ["OQ-002"]:
+            failures.append("impact: FR-001 should show OQ-002 on UC-001")
+        if impact(root, bpmn, ["UC-001:BR-001"])["changed"][0]["id"] \
+                != "UC-001 BR-001":
+            failures.append("impact: UC-001:BR-001 not read as a rule")
+        if impact(root, bpmn, ["FR-003"])["gaps"] != [
+                "FR-003 is linked by no use case and no ADR; nothing "
+                "downstream traces to it"]:
+            failures.append("impact: unlinked FR-003 not reported as gap")
+        try:
+            impact(root, bpmn, ["FR-099"])
+            failures.append("impact: unknown FR-099 accepted")
+        except ValueError:
+            pass
+        text = render_impact(impact(root, bpmn, ["FR-001"]))
+        if "| UC-002 Reserve Room" not in text \
+                or "FR-001 → UC-001 → UC-001 BR-001 → UC-002" not in text:
+            failures.append("impact: rendered table lacks UC-002 and its "
+                            "trace")
+        diagram = read_diagram_actors(os.path.join(root, "use_cases.puml"))
+        if diagram[3] != [("UC-002", "include", "UC-003"),
+                          ("UC-004", "extend", "UC-002")]:
+            failures.append("impact: diagram relations wrong, got "
+                            + str(diagram[3]))
+
+    with tempfile.TemporaryDirectory() as root:
+        write_fixture(root, ADRS)
+        adr_codes = ("ADR_", "DANGLING_REF", "DUPLICATE_ID")
+        found = [f for f in lint(root, validator, bpmn)
+                 if f.code.startswith(adr_codes)]
+        for f in found:
+            failures.append("adr: unexpected %s %s %s:%d %s" % (
+                f.severity, f.code, os.path.relpath(f.path, root), f.line,
+                f.message))
+        matrix = trace(root)
+        got = [(d["id"], d["status"], d["requirements"], d["superseded_by"])
+               for d in matrix["decisions"]]
+        if got != ADRS_TRACE:
+            failures.append("adr: trace wrong, got " + str(got))
+        if [d["id"] for d in filter_trace(matrix, "C-001")["decisions"]] \
+                != ["ADR-002", "ADR-003", "ADR-004"]:
+            failures.append("adr: --only C-001 should keep ADR-002 to ADR-004")
+        if "## Architecture Decisions" not in render_trace(matrix) \
+                or "<h2>Architecture Decisions" not in render_report(
+                    matrix, [], 0, root):
+            failures.append("adr: decisions not rendered")
+
+        write_fixture(root, ADRS_BROKEN)
+        found = {(f.severity, f.code, f.element)
+                 for f in lint(root, validator, bpmn)
+                 if f.code.startswith(adr_codes)}
+        if found != ADRS_BROKEN_EXPECTED:
+            failures.append("adr: broken findings wrong, missing %s, extra %s"
+                            % (sorted(ADRS_BROKEN_EXPECTED - found),
+                               sorted(found - ADRS_BROKEN_EXPECTED)))
 
     if failures:
         for failure in failures:
@@ -1895,10 +3365,15 @@ def main(argv):
                         help="accept all current findings into the baseline")
     parser.add_argument("--only", metavar="ID",
                         help="report only findings about this UC-XXX, "
-                             "TC-XXX, or BP-XXX")
+                             "TC-XXX, BP-XXX, or ADR-XXX")
     parser.add_argument("--trace", action="store_true",
                         help="print the requirement -> use case -> business "
                              "rule -> test case matrix instead of findings")
+    parser.add_argument("--impact", nargs="+", metavar="ID",
+                        help="print what a change to these requirement, use "
+                             "case, business rule ('UC-003 BR-002'), test "
+                             "case, process, or ADR ids affects instead of "
+                             "findings")
     parser.add_argument("--report", action="store_true",
                         help="print one HTML page with the findings, the "
                              "requirement coverage, and the trace matrix")
@@ -1923,9 +3398,21 @@ def main(argv):
             print(render_trace(matrix))
         return 0
 
+    bpmn = load_sibling("*test-case/scripts/bpmn_paths.py", "bpmn_paths")
+    if args.impact:
+        try:
+            result = impact(args.docs, bpmn, args.impact)
+        except ValueError as exc:
+            print("spec_lint.py: " + str(exc), file=sys.stderr)
+            return 2
+        if args.format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(render_impact(result))
+        return 0
+
     validator = load_sibling("*use-case-spec/scripts/validate_use_case.py",
                              "validate_use_case")
-    bpmn = load_sibling("*test-case/scripts/bpmn_paths.py", "bpmn_paths")
     findings = lint(args.docs, validator, bpmn)
 
     baseline = args.baseline or os.path.join(args.docs, BASELINE_NAME)

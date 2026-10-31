@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/flags"
 )
 
@@ -54,12 +55,7 @@ func (l *Loop) admitOrHold(snapshot flags.Snapshot, d Decision, now time.Time, c
 
 // protectiveInterventions are the medium-cost interventions the nudge reserve
 // keeps room for (BR-015).
-var protectiveInterventions = []string{
-	InterventionGrantShield,
-	InterventionToughnessBoost,
-	InterventionAdjustPlayerSensitivity,
-	InterventionSetPlayerHandicap,
-}
+var protectiveInterventions = decide.Names(func(iv decide.Intervention) bool { return iv.Protective })
 
 // nudgeReserve is the budget d must leave free (BR-015): protectiveReserve for a
 // send_controller_effect, unless chaos is the strictly dominant objective in the
@@ -113,9 +109,9 @@ func (l *Loop) repeatRefusal(d Decision, now time.Time) bool {
 // refusal without spans, warning or timeline entry: the outcome stays in the cycle's
 // LayerState (so agent.decide still reports decide.blocked) and in
 // agent_decisions_total, and a debug line names the repeat.
-func (l *Loop) recordRepeatRefusal(ctx context.Context, d Decision, cost float64, state *LayerState, reason BlockReason) {
+func (l *Loop) recordRepeatRefusal(ctx context.Context, gameKind string, d Decision, cost float64, state *LayerState, reason BlockReason) {
 	state.recordBlocked(d, reason, cost)
-	l.recordDecision(ctx, d.Intervention, true, reason)
+	l.recordDecision(ctx, gameKind, d.Intervention, true, reason)
 	l.Log.Debug("agent.decision_"+string(reason)+"_repeat",
 		"intervention", d.Intervention,
 		"target_serial", d.TargetSerial)

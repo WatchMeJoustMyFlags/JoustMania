@@ -9,7 +9,7 @@ from lib.colors import Colors
 from lib.types import Sound
 from services.menu.utils.audio import GAME_MODE_VOICE, AudioHelper
 from services.menu.utils.led import DEFAULT_COLOR, GAME_MODE_COLORS, LedController
-from services.menu.utils.settings import GAME_MODES, get_next_game_mode, is_valid_game_mode, validate_mode_keys
+from services.menu.utils.settings import GAME_MODES, get_next_game_mode, validate_mode_keys
 
 
 class TestAudioHelper:
@@ -78,6 +78,7 @@ class TestAudioHelper:
             mock_stub_class.return_value = mock_stub
 
             await audio.play_sound("test/sound.ogg")
+            await asyncio.gather(*audio._sound_tasks)  # sent from a detached task (#2378)
 
             assert mock_stub.PlaySound.call_args.args[0].volume == pytest.approx(0.55)
 
@@ -98,11 +99,11 @@ class TestAudioHelper:
             def __init__(self, _channel):
                 pass
 
-            async def SetVolume(self, request):  # noqa: N802 - gRPC stub name
+            async def SetVolume(self, request, **_kwargs):  # noqa: N802 - gRPC stub name
                 calls.append(("SetVolume", request.volume))
                 return audio_pb2.SetVolumeResponse(success=True)
 
-            async def PlayMusic(self, request):  # noqa: N802 - gRPC stub name
+            async def PlayMusic(self, request, **_kwargs):  # noqa: N802 - gRPC stub name
                 calls.append(("PlayMusic", request.file_pattern))
                 return audio_pb2.PlayMusicResponse(track_id="lobby-1", success=True)
 
@@ -126,7 +127,7 @@ class TestAudioHelper:
             def __init__(self, _channel):
                 pass
 
-            async def StopMusic(self, request):  # noqa: N802 - gRPC stub name
+            async def StopMusic(self, request, **_kwargs):  # noqa: N802 - gRPC stub name
                 calls.append(("StopMusic", request.track_id))
                 return audio_pb2.StopMusicResponse(success=True)
 
@@ -145,6 +146,7 @@ class TestAudioHelper:
             mock_stub_class.return_value = mock_stub
 
             await audio.play_sound("test/sound.ogg", volume=0.5)
+            await asyncio.gather(*audio._sound_tasks)  # sent from a detached task (#2378)
 
             mock_stub.PlaySound.assert_called_once()
 
@@ -272,13 +274,6 @@ class TestSettingsModuleFunctions:
         result = get_next_game_mode(Games.JoustFFA, forward=False)
 
         assert result.name == expected_name
-
-    def test_is_valid_game_mode(self):
-        """is_valid_game_mode should validate game modes."""
-        from lib.types import Games
-
-        assert is_valid_game_mode(Games.JoustFFA) is True
-        assert is_valid_game_mode(Games.Werewolf) is True
 
 
 class TestGameModesConstant:

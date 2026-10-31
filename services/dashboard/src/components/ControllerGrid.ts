@@ -3,6 +3,7 @@
  *
  * Displays a grid of controller cards with real-time updates.
  */
+import { html, setHtml } from "../html.js";
 import { ControllerCard } from "./ControllerCard.js";
 import type { GameplayData } from "../gen/controller_manager_pb.js";
 import type { ShieldStore } from "../shield.js";
@@ -12,7 +13,6 @@ import type { AdapterMap } from "../adapters.js";
 export class ControllerGrid {
   private readonly container: HTMLElement;
   private readonly cards: Map<string, ControllerCard> = new Map();
-  private isLoading = true;
   private adapters: AdapterMap = new Map();
   private adaptersStale = false;
   private readonly countsElement: HTMLElement | null;
@@ -48,20 +48,21 @@ export class ControllerGrid {
     }
     if (!this.countsElement) return;
     const text = adapterCountsText(counts);
+    const shown = text && this.adaptersStale ? `${text} · stale` : text;
+    if (this.countsElement.hidden === (text === "") && this.countsElement.textContent === shown) return;
     this.countsElement.hidden = text === "";
-    this.countsElement.textContent = text && this.adaptersStale ? `${text} · stale` : text;
+    this.countsElement.textContent = shown;
     this.countsElement.classList.toggle("stale", this.adaptersStale);
   }
 
   setLoading(loading: boolean) {
-    this.isLoading = loading;
     if (loading) {
-      this.container.innerHTML = '<div class="loading">Connecting to controller manager...</div>';
+      setHtml(this.container, html`<div class="loading">Connecting to controller manager...</div>`);
     }
   }
 
   setError(message: string) {
-    this.container.innerHTML = `<div class="loading">${message}</div>`;
+    setHtml(this.container, html`<div class="loading">${message}</div>`);
   }
 
   /**
@@ -74,9 +75,10 @@ export class ControllerGrid {
     nowMs: number = Date.now(),
     alive: ReadonlyMap<string, boolean> | null = null,
   ) {
-    if (this.isLoading) {
-      this.isLoading = false;
-      this.container.innerHTML = "";
+    // A placeholder (connecting, connection lost, no controllers) never outlives a frame.
+    // With no controllers the empty placeholder is kept as is, not rebuilt every frame.
+    if (controllers.length > 0) {
+      for (const placeholder of this.container.querySelectorAll(":scope > .loading")) placeholder.remove();
     }
 
     // Track which controllers are still present
@@ -97,9 +99,10 @@ export class ControllerGrid {
       if (!card) {
         // Create new card
         card = new ControllerCard(controller.serial);
-        this.container.appendChild(card.element);
         this.cards.set(controller.serial, card);
       }
+      // setError wiped the container but kept the cards: put known cards back (#2285).
+      if (card.element.parentElement !== this.container) this.container.appendChild(card.element);
 
       // Update card with new data
       card.update(controller, shields?.get(controller.serial, nowMs) ?? null, nowMs, alive?.get(controller.serial));
@@ -108,10 +111,11 @@ export class ControllerGrid {
     this.renderAdapters();
 
     // Show empty state if no controllers
-    if (controllers.length === 0 && !this.isLoading) {
-      if (!this.container.querySelector(".loading")) {
-        this.container.innerHTML = '<div class="loading">No controllers connected</div>';
-      }
+    if (controllers.length === 0) {
+      const existing = this.container.querySelector(":scope > .loading");
+      if (existing?.textContent === "No controllers connected") return;
+      // Drop any other placeholder (connecting, connection lost) before the empty state.
+      setHtml(this.container, html`<div class="loading">No controllers connected</div>`);
     }
   }
 }

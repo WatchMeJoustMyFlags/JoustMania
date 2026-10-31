@@ -57,7 +57,6 @@ from services.game_coordinator.flag_service_client import FlagServiceLifecycle, 
 from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GAME_KIND_SHADOW, GameSession
 from services.game_coordinator.interventions import InterventionManager, SessionView
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
-from services.game_coordinator.tempo_schedule import TempoScheduleManager
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +68,25 @@ tracer = get_tracer(__name__)
 # safety net, NOT the single-game guard. Default 8 leaves room for one real
 # game plus several concurrent shadow games; tune via GAME_MAX_CONCURRENT_GAMES.
 DEFAULT_MAX_CONCURRENT_GAMES = 8
+
+
+def injected_parent_span_context(span):
+    """The span context the caller injected as traceparent (#1182, #2223), or None.
+
+    With ``grpc_rpc_spans`` on, the current span is the server interceptor's SERVER
+    span (lib/grpc_tracing.py), a CHILD of the injected context: the injected
+    context is its remote parent, and a server span with no remote parent means no
+    traceparent came in. With it off, the current span is the extracted context
+    itself (a non-recording span), so its own context is the injected one.
+    """
+    if span is None:
+        return None
+    if hasattr(span, "parent"):
+        parent = span.parent
+        if parent is not None and parent.is_valid and parent.is_remote:
+            return parent
+        return None
+    return span.get_span_context()
 
 
 def _max_concurrent_games() -> int:
@@ -199,14 +217,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         # shield_seconds (per-player grace shield), eliminate_player, revive_player.
         register_lifecycle_handlers(self.intervention_manager)
         self.intervention_manager.start()
-
-        # Tempo-schedule SOURCE listener (#1109): subscribes to flagd's
-        # PROVIDER_CONFIGURATION_CHANGED event and re-reads `game.tempo_schedule_mode`
-        # for every live session's gameId, atomically swapping each game's
-        # `tempo_schedule_mode` so the pacing SOURCE (rule | agent) switches LIVE
-        # mid-game. Reuses the same per-session seam as the InterventionManager.
-        self.tempo_schedule_manager = TempoScheduleManager(get_sessions=self.get_intervention_sessions)
-        self.tempo_schedule_manager.start()
 
         # Flag service game lifecycle (FR-135, #1410): register each game before
         # it runs (bounded 200 ms, outside _sessions_lock), report its end, and
@@ -574,15 +584,14 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # Spawn-traceparent propagation (#1182, epic #1181). When the agent
             # spawns a shadow game it injects its long-lived EXPERIMENT span's
             # traceparent into the StreamGameEvents call; the server interceptor
-            # extracts it (lib/grpc_tracing.py) so the current span's context here
-            # chains back to that experiment span. We capture it as the candidate
-            # PARENT for a shadow + experiment-bound game so its lifecycle span is
-            # a CHILD of the experiment span (causal parent-child, not just a
-            # Link). For a real game (or any game with no incoming traceparent)
-            # this is the same harmless SpanContext used for the Link; the strict
-            # shadow+experiment gate in GameSession keeps a real game own-rooted
-            # (#1157/#1164).
-            experiment_parent_span_context = stream_span_context
+            # extracts it (lib/grpc_tracing.py). We capture the INJECTED context
+            # itself (the agent.experiment span), not the coordinator's own SERVER
+            # span the interceptor starts under it when grpc_rpc_spans is on, as
+            # the experiment target of a shadow + experiment-bound game: its Link
+            # (``link``) or its parent (``child``), telemetry.experiment_game_parent
+            # (#2223). The strict shadow+experiment gate in GameSession keeps a
+            # real game own-rooted (#1157/#1164).
+            experiment_parent_span_context = injected_parent_span_context(parent_span)
 
             # Experiment/cohort spawn binding (#976, epic #982). The caller
             # provides (experiment_id, arm) on StartGameConfig; the registry
@@ -604,14 +613,21 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             # shadow session deterministic for Common-Random-Numbers pairing, but
             # a real game MUST get entropy (0) so its behavior is byte-unchanged.
             # Same invariant — never seed a primary session from a caller value.
+            #
+            # pattern_trigger_policy (#2096, UC-046 BR-018, UC-040 BR-019) rides it
+            # too: it lets a shadow game honour shield.activation trigger/hold
+            # because its pattern controllers press the trigger; a real start's
+            # value is dropped so it can never change a real game.
             if game_kind == GAME_KIND_SHADOW:
                 experiment_id = getattr(config, "experiment_id", "")
                 arm = getattr(config, "arm", "")
                 rng_seed = getattr(config, "rng_seed", 0)
+                pattern_trigger_policy = bool(getattr(config, "pattern_trigger_policy", False))
             else:
                 experiment_id = ""
                 arm = ""
                 rng_seed = 0
+                pattern_trigger_policy = False
 
             session = GameSession(
                 game_id=game_id,
@@ -625,6 +641,7 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
                 experiment_id=experiment_id,
                 arm=arm,
                 rng_seed=rng_seed,
+                pattern_trigger_policy=pattern_trigger_policy,
             )
             # The game thread reports the end to the flag service (#1847).
             session.on_game_ended = self._on_session_game_ended
@@ -1205,12 +1222,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             self.intervention_manager.stop()
         except Exception as e:
             logger.debug(f"InterventionManager stop failed: {e}")
-
-        # Stop tempo-schedule SOURCE subscription (#1109)
-        try:
-            self.tempo_schedule_manager.stop()
-        except Exception as e:
-            logger.debug(f"TempoScheduleManager stop failed: {e}")
 
         with self._sessions_lock:
             sessions = list(self.sessions.values())

@@ -12,8 +12,8 @@ dependencies = [
     "hidapi>=0.14.0",
 
     # gRPC
-    "grpcio>=1.70.0",
-    "grpcio-health-checking>=1.70.0",
+    "grpcio>=1.85.0",
+    "grpcio-health-checking>=1.85.0",
 
     # OpenTelemetry
     "opentelemetry-distro>=0.49b0",

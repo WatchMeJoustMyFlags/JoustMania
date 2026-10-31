@@ -20,8 +20,11 @@ const DigestUnavailable = "unavailable"
 // An entry ending in "." is a key prefix; "*" means every key of the set.
 var digestKeys = map[string][]string{
 	"game": {
-		"sensitivity", "thresholds", "tempo_schedule_mode", "windows", "death_grace_period_seconds",
+		"sensitivity", "thresholds", "windows", "death_grace_period_seconds",
 		"invincibility_seconds", "countdown_phase_duration_ms", "winner_rainbow_duration_ms", "shadow_policy",
+		// Shield activation and hold values shape a game whose archetype presses
+		// the trigger (UC-046 BR-018, #2096). Adding them changed every digest.
+		"shield.",
 	},
 	"agent": {
 		"enabled", "interventions_enabled", "interventions_allowed", "objectives", "perception.ema_weight",

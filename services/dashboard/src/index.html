@@ -54,6 +54,8 @@
         <div id="tab-controllers" class="tab-panel active">
           <!-- Screen-only fallback (UC-070 A9): which shadow game the tiles follow -->
           <div id="follow-banner" class="follow-banner" hidden></div>
+          <!-- Live stage settings: shield mode, sensitivity, teams (UC-035 BR-010) -->
+          <div id="stage-settings" class="stage-settings" hidden></div>
           <!-- Controllers per Bluetooth adapter (UC-035 BR-009) -->
           <div id="adapter-counts" class="adapter-counts" hidden></div>
           <div id="controller-grid" class="controller-grid">
@@ -126,7 +128,7 @@
             </div>
             <iframe
               id="grafana-embed"
-              src="/grafana/d/controller-overview/controller-overview?orgId=1&theme=dark&kiosk"
+              data-src="/grafana/d/controller-overview/controller-overview?orgId=1&theme=dark&kiosk"
               class="embed-iframe"
               title="Grafana Controllers &amp; Bluetooth Dashboard"
             ></iframe>
@@ -138,11 +140,11 @@
           <div class="embed-container">
             <div class="embed-header">
               <h3>Game Traces</h3>
-              <a href="/jaeger/search?service=game-coordinator-service" target="_blank" class="external-link">Open in Jaeger &#8599;</a>
+              <a href="/jaeger/search?service=game-coordinator-service&amp;tags=%7B%22game.kind%22%3A%22primary%22%7D" target="_blank" class="external-link">Open in Jaeger &#8599;</a>
             </div>
             <iframe
               id="jaeger-embed"
-              src="/jaeger/search?service=game-coordinator-service&limit=20"
+              data-src="/jaeger/search?service=game-coordinator-service&amp;tags=%7B%22game.kind%22%3A%22primary%22%7D&amp;limit=20"
               class="embed-iframe"
               title="Jaeger Game Traces Search"
             ></iframe>

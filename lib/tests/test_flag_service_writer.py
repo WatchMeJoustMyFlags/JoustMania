@@ -395,3 +395,44 @@ def test_connection_refused_is_not_reread(svc):
     writer = FlagServiceWriter("agent", "http://fs:8070", transport=svc)
     assert writer.update_default_variant("interventions_allowed", "none") is False
     assert [m for m, _u, _b in svc.requests] == ["PUT"]
+
+
+# --- clear_persisted (UC-015 BR-018, #2215) ---------------------------------------------------
+
+
+@pytest.mark.uc("UC-015", br=["BR-018"], steps=[9])
+@pytest.mark.parametrize(("status", "expected"), [(204, True), (200, True), (503, False), (400, False)])
+def test_clear_persisted_is_one_delete_with_persist(status, expected):
+    calls = []
+
+    def transport(method, url, body):
+        calls.append((method, url, body))
+        return status, {}
+
+    w = FlagServiceWriter("game", "http://fs:8070", transport=transport)
+    assert w.clear_persisted("shield.activation") is expected
+    assert calls == [("DELETE", "http://fs:8070/game/shield.activation?persist=true", None)]
+
+
+@pytest.mark.uc("UC-015", br=["BR-018"], flow="A3", steps=[9])
+@pytest.mark.parametrize(("admin_after", "expected"), [(None, True), ({"variant": "hold"}, False)])
+def test_clear_persisted_without_a_clear_answer_is_settled_by_a_re_read(admin_after, expected):
+    def transport(method, _url, _body):
+        if method == "DELETE":
+            raise TimeoutError("timed out")
+        view = {"variants": ["instant"], "effective_default": "instant"}
+        if admin_after is not None:
+            view["admin_value"] = admin_after
+        return 200, view
+
+    w = FlagServiceWriter("game", "http://fs:8070", transport=transport)
+    assert w.clear_persisted("shield.activation") is expected
+
+
+@pytest.mark.uc("UC-015", br=["BR-018"], flow="A3", steps=[9])
+def test_clear_persisted_with_the_flag_service_down_fails():
+    def transport(_method, _url, _body):
+        raise urllib.error.URLError("refused")
+
+    w = FlagServiceWriter("game", "http://fs:8070", transport=transport)
+    assert w.clear_persisted("shield.activation") is False

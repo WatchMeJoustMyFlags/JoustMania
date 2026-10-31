@@ -3,6 +3,7 @@
  *
  * Displays a single controller with LED color, battery, accelerometer visualization.
  */
+import { BASE_URL } from "../baseUrl.js";
 import type { ConnectionQuality, GameplayData, RGB } from "../gen/controller_manager_pb.js";
 import { accelDotOffset, batteryView, normalizeGameplay, statusView } from "../motion.js";
 import type { StatusView } from "../motion.js";
@@ -12,6 +13,7 @@ import type { ShieldView } from "../shield.js";
 import { controllerClient } from "../client.js";
 import { identifyController } from "../identify.js";
 import { UNPAIR_NOTICE_EVENT, canUnpair, requestUnpair } from "../unpair.js";
+import { html, setHtml } from "../html.js";
 
 /**
  * CSS for the LED circle. `color` is the colour last written to the LED, so a
@@ -32,6 +34,8 @@ export function ledColorCss(color: Partial<Pick<RGB, "r" | "g" | "b">> | undefin
 export class ControllerCard {
   readonly element: HTMLElement;
   private readonly serial: string;
+  private readonly nameElement: HTMLElement;
+  private readonly idElement: HTMLElement;
   private readonly ledElement: HTMLElement;
   private readonly batteryElement: HTMLElement;
   private readonly accelDot: HTMLElement;
@@ -53,6 +57,10 @@ export class ControllerCard {
     this.serial = serial;
     this.element = this.createElement();
 
+    this.nameElement = this.element.querySelector(".controller-name")!;
+    this.idElement = this.element.querySelector(".controller-id")!;
+    this.idElement.textContent = `P${this.getShortId()}`;
+    this.setName(undefined);
     this.ledElement = this.element.querySelector(".led-color")!;
     this.batteryElement = this.element.querySelector(".battery-level")!;
     this.accelDot = this.element.querySelector(".accel-dot")!;
@@ -94,7 +102,7 @@ export class ControllerCard {
       const outcome = await requestUnpair(this.serial, {
         confirm: (message) => globalThis.confirm(message),
         fetch: (input, init) => globalThis.fetch(input, init),
-        baseUrl: import.meta.env.DEV ? "" : globalThis.location.origin,
+        baseUrl: BASE_URL,
       });
       if (outcome.kind === "cancelled") return;
       // The card disappears when the controller disconnects: also log to the event feed
@@ -110,8 +118,9 @@ export class ControllerCard {
   private createElement(): HTMLElement {
     const card = document.createElement("div");
     card.className = "controller-card connected";
-    card.innerHTML = `
-      <div class="controller-id">P${this.getShortId()}</div>
+    setHtml(card, html`
+      <div class="controller-name"></div>
+      <div class="controller-id"></div>
       <div class="led-color"></div>
       <div class="battery-bar">
         <div class="battery-level high" style="width: 100%"></div>
@@ -132,8 +141,14 @@ export class ControllerCard {
       <div class="identify-status" hidden></div>
       <button type="button" class="unpair-btn" title="Remove this controller from every Bluetooth adapter">Unpair</button>
       <div class="unpair-result" hidden></div>
-    `;
+    `);
     return card;
+  }
+
+  /** UC-004 BR-007: the name is the title (text only, never HTML); empty falls back to P<short id>. */
+  private setName(name: string | undefined) {
+    const title = name ? name : `P${this.getShortId()}`;
+    if (this.nameElement.textContent !== title) this.nameElement.textContent = title;
   }
 
   private getShortId(): string {
@@ -149,6 +164,7 @@ export class ControllerCard {
   ) {
     // Proto3 JSON omits zero scalars: default them so nothing renders as NaN (#1604)
     const data = normalizeGameplay(frame);
+    this.setName(frame.name);
     // Update LED color: the colour last written to the LED (shield fade included, #1301)
     this.updateLedColor(data.color);
 
@@ -211,10 +227,13 @@ export class ControllerCard {
       this.adapterElement.hidden = true;
       return;
     }
+    const title = stale ? `Bluetooth adapter ${adapter} (stale: VictoriaMetrics unreachable)` : `Bluetooth adapter ${adapter}`;
+    // Called with every controller frame (30 Hz): touch the DOM only on a change (#2387).
+    if (!this.adapterElement.hidden && this.adapterElement.textContent === adapter && this.adapterElement.title === title) return;
     this.adapterElement.hidden = false;
     this.adapterElement.textContent = adapter;
     this.adapterElement.classList.toggle("stale", stale);
-    this.adapterElement.title = stale ? `Bluetooth adapter ${adapter} (stale: VictoriaMetrics unreachable)` : `Bluetooth adapter ${adapter}`;
+    this.adapterElement.title = title;
   }
 
   private updateQuality(quality: ConnectionQuality | undefined) {

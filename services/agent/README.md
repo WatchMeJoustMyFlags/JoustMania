@@ -433,11 +433,11 @@ with Jaeger under the `/jaeger` base path:
 
 - UI: select **service `agent`**, **operation `agent.infrastructure.decision`**,
   order by time, and read the `remediation.action` timeline down the trace list.
-- Jaeger v2 API (note the `/jaeger` prefix):
-  `http://localhost/jaeger/api/traces?service=agent&operation=agent.infrastructure.decision`
-  (or `http://jaeger:16686/jaeger/api/traces?service=agent` from inside the
-  compose network). Filter for `remediation.action=rollback` to jump straight to
-  the remediation events.
+- Jaeger query API v3 (note the `/jaeger` prefix; both window bounds are required):
+  `http://localhost/jaeger/api/v3/traces?query.serviceName=agent&query.operationName=agent.infrastructure.decision&query.startTimeMin=1970-01-01T00:00:00Z&query.startTimeMax=2100-01-01T00:00:00Z`
+  (or `http://jaeger:16686/jaeger/api/v3/traces?...` from inside the compose
+  network). Add `query.attributes={"remediation.action":"rollback"}` (URL-encoded)
+  to jump straight to the remediation events.
 
 The Go narrative test (`decision/infra_narrative_test.go`,
 `TestInfraNarrative_FullIncident`) drives this exact sequence with a fake
@@ -540,7 +540,7 @@ per second. The weighted per-minute budget is enforced downstream by the loop
 |------|-----------|---------|--------------|
 | R1/R2 | endurance | session younger than `fitness.endurance.min_session_seconds` while players are eliminated | `adjust_music_tempo` (slow) / `play_audio_cue` |
 | R3 | balanced | skill spread > `fitness.balanced.max_skill_gap` | `adjust_player_sensitivity` → highest-skill outlier |
-| R4 | balanced | weakest player while the field shrinks (needs ≥ 2 players with known skill — "weakest" is only meaningful relative to others) | `grant_shield` → weakest |
+| R4 | balanced | a struggling player (below the field mean, never the strongest; fewest shields first) while the field shrinks (needs ≥ 2 players with known skill — "struggling" is only meaningful relative to others) | `grant_shield` → struggling player |
 | R5 | accelerate | duration > `fitness.accelerate.target_session_seconds` | `adjust_music_tempo` (fast) |
 | R6 | accelerate | duration > 1.5× target, > 2 players | `eliminate_player` → least active |
 | R7 | accelerate | duration > 2× target **and accelerate strictly dominant** (a tie never ends a game) | `end_game` |

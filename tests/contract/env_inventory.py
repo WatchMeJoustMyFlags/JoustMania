@@ -93,8 +93,7 @@ def _python_files(root: Path) -> list[Path]:
         if (
             name.startswith("test_")
             or name == "conftest.py"
-            or name.endswith("_pb2.py")
-            or name.endswith("_pb2_grpc.py")
+            or name.endswith(("_pb2.py", "_pb2_grpc.py"))
         ):
             continue
         out.append(path)
@@ -220,11 +219,11 @@ def python_reads(path: Path) -> list[EnvRead]:
 # --------------------------------------------------------------------------- #
 # Go
 # --------------------------------------------------------------------------- #
-_GO_FUNC = re.compile(r"^func (\w+)\(([^)]*)\)", re.M)
+_GO_FUNC = re.compile(r"^func (\w+)\(([^)]*)\)", re.MULTILINE)
 _GO_CONST = re.compile(r"\b(\w+)\s*(?:string\s*)?=\s*\"([A-Z][A-Z0-9_]*)\"")
 
 
-_GO_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+_GO_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 
 
 def _go_source(path: Path) -> str:
@@ -266,7 +265,10 @@ def _go_helpers(files: list[Path]) -> dict[str, tuple[int, bool]]:
             body = text[m.end() : end]
             params = _go_param_names(m.group(2))
             for index, param in enumerate(params):
-                if re.search(rf"os\.(?:Getenv|LookupEnv)\({param}\)", body):
+                # An unnamed parameter ("[]*http.Request") is no identifier.
+                if param.isidentifier() and re.search(
+                    rf"os\.(?:Getenv|LookupEnv)\({re.escape(param)}\)", body
+                ):
                     name, shape = m.group(1), (index, len(params) > 1)
                     if helpers.get(name, shape) != shape:
                         raise ValueError(
@@ -412,7 +414,7 @@ _ComposeLoader.add_constructor("!reset", lambda loader, node: _Reset())
 
 @functools.cache
 def _load_compose(path: Path) -> dict:
-    return yaml.load(path.read_text(), Loader=_ComposeLoader)["services"]  # noqa: S506 (SafeLoader subclass)
+    return yaml.load(path.read_text(), Loader=_ComposeLoader)["services"]
 
 
 def _env_dict(env) -> dict[str, str | None]:

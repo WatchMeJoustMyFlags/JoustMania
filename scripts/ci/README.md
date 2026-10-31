@@ -88,7 +88,7 @@ bash scripts/ci/validate-packages.sh
 ### `deps-fingerprint.sh` (#925)
 
 Print a stable 16-char hash of the files that determine what a given service
-image bakes — the shared baked-deps inputs (root/proto/lib `pyproject.toml`)
+image bakes — the shared baked-deps inputs (root/proto/lib `pyproject.toml`, root `uv.lock`)
 plus that service's own `pyproject.toml` + `Dockerfile`.
 CI computes this **per service** and bakes it into that Python service image as
 the OCI label `org.joustmania.deps-fingerprint` (build-arg `DEPS_FINGERPRINT`).
@@ -156,6 +156,23 @@ the digests dir; the jobs check out a blobless partial clone with only
 `check-retag-source.sh`, which stays the guard for the retag path.
 Test: `scripts/tests/test-check-main-tag-order.sh`.
 
+### `release-retag.sh` (#2338)
+
+`release.yml` tag-images, one matrix job per image: retags `IMAGE:<sha>` (the
+release tag commit) to `IMAGE:<version>`. release-please runs from the CI
+`workflow_run` of an earlier commit, so the tag commit's own CI is often still
+queued: the script polls for `IMAGE:<sha>` with exponential backoff (20 s
+doubling, capped at 300 s) for at most `WAIT_TIMEOUT` (2700 s = 45 min), then
+copies by digest and verifies the new tag. An existing `:<version>` with another
+digest is never overwritten; any inspect error other than a registry "not
+found" fails closed at once. On timeout the error names the image and the retag
+command (`gh workflow run release.yml -f version=<v> -f sha=<sha>`).
+Test: `scripts/tests/test-release-retag.sh`.
+
+```bash
+IMAGE_PREFIX=ghcr.io/<owner>/<repo> VERSION=0.9.1 SHA=<40-hex> bash scripts/ci/release-retag.sh menu-service
+```
+
 ## Makefile Targets
 
 All CI operations are available as Make targets:
@@ -189,3 +206,19 @@ make format
 # Run pre-commit checks
 make lint
 ```
+
+### `prune-collector-tags.sh`
+
+Weekly GHCR retention (#1787, workflow `prune-collector-tags.yml`) for the
+`otel-collector:<16-hex hash>` tags: deletes hash-only versions beyond the newest
+`KEEP` (default 5), except the hash HEAD produces and hashes referenced by the
+latest release's `.env` / compose files (belt and braces: release pins use
+`IMAGE_TAG` = X.Y.Z or sha, which are separate GHCR versions and never
+candidates). Never touches X.Y.Z, `latest`, `main`, `<sha>` or untagged
+versions. `KEEP` must be >= 1. `DRY_RUN=1` (workflow_dispatch default) only lists.
+The scheduled run deletes for real only when the repo variable
+`PRUNE_COLLECTOR_DELETE` is `true` (maintainer sets it); otherwise it is a dry
+run. The job runs only on `WatchMeJoustMyFlags/JoustMania`.
+Known limit: a hash-only version whose digest is also an untagged child of a
+release index would be deleted and break that index's amd64 leg (not observed).
+Test: `scripts/tests/test-prune-collector-tags.sh` (fake `gh`).

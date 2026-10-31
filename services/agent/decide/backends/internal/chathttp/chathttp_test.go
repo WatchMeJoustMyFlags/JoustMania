@@ -102,3 +102,32 @@ func TestPostResponse_Header(t *testing.T) {
 		t.Errorf("big = %+v, %v (headers must survive an oversized body)", r, err)
 	}
 }
+
+// DefaultHTTPClient is the openai and jev client when none is injected. It must
+// refuse a cross-host redirect: net/http strips only Authorization and Cookie
+// across hosts, so jev's x-api-key would reach the redirect target.
+// UC: UC-044 BR-003
+// UC: C-016
+func TestDefaultHTTPClient_RefusesCrossHostRedirect(t *testing.T) {
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	header := http.Header{"X-Api-Key": {"sk-secret"}, "Authorization": {"Bearer sk-secret"}}
+	status, _, err := Post(context.Background(), DefaultHTTPClient, redirector.URL+"/v1/x", header, []byte("{}"), MaxResponseBytes)
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if status != http.StatusTemporaryRedirect {
+		t.Errorf("status = %d, want the 307 returned as the response", status)
+	}
+	if targetHits != 0 {
+		t.Errorf("redirect target received %d request(s)", targetHits)
+	}
+}

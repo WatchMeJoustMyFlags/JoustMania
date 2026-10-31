@@ -74,6 +74,7 @@ class TestCountdown:
         assert events.count_events_of_type("countdown_end") == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.real_durations
     @pytest.mark.uc("UC-010", flow="main", steps=[6])
     @pytest.mark.nfr("NFR-005")
     async def test_default_phase_is_750_ms(self):

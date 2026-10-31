@@ -31,6 +31,7 @@
 # Needs python3 + PyYAML (as scripts/ci/check-retag-source.sh).
 #   ./scripts/tests/test-ci-workflow.sh [path/to/ci.yml]
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -660,7 +661,7 @@ for publish in ("docker-build-merge", "docker-build-extra-merge"):
 # 9. (#1569) The CI Complete gate stays blocking.
 REQUIRED_NEEDS = {
     "changes", "dashboard-tests", "connect-proxy-tests", "lib-tests", "service-checks",
-    "rust-checks", "agent-tests", "flag-service-tests", "script-tests", "telemetry-contract",
+    "rust-checks", "rust-deny", "agent-tests", "flag-service-tests", "registry-pinned", "script-tests", "telemetry-contract",
     "flagd-contract", "service-tests", "lint-dockerfiles", "spec-gate", "validate",
     "integration-test", "docker-build", "docker-build-extra", "docker-build-merge",
     "docker-build-extra-merge", "retag-skipped",

@@ -52,6 +52,7 @@ type mdRow struct {
 	set, key, kind, bounds string
 	scopes                 []string
 	persist                bool
+	realWrite              bool // the row names `real_write: no_live_real_game`
 }
 
 var backticked = regexp.MustCompile("`([^`]+)`")
@@ -107,7 +108,8 @@ func parseFlagsMD(t *testing.T) []mdRow {
 		for _, k := range keys {
 			rows = append(rows, mdRow{
 				set: set, key: k[1], kind: cells[1], scopes: scopes, bounds: cells[3],
-				persist: strings.HasPrefix(cells[4], "**yes**"),
+				persist:   strings.HasPrefix(cells[4], "**yes**"),
+				realWrite: strings.Contains(strings.Join(cells[5:], "|"), "`real_write: "+RealWriteNoLiveRealGame+"`"),
 			})
 		}
 	}
@@ -189,6 +191,9 @@ func TestRegistryMatchesFlagsMD(t *testing.T) {
 			}
 			if p.Persist != row.persist {
 				t.Errorf("%s: persist %v in registry, %v in flags.md", row.key, p.Persist, row.persist)
+			}
+			if p.RealWriteNeedsNoRealGame() != row.realWrite {
+				t.Errorf("%s: real_write %q in registry, flags.md names it: %v", row.key, p.RealWrite, row.realWrite)
 			}
 			checkBounds(t, row, p)
 		}
@@ -386,6 +391,136 @@ func TestOperatorSetIsReadOnlyBaseline(t *testing.T) {
 				if reg.Get("operator", key) != nil {
 					t.Fatalf("operator/%s must not be mutable at runtime", key)
 				}
+			}
+		})
+	}
+}
+
+// UC: UC-043 A17
+func TestRealWriteAttribute(t *testing.T) {
+	t.Run("UC-043/A17 exactly the eight hold keys carry real_write: no_live_real_game", func(t *testing.T) {
+		want := []string{
+			"game/shield.activation", "game/shield.empty_pulse_ms", "game/shield.energy_budget_seconds",
+			"game/shield.energy_initial_seconds", "game/shield.energy_max_seconds", "game/shield.hold_rumble_intensity",
+			"game/shield.min_burst_seconds", "game/shield.recharge_per_second",
+		}
+		for _, dir := range []string{"", "ci"} {
+			var got []string
+			for _, p := range loadReal(t, dir).Policies() {
+				if p.RealWriteNeedsNoRealGame() {
+					got = append(got, id(p.Set, p.Key))
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("flagd/%s: real_write keys %v, want %v", dir, got, want)
+			}
+		}
+	})
+	b, err := baseline.Load(filepath.Join(root(t), "..", "flagd", "ci"), baseline.DefaultFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := []struct{ name, row string }{
+		{"an unknown value", `{set: game, key: sensitivity, kind: overlay, scope: [stack, real], real_write: always}`},
+		{"a kind other than overlay", `{set: game, key: num_teams, kind: state, scope: [game], real_write: no_live_real_game}`},
+	}
+	for _, c := range bad {
+		t.Run("UC-043/A17 the registry refuses real_write with "+c.name, func(t *testing.T) {
+			if _, err := Parse([]byte("flags:\n  - "+c.row+"\n"), b); err == nil {
+				t.Fatalf("accepted %s", c.row)
+			}
+		})
+	}
+}
+
+// The kill-switch set is a Go set (not a registry.yaml key, so released images
+// still load the checkout's registry.yaml); flags.md §13 lists the same names.
+//
+// UC: UC-053 A12
+func TestKillSwitchSetMatchesFlagsMD(t *testing.T) {
+	t.Run("UC-053/A12 flags.md §13 lists exactly the Go kill-switch set (#2368)", func(t *testing.T) {
+		raw, err := os.ReadFile(filepath.Join(root(t), "..", "..", "docs", "specs", "flags.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		const marker = "**Failed save, kill switches"
+		start := strings.Index(text, marker)
+		if start < 0 {
+			t.Fatalf("flags.md has no %q paragraph", marker)
+		}
+		para := text[start:]
+		if end := strings.Index(para, "\n\n"); end > 0 {
+			para = para[:end]
+		}
+		var got []string
+		for _, m := range backticked.FindAllStringSubmatch(para, -1) {
+			if strings.Contains(m[1], "/") && !strings.ContainsAny(m[1], " ?") {
+				got = append(got, m[1])
+			}
+		}
+		sort.Strings(got)
+		if want := KillSwitches(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("flags.md kill-switch paragraph names %v, the Go set is %v", got, want)
+		}
+	})
+	for _, dir := range []string{"", "ci"} {
+		t.Run("UC-053/A12 every kill switch is a persist row of registry.yaml against flagd/"+dir, func(t *testing.T) {
+			reg := loadReal(t, dir)
+			for _, name := range KillSwitches() {
+				found := false
+				for _, p := range reg.Policies() {
+					if id(p.Set, p.Key) == name {
+						found = true
+						if !p.Persist {
+							t.Errorf("%s: kill switch without persist: a persisted write is 400, so the exception never applies", name)
+						}
+						if !p.AppliesWhenPersistFails() {
+							t.Errorf("%s: AppliesWhenPersistFails is false", name)
+						}
+					}
+				}
+				if !found {
+					t.Errorf("%s: kill switch with no registry row", name)
+				}
+			}
+		})
+	}
+}
+
+// UC: UC-053 A5
+func TestCheckValueShapeCeiling(t *testing.T) {
+	p := &Policy{Set: "game", Key: "windows", Kind: KindOverlay, Scopes: []string{ScopeExperiment}, Bounds: Bounds{Shape: true}}
+	f := &baseline.Flag{Variants: map[string]json.RawMessage{
+		"default": json.RawMessage(`{"a":4,"b":8}`), "calm": json.RawMessage(`{"a":3,"b":30}`)}, DefaultVariant: "default"}
+	for value, ok := range map[string]bool{
+		`{"a":8,"b":60}`:     true,
+		`{"a":0,"b":0}`:      true,
+		`{"a":9,"b":11}`:     false,
+		`{"a":4,"b":61}`:     false,
+		`{"a":-1,"b":11}`:    false,
+		`{"a":1e9,"b":11}`:   false,
+		`{"a":4,"b":999999}`: false,
+	} {
+		t.Run("UC-053/A5 shape ceiling "+value, func(t *testing.T) {
+			_, err := CheckValue(p, f, "", json.RawMessage(value))
+			if ok != (err == nil) {
+				t.Fatalf("value %s: accepted=%v, want %v (%v)", value, err == nil, ok, err)
+			}
+			if err != nil && err.Reason != fserr.OutOfBounds {
+				t.Fatalf("reason %s, want out_of_bounds", err.Reason)
+			}
+		})
+	}
+}
+
+// UC: UC-053 A5
+func TestPatternFloatIsPlainDecimal(t *testing.T) {
+	seg := &segment{kind: "float", lo: 0, hi: 10}
+	for part, ok := range map[string]bool{"1": true, "2.5": true, "0.25": true, "0x1p0": false, "inf": false, "NaN": false, "1e1": false, "1_0": false, "": false, ".5": true, "5.": true, "+1": true, "-2.5": false, "+.5": true, "-.": false, ".": false, "+": false, "1.5.2": false, "+0x1": false, ".5e1": false} {
+		t.Run("UC-053/A5 float segment "+part, func(t *testing.T) {
+			if got := seg.match(part); got != ok {
+				t.Fatalf("match(%q)=%v, want %v", part, got, ok)
 			}
 		})
 	}

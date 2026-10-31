@@ -172,7 +172,7 @@ async def test_ffa_game_full_lifecycle(mock_controller_manager, event_collector)
     game = ffa_grpc.FFAGame(
         controller_manager_client=mock_controller_manager,
         event_publisher=event_collector.publish,
-        game_id="test_game_1"
+        game_id="test_game_1",
     )
 
     await game.run()
@@ -220,7 +220,7 @@ self.moves = moves  # Direct PSMove objects
 self.command_queue = command_queue
 
 # Shared namespace ❌
-self.ns.settings['play_audio']
+self.ns.settings["play_audio"]
 
 # Blocking execution ❌
 self.game_loop()  # Blocks
@@ -492,7 +492,7 @@ If spans don't appear in Jaeger:
 
 4. **Query Jaeger API:**
    ```bash
-   curl "http://localhost:16686/api/traces?service=game-coordinator-service&operation=Teams&lookback=5m&limit=1"
+   curl "http://localhost:16686/jaeger/api/v3/traces?query.serviceName=game-coordinator-service&query.operationName=Teams&query.startTimeMin=$(date -u -d '-5 min' +%Y-%m-%dT%H:%M:%SZ)&query.startTimeMax=$(date -u +%Y-%m-%dT%H:%M:%SZ)&query.searchDepth=1"
    ```
 
 5. **Check that `trace.use_span()` is used for hierarchical spans** (Teams/Random Teams)

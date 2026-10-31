@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/joustmania/agent/experiment/journal"
 )
@@ -351,9 +352,13 @@ func TestPromotionWriteAhead_2042(t *testing.T) {
 		root := t.TempDir()
 		path := ""
 		var original []byte
-		// The journal accepts writes again once the refusal is logged: the log line is
-		// the only call between the failed promoting append and the refusal append.
-		restore := &restoreOnLog{fire: func() {
+		// Deterministic seam: every journal append stamps its time from the registry clock
+		// first. Once armed, the first stamp belongs to the failing promoting append; the
+		// second belongs to the refusal append, where the journal is made writable again.
+		var armed bool
+		var stamps int
+		base := fixedClock()
+		restore := func() {
 			if err := os.Remove(path); err != nil {
 				t.Error(err)
 				return
@@ -361,10 +366,19 @@ func TestPromotionWriteAhead_2042(t *testing.T) {
 			if err := os.WriteFile(path, original, 0o644); err != nil {
 				t.Error(err)
 			}
-		}, msg: "experiment.promote_failed"}
+		}
+		clock := func() time.Time {
+			if armed {
+				stamps++
+				if stamps == 2 {
+					restore()
+				}
+			}
+			return base()
+		}
 		r := newTestRegistry(t, RegistryConfig{
 			Root: root, MaxShadowGames: 4, Promoter: promoter, Targeting: &fakeTargeting{},
-			Log: slog.New(restore),
+			Clock: clock,
 		})
 		id := startExperiment(t, r)
 		r.mu.Lock()
@@ -381,8 +395,12 @@ func TestPromotionWriteAhead_2042(t *testing.T) {
 			t.Fatal(err)
 		}
 		replaceWithDir(t, path)
+		armed = true
 
 		res := r.promote(context.Background(), id, jrnl)
+		if stamps != 2 {
+			t.Fatalf("journal appends after arming = %d, want 2 (promoting, refusal)", stamps)
+		}
 		if n := promoter.count(); n != 0 {
 			t.Fatalf("promoter called %d times, want 0", n)
 		}
@@ -473,20 +491,3 @@ func TestPromotionWriteAhead_2042(t *testing.T) {
 		}
 	})
 }
-
-// restoreOnLog is a slog handler that runs fire once, on the first record with msg.
-type restoreOnLog struct {
-	msg  string
-	fire func()
-	once sync.Once
-}
-
-func (h *restoreOnLog) Enabled(context.Context, slog.Level) bool { return true }
-func (h *restoreOnLog) Handle(_ context.Context, rec slog.Record) error {
-	if rec.Message == h.msg {
-		h.once.Do(h.fire)
-	}
-	return nil
-}
-func (h *restoreOnLog) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *restoreOnLog) WithGroup(string) slog.Handler      { return h }

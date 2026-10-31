@@ -32,7 +32,7 @@ from services.menu.tests.servicer_harness import (
 FLAGD_DIR = Path(__file__).resolve().parents[3] / "services" / "flagd"
 STEPS = [n for n in range(-12, 13) if n != 0]
 KEYS = {
-    "game": ["sensitivity", "num_teams", "force_all_start"],
+    "game": ["sensitivity", "num_teams", "force_all_start", "shield.activation"],
     "user": ["game_instructions", "audio_volume.master", "current_game"],
     "agent": ["interventions_allowed", "enabled", "interventions_enabled", "decision.backend"],
 }
@@ -44,6 +44,9 @@ def _flag_file_variants() -> dict[tuple[str, str], dict[str, object]]:
         flags = json.loads((FLAGD_DIR / f"{flag_set}.json").read_text())["flags"]
         for key in keys:
             variants[(flag_set, key)] = dict(flags[key]["variants"])
+    # Served in reverse listing order: the shield commit ladder must come from the menu's `order`
+    # (UC-015 BR-018), so a reordered flag file can never make the commit differ from the preview.
+    variants[("game", "shield.activation")] = dict(reversed(list(variants[("game", "shield.activation")].items())))
     return variants
 
 
@@ -55,17 +58,29 @@ class FlagFileService:
 
     def __init__(self):
         self.values: dict[tuple[str, str], str] = {}
+        self.admin: dict[tuple[str, str], str] = {}  # persisted admin values (the shield knob reads them)
 
     def __call__(self, method, url, body):
-        flag_set, key = url.split("/")[-2:]
+        path, _, query = url.partition("?")
+        flag_set, key = path.split("/")[-2:]
         variants = VARIANTS[(flag_set, key)]
         if method == "GET":
-            return 200, {
+            view = {
                 "variants": list(variants),
                 "variant_values": variants,
                 "effective_default": self.values[(flag_set, key)],
             }
+            if (flag_set, key) in self.admin:
+                view["admin_value"] = {"variant": self.admin[(flag_set, key)]}
+            return 200, view
+        if method == "DELETE":
+            assert query == "persist=true"
+            self.admin.pop((flag_set, key), None)
+            self.values[(flag_set, key)] = DEFAULTS[(flag_set, key)]
+            return 204, {}
         self.values[(flag_set, key)] = body["variant"]
+        if body.get("persist"):
+            self.admin[(flag_set, key)] = body["variant"]
         return 200, {"variant": body["variant"], "persisted": bool(body.get("persist"))}
 
 
@@ -116,6 +131,7 @@ DEFAULTS = {
 def reset(flags: FlagFileService, menu) -> None:
     """Every flag at its flag-file default, no saved agent level."""
     flags.values = dict(DEFAULTS)
+    flags.admin = {}
     menu.settings_ops.saved_agent_level = None
 
 
@@ -140,7 +156,7 @@ FLAG_OPTIONS = {
 
 @pytest.mark.uc("UC-015", br=["BR-004", "BR-005"], flow="A7")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("option", sorted(FLAG_OPTIONS))
+@pytest.mark.parametrize("option", sorted(set(FLAG_OPTIONS) - setting_ladders.AUTOMATIC_OPTIONS))
 async def test_flag_ladders_preview_equals_commit(menu, flags, option):
     key = FLAG_OPTIONS[option]
     assert set(VARIANTS[key]) == set(setting_ladders.FLAG_LADDERS[option]), "ladder differs from the flag file"
@@ -189,6 +205,25 @@ async def test_agent_level_preview_equals_commit(menu, flags, enabled, level, sa
         await assert_preview_equals_commit(menu, "agent_level", steps, committed)
 
 
+@pytest.mark.uc("UC-015", br=["BR-018", "BR-005"], flow="A7", steps=[9])
+@pytest.mark.asyncio
+async def test_shield_knob_preview_equals_commit(menu, flags):
+    """BR-018: from every operator value (`automatic` = none) and every net step, preview == commit."""
+    key = ("game", "shield.activation")
+    assert set(VARIANTS[key]) == set(setting_ladders.SHIELD_ACTIVATION_LADDER), "ladder differs from the flag file"
+
+    def committed():
+        return flags.admin.get(key, setting_ladders.SHIELD_AUTOMATIC)
+
+    for start in setting_ladders.SHIELD_KNOB_LADDER:
+        for steps in STEPS:
+            reset(flags, menu)
+            if start != setting_ladders.SHIELD_AUTOMATIC:
+                flags.values[key] = flags.admin[key] = start
+            await menu.settings_ops.refresh_operator_settings()  # what GetMenuStatus serves (background read)
+            await assert_preview_equals_commit(menu, "shield.activation", steps, committed)
+
+
 @pytest.mark.uc("UC-015", br=["BR-004"])
 def test_backend_ladder_is_the_flag_file_and_the_menu_list():
     from services.menu.settings_ops import DECISION_BACKENDS
@@ -200,3 +235,24 @@ def test_backend_ladder_is_the_flag_file_and_the_menu_list():
 @pytest.mark.uc("UC-015", br=["BR-004"])
 def test_every_selectable_mode_is_a_games_member():
     assert all(Games.from_name(name) is not None for name in setting_ladders.MODE_LADDER)
+
+
+@pytest.mark.uc("UC-015", br=["BR-018", "BR-005"], flow="A7")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option", ["sensitivity", "num_teams"])
+async def test_automatic_knob_preview_equals_commit(menu, flags, option):
+    """BR-018 (#2222): from every operator value (`automatic` = none) and every net step, preview == commit."""
+    key = FLAG_OPTIONS[option]
+    assert set(VARIANTS[key]) == set(setting_ladders.FLAG_LADDERS[option]), "ladder differs from the flag file"
+    assert setting_ladders.KNOB_LADDERS[option] == [setting_ladders.AUTOMATIC, *setting_ladders.FLAG_LADDERS[option]]
+
+    def committed():
+        return flags.admin.get(key, setting_ladders.AUTOMATIC)
+
+    for start in setting_ladders.KNOB_LADDERS[option]:
+        for steps in STEPS:
+            reset(flags, menu)
+            if start != setting_ladders.AUTOMATIC:
+                flags.values[key] = flags.admin[key] = start
+            await menu.settings_ops.refresh_operator_settings()  # what GetMenuStatus serves (background read)
+            await assert_preview_equals_commit(menu, option, steps, committed)

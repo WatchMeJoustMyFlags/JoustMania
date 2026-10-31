@@ -13,7 +13,6 @@ For each game mode, tests:
 """
 
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -25,9 +24,10 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import MockControllerManagerService, async_noop
+from conftest import MockControllerManagerService, MockGameplayStream, async_noop
 
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
 from services.game_coordinator.games.random_teams import RandomTeamsGame
@@ -37,16 +37,6 @@ from services.game_coordinator.games.tournament import TournamentGame, Tournamen
 from services.game_coordinator.games.traitor import TraitorGame
 from services.game_coordinator.games.werewolf import WerewolfGame
 from services.game_coordinator.games.zombie import ZombieGame
-
-
-class MockGameplayStream:
-    """Mock bidirectional stream for testing."""
-
-    def __init__(self):
-        self.messages = []
-
-    async def write(self, message):
-        self.messages.append(message)
 
 
 def _gentle_state(serial: str) -> controller_manager_pb2.GameplayData:
@@ -311,6 +301,7 @@ class TestSwapperMotionProcessing:
 
         assert game.players[serial].alive is True
 
+    @pytest.mark.real_game_time
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-024", flow="main", steps=[2])
     async def test_lethal_motion_swaps_team(self, game):
@@ -432,7 +423,7 @@ class TestZombieMotionProcessing:
         # the conversion grace period (#757), not insta-rekilled
         assert player.is_zombie is True
         assert player.alive is True
-        assert player.grace_until > time.time()
+        assert player.grace_until > game_clock.now()
 
         # Once grace expires, sustained lethal motion kills the zombie
         player.grace_until = 0.0

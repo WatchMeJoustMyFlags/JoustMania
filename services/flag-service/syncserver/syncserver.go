@@ -11,7 +11,6 @@ package syncserver
 import (
 	"context"
 	"strings"
-	"sync"
 	"time"
 
 	syncv1grpc "buf.build/gen/go/open-feature/flagd/grpc/go/flagd/sync/v1/syncv1grpc"
@@ -49,50 +48,13 @@ func ServerOptions() []grpc.ServerOption {
 	}
 }
 
-// Links remembers the span context of the write that produced a snapshot
-// version, so a flagservice.sync.push span can link to it (telemetry.md §10.1).
-type Links struct {
-	mu    sync.Mutex
-	order []uint64
-	byVer map[uint64]linkEntry
-}
-
-type linkEntry struct {
-	sc trace.SpanContext
-	at time.Time
-}
-
-const maxLinks = 128
-
-// Remember records that version was produced by the write span sc at time at.
-func (l *Links) Remember(version uint64, sc trace.SpanContext, at time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.byVer == nil {
-		l.byVer = map[uint64]linkEntry{}
-	}
-	l.byVer[version] = linkEntry{sc: sc, at: at}
-	l.order = append(l.order, version)
-	if len(l.order) > maxLinks {
-		delete(l.byVer, l.order[0])
-		l.order = l.order[1:]
-	}
-}
-
-func (l *Links) lookup(version uint64) (linkEntry, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	e, ok := l.byVer[version]
-	return e, ok
-}
-
 // Server is the FlagSyncService implementation.
 type Server struct {
 	syncv1grpc.UnimplementedFlagSyncServiceServer
 	State   *state.State
 	Metrics *telemetry.Metrics
 	Tracer  trace.Tracer
-	Links   *Links
+	Links   *telemetry.Links
 	Now     func() time.Time
 }
 
@@ -115,6 +77,8 @@ func parseSelector(raw string) (string, bool) {
 }
 
 func (s *Server) selector(ctx context.Context, body string) (string, error) {
+	// body is the deprecated request field (SA1019): kept as the fallback for
+	// flagd versions that send no flagd-selector header, which wins.
 	raw := body
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if vals := md.Get(SelectorHeader); len(vals) > 0 && vals[0] != "" {
@@ -150,7 +114,7 @@ func (s *Server) now() time.Time {
 // every change. A slow stream skips intermediate versions (latest wins).
 func (s *Server) SyncFlags(req *syncv1.SyncFlagsRequest, stream grpc.ServerStreamingServer[syncv1.SyncFlagsResponse]) error {
 	ctx := stream.Context()
-	set, err := s.selector(ctx, req.GetSelector())
+	set, err := s.selector(ctx, req.GetSelector()) //nolint:staticcheck // SA1019: body fallback of the selector header
 	if err != nil {
 		return err
 	}
@@ -182,9 +146,9 @@ func (s *Server) SyncFlags(req *syncv1.SyncFlagsRequest, stream grpc.ServerStrea
 
 func (s *Server) send(ctx context.Context, stream grpc.ServerStreamingServer[syncv1.SyncFlagsResponse], payload []byte, version uint64, first bool) error {
 	var opts []trace.SpanStartOption
-	entry, linked := s.Links.lookup(version)
-	if linked && entry.sc.IsValid() {
-		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: entry.sc}))
+	entry, linked := s.Links.Lookup(version)
+	if linked && entry.SC.IsValid() {
+		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: entry.SC}))
 	}
 	opts = append(opts, trace.WithAttributes(
 		attribute.Int64("flagservice.snapshot_version", int64(version)),
@@ -201,7 +165,7 @@ func (s *Server) send(ctx context.Context, stream grpc.ServerStreamingServer[syn
 		return err
 	}
 	if !first && linked && s.Metrics != nil {
-		s.Metrics.Propagation.Record(ctx, s.now().Sub(entry.at).Seconds())
+		s.Metrics.Propagation.Record(ctx, s.now().Sub(entry.At).Seconds())
 	}
 	return nil
 }
@@ -209,7 +173,7 @@ func (s *Server) send(ctx context.Context, stream grpc.ServerStreamingServer[syn
 // FetchAllFlags returns the current merged configuration, filtered like
 // SyncFlags.
 func (s *Server) FetchAllFlags(ctx context.Context, req *syncv1.FetchAllFlagsRequest) (*syncv1.FetchAllFlagsResponse, error) {
-	set, err := s.selector(ctx, req.GetSelector())
+	set, err := s.selector(ctx, req.GetSelector()) //nolint:staticcheck // SA1019: body fallback of the selector header
 	if err != nil {
 		return nil, err
 	}

@@ -17,6 +17,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
 import services.controller_manager.servicer as servicer_mod
+from services.controller_manager.tests.backend_doubles import autospec_flag_client
 
 
 class TestOnSystemFlagsChanged:
@@ -36,7 +37,7 @@ class TestOnSystemFlagsChanged:
     def test_valid_value_updates_override(self, mock_get_client, mock_metrics):
         self._reset()
         try:
-            mock_client = MagicMock()
+            mock_client = autospec_flag_client()
             mock_client.get_integer_value.return_value = 30
             mock_get_client.return_value = mock_client
 
@@ -52,7 +53,7 @@ class TestOnSystemFlagsChanged:
     def test_zero_value_skipped(self, mock_get_client, mock_metrics):
         self._reset()
         try:
-            mock_client = MagicMock()
+            mock_client = autospec_flag_client()
             mock_client.get_integer_value.return_value = 0
             mock_get_client.return_value = mock_client
 
@@ -66,7 +67,7 @@ class TestOnSystemFlagsChanged:
     def test_negative_value_skipped(self, mock_get_client, mock_metrics):
         self._reset()
         try:
-            mock_client = MagicMock()
+            mock_client = autospec_flag_client()
             mock_client.get_integer_value.return_value = -5
             mock_get_client.return_value = mock_client
 
@@ -82,7 +83,7 @@ class TestOnSystemFlagsChanged:
     def test_clamped_to_max(self, mock_get_client, mock_metrics):
         self._reset()
         try:
-            mock_client = MagicMock()
+            mock_client = autospec_flag_client()
             mock_client.get_integer_value.return_value = 500
             mock_get_client.return_value = mock_client
 
@@ -96,7 +97,7 @@ class TestOnSystemFlagsChanged:
     def test_clamped_to_min(self, mock_get_client, mock_metrics):
         self._reset()
         try:
-            mock_client = MagicMock()
+            mock_client = autospec_flag_client()
             mock_client.get_integer_value.return_value = -1
             mock_get_client.return_value = mock_client
 
@@ -112,7 +113,7 @@ class TestOnSystemFlagsChanged:
         self._reset()
         servicer_mod._frequency_override = 60
         try:
-            mock_client = MagicMock()
+            mock_client = autospec_flag_client()
             mock_client.get_integer_value.return_value = 60
             mock_get_client.return_value = mock_client
 
@@ -156,7 +157,7 @@ class TestOnSystemFlagsChanged:
         """Handler evaluates when game_loop.update_frequency_hz is in changed flags."""
         self._reset()
         try:
-            mock_client = MagicMock()
+            mock_client = autospec_flag_client()
             mock_client.get_integer_value.return_value = 45
             mock_get_client.return_value = mock_client
 

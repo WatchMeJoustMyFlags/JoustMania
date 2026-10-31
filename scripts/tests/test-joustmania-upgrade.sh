@@ -7,8 +7,8 @@
 # the real docker stack or systemd.
 #  - release tag and exact sha accepted; latest, main, short sha refused; below
 #    MIN_PINNABLE (version and commit floor) refused; nothing changes on a refusal;
-#    with MIN_PINNABLE empty (as shipped) the commit floor and the script check
-#    decide
+#    the shipped MIN_PINNABLE (0.8.0) is inclusive: v0.8.0 accepted, v0.7.0 refused;
+#    with MIN_PINNABLE empty the commit floor and the script check decide
 #  - registry down (no 200/401) -> no fetch, no checkout, no restart
 #  - prepare pull missing an image -> listed, nothing changed, temp worktree removed
 #  - healthy -> switch, restart, record, prune (only superseded tags of the
@@ -24,6 +24,10 @@
 #    (never toggles back); an upgrade cut off after its checkout is flagged by
 #    --status and repaired by re-running it; failed checkouts change nothing and
 #    the record is written only after the checkout
+#  - guards: a rollback cut off during its restart keeps rollback_to (the rerun
+#    finishes on the target); re-running an already repaired upgrade changes
+#    nothing; a rollback and then an upgrade both cut off: the stale marker is
+#    dropped and the re-run repairs the record (previous = the rollback target)
 #  - the start limit (BR-006): every restart runs reset-failed first, so a 4th
 #    and 5th restart inside the window start; a start systemd still refuses is
 #    retried once, then reported as refused (never unhealthy, never rolled back);
@@ -36,12 +40,12 @@
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-upgrade.sh
 # UC: UC-060 main step 2 A2 A3 A4 BR-003 BR-006
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 unset COMPOSE DOCKER COMPOSE_PROJECT_NAME COMPOSE_PROFILES OTEL_COLLECTOR_TAG IMAGE_TAG \
   JOUSTMANIA_UNIT_REV RUNTIME_DIRECTORY GIT_DIR GIT_WORK_TREE || true
 # A test that reaches for the real docker fails instead of using it
-export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 REAL_GIT="$(command -v git)"
 fails=0
 fail() {
@@ -71,7 +75,7 @@ add_scripts() { # $1 = floor commit
   mkdir -p "${SRC}/scripts/setup"
   cp "${ROOT}/scripts/setup/joustmania-compose.sh" "${ROOT}/scripts/setup/lib-joustmania.sh" \
     "${ROOT}/scripts/setup/joustmania-start.sh" "${ROOT}/scripts/setup/joustmania.service" "${SRC}/scripts/setup/"
-  sed -e "s/^MIN_PINNABLE_COMMIT=.*/MIN_PINNABLE_COMMIT=\"$1\"/" -e 's/^MIN_PINNABLE=""/MIN_PINNABLE="1.0.0"/' \
+  sed -e "s/^MIN_PINNABLE_COMMIT=.*/MIN_PINNABLE_COMMIT=\"$1\"/" -e 's/^MIN_PINNABLE=.*/MIN_PINNABLE="1.0.0"/' \
     "${ROOT}/scripts/setup/joustmania-upgrade.sh" >"${SRC}/scripts/setup/joustmania-upgrade.sh"
   chmod +x "${SRC}/scripts/setup/"*.sh
   printf '.env.local\n.joustmania-release\n.joustmania-release.tmp\n' >"${SRC}/.gitignore"
@@ -79,8 +83,11 @@ add_scripts() { # $1 = floor commit
 }
 C_OLD="$(commit old 0.1.0)"
 g -C "${SRC}" tag joustmania-v0.1.0
+g -C "${SRC}" tag joustmania-v0.7.0
 C_FLOOR="$(commit floor 0.1.0)"
 add_scripts "${C_FLOOR}"
+C_08="$(commit v0.8.0 0.8.0)"
+g -C "${SRC}" tag joustmania-v0.8.0
 C_09="$(commit v0.9.0 0.9.0)"
 g -C "${SRC}" tag joustmania-v0.9.0
 C_V1="$(commit v1.0.0 1.0.0)"
@@ -92,9 +99,17 @@ C_MAIN="$(commit main-later 1.1.0)"
 g -C "${SRC}" checkout -q -b side "${C_OLD}"
 add_scripts "${C_FLOOR}"
 C_SIDE="$(commit side 0.1.0)"
+# A branch off the floor commit with the scripts but without the joustmania-v0.8.0 tag
+# (the stage Pi's pre-tag pin: it contains #2040, not the tag)
+g -C "${SRC}" checkout -q -b pre08 "${C_FLOOR}"
+add_scripts "${C_FLOOR}"
+C_PRE="$(commit pre08 0.1.0)"
 g -C "${SRC}" checkout -q main
 ORIGIN="${WORK}/origin.git"
 g clone -q --bare "${SRC}" "${ORIGIN}"
+ORIGIN_NOTAG="${WORK}/origin-notag.git" # the same origin before the joustmania-v0.8.0 cut
+g clone -q --bare "${ORIGIN}" "${ORIGIN_NOTAG}"
+g -C "${ORIGIN_NOTAG}" tag -d joustmania-v0.8.0 >/dev/null
 : "${C_OLD}" "${C_09}"
 
 GC=ghcr.io/o/joustmania/game-coordinator-service
@@ -184,6 +199,13 @@ case "\$1" in
     [[ -f "\$C/reset-noop" ]] || { echo 0 >"\$C/starts"; echo success >"\$C/result"; }
     exit 0 ;;
   restart | start)
+    # kill-on-restart: power loss / SIGHUP of the command during the restart
+    if [[ -f "\$C/kill-on-restart" ]]; then
+      rm -f "\$C/kill-on-restart"
+      for _ in \$(seq 50); do [[ -s "\$C/upgrade.pid" ]] && break; sleep 0.1; done
+      kill -9 "\$(cat "\$C/upgrade.pid")"
+      exit 1
+    fi
     n="\$(cat "\$C/starts")"
     if ((n >= 3)); then
       echo start-limit-hit >"\$C/result"
@@ -245,28 +267,62 @@ for bad in latest main "${C_V11:0:12}" feature/x joustmania-v0.1.0 0.9.0 "${C_OL
   grep -q 'compose.* pull' "${CASE}/calls.log" && fail "refuse ${bad}: images were pulled"
 done
 
-# --- 1b. the floor as shipped: MIN_PINNABLE empty -> commit floor + script check
-# The checkout's command with only the commit floor swapped in (untracked copy)
+# --- 1b. the floor as shipped: MIN_PINNABLE 0.8.0 (inclusive); blanked -> commit floor + script check
+# The checkout's command with only the commit floor swapped in (untracked copy);
+# SHIPPED_MIN="" blanks MIN_PINNABLE to exercise the commit floor alone.
+SHIPPED_MIN=0.8.0
 shipped() {
-  sed -e "s/^MIN_PINNABLE_COMMIT=.*/MIN_PINNABLE_COMMIT=\"${C_FLOOR}\"/" "${ROOT}/scripts/setup/joustmania-upgrade.sh" \
-    >"${REPO}/scripts/setup/joustmania-upgrade-shipped.sh"
-  grep -q '^MIN_PINNABLE=""$' "${REPO}/scripts/setup/joustmania-upgrade-shipped.sh" || fail "shipped: MIN_PINNABLE is not empty"
+  sed -e "s/^MIN_PINNABLE_COMMIT=.*/MIN_PINNABLE_COMMIT=\"${C_FLOOR}\"/" -e "s/^MIN_PINNABLE=.*/MIN_PINNABLE=\"${SHIPPED_MIN}\"/" \
+    "${ROOT}/scripts/setup/joustmania-upgrade.sh" >"${REPO}/scripts/setup/joustmania-upgrade-shipped.sh"
+  grep -q '^MIN_PINNABLE="0.8.0"$' "${ROOT}/scripts/setup/joustmania-upgrade.sh" || fail "shipped: MIN_PINNABLE is not 0.8.0"
   env PATH="${CASE}/bin:${PATH}" TMPDIR="${CASE}/tmp" JOUSTMANIA_HEALTH_TIMEOUT=1 JOUSTMANIA_HEALTH_POLL=1 \
     bash "${REPO}/scripts/setup/joustmania-upgrade-shipped.sh" "$@" >"${CASE}/out.log" 2>&1
 }
 for bad in "${C_FLOOR}:no scripts/setup/joustmania-upgrade.sh" "${C_SIDE}:older than the pinnable floor"; do
   make_case "floor-${bad:0:8}" "${C_V1}"
+  SHIPPED_MIN=""
   if shipped "${bad%%:*}"; then fail "floor ${bad}: accepted with MIN_PINNABLE empty"; fi
+  SHIPPED_MIN=0.8.0
   grep -q "refusing.*${bad#*:}" "${CASE}/out.log" || fail "floor ${bad}: wrong or no refusal: $(tail -1 "${CASE}/out.log")"
   grep -q 'git worktree add' "${CASE}/calls.log" && fail "floor ${bad}: prepared the target"
   nothing_changed "floor ${bad}" "${C_V1}"
 done
+make_case floor-accept-08 "${C_V1}"
+shipped joustmania-v0.8.0 || fail "floor: 0.8.0 (MIN_PINNABLE itself) refused: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_08}" ]] || fail "floor: HEAD is not 0.8.0"
+make_case floor-refuse-07 "${C_V1}"
+if shipped joustmania-v0.7.0; then fail "floor: 0.7.0 accepted below MIN_PINNABLE 0.8.0"; fi
+grep -q 'refusing.*older than MIN_PINNABLE 0.8.0' "${CASE}/out.log" || fail "floor: 0.7.0 wrong refusal: $(tail -1 "${CASE}/out.log")"
+nothing_changed "floor 0.7.0" "${C_V1}"
 make_case floor-accept-09 "${C_V1}"
-shipped joustmania-v0.9.0 || fail "floor: 0.9.0 refused with MIN_PINNABLE empty: $(tail -1 "${CASE}/out.log")"
+shipped joustmania-v0.9.0 || fail "floor: 0.9.0 refused with MIN_PINNABLE 0.8.0: $(tail -1 "${CASE}/out.log")"
 [[ "$(head_of)" == "${C_09}" ]] || fail "floor: HEAD is not 0.9.0"
 make_case floor-accept-sha "${C_V1}"
-shipped "${C_09}" || fail "floor: the 0.9.0 sha refused with MIN_PINNABLE empty: $(tail -1 "${CASE}/out.log")"
+shipped "${C_09}" || fail "floor: the 0.9.0 sha refused with MIN_PINNABLE 0.8.0: $(tail -1 "${CASE}/out.log")"
 [[ "$(head_of)" == "${C_09}" ]] || fail "floor: HEAD is not the 0.9.0 sha"
+
+# --- 1c. the tag check (BR-003), and the way back to a pre-tag commit is --rollback
+make_case floor-pre-tag "${C_08}"
+if shipped "${C_PRE}"; then fail "pre-tag: an explicit upgrade to a commit without joustmania-v0.8.0 was accepted"; fi
+grep -q 'refusing.*does not contain MIN_PINNABLE joustmania-v0.8.0' "${CASE}/out.log" || fail "pre-tag: wrong or no refusal: $(tail -1 "${CASE}/out.log")"
+nothing_changed "pre-tag" "${C_08}"
+make_case floor-pre-tag-rollback "${C_PRE}"
+printf '%s:%s\n%s:%s\n' "${GC}" "${C_PRE}" "${AG}" "${C_PRE}" >>"${CASE}/images.local" # the pre-tag pin ran from its sha tag
+shipped joustmania-v0.8.0 || fail "pre-tag: 0.8.0 from the pre-tag pin refused: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_08}" ]] || fail "pre-tag: HEAD is not 0.8.0"
+shipped --rollback || fail "pre-tag: --rollback to the pre-tag commit refused: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_PRE}" ]] || fail "pre-tag: --rollback did not land on the pre-tag commit"
+make_case floor-no-tag "${C_08}"
+g -C "${REPO}" remote set-url origin "${ORIGIN_NOTAG}"
+g -C "${REPO}" tag -d joustmania-v0.8.0 >/dev/null
+shipped "${C_PRE}" || fail "no-tag: the pre-tag sha refused while the tag is absent: $(tail -1 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_PRE}" ]] || fail "no-tag: HEAD is not the pre-tag sha"
+make_case floor-no-tag-07 "${C_PRE}"
+g -C "${REPO}" remote set-url origin "${ORIGIN_NOTAG}"
+g -C "${REPO}" tag -d joustmania-v0.8.0 >/dev/null
+if shipped joustmania-v0.7.0; then fail "no-tag: 0.7.0 accepted"; fi
+grep -q 'refusing.*older than MIN_PINNABLE 0.8.0' "${CASE}/out.log" || fail "no-tag: 0.7.0 wrong refusal: $(tail -1 "${CASE}/out.log")"
+nothing_changed "no-tag 0.7.0" "${C_PRE}"
 
 # --- 2. registry down or a captive portal: no fetch, nothing changed ---------
 for code in 000 302 503; do
@@ -418,8 +474,78 @@ grep -q 'repaired the stale' "${CASE}/out.log" || fail "upgrade-cutoff: record n
 grep -q restart "${CASE}/calls.log" && fail "upgrade-cutoff: the repair restarted the unit"
 upgrade --status || fail "upgrade-cutoff: --status failed after the repair"
 grep -q 'neither recorded version' "${CASE}/out.log" && fail "upgrade-cutoff: --status still warns after the repair"
+# running the same upgrade again: the record is current, so nothing changes
+cp "${REPO}/.joustmania-release" "${CASE}/release.before"
+: >"${CASE}/calls.log"
+upgrade "${C_MAIN}" || fail "upgrade-cutoff: second rerun failed: $(tail -2 "${CASE}/out.log")"
+cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "upgrade-cutoff: the second rerun changed the record"
+grep -q restart "${CASE}/calls.log" && fail "upgrade-cutoff: the second rerun restarted the unit"
 upgrade --rollback || fail "upgrade-cutoff: --rollback after the repair failed: $(tail -2 "${CASE}/out.log")"
 [[ "$(head_of)" == "${C_V11}" ]] || fail "upgrade-cutoff: --rollback did not return to 1.1.0"
+# --rollback cut off during the restart (after the second record write): rollback_to
+# is still there, so the rerun finishes on 1.0.0 and does not toggle back
+make_case rollback-cutoff-restart "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "rollback-cutoff-restart: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/kill-on-restart"
+upgrade_killed --rollback
+[[ -f "${CASE}/kill-on-restart" ]] && fail "rollback-cutoff-restart: setup: the run was not cut off"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "rollback-cutoff-restart: setup: HEAD is not 1.0.0"
+[[ "$(rel rollback_to)" == "${C_V1}" ]] || fail "rollback-cutoff-restart: rollback_to dropped before the restart was judged"
+: >"${CASE}/calls.log"
+upgrade --rollback || fail "rollback-cutoff-restart: rerun failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "rollback-cutoff-restart: the rerun toggled back to 1.1.0"
+grep -qx "sudo systemctl restart joustmania" "${CASE}/calls.log" || fail "rollback-cutoff-restart: the rerun did not restart 1.0.0"
+grep -q '^rollback_to=' "${REPO}/.joustmania-release" && fail "rollback-cutoff-restart: rollback_to left after the judged restart"
+
+# Two cut-offs in a row: a rollback cut off (marker left), then an upgrade cut off
+# after its checkout. HEAD is neither recorded version: --status WARNs once (no
+# "rollback cut off"), the same upgrade repairs the record (previous = the
+# rollback target 1.0.0), clears the marker and restarts nothing, --rollback works
+make_case double-cutoff "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "double-cutoff: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/kill-on-images"
+upgrade_killed --rollback
+[[ "$(rel rollback_to)" == "${C_V1}" && "$(head_of)" == "${C_V1}" ]] || fail "double-cutoff: setup: rollback not cut off with its marker"
+g -C "${REPO}" checkout -q --detach "${C_MAIN}"
+printf '%s:%s\n%s:%s\n' "${GC}" "${C_MAIN}" "${AG}" "${C_MAIN}" >>"${CASE}/images.local"
+upgrade --status || fail "double-cutoff: --status failed"
+grep -q "neither recorded version" "${CASE}/out.log" || fail "double-cutoff: --status does not warn about HEAD"
+grep -q "was cut off" "${CASE}/out.log" && fail "double-cutoff: --status also warns about a rollback cut off: $(cat "${CASE}/out.log")"
+: >"${CASE}/calls.log"
+upgrade "${C_MAIN}" || fail "double-cutoff: rerun failed: $(tail -2 "${CASE}/out.log")"
+grep -q 'repaired the stale' "${CASE}/out.log" || fail "double-cutoff: record not repaired: $(tail -1 "${CASE}/out.log")"
+[[ "$(rel current_ref)" == "${C_MAIN}" && "$(rel previous_ref)" == "${C_V1}" && "$(rel previous_tag)" == 1.0.0 ]] \
+  || fail "double-cutoff: record is not current MAIN / previous 1.0.0"
+grep -q '^rollback_to=' "${REPO}/.joustmania-release" && fail "double-cutoff: stale rollback_to kept"
+grep -q restart "${CASE}/calls.log" && fail "double-cutoff: the repair restarted the unit"
+upgrade --status || fail "double-cutoff: --status failed after the repair"
+grep -qE 'neither recorded version|was cut off' "${CASE}/out.log" && fail "double-cutoff: --status still warns after the repair"
+upgrade --rollback || fail "double-cutoff: --rollback after the repair failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "double-cutoff: --rollback did not return to 1.0.0"
+# Same, but the rollback was cut off during the RESTART (2nd record write: current
+# is the rollback target 1.0.0, previous the failed 1.1.0): the repair keeps 1.0.0
+make_case double-cutoff-restart "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "double-cutoff-restart: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/kill-on-restart"
+upgrade_killed --rollback
+[[ "$(rel rollback_to)" == "${C_V1}" && "$(rel current_ref)" == "${C_V1}" && "$(head_of)" == "${C_V1}" ]] || fail "double-cutoff-restart: setup"
+g -C "${REPO}" checkout -q --detach "${C_MAIN}"
+printf '%s:%s\n%s:%s\n' "${GC}" "${C_MAIN}" "${AG}" "${C_MAIN}" >>"${CASE}/images.local"
+upgrade "${C_MAIN}" || fail "double-cutoff-restart: rerun failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(rel previous_ref)" == "${C_V1}" && "$(rel previous_tag)" == 1.0.0 ]] || fail "double-cutoff-restart: previous is not 1.0.0"
+upgrade --rollback || fail "double-cutoff-restart: --rollback failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(head_of)" == "${C_V1}" ]] || fail "double-cutoff-restart: --rollback went to the failed 1.1.0"
+
+# A live marker (HEAD is a recorded version): re-running the upgrade for HEAD must
+# not touch the record, or the other version and the marker are lost
+make_case live-marker "${C_V1}"
+upgrade joustmania-v1.1.0 || fail "live-marker: upgrade failed: $(tail -2 "${CASE}/out.log")"
+touch "${CASE}/kill-on-images"
+upgrade_killed --rollback
+[[ "$(rel rollback_to)" == "${C_V1}" && "$(head_of)" == "${C_V1}" ]] || fail "live-marker: setup"
+upgrade "${C_V1}" || fail "live-marker: rerun failed: $(tail -2 "${CASE}/out.log")"
+[[ "$(rel current_ref)" == "${C_V11}" && "$(rel previous_ref)" == "${C_V1}" && "$(rel rollback_to)" == "${C_V1}" ]] \
+  || fail "live-marker: the rerun changed the record"
 # The migration cut off the same way: no record, the previous branch is lost; WARN
 make_case migrate-cutoff
 g -C "${REPO}" checkout -q --detach "${C_MAIN}"
@@ -591,6 +717,9 @@ grep -q "not on the Pi:.*${GC}:never-pulled" "${CASE}/out.log" || fail "migrate-
 g -C "${REPO}" symbolic-ref -q HEAD >/dev/null && fail "migrate-rollback: left on a branch after the refusal"
 grep -q restart "${CASE}/calls.log" && fail "migrate-rollback: the unit was restarted"
 cmp -s "${CASE}/release.before" "${REPO}/.joustmania-release" || fail "migrate-rollback: record changed"
+# switch_back_and_restore returned 2: the command says nothing changed
+grep -q "nothing changed: ${C_MAIN} still runs" "${CASE}/out.log" || fail "migrate-rollback: no 'nothing changed': $(tail -1 "${CASE}/out.log")"
+grep -q 'state failed' "${CASE}/out.log" && fail "migrate-rollback: says state failed although nothing changed"
 cp "${CASE}/env.local.orig" "${REPO}/.env.local"
 upgrade --rollback || fail "migrate-rollback: --rollback failed: $(tail -2 "${CASE}/out.log")"
 [[ "$(g -C "${REPO}" symbolic-ref -q --short HEAD)" == main && "$(head_of)" == "${C_V1}" ]] \

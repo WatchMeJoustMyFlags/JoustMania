@@ -8,7 +8,6 @@ Tests the core FFA mechanics:
 """
 
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -20,19 +19,12 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream
 
 from lib.types import GameEvent
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.ffa import FFAGame
-
-
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
 
 
 class TestFFAGameMode:
@@ -209,7 +201,7 @@ class TestFFAGameMode:
 
         # Set up game state for _end_game_impl
         game.state = GameState.RUNNING
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.gameplay_stream = MockGameplayStream()
 
         # Trigger win condition check (publishes game_winner event)

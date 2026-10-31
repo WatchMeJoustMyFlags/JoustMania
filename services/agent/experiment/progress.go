@@ -2,14 +2,17 @@ package experiment
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/telemetry/keys"
 )
 
 // experiment.progress (#2059, docs/specs/telemetry.md §4.1): a registry snapshot of
@@ -22,12 +25,15 @@ const (
 	// SpanExperimentProgress is the span name.
 	SpanExperimentProgress = "experiment.progress"
 	// EventExperimentArm is the per-arm span event; it carries
-	// decision.AttrExperimentArm plus the three AttrExperimentArm* values.
+	// keys.AttrExperimentArm plus the three AttrExperimentArm* values.
 	EventExperimentArm = "experiment.arm"
 	// AttrExperimentProgressTrigger is one of the ProgressTrigger* values.
 	AttrExperimentProgressTrigger = "experiment.progress.trigger"
 	// AttrExperimentEndReason is the teardown reason, on the terminal snapshot only.
 	AttrExperimentEndReason = "experiment.end_reason"
+	// AttrExperimentValue is the experimental arm's flag value as JSON (#2291); the
+	// control arm resolves the flag's current value.
+	AttrExperimentValue = "experiment.experimental_value"
 	// AttrExperimentArmAssigned is a point-in-time count of the games bound to the arm
 	// and still in flight (not concluded, not released; a spawn reservation does not
 	// count). Not cumulative: 0 on the terminal snapshot, teardown clears the in-flight
@@ -52,6 +58,16 @@ const (
 	ProgressTriggerTerminal      = "terminal"
 	ProgressTriggerRehydrate     = "rehydrate"
 	ProgressTriggerHeartbeat     = "heartbeat"
+	// ProgressTriggerRecommendation: a deferred promotion was refused after the
+	// experiment ended (UC-043 A19, #2276); the snapshot carries the recommendation.
+	ProgressTriggerRecommendation = "recommendation"
+
+	// AttrExperimentRecommendationFlag / Value / Owner: the winning value as a
+	// recommendation when the promotion was refused because another writer owns the
+	// real overlay (UC-043 A19, #2276). Value is the JSON encoding of the value.
+	AttrExperimentRecommendationFlag  = "experiment.recommendation.flag"
+	AttrExperimentRecommendationValue = "experiment.recommendation.value"
+	AttrExperimentRecommendationOwner = "experiment.recommendation.owner"
 
 	// ProgressHeartbeatInterval is how often every live experiment re-emits its
 	// snapshot, so an idle experiment stays visible.
@@ -69,23 +85,45 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 	intent := e.journal.Intent()
 	summary := e.journal.Summary()
 	attrs := []attribute.KeyValue{
-		attribute.String(decision.AttrExperimentID, e.id),
-		attribute.String(decision.AttrExperimentStatus, string(e.status)),
-		attribute.String(decision.AttrExperimentFlagKey, intent.FlagKey),
-		attribute.String(decision.AttrExperimentObjective, intent.Objective),
-		attribute.Int(decision.AttrExperimentTargetN, intent.TargetNPerArm),
-		attribute.String(decision.AttrExperimentArms, strings.Join(e.arms, ",")),
+		attribute.String(keys.AttrExperimentID, e.id),
+		attribute.String(keys.AttrExperimentStatus, string(e.status)),
+		attribute.String(keys.AttrExperimentFlagKey, intent.FlagKey),
+		attribute.String(keys.AttrExperimentObjective, intent.Objective),
+		attribute.Int(keys.AttrExperimentTargetN, intent.TargetNPerArm),
+		attribute.String(keys.AttrExperimentArms, strings.Join(e.arms, ",")),
 		attribute.String(AttrExperimentProgressTrigger, trigger),
+	}
+	// #2291: what is tested, for the dashboard's experiment card. The thesis and the
+	// experimental arm's value are on every snapshot (the dashboard keeps the newest
+	// span); each is omitted when empty.
+	if intent.Hypothesis != "" {
+		attrs = append(attrs, attribute.String(keys.AttrExperimentThesis, capSpanText(intent.Hypothesis)))
+	}
+	if intent.ExperimentalValue != nil {
+		if raw, err := json.Marshal(intent.ExperimentalValue); err == nil {
+			attrs = append(attrs, attribute.String(AttrExperimentValue, capSpanText(string(raw))))
+		}
 	}
 	if v := summary.Verdict; v != nil {
 		attrs = append(attrs,
-			attribute.String(decision.AttrVerdictOutcome, v.Outcome),
-			attribute.Float64(decision.AttrVerdictDelta, v.Delta),
-			attribute.Bool(decision.AttrVerdictSignificant, v.Significant),
+			attribute.String(keys.AttrVerdictOutcome, v.Outcome),
+			attribute.Float64(keys.AttrVerdictDelta, v.Delta),
+			attribute.Bool(keys.AttrVerdictSignificant, v.Significant),
 		)
 	}
-	if trigger == ProgressTriggerTerminal {
+	if trigger == ProgressTriggerTerminal || (trigger == ProgressTriggerRecommendation && endReason != "") {
 		attrs = append(attrs, attribute.String(AttrExperimentEndReason, endReason))
+	}
+	if e.recommendOwner != "" {
+		value, err := json.Marshal(intent.ExperimentalValue)
+		if err != nil {
+			value = []byte(fmt.Sprint(intent.ExperimentalValue))
+		}
+		attrs = append(attrs,
+			attribute.String(AttrExperimentRecommendationFlag, intent.FlagKey),
+			attribute.String(AttrExperimentRecommendationValue, capSpanText(string(value))),
+			attribute.String(AttrExperimentRecommendationOwner, e.recommendOwner),
+		)
 	}
 	opts := []trace.SpanStartOption{trace.WithNewRoot(), trace.WithAttributes(attrs...)}
 	if link.IsValid() {
@@ -109,7 +147,7 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 			samples, mean = st.Count, st.Mean
 		}
 		span.AddEvent(EventExperimentArm, trace.WithAttributes(
-			attribute.String(decision.AttrExperimentArm, arm),
+			attribute.String(keys.AttrExperimentArm, arm),
 			attribute.Int(AttrExperimentArmAssigned, inFlight[arm]),
 			attribute.Int(AttrExperimentArmSamples, samples),
 			attribute.Float64(AttrExperimentArmMeanFitness, mean),
@@ -138,4 +176,22 @@ func (r *Registry) ProgressHeartbeat() {
 		e := r.entries[id]
 		r.emitProgressLocked(e, ProgressTriggerHeartbeat, "", e.spanCtx)
 	}
+}
+
+// maxSpanTextLen caps free-text span attributes at 512 bytes: experiment.thesis,
+// experiment.experimental_value and experiment.recommendation.value (#2291, #2276).
+const maxSpanTextLen = 512
+
+// capSpanText cuts s to maxSpanTextLen bytes on a rune boundary and appends "..." when
+// it cut, so the result stays valid UTF-8 and at most maxSpanTextLen bytes. It is the
+// one cap helper for every free-text attribute of experiment.progress.
+func capSpanText(s string) string {
+	if len(s) <= maxSpanTextLen {
+		return s
+	}
+	cut := maxSpanTextLen - len("...")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }

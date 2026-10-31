@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
 from services.menu.handlers.base import ButtonDebouncer, ControllerState
+from services.menu.utils.detached import run_detached
 from services.menu.utils.settings import get_next_game_mode
 
 if TYPE_CHECKING:
@@ -30,6 +32,8 @@ class ConnectedHandler:
         """Initialize connected handler."""
         self._state_manager: StateManager | None = None
         self._debouncer = ButtonDebouncer(default_interval=0.1)
+        # Ready beeps in flight: held so they are not garbage-collected (#2312).
+        self._sound_tasks: set[asyncio.Task] = set()
 
     @property
     def state(self) -> ControllerState:
@@ -96,13 +100,25 @@ class ConnectedHandler:
 
         logger.info(f"Controller {serial} trigger press -> ready")
 
-        # Play ready sound
+        # READY and its LED first (UC-010 step 2, BR-012): the button events of every
+        # controller are handled one after another, so awaiting the beep here held the
+        # next press (another ready, an un-ready) back for as long as audio took (#2312).
+        await self._state_manager.transition_to(serial, ControllerState.READY)
+        self._play_ready_beep_detached()
+
+    def _play_ready_beep_detached(self) -> None:
+        """Play the ready beep without awaiting it (pattern of AdminHandler._play_voice_detached, #1746)."""
+        run_detached(self._play_ready_beep(), tasks=self._sound_tasks, what="Ready beep")
+
+    async def _play_ready_beep(self) -> None:
+        if self._state_manager is None:
+            return
         from lib.types import Sound
 
-        await self._state_manager.audio.play_sound(Sound.SFX_BEEP_LOUD, volume=0.5)
-
-        # Transition to ready state
-        await self._state_manager.transition_to(serial, ControllerState.READY)
+        try:
+            await self._state_manager.audio.play_sound(Sound.SFX_BEEP_LOUD, volume=0.5)
+        except Exception as e:
+            logger.warning(f"Ready beep failed: {e}")
 
     async def _handle_select(self, serial: str) -> None:
         """

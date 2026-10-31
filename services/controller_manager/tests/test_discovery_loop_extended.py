@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
+from services.controller_manager.tests.backend_doubles import InertBackendHooks
+
 # Setup paths for imports
 test_dir = Path(__file__).parent
 service_dir = test_dir.parent
@@ -25,7 +27,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
 
-class MockBackend:
+class MockBackend(InertBackendHooks):
     """Mock backend for testing discovery loop."""
 
     def __init__(self):
@@ -520,15 +522,15 @@ class TestCheckForNewControllersAsync:
             button_detector=button_det,
         )
         loop.backend_initialized = True
-        loop._last_activity_time["serial_A"] = 1.0
-        loop._previous_accel["serial_A"] = (0.0, 0.0, 1.0)
+        loop._record("serial_A").last_activity_time = 1.0
+        loop._record("serial_A").previous_accel = (0.0, 0.0, 1.0)
 
         await loop._check_for_new_controllers()
 
         assert "serial_A" not in tracked
         assert "serial_A" not in states
-        assert "serial_A" not in loop._last_activity_time
-        assert "serial_A" not in loop._previous_accel
+        assert loop._record("serial_A").last_activity_time is None
+        assert loop._record("serial_A").previous_accel is None
         assert len(button_det.connection_events) == 1
         assert button_det.connection_events[0]["is_connect"] is False
         assert button_det.connection_events[0]["serial"] == "serial_A"

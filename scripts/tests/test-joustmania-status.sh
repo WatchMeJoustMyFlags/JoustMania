@@ -29,11 +29,11 @@
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-joustmania-status.sh
 # UC: UC-060 BR-005 A1 A4 A5 BR-006; UC-002 A7; UC-061 main A10 BR-007 BR-011
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 unset COMPOSE_PROJECT_NAME COMPOSE_PROFILES IMAGE_TAG RUNTIME_DIRECTORY JOUSTMANIA_STATUS_DIR || true
 # A test that reaches for the real docker fails instead of using it
-export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 fails=0
 fail() {
   echo "FAIL $*"

@@ -51,9 +51,9 @@ async def grpc_service():
         patch("lib.feature_flags.get_flag_client", return_value=_make_flag_client_mock()),
         patch("lib.feature_flags.set_game_transaction_context"),
         patch("lib.flag_service_writer.FlagServiceWriter"),
-        patch("services.menu.servicer.LedController"),
-        patch("services.menu.servicer.AudioHelper") as mock_audio_cls,
-        patch("services.menu.servicer.ControllerEventLoop") as mock_events_cls,
+        patch("services.menu.menu_setup.LedController"),
+        patch("services.menu.menu_setup.AudioHelper") as mock_audio_cls,
+        patch("services.menu.menu_setup.ControllerEventLoop") as mock_events_cls,
     ):
         # Configure AudioHelper mock
         mock_audio = AsyncMock()

@@ -11,6 +11,9 @@
 # UC: UC-070 main A9 BR-003 BR-004 BR-006 BR-007 Pre-4
 # UC: UC-002 BR-003
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
+# curl is stubbed below; the expected messages name the default entry point
+unset TALK_BASE_URL
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFLIGHT="${SCRIPT_DIR}/../talk-preflight.sh"
@@ -53,14 +56,29 @@ if [[ "$1" == "inspect" ]]; then
 fi
 exit 0
 SH
-# curl stub: Jaeger traces JSON, a Date header, 200 for everything else.
-cat >"${WORK}/bin/curl" <<'SH'
+# curl stub: Jaeger traces JSON, a Date header, 200 for everything else; the
+# flag service client (scripts/flagservice.py, curl by default #2057) reaches
+# the fake flag service through the real curl.
+REAL_CURL="$(command -v curl)"
+cat >"${WORK}/bin/curl" <<SH
 #!/usr/bin/env bash
+SH
+cat >>"${WORK}/bin/curl" <<'SH'
 for a in "$@"; do
   case "${a}" in
-    *jaeger/api/traces*)
-      echo '{"data":[{"spans":[{"operationName":"agent.decide","startTime":2,"tags":[{"key":"decide.backend","value":"claude"},{"key":"decide.outcome","value":"held"}]}]}]}'
+    "${FLAG_SERVICE_URL}"*) exec "${STUB_REAL_CURL}" "$@" ;;
+    *jaeger/api/v3/traces*)
+      # Jaeger query API v3 (#2283): OTLP JSON; nothing matched is 404 "No traces found".
+      if [[ -n "${STUB_JAEGER_EMPTY:-}" ]]; then
+        echo '{"error":{"httpCode":404,"message":"No traces found"}}'
+        exit 0
+      fi
+      echo '{"result":{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"agent"}}]},"scopeSpans":[{"scope":{},"spans":[{"traceId":"01","spanId":"02","name":"agent.decide","startTimeUnixNano":"1760000000200000000","attributes":[{"key":"decide.backend","value":{"stringValue":"claude"}},{"key":"decide.outcome","value":{"stringValue":"held"}}]},{"traceId":"01","spanId":"03","name":"agent.decide","startTimeUnixNano":"1760000000100000000","attributes":[{"key":"decide.backend","value":{"stringValue":"rules"}},{"key":"decide.outcome","value":{"stringValue":"fallback"}}]}]}]}]}}'
       exit 0 ;;
+    *jaeger/api/traces*|*jaeger/api/services*)
+      # The legacy query API (gone in Jaeger 2.21): the preflight must not call it.
+      echo "${a}" >>"${STUB_LEGACY_JAEGER_LOG}"
+      exit 22 ;;
     *GetConnectedControllers*)
       [[ -n "${STUB_CM_DOWN:-}" ]] && exit 22
       echo "${STUB_CONTROLLERS:-{\"connectedSerials\":[\"00:06:f7:aa:bb:01\",\"00:06:f7:aa:bb:02\",\"MOCK0001\"]\}}"
@@ -78,6 +96,8 @@ if [[ "\$*" == "+%s" ]]; then echo 1760000000; exit 0; fi
 exec "${REAL_DATE}" "\$@"
 SH
 chmod +x "${WORK}/bin/"*
+export STUB_REAL_CURL="${REAL_CURL}"
+export STUB_LEGACY_JAEGER_LOG="${WORK}/legacy-jaeger-calls"
 export STUB_SECRET="${SECRET}"
 export STUB_MOUNT="${WORK}/flags"
 
@@ -164,7 +184,15 @@ check "jev threshold baseline" "PASS  decision.jev.act_confidence_threshold = ga
 check "jev blackhole variant present" "PASS  decision.jev.base_url = default"
 if has "stub"; then not_ok "no stub wording"; else ok "no stub wording"; fi
 check "interventions are per game" "PASS  interventions are per game: 0 value(s) in 0 live game(s)"
-check "jaeger newest span summarised" "newest: backend=claude outcome=held"
+check "jaeger newest span summarised" "PASS  2 agent.decide span(s) in the last"
+check "jaeger newest span is the latest by start time" "newest: backend=claude outcome=held"
+if [[ -s "${WORK}/legacy-jaeger-calls" ]]; then
+  not_ok "only the Jaeger v3 API is called (legacy: $(tr '\n' ' ' <"${WORK}/legacy-jaeger-calls"))"
+else
+  ok "only the Jaeger v3 API is called"
+fi
+STUB_BUDGET=30 STUB_JAEGER_EMPTY=1 run_preflight
+check "jaeger 404 no traces is no spans, not a failed query" "FAIL  no agent.decide spans in the last"
 check "vendor variant listed" "decision.openai.model variants available: vendor"
 check "clock in sync" "PASS  clock skew 0s"
 check "stage allow-list is standard" "PASS  interventions_allowed = standard"

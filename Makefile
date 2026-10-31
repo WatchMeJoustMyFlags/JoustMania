@@ -45,6 +45,7 @@ help:
 	@echo "  make specs-check     - Fail if docs/specs/generated/ is stale (CI)"
 	@echo "  make specs-counts    - Print the flag, RPC and metric totals (not committed)"
 	@echo "  make spec-refs-check - Fail on a broken path:line / path:Symbol ref in docs/specs (CI)"
+	@echo "  make spec-refs-report - Markdown drift report of stale path:line refs (weekly workflow, never fails)"
 	@echo "  make spec-refs       - Rewrite the undocumented-attribute baseline (growth needs a label)"
 	@echo ""
 	@echo "Voice catalog (#2107):"
@@ -160,6 +161,7 @@ dry-run:
 .PHONY: lint
 lint:
 	uv run ruff check .
+	scripts/ci/check-hermetic-tests.sh
 	@for t in scripts/tests/test-*.sh; do echo "$$t"; "./$$t" >/dev/null || exit 1; done
 
 .PHONY: format
@@ -234,6 +236,10 @@ spec-refs:
 .PHONY: spec-refs-check
 spec-refs-check:
 	@$(SPEC_REFS) --check $(SPEC_REFS_ARGS)
+
+.PHONY: spec-refs-report
+spec-refs-report:
+	@$(SPEC_REFS) --report
 
 # ============================================================================
 # Protobuf Generation
@@ -326,16 +332,17 @@ test-service:
 # config checks, and the flagd contract (one real flagd, no game stack).
 # promtool, envoy and flagd run via docker when available (CI: required).
 # openfeature versions pinned to uv.lock (bump together with it).
-CONTRACT_DEPS = --with pytest --with pyyaml --with pytest-rerunfailures --with 'openfeature-sdk==0.10.0' --with 'openfeature-provider-flagd==0.5.0'
+CONTRACT_DEPS = --with pytest --with pyyaml --with pytest-rerunfailures --with 'openfeature-sdk==0.10.0' --with 'openfeature-provider-flagd==0.6.1'
 .PHONY: test-contract
 test-contract:
 	uv run --no-project $(CONTRACT_DEPS) pytest tests/contract -v -p no:cacheprovider
 
 # Only the flagd contract (tests/contract/test_flagd_resolution.py, ~1 min), plus
-# the #2184 RPC retry test (needs grpc + the provider from CONTRACT_DEPS).
+# the #2184 RPC retry test and the #1945 pinned fractional buckets (need grpc +
+# the provider from CONTRACT_DEPS).
 .PHONY: test-contract-flagd
 test-contract-flagd:
-	uv run --no-project $(CONTRACT_DEPS) pytest tests/contract/test_flagd_resolution.py tests/contract/test_flagd_rpc_retry.py -v --tb=short -p no:cacheprovider
+	uv run --no-project $(CONTRACT_DEPS) pytest tests/contract/test_flagd_resolution.py tests/contract/test_flagd_rpc_retry.py tests/contract/test_fractional_bucketing.py -v --tb=short -p no:cacheprovider
 
 # Integration tests with pre-built images + volume-mounted source (no rebuild)
 # Requires images: run `docker compose pull` or `make dev` first

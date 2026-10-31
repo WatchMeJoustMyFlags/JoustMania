@@ -30,6 +30,7 @@ from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.servicer import _stream_rate_hz
+from services.controller_manager.tests.backend_doubles import autospec_backend, autospec_servicer_context
 
 SERIAL = "mock_controller_0"
 
@@ -59,7 +60,11 @@ def rig():
     ctrl["death_frames_remaining"] = 3
     ctrl["death_hold_until"] = 0.0
 
-    backend = MagicMock(spec=["consume_death_frame"])
+    backend = autospec_backend()
+    backend.consume_trigger_press.return_value = False
+    backend.pattern_serials.return_value = set()
+    backend.pattern_frame.return_value = None
+    backend.pattern_stream_rate.return_value = None
     backend.consume_death_frame.side_effect = adapter.consume_death_frame
 
     with (
@@ -73,7 +78,7 @@ def rig():
     monitoring = create_autospec(ControllerMonitoring, instance=True)
     monitoring.last_battery_check = 0
     loop = DiscoveryLoop(
-        backend=MagicMock(spec=[]),
+        backend=autospec_backend(),
         tracked_controllers=servicer.tracked_controllers,
         controller_states={},
         button_detector=create_autospec(ButtonDetector, instance=True),
@@ -88,8 +93,8 @@ def rig():
     servicer.state_builder.build_state = MagicMock(return_value=_state())
     servicer.tracked_controllers[SERIAL] = {}
 
-    loop._poll_drops[SERIAL] = 2
-    loop._poll_errors[SERIAL] = 1
+    loop._record(SERIAL).poll_drops = 2
+    loop._record(SERIAL).poll_errors = 1
     return servicer, ctrl
 
 
@@ -159,7 +164,7 @@ async def _frame_intervals(servicer, config, frames: int = 6) -> list[float]:
         yield controller_manager_pb2.GameplayStreamControl(config=config)
         await real_sleep(3600)
 
-    context = MagicMock()
+    context = autospec_servicer_context()
     context.cancelled.return_value = False
     with patch("services.controller_manager.servicer.asyncio.sleep", side_effect=fake_sleep):
         stream = servicer.StreamGameplayData(requests(), context)

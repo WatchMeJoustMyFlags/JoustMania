@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -43,10 +44,20 @@ const (
 	ScopeFraction   = "fraction"
 )
 
+// RealWriteNoLiveRealGame is the registry attribute (real_write) that makes the
+// flag service refuse a write in scope real while a registered game has kind
+// real (409 real_game_live, flags.md §13, #2096): a promotion never changes a
+// value a running real game reads.
+const RealWriteNoLiveRealGame = "no_live_real_game"
+
 var validKinds = map[string]bool{KindState: true, KindLevel: true, KindGrant: true, KindEvent: true, KindOverlay: true}
 var validScopes = map[string]bool{
 	ScopeStack: true, ScopeGame: true, ScopeGameSerial: true, ScopeExperiment: true, ScopeReal: true, ScopeFraction: true,
 }
+
+// MaxDescription is the longest description a registry row may carry (in
+// characters) (#2345).
+const MaxDescription = 120
 
 // MaxFreeString is the longest value a `free string` bound accepts.
 const MaxFreeString = 512
@@ -54,6 +65,11 @@ const MaxFreeString = 512
 // soundIDPattern is the syntax of an audio_cue sound id. The service cannot
 // see the audio container's assets; the audio service resolves the id
 // (flags.md §13.1).
+// decimalFloatPattern is the plain decimal form a "float lo hi" pattern segment
+// accepts. strconv.ParseFloat alone would also take hex floats (0x1p0), inf and
+// nan, which the readers of such a string do not parse.
+var decimalFloatPattern = regexp.MustCompile(`^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$`)
+
 var soundIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]{1,64}$`)
 
 // Bounds says which values a write may carry. Exactly one of the fields is
@@ -93,6 +109,49 @@ type Policy struct {
 	Scopes  []string `yaml:"scope" json:"scope"`
 	Bounds  Bounds   `yaml:"bounds" json:"bounds"`
 	Persist bool     `yaml:"persist" json:"persist"`
+	// RealWrite restricts writes in scope real: "" (none) or
+	// RealWriteNoLiveRealGame.
+	RealWrite string `yaml:"real_write,omitempty" json:"real_write,omitempty"`
+	// Description says in one line, in game terms, what the flag does (#2345).
+	// Required on a row that allows ScopeExperiment: the agent's experiment
+	// proposer shows it to the model next to the key, variants and range.
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+}
+
+// killSwitches is the set of kill-switch flags ("set/key"): a persisted write
+// or clear of one whose state-file save fails still applies in memory and
+// reports persisted false, instead of being rolled back (#2368, C-034). It is
+// a Go set, not a registry.yaml attribute, because released flag-service images
+// parse the checkout's registry.yaml strictly and would refuse a new key.
+// flags.md §13 ("Failed save, kill switches") lists the same set; a test keeps
+// them in sync. Only a persist row can use it: a non-persist flag never takes
+// a persisted write.
+var killSwitches = map[string]bool{
+	"agent/interventions_allowed": true,
+}
+
+// KillSwitches returns the kill-switch set as sorted "set/key" names.
+func KillSwitches() []string {
+	out := make([]string, 0, len(killSwitches))
+	for k := range killSwitches {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// AppliesWhenPersistFails reports whether a persisted write or clear of this
+// flag applies in memory even when the state file cannot be saved: a kill
+// switch must take effect now, a restart bringing the old value back is the
+// smaller risk (#2368). Every other flag is rolled back (500 persist_failed).
+func (p *Policy) AppliesWhenPersistFails() bool {
+	return killSwitches[p.Set+"/"+p.Key]
+}
+
+// RealWriteNeedsNoRealGame reports whether a real-scope write of this flag is
+// refused while a real game is registered.
+func (p *Policy) RealWriteNeedsNoRealGame() bool {
+	return p.RealWrite == RealWriteNoLiveRealGame
 }
 
 // AllowsScope reports whether scope is one of the policy's scopes.
@@ -180,6 +239,17 @@ func validatePolicy(p *Policy, b *baseline.Baseline) error {
 			return fmt.Errorf("unknown scope %q", s)
 		}
 	}
+	// real_write is checked for its value only, not against the scopes: a row
+	// may carry it before its scope is widened to real (the guard is then inert).
+	if p.RealWrite != "" && p.RealWrite != RealWriteNoLiveRealGame {
+		return fmt.Errorf("unknown real_write %q (allowed: %s)", p.RealWrite, RealWriteNoLiveRealGame)
+	}
+	if err := validDescription(p); err != nil {
+		return err
+	}
+	if p.RealWrite != "" && p.Kind != KindOverlay {
+		return fmt.Errorf("real_write needs kind overlay")
+	}
 	if p.Persist && (p.Kind != KindOverlay || !p.AllowsScope(ScopeStack)) {
 		return fmt.Errorf("persist needs kind overlay with scope stack")
 	}
@@ -221,6 +291,28 @@ func validatePolicy(p *Policy, b *baseline.Baseline) error {
 		if f := p.Bounds.Fraction; len(f) != 2 || f[0] < 1 || f[1] > 100 || f[0] > f[1] {
 			return fmt.Errorf("a fraction scope needs bounds.fraction [lo, hi] within 1..100")
 		}
+	}
+	return nil
+}
+
+// validDescription checks the description: one line of at most MaxDescription
+// characters, and present on every row of the experiment catalog.
+func validDescription(p *Policy) error {
+	d := p.Description
+	if strings.TrimSpace(d) == "" {
+		if p.AllowsScope(ScopeExperiment) {
+			return fmt.Errorf("a row with scope %s needs a description (one line, in game terms, the experiment proposer shows it)", ScopeExperiment)
+		}
+		if d != "" {
+			return fmt.Errorf("description is blank")
+		}
+		return nil
+	}
+	if strings.ContainsAny(d, "\r\n") {
+		return fmt.Errorf("description must be one line")
+	}
+	if n := utf8.RuneCountInString(d); n > MaxDescription {
+		return fmt.Errorf("description has %d characters, at most %d", n, MaxDescription)
 	}
 	return nil
 }
@@ -276,6 +368,9 @@ func CheckValue(p *Policy, flag *baseline.Flag, variant string, value json.RawMe
 		if !sameShape(flag.Variants[flag.DefaultVariant], value) {
 			return nil, fserr.Unprocessable(fserr.OutOfBounds, "%s takes an object with the keys and value types of its declared variants, got %s", p.Key, value)
 		}
+		if msg := shapeNumbersOutOfCeiling(flag, value); msg != "" {
+			return nil, fserr.Unprocessable(fserr.OutOfBounds, "%s: %s, got %s", p.Key, msg, value)
+		}
 	case p.Bounds.FreeString:
 		s, ok := asString(value)
 		if !ok || len(s) > MaxFreeString {
@@ -301,6 +396,50 @@ func sameShape(want, value json.RawMessage) bool {
 		}
 	}
 	return true
+}
+
+// ShapeCeilingFactor scales the largest value a declared variant holds for a
+// key into the ceiling a shape-bound write may reach for that key (C-034: the
+// registry, not the writer, is the ceiling). A number below 0 is out of bounds.
+const ShapeCeilingFactor = 2
+
+// shapeNumbersOutOfCeiling returns why a number of value is out of the shape
+// bound, or "" when every number is within 0 to ShapeCeilingFactor times the
+// largest value any declared variant holds for the same key. The ceiling is
+// derived from the baseline variants, so the registry needs no field for it.
+func shapeNumbersOutOfCeiling(flag *baseline.Flag, value json.RawMessage) string {
+	var v map[string]json.RawMessage
+	if json.Unmarshal(value, &v) != nil {
+		return "not an object"
+	}
+	largest := map[string]float64{}
+	for _, raw := range flag.Variants {
+		var w map[string]float64
+		if json.Unmarshal(raw, &w) != nil {
+			continue
+		}
+		for k, n := range w {
+			if n > largest[k] {
+				largest[k] = n
+			}
+		}
+	}
+	keys := make([]string, 0, len(v))
+	for k := range v {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		var n float64
+		if json.Unmarshal(v[k], &n) != nil {
+			continue // not a number: the shape check decided its kind
+		}
+		ceiling := largest[k] * ShapeCeilingFactor
+		if n < 0 || n > ceiling {
+			return fmt.Sprintf("%s must be within 0 to %v", k, ceiling)
+		}
+	}
+	return ""
 }
 
 func kindOf(raw json.RawMessage) string {
@@ -421,6 +560,9 @@ func (s *segment) match(part string) bool {
 		n, err := strconv.Atoi(part)
 		return err == nil && float64(n) >= s.lo && float64(n) <= s.hi
 	case "float":
+		if !decimalFloatPattern.MatchString(part) {
+			return false
+		}
 		f, err := strconv.ParseFloat(part, 64)
 		return err == nil && f >= s.lo && f <= s.hi
 	}

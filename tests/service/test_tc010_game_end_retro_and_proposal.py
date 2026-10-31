@@ -160,7 +160,9 @@ async def test_tc010_game_end_runs_retro_summary_and_proposer(fresh_stack):
         assert [c["kind"] for c in calls].count("retro") == 1, calls
         assert [c["kind"] for c in calls].count("proposal") == 1, calls
         assert all(c["key_ok"] and c["model"] == FAKE_CLAUDE_MODEL for c in calls), calls
-        assert f"  - {PROPOSED_FLAG}\n" in fake.requests("proposal")[0]["system"]
+        # BR-008: the catalog line carries the registry description (flag-service/registry.yaml, sensitivity).
+        sensitivity_description = "movement a player survives: 0 ultra_slow (strictest) to 4 ultra_fast (most lenient)"
+        assert f"  - {PROPOSED_FLAG}: {sensitivity_description}" in fake.requests("proposal")[0]["system"]
         assert game_id in fake.requests("retro")[0]["user"]
 
         # Step 6: the flag service holds one experiment-arm value, experimental arm only.

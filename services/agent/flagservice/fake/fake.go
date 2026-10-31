@@ -42,6 +42,8 @@ type Policy struct {
 	Integer bool
 	// Shape accepts an object with the default variant's keys and value kinds.
 	Shape bool
+	// Description is served in the view's policy (flags.md §13, #2345).
+	Description string
 }
 
 type armKey struct{ exp, arm string }
@@ -208,6 +210,12 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 	if !f.scopes[scope] {
 		return flagservice.Result{}, &flagservice.Error{Status: 400, Reason: "malformed", Detail: "scope does not fit"}
 	}
+	if w.IfWriterIn != nil {
+		// ?if_writer_in= (#2260): the write precondition, like the flag service.
+		if scope != "real" {
+			return flagservice.Result{}, &flagservice.Error{Status: 400, Reason: "malformed", Detail: "if_writer_in outside scope real"}
+		}
+	}
 	var v value
 	if w.Variant != "" {
 		raw, ok := f.base.Variants[w.Variant]
@@ -229,6 +237,10 @@ func (s *Service) Put(_ context.Context, set, key string, w flagservice.Write) (
 		}
 		s.counter++
 		v = value{variant: fmt.Sprintf("rfake_%d", s.counter), raw: raw, writer: w.Writer}
+	}
+	// Checked last, after the 422 value/bounds checks, like the real service.
+	if w.IfWriterIn != nil && !realWriterAllowed(f.real, w.IfWriterIn) {
+		return flagservice.Result{}, &flagservice.Error{Status: 412, Reason: flagservice.ReasonWriterMismatch, Detail: "fake: real overlay owned by another writer"}
 	}
 	var before json.RawMessage
 	var restore func()
@@ -287,11 +299,26 @@ func (s *Service) Delete(_ context.Context, set, key string, q url.Values) error
 			}
 		}
 	case q.Get("game_kind") == "real":
+		// ?if_writer= (#1877): compare-and-delete, like the flag service.
+		if iw := q.Get("if_writer"); iw != "" && f.real != nil && f.real.writer != iw {
+			return &flagservice.Error{Status: 412, Reason: flagservice.ReasonWriterMismatch, Detail: "fake: real overlay written by " + f.real.writer}
+		}
 		f.real = nil
 	default:
 		f.stack = nil
 	}
 	return nil
+}
+
+// realWriterAllowed mirrors the flag service: "" matches no overlay, a label
+// matches an overlay with that writer; an unlabeled overlay matches nothing.
+func realWriterAllowed(cur *value, allowed []string) bool {
+	for _, w := range allowed {
+		if (cur == nil && w == "") || (cur != nil && w != "" && cur.writer == w) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *flagState) inBounds(raw json.RawMessage) bool {
@@ -381,7 +408,10 @@ func (f *flagState) view(key string) flagservice.FlagView {
 		Rendered:         f.rendered(),
 	}
 	if len(scopes) > 0 {
-		v.Policy = &flagservice.Policy{Kind: "overlay", Scopes: scopes}
+		v.Policy = &flagservice.Policy{
+			Kind: "overlay", Scopes: scopes, Description: f.policy.Description,
+			Bounds: flagservice.Bounds{Range: f.policy.Range, Integer: f.policy.Integer},
+		}
 	}
 	if f.stack != nil {
 		v.StackOverlay = &flagservice.ValueView{Variant: f.stack.variant, Value: f.stack.raw, Writer: f.stack.writer}
@@ -483,10 +513,11 @@ func RegistryPolicies(path, set string) (map[string]Policy, error) {
 	}
 	var doc struct {
 		Flags []struct {
-			Set    string   `yaml:"set"`
-			Key    string   `yaml:"key"`
-			Scope  []string `yaml:"scope"`
-			Bounds struct {
+			Set         string   `yaml:"set"`
+			Key         string   `yaml:"key"`
+			Scope       []string `yaml:"scope"`
+			Description string   `yaml:"description"`
+			Bounds      struct {
 				Range   []float64 `yaml:"range"`
 				Integer bool      `yaml:"integer"`
 				Shape   bool      `yaml:"shape"`
@@ -499,7 +530,7 @@ func RegistryPolicies(path, set string) (map[string]Policy, error) {
 	out := map[string]Policy{}
 	for _, f := range doc.Flags {
 		if f.Set == set {
-			out[f.Key] = Policy{Scopes: f.Scope, Range: f.Bounds.Range, Integer: f.Bounds.Integer, Shape: f.Bounds.Shape}
+			out[f.Key] = Policy{Scopes: f.Scope, Range: f.Bounds.Range, Integer: f.Bounds.Integer, Shape: f.Bounds.Shape, Description: f.Description}
 		}
 	}
 	return out, nil

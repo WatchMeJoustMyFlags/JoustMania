@@ -157,7 +157,7 @@ def test_default_instance_reproduces_scheduling_ranges():
     game.players = {"a": object(), "b": object()}
     game.dead_count = 0
 
-    import time as _time
+    from services.game_coordinator import game_clock
 
     # speed_up=True -> slow windows; speed_up=False -> fast windows.
     for speed_up, lo, hi in (
@@ -166,11 +166,12 @@ def test_default_instance_reproduces_scheduling_ranges():
     ):
         game.speed_up = speed_up
         for _ in range(200):
-            now = _time.time()
+            now = game_clock.now()
             delay = game._get_music_change_time() - now
             assert lo - 0.001 <= delay <= hi + 0.001
 
 
+@pytest.mark.real_game_time
 @pytest.mark.uc("UC-031", flow="main", steps=[3])
 def test_end_game_windows_used_when_all_dead():
     """game_percent=1.0 -> end-game windows bound the delay."""
@@ -227,6 +228,7 @@ def test_malformed_flag_instance_falls_back():
     assert game.music_windows == MusicWindows.defaults()
 
 
+@pytest.mark.real_game_time
 def test_f6_atomic_swap_seam():
     """F6 swaps self.music_windows atomically; the loop picks up the new windows."""
     game = _make_ffa()

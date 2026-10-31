@@ -17,8 +17,8 @@ export default defineConfig({
       },
       // Proxy VictoriaMetrics queries (agent applied-intervention count, #792)
       // through envoy, which routes /victoria-metrics/* to the VM HTTP API. This
-      // only matters for `vite dev`; in production the dashboard
-      // is served behind the same envoy.
+      // only matters for `vite dev`; in production the dashboard is served behind
+      // the same envoy.
       '/victoria-metrics': {
         target: 'http://localhost:80',
         changeOrigin: true,

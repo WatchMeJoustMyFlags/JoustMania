@@ -37,6 +37,7 @@ import (
 
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/flagservice"
+	"github.com/joustmania/agent/gamecontext"
 )
 
 // FlagSetInterventions is the flag set every intervention flag lives in.
@@ -96,9 +97,12 @@ const (
 	defaultGlobalSensitivity = 2    // matches "medium"
 	defaultPlayerSensitivity = 1.5  // matches "handicap"
 	defaultPlayerHandicap    = 1.25 // #1107: mild "help" (>1 harder to die), within [0.5,2.0]
-	defaultShieldSeconds     = 5    // matches "default"
-	defaultGlobalDifficulty  = 1.5  // matches interventions.json "hard" (#766 F6)
-	defaultPacingProfile     = "frantic"
+	// defaultShieldSeconds is the fail-closed length for a grant the loop did not
+	// stamp (UC-040 BR-029): the loop stamps every grant with the shield_seconds
+	// "default" variant when the ShieldSecondsReader is wired (shield_seconds.go).
+	defaultShieldSeconds    = decision.DefaultShieldSeconds
+	defaultGlobalDifficulty = 1.5 // matches interventions.json "hard" (#766 F6)
+	defaultPacingProfile    = "frantic"
 	// defaultTempoRamp is the safe fallback ramp_tempo curve (#1117).
 	defaultTempoRamp = "1.3:8:linear"
 	// defaultToughnessBoost is the safe fallback toughness_boost directive (#1129).
@@ -157,7 +161,7 @@ func NewWriterFromEnv(log *slog.Logger) *Writer {
 func newWritesCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
 	c, err := mp.Meter(meterName).Int64Counter(
 		"agent_intervention_writes_total",
-		otelmetric.WithDescription("Intervention writes the agent sent to the flag service, labeled by outcome"),
+		otelmetric.WithDescription("Intervention writes the agent sent to the flag service, labeled by outcome and game_kind (primary|shadow, #2294)"),
 	)
 	if err != nil {
 		c, _ = metricnoop.NewMeterProvider().Meter(meterName).Int64Counter("agent_intervention_writes_total")
@@ -183,18 +187,20 @@ func (w *Writer) Apply(ctx context.Context, d decision.Decision) error {
 	}
 	err := w.write(ctx, d)
 	if err != nil {
-		w.recordWrite(ctx, resultError)
+		w.recordWrite(ctx, d.GameKind, resultError)
 		w.log.Error("agent.action_write_failed",
 			"intervention", d.Intervention, "game_id", d.GameID, "target_serial", d.TargetSerial, "error", err)
 		return err
 	}
-	w.recordWrite(ctx, resultOK)
+	w.recordWrite(ctx, d.GameKind, resultOK)
 	w.log.Debug("agent.action_written", "intervention", d.Intervention, "game_id", d.GameID, "target_serial", d.TargetSerial)
 	return nil
 }
 
-func (w *Writer) recordWrite(ctx context.Context, result string) {
-	w.writes.Add(ctx, 1, otelmetric.WithAttributes(attribute.String("result", result)))
+func (w *Writer) recordWrite(ctx context.Context, gameKind, result string) {
+	w.writes.Add(ctx, 1, otelmetric.WithAttributes(
+		attribute.String("game_kind", gamecontext.TelemetryGameKind(gameKind)),
+		attribute.String("result", result)))
 }
 
 func (w *Writer) write(ctx context.Context, d decision.Decision) error {

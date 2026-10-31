@@ -26,6 +26,7 @@
 # UC: UC-002 BR-003
 # UC: UC-015 Pre-1
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fails=0

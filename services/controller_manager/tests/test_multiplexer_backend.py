@@ -19,19 +19,18 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
+from services.controller_manager.tests.backend_doubles import autospec_adapter, autospec_flag_client
 
 
 def _make_adapter(adapter_type="mock", serials=None):
     """Create a mock ControllerIOAdapter."""
-    adapter = MagicMock()
+    adapter = autospec_adapter()
     adapter.adapter_type = adapter_type
-    adapter.discover = MagicMock(return_value=serials or [])
-    adapter.open = MagicMock(return_value=True)
-    adapter.poll = MagicMock(return_value=None)
-    adapter.set_output = MagicMock(return_value=True)
-    adapter.close = MagicMock()
-    adapter.close_all = MagicMock()
-    adapter.get_adapter_for_serial = MagicMock(return_value=None)
+    adapter.discover.return_value = serials or []
+    adapter.open.return_value = True
+    adapter.poll.return_value = None
+    adapter.set_output.return_value = True
+    adapter.get_adapter_for_serial.return_value = None
     # Plain adapters are their own device owner — no shared inner.
     adapter.inner = None
     return adapter
@@ -132,7 +131,7 @@ class TestMultiplexerGetConnectedControllers:
 
         mux.get_connected_controllers(force_rescan=True)
 
-        a1.discover.assert_called_once_with(force=True, verify_only=False, exclude_serials=ANY)
+        a1.discover.assert_called_once_with(force=True, exclude_serials=ANY)
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
     def test_cleans_stale_state_on_disconnect(self, mock_metrics):
@@ -298,14 +297,6 @@ class TestMultiplexerRouting:
 
         a1.consume_death_frame.assert_not_called()
         a2.consume_death_frame.assert_not_called()
-
-    def test_consume_death_frame_skips_adapter_without_hook(self):
-        """Hardware adapters lacking the hook are skipped, not errored (#926)."""
-        mux, a1, a2 = self._setup_two_adapters()
-        # Real hardware adapters don't implement consume_death_frame.
-        del a1.consume_death_frame
-
-        mux.consume_death_frame("AA:AA")  # must not raise
 
     @pytest.mark.asyncio
     async def test_set_led_stores_color_centrally(self):
@@ -590,28 +581,6 @@ class TestShutdownDuringDiscovery:
         await mux.initialize()
         with patch(self._METRICS, autospec=True):
             assert mux.get_connected_controllers() == ["AA:AA"]
-
-
-class TestMultiplexerScanControllers:
-    @pytest.mark.asyncio
-    async def test_scan_returns_results(self):
-        a1 = _make_adapter(serials=["AA:AA"])
-        mux = MultiplexerBackend(adapters=[a1])
-
-        result = await mux.scan_controllers()
-
-        assert len(result) == 1
-        assert result[0]["serial"] == "AA:AA"
-
-    @pytest.mark.asyncio
-    async def test_scan_merges_from_multiple_adapters(self):
-        a1 = _make_adapter(serials=["AA:AA"])
-        a2 = _make_adapter(serials=["BB:BB"])
-        mux = MultiplexerBackend(adapters=[a1, a2])
-
-        result = await mux.scan_controllers()
-
-        assert len(result) == 2
 
 
 class TestRouteControllers:
@@ -919,7 +888,7 @@ class TestResolveAdapterForSerial:
         a2 = _make_adapter("rust")
         mux = MultiplexerBackend(adapters=[a1, a2])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("rust", "TARGETING_MATCH")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
@@ -934,7 +903,7 @@ class TestResolveAdapterForSerial:
         a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("python", "DEFAULT")
         # No rollout in play
         with (
@@ -954,7 +923,7 @@ class TestResolveAdapterForSerial:
         a_un = _make_adapter("unstable")
         mux = MultiplexerBackend(adapters=[a_py], routing_only_adapters=[a_un])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         # bluetooth_backend resolves to default variant (no TARGETING_MATCH)
         mock_client.get_string_details.return_value = _details("python", "DEFAULT")
 
@@ -976,7 +945,7 @@ class TestResolveAdapterForSerial:
         a_un = _make_adapter("unstable")
         mux = MultiplexerBackend(adapters=[a_py], routing_only_adapters=[a_un])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("python", "TARGETING_MATCH")
 
         with (
@@ -994,7 +963,7 @@ class TestResolveAdapterForSerial:
         a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("nonexistent", "DEFAULT")
 
         with (
@@ -1010,7 +979,7 @@ class TestResolveAdapterForSerial:
         a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("", "DEFAULT")
 
         with (
@@ -1036,7 +1005,7 @@ class TestResolveAdapterForSerial:
         a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("python", "TARGETING_MATCH")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
@@ -1062,84 +1031,29 @@ class TestGetAdapterType:
         assert mux.get_adapter_type("ZZ:ZZ") == "unknown"
 
 
-class TestDiscoveryThrottling:
-    """Tests for verify_only discovery throttling."""
+class TestEveryPassIsAFullDiscovery:
+    """Every discovery pass enumerates in full (no verify-only pass, #2352)."""
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    def test_first_call_is_full_discovery(self, mock_metrics):
-        """First call should always do full discovery (verify_only=False)."""
-        a1 = _make_adapter(serials=["AA:AA"])
-        mux = MultiplexerBackend(adapters=[a1])
-
-        mux.get_connected_controllers()
-
-        a1.discover.assert_called_once_with(force=False, verify_only=False, exclude_serials=ANY)
-
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    def test_rapid_second_call_uses_verify_only(self, mock_metrics):
-        """Immediate second call should use verify_only=True."""
-        a1 = _make_adapter(serials=["AA:AA"])
-        mux = MultiplexerBackend(adapters=[a1])
-
-        mux.get_connected_controllers()
-        a1.discover.reset_mock()
-
-        mux.get_connected_controllers()
-
-        a1.discover.assert_called_once_with(force=False, verify_only=True, exclude_serials=ANY)
-
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    def test_force_always_does_full_discovery(self, mock_metrics):
-        """force=True should bypass throttle and use verify_only=False."""
-        a1 = _make_adapter(serials=["AA:AA"])
-        mux = MultiplexerBackend(adapters=[a1])
-
-        # First call to set _last_full_discovery
-        mux.get_connected_controllers()
-        a1.discover.reset_mock()
-
-        # Immediate force call should still do full discovery
-        mux.get_connected_controllers(force_rescan=True)
-
-        a1.discover.assert_called_once_with(force=True, verify_only=False, exclude_serials=ANY)
-
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    def test_verify_only_still_returns_controllers(self, mock_metrics):
-        """Known controllers should still be reported during verify_only cycles."""
+    def test_back_to_back_passes_both_enumerate(self, mock_metrics):
         a1 = _make_adapter(serials=["AA:AA", "BB:BB"])
         mux = MultiplexerBackend(adapters=[a1])
 
-        # First call — full discovery
-        result1 = mux.get_connected_controllers()
-        assert sorted(result1) == ["AA:AA", "BB:BB"]
+        assert sorted(mux.get_connected_controllers()) == ["AA:AA", "BB:BB"]
+        assert sorted(mux.get_connected_controllers()) == ["AA:AA", "BB:BB"]
 
-        # Second call — verify_only, but adapter still returns known serials
-        result2 = mux.get_connected_controllers()
-        assert sorted(result2) == ["AA:AA", "BB:BB"]
+        assert a1.discover.call_count == 2
+        a1.discover.assert_called_with(force=False, exclude_serials=ANY)
+        assert mock_metrics.discovery_full_enumerate_total.inc.call_count == 2
 
     @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
-    @patch("services.controller_manager.multiplexer.multiplexer_backend.time")
-    def test_after_interval_does_full_discovery_again(self, mock_time, mock_metrics):
-        """After the throttle interval elapses, full discovery should run again."""
+    def test_force_is_passed_through(self, mock_metrics):
         a1 = _make_adapter(serials=["AA:AA"])
         mux = MultiplexerBackend(adapters=[a1])
 
-        # First call at t=0
-        mock_time.monotonic.return_value = 0.0
-        mock_time.time = MagicMock(return_value=1000.0)
-        mux.get_connected_controllers()
-        a1.discover.reset_mock()
+        mux.get_connected_controllers(force_rescan=True)
 
-        # Second call at t=0.1 — within interval, should be verify_only
-        mock_time.monotonic.return_value = 0.1
-        mux.get_connected_controllers()
-        a1.discover.assert_called_once_with(force=False, verify_only=True, exclude_serials=ANY)
-        a1.discover.reset_mock()
-
-        # Third call at t=0.6 — past the 0.5s interval, should be full
-        mock_time.monotonic.return_value = 0.6
-        mux.get_connected_controllers()
-        a1.discover.assert_called_once_with(force=False, verify_only=False, exclude_serials=ANY)
+        a1.discover.assert_called_once_with(force=True, exclude_serials=ANY)
 
 
 class TestLedBatchVersusDiscoveryCleanup:
@@ -1212,7 +1126,7 @@ class TestRoutingSwitchKeepsTheController:
             spec = create_autospec(ControllerIOAdapter, instance=True)
             spec.adapter_type = adapter_type
             # Like rust-hid: a serial another adapter holds is not opened (exclude_serials).
-            spec.discover.side_effect = lambda force=False, verify_only=False, exclude_serials=None: [  # noqa: ARG005
+            spec.discover.side_effect = lambda force=False, exclude_serials=None: [  # noqa: ARG005
                 serial for serial in ["AA:AA"] if serial not in (exclude_serials or [])
             ]
             spec.open.return_value = True
@@ -1246,3 +1160,215 @@ class TestRoutingSwitchKeepsTheController:
         button_detector.publish_connection_event.assert_not_called()
         assert set(tracked) == {"AA:AA"}
         assert loop.drain_disconnects() == []
+
+
+def _specced_adapter(serials):
+    adapter = create_autospec(ControllerIOAdapter, instance=True)
+    adapter.adapter_type = "mock"
+    adapter.discover.return_value = serials
+    adapter.open.return_value = True
+    adapter.set_output.return_value = True
+    adapter.get_adapter_for_serial.return_value = None
+    return adapter
+
+
+class TestLedBatchSendsTheDesiredOutputState:
+    """#2355: the 20 Hz batch sends colour + rumble on change and retries a failed write.
+
+    Before, the batch compared only the colour (a rumble change or stop waited for
+    the 2 s keep-alive) and marked a colour as sent even when the write failed.
+    """
+
+    SERIAL = "AA:AA"
+
+    def _mux_with_colour_sent(self):
+        adapter = _specced_adapter([self.SERIAL])
+        mux = MultiplexerBackend(adapters=[adapter])
+        mux.get_connected_controllers()
+        mux._led_colors[self.SERIAL] = (255, 0, 0)
+        assert mux.update_all_leds() == 1  # colour sent, keep-alive not due
+        adapter.set_output.reset_mock()
+        return mux, adapter
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_rumble_change_skipped_by_a_busy_lock_goes_out_on_the_next_tick(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+
+        with mux._led_lock:  # a batch or discovery swap is in progress
+            assert await mux.set_rumble(self.SERIAL, 200) is True
+        adapter.set_output.assert_not_called()
+
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 255, 0, 0, 200)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_rumble_stop_skipped_by_a_busy_lock_goes_out_on_the_next_tick(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        await mux.set_rumble(self.SERIAL, 200)
+        adapter.set_output.reset_mock()
+
+        with mux._led_lock:
+            await mux.set_rumble(self.SERIAL, 0)
+
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 255, 0, 0, 0)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_failed_direct_rumble_write_is_retried_on_the_next_tick(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        await mux.set_rumble(self.SERIAL, 200)
+        adapter.set_output.return_value = False  # stream reconnecting / queue full
+
+        assert await mux.set_rumble(self.SERIAL, 0) is False
+
+        adapter.set_output.reset_mock()
+        adapter.set_output.return_value = True
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 255, 0, 0, 0)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_failed_batch_write_is_retried_on_the_next_tick(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        mux._led_colors[self.SERIAL] = (0, 0, 255)
+        adapter.set_output.return_value = False
+
+        mux.update_all_leds()
+        assert mux._last_sent_color[self.SERIAL] == (255, 0, 0)  # not marked as sent
+
+        adapter.set_output.reset_mock()
+        adapter.set_output.return_value = True
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 0, 0, 255, 0)
+        assert mux._last_sent_color[self.SERIAL] == (0, 0, 255)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_an_unchanged_state_is_not_resent_before_the_keepalive(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        await mux.set_rumble(self.SERIAL, 200)  # direct write succeeds
+        adapter.set_output.reset_mock()
+
+        assert mux.update_all_leds() == 0
+
+        adapter.set_output.assert_not_called()
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_persistent_failure_is_counted_once_per_keepalive_interval(self, _metrics):
+        """Retries run every tick; the health counter keeps the old once-per-2 s cadence."""
+        mux, adapter = self._mux_with_colour_sent()
+        mux._led_colors[self.SERIAL] = (0, 0, 255)
+        adapter.set_output.return_value = False
+
+        for _ in range(5):
+            mux.update_all_leds()
+
+        assert adapter.set_output.call_count == 5
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        mux.update_all_leds()
+        assert mux._led_failures[self.SERIAL] == 2
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_changing_output_during_an_outage_is_counted_once_per_interval(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        adapter.set_output.return_value = False
+
+        for level in range(1, 13):  # a shield swell: a new output every tick
+            mux._rumble[self.SERIAL] = level
+            mux.update_all_leds()
+
+        assert adapter.set_output.call_count == 12
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        mux._rumble[self.SERIAL] = 99
+        mux.update_all_leds()
+        assert mux._led_failures[self.SERIAL] == 2
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_raising_write_is_counted_once_per_interval(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        mux._led_colors[self.SERIAL] = (0, 0, 255)
+        adapter.set_output.side_effect = OSError("boom")
+
+        for _ in range(5):
+            mux.update_all_leds()
+
+        assert adapter.set_output.call_count == 5
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        mux.update_all_leds()
+        assert mux._led_failures[self.SERIAL] == 2
+
+
+class TestRumbleWithoutAColour:
+    """#2365: rumble is a desired output of its own; direct-write failures are counted."""
+
+    SERIAL = "AA:AA"
+
+    def _mux(self):
+        adapter = _specced_adapter([self.SERIAL])
+        mux = MultiplexerBackend(adapters=[adapter])
+        mux.get_connected_controllers()
+        return mux, adapter
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_failed_rumble_on_a_serial_without_a_colour_is_retried(self, _metrics):
+        mux, adapter = self._mux()
+        adapter.set_output.return_value = False
+        assert await mux.set_rumble(self.SERIAL, 200) is False
+        adapter.set_output.reset_mock()
+        adapter.set_output.return_value = True
+
+        assert mux.update_all_leds() == 1
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 0, 0, 0, 200)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_rumble_skipped_by_a_busy_lock_without_a_colour_goes_out_next_tick(self, _metrics):
+        mux, adapter = self._mux()
+        with mux._led_lock:
+            await mux.set_rumble(self.SERIAL, 200)
+        adapter.set_output.assert_not_called()
+
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 0, 0, 0, 200)
+
+    @pytest.mark.uc("UC-002", br=["BR-005"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_direct_write_failures_count_once_per_interval(self, _metrics):
+        mux, adapter = self._mux()
+        adapter.set_output.return_value = False
+
+        await mux.set_rumble(self.SERIAL, 200)
+        await mux.set_led_color(self.SERIAL, 1, 2, 3)
+        await mux.set_rumble(self.SERIAL, 100)
+
+        assert mux._led_failures[self.SERIAL] == 1
+
+        mux._led_failures_counted[self.SERIAL] = 0.0
+        await mux.set_led_color(self.SERIAL, 4, 5, 6)
+        assert mux._led_failures[self.SERIAL] == 2

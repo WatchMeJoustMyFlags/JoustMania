@@ -25,7 +25,7 @@
 //! episode. Report only: a stuck writer never trips the watchdog.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -153,6 +153,8 @@ pub struct OutputRouter {
     slots: Arc<Mutex<HashMap<String, Arc<OutputSlot>>>>,
     /// Time base of every slot's `write_started` stamp.
     origin: Instant,
+    /// Writer threads that have not ended yet (a closed one counts until its off is sent).
+    live_writers: Arc<AtomicUsize>,
 }
 
 impl Default for OutputRouter {
@@ -160,11 +162,43 @@ impl Default for OutputRouter {
         Self {
             slots: Arc::default(),
             origin: Instant::now(),
+            live_writers: Arc::default(),
         }
     }
 }
 
+/// Counts a writer thread as live until it is dropped (also on a panic).
+struct LiveWriter(Arc<AtomicUsize>);
+
+impl LiveWriter {
+    fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count.clone())
+    }
+}
+
+impl Drop for LiveWriter {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 impl OutputRouter {
+    /// Wait until every writer thread has ended (after a close each sends its
+    /// off first), at most `timeout`. True when none is left.
+    pub fn wait_writers_stopped(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.live_writers.load(Ordering::SeqCst) == 0 {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// Every open controller's write in flight, if any (never touches a device).
     pub fn writes_in_flight(&self) -> Vec<WriteInFlight> {
         let now_ms = self.origin.elapsed().as_millis() as u64;
@@ -214,13 +248,18 @@ impl OutputRouter {
         let slot = Arc::new(OutputSlot::default());
         let writer = Writer {
             serial: serial.to_string(),
+            labels: crate::metrics::ControllerLabels::new(serial),
             slot: slot.clone(),
             slots: self.slots.clone(),
             origin: self.origin,
         };
+        let live = LiveWriter::new(&self.live_writers);
         let spawned = std::thread::Builder::new()
             .name(format!("hid-out-{serial}"))
-            .spawn(move || writer.run(&device, &rate));
+            .spawn(move || {
+                let _live = live;
+                writer.run(&device, &rate)
+            });
         if let Err(e) = spawned {
             warn!(serial, error = %e, "Failed to start the output writer; no LED / rumble for this controller");
             return;
@@ -253,6 +292,7 @@ impl OutputRouter {
 /// newer slot has replaced it.
 struct Writer {
     serial: String,
+    labels: crate::metrics::ControllerLabels,
     slot: Arc<OutputSlot>,
     slots: Arc<Mutex<HashMap<String, Arc<OutputSlot>>>>,
     origin: Instant,
@@ -316,11 +356,13 @@ impl Writer {
             // Stamped before the device lock: waiting on it is part of the stall.
             let stamp = self.origin.elapsed().as_millis() as u64 + 1;
             slot.write_started.store(stamp, Ordering::Relaxed);
+            let write_started = Instant::now();
             let result = device
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .write(&report);
             slot.write_started.store(0, Ordering::Relaxed);
+            crate::metrics::record_write(&self.labels, write_started.elapsed(), result.is_ok());
             last_write = Some(Instant::now());
             let mut gave_up = false;
             match result {

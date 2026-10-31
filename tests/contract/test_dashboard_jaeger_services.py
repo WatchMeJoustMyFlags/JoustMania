@@ -1,7 +1,7 @@
 """Every Jaeger service name the dashboard SPA searches is a real OTel service identity (#2061).
 
-The SPA links and embeds `/jaeger/search?service=<name>` and queries `/jaeger/api/traces`
-with a `service` parameter. A name that is not an `OTEL_SERVICE_NAME` shows an empty
+The SPA links and embeds `/jaeger/search?service=<name>` and queries `/jaeger/api/v3/traces`
+with a `query.serviceName` parameter (#2283). A name that is not an `OTEL_SERVICE_NAME` shows an empty
 Jaeger (the coordinator once linked `game_coordinator` instead of `game-coordinator-service`).
 Declared identities: docs/specs/telemetry.md section 1 and docker-compose.yml.
 """

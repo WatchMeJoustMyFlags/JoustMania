@@ -53,6 +53,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/experiment"
@@ -103,6 +104,10 @@ const (
 	// OutcomeReverted — autonomous applied to the real default but a degradation was
 	// observed, so the real-default change was rolled back (per M7-7's Reverter seam).
 	OutcomeReverted Outcome = "reverted"
+	// OutcomeDeferred — autonomous promotion of a hold key while a real game runs:
+	// the real write waits in the deferred queue until no real game runs (UC-043 A17
+	// step 3, deferred.go). Its later outcome is journaled separately.
+	OutcomeDeferred Outcome = "deferred"
 )
 
 // Config is the live, per-promotion flag configuration the Promoter acts under
@@ -207,6 +212,12 @@ type Result struct {
 	// presence on a github-target Result is the SAFETY RAIL's visible proof that the
 	// real path was unreachable and the promotion degraded to an inert recorded no-op.
 	Reason string
+	// RevertPending: the watch's revert of a hold key waits until no real game runs
+	// (UC-043 A17); journaled write-ahead (journal.Promotion.RevertPending).
+	RevertPending bool
+	// ForeignOwner: the writer that owns the real overlay when the promotion was
+	// refused with 412 writer_mismatch (UC-043 A19, #2276); empty otherwise.
+	ForeignOwner string
 }
 
 // GitHubClient is the GitHub API wire boundary (the SAFETY RAIL's network seam).
@@ -271,6 +282,15 @@ type RealDefaultReverter interface {
 	RevertRealDefault(ctx context.Context, flagKey string) error
 }
 
+// GuardedRealDefaultReverter is the optional guarded revert of a watch or re-watch
+// (#2236, UC-043 A17 step 3): the flag service refuses it with 409 real_game_live
+// under its registration lock while a non-shadow game is registered, for a flag
+// marked real_write: no_live_real_game. The production writer implements it. The
+// kill switch never uses it: its revert (RevertRealDefault) is never refused.
+type GuardedRealDefaultReverter interface {
+	RevertRealDefaultUnlessRealGame(ctx context.Context, flagKey string) error
+}
+
 // Promoter orchestrates a promotion per the live mode/target. It owns ONLY the
 // dispatch + outcome logic; every consequential effect (open issue/PR, commit,
 // write real default, watch, revert) is an injected seam, so the whole flow is
@@ -323,6 +343,31 @@ type Promoter struct {
 	// rewatchJournal receives a re-watch revert's outcome for its experiment
 	// (UC-043 step 7, #1883); nil leaves it logged only. Guarded by mu.
 	rewatchJournal RewatchJournal
+
+	// --- deferred real writes of hold keys (UC-043 A17 step 3, deferred.go) ---
+	// probe reports whether a real game is live (nil = always live, fail closed);
+	// pending holds the waiting promotion writes and pendingReverts the waiting watch
+	// and re-watch reverts, by flag. Guarded by mu.
+	probe          RealGameProbe
+	pending        map[string]*deferredWrite
+	pendingReverts map[string]*deferredRevert
+	// restoredReverts are the reverts a previous run left waiting (no entry). Several
+	// may wait on one flag: the drain's value check decides which one runs.
+	restoredReverts []*deferredRevert
+	// offPasses counts consecutive drain passes that saw a mode other than
+	// autonomous (or the agent disabled); waiting writes drop at the second, so a
+	// one-pass flagd sync flap does not drop them (fail closed: they wait).
+	offPasses int
+	// closed is set by DropDeferred (shutdown): a revert that would wait after it is
+	// not queued; its write-ahead journal event lets the next run re-queue it.
+	closed bool
+	// probeErrors counts failed real-game probe reads (nil until the gauges are
+	// registered); lastProbeWarn rate-limits their WARN. Guarded by mu.
+	probeErrors   otelmetric.Int64Counter
+	lastProbeWarn map[string]time.Time
+	// replacedReverts are waiting reverts another one replaced, journaled by
+	// flushReplacedReverts outside killMu. Guarded by mu.
+	replacedReverts []experiment.Proposal
 }
 
 // appliedPromotion is one autonomous real default this agent run wrote and has not

@@ -21,21 +21,12 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream
 
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.ffa import FFAGame
-
-
-class MockGameplayStream:
-    """Mock bidirectional stream for testing."""
-
-    def __init__(self):
-        self.messages = []
-
-    async def write(self, message):
-        self.messages.append(message)
 
 
 class TestHandleDisconnect:
@@ -55,7 +46,7 @@ class TestHandleDisconnect:
         )
         game.gameplay_stream = MockGameplayStream()
         game.running = True
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         game.players["serial_a"] = Player(
             serial="serial_a",
@@ -181,7 +172,7 @@ class TestProcessGameplayUpdateWithDisconnects:
         )
         game.gameplay_stream = MockGameplayStream()
         game.running = True
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         for i in range(3):
             serial = f"player_{i}"
@@ -300,7 +291,7 @@ class TestTwoPlayerDisconnectScenario:
         )
         game.gameplay_stream = MockGameplayStream()
         game.running = True
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         game.players["player_a"] = Player(serial="player_a", team=0, alive=True, color=(255, 0, 0))
         game.players["player_b"] = Player(serial="player_b", team=0, alive=True, color=(0, 255, 0))

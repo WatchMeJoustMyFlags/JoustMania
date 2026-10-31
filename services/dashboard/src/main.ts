@@ -3,6 +3,7 @@
  *
  * Real-time controller visualization and game controls using Connect-Web.
  */
+import { html, setHtml } from "./html.js";
 import { keepGameEventStreamOpen } from "./stream.js";
 import { keepControllerStreamOpen } from "./controllerStream.js";
 import { controllerClient, gameClient, menuClient } from "./client.js";
@@ -19,16 +20,22 @@ import {
   RolloutStore,
   activityFeed,
   blockedRowsFrom,
-  fetchDecideFeed,
   fetchFlagStates,
   fetchInterventionCounts,
   fetchRollouts,
   needsFlagStateFallback,
+  createDecideRun,
+  DECIDE_SEARCH_TIMEOUT_MS,
+  FlagFallbackPacer,
+  flagFallbackKey,
 } from "./agent.js";
 import type { FlagPanel, InterventionOverlay } from "./agent.js";
 import { fetchAdapters } from "./adapters.js";
+import { StageSettings } from "./components/StageSettings.js";
+import { fetchStageSettings } from "./stageSettings.js";
 import { createPoller } from "./poller.js";
 import { PageGate } from "./pageGate.js";
+import { EmbedGate, VisibilityGate } from "./visibilityGate.js";
 import { ShieldStore } from "./shield.js";
 import { reduceGameEvent } from "./gameEvents.js";
 import {
@@ -38,8 +45,9 @@ import {
   paintAgentPanels,
   settleAgentPoll,
 } from "./degrade.js";
-import { FollowTracker, followBanner, visibleTiles } from "./follow.js";
-import { loadModeChoices, startGameEvent } from "./modes.js";
+import { FollowTracker, GameEventClock, followBanner, isRealGameLive, seedFromPoll, visibleTiles } from "./follow.js";
+import type { GameInfoLike } from "./follow.js";
+import { loadModeChoicesWithRetry, startGameEvent } from "./modes.js";
 import type { Poller } from "./poller.js";
 import type { GameplayData } from "./gen/controller_manager_pb.js";
 
@@ -69,7 +77,7 @@ const ROLLOUT_EVERY_TICKS = 2;
 // after DECIDE_TIMEOUT_MS so a struggling Jaeger is not piled onto.
 const DECIDE_POLL_MS = 1500;
 const DECIDE_MAX_BACKOFF_MS = 10_000;
-const DECIDE_TIMEOUT_MS = 4000;
+const DECIDE_TIMEOUT_MS = 2 * DECIDE_SEARCH_TIMEOUT_MS + 1000;
 
 // Poll cadence for the followed game (UC-070 BR-005, #1316): ListGames +
 // GetGameState on the game coordinator, two small unary calls. Decides whether
@@ -139,12 +147,12 @@ async function init() {
   controls = new Controls({
     onStartGame: handleStartGame,
     onStopGame: handleStopGame,
-    onModeChange: handleModeChange,
   });
   // The playable modes come from the menu (#1278); FFA stays preselected.
-  loadModeChoices(() => menuClient.listGameModes())
-    .then((choices) => controls.setModeChoices(choices))
-    .catch(console.error);
+  // Retried with backoff until the menu answers (#2387).
+  loadModeChoicesWithRetry(() => menuClient.listGameModes(), (choices) => controls.setModeChoices(choices)).catch(
+    console.error,
+  );
   experimentsView = new ExperimentsView("experiments-grid", "experiments-freshness");
   agentView = new AgentView("agent-feed", "agent-flags", "agent-overlay", "agent-freshness", {
     strip: "decide-strip",
@@ -163,6 +171,7 @@ async function init() {
 
   // Start polling the controllers' HCI adapters (VictoriaMetrics, UC-035 BR-009)
   startAdapterPolling();
+  startStageSettingsPolling();
 
   // Start polling the experiment.progress spans (Jaeger)
   startExperimentsPolling();
@@ -183,6 +192,7 @@ let decidePoller: Poller | null = null;
 let agentPoller: Poller | null = null;
 let experimentsPoller: Poller | null = null;
 let adapterPoller: Poller | null = null;
+let stagePoller: Poller | null = null;
 // Pollers that only feed one tab run while it is shown and the page is visible
 // (pageGate.ts): a hidden tab, a hidden page or a page in the back/forward cache
 // costs no queries; coming back resumes them.
@@ -190,8 +200,43 @@ const pageGate = new PageGate(
   document,
   globalThis,
   (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
-  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller],
+  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller, stagePoller, followPoller],
 );
+
+// Background load (UC-035 BR-012, #2290): the gameplay stream pauses on a hidden
+// page; the Grafana iframe loads on first open of its tab and is blanked 60 s after the
+// tab is left or at once on a hidden page; the Jaeger search loads once, on first open.
+const streamGate = new VisibilityGate(document, globalThis);
+const embedGate = new EmbedGate([
+  {
+    frame: document.getElementById("grafana-embed") as HTMLIFrameElement,
+    tab: "metrics",
+    src: document.getElementById("grafana-embed")?.dataset.src ?? "",
+    unloadWhenAway: true,
+  },
+  {
+    frame: document.getElementById("jaeger-embed") as HTMLIFrameElement,
+    tab: "traces",
+    src: document.getElementById("jaeger-embed")?.dataset.src ?? "",
+    unloadWhenAway: false,
+  },
+]);
+// The follow poll feeds the Controllers tab (banner, tiles) and the Agent tab (followed game).
+const FOLLOW_TABS = new Set(["controllers", "agent"]);
+let followPoller: Poller | null = null;
+function followActive(): boolean {
+  return FOLLOW_TABS.has(pageGate.activeTab) && pageGate.isActive(pageGate.activeTab);
+}
+function syncBackground() {
+  embedGate.sync(pageGate.activeTab, !pageGate.pageVisible);
+  if (followActive()) followPoller?.poke();
+  else followPoller?.stop();
+}
+document.addEventListener("visibilitychange", syncBackground);
+// After PageGate's own listeners (registered first), so pageVisible is current.
+globalThis.addEventListener("pagehide", syncBackground);
+globalThis.addEventListener("pageshow", syncBackground);
+syncBackground();
 
 function tabActive(tab: string): boolean {
   return pageGate.isActive(tab);
@@ -220,12 +265,16 @@ function setupTabs() {
       });
 
       pageGate.activeTab = tabId;
+      syncBackground();
       if (tabId === "agent") {
         decidePoller?.poke();
         agentPoller?.poke();
       }
       if (tabId === "experiments") experimentsPoller?.poke();
-      if (tabId === "controllers") adapterPoller?.poke();
+      if (tabId === "controllers") {
+        adapterPoller?.poke();
+        stagePoller?.poke();
+      }
 
       console.log(`Switched to tab: ${tabId}`);
     });
@@ -237,7 +286,8 @@ function setupTabs() {
 function startControllerStream() {
   if (state.isStreaming) return;
   void keepControllerStreamOpen({
-    open: () => controllerClient.watchGameplayData({ updateFrequencyHz: 30 }),
+    gate: streamGate,
+    open: (signal) => controllerClient.watchGameplayData({ updateFrequencyHz: 30 }, signal),
     onUpdate: (update) => {
       // Update controller state
       state.controllers.clear();
@@ -303,6 +353,7 @@ function renderAgentPanels() {
 // failure keeps the last render, flagged stale).
 function startAgentPolling() {
   let tick = 0;
+  const flagFallbackPacer = new FlagFallbackPacer();
   agentPoller = createPoller({
     baseMs: AGENT_POLL_MS,
     maxMs: AGENT_MAX_BACKOFF_MS,
@@ -310,11 +361,11 @@ function startAgentPolling() {
     isActive: () => tabActive("agent"),
     run: async (signal) => {
       const rolloutDue = tick % ROLLOUT_EVERY_TICKS === 0;
-      const flagsNeeded = needsFlagStateFallback(
-        flagStore,
-        decideStore.feed().current?.gameId ?? null,
-        decideStore.followState,
-      );
+      const decideGameId = decideStore.feed().current?.gameId ?? null;
+      // Paced (#2287): the same game's fallback search repeats at most every 30 s.
+      const flagsNeeded =
+        needsFlagStateFallback(flagStore, decideGameId, decideStore.followState) &&
+        flagFallbackPacer.take(flagFallbackKey(decideGameId, decideStore.followState));
       // Settled, not all: the VictoriaMetrics counts render even when a Jaeger
       // leg fails (UC-035 A3 step 2); the Jaeger failure still marks the poll failed.
       const settled = await Promise.allSettled([
@@ -323,6 +374,8 @@ function startAgentPolling() {
         rolloutDue ? fetchRollouts(rolloutStore, signal) : Promise.resolve(),
       ]);
       tick += 1;
+      // A failed fallback search is retried on the next poll, not after the pace.
+      if (flagsNeeded && settled[1].status === "rejected") flagFallbackPacer.forget();
       const result = settleAgentPoll(settled, interventionCounts, (states) =>
         flagStore.merge(states, decideStore.followState),
         { flags: flagsNeeded, rollouts: rolloutDue },
@@ -362,9 +415,29 @@ function startAdapterPolling() {
   adapterPoller.poke();
 }
 
+// The live stage settings strip (UC-035 BR-010, #2289): VictoriaMetrics gauges plus the
+// menu's GetMenuStatus, every 5 s while the Controllers tab is shown and the page visible.
+const STAGE_POLL_MS = 5000;
+
+function startStageSettingsPolling() {
+  const stageSettings = new StageSettings();
+  stagePoller = createPoller({
+    baseMs: STAGE_POLL_MS,
+    maxMs: 30_000,
+    timeoutMs: 5000,
+    isActive: () => tabActive("controllers"),
+    run: async (signal) => {
+      stageSettings.update(await fetchStageSettings((s) => menuClient.getMenuStatus(s), signal));
+    },
+    onError: () => stageSettings.markStale(),
+  });
+  stagePoller.poke();
+}
+
 // Poll the agent.decide spans from Jaeger (#1233). Only while the Agent tab is
 // shown AND the page is visible; one chain at most (see poller.ts), incremental
-// query window (DecideStore), per-request timeout and backoff. Its game traces
+// query window per search lane (DecideStore), per-request timeout and backoff,
+// paced by the answer size and targeted at the live real game (#2287). Its game traces
 // also carry the blocked agent.decision and agent.flag_state spans (#2059).
 function startDecidePolling() {
   const store = decideStore;
@@ -373,13 +446,12 @@ function startDecidePolling() {
     maxMs: DECIDE_MAX_BACKOFF_MS,
     timeoutMs: DECIDE_TIMEOUT_MS,
     isActive: () => tabActive("agent"),
-    run: async (signal) => {
-      const feed = await fetchDecideFeed(store.queryStartMs(), signal);
-      store.merge(feed.rows);
-      flagStore.merge(feed.flagStates ?? [], store.followState);
+    run: createDecideRun(store, (polled) => {
+      for (const error of polled.laneErrors) console.warn("Decide lane failed (feed kept):", error);
+      flagStore.merge(polled.flagStates, store.followState);
       agentView.renderDecide(store.feed());
       renderAgentPanels();
-    },
+    }),
     onError: (error) => {
       console.error("Decide feed poll error:", error);
       onDecidePollFailed(agentView);
@@ -411,15 +483,7 @@ function renderFollowBanner() {
   if (!banner) return;
   const text = followBanner(followTracker.state);
   banner.hidden = text === "";
-  banner.innerHTML = text
-    ? `<span class="decide-game decide-game-shadow">shadow</span> ${escapeText(text)}`
-    : "";
-}
-
-function escapeText(text: string): string {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
+  setHtml(banner, text ? html`<span class="decide-game decide-game-shadow">shadow</span> ${text}` : html``);
 }
 
 // Fold the followed shadow game's own events (shields, deaths) until it is no
@@ -467,22 +531,40 @@ function updatePlayerCount(visible: number) {
   gameStatus.updatePlayerCount(state.totalPlayers, state.alivePlayers);
 }
 
+// Start / Stop and the status line from GetGameState (UC-035 A6, #2386): the
+// event bus has no replay, so a reload mid-game would keep Stop disabled.
+let polledLive: boolean | null = null;
+const gameEventClock = new GameEventClock();
+function seedGameControls(primary: GameInfoLike | undefined) {
+  const seed = seedFromPoll(primary, polledLive, state.gameState);
+  polledLive = isRealGameLive(primary);
+  if (!seed) return;
+  controls.setGameRunning(seed.running);
+  if (seed.status !== null) {
+    state.gameState = seed.status;
+    gameStatus.updateState(state.gameState);
+  }
+}
+
 // Same single-chain poller with timeout and backoff as the decide feed: a
 // coordinator outage backs off to FOLLOW_MAX_BACKOFF_MS instead of erroring
 // every 2 s, and a transient error keeps the followed game (FollowTracker).
 function startFollowPolling() {
   let failing = false;
-  const poller = createPoller({
+  const poller = (followPoller = createPoller({
     baseMs: FOLLOW_POLL_MS,
     maxMs: FOLLOW_MAX_BACKOFF_MS,
     timeoutMs: FOLLOW_TIMEOUT_MS,
-    isActive: () => !document.hidden,
+    isActive: followActive,
     run: async (signal) => {
+      const stamp = gameEventClock.stamp();
       const [primary, list] = await Promise.all([
         gameClient.getGameState({}, signal),
         gameClient.listGames(signal),
       ]);
       followTracker.update(primary.gameInfo, list.games ?? []);
+      // An answer older than a game event or a Start / Stop click must not undo it.
+      if (gameEventClock.isCurrent(stamp)) seedGameControls(primary.gameInfo);
       failing = false;
       applyFollow();
     },
@@ -493,11 +575,8 @@ function startFollowPolling() {
       followTracker.fail();
       applyFollow();
     },
-  });
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) poller.stop();
-    else poller.poke();
-  });
+  }));
+  // Visibility and tab changes stop / poke it through syncBackground().
   poller.poke();
 }
 
@@ -510,7 +589,10 @@ function handleGameEvent(event: { eventType: string; data: { [key: string]: stri
   state.gameState = effect.state.gameState;
   state.alivePlayers = effect.state.alivePlayers;
   state.winner = effect.state.winner;
-  if (effect.gameRunning !== null) controls.setGameRunning(effect.gameRunning);
+  if (effect.gameRunning !== null) {
+    gameEventClock.bump();
+    controls.setGameRunning(effect.gameRunning);
+  }
   if (effect.feedLine !== null) addEvent(effect.feedLine);
 
   gameStatus.updateState(state.gameState);
@@ -533,6 +615,7 @@ function addEvent(text: string) {
 
 // Game controls
 async function handleStartGame() {
+  gameEventClock.bump();
   const mode = controls.getSelectedMode();
   console.log("Starting game:", mode);
 
@@ -550,6 +633,7 @@ async function handleStartGame() {
 }
 
 async function handleStopGame() {
+  gameEventClock.bump();
   console.log("Stopping game");
 
   try {
@@ -561,10 +645,6 @@ async function handleStopGame() {
     console.error("Failed to stop game:", error);
     addEvent("Failed to stop game");
   }
-}
-
-function handleModeChange(mode: string) {
-  console.log("Mode changed to:", mode);
 }
 
 // Start the app

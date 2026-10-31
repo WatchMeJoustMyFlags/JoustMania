@@ -22,6 +22,7 @@ sys.path.insert(0, str(test_dir))
 from conftest import EventCollector, MockControllerManagerService
 
 from proto import controller_manager_pb2 as pb
+from services.game_coordinator import game_clock
 from services.game_coordinator.games import base as base_module
 from services.game_coordinator.games.base import BaseGameMode, Player
 from services.game_coordinator.games.ffa import FFAGame
@@ -45,11 +46,16 @@ class RecordingStream:
         self.writes.append(message)
 
     def effects(self, serial=None):
-        """(effect name, duration_ms, shield_hold or None) per game effect, optionally for one serial."""
+        """(effect name, duration_ms, shield_hold or None) per game effect, optionally for one serial.
+
+        The help cue PULSE (UC-040 A42, BR-031) is left out; test_shield_help_cue.py pins it.
+        """
         out = []
         for message in self.writes:
             effect = message.game_effect
             if serial is not None and effect.serial != serial:
+                continue
+            if effect.effect == pb.GAME_EFFECT_PULSE:
                 continue
             hold = effect.shield_hold if effect.HasField("shield_hold") else None
             out.append((pb.GameEffect.Name(effect.effect), effect.duration_ms, hold))
@@ -86,7 +92,11 @@ class Flags:
 @pytest.fixture
 def clock():
     c = Clock()
-    with patch.object(base_module.time, "time", side_effect=lambda: c.t):
+    # The game clock drives the deadlines (UC-030 BR-010); the wall clock the wire timestamps.
+    with (
+        patch.object(base_module.time, "time", side_effect=lambda: c.t),
+        patch.object(game_clock, "now", side_effect=lambda: c.t),
+    ):
         yield c
 
 

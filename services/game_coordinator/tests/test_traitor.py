@@ -11,7 +11,6 @@ Tests the core Traitor mechanics:
 import asyncio
 import sys
 import threading
-import time
 from pathlib import Path
 from unittest.mock import create_autospec, patch
 
@@ -24,24 +23,17 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, async_noop
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream, async_noop
 
 from lib.types import GameEvent
 from proto import controller_manager_pb2, game_coordinator_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import GameState, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.traitor import TraitorGame, TraitorPlayer
 from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
 from services.game_coordinator.tests.test_death_detection_uc030 import LETHAL, STILL, _frame
 from services.game_coordinator.tests.test_ffa_uc020 import RecordingAudio, RecordingControllerManager
-
-
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
 
 
 class TestTraitorGameMode:
@@ -630,7 +622,7 @@ class TestTraitorEndGameImpl:
 
         stream = RecordingGameplayStream()
         game.gameplay_stream = stream
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         game.running = True
         assert await game._check_win_condition()  # latches the result (UC-022 BR-005)
@@ -670,7 +662,7 @@ class TestTraitorEndGameImpl:
                 player.alive = False
 
         game.gameplay_stream = RecordingGameplayStream()
-        game.start_time = time.time() - 45
+        game.start_time = game_clock.now() - 45
         game.state = GameState.RUNNING
         game.running = True
         assert await game._check_win_condition()  # latches the result (UC-022 BR-005)
@@ -707,7 +699,7 @@ class TestTraitorEndGameImpl:
             player.alive = False
 
         game.gameplay_stream = RecordingGameplayStream()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         game.running = True
         assert await game._check_win_condition()  # latches the result (UC-022 BR-005)
@@ -738,7 +730,7 @@ class TestTraitorEndGameImpl:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         game.gameplay_stream = RecordingGameplayStream()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         game.running = False
 
@@ -848,7 +840,7 @@ class TestUC022Step3BaseThresholds:
         await game._initialize_players()
         game.gameplay_stream = MockGameplayStream()
         game.running = True
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         traitor = game.players[game.traitor_serials[0]]
         loyal_serials = [s for s in game.players if s not in game.traitor_serials]
@@ -991,7 +983,7 @@ class TestTraitorBR005ForceEndNoWinner:
         game.random_teams = False
         await game._initialize_players_impl(cm.controllers)
         game.gameplay_stream = RecordingGameplayStream()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         game.running = True
         game.sounds = []

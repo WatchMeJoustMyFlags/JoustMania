@@ -9,7 +9,6 @@ Tests:
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -18,21 +17,29 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
 from services.controller_manager.discovery_loop import DiscoveryLoop
+from services.controller_manager.tests.backend_doubles import (
+    autospec_backend,
+    autospec_button_detector,
+    autospec_feedback_manager,
+    autospec_monitoring,
+    autospec_publisher,
+    autospec_rescan_timer,
+)
 
 
 def _create_discovery_loop(**overrides):
     """Create a DiscoveryLoop with mocked dependencies."""
     defaults = {
-        "backend": MagicMock(spec=[]),
+        "backend": autospec_backend(),
         "tracked_controllers": {},
         "controller_states": {},
-        "button_detector": MagicMock(),
-        "feedback_manager": MagicMock(),
-        "monitoring": MagicMock(last_battery_check=0),
-        "rescan_timer": MagicMock(),
+        "button_detector": autospec_button_detector(),
+        "feedback_manager": autospec_feedback_manager(),
+        "monitoring": autospec_monitoring(),
+        "rescan_timer": autospec_rescan_timer(),
         "paired_serials": [],
         "base_colors": {},
-        "event_publisher": MagicMock(),
+        "event_publisher": autospec_publisher(),
     }
     defaults.update(overrides)
     return DiscoveryLoop(**defaults)

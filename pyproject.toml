@@ -1,6 +1,6 @@
 [project]
 name = "joustmania"
-version = "0.7.0"
+version = "0.10.0"
 description = "Microservices-based motion gaming platform for PlayStation Move controllers"
 readme = "README.md"
 license = "MIT"
@@ -31,7 +31,7 @@ build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.14.11",
+    "ruff>=0.17.3",
     "ty>=0.0.11",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -62,6 +62,8 @@ addopts = "-v"
 markers = [
     "uc(id, flow=, br=, steps=, tc=, cond=): traceability tag to a use-case flow / business rule (see .claude/skills/README.md)",
     "nfr(*ids): traceability tag to the non-functional requirement(s) (NFR-XXX in docs/requirements.md) the test measures or verifies (see .claude/skills/README.md)",
+    "real_game_time: game_coordinator tests only: game time runs at wall-clock speed (the autouse fixture in tests/conftest.py runs it 10x faster, #2361)",
+    "real_durations: game_coordinator tests only: keep the production intro / pause / countdown durations (the autouse fixture in tests/conftest.py shortens them, #2361)",
 ]
 
 # ty - Type checking configuration
@@ -82,3 +84,7 @@ exclude = [
     "tests/integration", # Integration tests (separate package)
     "scripts/aiup",      # Vendored AI Unified Process linter (upstream style, Apache-2.0)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff 0.17 enables RUF022 by default; services/ behaviour files stay untouched by the bump (#2277)
+"services/__init__.py" = ["RUF022"]

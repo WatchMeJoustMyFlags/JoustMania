@@ -9,7 +9,7 @@ would be eliminated at frame 1 (UC-020 A2).
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, create_autospec
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -21,6 +21,7 @@ from test_observer_stream import SERIAL, rig  # noqa: F401  (pytest fixture)
 
 from proto import controller_manager_pb2
 from services.controller_manager.feedback_manager import FeedbackManager
+from services.controller_manager.tests.backend_doubles import autospec_span
 
 
 def _game_config() -> controller_manager_pb2.GameplayStreamConfig:
@@ -35,7 +36,7 @@ async def _configure(servicer, subscriber_id: str) -> None:
     feedback = create_autospec(FeedbackManager, instance=True)
     feedback.base_colors = {}
     servicer.feedback_manager = feedback
-    await servicer._process_gameplay_config(_game_config(), subscriber_id, MagicMock())
+    await servicer._process_gameplay_config(_game_config(), subscriber_id, autospec_span())
 
 
 def _disconnects(update) -> list[str]:

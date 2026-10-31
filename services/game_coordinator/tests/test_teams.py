@@ -25,14 +25,6 @@ from conftest import EventCollector, MockControllerManagerService
 from services.game_coordinator.games.teams import SimpleTeamsGame
 
 
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
-
-
 class TestTeamsGameMode:
     """Test Teams game mechanics."""
 

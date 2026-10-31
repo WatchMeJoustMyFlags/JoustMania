@@ -48,7 +48,8 @@ type Options struct {
 	Served []string
 	// EventListLen is K, the number of events an event list keeps.
 	EventListLen int
-	// MaxGameAge expires a game scope whose end was never reported (UC-053 A11).
+	// MaxGameAge expires a game scope not seen (registered or reconciled) for
+	// this long, i.e. whose end was never reported (UC-053 A11).
 	MaxGameAge time.Duration
 	// MaxGames caps the number of live game scopes (NFR-051).
 	MaxGames int
@@ -71,6 +72,9 @@ type Game struct {
 	ExperimentID        string    `json:"experiment_id,omitempty"`
 	Arm                 string    `json:"arm,omitempty"`
 	RegisteredAt        time.Time `json:"registered_at"`
+	// LastSeenAt is refreshed by every registration and every reconcile entry;
+	// game expiry counts from it (UC-053 A11, #2217).
+	LastSeenAt time.Time `json:"last_seen_at"`
 }
 
 // HasSerial reports whether serial is a player of the game.
@@ -208,6 +212,9 @@ type LoadReport struct {
 	Dropped     []string
 	Corrupt     bool
 	CorruptPath string
+	// FutureVersion: the file was written by a newer flag service; it is kept
+	// untouched and admin writes stay in memory (UC-053 A12).
+	FutureVersion bool
 }
 
 // New builds the state from the baseline and the registry, and restores the

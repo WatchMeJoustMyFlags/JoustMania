@@ -5,8 +5,8 @@
  * state change (started, game assigned / concluded / released, concluded,
  * promoting, terminal, rehydrate) and as a 60 s heartbeat per live experiment
  * (docs/specs/telemetry.md §4.1). Each span is its OWN one-span trace (never a
- * child of `agent.experiment`, whose trace holds every shadow game), so a search
- * stays small. Each carries the registry snapshot: status, flag, verdict once
+ * child of `agent.experiment`, whose trace holds every shadow game when
+ * `telemetry.experiment_game_parent=child`, #2223), so a search stays small. Each carries the registry snapshot: status, flag, verdict once
  * there is one, the end reason on `terminal`, and one `experiment.arm` event per
  * arm with `experiment.arm_stats.assigned` (games in flight), `.samples` and
  * `.mean_fitness` (the journal summary).
@@ -76,11 +76,30 @@ export interface ArmAggregate {
   inFlight: number;
 }
 
+/**
+ * The winning value of an experiment whose promotion was refused because another
+ * writer owns the real overlay (UC-043 A19, #2276).
+ */
+export interface Recommendation {
+  flag: string;
+  /** JSON encoding of the value (as the agent wrote it). */
+  value: string;
+  owner: string;
+}
+
 /** One experiment, from its newest experiment.progress snapshot. */
 export interface ExperimentView {
   experimentId: string;
   /** experiment.status of the snapshot. */
   status: string;
+  /** experiment.flag_key: the game flag under test ("" on an older agent image). */
+  flagKey: string;
+  /** experiment.objective: the fitness objective being optimized. */
+  objective: string;
+  /** experiment.thesis: why the change should help (#2291). */
+  thesis: string;
+  /** experiment.experimental_value: the experimental arm's flag value as JSON (#2291). */
+  experimentalValue: string;
   arms: ArmAggregate[];
   /** experimental mean minus control mean when both arms have samples, else null. */
   delta: number | null;
@@ -88,6 +107,8 @@ export interface ExperimentView {
   verdict: string;
   /** experiment.end_reason (terminal snapshot only). */
   reason: string;
+  /** Set when a promotion was refused for a foreign real-overlay owner, else null. */
+  recommendation: Recommendation | null;
   /** Span time of the snapshot (agent clock). */
   lastUpdatedMs: number;
   /** Span time in µs (agent clock): the ordering key. */
@@ -143,13 +164,28 @@ export function experimentFrom(span: JaegerSpan): ExperimentView {
       ? experimental.meanFitness - control.meanFitness
       : null;
 
+  const owner = tagString(tags, "experiment.recommendation.owner");
+  const recommendation: Recommendation | null =
+    owner === ""
+      ? null
+      : {
+          flag: tagString(tags, "experiment.recommendation.flag") || tagString(tags, "experiment.flag_key"),
+          value: tagString(tags, "experiment.recommendation.value"),
+          owner,
+        };
+
   return {
     experimentId: tagString(tags, "experiment.id"),
     status,
+    flagKey: tagString(tags, "experiment.flag_key"),
+    objective: tagString(tags, "experiment.objective"),
+    thesis: tagString(tags, "experiment.thesis"),
+    experimentalValue: tagString(tags, "experiment.experimental_value"),
     arms,
     delta,
     verdict: resolveVerdict(tagString(tags, "verdict.outcome"), status),
     reason: tagString(tags, "experiment.end_reason"),
+    recommendation,
     lastUpdatedMs: spanStartMs(span),
     startUs: spanStartUs(span),
     live: LIVE_STATUSES.has(status),
@@ -225,9 +261,4 @@ export async function pollExperiments(store: ExperimentStore, signal?: AbortSign
   );
   store.merge(parseExperimentSnapshots(body));
   return store.list();
-}
-
-/** A one-shot read with a fresh store (cold start). */
-export async function fetchExperiments(signal?: AbortSignal): Promise<ExperimentView[]> {
-  return pollExperiments(new ExperimentStore(), signal);
 }

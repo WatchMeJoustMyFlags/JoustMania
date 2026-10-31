@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,7 @@ import (
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/patterngame"
+	"github.com/joustmania/agent/telemetry/keys"
 )
 
 // registry.go is the agent-owned experiment COORDINATOR (design §7, #978). It is
@@ -196,6 +198,9 @@ type entry struct {
 	journal *journal.Journal
 	status  Status
 	flagKey string
+	// teardownBegun is set (under r.mu) before teardown strips the targeting. A
+	// Start whose targeting write lands after that point strips it again (#2340).
+	teardownBegun bool
 	// arms is the experiment's arm list (from intent), used for round-robin.
 	arms []string
 	// games maps a live (in-flight) shadow game_id → its arm. A game is removed on
@@ -221,6 +226,19 @@ type entry struct {
 	// recover which two games share a seed. The seed is a pure function of
 	// (experimentID, pairIndex) — NEVER a clock — so it is reproducible.
 	armCursor int
+
+	// promotionInFlight is set while the experiment's promotion runs and its own
+	// promotion event is not journaled yet; RecordPromotion holds later outcomes in
+	// laterPromotions until then (UC-043 A17: the deferred queue may journal first).
+	promotionInFlight bool
+	laterPromotions   []PromotionResult
+	// recommendOwner is the writer owning the real overlay when the experiment's
+	// promotion was refused with 412 writer_mismatch (UC-043 A19, #2276). Non-empty
+	// = every experiment.progress snapshot carries the recommendation attributes.
+	recommendOwner string
+	// endReason is the teardown reason of a terminal experiment; a recommendation
+	// snapshot repeats it as experiment.end_reason (the dashboard reason line).
+	endReason string
 
 	// span is the long-lived experiment ROOT span (#1188, epic #1181 PR2): the
 	// agent.experiment span started when the experiment becomes RUNNING (Start /
@@ -314,6 +332,12 @@ type Registry struct {
 	// seam.
 	minN int
 
+	// shutdown is the context whose cancellation means the agent's graceful stop has
+	// begun (UC-043 A20, #2332); the experiment loop sets it to its run context. Once
+	// it is cancelled the registry declares and starts no experiment and a conclusion
+	// does not call the promoter. Unset: never stopping (test wiring).
+	shutdown atomic.Pointer[context.Context]
+
 	mu      sync.Mutex
 	entries map[string]*entry
 	// rrCursor is the cross-experiment round-robin cursor for fair capacity
@@ -351,6 +375,17 @@ type Registry struct {
 	// is a test-only seam for the allocation mechanics (the production spawner
 	// refuses any spawn without an archetype).
 	patterns PatternPinner
+	// holdGate checks an experiment on a hold flag against the current defaults
+	// (UC-043 A17); nil skips the check (test seam).
+	holdGate HoldGate
+	// pendingPromotions lists the flags whose promotion write waits in the
+	// promoter's deferred queue (UC-043 A17 step 3); they count as under test. nil =
+	// none. Called without mu held.
+	pendingPromotions func() []string
+	// restoredReverts are the waiting hold-key reverts Rehydrate found in done
+	// journals (UC-043 A17); TakeRestoredReverts hands them to the promoter.
+	// Guarded by mu.
+	restoredReverts []RestoredRevert
 	// flagDigest computes UC-046 BR-011's digest for an arm before it spawns.
 	flagDigest func(ctx context.Context, experimentID, arm string) string
 	// patternTracker force-ends in-flight pattern games on the kill switch (A12).
@@ -422,6 +457,14 @@ type RegistryConfig struct {
 	// first allocation pass (UC-046). Production always wires it; nil is a test-only
 	// seam for the allocation mechanics.
 	Patterns PatternPinner
+	// HoldGate returns why an experiment on a hold flag cannot run on the current
+	// defaults ("" = it can), at its pin and at every tick (UC-043 A17 step 2). An
+	// error keeps the experiment. nil skips the check (test seam).
+	HoldGate HoldGate
+	// PendingPromotions lists the flags whose deferred promotion write still waits
+	// (promote.Promoter.PendingFlags, UC-043 A17 step 3): Declare refuses them and
+	// ActiveFlags reports them busy. nil = none.
+	PendingPromotions func() []string
 	// FlagDigest computes the arm's resolved-values flag digest (UC-046 BR-011)
 	// before the spawn; nil ⇒ no digest.
 	FlagDigest func(ctx context.Context, experimentID, arm string) string
@@ -503,6 +546,8 @@ func NewRegistry(cfg RegistryConfig) *Registry {
 		entries:           make(map[string]*entry),
 		releaseTombstones: make(map[string]string),
 		patterns:          cfg.Patterns,
+		holdGate:          cfg.HoldGate,
+		pendingPromotions: cfg.PendingPromotions,
 		flagDigest:        cfg.FlagDigest,
 		patternTracker:    cfg.PatternTracker,
 	}
@@ -530,6 +575,12 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	if !decision.IsExperimentable(in.Objective) {
 		return "", fmt.Errorf("registry: declare experiment: objective %q is not experimentable: no fitness function", in.Objective)
 	}
+	// UC-043 A17 step 1 (#2096): shield.activation is experimented on only toward
+	// hold, whoever declares it (the declarer forces it; a proposer cannot pick another
+	// value and experiment its way out of hold).
+	if err := checkHoldValue(in.FlagKey, in.ExperimentalValue); err != nil {
+		return "", fmt.Errorf("registry: declare experiment: %w", err)
+	}
 
 	arms := in.Arms
 	if len(arms) == 0 {
@@ -543,8 +594,19 @@ func (r *Registry) Declare(in Intent) (string, error) {
 	// experiment tick) is either fully registered when Rehydrate sees its journal,
 	// or not on disk yet. Otherwise Rehydrate would read the fresh PROPOSED journal
 	// as a leftover of a crash and abort it with start_failed (UC-043 A8).
+	// UC-043 A17 step 3 (opposer M6): a flag whose deferred promotion write still
+	// waits counts as under test; a new experiment's baseline would ignore it.
+	if _, waiting := r.pendingPromotionSet()[in.FlagKey]; waiting {
+		return "", fmt.Errorf("registry: declare experiment: %s has a deferred promotion waiting for the end of the real game (UC-043 A17)", in.FlagKey)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// UC-043 A20 (#2332): checked under r.mu, where AbortAll takes its snapshot, so
+	// an experiment declared before the stop began is in that snapshot and none is
+	// declared after it.
+	if r.shuttingDown() {
+		return "", fmt.Errorf("registry: declare experiment: %w", ErrShuttingDown)
+	}
 	// Keep this call inside the lock: TestDeclareCreatesJournalUnderRegistryLock_1731
 	// probes r.mu through r.clock().
 	now := r.clock()
@@ -620,6 +682,12 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 		r.mu.Unlock()
 		return fmt.Errorf("registry: start: experiment %q is %s, not proposed", id, st)
 	}
+	if r.shuttingDown() {
+		// UC-043 A20 (#2332): no targeting write once the stop began; the caller aborts
+		// the PROPOSED experiment (start_failed), or the shutdown AbortAll does.
+		r.mu.Unlock()
+		return fmt.Errorf("registry: start %q: %w", id, ErrShuttingDown)
+	}
 	intent := e.journal.Intent()
 	r.mu.Unlock()
 
@@ -631,15 +699,48 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 			Rationale:         intent.Hypothesis,
 		}
 		if err := r.target.Apply(ctx, p); err != nil {
-			return fmt.Errorf("registry: start: write targeting for %q: %w", id, err)
+			applyErr := fmt.Errorf("registry: start: write targeting for %q: %w", id, err)
+			// #2340: an Apply error (the client's request cap, the shutdown-cancelled
+			// ctx) does not prove the write missed the flag service: it may land after
+			// a concurrent teardown's strip. Strip again, best effort, when a teardown
+			// began; an experiment still PROPOSED is aborted by the caller, which strips.
+			r.mu.Lock()
+			e = r.entries[id]
+			if e != nil && !e.teardownBegun && !e.status.IsTerminal() {
+				r.mu.Unlock()
+				return applyErr
+			}
+			var jrnl *journal.Journal
+			if e != nil {
+				jrnl = e.journal
+			}
+			r.mu.Unlock()
+			if stripErr := r.stripAfterAbortedStart(ctx, id, intent.FlagKey, jrnl); stripErr != nil {
+				return errors.Join(applyErr, stripErr)
+			}
+			return applyErr
 		}
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	// Re-fetch: a concurrent Abort may have removed/terminated it while unlocked.
 	e = r.entries[id]
+	if r.target != nil && (e == nil || e.teardownBegun || e.status.IsTerminal()) {
+		// #2340: a teardown (Abort / AbortAll: kill switch, experiments_enabled off,
+		// shutdown) began while the Apply above was in flight, so its strip may have
+		// run before the Apply wrote the branch. Strip it again: the teardown does
+		// not strip a second time, and the experiment never becomes RUNNING.
+		var jrnl *journal.Journal
+		if e != nil {
+			jrnl = e.journal
+		}
+		r.mu.Unlock()
+		return r.stripAfterAbortedStart(ctx, id, intent.FlagKey, jrnl)
+	}
+	defer r.mu.Unlock()
 	if e == nil || e.status != StatusProposed {
+		// Gone, tearing down or terminal without a targeting writer; or a concurrent
+		// Start won (RUNNING) and its targeting is the live one: keep it.
 		return nil
 	}
 	e.status = StatusRunning
@@ -651,6 +752,88 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 	r.emitProgressLocked(e, ProgressTriggerStarted, "", e.spanCtx) // #2059
 	r.log.Info("experiment.started", "experiment_id", id)
 	return nil
+}
+
+// Strip attempts and the per-attempt bound of the compensating strip (#2340).
+const (
+	abortedStartStripAttempts = 3
+	abortedStartStripTimeout  = 5 * time.Second
+	abortedStartStripBackoff  = 100 * time.Millisecond
+)
+
+// noteStartStripFailed is the journal note (a KindDecision without a status change)
+// of a compensating strip that failed after every attempt (#2340).
+const noteStartStripFailed = "start_targeting_strip_failed"
+
+// noteReassertStripFailed is the journal note of a compensating strip after an
+// arm-value re-assert (#2362) that failed after every attempt.
+const noteReassertStripFailed = "reassert_targeting_strip_failed"
+
+// ErrStartTargetingLeaked is returned by Start when the experiment was aborted
+// while its targeting write was in flight and the compensating strip failed: the
+// shadow targeting branch may remain on the flag service (#2340).
+var ErrStartTargetingLeaked = errors.New("targeting written after abort could not be stripped")
+
+// ErrReassertTargetingLeaked is returned by reassertArmValue when the experiment
+// was torn down while its arm-value re-assert was in flight and the compensating
+// strip failed (#2362).
+var ErrReassertTargetingLeaked = errors.New("targeting re-asserted after abort could not be stripped")
+
+// errReassertTornDown is returned by reassertArmValue when a teardown began
+// before or during the re-assert: the pair must not spawn (#2362).
+var errReassertTornDown = errors.New("experiment torn down during arm-value re-assert")
+
+// lateTargetingWrite names the writer whose targeting landed after a teardown
+// began: its log event, journal note and leak error.
+type lateTargetingWrite struct {
+	op     string // "start" | "reassert"
+	note   string
+	leaked error
+}
+
+var (
+	lateWriteStart    = lateTargetingWrite{op: "start", note: noteStartStripFailed, leaked: ErrStartTargetingLeaked}
+	lateWriteReassert = lateTargetingWrite{op: "reassert", note: noteReassertStripFailed, leaked: ErrReassertTargetingLeaked}
+)
+
+// stripAfterAbortedStart removes the targeting a Start wrote after a concurrent
+// teardown had already stripped it (#2340).
+func (r *Registry) stripAfterAbortedStart(ctx context.Context, id, flagKey string, jrnl *journal.Journal) error {
+	return r.stripLateTargetingWrite(ctx, lateWriteStart, id, flagKey, jrnl)
+}
+
+// stripLateTargetingWrite removes targeting written (by a Start, #2340, or an
+// arm-value re-assert, #2362) after a concurrent teardown had already stripped
+// it, so the kill switch, experiments_enabled off and the shutdown leave no agent
+// targeting behind. It runs outside r.mu (file I/O) on a context detached from the
+// caller's cancellation: the shutdown cancels the writer's context, and the strip
+// must still run. A strip that fails after every attempt is logged at ERROR,
+// journaled on the experiment and returned.
+func (r *Registry) stripLateTargetingWrite(ctx context.Context, w lateTargetingWrite, id, flagKey string, jrnl *journal.Journal) error {
+	var err error
+	for attempt := 1; attempt <= abortedStartStripAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(time.Duration(attempt-1) * abortedStartStripBackoff)
+		}
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abortedStartStripTimeout)
+		err = r.target.Strip(sctx, flagKey, id)
+		cancel()
+		if err == nil {
+			r.log.Info("experiment."+w.op+"_targeting_stripped", "experiment_id", id, "flag_key", flagKey)
+			return nil
+		}
+	}
+	r.log.Error("experiment."+w.op+"_targeting_strip_failed", "experiment_id", id, "flag_key", flagKey,
+		"attempts", abortedStartStripAttempts, "error", err)
+	if jrnl != nil {
+		r.mu.Lock()
+		r.appendEvent(jrnl, journal.Event{
+			Kind: journal.KindDecision,
+			Note: w.note + ": " + err.Error(),
+		})
+		r.mu.Unlock()
+	}
+	return fmt.Errorf("registry: %s %q: %w: %w", w.op, id, w.leaked, err)
 }
 
 // startSpanLocked starts the experiment's long-lived agent.experiment ROOT span
@@ -666,28 +849,28 @@ func (r *Registry) startSpanLocked(e *entry, intent journal.Intent) {
 		return
 	}
 	attrs := []attribute.KeyValue{
-		attribute.String(decision.AttrExperimentID, e.id),
+		attribute.String(keys.AttrExperimentID, e.id),
 	}
 	// #1184: stamp the explicit THESIS (the immutable Intent.Hypothesis — what idea +
 	// expected effect) on the root span so the trace carries the experiment's WHY, not
 	// just the flag/value mechanics. Same string the journal persists + the dossier
 	// surfaces. Guarded so a thesis-less (legacy/test) intent adds no empty attr.
 	if intent.Hypothesis != "" {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentThesis, intent.Hypothesis))
+		attrs = append(attrs, attribute.String(keys.AttrExperimentThesis, intent.Hypothesis))
 	}
 	if intent.FlagKey != "" {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentFlagKey, intent.FlagKey))
+		attrs = append(attrs, attribute.String(keys.AttrExperimentFlagKey, intent.FlagKey))
 	}
 	if intent.Objective != "" {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentObjective, intent.Objective))
+		attrs = append(attrs, attribute.String(keys.AttrExperimentObjective, intent.Objective))
 	}
 	if intent.TargetNPerArm > 0 {
-		attrs = append(attrs, attribute.Int(decision.AttrExperimentTargetN, intent.TargetNPerArm))
+		attrs = append(attrs, attribute.Int(keys.AttrExperimentTargetN, intent.TargetNPerArm))
 	}
 	if len(intent.Arms) > 0 {
-		attrs = append(attrs, attribute.String(decision.AttrExperimentArms, strings.Join(intent.Arms, ",")))
+		attrs = append(attrs, attribute.String(keys.AttrExperimentArms, strings.Join(intent.Arms, ",")))
 	}
-	_, span := r.tracer.Start(context.Background(), decision.SpanExperiment, trace.WithAttributes(attrs...))
+	_, span := r.tracer.Start(context.Background(), keys.SpanExperiment, trace.WithAttributes(attrs...))
 	e.span = span
 	e.spanCtx = span.SpanContext()
 }
@@ -730,6 +913,8 @@ func (r *Registry) AllocateAndSpawn(ctx context.Context) int {
 	if r.spawner == nil {
 		return 0
 	}
+	// UC-043 A17 step 2: a running hold-flag experiment whose condition flipped ends.
+	r.discardHoldStale(ctx)
 	// UC-046 step 2: pin the archetype selection of experiments that have not spawned yet.
 	r.pinPending(ctx)
 	// UC-046 A6 / BR-015: conclude pattern experiments whose archetypes are all used
@@ -809,6 +994,22 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 	}
 	if err := r.reassertArmValue(ctx, plan.id); err != nil {
 		r.rollbackPair(plan, 0, nil)
+		// #2362: a teardown began before or during the re-assert; it owns the
+		// experiment's end, so no discard and no retry here.
+		if errors.Is(err, errReassertTornDown) {
+			r.log.Debug("experiment.arm_value_reassert_torn_down", "experiment_id", plan.id, "error", err)
+			return 0, true
+		}
+		// UC-043 A10 step 3 (#2366): the gate refuses the flag as not experimentable
+		// (it left the experiment catalog, e.g. an experiment journaled before an
+		// upgrade and rehydrated after it). No retry can succeed, so end it discarded
+		// (journaled), which frees its slot and its flag; other errors retry next tick.
+		var rej *RejectError
+		if errors.As(err, &rej) && rej.Reason == ReasonNotExperimentable {
+			r.log.Warn("experiment.arm_value_not_experimentable", "experiment_id", plan.id, "error", err)
+			r.teardown(ctx, plan.id, r.flagKeyOf(plan.id), StatusDiscarded, string(ReasonNotExperimentable)+": "+rej.Detail)
+			return 0, true
+		}
 		r.log.Warn("experiment.arm_value_reassert_failed", "experiment_id", plan.id, "error", err)
 		return 0, true
 	}
@@ -844,6 +1045,11 @@ func (r *Registry) spawnPair(ctx context.Context, plan pairPlan) (bound int, sto
 // a pair spawns: a flag-service restart drops it (the targeting writer compares
 // boot epochs and writes it again). A targeting writer without the capability,
 // or an experiment without a flag, needs nothing.
+//
+// The write runs outside r.mu. A teardown (Abort / AbortAll: kill switch,
+// experiments_enabled off, shutdown) that begins while it is in flight may strip
+// before the write lands, so after the write (success or error) a begun teardown
+// gets a compensating strip and errReassertTornDown is returned (#2362).
 func (r *Registry) reassertArmValue(ctx context.Context, id string) error {
 	ra, ok := r.target.(interface {
 		Reassert(ctx context.Context, p Proposal) error
@@ -857,17 +1063,40 @@ func (r *Registry) reassertArmValue(ctx context.Context, id string) error {
 		r.mu.Unlock()
 		return nil
 	}
+	if e.teardownBegun || e.status.IsTerminal() {
+		r.mu.Unlock()
+		return errReassertTornDown // the teardown owns the strip; write nothing
+	}
 	intent := e.journal.Intent()
 	r.mu.Unlock()
 	if intent.FlagKey == "" {
 		return nil
 	}
-	return ra.Reassert(ctx, Proposal{
+	writeErr := ra.Reassert(ctx, Proposal{
 		FlagKey:           intent.FlagKey,
 		ExperimentID:      id,
 		ExperimentalValue: intent.ExperimentalValue,
 		Rationale:         intent.Hypothesis,
 	})
+
+	r.mu.Lock()
+	e = r.entries[id]
+	if e != nil && !e.teardownBegun && !e.status.IsTerminal() {
+		r.mu.Unlock()
+		return writeErr
+	}
+	// A teardown began while the write was in flight: an erroring write may still
+	// have reached the flag service, so strip in both cases. The teardown does not
+	// strip a second time.
+	var jrnl *journal.Journal
+	if e != nil {
+		jrnl = e.journal
+	}
+	r.mu.Unlock()
+	if stripErr := r.stripLateTargetingWrite(ctx, lateWriteReassert, id, intent.FlagKey, jrnl); stripErr != nil {
+		return errors.Join(errReassertTornDown, stripErr)
+	}
+	return errReassertTornDown
 }
 
 // rollbackPair undoes a partially-spawned CRN pair on a spawn error (#1003), keeping
@@ -1558,7 +1787,28 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 		r.mu.Unlock()
 		return PromotionResult{Outcome: PromotionDiscarded, Reason: "experiment " + string(st) + ", not concluded"}
 	}
+	if r.shuttingDown() {
+		// UC-043 A20 (#2332): a conclusion that lands after the graceful stop began
+		// keeps its sample and verdict but does not promote: no issue, PR or real
+		// default write while the agent goes down. Journaled `discarded: shutdown`, the
+		// reason a deferred write dropped at shutdown gets (A17 step 3), so the
+		// experiment ends discarded and a restart finds the outcome (A15 step 3).
+		res := PromotionResult{Outcome: PromotionDiscarded, Reason: PromotionReasonShutdown}
+		promotion := res
+		r.appendEvent(e.journal, journal.Event{
+			Kind:      journal.KindPromotion,
+			Status:    res.Outcome,
+			Note:      res.Reason,
+			Promotion: &promotion,
+		})
+		r.mu.Unlock()
+		r.log.Info("experiment.promotion_skipped_at_shutdown", "experiment_id", id)
+		return res
+	}
 	e.status = StatusPromoting
+	// A later outcome (deferred queue, kill switch) journaled before this promotion's
+	// own event waits until it, so the journal keeps their order (UC-043 A17).
+	e.promotionInFlight = true
 	// UC-043 BR-007 (#2042): write-ahead. The promoter acts only once the promoting
 	// decision is durable, so a restart never finds a promotion that acted without
 	// one (A15). A summary rewrite that fails after the line is durable still counts.
@@ -1610,9 +1860,100 @@ func (r *Registry) promote(ctx context.Context, id string, jrnl *journal.Journal
 			Note:      res.Reason,
 			Promotion: &promotion,
 		})
+		if res.ForeignOwner != "" {
+			e.recommendOwner = res.ForeignOwner
+		}
+		r.flushLaterPromotionsLocked(e)
 	}
 	r.mu.Unlock()
 	return res
+}
+
+// flushLaterPromotionsLocked journals the later promotion outcomes RecordPromotion
+// held back while e's promotion ran, after its own event. Assumes r.mu is held.
+func (r *Registry) flushLaterPromotionsLocked(e *entry) {
+	e.promotionInFlight = false
+	for _, res := range e.laterPromotions {
+		promotion := res
+		r.noteRecommendationLocked(e, res)
+		r.appendEvent(e.journal, journal.Event{
+			Kind:      journal.KindPromotion,
+			Status:    res.Outcome,
+			Note:      res.Reason,
+			Promotion: &promotion,
+		})
+	}
+	e.laterPromotions = nil
+}
+
+// RestoredRevert is a hold-key watch or re-watch revert that waited when the agent
+// stopped (its experiment's last promotion event has RevertPending, UC-043 A17).
+type RestoredRevert struct {
+	ExperimentID string
+	FlagKey      string
+	// Rewatch: the re-watch queued it (its journal reason prefix).
+	Rewatch bool
+	// Value is the value the experiment promoted (its intent's experimental value,
+	// which is what the promotion wrote). The revert runs only while the flag's
+	// promotion overlay still holds it, so a restart never deletes a newer
+	// promotion's value.
+	Value any
+}
+
+// DeferredLostAtRestart is the reason journaled for a deferred hold-key write a
+// restart lost (UC-043 A17 step 3, A15).
+const DeferredLostAtRestart = "lost_at_restart"
+
+// sweepDeferredLocked handles a done journal whose last promotion event a restart
+// interrupted (UC-043 A17 step 3): a write still `deferred` was lost with the
+// in-memory queue and is journaled `discarded: lost_at_restart`; a revert still
+// pending is kept for TakeRestoredReverts. Assumes r.mu is held.
+func (r *Registry) sweepDeferredLocked(id string, jrnl *journal.Journal) {
+	events, err := jrnl.Events()
+	if err != nil {
+		return
+	}
+	var last *journal.Promotion
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == journal.KindPromotion && events[i].Promotion != nil {
+			last = events[i].Promotion
+			break
+		}
+	}
+	switch {
+	case last == nil:
+	case last.Outcome == PromotionDeferred:
+		promotion := PromotionResult{Outcome: PromotionDiscarded, Reason: DeferredLostAtRestart}
+		r.appendEvent(jrnl, journal.Event{Kind: journal.KindPromotion, Status: promotion.Outcome, Note: promotion.Reason, Promotion: &promotion})
+		r.log.Warn("experiment: a deferred hold-key promotion was lost at restart (UC-043 A17)", "experiment_id", id)
+	case last.RevertPending:
+		r.restoredReverts = append(r.restoredReverts, RestoredRevert{
+			ExperimentID: id, FlagKey: jrnl.Intent().FlagKey, Rewatch: strings.HasPrefix(last.Reason, "re-watch: "),
+			Value: jrnl.Intent().ExperimentalValue,
+		})
+	}
+}
+
+// TakeRestoredReverts returns, once, the waiting reverts Rehydrate found.
+func (r *Registry) TakeRestoredReverts() []RestoredRevert {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.restoredReverts
+	r.restoredReverts = nil
+	return out
+}
+
+// pendingPromotionSet returns the flags with a waiting deferred promotion write.
+// It must be called without r.mu held.
+func (r *Registry) pendingPromotionSet() map[string]struct{} {
+	out := map[string]struct{}{}
+	if r.pendingPromotions == nil {
+		return out
+	}
+	for _, flag := range r.pendingPromotions() {
+		out[flag] = struct{}{}
+	}
+	return out
 }
 
 // RecordPromotion journals a later outcome of an experiment's promotion (UC-043
@@ -1624,7 +1965,30 @@ func (r *Registry) RecordPromotion(id string, res PromotionResult) {
 	defer r.mu.Unlock()
 	e := r.entries[id]
 	if e == nil {
+		// A done experiment is not held in memory after a restart (Rehydrate skips
+		// it), yet the deferred queue and the kill switch journal on it (UC-043 A17).
+		if jrnl, err := journal.Load(r.root, id); err == nil {
+			promotion := res
+			r.appendEvent(jrnl, journal.Event{Kind: journal.KindPromotion, Status: res.Outcome, Note: res.Reason, Promotion: &promotion})
+			if res.ForeignOwner != "" {
+				// Not held in memory: build the snapshot from the journal (UC-043 A19).
+				view := jrnl.CompactView()
+				ghost := &entry{
+					id: id, journal: jrnl, status: Status(view.Status),
+					arms: append([]string(nil), view.Intent.Arms...), recommendOwner: res.ForeignOwner,
+				}
+				events, _ := jrnl.Events()
+				ghost.endReason = teardownReasonOf(events)
+				r.emitProgressLocked(ghost, ProgressTriggerRecommendation, ghost.endReason, trace.SpanContext{})
+			}
+			return
+		}
 		r.log.Warn("experiment.promotion_unrecorded", "experiment_id", id, "outcome", res.Outcome, "reason", res.Reason)
+		return
+	}
+	if e.promotionInFlight {
+		// Its own promotion event is not journaled yet: keep the order (UC-043 A17).
+		e.laterPromotions = append(e.laterPromotions, res)
 		return
 	}
 	promotion := res
@@ -1634,6 +1998,21 @@ func (r *Registry) RecordPromotion(id string, res PromotionResult) {
 		Note:      res.Reason,
 		Promotion: &promotion,
 	})
+	r.noteRecommendationLocked(e, res)
+}
+
+// noteRecommendationLocked records a refused promotion's foreign owner (UC-043 A19,
+// #2276) and, for a later outcome of an experiment that already ended (the deferred
+// queue), emits a snapshot so the dashboard sees the recommendation. Assumes r.mu
+// is held.
+func (r *Registry) noteRecommendationLocked(e *entry, res PromotionResult) {
+	if res.ForeignOwner == "" {
+		return
+	}
+	e.recommendOwner = res.ForeignOwner
+	if e.status.IsTerminal() {
+		r.emitProgressLocked(e, ProgressTriggerRecommendation, e.endReason, e.spanCtx)
+	}
 }
 
 // Abort terminates an experiment (kill-switch / capacity reclaim / error): it
@@ -1697,6 +2076,13 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	if r.onTerminal != nil {
 		defer r.onTerminal(id)
 	}
+	// Mark the teardown before the strip, so a Start whose targeting write lands
+	// after the strip below removes it again (#2340).
+	r.mu.Lock()
+	if e := r.entries[id]; e != nil {
+		e.teardownBegun = true
+	}
+	r.mu.Unlock()
 	// Strip the targeting OUTSIDE the registry lock (it does file I/O). Stripping a
 	// shadow branch only ever affects shadow games, so it is invariant-safe.
 	if r.target != nil {
@@ -1724,6 +2110,7 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 		return
 	}
 	e.status = terminal
+	e.endReason = reason
 	// Free capacity: drop the in-flight games (reservations + bound games). Their
 	// slots return to the global cap for other experiments. gamePairs is the parallel
 	// (game_id → pair index) map; clear it too so no stale binding survives teardown.
@@ -1736,6 +2123,17 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	})
 	r.emitProgressLocked(e, ProgressTriggerTerminal, reason, progressLink) // #2059
 	r.log.Info("experiment.torn_down", "experiment_id", id, "status", string(terminal), "reason", reason)
+}
+
+// SetShutdownContext sets the context whose cancellation marks the start of the
+// agent's graceful stop (UC-043 A20, #2332). The experiment loop calls it with its
+// run context before any proposer or tick can reach the registry's write paths.
+func (r *Registry) SetShutdownContext(ctx context.Context) { r.shutdown.Store(&ctx) }
+
+// shuttingDown reports whether the graceful stop has begun.
+func (r *Registry) shuttingDown() bool {
+	p := r.shutdown.Load()
+	return p != nil && (*p).Err() != nil
 }
 
 // SetTerminalHook registers f to be told an experiment's id when it reaches a
@@ -1804,7 +2202,10 @@ func (r *Registry) Rehydrate(ids []string) error {
 			st = StatusRunning
 		}
 		if st.IsTerminal() {
-			continue // done experiment — nothing to manage.
+			// Done experiment: nothing to manage, except a deferred hold-key promotion
+			// the restart interrupted (UC-043 A17 step 3).
+			r.sweepDeferredLocked(id, jrnl)
+			continue
 		}
 		e := &entry{
 			id:        id,
@@ -1814,6 +2215,9 @@ func (r *Registry) Rehydrate(ids []string) error {
 			arms:      append([]string(nil), view.Intent.Arms...),
 			games:     make(map[string]string),
 			gamePairs: make(map[string]int),
+		}
+		if events, evErr := jrnl.Events(); evErr == nil {
+			e.recommendOwner = lastForeignOwner(events) // UC-043 A19
 		}
 		// #1188 RESTART DISCONTINUITY: a rehydrated experiment gets a BRAND-NEW root
 		// span with a fresh trace_id — the SpanContext is NOT persisted across the
@@ -2055,14 +2459,15 @@ func (r *Registry) Live() []string {
 }
 
 // ActiveFlags returns the set of flag keys that have at least one LIVE
-// (non-terminal: PROPOSED or RUNNING) experiment. The dynamic declarer (#995)
-// uses it to avoid stacking a second concurrent experiment on a flag that is
-// already under test. A flag torn down (terminal) is not included — its targeting
-// branch is stripped, so it is free to experiment on again.
+// (non-terminal: PROPOSED or RUNNING) experiment, plus the flags whose deferred
+// promotion write still waits (UC-043 A17 step 3, opposer M6). The dynamic
+// declarer (#995) uses it to avoid stacking a second concurrent experiment on a
+// flag that is already under test. Any other flag torn down (terminal) is not
+// included — its targeting branch is stripped, so it is free to experiment on again.
 func (r *Registry) ActiveFlags() map[string]struct{} {
+	out := r.pendingPromotionSet()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make(map[string]struct{}, len(r.entries))
 	for _, e := range r.entries {
 		if !e.status.IsTerminal() {
 			out[e.flagKey] = struct{}{}
@@ -2162,6 +2567,25 @@ func (r *Registry) IsBound(gameID string) bool {
 	return e != nil
 }
 
+// ExperimentFlag returns the flag under test in a game (UC-040 A40, BR-028; #1975):
+// the experiment bound to gameID at spawn, else the experiment experimentID names.
+// ok=false when the registry knows neither, or the experiment is in a terminal status.
+func (r *Registry) ExperimentFlag(gameID, experimentID string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if gameID != "" {
+		if _, _, e := r.findGameLocked(gameID); e != nil {
+			return e.flagKey, true
+		}
+	}
+	// A torn-down experiment (aborted, concluded, discarded) is not known any more:
+	// its leftover games decide as before (UC-040 A40 step 4).
+	if e := r.entries[experimentID]; experimentID != "" && e != nil && !e.status.IsTerminal() {
+		return e.flagKey, true
+	}
+	return "", false
+}
+
 // findGameLocked looks up the experiment + arm owning a coordinator game_id.
 // Assumes r.mu held.
 func (r *Registry) findGameLocked(gameID string) (id, arm string, e *entry) {
@@ -2203,4 +2627,25 @@ func (r *Registry) appendEventErr(jrnl *journal.Journal, e journal.Event) error 
 		r.log.Warn("experiment.journal_append_failed", "kind", string(e.Kind), "error", err)
 	}
 	return err
+}
+
+// lastForeignOwner returns the writer of the latest promotion event the flag
+// service refused with 412 writer_mismatch, or "" (UC-043 A19, #2276).
+func lastForeignOwner(events []journal.Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if p := events[i].Promotion; p != nil && p.ForeignOwner != "" {
+			return p.ForeignOwner
+		}
+	}
+	return ""
+}
+
+// teardownReasonOf returns the teardown reason (the note of the last outcome event).
+func teardownReasonOf(events []journal.Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == journal.KindOutcome {
+			return events[i].Note
+		}
+	}
+	return ""
 }

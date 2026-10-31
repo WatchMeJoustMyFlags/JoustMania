@@ -3,6 +3,7 @@ package promote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -114,6 +115,13 @@ func newServiceRealDefaultWriter(svc realDefaultService, snaps *snapStore, log *
 // on the flag service. The registry bounds the value (a declared variant's
 // value); a value whose JSON kind differs from the current default is refused
 // here first (#936 review note 2), as the last line before real players.
+//
+// WRITE PRECONDITION (#2260, UC-043 A19): the PUT carries
+// ?if_writer_in=promotion, so the flag service writes only over a previous
+// promotion's overlay or where none is present, compared and written under its
+// lock. Another writer's real overlay is refused with 412 writer_mismatch and
+// left in place; SetRealDefault then returns ErrRealOverlayOwnedByAnotherWriter
+// and the promotion is not made (no retry, no cooldown: nothing was reverted).
 func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey string, value any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -136,7 +144,18 @@ func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey s
 		Scope:  flagservice.Scope{GameKind: "real"},
 		Writer: promotionWriter,
 		Reason: "autonomous_promotion",
+		// The promotion's own overlay ("promotion") or none (""), #2260.
+		IfWriterIn: []string{promotionWriter, ""},
 	})
+	if flagservice.IsReason(err, flagservice.ReasonWriterMismatch) {
+		owner := ""
+		if view.RealOverlay != nil {
+			owner = view.RealOverlay.Writer
+		}
+		w.log.Warn("code_improvement promotion not made: another writer owns the real overlay (writer_mismatch); nothing written",
+			"flag", flagKey, "owner", owner)
+		return fmt.Errorf("promote %s/%s: %w", gameFlagSet, flagKey, &foreignOverlayError{Owner: owner})
+	}
 	if err != nil {
 		return fmt.Errorf("promote %s/%s: %w", gameFlagSet, flagKey, err)
 	}
@@ -151,13 +170,80 @@ func (w *serviceRealDefaultWriter) SetRealDefault(ctx context.Context, flagKey s
 // restart dropped it) real games already resolve the pre-promotion default: the
 // revert writes nothing, stamps the cooldown and succeeds (PR #1417 review).
 //
-// ACCEPTED WINDOW (#1753): the writer check is a read followed by a delete. The
-// flag service clears the real overlay whoever wrote it (it ignores `writer` for
-// that scope), so another writer's real overlay set in the milliseconds between
-// the read and the delete would be removed. w.mu serialises this agent's own
-// writes; only promotions write real overlays, so the window is accepted
-// (UC-043 A1). The flag-service precondition that would close it is #1877.
+// COMPARE-AND-DELETE (#1877, closes the #1753 window): the DELETE carries
+// ?if_writer=promotion, so the flag service clears the real overlay only while
+// its writer is still "promotion", atomically under its lock. Another writer's
+// overlay set between the read and the delete is refused with 412
+// writer_mismatch and left in place; the revert is then dropped like the
+// "no promotion overlay" case (logged once, cooldown stamped, nil returned).
+// The kill switch uses the same path: every overlay this agent writes carries
+// writer "promotion", so the precondition never blocks clearing one of them.
 func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKey string) error {
+	return w.revert(ctx, flagKey, false)
+}
+
+// RevertRealDefaultUnlessRealGame is RevertRealDefault with the guarded DELETE
+// (?unless_real_game=true, #2236): for a flag marked real_write:
+// no_live_real_game the flag service refuses it with 409 real_game_live while a
+// non-shadow game is registered, checked under its registration lock. The watch
+// and re-watch reverts of hold keys use it; the kill switch never does.
+func (w *serviceRealDefaultWriter) RevertRealDefaultUnlessRealGame(ctx context.Context, flagKey string) error {
+	return w.revert(ctx, flagKey, true)
+}
+
+// ErrSupersededByAnotherWriter is returned by a revert whose DELETE the flag service
+// refused with 412 writer_mismatch (#1877): nothing was cleared, the cooldown is
+// stamped, and the revert counts as done. Callers treat it as success; the kill
+// switch adds SupersededReasonSuffix to the journaled reason so "the agent cleared
+// it" and "another writer owns it" can be told apart.
+var ErrSupersededByAnotherWriter = errors.New("real overlay superseded by another writer (writer_mismatch); nothing removed")
+
+// ReasonRealOverlayForeign is the journaled reason (outcome discarded) of a
+// promotion the flag service refused because another writer owns the real
+// overlay (PUT ?if_writer_in=, 412 writer_mismatch, #2260, UC-043 A19).
+const ReasonRealOverlayForeign = "real_overlay_owned_by_another_writer"
+
+// foreignOverlayError wraps ErrRealOverlayOwnedByAnotherWriter with the writer
+// that owns the overlay (as read before the write), for the log and the journal.
+type foreignOverlayError struct{ Owner string }
+
+func (e *foreignOverlayError) Error() string {
+	return fmt.Sprintf("%s (owner %q)", ErrRealOverlayOwnedByAnotherWriter, e.Owner)
+}
+
+func (e *foreignOverlayError) Is(target error) bool {
+	return target == ErrRealOverlayOwnedByAnotherWriter
+}
+
+// foreignReason is ReasonRealOverlayForeign, with " owner=<writer>" appended
+// when the owner is known; the fixed reason token stays the prefix.
+func foreignReason(err error) string {
+	var fe *foreignOverlayError
+	if errors.As(err, &fe) && fe.Owner != "" {
+		return ReasonRealOverlayForeign + " owner=" + fe.Owner
+	}
+	return ReasonRealOverlayForeign
+}
+
+// foreignOwner is the writer label of a foreignOverlayError ("unknown" when the
+// owner could not be read before the write).
+func foreignOwner(err error) string {
+	var fe *foreignOverlayError
+	if errors.As(err, &fe) && fe.Owner != "" {
+		return fe.Owner
+	}
+	return "unknown"
+}
+
+// ErrRealOverlayOwnedByAnotherWriter is returned by SetRealDefault when the flag
+// service refused the write with 412 writer_mismatch: nothing was written.
+var ErrRealOverlayOwnedByAnotherWriter = errors.New(ReasonRealOverlayForeign + " (writer_mismatch); nothing written")
+
+// SupersededReasonSuffix is appended to the kill-switch journal reason when the
+// revert was dropped on a writer_mismatch.
+const SupersededReasonSuffix = "; superseded by another writer"
+
+func (w *serviceRealDefaultWriter) revert(ctx context.Context, flagKey string, unlessRealGame bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -174,10 +260,24 @@ func (w *serviceRealDefaultWriter) RevertRealDefault(ctx context.Context, flagKe
 		w.stampRevert(flagKey)
 		return nil
 	}
-	if err := w.svc.Delete(ctx, gameFlagSet, flagKey, url.Values{"game_kind": {"real"}, "writer": {promotionWriter}}); err != nil {
+	query := url.Values{"game_kind": {"real"}, "writer": {promotionWriter}, "if_writer": {promotionWriter}}
+	if unlessRealGame {
+		query.Set("unless_real_game", "true")
+	}
+	if err := w.svc.Delete(ctx, gameFlagSet, flagKey, query); err != nil {
+		if flagservice.IsReason(err, flagservice.ReasonWriterMismatch) {
+			// Another writer replaced the overlay after the read (#1877): it owns
+			// the real default now, so the revert is dropped, not retried.
+			w.log.Warn("code_improvement revert dropped: another writer owns the real overlay now (writer_mismatch); nothing removed",
+				"flag", flagKey)
+			w.stampRevert(flagKey)
+			return ErrSupersededByAnotherWriter
+		}
 		return fmt.Errorf("revert %s/%s: %w", gameFlagSet, flagKey, err)
 	}
-	w.log.Warn("code_improvement.autonomous REVERTED: removed the promotion's real-default overlay; real games resolve the default beneath it (#1065)", "flag", flagKey)
+	// 204 also when the overlay vanished between the read and the DELETE (a
+	// flag-service restart): the promotion's overlay is gone either way.
+	w.log.Warn("code_improvement.autonomous REVERTED: the promotion's real-default overlay is gone (cleared now, or already absent); real games resolve the default beneath it (#1065)", "flag", flagKey)
 	w.stampRevert(flagKey)
 	return nil
 }
@@ -198,6 +298,20 @@ func (w *serviceRealDefaultWriter) PromotedFlags(ctx context.Context) ([]string,
 		}
 	}
 	return out, nil
+}
+
+// PromotionOverlay reads the value of flagKey's real overlay when a promotion wrote
+// it (ok false otherwise), so a revert restored after a restart deletes only its
+// own value (UC-043 A17).
+func (w *serviceRealDefaultWriter) PromotionOverlay(ctx context.Context, flagKey string) (json.RawMessage, bool, error) {
+	view, err := w.svc.GetFlag(ctx, gameFlagSet, flagKey)
+	if err != nil {
+		return nil, false, err
+	}
+	if view.RealOverlay == nil || view.RealOverlay.Writer != promotionWriter {
+		return nil, false, nil
+	}
+	return view.RealOverlay.Value, true, nil
 }
 
 // realOverlayWriter is the writer of view's real overlay, or "" when none.

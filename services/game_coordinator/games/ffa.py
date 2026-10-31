@@ -8,12 +8,12 @@ Phase 36b: Refactored to extend BaseGameMode, eliminating ~550 lines of duplicat
 """
 
 import logging
-import time
 
 from opentelemetry.trace import Status, StatusCode
 
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sound
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import BaseGameMode, Phase
 from services.game_coordinator.runtime_config import get_config_manager
@@ -64,7 +64,7 @@ class FFAGame(BaseGameMode):
         from services.game_coordinator.games.base import Player
 
         config = get_config_manager().get_config()
-        game_start_time = time.time()
+        game_start_time = game_clock.now()
 
         for controller in controllers:
             # Initialize analytics if enabled
@@ -233,7 +233,7 @@ class FFAGame(BaseGameMode):
                 # Build attributes including analytics summary if available
                 if player.alive:
                     end_attrs = {
-                        "game_duration": time.time() - self.start_time if self.start_time else 0,
+                        "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
                         "winner": serial == winner_serial,
                     }
                     outcome = self._game_outcome_attributes()
@@ -323,7 +323,7 @@ class FFAGame(BaseGameMode):
         outcome = self._game_outcome_attributes()
         ended_data = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "outcome": outcome["game.outcome"],
         }
         if "game.end_reason" in outcome:

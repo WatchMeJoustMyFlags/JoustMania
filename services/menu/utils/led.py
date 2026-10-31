@@ -221,15 +221,3 @@ class LedController:
         """
         color = self.get_game_color(game_mode)
         return await self.set_color(serial, color)
-
-    async def set_admin_color(self, serial: str) -> bool:
-        """
-        Set controller to admin mode color (white).
-
-        Args:
-            serial: Controller serial number
-
-        Returns:
-            True if successful
-        """
-        return await self.set_color(serial, Colors.White.value)

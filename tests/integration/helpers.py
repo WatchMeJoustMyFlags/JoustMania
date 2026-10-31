@@ -11,11 +11,8 @@ These helpers provide:
 import asyncio
 import contextlib
 import os
-import json
 import sys
 import time
-import urllib.parse
-import urllib.request
 
 import grpc
 import pytest
@@ -32,6 +29,7 @@ from proto import (
     menu_pb2,
     menu_pb2_grpc,
 )
+from tests.integration import jaeger_v3
 from tests.integration.flag_service import default as flag_service_default
 
 
@@ -61,15 +59,14 @@ COORDINATOR_SERVICE = "game-coordinator-service"
 
 
 def jaeger_root_spans(game_id: str) -> list:
-    """Root spans of the coordinator's traces tagged ``game.id``.
+    """Root spans of the coordinator's traces tagged ``game.id`` (query API v3, #2283).
 
     A root has no CHILD_OF reference: the game root carries an OTel Link to the
-    inbound stream span, which Jaeger lists as a FOLLOWS_FROM reference.
+    inbound stream span, which ``jaeger_v3`` lists as a FOLLOWS_FROM reference.
     """
-    tags = urllib.parse.quote(json.dumps({"game.id": game_id}))
-    url = f"{JAEGER_API}/traces?service={COORDINATOR_SERVICE}&tags={tags}&limit=20"
-    with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310 - loopback test URL
-        traces = json.load(response)["data"]
+    traces = jaeger_v3.find_traces(
+        JAEGER_API, COORDINATOR_SERVICE, attributes={"game.id": game_id}, limit=20
+    )
     return [
         span
         for trace in traces

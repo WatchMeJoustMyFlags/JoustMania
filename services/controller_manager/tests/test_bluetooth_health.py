@@ -24,6 +24,15 @@ service_dir = test_dir.parent
 project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
+from services.controller_manager.tests.backend_doubles import (
+    autospec_backend,
+    autospec_button_detector,
+    autospec_feedback_manager,
+    autospec_monitoring,
+    autospec_publisher,
+    autospec_rescan_timer,
+)
+
 
 class FakeSpan:
     """Records attributes and events set on a span for assertions."""
@@ -61,16 +70,16 @@ def _make_loop(backend=None):
     from services.controller_manager.discovery_loop import DiscoveryLoop
 
     return DiscoveryLoop(
-        backend=backend or MagicMock(),
+        backend=backend or autospec_backend(),
         tracked_controllers={},
         controller_states={},
-        button_detector=MagicMock(),
-        feedback_manager=MagicMock(),
-        monitoring=MagicMock(),
-        rescan_timer=MagicMock(),
+        button_detector=autospec_button_detector(),
+        feedback_manager=autospec_feedback_manager(),
+        monitoring=autospec_monitoring(),
+        rescan_timer=autospec_rescan_timer(),
         paired_serials=[],
         base_colors={},
-        event_publisher=MagicMock(),
+        event_publisher=autospec_publisher(),
     )
 
 
@@ -83,13 +92,13 @@ def _feed(loop, serial, sequence, t0=0.0, dt=0.01):
     """
     t = t0
     for item in sequence:
-        loop._hw_polls[serial] = loop._hw_polls.get(serial, 0) + 1
+        loop._record(serial).hw_polls += 1
         if item is None:
-            loop._hw_drops[serial] = loop._hw_drops.get(serial, 0) + 1
+            loop._record(serial).hw_drops += 1
         else:
             obj_id = id(item)
-            if loop._hw_last_obj_id.get(serial) != obj_id:
-                loop._hw_last_obj_id[serial] = obj_id
+            if loop._record(serial).hw_last_obj_id != obj_id:
+                loop._record(serial).hw_last_obj_id = obj_id
                 loop._record_fresh_frame(serial, t)
         t += dt
     return t
@@ -133,15 +142,15 @@ class TestWindowComputation:
         loop = _make_loop()
         a, b, c = {"n": 1}, {"n": 2}, {"n": 3}
         # fresh @0, stale*5 (50ms), fresh @60ms, fresh @70ms
-        loop._hw_last_obj_id["AA"] = None
+        loop._record("AA").hw_last_obj_id = None
         for item, t in [(a, 0.0), (a, 0.01), (a, 0.02), (a, 0.03), (a, 0.04), (a, 0.05), (b, 0.06), (c, 0.07)]:
-            loop._hw_polls["AA"] = loop._hw_polls.get("AA", 0) + 1
+            loop._record("AA").hw_polls += 1
             oid = id(item)
-            if loop._hw_last_obj_id.get("AA") != oid:
-                loop._hw_last_obj_id["AA"] = oid
+            if loop._record("AA").hw_last_obj_id != oid:
+                loop._record("AA").hw_last_obj_id = oid
                 loop._record_fresh_frame("AA", t)
         # Gaps between fresh frames: a@0 -> b@60ms = 60ms, b@60 -> c@70 = 10ms.
-        assert abs(loop._hw_max_gap_ms["AA"] - 60.0) < 1e-6
+        assert abs(loop._record("AA").hw_max_gap_ms - 60.0) < 1e-6
 
     def test_window_aggregates_worst_case_across_serials(self):
         loop = _make_loop()
@@ -183,7 +192,7 @@ class TestSpanEmission:
     @patch("services.controller_manager.metrics.controller_bluetooth_event_gap_seconds")
     @patch("services.controller_manager.metrics.controller_state_update_hz")
     def test_span_attributes_and_events(self, _hz, _gap, _ratio_w, _ratio, _mhz):
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_adapter_type.return_value = "unstable"
         backend.rollout_summary.return_value = ("unstable", 3)
         backend.rollout_strategy.return_value = "progressive"
@@ -225,7 +234,7 @@ class TestSpanEmission:
         """#1489: a failed rollout read omits target/count and flags the error."""
         from services.controller_manager.multiplexer.rollout_router import RolloutReadError
 
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_adapter_type.return_value = "python"
         backend.rollout_summary.side_effect = RolloutReadError("flagd down")
         # The strategy read falls back to its "off" default on the same error.
@@ -254,7 +263,7 @@ class TestSpanEmission:
         """#1489: a persistent read error warns once, recovery logs info once."""
         from services.controller_manager.multiplexer.rollout_router import RolloutReadError
 
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_adapter_type.return_value = "python"
         backend.rollout_strategy.return_value = "off"
         loop = _make_loop(backend)
@@ -286,7 +295,7 @@ class TestSpanEmission:
     @patch("services.controller_manager.metrics.controller_bluetooth_event_gap_seconds")
     @patch("services.controller_manager.metrics.controller_state_update_hz")
     def test_rollout_off_has_empty_target_and_no_read_error(self, *_metrics):
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_adapter_type.return_value = "python"
         backend.rollout_summary.return_value = ("", 0)
         backend.rollout_strategy.return_value = "off"
@@ -323,7 +332,7 @@ class TestSpanEmission:
         loop = _make_loop(MagicMock())
         loop._window_start = 0.0
         # One serial, two fresh frames 60ms apart -> max gap 60ms.
-        loop._hw_polls["AA"] = 2
+        loop._record("AA").hw_polls = 2
         loop._record_fresh_frame("AA", 0.0)
         loop._record_fresh_frame("AA", 0.06)
         fake = FakeTracer()
@@ -345,8 +354,7 @@ class TestSpanEmission:
         fake = FakeTracer()
         with patch("services.controller_manager.discovery_loop.tracer", fake):
             loop._emit_bluetooth_health(now=1.0)
-        assert loop._hw_polls == {}
-        assert loop._hw_fresh == {}
+        assert all(r.hw_polls == 0 and r.hw_fresh == 0 for r in loop._records.values())
         assert loop._window_start == 1.0
 
 
@@ -360,7 +368,7 @@ class TestUpdateControllerStatesWiring:
         loop.tracked_controllers = {"AA": {}}
         loop.controller_states = {}
         loop._cached_serials = ["AA"]
-        loop.button_detector = MagicMock()
+        loop.button_detector = autospec_button_detector()
 
         fresh1 = {"serial": "AA", "accel": {"x": 0.0, "y": 0.0, "z": 1.0}}
         stale = fresh1  # same object -> stale replay
@@ -371,9 +379,9 @@ class TestUpdateControllerStatesWiring:
         for _ in range(4):
             await loop._update_controller_states()
 
-        assert loop._hw_polls["AA"] == 4
-        assert loop._hw_fresh["AA"] == 2  # fresh1 + fresh2 (stale replay excluded)
-        assert loop._hw_drops["AA"] == 1  # the None
+        assert loop._record("AA").hw_polls == 4
+        assert loop._record("AA").hw_fresh == 2  # fresh1 + fresh2 (stale replay excluded)
+        assert loop._record("AA").hw_drops == 1  # the None
 
 
 class TestUnstableAdapterDegradationEndToEnd:
@@ -413,13 +421,13 @@ class TestUnstableAdapterDegradationEndToEnd:
         n_polls = 300  # 3 seconds at 100Hz
         for _ in range(n_polls):
             result = adapter.poll(serial)
-            loop._hw_polls[serial] = loop._hw_polls.get(serial, 0) + 1
+            loop._record(serial).hw_polls += 1
             if result is None:
-                loop._hw_drops[serial] = loop._hw_drops.get(serial, 0) + 1
+                loop._record(serial).hw_drops += 1
             else:
                 oid = id(result)
-                if loop._hw_last_obj_id.get(serial) != oid:
-                    loop._hw_last_obj_id[serial] = oid
+                if loop._record(serial).hw_last_obj_id != oid:
+                    loop._record(serial).hw_last_obj_id = oid
                     loop._record_fresh_frame(serial, wall)
             clock.t += 0.01
             wall += 0.01

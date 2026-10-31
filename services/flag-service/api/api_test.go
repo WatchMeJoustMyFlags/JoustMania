@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,7 +25,6 @@ import (
 	"github.com/joustmania/flag-service/baseline"
 	"github.com/joustmania/flag-service/registry"
 	"github.com/joustmania/flag-service/state"
-	"github.com/joustmania/flag-service/syncserver"
 	"github.com/joustmania/flag-service/telemetry"
 )
 
@@ -34,9 +34,17 @@ type env struct {
 	st     *state.State
 	spans  *tracetest.SpanRecorder
 	reader *sdkmetric.ManualReader
+	links  *telemetry.Links
 }
 
 func newEnv(t *testing.T, stream bool) *env {
+	t.Helper()
+	return newEnvRegistry(t, stream, "")
+}
+
+// newEnvRegistry is newEnv with the registry document regYAML in place of
+// registry.yaml when it is not empty.
+func newEnvRegistry(t *testing.T, stream bool, regYAML string) *env {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(file), "..")
@@ -44,7 +52,12 @@ func newEnv(t *testing.T, stream bool) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := registry.LoadFile(filepath.Join(root, "registry.yaml"), base)
+	var reg *registry.Registry
+	if regYAML != "" {
+		reg, err = registry.Parse([]byte(regYAML), base)
+	} else {
+		reg, err = registry.LoadFile(filepath.Join(root, "registry.yaml"), base)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +75,11 @@ func newEnv(t *testing.T, stream bool) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("t"), Links: &syncserver.Links{}}
+	links := &telemetry.Links{}
+	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("t"), Links: links}
 	srv := httptest.NewServer(a.Handler())
 	t.Cleanup(srv.Close)
-	return &env{t: t, srv: srv, st: st, spans: spans, reader: reader}
+	return &env{t: t, srv: srv, st: st, spans: spans, reader: reader, links: links}
 }
 
 func (e *env) do(method, path string, body any) (int, map[string]any) {
@@ -350,13 +364,445 @@ func TestDryRunEndpoint(t *testing.T) {
 	t.Run("UC-042/main PUT ?dry_run=true answers the rendered flag and applies nothing", func(t *testing.T) {
 		e := newEnv(t, true)
 		body := map[string]any{"value": 4, "scope": map[string]any{"experiment_id": "exp_1", "arm": "experimental"}}
-		status, res := e.do("PUT", "/game/invincibility_seconds?dry_run=true", body)
+		status, res := e.do("PUT", "/game/nonstop.respawn_seconds?dry_run=true", body)
 		if status != 200 || res["dry_run"] != true || res["rendered"] == nil || res["rendered_before"] == nil {
 			t.Fatalf("%d %v", status, res)
 		}
-		_, view := e.do("GET", "/game/invincibility_seconds", nil)
+		_, view := e.do("GET", "/game/nonstop.respawn_seconds", nil)
 		if fmt.Sprint(view["rendered"]) != fmt.Sprint(res["rendered_before"]) {
 			t.Fatalf("the dry run was applied:\n%v\n%v", view["rendered"], res["rendered_before"])
+		}
+	})
+}
+
+// UC: UC-043 A17
+func TestGuardedRealDelete(t *testing.T) {
+	const path = "/game/shield.energy_max_seconds"
+	setup := func(t *testing.T) *env {
+		e := newEnv(t, true)
+		if s, b := e.do("PUT", path, map[string]any{"value": 4, "scope": map[string]any{"game_kind": "real"}, "writer": "promotion"}); s != 200 {
+			t.Fatalf("real write: %d %v", s, b)
+		}
+		if s, _ := e.do("PUT", "/games/g-real", map[string]any{"coordinator_instance": "c1", "game_kind": "real"}); s != 200 {
+			t.Fatalf("register: %d", s)
+		}
+		return e
+	}
+	t.Run("UC-043/A17 DELETE ?unless_real_game=true is 409 real_game_live while a real game is registered", func(t *testing.T) {
+		e := setup(t)
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion&unless_real_game=true", nil); s != 409 || b["error"] != "real_game_live" {
+			t.Fatalf("%d %v, want 409 real_game_live", s, b)
+		}
+		if e.writes("rejected", "real_game_live") != 1 {
+			t.Fatalf("the refusal is not counted as rejected/real_game_live")
+		}
+	})
+	t.Run("UC-043/A17 a plain DELETE (the kill switch) is 204 while a real game is registered", func(t *testing.T) {
+		e := setup(t)
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion", nil); s != 204 {
+			t.Fatalf("%d %v, want 204", s, b)
+		}
+	})
+	t.Run("UC-043/A17 the guarded DELETE is 204 once the real game ended", func(t *testing.T) {
+		e := setup(t)
+		e.do("DELETE", "/games/g-real", nil)
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion&unless_real_game=true", nil); s != 204 {
+			t.Fatalf("%d %v, want 204", s, b)
+		}
+	})
+	t.Run("UC-043/A17 a non-boolean unless_real_game is 400 malformed", func(t *testing.T) {
+		e := setup(t)
+		if s, b := e.do("DELETE", path+"?game_kind=real&unless_real_game=yes-please", nil); s != 400 || b["error"] != "malformed" {
+			t.Fatalf("%d %v, want 400 malformed", s, b)
+		}
+	})
+}
+
+// UC: UC-043 A18
+func TestIfWriterDelete(t *testing.T) {
+	const path = "/game/shield.energy_max_seconds"
+	setup := func(t *testing.T, writer string) *env {
+		e := newEnv(t, true)
+		if s, b := e.do("PUT", path, map[string]any{"value": 4, "scope": map[string]any{"game_kind": "real"}, "writer": writer}); s != 200 {
+			t.Fatalf("real write: %d %v", s, b)
+		}
+		return e
+	}
+	realWriter := func(e *env) any {
+		_, view := e.do("GET", path, nil)
+		ro, _ := view["real_overlay"].(map[string]any)
+		if ro == nil {
+			return nil
+		}
+		return ro["writer"]
+	}
+	t.Run("UC-043/A18 DELETE ?if_writer=promotion clears the promotion's real overlay (204)", func(t *testing.T) {
+		e := setup(t, "promotion")
+		if s, b := e.do("DELETE", path+"?game_kind=real&if_writer=promotion", nil); s != 204 {
+			t.Fatalf("%d %v, want 204", s, b)
+		}
+		if w := realWriter(e); w != nil {
+			t.Fatalf("real overlay of %v is still there", w)
+		}
+	})
+	t.Run("UC-043/A18 DELETE ?if_writer=promotion on another writer's overlay is 412 writer_mismatch and changes nothing", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion&if_writer=promotion", nil); s != 412 || b["error"] != "writer_mismatch" {
+			t.Fatalf("%d %v, want 412 writer_mismatch", s, b)
+		}
+		if w := realWriter(e); w != "operator" {
+			t.Fatalf("real overlay writer = %v after a refused DELETE, want operator", w)
+		}
+		if e.writes("rejected", "writer_mismatch") != 1 {
+			t.Fatalf("the refusal is not counted as rejected/writer_mismatch")
+		}
+	})
+	t.Run("UC-043/A18 the informational writer label alone is never compared", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, b := e.do("DELETE", path+"?game_kind=real&writer=promotion", nil); s != 204 {
+			t.Fatalf("%d %v, want 204", s, b)
+		}
+	})
+	t.Run("UC-043/A18 an empty if_writer is 400 malformed", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, b := e.do("DELETE", path+"?game_kind=real&if_writer=", nil); s != 400 || b["error"] != "malformed" {
+			t.Fatalf("%d %v, want 400 malformed", s, b)
+		}
+		if w := realWriter(e); w != "operator" {
+			t.Fatalf("real overlay writer = %v, want operator", w)
+		}
+	})
+	t.Run("UC-043/A18 if_writer outside scope real is 400 malformed", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, b := e.do("DELETE", path+"?if_writer=promotion", nil); s != 400 || b["error"] != "malformed" {
+			t.Fatalf("%d %v, want 400 malformed", s, b)
+		}
+	})
+	t.Run("UC-043/A18 with unless_real_game: 409 real_game_live first, then 412 once no real game runs", func(t *testing.T) {
+		e := setup(t, "operator")
+		if s, _ := e.do("PUT", "/games/g-real", map[string]any{"coordinator_instance": "c1", "game_kind": "real"}); s != 200 {
+			t.Fatalf("register: %d", s)
+		}
+		q := path + "?game_kind=real&unless_real_game=true&if_writer=promotion"
+		if s, b := e.do("DELETE", q, nil); s != 409 || b["error"] != "real_game_live" {
+			t.Fatalf("%d %v, want 409 real_game_live", s, b)
+		}
+		e.do("DELETE", "/games/g-real", nil)
+		if s, b := e.do("DELETE", q, nil); s != 412 || b["error"] != "writer_mismatch" {
+			t.Fatalf("%d %v, want 412 writer_mismatch", s, b)
+		}
+	})
+}
+
+// UC: UC-043 A19
+func TestIfWriterInPut(t *testing.T) {
+	const path = "/game/shield.energy_max_seconds"
+	put := func(e *env, query string, value int, writer string) (int, map[string]any) {
+		return e.do("PUT", path+query, map[string]any{"value": value, "scope": map[string]any{"game_kind": "real"}, "writer": writer})
+	}
+	realWriter := func(e *env) any {
+		_, view := e.do("GET", path, nil)
+		ro, _ := view["real_overlay"].(map[string]any)
+		if ro == nil {
+			return nil
+		}
+		return ro["writer"]
+	}
+	t.Run("UC-043/A19 PUT ?if_writer_in=promotion, writes when no real overlay is present", func(t *testing.T) {
+		e := newEnv(t, true)
+		if s, b := put(e, "?if_writer_in=promotion,", 4, "promotion"); s != 200 {
+			t.Fatalf("%d %v, want 200", s, b)
+		}
+		if w := realWriter(e); w != "promotion" {
+			t.Fatalf("real overlay writer = %v, want promotion", w)
+		}
+	})
+	t.Run("UC-043/A19 PUT ?if_writer_in=promotion, replaces the promotion's own overlay", func(t *testing.T) {
+		e := newEnv(t, true)
+		put(e, "", 4, "promotion")
+		if s, b := put(e, "?if_writer_in=promotion,", 5, "promotion"); s != 200 {
+			t.Fatalf("%d %v, want 200", s, b)
+		}
+	})
+	t.Run("UC-043/A19 PUT ?if_writer_in=promotion, on another writer's overlay is 412 writer_mismatch and changes nothing", func(t *testing.T) {
+		e := newEnv(t, true)
+		put(e, "", 4, "operator")
+		if s, b := put(e, "?if_writer_in=promotion,", 5, "promotion"); s != 412 || b["error"] != "writer_mismatch" {
+			t.Fatalf("%d %v, want 412 writer_mismatch", s, b)
+		}
+		if w := realWriter(e); w != "operator" {
+			t.Fatalf("real overlay writer = %v after a refused PUT, want operator", w)
+		}
+		if e.writes("rejected", "writer_mismatch") != 1 {
+			t.Fatalf("the refusal is not counted as rejected/writer_mismatch")
+		}
+	})
+	t.Run("UC-043/A19 without if_writer_in a PUT still writes unconditionally", func(t *testing.T) {
+		e := newEnv(t, true)
+		put(e, "", 4, "operator")
+		if s, b := put(e, "", 5, "promotion"); s != 200 {
+			t.Fatalf("%d %v, want 200", s, b)
+		}
+	})
+	t.Run("UC-043/A19 if_writer_in outside scope real, or repeated, is 400 malformed", func(t *testing.T) {
+		e := newEnv(t, true)
+		if s, b := e.do("PUT", path+"?if_writer_in=promotion,", map[string]any{"value": 4, "writer": "promotion"}); s != 400 || b["error"] != "malformed" {
+			t.Fatalf("stack scope: %d %v, want 400 malformed", s, b)
+		}
+		if s, b := put(e, "?if_writer_in=promotion&if_writer_in=", 4, "promotion"); s != 400 || b["error"] != "malformed" {
+			t.Fatalf("repeated: %d %v, want 400 malformed", s, b)
+		}
+	})
+	t.Run("UC-043/A19 409 real_game_live takes precedence over 412", func(t *testing.T) {
+		e := newEnv(t, true)
+		put(e, "", 4, "operator")
+		if s, _ := e.do("PUT", "/games/g-real", map[string]any{"coordinator_instance": "c1", "game_kind": "real"}); s != 200 {
+			t.Fatalf("register: %d", s)
+		}
+		if s, b := put(e, "?if_writer_in=promotion,", 5, "promotion"); s != 409 || b["error"] != "real_game_live" {
+			t.Fatalf("%d %v, want 409 real_game_live", s, b)
+		}
+		e.do("DELETE", "/games/g-real", nil)
+		if s, b := put(e, "?if_writer_in=promotion,", 5, "promotion"); s != 412 || b["error"] != "writer_mismatch" {
+			t.Fatalf("%d %v, want 412 writer_mismatch", s, b)
+		}
+	})
+}
+
+// The read endpoints serve a row's optional description inside its policy, for
+// one flag and for the whole set; a row without one carries no description key
+// (#2345).
+//
+// UC: UC-042 BR-008
+func TestReadEndpointsServeDescription(t *testing.T) {
+	e := newEnvRegistry(t, false, `flags:
+  - {set: game, key: invincibility_seconds, kind: overlay, scope: [stack, experiment+arm], bounds: {range: [0, 10]}, description: "seconds a fighter cannot lose at the start"}
+  - {set: game, key: sensitivity, kind: overlay, scope: [stack]}
+`)
+	t.Run("UC-042/BR-008 GET /game/{flag} and GET /game carry policy.description", func(t *testing.T) {
+		s, b := e.do("GET", "/game/invincibility_seconds", nil)
+		if s != 200 {
+			t.Fatalf("GET flag: %d", s)
+		}
+		policy, _ := b["policy"].(map[string]any)
+		if d, _ := policy["description"].(string); d != "seconds a fighter cannot lose at the start" {
+			t.Fatalf("policy.description = %q", d)
+		}
+		s, b = e.do("GET", "/game", nil)
+		if s != 200 {
+			t.Fatalf("GET set: %d", s)
+		}
+		described := 0
+		for _, f := range b["flags"].([]any) {
+			p, _ := f.(map[string]any)["policy"].(map[string]any)
+			if d, _ := p["description"].(string); d != "" {
+				described++
+			}
+		}
+		if described != 1 {
+			t.Fatalf("GET /game: %d flags with a description, want 1", described)
+		}
+		_, b = e.do("GET", "/game/sensitivity", nil)
+		if _, ok := b["policy"].(map[string]any)["description"]; ok {
+			t.Fatalf("sensitivity has no description, the key must be absent: %v", b["policy"])
+		}
+	})
+}
+
+// UC: UC-042 main
+func TestStrictBooleanQueryParams(t *testing.T) {
+	const path = "/game/nonstop.respawn_seconds"
+	put := map[string]any{"value": 4, "scope": map[string]any{"experiment_id": "exp_1", "arm": "experimental"}}
+	bad := []string{"yes", "True", "TRUE", "", "2", "on"}
+	cases := []struct{ method, param, rest string }{
+		{"PUT", "dry_run", ""},
+		{"DELETE", "persist", ""},
+		{"DELETE", "fraction", ""},
+		{"DELETE", "unless_real_game", "game_kind=real&"},
+	}
+	for _, c := range cases {
+		for _, v := range bad {
+			t.Run(fmt.Sprintf("UC-042/main %s ?%s=%q is 400 naming the parameter", c.method, c.param, v), func(t *testing.T) {
+				e := newEnv(t, true)
+				var body any
+				if c.method == "PUT" {
+					body = put
+				}
+				s, b := e.do(c.method, path+"?"+c.rest+c.param+"="+v, body)
+				if s != 400 || b["error"] != "malformed" || !strings.Contains(b["detail"].(string), c.param) {
+					t.Fatalf("%d %v, want 400 malformed naming %s", s, b, c.param)
+				}
+			})
+		}
+	}
+	t.Run("UC-042/main dry_run=1 validates and does not write; dry_run=0 writes", func(t *testing.T) {
+		e := newEnv(t, true)
+		_, before := e.do("GET", path, nil)
+		s, res := e.do("PUT", path+"?dry_run=1", put)
+		if s != 200 || res["dry_run"] != true {
+			t.Fatalf("%d %v", s, res)
+		}
+		_, after := e.do("GET", path, nil)
+		if fmt.Sprint(before["rendered"]) != fmt.Sprint(after["rendered"]) {
+			t.Fatalf("dry_run=1 wrote:\n%v\n%v", before["rendered"], after["rendered"])
+		}
+		if s, res := e.do("PUT", path+"?dry_run=0", put); s != 200 || res["dry_run"] == true {
+			t.Fatalf("dry_run=0: %d %v", s, res)
+		}
+		_, applied := e.do("GET", path, nil)
+		if fmt.Sprint(before["rendered"]) == fmt.Sprint(applied["rendered"]) {
+			t.Fatal("dry_run=0 did not write")
+		}
+	})
+	t.Run("UC-042/main 1, 0, true and false are accepted on DELETE", func(t *testing.T) {
+		for _, q := range []string{"persist=1", "persist=0", "persist=true", "persist=false", "fraction=false", "fraction=0"} {
+			e := newEnv(t, true)
+			if s, b := e.do("DELETE", "/game/shield.activation?"+q, nil); s != 204 {
+				t.Fatalf("?%s: %d %v, want 204", q, s, b)
+			}
+		}
+	})
+}
+
+// newEnvStateFile is newEnv (stream open) with the state file stateFile.
+func newEnvStateFile(t *testing.T, stateFile string) *httptest.Server {
+	t.Helper()
+	_, file, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(file), "..")
+	base, err := baseline.Load(filepath.Join(root, "..", "flagd", "ci"), baseline.DefaultFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := registry.LoadFile(filepath.Join(root, "registry.yaml"), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _, err := state.New(base, reg, state.Options{Epoch: "e1", Served: base.Order, StateFile: stateFile, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, _ := st.Subscribe("")
+	t.Cleanup(sub.Close)
+	metrics, err := telemetry.NewMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewManualReader())).Meter("t"), st.Stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &API{State: st, Metrics: metrics, Tracer: sdktrace.NewTracerProvider().Tracer("t"), Links: &telemetry.Links{}}
+	srv := httptest.NewServer(a.Handler())
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func deleteHeader(t *testing.T, url string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodDelete, url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode, resp.Header.Get(HeaderPersisted)
+}
+
+// UC: UC-053 A12
+func TestKillSwitchPersistedClearSignalsPersistFailure(t *testing.T) {
+	t.Run("UC-053/A12 a kill switch DELETE ?persist=true with an unwritable state file answers 204 and X-Flag-Persisted false (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil { // unreadable at start: persistence blocked
+			t.Fatal(err)
+		}
+		srv := newEnvStateFile(t, path)
+		e := &env{t: t, srv: srv}
+		code, body := e.do(http.MethodPut, "/agent/interventions_allowed", map[string]any{"variant": "full", "persist": true, "writer": "menu"})
+		if code != http.StatusOK || body["persisted"] != false {
+			t.Fatalf("PUT %d %v, want 200 persisted false", code, body)
+		}
+		code, hdr := deleteHeader(t, srv.URL+"/agent/interventions_allowed?persist=true")
+		if code != http.StatusNoContent || hdr != "false" {
+			t.Fatalf("DELETE %d %s=%q, want 204 and false", code, HeaderPersisted, hdr)
+		}
+	})
+	t.Run("UC-053/A12 with the state file unreadable at start a persisted DELETE answers 500, a kill switch's 204 and X-Flag-Persisted false (#2368)", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "admin.json")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		srv := newEnvStateFile(t, path)
+		if code, _ := deleteHeader(t, srv.URL+"/game/sensitivity?persist=true"); code != http.StatusInternalServerError {
+			t.Fatalf("DELETE game/sensitivity %d, want 500 persist_failed", code)
+		}
+		code, hdr := deleteHeader(t, srv.URL+"/agent/interventions_allowed?persist=true")
+		if code != http.StatusNoContent || hdr != "false" {
+			t.Fatalf("DELETE %d %s=%q, want 204 and false with nothing in memory", code, HeaderPersisted, hdr)
+		}
+	})
+	t.Run("UC-053/A2 a persisted DELETE that reached the state file answers X-Flag-Persisted true", func(t *testing.T) {
+		srv := newEnvStateFile(t, filepath.Join(t.TempDir(), "admin.json"))
+		e := &env{t: t, srv: srv}
+		if code, body := e.do(http.MethodPut, "/agent/interventions_allowed", map[string]any{"variant": "full", "persist": true, "writer": "menu"}); code != http.StatusOK || body["persisted"] != true {
+			t.Fatalf("PUT %d %v", code, body)
+		}
+		code, hdr := deleteHeader(t, srv.URL+"/agent/interventions_allowed?persist=true")
+		if code != http.StatusNoContent || hdr != "true" {
+			t.Fatalf("DELETE %d %s=%q, want 204 and true", code, HeaderPersisted, hdr)
+		}
+	})
+}
+
+// UC: UC-053 A7
+func TestWritesEndTheirInflightMark(t *testing.T) {
+	t.Run("UC-053/A7 every write path, rejected or not, ends its in-flight mark (#2369)", func(t *testing.T) {
+		e := newEnv(t, true)
+		e.do("PUT", "/game/nonstop.respawn_seconds", `{"value":4,"scope":{"experiment_id":"e","arm":"a"}}`)
+		e.do("PUT", "/game/nonstop.respawn_seconds", `{"value":"x"`)
+		e.do("PUT", "/game/nonstop.respawn_seconds", `{"value":999,"scope":{"experiment_id":"e","arm":"a"}}`)
+		e.do("POST", "/game/nope", `{}`)
+		e.do("DELETE", "/game/nonstop.respawn_seconds?experiment_id=e&arm=a", nil)
+		e.do("DELETE", "/game/nonstop.respawn_seconds?persist=maybe", nil)
+		e.do("DELETE", "/game?writer=menu", nil)
+		e.do("DELETE", "/nope?writer=menu", nil)
+		if n := e.links.Inflight(); n != 0 {
+			t.Fatalf("%d writes still marked in flight", n)
+		}
+	})
+}
+
+// UC: UC-053 A7
+func TestPanickingWriteEndsItsInflightMark(t *testing.T) {
+	t.Run("UC-053/A7 a panic after beginWrite (recovered by net/http) leaves no in-flight mark (#2369)", func(t *testing.T) {
+		e := newEnv(t, true)
+		// Zero Metrics: finishWrite's RecordWrite dereferences a nil counter.
+		a := &API{State: e.st, Metrics: &telemetry.Metrics{}, Tracer: sdktrace.NewTracerProvider().Tracer("t"), Links: e.links}
+		srv := httptest.NewServer(a.Handler())
+		t.Cleanup(srv.Close)
+		req, _ := http.NewRequest("PUT", srv.URL+"/game/nonstop.respawn_seconds", strings.NewReader(`{"value":4,"scope":{"experiment_id":"e","arm":"a"}}`))
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			t.Fatalf("the handler did not panic (status %d): the test no longer exercises the panic path", resp.StatusCode)
+		}
+		if n := e.links.Inflight(); n != 0 {
+			t.Fatalf("%d writes still marked in flight after a panic", n)
+		}
+	})
+}
+
+// UC: UC-053 A10
+func TestPutGameNeverRehomesAnotherInstancesGame(t *testing.T) {
+	t.Run("UC-053/A10 PUT /games of an id another instance holds is 409 game_id_taken (#2369)", func(t *testing.T) {
+		e := newEnv(t, true)
+		if s, _ := e.do("PUT", "/games/g1", map[string]any{"coordinator_instance": "c/1", "serials": []string{"S1"}}); s != 200 {
+			t.Fatalf("first register %d", s)
+		}
+		s, body := e.do("PUT", "/games/g1", map[string]any{"coordinator_instance": "c/2", "serials": []string{"S9"}})
+		if s != 409 || body["error"] != "game_id_taken" {
+			t.Fatalf("PUT by another instance %d %v, want 409 game_id_taken", s, body)
+		}
+		if g := e.st.Game("g1"); g == nil || g.CoordinatorInstance != "c/1" || len(g.Serials) != 1 || g.Serials[0] != "S1" {
+			t.Fatalf("g1 was re-homed or changed: %+v", g)
+		}
+		if s, _ := e.do("PUT", "/games/g1", map[string]any{"coordinator_instance": "c/1", "serials": []string{"S1"}}); s != 200 {
+			t.Fatalf("the holder's own re-register %d", s)
 		}
 	})
 }

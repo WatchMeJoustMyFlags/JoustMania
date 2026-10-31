@@ -1,5 +1,5 @@
 /**
- * Unit tests for the agent.decide feed (#1233): Jaeger /api/traces JSON ->
+ * Unit tests for the agent.decide feed (#1233): Jaeger search JSON (fromOtlp shape) ->
  * DecideRow folding, the current-backend strip, threshold-bar maths, and the
  * escaping of span-derived (untrusted, model-written) text.
  *
@@ -11,24 +11,26 @@
  *   fallback    claude timed out, rules answered
  *   discarded   act answer dropped (game_ended), truncated answers, hostile rationale
  */
+import { escapeHtml } from "../html.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DecideStore,
   DECIDE_OVERLAP_MS,
   confidenceBar,
   decisionTargetLabel,
-  decideQueryParams,
   decideQueryStartMs,
-  fetchDecideFeed,
+  decideSearches,
+  pollDecides,
   jaegerTraceUrl,
   parseDecideAnswers,
   parseDecideTraces,
 } from "../agent.js";
 import { createPoller } from "../poller.js";
+import { COLD_START_TIME_MIN, SEARCH_TIME_MAX, searchParams } from "../jaeger.js";
+import { toOtlp } from "./otlp.js";
 import type { DecideRow, JaegerTracesResponse } from "../agent.js";
 import {
   AgentView,
-  escapeHtml,
   renderConfidenceBar,
   renderDecideRow,
   renderDecideStrip,
@@ -311,20 +313,23 @@ describe("current strip with real + shadow games", () => {
 });
 
 describe("incremental query window", () => {
-  it("cold start: no start (Jaeger's server-side default window)", () => {
+  it("cold start: the epoch lower bound, the fixed upper bound (#2283)", () => {
     expect(decideQueryStartMs(null)).toBeNull();
-    const q = decideQueryParams(null);
-    expect(q.has("start")).toBe(false);
-    expect(q.has("end")).toBe(false);
-    expect(q.get("limit")).toBe("5");
+    const q = searchParams(decideSearches(new DecideStore(), 0)[0].spec);
+    expect(q.get("query.startTimeMin")).toBe(COLD_START_TIME_MIN);
+    expect(q.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
+    expect(q.get("query.searchDepth")).toBe("5");
   });
 
-  it("warm: 30s behind the newest decide seen, in microseconds, no end", () => {
+  it("warm: the overlap behind the newest decide seen, RFC 3339, the fixed upper bound", () => {
     const newest = 1_760_000_012_000;
     expect(decideQueryStartMs(newest)).toBe(newest - DECIDE_OVERLAP_MS);
-    const q = decideQueryParams(decideQueryStartMs(newest));
-    expect(q.get("start")).toBe(String((newest - DECIDE_OVERLAP_MS) * 1000));
-    expect(q.has("end")).toBe(false);
+    const store = new DecideStore();
+    store.merge([{ ...parseDecideTraces(asResp(multiFixture)).rows[0], tsMs: newest }]);
+    expect(store.queryStartMs()).toBe(newest - DECIDE_OVERLAP_MS);
+    const q = searchParams(decideSearches(store, 0)[0].spec);
+    expect(q.get("query.startTimeMin")).toBe(new Date(newest - DECIDE_OVERLAP_MS).toISOString());
+    expect(q.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
   });
 
   it("DecideStore tracks the newest decide, replaces re-fetched rows, and stays bounded", () => {
@@ -530,24 +535,25 @@ describe("clock skew: browser clock hours off the agent/Jaeger clock", () => {
     const urls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       urls.push(url);
-      return { ok: true, json: async () => merged(multiFixture) } as unknown as Response;
+      return new Response(JSON.stringify(toOtlp(merged(multiFixture))), { status: 200 });
     });
 
     const store = new DecideStore();
-    const first = await fetchDecideFeed(store.queryStartMs());
-    store.merge(first.rows);
-    await fetchDecideFeed(store.queryStartMs());
+    await pollDecides(store, 0);
+    const firstRows = store.feed().rows;
+    await pollDecides(store, 0);
 
     const [cold, warm] = urls.map((u) => new URLSearchParams(u.split("?")[1]));
-    expect(cold.has("start")).toBe(false);
-    expect(cold.has("end")).toBe(false);
-    const newest = Math.max(...first.rows.map((r) => r.tsMs));
-    expect(warm.get("start")).toBe(String((newest - DECIDE_OVERLAP_MS) * 1000));
-    expect(warm.has("end")).toBe(false);
-    // The only time in either query is span-derived (agent clock).
-    expect([...cold.keys()].sort()).toEqual(["limit", "operation", "service"]);
-    expect([...warm.keys()].sort()).toEqual(["limit", "operation", "service", "start"]);
-    expect(Number(warm.get("start")) / 1000).toBeLessThan(browserNow - 6 * 3_600_000);
+    expect(cold.get("query.startTimeMin")).toBe(COLD_START_TIME_MIN);
+    expect(cold.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
+    const newest = Math.max(...firstRows.map((r) => r.tsMs));
+    expect(warm.get("query.startTimeMin")).toBe(new Date(newest - DECIDE_OVERLAP_MS).toISOString());
+    expect(warm.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
+    // The only times in either query are fixed bounds or span-derived (agent clock).
+    const keys = ["query.operationName", "query.searchDepth", "query.serviceName", "query.startTimeMax", "query.startTimeMin"];
+    expect([...cold.keys()].sort()).toEqual(keys);
+    expect([...warm.keys()].sort()).toEqual(keys);
+    expect(Date.parse(warm.get("query.startTimeMin")!)).toBeLessThan(browserNow - 6 * 3_600_000);
 
     const feed = store.feed();
     expect(feed.rows.map((r) => r.spanId)).toEqual(["D2", "D1", "R1"]);

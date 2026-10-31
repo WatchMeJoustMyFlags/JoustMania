@@ -61,40 +61,16 @@ const gatedInterventionInstructions = "If the agent intervenes now, which interv
 // interventionDescriptions describe each ffa.intervention option (the levers'
 // effect, from the retired FFA impact model of llm/prompt.go, #1102). An
 // option without an entry is sent with a null description.
-var interventionDescriptions = map[string]string{
-	decide.OptionNoop: "Do nothing and leave the game as it is. Right when the game is already close and " +
-		"lively, or when nothing clearly calls for an intervention.",
-	"adjust_music_tempo": "Change the music tempo for everyone. Faster music raises everyone's death " +
-		"threshold (more movement tolerated, fewer eliminations); slower music lowers it (eliminations come faster).",
-	"ramp_tempo": "Ramp the music tempo smoothly over several seconds instead of one step, gradually " +
-		"making the game more forgiving or more dangerous for everyone.",
-	"set_pacing_profile": "Switch the session's pacing profile (how the music tempo evolves over the round), " +
-		"speeding up or slowing down eliminations for everyone.",
-	"adjust_volume": "Change the music volume. Atmosphere only: no effect on who gets eliminated.",
-	"adjust_global_sensitivity": "Change the sensitivity level for all players at once. A higher level makes " +
-		"everyone much harder to eliminate, a lower level much easier; one step is a sizable jump.",
-	"adjust_global_difficulty": "Scale the difficulty for all players at once, making eliminations come " +
-		"faster (harder) or slower (easier) for everyone.",
-	"adjust_player_sensitivity": "Change one player's sensitivity, protecting them (harder to eliminate) " +
-		"or handicapping them (easier to eliminate).",
-	"set_player_handicap": "Help one player (harder to eliminate) or rein in one player (easier to " +
-		"eliminate), to balance a lopsided game.",
-	"grant_shield": "Make one player immune to elimination for a few seconds. Saves a player who is about " +
-		"to be eliminated unfairly.",
-	"toughness_boost": "Make one player much harder, but not impossible, to eliminate for a few seconds; " +
-		"weaker than grant_shield.",
-	"soft_penalty": "Put pressure on one player: a warning cue, or briefly making them easier to " +
-		"eliminate. Recoverable, never an instant elimination.",
-	"auto_rubberband": "Automatically help the trailing players (harder to eliminate) to keep a lopsided " +
-		"game close, without ever inverting the standings.",
-	"play_audio_cue": "Play an audio cue or announcement to build tension or excitement. No effect on who " +
-		"gets eliminated.",
-	"send_controller_effect": "Flash or rumble one player's controller as feedback. No effect on who gets " +
-		"eliminated.",
-	"eliminate_player": "Immediately and permanently eliminate one player. Maximal and irreversible.",
-	"revive_player":    "Bring an eliminated player back into the game.",
-	"end_game":         "End the round now. Maximal and irreversible; the last player alive wins.",
-}
+var interventionDescriptions = func() map[string]string {
+	out := map[string]string{
+		decide.OptionNoop: "Do nothing and leave the game as it is. Right when the game is already close and " +
+			"lively, or when nothing clearly calls for an intervention.",
+	}
+	for _, iv := range decide.Catalog {
+		out[iv.Name] = iv.JevDescription
+	}
+	return out
+}()
 
 // targetNoneDescription describes the ffa.target "none" option.
 const targetNoneDescription = "No specific player: the intervention is session-wide (music tempo, volume, " +
@@ -387,6 +363,11 @@ func suitability(iv string, p decide.PlayerState, st decide.State) string {
 				return "Shield energy already full: another shield is refused."
 			}
 		}
+		// #2066: the per-game cap or the cooldown (and a hold refusal the state's
+		// own fields do not show) refuse another grant.
+		if iv == "grant_shield" && p.ShieldLimited {
+			return "No more agent shields for this player right now (per-game cap or cooldown): another shield is refused."
+		}
 		if p.Shielded && (iv != "grant_shield" || st.ShieldActivation == "") {
 			return "Already shielded a moment ago: another shield would be wasted."
 		}
@@ -450,6 +431,7 @@ func describeCandidates(st decide.State, iv string) map[string]string {
 			b.WriteString(" Holds an agent shield charge, or has just used it.")
 		}
 		b.WriteString(holdPhrase(p, st))
+		b.WriteString(levelPhrase(p))
 		if v := finiteOrNil(p.Skill); v != nil {
 			b.WriteString(" Skill " + strconv.FormatFloat(*v, 'f', 2, 64) + ".")
 		}
@@ -459,6 +441,19 @@ func describeCandidates(st decide.State, iv string) map[string]string {
 		out[p.Serial] = b.String()
 	}
 	return out
+}
+
+// levelPhrase names the per-player factors the agent already applied (#2066), e.g.
+// " Agent sensitivity factor 0.80 already applied.". Empty when none is set.
+func levelPhrase(p decide.PlayerState) string {
+	var s string
+	if p.SensitivityFactor != nil {
+		s += " Agent sensitivity factor " + strconv.FormatFloat(*p.SensitivityFactor, 'f', 2, 64) + " already applied."
+	}
+	if p.HandicapFactor != nil {
+		s += " Agent handicap factor " + strconv.FormatFloat(*p.HandicapFactor, 'f', 2, 64) + " already applied."
+	}
+	return s
 }
 
 // rankWord is "most" for rank 1, "least" for the last rank, else "2nd most".

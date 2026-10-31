@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -207,6 +208,13 @@ type experimentLoop struct {
 	// dependency. Production leaves it nil (the real flags client is consulted).
 	configOverride func(ctx context.Context) flags.ExperimentConfig
 
+	// runCtx is the context run() was started with (#2323). The slot refills that
+	// fire off the tick goroutine (conclude, stale release, terminal outcome, grace
+	// backstops) read it through refillCtx so a refill during shutdown sees the
+	// cancellation instead of spawning a new shadow game. Unset (test wiring that
+	// never calls run) falls back to context.Background().
+	runCtx atomic.Pointer[context.Context]
+
 	// startMu guards startedOnce so the deferred bootstrap runs EXACTLY once even
 	// though allocateIfEnabled is called concurrently from several goroutines (tick,
 	// immediate allocate, per-partition onGameEnd, onGameTerminal, grace timer).
@@ -238,6 +246,11 @@ type experimentLoop struct {
 	// promotions reverts the autonomous promotions this agent run applied when the
 	// kill switch is off (UC-043 A1, UC-045 step 5, #1704). nil: nothing to revert.
 	promotions promotionKillSwitch
+	// deferred drains the promoter's queue of hold-key real writes and reverts
+	// every promote.DeferredDrainInterval with the live promotionConfig (UC-043 A17
+	// step 3); nil = no queue (test wiring).
+	deferred        deferredPromotions
+	promotionConfig promote.ConfigResolver
 
 	// ceilings are the operator's env ceilings on the widening experiment settings
 	// (#1810, C-034): read once at startup (the process env does not change); 0 =
@@ -277,6 +290,9 @@ type experimentLoop struct {
 	// Each entry has one timer in graceTimers that bounds it.
 	parked   map[string]gamecontext.GameContext
 	outcomes map[string]gamerunner.Outcome
+	// hold is the UC-043 A17 gate of the declarer; main shares its policy with the
+	// proposer vocabulary.
+	hold *holdGate
 }
 
 // gameFitnessFunc scores a finished game (its pre-reset GameContext) into one
@@ -356,8 +372,10 @@ func buildExperimentLoop(
 	// each promotion, so the real-default path stays behind every existing gate.
 	promo := promote.NewExperimentPromoter(promoter, promotionConfigResolver(flagsClient))
 
-	// ShadowSpawner (#976): the real outbound game-coordinator client.
-	spawner := newShadowSpawner(gamerunner.ConfigFromEnv(), logger)
+	// ShadowSpawner (#976): the real outbound game-coordinator client. Each experiment
+	// arm starts with its own resolved sensitivity (UC-046 BR-019, #2392).
+	spawner := newShadowSpawner(gamerunner.ConfigFromEnv(), logger, flagsClient.ShadowGameInt)
+	spawner.SetSpawnFailureCounter(newSpawnFailureCounter(globalMeterProvider()))
 
 	// FitnessStore (#965/#1017): the finalized-per-game fitness store onGameEnd
 	// Records into and the #992 recent-real anchor reads from. It is built
@@ -395,9 +413,13 @@ func buildExperimentLoop(
 		Promoter:  promo,
 		Targeting: targeting,
 		Log:       logger,
+		// UC-043 A17 step 3: a flag whose deferred promotion waits counts as under test.
+		PendingPromotions: pendingPromotionFlags(promoter),
 		// UC-046: pin experiment.mock_archetypes at each experiment's first spawn;
 		// the kill switch force-ends in-flight pattern games through the tracker.
-		Patterns:       pinner,
+		Patterns: pinner,
+		// UC-043 A17 step 2: hold-flag experiments are checked at the pin and per tick.
+		HoldGate:       registryHoldGate(gameFlags),
 		FlagDigest:     resolvedFlagDigest,
 		PatternTracker: patterngame.Default,
 	})
@@ -408,6 +430,14 @@ func buildExperimentLoop(
 		registry.SetTerminalHook(window.Forget)
 	}
 	spawner.SetPatternCallbacks(registry.RecordPatternStart, patternEndChain(registry.RecordPatternEnd, windowSink))
+
+	// UC-043 A17 step 1: the declarer offers a hold key only while the selected
+	// archetypes all press the trigger in a Free-for-All shadow mode.
+	hold := &holdGate{}
+	hold.setPolicy(func(ctx context.Context) bool {
+		pin := pinner.Pin(ctx)
+		return pin.Active() && len(experiment.ArchetypesWithoutTriggerPolicy(pin)) == 0
+	})
 
 	thresholds := flagsFitnessSource{flags: flagsClient}
 	loop := &experimentLoop{
@@ -422,6 +452,7 @@ func buildExperimentLoop(
 		thresholds:   thresholds,
 		ceilings:     experimentCeilingsFromEnv(logger),
 		dynamic:      newDynamicDeclarer(gameFlags, nil),
+		hold:         hold,
 		// #1184: the retro-seeded thesis proposer is ALWAYS built (like the #995
 		// declarer) so the retro coordinator can Record into it unconditionally; whether
 		// it actually DECLARES is gated by the proposer gate (env AND flag, #1810) in
@@ -432,7 +463,14 @@ func buildExperimentLoop(
 		loop.promotions = promoter
 		// A re-watch revert journals on its experiment (UC-043 step 7, #1883).
 		promoter.SetRewatchJournal(loop.journalRewatchRevert)
+		// UC-043 A17 step 3: the deferred real writes and reverts of hold keys.
+		loop.deferred = promoter
+		loop.promotionConfig = promotionConfigResolver(flagsClient)
+		if !promoter.HasRealGameProbe() {
+			logger.Warn("code_improvement: no real-game probe wired; every autonomous promotion of a hold key waits forever (UC-043 A17, fail closed)")
+		}
 	}
+	loop.dynamic.hold = hold
 	logger.Info("Dynamic experiment declarer constructed (#995/#1044) — gated LIVE by agent.json experiment_dynamic_enabled; settings are the experiment_dynamic_* flags, read per tick (#1907)")
 	// Wire the #1014 terminal-outcome backstop: each spawned game signals its
 	// terminal outcome here, and a non-concluding game releases its in-flight slot
@@ -491,6 +529,11 @@ func promotionConfigResolver(f *flags.Flags) promote.ConfigResolver {
 // `enabled`) is ALSO honored each tick (agentEnabled), independent of
 // experiments_enabled — either being off tears the surface down.
 func (e *experimentLoop) run(ctx context.Context) {
+	e.runCtx.Store(&ctx)
+	// UC-043 A20 (#2332): once ctx is cancelled the registry declares and starts no
+	// experiment (the game-end proposer can race the AbortAll below) and a conclusion
+	// does not promote.
+	e.registry.SetShutdownContext(ctx)
 	// First action immediately so an already-enabled agent accrues games without
 	// waiting a full tick (and a disabled one tears down promptly), then refill on
 	// the live cadence. The first interval is read before flagd has synced, so it is
@@ -512,11 +555,27 @@ func (e *experimentLoop) run(ctx context.Context) {
 	}
 	heartbeat := newHeartbeat(experiment.ProgressHeartbeatInterval)
 	defer heartbeat.Stop()
+	// UC-043 A17 step 3: drain the deferred hold-key writes and reverts.
+	var drain <-chan time.Time
+	if e.deferred != nil {
+		drainTicker := time.NewTicker(promote.DeferredDrainInterval)
+		defer drainTicker.Stop()
+		drain = drainTicker.C
+	}
 	for {
 		select {
 		case <-heartbeat.Chan():
 			e.registry.ProgressHeartbeat()
+		case <-drain:
+			e.drainDeferred(ctx)
 		case <-ctx.Done():
+			// UC-043 A17: journal the dropped deferred writes before the journal closes.
+			// A waiting revert runs now if no real game is live, else it stays journaled.
+			if e.deferred != nil {
+				dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+				e.deferred.DropDeferred(dctx, promote.ReasonShutdown)
+				dcancel()
+			}
 			// Shutdown / kill-switch teardown: abort every live experiment so its
 			// targeting branch is stripped and capacity released. Cancel any pending
 			// completed-grace timers first so none fires after the loop returns (#1020).
@@ -600,6 +659,14 @@ func (e *experimentLoop) tickInterval(ctx context.Context) time.Duration {
 // decision loop obeys. When enabled, it lazily runs the one-time rehydrate, the seed
 // (startup-gate inversion), applies the live caps, then allocates.
 func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
+	// #2323: a refill that arrives after shutdown began does nothing; run()'s own
+	// teardown aborts the live experiments ("agent shutdown"). The guard exists so
+	// refills, spawns and reverts stop once shutdown has begun. It does not make the
+	// flag read fail closed: the OpenFeature SDK and the flagd in-process provider
+	// ignore ctx when evaluating.
+	if ctx.Err() != nil {
+		return
+	}
 	// UC-043 A1 / UC-045 step 5 (#1704): with the kill switch off (or failed closed)
 	// every tick reverts the autonomous promotions this agent run applied, whatever
 	// experiments_enabled says, so none survives the switch.
@@ -610,7 +677,7 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 	cfg := e.config(ctx)
 	// #1907: an `off` experiment_seed re-arms the seed on ANY tick, so it is seen
 	// while the gates are off too (agent-dryrun-enable.sh off clears them first).
-	e.observeSeedOff(cfg)
+	e.observeSeedOff(ctx, cfg)
 	if !cfg.Enabled {
 		if ids := e.registry.AbortAll(ctx, "experiments_enabled flag off"); len(ids) > 0 {
 			e.log.Warn("experiment: experiments_enabled flag off — aborted live experiments (#1044)", "count", len(ids))
@@ -667,6 +734,33 @@ func (e *experimentLoop) allocateIfEnabled(ctx context.Context) {
 // promotion still applied, stops its re-watch and returns what it reverted.
 type promotionKillSwitch interface {
 	RevertOnKillSwitch(ctx context.Context) []promote.KillSwitchRevert
+}
+
+// deferredPromotions is the Promoter half that owns the deferred real writes of
+// hold keys (UC-043 A17 step 3).
+type deferredPromotions interface {
+	DrainDeferred(ctx context.Context, resolve promote.ConfigResolver)
+	DropDeferred(ctx context.Context, reason string)
+	RestoreDeferredReverts(ctx context.Context, restored []experiment.RestoredRevert)
+}
+
+// pendingPromotionFlags is the registry's view of the promoter's waiting writes;
+// nil without a promoter.
+func pendingPromotionFlags(p *promote.Promoter) func() []string {
+	if p == nil {
+		return nil
+	}
+	return p.PendingFlags
+}
+
+// drainDeferred runs one pass of the deferred queue with the live promotion
+// config resolver (read per pass and per write, opposer m2). The promoter journals
+// each outcome.
+func (e *experimentLoop) drainDeferred(ctx context.Context) {
+	if e.deferred == nil || e.promotionConfig == nil {
+		return
+	}
+	e.deferred.DrainDeferred(ctx, e.promotionConfig)
 }
 
 // revertPromotionsOnKillSwitch reverts the applied autonomous promotions and
@@ -871,6 +965,12 @@ func (e *experimentLoop) ensureStarted() {
 	if err := e.rehydrate(); err != nil {
 		e.log.Error("experiment: rehydrate from journal failed (continuing without prior experiments)", "error", err)
 	}
+	// UC-043 A17 step 3: re-queue the hold-key reverts a previous run left waiting.
+	if e.deferred != nil && e.registry != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		e.deferred.RestoreDeferredReverts(ctx, e.registry.TakeRestoredReverts())
+		cancel()
+	}
 }
 
 // rehydrate rebuilds the live registry from the durable journal on startup.
@@ -1060,7 +1160,7 @@ func (e *experimentLoop) concludeExperimentGame(gc gamecontext.GameContext) {
 	}
 	if status == experiment.StatusRunning {
 		// A freed in-flight slot; refill it (respecting the kill-switch).
-		e.allocateIfEnabled(context.Background())
+		e.allocateIfEnabled(e.refillCtx())
 	}
 }
 
@@ -1078,7 +1178,7 @@ func (e *experimentLoop) releaseStaleGame(gc gamecontext.GameContext, reason str
 		return
 	}
 	if e.registry.ReleaseGame(gc.SessionID, reason) {
-		e.allocateIfEnabled(context.Background())
+		e.allocateIfEnabled(e.refillCtx())
 	}
 }
 
@@ -1156,6 +1256,9 @@ func (e *experimentLoop) experimentParentCtx(experimentID string) context.Contex
 // directly with no span. The returned (status, err) are passed straight through.
 func (e *experimentLoop) concludeWithSpan(gc gamecontext.GameContext, fitness, duration float64, gameLink []trace.SpanStartOption) (experiment.Status, error) {
 	if e.tracer == nil {
+		// context.Background on purpose (#2323): the fold journals a finished game's
+		// sample and must complete even when it lands during shutdown. The registry
+		// does not promote once shutdown began (UC-043 A20, #2332).
 		return e.registry.ConcludeGame(context.Background(), gc.SessionID, fitness, duration)
 	}
 	attrs := []attribute.KeyValue{
@@ -1322,6 +1425,8 @@ func isSampleOutcome(outcome gamerunner.Outcome) bool {
 // pair's rerun does not use up its 3-rerun budget (BR-015).
 func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcome) {
 	sample := isSampleOutcome(outcome)
+	// The grace reads stay on context.Background (#2323): they only size a timer, and a
+	// cancelled ctx must not turn them into the fail-closed defaults.
 	grace := e.config(context.Background()).CompletedGrace
 	window := parkWindowFor(grace)
 
@@ -1356,12 +1461,20 @@ func (e *experimentLoop) onGameTerminal(gameID string, outcome gamerunner.Outcom
 	if e.registry.ReleaseGame(gameID, reason) {
 		e.log.Warn("experiment: released in-flight slot for non-concluding game (#1014)",
 			"game_id", gameID, "outcome", outcome)
-		// Refill the freed slot (respecting the kill-switch). context.Background is
-		// intentional: this runs on the drive goroutine, which has no tick/request
-		// context to thread through — the spawn it triggers is bounded by the runner's
-		// own RPC + ready timeouts, so an unbounded Background cannot stall here.
-		e.allocateIfEnabled(context.Background())
+		// Refill the freed slot (respecting the kill-switch). This runs on the drive
+		// goroutine, which has no tick/request context; refillCtx is run()'s context,
+		// so a refill after shutdown began spawns nothing (#2323).
+		e.allocateIfEnabled(e.refillCtx())
 	}
+}
+
+// refillCtx returns the context run() was started with, so a slot refill fired
+// off the tick goroutine sees shutdown (#2323); context.Background() before run().
+func (e *experimentLoop) refillCtx() context.Context {
+	if p := e.runCtx.Load(); p != nil {
+		return *p
+	}
+	return context.Background()
 }
 
 // parkWindow is how long a parked telemetry end waits for the runner's outcome:
@@ -1400,7 +1513,7 @@ func (e *experimentLoop) fireParkedEnd(gameID string) {
 	if e.registry.ReleaseGame(gameID, releaseReasonNoOutcome) {
 		e.log.Warn("experiment: telemetry end got no terminal outcome — released without a sample (#1405)",
 			"game_id", gameID)
-		e.allocateIfEnabled(context.Background())
+		e.allocateIfEnabled(e.refillCtx())
 	}
 }
 
@@ -1506,10 +1619,9 @@ func (e *experimentLoop) fireCompletedGrace(gameID string) {
 		// normal conclude path) so the drop is visible in the agent's logs/metrics.
 		e.log.Warn("experiment: completed-game grace backstop fired — released leaked slot (#1020)",
 			"game_id", gameID)
-		// Refill the freed slot (respecting the kill-switch). context.Background is
-		// intentional here for the same reason as the #1014 release path: this runs on
-		// a runtime timer goroutine with no request/tick context to thread.
-		e.allocateIfEnabled(context.Background())
+		// Refill the freed slot (respecting the kill-switch) with run()'s context, as
+		// on the #1014 release path: this runs on a runtime timer goroutine (#2323).
+		e.allocateIfEnabled(e.refillCtx())
 	}
 }
 

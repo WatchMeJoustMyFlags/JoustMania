@@ -10,11 +10,13 @@
 
 use hidapi::HidApi;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, mpsc};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::hid::{self, HidDeviceIo};
+use crate::input_slot::InputSink;
 use crate::output::{OutputRate, OutputRouter};
 use crate::watchdog::Heartbeat;
 
@@ -49,22 +51,35 @@ pub enum DeviceCmd {
         serial: String,
     },
     CloseAll,
-    /// Register the tokio mpsc sender for streaming sensor data.
+    /// Register the latest-sample sink for streaming sensor data (#2372).
+    /// `id` (from `next_stream_id`) names this registration; the newest one
+    /// wins. Every open device's input is flushed first (not forwarded).
     RegisterStream {
-        sender: tokio::sync::mpsc::Sender<StreamSensorData>,
+        id: u64,
+        sender: InputSink,
     },
-    /// Unregister the stream sender.
-    UnregisterStream,
-    /// Shutdown the device manager thread.
-    #[allow(dead_code)]
+    /// Unregister the stream registered with `id`. A late unregister from an
+    /// older stream (its id no longer registered) is ignored (#2371).
+    UnregisterStream {
+        id: u64,
+    },
+    /// Shutdown the device manager thread: every open controller is closed,
+    /// so each writer sends LED off and rumble 0 (B5, #2373).
     Shutdown,
 }
 
-/// Sensor data sent from the device manager to the gRPC stream.
-#[derive(Debug, Clone)]
-pub struct StreamSensorData {
-    pub serial: String,
-    pub report: hid::ParsedInputReport,
+/// Source of `RegisterStream` ids: unique for the life of the process.
+static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
+
+/// A new, unique stream registration id.
+pub fn next_stream_id() -> u64 {
+    NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The registered input stream: its id and the sink to its gRPC stream.
+struct ActiveStream {
+    id: u64,
+    sender: InputSink,
 }
 
 /// Device enumeration and opening, the seam between the device loop and
@@ -74,8 +89,12 @@ pub trait HidBackend {
 
     /// Re-enumerate the attached HID devices.
     fn refresh_devices(&mut self) -> hidapi::HidResult<()>;
-    /// Open every attached PS Move: (serial, device, product_id, adapter_name).
-    fn discover_controllers(&self) -> Vec<(String, Self::Device, u16, Option<String>)>;
+    /// Open every attached PS Move whose serial `skip` rejects:
+    /// (serial, device, product_id, adapter_name). A skipped serial is not opened.
+    fn discover_controllers(
+        &self,
+        skip: &dyn Fn(&str) -> bool,
+    ) -> Vec<(String, Self::Device, u16, Option<String>)>;
     /// Open the attached PS Move with this serial: (device, product_id, adapter_name).
     /// The adapter is resolved once here, the same way discovery does (#2200).
     fn open_controller_by_serial(
@@ -91,8 +110,11 @@ impl HidBackend for HidApi {
         HidApi::refresh_devices(self)
     }
 
-    fn discover_controllers(&self) -> Vec<(String, Self::Device, u16, Option<String>)> {
-        hid::discover_controllers(self)
+    fn discover_controllers(
+        &self,
+        skip: &dyn Fn(&str) -> bool,
+    ) -> Vec<(String, Self::Device, u16, Option<String>)> {
+        hid::discover_controllers(self, skip)
     }
 
     fn open_controller_by_serial(
@@ -108,6 +130,15 @@ struct DeviceEntry<D> {
     device: Arc<Mutex<D>>,
     product_id: u16,
     adapter_name: Option<String>,
+    /// A poll of the input stream hit a read error: the handle is gone and the
+    /// next discovery pass drops it (UC-002 BR-006, #2314).
+    read_failed: bool,
+    /// A stream was registered since the last poll: the next poll drains the
+    /// hidraw ring and forwards nothing, so the stream starts with fresh input
+    /// instead of the reports queued while nobody read (#2372).
+    flush_input: bool,
+    /// Metric attributes, built once at open (#2374).
+    labels: crate::metrics::ControllerLabels,
 }
 
 /// Run the device manager loop on the current thread (blocking).
@@ -128,6 +159,19 @@ pub fn run_device_manager(
         }
     };
     run_device_loop(api, cmd_rx, &heartbeat, &outputs);
+}
+
+/// Stop the device loop and wait, at most `timeout`, until every writer has sent
+/// its LED-off / rumble-off (process stop, #2373). True when all writers ended in time.
+pub fn graceful_stop(
+    cmd_tx: &mpsc::Sender<DeviceCmd>,
+    router: &OutputRouter,
+    timeout: Duration,
+) -> bool {
+    if cmd_tx.send(DeviceCmd::Shutdown).is_err() {
+        warn!("Device manager already stopped; no off command sent");
+    }
+    router.wait_writers_stopped(timeout)
 }
 
 /// The output side the device loop hands every opened device to.
@@ -151,19 +195,20 @@ fn run_device_loop<B: HidBackend>(
     outputs: &DeviceOutputs,
 ) {
     let mut devices: HashMap<String, DeviceEntry<B::Device>> = HashMap::new();
-    let mut stream_sender: Option<tokio::sync::mpsc::Sender<StreamSensorData>> = None;
+    let mut stream: Option<ActiveStream> = None;
 
     info!("Device manager thread started");
 
     loop {
         heartbeat.beat();
+        let pass_started = std::time::Instant::now();
 
         // Process pending commands (non-blocking), at most MAX_CMDS_PER_PASS per
         // pass, so a flood of commands cannot starve the poll or the heartbeat
         for _ in 0..MAX_CMDS_PER_PASS {
             match cmd_rx.try_recv() {
                 Ok(cmd) => {
-                    if !handle_command(cmd, &mut api, &mut devices, &mut stream_sender, outputs) {
+                    if !handle_command(cmd, &mut api, &mut devices, &mut stream, outputs) {
                         info!("Device manager shutting down");
                         // Close all devices: each writer sends off and stops
                         handle_close_all(&mut devices, outputs);
@@ -178,10 +223,21 @@ fn run_device_loop<B: HidBackend>(
             }
         }
 
-        // Poll all open devices for input reports
-        if let Some(ref sender) = stream_sender {
-            poll_all_devices(&devices, sender);
+        // Poll all open devices for input reports. A stream whose receiver is
+        // gone (its gRPC call ended) is unregistered instead (#2371).
+        if let Some(active) = &stream {
+            let closed =
+                active.sender.is_closed() || poll_all_devices(&mut devices, &active.sender);
+            if closed {
+                info!(
+                    stream_id = active.id,
+                    "Stream closed by its receiver, unregistered"
+                );
+                stream = None;
+            }
         }
+
+        crate::metrics::record_pass(pass_started.elapsed());
 
         // Brief sleep to avoid busy-waiting (~1 kHz poll rate)
         std::thread::sleep(POLL_INTERVAL);
@@ -193,7 +249,7 @@ fn handle_command<B: HidBackend>(
     cmd: DeviceCmd,
     api: &mut B,
     devices: &mut HashMap<String, DeviceEntry<B::Device>>,
-    stream_sender: &mut Option<tokio::sync::mpsc::Sender<StreamSensorData>>,
+    stream: &mut Option<ActiveStream>,
     outputs: &DeviceOutputs,
 ) -> bool {
     match cmd {
@@ -208,8 +264,22 @@ fn handle_command<B: HidBackend>(
             exclude_serials,
             reply,
         } => {
-            let serials =
-                handle_discover(api, devices, force, verify_only, &exclude_serials, outputs);
+            let polling = stream.is_some();
+            if force && polling {
+                // The poll already finds dead controllers, so `force` adds nothing (psmove_hid.proto).
+                debug!("Discover force ignored: the input stream is open");
+            }
+            let serials = handle_discover(
+                api,
+                devices,
+                DiscoverPass {
+                    force,
+                    verify_only,
+                    polling,
+                },
+                &exclude_serials,
+                outputs,
+            );
             let _ = reply.send(serials);
         }
         DeviceCmd::Open { serial, reply } if reply.is_closed() => {
@@ -225,14 +295,27 @@ fn handle_command<B: HidBackend>(
         DeviceCmd::CloseAll => {
             handle_close_all(devices, outputs);
         }
-        DeviceCmd::RegisterStream { sender } => {
-            info!("Stream registered");
-            *stream_sender = Some(sender);
+        DeviceCmd::RegisterStream { id, sender } => {
+            let replaced = stream.as_ref().map(|old| old.id);
+            info!(stream_id = id, replaced = ?replaced, "Stream registered");
+            for entry in devices.values_mut() {
+                entry.flush_input = true;
+            }
+            *stream = Some(ActiveStream { id, sender });
         }
-        DeviceCmd::UnregisterStream => {
-            info!("Stream unregistered");
-            *stream_sender = None;
-        }
+        DeviceCmd::UnregisterStream { id } => match stream {
+            Some(active) if active.id == id => {
+                info!(stream_id = id, "Stream unregistered");
+                *stream = None;
+            }
+            // A late unregister from a replaced stream must not drop the new one.
+            _ => {
+                debug!(
+                    stream_id = id,
+                    "Ignored unregister of a stream no longer registered"
+                );
+            }
+        },
         DeviceCmd::Shutdown => {
             return false;
         }
@@ -240,7 +323,26 @@ fn handle_command<B: HidBackend>(
     true
 }
 
-/// Discover controllers: enumerate HID devices, open new ones.
+/// One Discover request as the device loop sees it.
+#[derive(Debug, Clone, Copy)]
+struct DiscoverPass {
+    /// Skip the read check of open devices (a periodic forced rescan). No effect
+    /// while the input stream is open: `polling` skips the read check anyway.
+    force: bool,
+    /// Skip the enumeration: only drop the devices that are gone.
+    verify_only: bool,
+    /// The input stream is registered, so the device loop reads every open
+    /// device each pass and records its read errors.
+    polling: bool,
+}
+
+/// Discover controllers: drop the ones that are gone, enumerate, open new ones.
+///
+/// A pass never reopens an open controller and never reads from one the input
+/// stream polls (UC-002 BR-006, #2314): an open device whose poll hit a read
+/// error is dropped; without a stream (nothing polls, nothing consumes the
+/// reports) a non-forced pass reads each device once to find the dead ones.
+/// The enumeration then opens only serials that are not open yet.
 ///
 /// `exclude_serials` lists controllers claimed by another adapter (e.g. hidapi).
 /// Excluded serials are skipped during enumeration — the device handle is not
@@ -248,46 +350,48 @@ fn handle_command<B: HidBackend>(
 fn handle_discover<B: HidBackend>(
     api: &mut B,
     devices: &mut HashMap<String, DeviceEntry<B::Device>>,
-    force: bool,
-    verify_only: bool,
+    pass: DiscoverPass,
     exclude_serials: &[String],
     outputs: &DeviceOutputs,
 ) -> Vec<DiscoveredControllerInfo> {
-    // Verify existing devices if not forcing
-    if !force && !devices.is_empty() {
-        let stale: Vec<String> = devices
-            .iter()
-            .filter_map(|(serial, entry)| {
-                let mut buf = [0u8; 64];
-                // Busy = its writer is in a write: the device is there.
-                let Ok(device) = entry.device.try_lock() else {
-                    return None;
-                };
-                match device.read(&mut buf) {
-                    Ok(_) => None,                  // Data or no data, device is alive
-                    Err(_) => Some(serial.clone()), // Device gone
-                }
-            })
-            .collect();
-        for serial in stale {
-            info!(serial = %serial, "Removing stale device");
-            devices.remove(&serial);
-            outputs.router.close(&serial);
-        }
+    let read_check = !pass.force && !pass.polling;
+    let stale: Vec<String> = devices
+        .iter()
+        .filter_map(|(serial, entry)| {
+            if entry.read_failed {
+                return Some(serial.clone());
+            }
+            if !read_check {
+                return None;
+            }
+            let mut buf = [0u8; 64];
+            // Busy = its writer is in a write: the device is there.
+            let Ok(device) = entry.device.try_lock() else {
+                return None;
+            };
+            match device.read(&mut buf) {
+                Ok(_) => None,                  // Data or no data, device is alive
+                Err(_) => Some(serial.clone()), // Device gone
+            }
+        })
+        .collect();
+    for serial in stale {
+        info!(serial = %serial, "Removing stale device");
+        devices.remove(&serial);
+        outputs.router.close(&serial);
     }
 
-    if !verify_only {
+    if !pass.verify_only {
         if let Err(e) = api.refresh_devices() {
             warn!(error = %e, "Failed to refresh HID device list");
         }
 
-        let discovered = api.discover_controllers();
+        // Open only what is not open yet and not claimed by another adapter.
+        let open_or_excluded = |serial: &str| {
+            devices.contains_key(serial) || exclude_serials.iter().any(|s| s == serial)
+        };
+        let discovered = api.discover_controllers(&open_or_excluded);
         for (serial, device, product_id, adapter_name) in discovered {
-            // Skip controllers claimed by another adapter
-            if exclude_serials.iter().any(|s| s == &serial) {
-                debug!(serial = %serial, "Skipping excluded controller (claimed by another adapter)");
-                continue;
-            }
             devices.entry(serial.clone()).or_insert_with(|| {
                 info!(serial = %serial, "New controller discovered");
                 let device = Arc::new(Mutex::new(device));
@@ -296,6 +400,9 @@ fn handle_discover<B: HidBackend>(
                     device,
                     product_id,
                     adapter_name,
+                    read_failed: false,
+                    flush_input: false,
+                    labels: crate::metrics::ControllerLabels::new(&serial),
                 }
             });
         }
@@ -337,6 +444,9 @@ fn handle_open<B: HidBackend>(
                     device,
                     product_id,
                     adapter_name,
+                    read_failed: false,
+                    flush_input: false,
+                    labels: crate::metrics::ControllerLabels::new(serial),
                 },
             );
             true
@@ -372,12 +482,14 @@ fn handle_close_all<D: HidDeviceIo>(
     info!("All controllers closed");
 }
 
-/// Poll all open devices and send sensor data through the stream.
+/// Poll all open devices and offer their newest report to the stream's
+/// latest-sample slots (#2372). Returns true when the stream's receiver is
+/// gone (the pass stops there, #2371).
 fn poll_all_devices<D: HidDeviceIo>(
-    devices: &HashMap<String, DeviceEntry<D>>,
-    sender: &tokio::sync::mpsc::Sender<StreamSensorData>,
-) {
-    for (serial, entry) in devices.iter() {
+    devices: &mut HashMap<String, DeviceEntry<D>>,
+    sender: &InputSink,
+) -> bool {
+    for (serial, entry) in devices.iter_mut() {
         let zcm2 = hid::is_zcm2(entry.product_id);
         let device = match entry.device.try_lock() {
             Ok(device) => device,
@@ -385,45 +497,64 @@ fn poll_all_devices<D: HidDeviceIo>(
             Err(TryLockError::WouldBlock) => continue,
             Err(TryLockError::Poisoned(e)) => e.into_inner(),
         };
-        if let Some(report) = hid::read_latest_input(&*device, zcm2) {
-            let data = StreamSensorData {
-                serial: serial.clone(),
-                report,
-            };
-            // Non-blocking send: if the channel is full, drop the data
-            // (the stream consumer will get the next one)
-            if sender.try_send(data).is_err() {
-                debug!(serial = %serial, "Stream channel full, dropping sensor data");
+        let drain = hid::read_latest_input(&*device, zcm2);
+        drop(device);
+        crate::metrics::record_drain(&entry.labels, u64::from(drain.reports_read));
+        if drain.read_failed && !entry.read_failed {
+            info!(serial = %serial, "Read failed, dropping the controller on the next discovery");
+            entry.read_failed = true;
+        }
+        if entry.flush_input {
+            // Reports queued before the stream registered: stale, not forwarded.
+            entry.flush_input = false;
+            continue;
+        }
+        if let Some(report) = drain.report {
+            // Never blocks: a sample the stream has not taken yet is replaced,
+            // keeping its button bits (UC-010 BR-012).
+            if sender.offer(serial, report).is_err() {
+                return true;
             }
         }
     }
+    false
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::thread::JoinHandle;
     use std::time::Instant;
 
-    const SERIAL: &str = "00:06:f7:aa:bb:cc";
+    /// Already in the normalized form discovery reports (`hid::normalize_serial`).
+    pub(crate) const SERIAL: &str = "0006F7AABBCC";
     const PRODUCT_ID_ZCM2: u16 = 0x0C5E;
 
     #[derive(Default)]
-    struct FakeDeviceState {
+    pub(crate) struct FakeDeviceState {
         /// Input reports the device will return, oldest first.
-        pending: VecDeque<[u8; hid::INPUT_REPORT_SIZE]>,
+        pub(crate) pending: VecDeque<[u8; hid::INPUT_REPORT_SIZE]>,
         /// When a read found no pending report: once per poll of this device.
-        drained_at: Vec<Instant>,
+        pub(crate) drained_at: Vec<Instant>,
+        /// Every read fails: the controller is gone (#2314).
+        pub(crate) read_fails: bool,
+        /// Every output report written to the device, oldest first.
+        pub(crate) writes: Vec<Vec<u8>>,
     }
 
     /// In-memory HID device shared between the test and the device loop thread.
     #[derive(Clone, Default)]
-    struct FakeDevice(Arc<Mutex<FakeDeviceState>>);
+    pub(crate) struct FakeDevice(pub(crate) Arc<Mutex<FakeDeviceState>>);
 
     impl HidDeviceIo for FakeDevice {
         fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize> {
             let mut state = self.0.lock().unwrap();
+            if state.read_fails {
+                return Err(hidapi::HidError::HidApiError {
+                    message: "No such device".to_string(),
+                });
+            }
             match state.pending.pop_front() {
                 Some(report) => {
                     buf[..report.len()].copy_from_slice(&report);
@@ -437,13 +568,14 @@ mod tests {
         }
 
         fn write(&self, data: &[u8]) -> hidapi::HidResult<usize> {
+            self.0.lock().unwrap().writes.push(data.to_vec());
             Ok(data.len())
         }
     }
 
     /// Backend with one attached ZCM2 controller.
-    struct FakeBackend {
-        device: FakeDevice,
+    pub(crate) struct FakeBackend {
+        pub(crate) device: FakeDevice,
     }
 
     impl HidBackend for FakeBackend {
@@ -453,7 +585,13 @@ mod tests {
             Ok(())
         }
 
-        fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+            if skip(SERIAL) {
+                return vec![];
+            }
             vec![(
                 SERIAL.to_string(),
                 self.device.clone(),
@@ -484,23 +622,32 @@ mod tests {
         device: &FakeDevice,
         heartbeat: Heartbeat,
     ) -> (mpsc::Sender<DeviceCmd>, JoinHandle<()>) {
+        spawn_loop_with(device, heartbeat, DeviceOutputs::default())
+    }
+
+    /// The device loop over the fake device, writing through `outputs`: a
+    /// gRPC service built on `outputs.router` drives it (controller_io_service tests).
+    pub(crate) fn spawn_loop_with(
+        device: &FakeDevice,
+        heartbeat: Heartbeat,
+        outputs: DeviceOutputs,
+    ) -> (mpsc::Sender<DeviceCmd>, JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let backend = FakeBackend {
             device: device.clone(),
         };
-        let handle = std::thread::spawn(move || {
-            run_device_loop(backend, cmd_rx, &heartbeat, &DeviceOutputs::default())
-        });
+        let handle =
+            std::thread::spawn(move || run_device_loop(backend, cmd_rx, &heartbeat, &outputs));
         (cmd_tx, handle)
     }
 
-    fn shutdown(cmd_tx: &mpsc::Sender<DeviceCmd>, handle: JoinHandle<()>) {
+    pub(crate) fn shutdown(cmd_tx: &mpsc::Sender<DeviceCmd>, handle: JoinHandle<()>) {
         cmd_tx.send(DeviceCmd::Shutdown).unwrap();
         handle.join().unwrap();
     }
 
     /// A ZCM2 input report: trigger 200, Cross pressed, gyro x = -1234.
-    fn sample_report() -> [u8; hid::INPUT_REPORT_SIZE] {
+    pub(crate) fn sample_report() -> [u8; hid::INPUT_REPORT_SIZE] {
         let mut data = [0u8; hid::INPUT_REPORT_SIZE];
         data[0] = 0x01;
         data[2] = hid::Button::CROSS as u8;
@@ -510,12 +657,12 @@ mod tests {
     }
 
     fn recv_within(
-        rx: &mut tokio::sync::mpsc::Receiver<StreamSensorData>,
+        rx: &mut crate::input_slot::InputReceiver,
         timeout: Duration,
-    ) -> Option<StreamSensorData> {
+    ) -> Option<crate::input_slot::StreamSensorData> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if let Ok(data) = rx.try_recv() {
+            if let Some(data) = rx.try_recv() {
                 return Some(data);
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -544,10 +691,15 @@ mod tests {
         assert_eq!(discovered[0].adapter_name, "hci0");
         assert_eq!(discovered[0].product_id, PRODUCT_ID_ZCM2 as u32);
 
-        let (sensor_tx, mut sensor_rx) = tokio::sync::mpsc::channel(16);
+        let (sensor_tx, mut sensor_rx) = crate::input_slot::channel();
         cmd_tx
-            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .send(DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender: sensor_tx,
+            })
             .unwrap();
+        // The register flushes the ring first (#2372): feed after it.
+        assert!(loop_polls(&device), "the registered stream was not polled");
         device.0.lock().unwrap().pending.push_back(sample_report());
 
         let data = recv_within(&mut sensor_rx, Duration::from_secs(2))
@@ -559,6 +711,223 @@ mod tests {
         assert_eq!(data.report.trigger, 200);
         // ZCM2 product id: gyro decoded as signed 16-bit
         assert_eq!(data.report.gyro_x, -1234.0);
+    }
+
+    fn open_device(cmd_tx: &mpsc::Sender<DeviceCmd>) {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Open {
+                serial: SERIAL.to_string(),
+                reply: reply_tx,
+            })
+            .unwrap();
+        assert!(reply_rx.blocking_recv().unwrap());
+    }
+
+    fn register(cmd_tx: &mpsc::Sender<DeviceCmd>) -> (u64, crate::input_slot::InputReceiver) {
+        let (sender, rx) = crate::input_slot::channel();
+        let id = next_stream_id();
+        cmd_tx
+            .send(DeviceCmd::RegisterStream { id, sender })
+            .unwrap();
+        (id, rx)
+    }
+
+    /// True when the loop polls the device: its empty-read count grows.
+    pub(crate) fn loop_polls(device: &FakeDevice) -> bool {
+        let before = device.0.lock().unwrap().drained_at.len();
+        std::thread::sleep(Duration::from_millis(100));
+        device.0.lock().unwrap().drained_at.len() > before
+    }
+
+    // UC: UC-002 A7 step 2
+    #[test]
+    fn test_a_late_unregister_of_an_old_stream_keeps_the_new_one() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+
+        // The client reopened its stream; the old call's end lands last (#2371).
+        let (old_id, _old_rx) = register(&cmd_tx);
+        let (new_id, mut new_rx) = register(&cmd_tx);
+        cmd_tx
+            .send(DeviceCmd::UnregisterStream { id: old_id })
+            .unwrap();
+        assert!(loop_polls(&device), "the new stream was not polled");
+        device.0.lock().unwrap().pending.push_back(sample_report());
+
+        let data = recv_within(&mut new_rx, Duration::from_secs(2));
+        assert!(
+            data.is_some(),
+            "a late unregister of the old stream dropped the new one"
+        );
+
+        // The new stream's own unregister still removes it: the poll stops.
+        cmd_tx
+            .send(DeviceCmd::UnregisterStream { id: new_id })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let polling = loop_polls(&device);
+        shutdown(&cmd_tx, handle);
+        assert!(
+            !polling,
+            "the stream stayed registered after its unregister"
+        );
+    }
+
+    // UC: UC-002 A7 step 2
+    #[test]
+    fn test_a_closed_stream_is_unregistered_and_a_new_one_streams() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+        let (_id, old_rx) = register(&cmd_tx);
+        assert!(loop_polls(&device), "the registered stream was not polled");
+
+        // The gRPC call ended without an unregister: its receiver is gone.
+        drop(old_rx);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !loop_polls(&device),
+            "the loop kept polling for a closed stream"
+        );
+
+        let (_id, mut new_rx) = register(&cmd_tx);
+        assert!(loop_polls(&device), "the new stream was not polled");
+        device.0.lock().unwrap().pending.push_back(sample_report());
+        let data = recv_within(&mut new_rx, Duration::from_secs(2));
+        shutdown(&cmd_tx, handle);
+        assert!(
+            data.is_some(),
+            "a new stream after a closed one got no data"
+        );
+    }
+
+    /// A ZCM2 input report with these buttons and this raw accel z.
+    fn report_with(buttons: u8, accel_z: i16) -> [u8; hid::INPUT_REPORT_SIZE] {
+        let mut data = [0u8; hid::INPUT_REPORT_SIZE];
+        data[0] = 0x01;
+        data[2] = buttons;
+        data[23..25].copy_from_slice(&accel_z.to_le_bytes());
+        data
+    }
+
+    fn accel_z(raw: i16) -> f32 {
+        hid::parse_input_report(&report_with(0, raw), true)
+            .unwrap()
+            .accel_z
+    }
+
+    /// Queue `report` and wait until the loop has read it and found the
+    /// device empty again (one full drain).
+    fn feed_and_wait_drained(device: &FakeDevice, report: [u8; hid::INPUT_REPORT_SIZE]) {
+        let before = {
+            let mut state = device.0.lock().unwrap();
+            state.pending.push_back(report);
+            state.drained_at.len()
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while device.0.lock().unwrap().drained_at.len() <= before {
+            assert!(
+                Instant::now() < deadline,
+                "the loop did not drain the device"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    // UC: UC-002 main step 2
+    #[test]
+    fn test_a_lagging_reader_gets_the_newest_sample() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+        let (_id, mut rx) = register(&cmd_tx);
+        assert!(loop_polls(&device), "the registered stream was not polled");
+
+        // The reader takes nothing while two polls deliver a sample each (#2372).
+        feed_and_wait_drained(&device, report_with(0, 100));
+        feed_and_wait_drained(&device, report_with(0, 200));
+
+        let first = recv_within(&mut rx, Duration::from_secs(2));
+        let second = rx.try_recv();
+        shutdown(&cmd_tx, handle);
+        let first = first.expect("no sample streamed");
+        assert_eq!(
+            first.report.accel_z,
+            accel_z(200),
+            "a lagging reader got an old sample, not the newest"
+        );
+        assert!(second.is_none(), "an older sample was still queued");
+    }
+
+    // UC: UC-010 BR-012
+    #[test]
+    fn test_a_press_in_a_replaced_sample_is_still_delivered() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+        let (_id, mut rx) = register(&cmd_tx);
+        assert!(loop_polls(&device), "the registered stream was not polled");
+
+        // A tap whose press and release both land before the reader reads.
+        feed_and_wait_drained(&device, report_with(hid::Button::CROSS as u8, 100));
+        feed_and_wait_drained(&device, report_with(0, 200));
+
+        let data = recv_within(&mut rx, Duration::from_secs(2));
+        shutdown(&cmd_tx, handle);
+        let data = data.expect("no sample streamed");
+        assert_eq!(data.report.accel_z, accel_z(200), "not the newest sample");
+        assert!(
+            data.report.button_cross(),
+            "the press in the replaced sample was lost"
+        );
+    }
+
+    // UC: UC-002 A7 step 2
+    #[test]
+    fn test_the_first_sample_after_register_is_fresh() {
+        let device = FakeDevice::default();
+        let (cmd_tx, handle) = spawn_loop(&device);
+        open_device(&cmd_tx);
+        // Reports the hidraw ring kept while no stream was registered,
+        // including an old press.
+        {
+            let mut state = device.0.lock().unwrap();
+            state
+                .pending
+                .push_back(report_with(hid::Button::CROSS as u8, 100));
+            state.pending.push_back(report_with(0, 150));
+        }
+
+        let (_id, mut rx) = register(&cmd_tx);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !device.0.lock().unwrap().pending.is_empty() {
+            assert!(Instant::now() < deadline, "the ring was never read");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The ring is empty after the last pop, but the flush poll still has
+        // its final empty read to do; a report fed now would be discarded.
+        let polls_before = device.0.lock().unwrap().drained_at.len();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while device.0.lock().unwrap().drained_at.len() <= polls_before {
+            assert!(Instant::now() < deadline, "the flush never finished");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        feed_and_wait_drained(&device, report_with(0, 200));
+
+        let first = recv_within(&mut rx, Duration::from_secs(2));
+        shutdown(&cmd_tx, handle);
+        let first = first.expect("no sample streamed after register");
+        assert_eq!(
+            first.report.accel_z,
+            accel_z(200),
+            "the first sample after register was a stale ring report"
+        );
+        assert!(
+            !first.report.button_cross(),
+            "a stale press from before the register was delivered"
+        );
     }
 
     // UC: UC-002 main step 3
@@ -612,9 +981,12 @@ mod tests {
             })
             .unwrap();
         assert!(reply_rx.blocking_recv().unwrap());
-        let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
+        let (sensor_tx, _sensor_rx) = crate::input_slot::channel();
         cmd_tx
-            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .send(DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender: sensor_tx,
+            })
             .unwrap();
 
         std::thread::sleep(Duration::from_millis(300));
@@ -690,8 +1062,11 @@ mod tests {
             Ok(())
         }
 
-        fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
-            self.inner.discover_controllers()
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+            self.inner.discover_controllers(skip)
         }
 
         fn open_controller_by_serial(
@@ -734,9 +1109,12 @@ mod tests {
                 reply: open_tx,
             })
             .unwrap();
-        let (sensor_tx, _sensor_rx) = tokio::sync::mpsc::channel(16);
+        let (sensor_tx, _sensor_rx) = crate::input_slot::channel();
         cmd_tx
-            .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+            .send(DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender: sensor_tx,
+            })
             .unwrap();
         let mut replies = Vec::new();
         for i in 0..FLOOD {
@@ -831,9 +1209,13 @@ mod tests {
             Ok(())
         }
 
-        fn discover_controllers(&self) -> Vec<(String, LoadDevice, u16, Option<String>)> {
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, LoadDevice, u16, Option<String>)> {
             self.devices
                 .iter()
+                .filter(|(s, _)| !skip(s))
                 .map(|(s, d)| {
                     (
                         s.clone(),
@@ -912,14 +1294,20 @@ mod tests {
             );
 
             // Sensor stream consumer: samples per serial.
-            let (sensor_tx, mut sensor_rx) = tokio::sync::mpsc::channel(1024);
+            let (sensor_tx, mut sensor_rx) = crate::input_slot::channel();
             cmd_tx
-                .send(DeviceCmd::RegisterStream { sender: sensor_tx })
+                .send(DeviceCmd::RegisterStream {
+                    id: next_stream_id(),
+                    sender: sensor_tx,
+                })
                 .unwrap();
             let counter = tokio::spawn(async move {
                 let mut per_serial: HashMap<String, usize> = HashMap::new();
                 let deadline = tokio::time::Instant::now() + RUN;
-                while let Ok(Some(d)) = tokio::time::timeout_at(deadline, sensor_rx.recv()).await {
+                while let Ok(Some(d)) =
+                    tokio::time::timeout_at(deadline, tokio_stream::StreamExt::next(&mut sensor_rx))
+                        .await
+                {
                     *per_serial.entry(d.serial).or_default() += 1;
                 }
                 per_serial
@@ -992,12 +1380,14 @@ mod tests {
         }
     }
 
-    /// Backend that counts every enumeration and open (#2140).
+    /// Backend that counts every enumeration and open (#2140), and every
+    /// device a discovery pass opened (#2314).
     #[derive(Default)]
     struct CountingBackend {
         device: FakeDevice,
         refreshes: usize,
         opens: std::cell::Cell<usize>,
+        discover_opens: std::cell::Cell<usize>,
     }
 
     impl HidBackend for CountingBackend {
@@ -1008,7 +1398,14 @@ mod tests {
             Ok(())
         }
 
-        fn discover_controllers(&self) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, FakeDevice, u16, Option<String>)> {
+            if skip(SERIAL) {
+                return vec![];
+            }
+            self.discover_opens.set(self.discover_opens.get() + 1);
             vec![(
                 SERIAL.to_string(),
                 self.device.clone(),
@@ -1031,12 +1428,12 @@ mod tests {
         api: &mut CountingBackend,
     ) -> HashMap<String, DeviceEntry<FakeDevice>> {
         let mut devices = HashMap::new();
-        let mut stream_sender = None;
+        let mut stream = None;
         assert!(handle_command(
             cmd,
             api,
             &mut devices,
-            &mut stream_sender,
+            &mut stream,
             &DeviceOutputs::default()
         ));
         devices
@@ -1116,5 +1513,601 @@ mod tests {
         assert_eq!(api.opens.get(), 1);
         assert!(reply_rx.try_recv().unwrap());
         assert!(devices.contains_key(SERIAL));
+    }
+
+    /// One Discover pass of the 1 Hz discovery check (controller manager:
+    /// full enumeration, not forced) on `devices`.
+    fn discover_pass(
+        api: &mut CountingBackend,
+        devices: &mut HashMap<String, DeviceEntry<FakeDevice>>,
+        verify_only: bool,
+        polling: bool,
+    ) -> Vec<DiscoveredControllerInfo> {
+        handle_discover(
+            api,
+            devices,
+            DiscoverPass {
+                force: false,
+                verify_only,
+                polling,
+            },
+            &[],
+            &DeviceOutputs::default(),
+        )
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_full_discovery_does_not_reopen_an_open_controller() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+
+        for _ in 0..3 {
+            let found = discover_pass(&mut api, &mut devices, false, true);
+            assert_eq!(found.len(), 1);
+        }
+
+        assert_eq!(
+            api.refreshes, 3,
+            "each full pass still enumerates (hot-plug)"
+        );
+        assert_eq!(
+            api.discover_opens.get(),
+            1,
+            "a full discovery pass reopened an open controller"
+        );
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_discovery_does_not_open_an_excluded_controller() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+
+        let found = handle_discover(
+            &mut api,
+            &mut devices,
+            DiscoverPass {
+                force: false,
+                verify_only: false,
+                polling: true,
+            },
+            &[SERIAL.to_string()],
+            &DeviceOutputs::default(),
+        );
+
+        assert!(found.is_empty());
+        assert_eq!(
+            api.discover_opens.get(),
+            0,
+            "an excluded controller was opened and dropped"
+        );
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_discovery_does_not_read_a_polled_controller() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        discover_pass(&mut api, &mut devices, false, true);
+        api.device
+            .0
+            .lock()
+            .unwrap()
+            .pending
+            .push_back(sample_report());
+
+        // Verify-only and full passes, the input stream registered.
+        discover_pass(&mut api, &mut devices, true, true);
+        discover_pass(&mut api, &mut devices, false, true);
+
+        assert_eq!(
+            api.device.0.lock().unwrap().pending.len(),
+            1,
+            "a discovery pass consumed an input report the stream needs"
+        );
+        assert!(devices.contains_key(SERIAL));
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_a_read_error_drops_the_controller_on_the_next_pass() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        discover_pass(&mut api, &mut devices, false, true);
+
+        // The poll hit a read error: the handle is gone.
+        devices.get_mut(SERIAL).unwrap().read_failed = true;
+        let found = discover_pass(&mut api, &mut devices, true, true);
+        assert!(found.is_empty(), "a controller with a failed read stayed");
+        assert!(!devices.contains_key(SERIAL));
+
+        // Still attached (it reconnected): the next full pass opens it again.
+        let found = discover_pass(&mut api, &mut devices, false, true);
+        assert_eq!(found.len(), 1);
+        assert_eq!(api.discover_opens.get(), 2);
+        assert!(!devices[SERIAL].read_failed);
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_a_read_error_drop_and_reopen_happen_in_one_pass() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        discover_pass(&mut api, &mut devices, false, true);
+        devices.get_mut(SERIAL).unwrap().read_failed = true;
+
+        // The drop runs before the enumeration, so a reconnected controller
+        // is reopened in the same pass instead of vanishing for one pass.
+        let found = discover_pass(&mut api, &mut devices, false, true);
+
+        assert_eq!(
+            found.len(),
+            1,
+            "the reconnected controller was not reopened"
+        );
+        assert_eq!(api.discover_opens.get(), 2);
+        assert!(!devices[SERIAL].read_failed);
+    }
+
+    /// A non-forced Discover through `handle_command`, which derives the
+    /// pass's `polling` from the registered stream.
+    fn discover_via_command(
+        api: &mut CountingBackend,
+        devices: &mut HashMap<String, DeviceEntry<FakeDevice>>,
+        stream: &mut Option<ActiveStream>,
+        verify_only: bool,
+    ) -> Vec<DiscoveredControllerInfo> {
+        let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
+        assert!(handle_command(
+            DeviceCmd::Discover {
+                force: false,
+                verify_only,
+                exclude_serials: vec![],
+                reply,
+            },
+            api,
+            devices,
+            stream,
+            &DeviceOutputs::default(),
+        ));
+        reply_rx.try_recv().unwrap()
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_discover_command_does_not_read_while_the_stream_is_registered() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        let mut stream = None;
+        let outputs = DeviceOutputs::default();
+        let (sender, _stream_rx) = crate::input_slot::channel();
+        assert!(handle_command(
+            DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender,
+            },
+            &mut api,
+            &mut devices,
+            &mut stream,
+            &outputs,
+        ));
+        discover_via_command(&mut api, &mut devices, &mut stream, false);
+        api.device
+            .0
+            .lock()
+            .unwrap()
+            .pending
+            .push_back(sample_report());
+
+        discover_via_command(&mut api, &mut devices, &mut stream, true);
+        discover_via_command(&mut api, &mut devices, &mut stream, false);
+
+        assert_eq!(
+            api.device.0.lock().unwrap().pending.len(),
+            1,
+            "a Discover consumed an input report the stream needs"
+        );
+        assert!(devices.contains_key(SERIAL));
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_discover_command_without_a_stream_drops_a_dead_controller() {
+        let mut api = CountingBackend::default();
+        let mut devices = HashMap::new();
+        let mut stream = None;
+        discover_via_command(&mut api, &mut devices, &mut stream, false);
+        assert!(devices.contains_key(SERIAL));
+        api.device.0.lock().unwrap().read_fails = true;
+
+        // Nothing polls without a stream: the Discover's read check finds it.
+        let found = discover_via_command(&mut api, &mut devices, &mut stream, true);
+
+        assert!(
+            found.is_empty(),
+            "a dead controller stayed without a stream"
+        );
+        assert!(!devices.contains_key(SERIAL));
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_the_poll_marks_a_failed_read() {
+        struct GoneDevice;
+        impl HidDeviceIo for GoneDevice {
+            fn read(&self, _buf: &mut [u8]) -> hidapi::HidResult<usize> {
+                Err(hidapi::HidError::HidApiError {
+                    message: "No such device".to_string(),
+                })
+            }
+            fn write(&self, _data: &[u8]) -> hidapi::HidResult<usize> {
+                Ok(0)
+            }
+        }
+        let mut devices = HashMap::from([(
+            SERIAL.to_string(),
+            DeviceEntry {
+                device: Arc::new(Mutex::new(GoneDevice)),
+                product_id: PRODUCT_ID_ZCM2,
+                adapter_name: None,
+                read_failed: false,
+                flush_input: false,
+                labels: crate::metrics::ControllerLabels::new(SERIAL),
+            },
+        )]);
+        let (sender, _rx) = crate::input_slot::channel();
+
+        poll_all_devices(&mut devices, &sender);
+
+        assert!(devices[SERIAL].read_failed);
+    }
+
+    /// Backend whose one controller records its writes.
+    struct RecordingBackend(crate::output::tests::RecordingDevice);
+
+    impl HidBackend for RecordingBackend {
+        type Device = crate::output::tests::RecordingDevice;
+
+        fn refresh_devices(&mut self) -> hidapi::HidResult<()> {
+            Ok(())
+        }
+
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, Self::Device, u16, Option<String>)> {
+            if skip(SERIAL) {
+                return vec![];
+            }
+            vec![(SERIAL.to_string(), self.0.clone(), PRODUCT_ID_ZCM2, None)]
+        }
+
+        fn open_controller_by_serial(
+            &self,
+            _serial: &str,
+        ) -> Option<(Self::Device, u16, Option<String>)> {
+            None
+        }
+    }
+
+    // UC: UC-002 A7
+    #[test]
+    fn test_graceful_stop_sends_led_and_rumble_off_to_every_controller() {
+        use crate::output::tests::{RecordingDevice, WriteMode};
+        let device = RecordingDevice::new(WriteMode::Ok);
+        let outputs = DeviceOutputs::default();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let backend = RecordingBackend(device.clone());
+        let loop_outputs = outputs.clone();
+        let handle = std::thread::spawn(move || {
+            run_device_loop(backend, cmd_rx, &Heartbeat::new(), &loop_outputs)
+        });
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Discover {
+                force: false,
+                verify_only: false,
+                exclude_serials: vec![],
+                reply: reply_tx,
+            })
+            .unwrap();
+        assert_eq!(reply_rx.blocking_recv().unwrap().len(), 1);
+        assert!(outputs.router.submit(SERIAL, 255, 0, 0, 200));
+
+        assert!(graceful_stop(
+            &cmd_tx,
+            &outputs.router,
+            Duration::from_secs(2)
+        ));
+        // Read before the join: graceful_stop itself must have waited for the off.
+        let last = device.reports().pop().expect("a write");
+        handle.join().unwrap();
+
+        assert_eq!(
+            (last[2], last[3], last[4], last[6]),
+            (0, 0, 0, 0),
+            "the last write must be LED off, rumble 0"
+        );
+    }
+
+    // UC: UC-002 A7
+    #[test]
+    fn test_graceful_stop_waits_for_a_writer_stuck_in_a_write() {
+        use crate::output::tests::{RecordingDevice, WriteMode};
+        let device = RecordingDevice::new(WriteMode::Block);
+        let router = OutputRouter::default();
+        router.open(
+            SERIAL,
+            Arc::new(Mutex::new(device.clone())),
+            crate::output::OutputRate::new(100),
+        );
+        router.submit(SERIAL, 1, 2, 3, 0); // the writer blocks in this write
+        std::thread::sleep(Duration::from_millis(30));
+        let (cmd_tx, _cmd_rx) = mpsc::channel();
+
+        let start = std::time::Instant::now();
+        assert!(
+            !graceful_stop(&cmd_tx, &router, Duration::from_millis(300)),
+            "a writer is still stuck: the stop must report it"
+        );
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "the stop returned before its timeout: {:?}",
+            start.elapsed()
+        );
+
+        // The device loop closes the controller; the write returns, the off goes out.
+        router.close(SERIAL);
+        device
+            .release
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(graceful_stop(&cmd_tx, &router, Duration::from_secs(2)));
+        let last = device.reports().pop().expect("a write");
+        assert_eq!((last[2], last[3], last[4], last[6]), (0, 0, 0, 0));
+    }
+    /// Backend with one controller whose reads and writes are scripted by the test.
+    struct ScriptedBackend(ScriptedDevice);
+
+    #[derive(Clone, Default)]
+    struct ScriptedDevice {
+        reports: Arc<Mutex<VecDeque<[u8; hid::INPUT_REPORT_SIZE]>>>,
+        empty_reads: Arc<std::sync::atomic::AtomicUsize>,
+        writes: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl HidDeviceIo for ScriptedDevice {
+        fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize> {
+            match self.reports.lock().unwrap().pop_front() {
+                Some(report) => {
+                    buf[..report.len()].copy_from_slice(&report);
+                    Ok(report.len())
+                }
+                None => {
+                    self.empty_reads
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(0)
+                }
+            }
+        }
+
+        fn write(&self, data: &[u8]) -> hidapi::HidResult<usize> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(data.len())
+        }
+    }
+
+    impl HidBackend for ScriptedBackend {
+        type Device = ScriptedDevice;
+
+        fn refresh_devices(&mut self) -> hidapi::HidResult<()> {
+            Ok(())
+        }
+
+        fn discover_controllers(
+            &self,
+            skip: &dyn Fn(&str) -> bool,
+        ) -> Vec<(String, ScriptedDevice, u16, Option<String>)> {
+            if skip(METRICS_SERIAL) {
+                return vec![];
+            }
+            vec![(
+                METRICS_SERIAL.to_string(),
+                self.0.clone(),
+                PRODUCT_ID_ZCM2,
+                None,
+            )]
+        }
+
+        fn open_controller_by_serial(
+            &self,
+            _serial: &str,
+        ) -> Option<(ScriptedDevice, u16, Option<String>)> {
+            None
+        }
+    }
+
+    const METRICS_SERIAL: &str = "00:06:f7:de:ad:01";
+
+    /// Sum of a u64 counter's data points, optionally for one serial.
+    fn counter_total(
+        exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
+        name: &str,
+        serial: Option<&str>,
+    ) -> u64 {
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+        let mut total = 0;
+        for rm in exporter.get_finished_metrics().unwrap() {
+            for m in rm.scope_metrics().flat_map(|sm| sm.metrics()) {
+                if m.name() != name {
+                    continue;
+                }
+                if let AggregatedMetrics::U64(MetricData::Sum(sum)) = m.data() {
+                    for point in sum.data_points() {
+                        let on_serial = serial.is_none_or(|want| {
+                            point
+                                .attributes()
+                                .any(|kv| kv.key.as_str() == "serial" && kv.value.as_str() == want)
+                        });
+                        if on_serial {
+                            total += point.value();
+                        }
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    /// Observation count of an f64 histogram, optionally for one serial.
+    fn histogram_count(
+        exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
+        name: &str,
+        serial: Option<&str>,
+    ) -> u64 {
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+        let mut total = 0;
+        for rm in exporter.get_finished_metrics().unwrap() {
+            for m in rm.scope_metrics().flat_map(|sm| sm.metrics()) {
+                if m.name() != name {
+                    continue;
+                }
+                if let AggregatedMetrics::F64(MetricData::Histogram(h)) = m.data() {
+                    for point in h.data_points() {
+                        let on_serial = serial.is_none_or(|want| {
+                            point
+                                .attributes()
+                                .any(|kv| kv.key.as_str() == "serial" && kv.value.as_str() == want)
+                        });
+                        if on_serial {
+                            total += point.count();
+                        }
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    // UC: UC-002 BR-005
+    // NFR: NFR-055
+    /// The only test that calls `metrics::install` (a first-wins OnceLock): it
+    /// drives the real write, drain, replacement and pass paths and checks that
+    /// each reached its instrument (#2374). The unlabelled counts use `>=`
+    /// because a test running in parallel may record too once installed.
+    #[test]
+    fn test_the_real_paths_record_their_metrics() {
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        crate::metrics::install(&provider.meter("test"));
+
+        let device = ScriptedDevice::default();
+        let outputs = DeviceOutputs::default();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let backend = ScriptedBackend(device.clone());
+        let loop_outputs = outputs.clone();
+        let handle = std::thread::spawn(move || {
+            run_device_loop(backend, cmd_rx, &Heartbeat::new(), &loop_outputs)
+        });
+        let wait_until = |what: &str, cond: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !cond() {
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        // Whole polls that ran after `from` empty reads: each poll ends in one empty read.
+        let empties = device.empty_reads.clone();
+        let polls_after = |from: usize, n: usize| {
+            let empties = empties.clone();
+            move || empties.load(SeqCst) >= from + n
+        };
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(DeviceCmd::Discover {
+                force: false,
+                verify_only: false,
+                exclude_serials: vec![],
+                reply: reply_tx,
+            })
+            .unwrap();
+        assert_eq!(reply_rx.blocking_recv().unwrap().len(), 1);
+
+        // The stream never takes a sample: the second offer replaces the first.
+        let (sink, _receiver) = crate::input_slot::channel();
+        cmd_tx
+            .send(DeviceCmd::RegisterStream {
+                id: next_stream_id(),
+                sender: sink,
+            })
+            .unwrap();
+        // The first poll after the registration only flushes; wait for it and one more.
+        wait_until("the flush poll", &polls_after(0, 2));
+
+        // A drain of 3 reports: 3 read, 2 superseded, 1 offered.
+        device
+            .reports
+            .lock()
+            .unwrap()
+            .extend([[0u8; hid::INPUT_REPORT_SIZE]; 3]);
+        let seen = device.empty_reads.load(SeqCst);
+        wait_until("the drain", &polls_after(seen, 2));
+        // One more report: offered while the first still waits.
+        device
+            .reports
+            .lock()
+            .unwrap()
+            .push_back([0u8; hid::INPUT_REPORT_SIZE]);
+        let seen = device.empty_reads.load(SeqCst);
+        wait_until("the replacing offer", &polls_after(seen, 2));
+
+        assert!(outputs.router.submit(METRICS_SERIAL, 255, 0, 0, 0));
+        wait_until("the write", &|| device.writes.load(SeqCst) >= 1);
+        assert!(graceful_stop(
+            &cmd_tx,
+            &outputs.router,
+            Duration::from_secs(2)
+        ));
+        handle.join().unwrap();
+        provider.force_flush().unwrap();
+
+        assert_eq!(
+            counter_total(
+                &exporter,
+                "rust_hid_input_reports_read_total",
+                Some(METRICS_SERIAL)
+            ),
+            4,
+            "drain: reports read"
+        );
+        assert!(
+            counter_total(&exporter, "rust_hid_input_reports_drained_total", None) >= 2,
+            "drain: superseded reports"
+        );
+        assert!(
+            counter_total(&exporter, "rust_hid_input_slot_replacements_total", None) >= 1,
+            "slot replacement"
+        );
+        assert!(
+            histogram_count(
+                &exporter,
+                "rust_hid_output_write_duration_seconds",
+                Some(METRICS_SERIAL)
+            ) >= 1,
+            "output write"
+        );
+        assert!(
+            histogram_count(&exporter, "rust_hid_device_loop_pass_seconds", None) >= 1,
+            "device-loop pass"
+        );
     }
 }

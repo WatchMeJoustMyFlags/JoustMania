@@ -308,7 +308,7 @@
           },
           {
             "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
+            "TargetSerial": "MID",
             "Dispatched": true,
             "BlockReason": "",
             "Weight": 1
@@ -346,7 +346,7 @@
           },
           {
             "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
+            "TargetSerial": "MID",
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
@@ -365,7 +365,7 @@
           },
           {
             "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
+            "TargetSerial": "MID",
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
@@ -384,7 +384,7 @@
           },
           {
             "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
+            "TargetSerial": "MID",
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
@@ -403,7 +403,7 @@
           },
           {
             "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
+            "TargetSerial": "MID",
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
@@ -422,7 +422,7 @@
           },
           {
             "Intervention": "grant_shield",
-            "TargetSerial": "WEAK",
+            "TargetSerial": "MID",
             "Dispatched": false,
             "BlockReason": "rate_limit",
             "Weight": 1
@@ -450,11 +450,41 @@
         "Intervention": "grant_shield",
         "TargetSerial": "WEAK",
         "Value": "",
-        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
+        "Reason": "shield a struggling player (skill 0.20) while the field shrinks",
         "ObjectiveServed": "balanced",
         "Fitness": {
           "active_players": 3,
-          "weakest_skill": 0.2
+          "target_skill": 0.2
+        },
+        "Objectives": {
+          "balanced": 1
+        }
+      },
+      {
+        "Intervention": "adjust_player_sensitivity",
+        "TargetSerial": "STRONG",
+        "Value": "",
+        "Reason": "skill gap 0.70 exceeds 0.40: handicap the outlier",
+        "ObjectiveServed": "balanced",
+        "Fitness": {
+          "max_skill_gap": 0.4,
+          "outlier_skill": 0.9,
+          "skill_gap": 0.7
+        },
+        "Objectives": {
+          "balanced": 1
+        }
+      },
+      {
+        "Intervention": "grant_shield",
+        "TargetSerial": "MID",
+        "Value": "",
+        "Reason": "catch-up: shield the player with the fewest agent shields (skill 0.50, 0 shields) while the field shrinks",
+        "ObjectiveServed": "balanced",
+        "Fitness": {
+          "active_players": 3,
+          "shield_grants": 0,
+          "target_skill": 0.5
         },
         "Objectives": {
           "balanced": 1
@@ -479,40 +509,11 @@
         "Intervention": "grant_shield",
         "TargetSerial": "WEAK",
         "Value": "",
-        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
+        "Reason": "shield a struggling player (skill 0.20) while the field shrinks",
         "ObjectiveServed": "balanced",
         "Fitness": {
           "active_players": 3,
-          "weakest_skill": 0.2
-        },
-        "Objectives": {
-          "balanced": 1
-        }
-      },
-      {
-        "Intervention": "adjust_player_sensitivity",
-        "TargetSerial": "STRONG",
-        "Value": "",
-        "Reason": "skill gap 0.70 exceeds 0.40: handicap the outlier",
-        "ObjectiveServed": "balanced",
-        "Fitness": {
-          "max_skill_gap": 0.4,
-          "outlier_skill": 0.9,
-          "skill_gap": 0.7
-        },
-        "Objectives": {
-          "balanced": 1
-        }
-      },
-      {
-        "Intervention": "grant_shield",
-        "TargetSerial": "WEAK",
-        "Value": "",
-        "Reason": "shield the weakest player (skill 0.20) while the field shrinks",
-        "ObjectiveServed": "balanced",
-        "Fitness": {
-          "active_players": 3,
-          "weakest_skill": 0.2
+          "target_skill": 0.2
         },
         "Objectives": {
           "balanced": 1

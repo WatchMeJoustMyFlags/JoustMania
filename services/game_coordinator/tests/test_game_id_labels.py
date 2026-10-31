@@ -21,18 +21,13 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream
 
 from proto import game_coordinator_pb2
 from services.game_coordinator import metrics
 from services.game_coordinator.games.ffa import FFAGame
 
 GAME_ID = "test_labels_001"
-
-
-class MockGameplayStream:
-    async def write(self, message):
-        pass
 
 
 @pytest_asyncio.fixture

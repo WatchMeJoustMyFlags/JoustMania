@@ -131,7 +131,7 @@ persist its own governor (§1, §6.2).
 ## 3. Parameter Ownership Table
 
 The eight admin flags. All are read once by the menu into `StartGameConfig`
-([`services/menu/servicer.py:_build_game_config`](../services/menu/servicer.py),
+([`services/menu/game_lifecycle.py:GameLifecycleMixin._build_game_config`](../services/menu/game_lifecycle.py),
 `StartGameConfig` build) and frozen into the game object in its constructor
 ([`services/game_coordinator/games/base.py:__init__`](../services/game_coordinator/games/base.py),
 constructor). "Frozen at start" means a mid-game admin flag change **silently
@@ -248,7 +248,7 @@ There are **three** distinct grace mechanisms, and they must not be conflated:
 |---|---|---|---|
 | Spawn / post-death grace | Game logic | `player.grace_until` (`BaseGameMode`) | Death respawn, spawn protection |
 | Round-start invincibility | Human baseline | `player.invincible_until` (Fight Club / Tournament only) | `invincibility_seconds` -> `_invincibility_duration`, applied at round/match start ([`fight_club.py`](../services/game_coordinator/games/fight_club.py), [`tournament.py`](../services/game_coordinator/games/tournament.py)) |
-| Agent shield | Agent | `player.grace_until` (`BaseGameMode`) | `shield_seconds` -> `grant_shield` ([`base.py`](../services/game_coordinator/games/base.py)) |
+| Agent shield | Agent | `player.grace_until` (`BaseGameMode`) | `shield_seconds` -> `grant_shield` ([`shields.py`](../services/game_coordinator/games/shields.py)) |
 
 Human invincibility uses a **mode-local** field (`invincible_until`), while the agent
 shield extends the **mode-agnostic** `grace_until` on the base class. They are
@@ -324,8 +324,8 @@ terminal (`scripts/flags.sh`) or a baseline edit. A conforming implementation mu
 `agent_control` (MOVE to select it, SELECT/START to change), that cycles the
 GLOBAL `interventions_allowed` policy in the `agent` set through the levels
 `none → ambient → standard → full` and back
-(`AdminModeHandler.handle_agent_control`,
-[`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py)). `none`
+(`AdminOptionsMixin.handle_agent_control`,
+[`services/menu/handlers/admin_options.py`](../services/menu/handlers/admin_options.py)). `none`
 is the hard panic-off: it is **load-bearing at the gate** because the
 coordinator's allow-list (`_check_chain`, step (a)) then rejects every agent
 intervention regardless of what the agent process does. Each level has a distinct
@@ -348,13 +348,13 @@ LED color (red = off / Turquoise / Orange / green = full) and a voice line.
 
 | Concern | File |
 |---|---|
-| Human write path | [`services/menu/handlers/admin.py`](../services/menu/handlers/admin.py), [`lib/flag_service_writer.py`](../lib/flag_service_writer.py) → flag service ([`services/flag-service/`](../services/flag-service/)) |
-| Baseline → game start | [`services/menu/servicer.py`](../services/menu/servicer.py) (`_build_game_config`), [`services/game_coordinator/game_factory.py`](../services/game_coordinator/game_factory.py) |
+| Human write path | [`services/menu/handlers/admin_options.py`](../services/menu/handlers/admin_options.py), [`lib/flag_service_writer.py`](../lib/flag_service_writer.py) → flag service ([`services/flag-service/`](../services/flag-service/)) |
+| Baseline → game start | [`services/menu/game_lifecycle.py`](../services/menu/game_lifecycle.py) (`_build_game_config`), [`services/game_coordinator/game_factory.py`](../services/game_coordinator/game_factory.py) |
 | Baseline freeze | [`services/game_coordinator/games/base.py`](../services/game_coordinator/games/base.py) (`__init__`, ~490-580) |
 | Agent write path | [`services/agent/actions/writer.go`](../services/agent/actions/writer.go) |
 | Agent guardrails | [`services/game_coordinator/interventions.py`](../services/game_coordinator/interventions.py) |
 | Sensitivity contention | [`services/game_coordinator/difficulty_handlers.py`](../services/game_coordinator/difficulty_handlers.py), [`base.py` `_compute_effective_thresholds`](../services/game_coordinator/games/base.py) |
-| Grace / shield | [`services/game_coordinator/lifecycle_handlers.py`](../services/game_coordinator/lifecycle_handlers.py), [`base.py` `grant_shield`](../services/game_coordinator/games/base.py), [`fight_club.py`](../services/game_coordinator/games/fight_club.py), [`tournament.py`](../services/game_coordinator/games/tournament.py) |
+| Grace / shield | [`services/game_coordinator/lifecycle_handlers.py`](../services/game_coordinator/lifecycle_handlers.py), [`shields.py` `grant_shield`](../services/game_coordinator/games/shields.py), [`fight_club.py`](../services/game_coordinator/games/fight_club.py), [`tournament.py`](../services/game_coordinator/games/tournament.py) |
 | Flag domains | read-only baseline [`services/flagd/`](../services/flagd/) (`game.json`, `user.json`, `interventions.json`, `agent.json`); mutable-flag registry [`services/flag-service/registry.yaml`](../services/flag-service/registry.yaml) ([flags.md §13](specs/flags.md#13-mutable-flag-registry)) |
 
 ## See Also

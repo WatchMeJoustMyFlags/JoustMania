@@ -11,16 +11,15 @@ Features:
 Phase 36b: Refactored to extend BaseGameMode, eliminating ~450 lines of duplicate code.
 """
 
-import asyncio
 import logging
-import time
 from dataclasses import dataclass
+from typing import Any
 
 from opentelemetry import trace
 
 from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import GameEvent, Sound
-from services.game_coordinator import metrics
+from services.game_coordinator import game_clock, metrics
 from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import (
     BaseGameMode,
@@ -68,6 +67,27 @@ def resolve_scoring(flag_value, default_base: int, default_penalty: int) -> tupl
     base = _non_neg_int(flag_value.get("base"), default_base)
     penalty = _non_neg_int(flag_value.get("death_penalty"), default_penalty)
     return base, penalty
+
+
+@dataclass(frozen=True)
+class NonstopInitFlags:
+    """The nonstop flags latched at game init, validated and immutable (#2359)."""
+
+    respawn_seconds: float
+    spawn_protection_seconds: float
+    score_base: int
+    score_death_penalty: int
+
+    @classmethod
+    def from_raw(cls, *, respawn_seconds: Any, spawn_protection_seconds: Any, scoring: Any) -> "NonstopInitFlags":
+        """Validate the raw flag values; a malformed one gives the module constant (fail closed)."""
+        base, penalty = resolve_scoring(scoring, SCORE_BASE, SCORE_DEATH_PENALTY)
+        return cls(
+            respawn_seconds=resolve_non_negative_duration(respawn_seconds, RESPAWN_DURATION),
+            spawn_protection_seconds=resolve_non_negative_duration(spawn_protection_seconds, SPAWN_PROTECTION_DURATION),
+            score_base=base,
+            score_death_penalty=penalty,
+        )
 
 
 @dataclass
@@ -150,26 +170,22 @@ class NonstopJoustGame(BaseGameMode):
         # end that declares a winner.
         self._time_limit_reached = False
         # Monotonic clock for the respawn deadline (UC-026 step 2, #1963); tests inject a fake.
-        self._clock = time.monotonic
+        self._clock = game_clock.now
 
         # #766 F2: respawn/spawn-protection durations and scoring weights promoted
         # to game flags. Read ONCE here (init-frozen); malformed values fall back
         # to the module constants (the source of truth).
-        self.respawn_duration = resolve_non_negative_duration(
-            read_float_flag("game", "nonstop.respawn_seconds", RESPAWN_DURATION, game_id=self.game_id),
-            RESPAWN_DURATION,
-        )
-        self.spawn_protection_duration = resolve_non_negative_duration(
-            read_float_flag(
+        self.mode_flags = NonstopInitFlags.from_raw(
+            respawn_seconds=read_float_flag("game", "nonstop.respawn_seconds", RESPAWN_DURATION, game_id=self.game_id),
+            spawn_protection_seconds=read_float_flag(
                 "game", "nonstop.spawn_protection_seconds", SPAWN_PROTECTION_DURATION, game_id=self.game_id
             ),
-            SPAWN_PROTECTION_DURATION,
+            scoring=read_object_flag("game", "nonstop.scoring", {}, game_id=self.game_id),
         )
-        self.score_base, self.score_death_penalty = resolve_scoring(
-            read_object_flag("game", "nonstop.scoring", {}, game_id=self.game_id),
-            SCORE_BASE,
-            SCORE_DEATH_PENALTY,
-        )
+        self.respawn_duration = self.mode_flags.respawn_seconds
+        self.spawn_protection_duration = self.mode_flags.spawn_protection_seconds
+        self.score_base = self.mode_flags.score_base
+        self.score_death_penalty = self.mode_flags.score_death_penalty
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -183,7 +199,7 @@ class NonstopJoustGame(BaseGameMode):
             controllers: List of controller protobuf messages from GetReadyControllers
         """
         config = get_config_manager().get_config()
-        game_start_time = time.time()
+        game_start_time = game_clock.now()
 
         for controller in controllers:
             # Initialize analytics if enabled
@@ -231,7 +247,7 @@ class NonstopJoustGame(BaseGameMode):
         if not self.start_time:
             return False
 
-        elapsed = time.time() - self.start_time
+        elapsed = game_clock.now() - self.start_time
         if elapsed >= self.time_limit:
             logger.info(f"Time limit reached: {elapsed:.1f}s / {self.time_limit}s")
             return True
@@ -404,7 +420,7 @@ class NonstopJoustGame(BaseGameMode):
 
             # Startup grace: residual spikes in the first frames cannot kill (UC-030 BR-003, #1591)
             # It never shortens a longer grace (an agent shield) granted before the loop.
-            grace_until = time.time() + 0.3
+            grace_until = game_clock.now() + 0.3
             for player in self.players.values():
                 if player.alive:
                     player.grace_until = max(player.grace_until, grace_until)
@@ -421,7 +437,7 @@ class NonstopJoustGame(BaseGameMode):
 
             # Frame metrics as in the base loop (#1963): game_loop_frames_dropped_total,
             # actual Hz, consistency, jitter
-            loop_start_time = time.time()
+            loop_start_time = game_clock.now()
             last_iteration_time = loop_start_time
             loop_iterations = 0
             target_frame_time_ms = 1000.0 / update_frequency_hz
@@ -434,7 +450,7 @@ class NonstopJoustGame(BaseGameMode):
             async for gameplay_update in self.gameplay_stream:
                 # The time limit runs from the first frame after the warm-up (UC-026 step 3)
                 if self.start_time is None:
-                    self.start_time = time.time()
+                    self.start_time = game_clock.now()
 
                 if not self.running:
                     break
@@ -479,7 +495,7 @@ class NonstopJoustGame(BaseGameMode):
                     last_alive_serials = current_alive_serials
 
                 loop_iterations += 1
-                iteration_end = time.time()
+                iteration_end = game_clock.now()
                 frames_on_target = self._update_frame_metrics(
                     (iteration_end - last_iteration_time) * 1000,
                     target_frame_time_ms,
@@ -507,7 +523,7 @@ class NonstopJoustGame(BaseGameMode):
         """Update respawn timers and respawn players (Nonstop-specific)."""
         from proto import controller_manager_pb2
 
-        current_time = time.time()
+        current_time = game_clock.now()
         now = self._clock()
 
         for serial, player in self.players.items():
@@ -600,7 +616,7 @@ class NonstopJoustGame(BaseGameMode):
         player.respawn_timer = 0.0
         player._last_respawn_color = None  # the next death shows its countdown colour again
         player.spawn_protected = True
-        player.spawn_protection_end = time.time() + self.spawn_protection_duration
+        player.spawn_protection_end = game_clock.now() + self.spawn_protection_duration
         # Reset warning state for clean respawn
         player.warning_until = 0.0
         player.smoothed_accel = 0.0
@@ -688,7 +704,7 @@ class NonstopJoustGame(BaseGameMode):
                     "score": self._final_score(player),
                     "kills": player.kills,
                     "deaths": player.deaths,
-                    "game_duration": time.time() - self.start_time if self.start_time else 0,
+                    "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
                 }
                 if player.analytics is not None:
                     for key, value in player.analytics.get_summary().items():
@@ -749,7 +765,7 @@ class NonstopJoustGame(BaseGameMode):
                 if not self.running:
                     logger.info("End game interrupted by force_end")
                     break
-                await asyncio.sleep(WINNER_HOLD_TICK_SECONDS)
+                await game_clock.sleep(WINNER_HOLD_TICK_SECONDS)
 
         # The player spans (with final_score) were closed at the end of gameplay_phase.
 
@@ -782,7 +798,7 @@ class NonstopJoustGame(BaseGameMode):
         self.state = GameState.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "outcome": self.game_outcome(),
             "winner": winner_serial or "none",
         }

@@ -11,7 +11,8 @@ disable_telemetry_for_tests()
 disable_metrics_for_tests()
 disable_logging_for_tests()
 
-import pytest_asyncio  # noqa: E402 - telemetry must be disabled first
+import pytest  # noqa: E402 - telemetry must be disabled first
+import pytest_asyncio  # noqa: E402
 
 from services.menu.tests.servicer_harness import cancel_background_tasks, make_real_servicer  # noqa: E402
 
@@ -22,3 +23,15 @@ async def real_servicer():
     servicer = make_real_servicer()
     yield servicer
     await cancel_background_tasks(servicer)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_flagd_provider(monkeypatch):
+    """Keep a real FlagdProvider out of the unit tests (#2232, after #2226).
+
+    The menu servicer calls ``init_flag_domain`` for four domains; unpatched, each installs
+    an in-process FlagdProvider whose gRPC sync thread retries ``flagd:8015`` for the whole
+    session. Without a provider, flag reads return their defaults.
+    """
+    monkeypatch.setattr("lib.feature_flags.init_flag_domain", lambda _domain: None)
+    monkeypatch.setattr("services.menu.menu_setup.init_flag_domain", lambda _domain: None)

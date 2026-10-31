@@ -152,6 +152,7 @@ class SpikeControllerManager(QueueControllerManager):
         return stream
 
 
+@pytest.mark.real_game_time
 @pytest.mark.uc("UC-025", flow="main", steps=[1])
 @pytest.mark.asyncio
 async def test_spikes_from_the_intro_never_reach_warmup_or_game_loop():
@@ -295,6 +296,7 @@ async def test_force_end_during_the_intro_stops_the_drain_without_a_reopen():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_game_time
 @pytest.mark.uc("UC-025", flow="main", steps=[4])
 @pytest.mark.asyncio
 async def test_frames_are_read_during_the_pause_between_matches():
@@ -810,6 +812,7 @@ async def test_a_stream_that_ends_ok_in_a_match_ends_the_game_once():
 
 
 @pytest.mark.uc("UC-025", flow="main", steps=[2, 4])
+@pytest.mark.real_durations
 def test_the_spec_defaults():
     """Step 2 and 4: 4 s invincibility, 2 s round pause, 5 s between matches; A1: 22 s match limit."""
     game = TournamentGame(

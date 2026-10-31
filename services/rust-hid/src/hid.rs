@@ -437,43 +437,82 @@ pub fn resolve_adapter_from_sysfs(hidraw_path: &str) -> Option<String> {
 
 /// Discover PS Move controllers via HID enumeration.
 ///
-/// Opens each discovered device, sets it to non-blocking mode, and
-/// returns a list of (serial, HidDevice, product_id, adapter_name) tuples.
-/// `adapter_name` is resolved from sysfs (e.g. "hci0") or None for USB.
-pub fn discover_controllers(api: &HidApi) -> Vec<(String, HidDevice, u16, Option<String>)> {
+/// Opens each discovered device whose serial `skip` rejects, sets it to
+/// non-blocking mode, and returns a list of (serial, HidDevice, product_id,
+/// adapter_name) tuples. A skipped serial (already open, or claimed by another
+/// adapter) is never opened, so a discovery pass does no I/O on it (UC-002
+/// BR-006, #2314). `adapter_name` is resolved from sysfs (e.g. "hci0") or None
+/// for USB.
+pub fn discover_controllers(
+    api: &HidApi,
+    skip: &dyn Fn(&str) -> bool,
+) -> Vec<(String, HidDevice, u16, Option<String>)> {
+    let candidates: Vec<HidCandidate<'_, &std::ffi::CStr>> = api
+        .device_list()
+        .map(|dev_info| HidCandidate {
+            vendor_id: dev_info.vendor_id(),
+            product_id: dev_info.product_id(),
+            serial: dev_info.serial_number(),
+            path: dev_info.path(),
+        })
+        .collect();
+
     let mut results = Vec::new();
-
-    for &pid in &ALL_PRODUCT_IDS {
-        for dev_info in api.device_list() {
-            if dev_info.vendor_id() != VENDOR_ID || dev_info.product_id() != pid {
-                continue;
-            }
-
-            let serial_raw = dev_info.serial_number().unwrap_or_default();
-            if serial_raw.is_empty() {
-                continue;
-            }
-            let serial = normalize_serial(serial_raw);
-
-            match api.open_path(dev_info.path()) {
-                Ok(device) => {
-                    if let Err(e) = device.set_blocking_mode(false) {
-                        warn!(serial = %serial, error = %e, "Failed to set non-blocking");
-                        continue;
-                    }
-                    let path = dev_info.path().to_string_lossy();
-                    let adapter_name = resolve_adapter_from_sysfs(&path);
-                    info!(serial = %serial, path = %path, product_id = pid, adapter = ?adapter_name, "Discovered controller");
-                    results.push((serial, device, pid, adapter_name));
+    for (serial, pid, dev_path) in controllers_to_open(&candidates, skip) {
+        match api.open_path(dev_path) {
+            Ok(device) => {
+                if let Err(e) = device.set_blocking_mode(false) {
+                    warn!(serial = %serial, error = %e, "Failed to set non-blocking");
+                    continue;
                 }
-                Err(e) => {
-                    warn!(serial = %serial, error = %e, "Failed to open controller");
-                }
+                let path = dev_path.to_string_lossy();
+                let adapter_name = resolve_adapter_from_sysfs(&path);
+                info!(serial = %serial, path = %path, product_id = pid, adapter = ?adapter_name, "Discovered controller");
+                results.push((serial, device, pid, adapter_name));
+            }
+            Err(e) => {
+                warn!(serial = %serial, error = %e, "Failed to open controller");
             }
         }
     }
 
     results
+}
+
+/// One enumerated HID device as discovery sees it. `P` is the device path
+/// (`&CStr` from hidapi), generic so a unit test can build the list.
+struct HidCandidate<'a, P> {
+    vendor_id: u16,
+    product_id: u16,
+    serial: Option<&'a str>,
+    path: P,
+}
+
+/// The devices a discovery pass opens: (normalized serial, product_id, path),
+/// PS Move product ids in `ALL_PRODUCT_IDS` order. A serial `skip` rejects is
+/// left out, so it is never opened (UC-002 BR-006, #2314).
+fn controllers_to_open<P: Copy>(
+    candidates: &[HidCandidate<'_, P>],
+    skip: &dyn Fn(&str) -> bool,
+) -> Vec<(String, u16, P)> {
+    let mut selected = Vec::new();
+    for &pid in &ALL_PRODUCT_IDS {
+        for candidate in candidates {
+            if candidate.vendor_id != VENDOR_ID || candidate.product_id != pid {
+                continue;
+            }
+            let serial_raw = candidate.serial.unwrap_or_default();
+            if serial_raw.is_empty() {
+                continue;
+            }
+            let serial = normalize_serial(serial_raw);
+            if skip(&serial) {
+                continue;
+            }
+            selected.push((serial, pid, candidate.path));
+        }
+    }
+    selected
 }
 
 /// Open a specific controller by serial via HID enumeration.
@@ -547,28 +586,104 @@ impl HidDeviceIo for HidDevice {
 
 /// Read the latest input report from a device (non-blocking).
 ///
-/// Drains all available reports and returns the most recent one,
-/// matching the Python HidapiAdapter.poll() pattern.
-pub fn read_latest_input<D: HidDeviceIo>(device: &D, zcm2: bool) -> Option<ParsedInputReport> {
-    let mut latest: Option<[u8; INPUT_REPORT_SIZE]> = None;
+/// Drains all available reports and returns the most recent one, with the
+/// button bits OR'ed across every drained report (#2312, UC-010 BR-012): a
+/// press and release that both land in one drain still reports the press,
+/// and the next drain reports the release. Every other value is the latest.
+/// `read_failed` is set when the drain ended on a read error (the device is
+/// gone; hidapi reports "no data" as `Ok(0)`), which the device loop uses
+/// instead of a discovery read to detect a lost controller (#2314).
+pub fn read_latest_input<D: HidDeviceIo>(device: &D, zcm2: bool) -> InputDrain {
+    let mut latest: Option<ParsedInputReport> = None;
+    let mut buttons_seen: u32 = 0;
     let mut buf = [0u8; INPUT_REPORT_SIZE];
+    let mut read_failed = false;
+    let mut reports_read: u32 = 0;
 
     loop {
         match device.read(&mut buf) {
             Ok(len) if len >= INPUT_REPORT_SIZE => {
-                latest = Some(buf);
+                reports_read += 1;
+                if let Ok(report) = parse_input_report(&buf, zcm2) {
+                    buttons_seen |= report.buttons;
+                    latest = Some(report);
+                }
             }
             Ok(_) => break, // Short read or no data
-            Err(_) => break,
+            Err(_) => {
+                read_failed = true;
+                break;
+            }
         }
     }
 
-    latest.and_then(|data| parse_input_report(&data, zcm2).ok())
+    InputDrain {
+        report: latest.map(|mut report| {
+            report.buttons |= buttons_seen;
+            report
+        }),
+        read_failed,
+        reports_read,
+    }
+}
+
+/// Result of one `read_latest_input` drain.
+#[derive(Debug)]
+pub struct InputDrain {
+    /// The latest report with the button bits of the whole drain, if any.
+    pub report: Option<ParsedInputReport>,
+    /// The drain ended on a read error.
+    pub read_failed: bool,
+    /// Full-size reports read in this drain (the latest one is kept, the rest dropped).
+    pub reports_read: u32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Discovery selection (UC-002 BR-006, #2314) ---
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_discovery_does_not_open_a_skipped_serial() {
+        let candidates = [
+            HidCandidate {
+                vendor_id: VENDOR_ID,
+                product_id: PRODUCT_ID_ZCM2,
+                serial: Some("00:06:f7:aa:bb:cc"),
+                path: 1,
+            },
+            HidCandidate {
+                vendor_id: VENDOR_ID,
+                product_id: PRODUCT_ID_ZCM1,
+                serial: Some("00:06:f7:11:22:33"),
+                path: 2,
+            },
+            HidCandidate {
+                vendor_id: VENDOR_ID,
+                product_id: PRODUCT_ID_NAVIGATION,
+                serial: Some("00:06:f7:44:55:66"),
+                path: 3,
+            },
+            HidCandidate {
+                vendor_id: VENDOR_ID,
+                product_id: PRODUCT_ID_ZCM2,
+                serial: None,
+                path: 4,
+            },
+        ];
+        // The skip sees the normalized serial: already open.
+        let skip = |serial: &str| serial == "0006F7AABBCC";
+
+        let selected = controllers_to_open(&candidates, &skip);
+
+        assert_eq!(
+            selected,
+            vec![("0006F7112233".to_string(), PRODUCT_ID_ZCM1, 2)],
+            "a skipped serial was opened"
+        );
+    }
 
     // --- MAC address conversion tests ---
 
@@ -960,5 +1075,97 @@ mod tests {
     #[test]
     fn test_resolve_adapter_from_sysfs_nonexistent_device() {
         assert!(resolve_adapter_from_sysfs("/dev/hidraw99999").is_none());
+    }
+
+    // --- read_latest_input: button bits OR'ed across one drain (#2312) ---
+
+    /// Device that returns queued reports, then "no data".
+    struct QueuedReports(std::cell::RefCell<std::collections::VecDeque<[u8; INPUT_REPORT_SIZE]>>);
+
+    impl HidDeviceIo for QueuedReports {
+        fn read(&self, buf: &mut [u8]) -> hidapi::HidResult<usize> {
+            match self.0.borrow_mut().pop_front() {
+                Some(report) => {
+                    buf[..report.len()].copy_from_slice(&report);
+                    Ok(report.len())
+                }
+                None => Ok(0),
+            }
+        }
+
+        fn write(&self, data: &[u8]) -> hidapi::HidResult<usize> {
+            Ok(data.len())
+        }
+    }
+
+    fn queued(reports: &[[u8; INPUT_REPORT_SIZE]]) -> QueuedReports {
+        QueuedReports(std::cell::RefCell::new(reports.iter().copied().collect()))
+    }
+
+    fn report_with(buttons: u32, trigger: u8, accel_z: u16) -> [u8; INPUT_REPORT_SIZE] {
+        make_input_report(
+            buttons,
+            trigger,
+            0x05,
+            (0x8000, 0x8000, accel_z),
+            (0x8000, 0x8000, 0x8000),
+            300,
+        )
+    }
+
+    // UC: UC-010 BR-012
+    #[test]
+    fn test_read_latest_input_keeps_a_press_released_within_one_drain() {
+        let device = queued(&[
+            report_with(0, 0, 0x8000),
+            report_with(Button::T | Button::MOVE, 255, 0x8000),
+            report_with(0, 0, 0x9000), // released again: the latest report
+        ]);
+
+        let report = read_latest_input(&device, false).report.expect("a report");
+
+        assert!(report.button_trigger(), "trigger tap lost inside the drain");
+        assert!(report.button_move(), "move tap lost inside the drain");
+        assert!(!report.button_cross());
+        // Everything else is the latest report.
+        assert_eq!(report.trigger, 0);
+        assert!((report.accel_z - 1.0).abs() < 0.001);
+
+        // The next drain shows the release.
+        let device = queued(&[report_with(0, 0, 0x9000)]);
+        let next = read_latest_input(&device, false).report.expect("a report");
+        assert!(!next.button_trigger());
+        assert!(!next.button_move());
+    }
+
+    // UC: UC-010 BR-012
+    #[test]
+    fn test_read_latest_input_without_reports_is_none() {
+        let drain = read_latest_input(&queued(&[]), false);
+        assert!(drain.report.is_none());
+        assert!(!drain.read_failed, "no data is not a read error");
+    }
+
+    /// Device whose handle is gone: every read fails.
+    struct GoneDevice;
+
+    impl HidDeviceIo for GoneDevice {
+        fn read(&self, _buf: &mut [u8]) -> hidapi::HidResult<usize> {
+            Err(hidapi::HidError::HidApiError {
+                message: "No such device".to_string(),
+            })
+        }
+
+        fn write(&self, _data: &[u8]) -> hidapi::HidResult<usize> {
+            Ok(0)
+        }
+    }
+
+    // UC: UC-002 BR-006
+    #[test]
+    fn test_read_latest_input_reports_a_read_error() {
+        let drain = read_latest_input(&GoneDevice, false);
+        assert!(drain.report.is_none());
+        assert!(drain.read_failed, "a failed read was not reported");
     }
 }

@@ -9,8 +9,10 @@ Original JoustMania behavior preserved.
 
 import asyncio
 import logging
-import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
@@ -19,14 +21,15 @@ from lib.colors import Colors
 from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
-    BaseGameMode,
     Phase,
     Player,
     Sensitivity,
     resolve_mode_thresholds,
 )
+from services.game_coordinator.games.streamed_intro import StreamedIntroGameMode
 from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
@@ -52,6 +55,22 @@ def resolve_fraction(value, default: float) -> float:
     return float(value) if 0.0 < value < 1.0 else default
 
 
+@dataclass(frozen=True)
+class WerewolfInitFlags:
+    """The werewolf flags latched at game init, validated and immutable (#2359)."""
+
+    thresholds: Mapping[Sensitivity, tuple[float, float]]
+    werewolf_fraction: float
+
+    @classmethod
+    def from_raw(cls, *, thresholds: Any, werewolf_fraction: Any) -> "WerewolfInitFlags":
+        """Validate the raw flag values; a malformed one gives the module default (fail closed)."""
+        return cls(
+            thresholds=MappingProxyType(dict(resolve_mode_thresholds(thresholds, WEREWOLF_THRESHOLDS))),
+            werewolf_fraction=resolve_fraction(werewolf_fraction, WEREWOLF_FRACTION),
+        )
+
+
 HUMAN_COLOR = Colors.Yellow.value  # Yellow for humans (and all players before reveal)
 WEREWOLF_COLOR = Colors.LightBlue.value  # Blue for werewolves after reveal
 
@@ -74,7 +93,7 @@ class WerewolfPlayer(Player):
     revealed: bool = False  # Whether identity has been revealed
 
 
-class WerewolfGame(BaseGameMode):
+class WerewolfGame(StreamedIntroGameMode):
     """
     Werewolf game mode using gRPC communication.
 
@@ -87,6 +106,8 @@ class WerewolfGame(BaseGameMode):
 
     This is a FFA-style game with two hidden teams.
     """
+
+    RUN_SPAN_NAME = "werewolf_game"
 
     def __init__(
         self,
@@ -123,16 +144,17 @@ class WerewolfGame(BaseGameMode):
 
         # #766 F1: werewolf threshold overrides promoted to ``game.werewolf.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to WEREWOLF_THRESHOLDS.
-        self.werewolf_thresholds = resolve_mode_thresholds(
-            read_object_flag("game", "werewolf.thresholds", {}, game_id=self.game_id), WEREWOLF_THRESHOLDS
+        self.mode_flags = WerewolfInitFlags.from_raw(
+            thresholds=read_object_flag("game", "werewolf.thresholds", {}, game_id=self.game_id),
+            werewolf_fraction=read_float_flag(
+                "game", "werewolf.werewolf_fraction", WEREWOLF_FRACTION, game_id=self.game_id
+            ),
         )
+        self.werewolf_thresholds = dict(self.mode_flags.thresholds)
 
         # #766 F2: werewolf population fraction promoted to ``game.werewolf.werewolf_fraction``.
         # Read once at init (init-frozen); out-of-range values fall back to WEREWOLF_FRACTION.
-        self.werewolf_fraction = resolve_fraction(
-            read_float_flag("game", "werewolf.werewolf_fraction", WEREWOLF_FRACTION, game_id=self.game_id),
-            WEREWOLF_FRACTION,
-        )
+        self.werewolf_fraction = self.mode_flags.werewolf_fraction
 
         # The result, latched once in _check_win_condition together with the outcome
         # (UC-022 BR-004, #1343, #2009): "humans" / "werewolves" / "tie". None = no
@@ -289,7 +311,7 @@ class WerewolfGame(BaseGameMode):
         for _ in range(round(WEREWOLF_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         await self.event_publisher("werewolf_intro_end", {})
         logger.info("Werewolf intro phase complete")
@@ -313,7 +335,7 @@ class WerewolfGame(BaseGameMode):
         Called as a background task during gameplay.
         """
         # Wait for reveal time (configurable via werewolf_reveal_time setting)
-        await asyncio.sleep(self._reveal_time)
+        await game_clock.sleep(self._reveal_time)
 
         # Nothing is revealed once a side has won (the win hold, UC-022 BR-006, #2022).
         if not self._reveal_allowed():
@@ -352,7 +374,7 @@ class WerewolfGame(BaseGameMode):
                 )
                 await self._write_effect_guarded(flash_cmd, "Werewolf reveal flash")
 
-                await asyncio.sleep(0.3)
+                await game_clock.sleep(0.3)
 
                 base_color_cmd = controller_manager_pb2.GameplayStreamControl(
                     base_color=controller_manager_pb2.ControllerColorConfig(
@@ -550,7 +572,7 @@ class WerewolfGame(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winner": winner,
             "revealed": self.revealed,
             "outcome": self.game_outcome(),
@@ -567,100 +589,11 @@ class WerewolfGame(BaseGameMode):
             self.reveal_task.cancel()
         await super().cleanup()
 
-    async def run(self):
-        """
-        Run the werewolf game with reveal timer.
+    def _log_run_config(self) -> None:
+        # reveal_time is set in __init__ from StartGameConfig
+        logger.info(f"Werewolf reveal time: {self._reveal_time}s")
 
-        Override to start the reveal task during gameplay.
-        """
-        # Start the base game flow
-        # We need to hook into gameplay to start the reveal timer
-        # The cleanest way is to override run() and start the task after countdown
-
-        # Import here to avoid circular imports
-        from services.game_coordinator.games.base import GameState
-
-        # The session game root span carries the outcome (#1328).
-        self._capture_game_root_span()
-        with tracer.start_as_current_span("werewolf_game") as game_span:
-            self.game_span = game_span
-            game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
-
-            try:
-                self.running = True
-                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
-
-                # Initialization phase
-                with tracer.start_as_current_span("initialization_phase") as init_span:
-                    # reveal_time is now set in __init__ from StartGameConfig
-                    logger.info(f"Werewolf reveal time: {self._reveal_time}s")
-                    await self._initialize_players()
-                    if len(self.players) < 2:
-                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
-                    # Before any task is created: tasks copy the context (#1273).
-                    self._set_flag_eval_context()
-                    self._create_player_spans(None)
-                    # The intro rumble goes over the stream, so it opens first; a drain
-                    # discards the intro's frames and keeps disconnects (UC-022 A1).
-                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
-                    await self._run_streamed_intro_and_instructions(init_span)
-
-                if not self.running:
-                    return
-
-                # Countdown
-                with tracer.start_as_current_span("countdown_phase"):
-                    await self._countdown()
-
-                if not self.running:
-                    return
-
-                # Start gameplay
-                self.state = GameState.RUNNING
-                self.start_time = time.time()
-
-                # Werewolf publishes game_started after the countdown (UC-022 A1).
-                await self.event_publisher(
-                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
-                )
-
-                # Start music (no tempo loop by design, UC-022 BR-001)
-                await self._start_game_music()
-
-                # Prime the EMA filters before death detection (UC-030 BR-003)
-                await self._warmup_ema()
-
-                # Reveal timer counts from gameplay start
-                self.reveal_task = self._track_task(asyncio.create_task(self._reveal_werewolves()))
-
-                # Game loop (gameplay stream already started before intro)
-                with tracer.start_as_current_span("gameplay_phase"):
-                    await self._game_loop()
-                self._latch_game_outcome()
-
-                # End game
-                with tracer.start_as_current_span("teardown_phase") as teardown_span:
-                    # Shield LEDs end with the game, before the winner effects (#1301).
-                    await self._end_shield_feedback()
-                    await self._end_game_impl()
-                    self._record_game_outcome(teardown_span)
-                    # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
-                    self._release_gameplay_stream()
-
-                game_span.set_status(Status(StatusCode.OK))
-
-            except Exception as e:
-                self._run_failed = True
-                logger.error(f"Game error: {e}", exc_info=True)
-                game_span.record_exception(e)
-                game_span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-            finally:
-                self._record_force_ended_outcome_if_unrecorded()
-                force_ended = not self.running
-                self.running = False
-                await self._stop_game_music()
-                if force_ended:
-                    await self.on_force_end()
-                await self._cleanup_after_run()
+    async def _run_streamed_gameplay(self) -> bool:
+        # Reveal timer counts from gameplay start
+        self.reveal_task = self._track_task(asyncio.create_task(self._reveal_werewolves()))
+        return await super()._run_streamed_gameplay()

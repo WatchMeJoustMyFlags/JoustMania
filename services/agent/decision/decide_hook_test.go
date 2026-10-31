@@ -50,7 +50,7 @@ func TestEvaluateDecide_MatchesEvaluate(t *testing.T) {
 			b := newTestEngine(fx.cfg, &clockB)
 			for step := 0; step < 6; step++ {
 				want := a.Evaluate(context.Background(), fx.ctx)
-				got, req, resp, ranked := b.EvaluateDecide(context.Background(), fx.ctx, func(map[string]bool) decide.Request {
+				got, req, resp, ranked := b.EvaluateDecide(context.Background(), fx.ctx, func(_, _ map[string]bool) decide.Request {
 					return ffaRequest(fx.ctx, allInterventions())
 				})
 				if !reflect.DeepEqual(got, want) {
@@ -413,8 +413,8 @@ func TestRemote_ActAboveThreshold(t *testing.T) {
 	span := h.run(t)
 
 	got := h.sink.decisions()
-	// GameID: the sink call is addressed to the deciding game (#1310).
-	want := []Decision{{Intervention: "grant_shield", TargetSerial: "A", Value: "6.5", Reason: "shield the weak player", GameID: "s-1"}}
+	// GameID: the sink call is addressed to the deciding game (#1310); GameKind labels its write counter (#2294).
+	want := []Decision{{Intervention: "grant_shield", TargetSerial: "A", Value: "6.5", Reason: "shield the weak player", GameID: "s-1", GameKind: "real"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("applied = %+v, want %+v", got, want)
 	}

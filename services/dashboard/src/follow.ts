@@ -88,6 +88,55 @@ export function isRealGameLive(primary: GameInfoLike | undefined | null): boolea
   return REAL_LIVE_STATES.has(String(primary.state ?? ""));
 }
 
+/**
+ * What a follow poll tells the Start / Stop buttons and the status line (UC-035 A6).
+ * Events drive them while the stream is up, but the event bus has no replay, so a
+ * dashboard opened mid-game (or one that missed `game_ended`) learns the state
+ * only from GetGameState. Edge-triggered: only the first answer and a change of the
+ * real game's live-ness yield a seed, so a late poll never undoes a newer event.
+ * `status` is null when the status line should stay as it is.
+ */
+export interface PolledGameSeed {
+  running: boolean;
+  status: "Starting" | "Running" | "Ended" | null;
+}
+
+export function seedFromPoll(
+  primary: GameInfoLike | undefined | null,
+  previousLive: boolean | null,
+  currentStatus: string,
+): PolledGameSeed | null {
+  const live = isRealGameLive(primary);
+  if (previousLive === live) return null;
+  if (live) {
+    const starting = String(primary?.state ?? "") === "STARTING" || String(primary?.state ?? "") === "1";
+    return { running: true, status: starting ? "Starting" : "Running" };
+  }
+  // Not live: the status line only changes when it still claims a live game.
+  const stale = currentStatus === "Running" || currentStatus === "Starting";
+  return { running: false, status: stale ? "Ended" : null };
+}
+
+/**
+ * Orders the follow poll against game events (UC-035 A6 step 2, #2386). Every
+ * game event and every Start / Stop click bumps the clock; a poll stamps it when
+ * its request goes out and its answer seeds the controls only if no bump happened
+ * since, so an answer older than a `game_ended` (or a Start click in flight) is
+ * dropped instead of undoing it.
+ */
+export class GameEventClock {
+  private n = 0;
+  bump(): void {
+    this.n += 1;
+  }
+  stamp(): number {
+    return this.n;
+  }
+  isCurrent(stamp: number): boolean {
+    return stamp === this.n;
+  }
+}
+
 function startMs(game: GameInfoLike): number {
   const n = Number(game.startTimeMs ?? 0);
   return Number.isFinite(n) ? n : 0;

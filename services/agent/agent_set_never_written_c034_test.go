@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,6 +45,8 @@ import (
 	"github.com/joustmania/agent/flagservice"
 	"github.com/joustmania/agent/flagservice/fake"
 	"github.com/joustmania/agent/promote"
+
+	"gopkg.in/yaml.v3"
 )
 
 // c034Request is one raw request the recording flag service saw.
@@ -316,7 +319,7 @@ var c034WriterRows = []c034Row{
 	},
 	{
 		name:   "promotion",
-		drives: []string{"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault", "promote/realdefault.go:serviceRealDefaultWriter.RevertRealDefault"},
+		drives: []string{"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault", "promote/realdefault.go:serviceRealDefaultWriter.revert"},
 		run: func(t *testing.T, svc *flagservice.Client) {
 			ctx := context.Background()
 			t.Setenv("FLAG_SERVICE_URL", svc.BaseURL())
@@ -334,6 +337,14 @@ var c034WriterRows = []c034Row{
 				if err := realDef.RevertRealDefault(ctx, key); err != nil {
 					t.Errorf("revert real default %q: %v", key, err)
 				}
+			}
+			// The guarded watch revert (#2236): same set, key and scope as the plain one.
+			var guarded promote.GuardedRealDefaultReverter = realDef
+			if err := realDef.SetRealDefault(ctx, "sensitivity", 3); err != nil {
+				t.Errorf("set real default: %v", err)
+			}
+			if err := guarded.RevertRealDefaultUnlessRealGame(ctx, "sensitivity"); err != nil {
+				t.Errorf("guarded revert: %v", err)
 			}
 			// The kill switch (UC-043 A1, #1704): list the promotion overlays and revert them.
 			pr := promote.NewPromoter(nil, nil, realDef, nil, realDef, promote.RepoRef{}, nil, testLogger())
@@ -497,17 +508,115 @@ func TestC034_InterventionKeysReadFromSpec(t *testing.T) {
 }
 
 // c034HumanOnlyGameKeys are game-set flags only a human may change (stage
-// overlay): the shield-charge switches of #1837 (UC-040 BR-019). The agent
-// writes the game set only as experiment+arm or game_kind=real overlays, so
-// these keys are out of its reach exactly when their registry rows allow
-// neither scope; the dynamic declarer then never offers them either. The hold
-// flags of #2096 (UC-040 BR-024) stay human-only until FR-162 widens their
-// scope in one PR together with this test (flags.md §4a).
+// overlay): the charge expiry of #1837 (UC-040 BR-019) and the charge cue flags
+// of #2094 (UC-040 BR-021). The agent writes the game set only as
+// experiment+arm or game_kind=real overlays, so these keys are out of its reach
+// exactly when their registry rows allow neither scope; the dynamic declarer
+// then never offers them either.
 var c034HumanOnlyGameKeys = []string{
-	"shield.activation", "shield.charge_expiry_seconds",
-	"shield.energy_max_seconds", "shield.energy_budget_seconds", "shield.energy_initial_seconds",
-	"shield.recharge_per_second", "shield.min_burst_seconds",
-	"shield.hold_rumble_intensity", "shield.empty_pulse_ms",
+	"shield.charge_expiry_seconds",
+	"shield.charge_rumble_intensity", "shield.charge_rumble_pulse_ms",
+	"shield.charge_reminder_seconds", "shield.charge_pre_expiry_seconds",
+	"shield.ending_rumble_seconds",
+}
+
+// c034HoldKeyCeilings are the eight hold keys FR-162 makes agent-writable as
+// experiment+arm and real values (UC-043 A17), with the registry range a human
+// set as their ceiling (C-034). shield.activation has variants, not a range.
+var c034HoldKeyCeilings = map[string][]float64{
+	"shield.activation":             nil,
+	"shield.energy_max_seconds":     {1, 10},
+	"shield.energy_budget_seconds":  {3, 30},
+	"shield.energy_initial_seconds": {0, 5},
+	"shield.recharge_per_second":    {0, 0.5},
+	"shield.min_burst_seconds":      {0.1, 1},
+	"shield.hold_rumble_intensity":  {0, 150},
+	"shield.empty_pulse_ms":         {100, 800},
+}
+
+// UC: UC-043 A17
+func TestC034_HoldKeysCeilings(t *testing.T) {
+	policies, err := fake.RegistryPolicies(filepath.Join("..", "flag-service", "registry.yaml"), experiment.GameFlagSet)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	var widened []string
+	for key, p := range policies {
+		if strings.HasPrefix(key, "shield.") && slices.Contains(p.Scopes, "experiment+arm") {
+			widened = append(widened, key)
+		}
+	}
+	sort.Strings(widened)
+	want := make([]string, 0, len(c034HoldKeyCeilings))
+	for key := range c034HoldKeyCeilings {
+		want = append(want, key)
+	}
+	sort.Strings(want)
+	if !slices.Equal(widened, want) {
+		t.Fatalf("UC-043/A17 the agent-writable shield keys are %v, want exactly %v (C-034)", widened, want)
+	}
+	// Every one of them carries the flag service's real-write guard (409 real_game_live
+	// while a real game is registered, #2216), so no real write lands mid-game.
+	rawRegistry, err := os.ReadFile(filepath.Join("..", "flag-service", "registry.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Flags []struct {
+			Set       string `yaml:"set"`
+			Key       string `yaml:"key"`
+			RealWrite string `yaml:"real_write"`
+		} `yaml:"flags"`
+	}
+	if err := yaml.Unmarshal(rawRegistry, &doc); err != nil {
+		t.Fatal(err)
+	}
+	guarded := map[string]bool{}
+	for _, f := range doc.Flags {
+		if f.Set == experiment.GameFlagSet && f.RealWrite == "no_live_real_game" {
+			guarded[f.Key] = true
+		}
+	}
+	for _, key := range want {
+		if !guarded[key] {
+			t.Errorf("UC-043/A17 %s has no real_write: no_live_real_game in registry.yaml", key)
+		}
+	}
+	writes := func(value any) []flagservice.Write {
+		return []flagservice.Write{
+			{Value: value, Scope: flagservice.Scope{ExperimentID: "exp_c034", Arm: experiment.ArmExperimental}},
+			{Value: value, Scope: flagservice.Scope{GameKind: "real"}},
+		}
+	}
+	for key, ceiling := range c034HoldKeyCeilings {
+		t.Run("UC-043/A17 "+key, func(t *testing.T) {
+			p := policies[key]
+			if !slices.Equal(p.Scopes, []string{"stack", "experiment+arm", "real"}) {
+				t.Fatalf("%s scopes %v, want [stack experiment+arm real]", key, p.Scopes)
+			}
+			if ceiling == nil {
+				return
+			}
+			if !slices.Equal(p.Range, ceiling) {
+				t.Fatalf("C-034: %s range %v, want the ceiling %v", key, p.Range, ceiling)
+			}
+			svc := fake.New()
+			if err := svc.LoadSetWithPolicies(experiment.GameFlagSet, "../flagd/game.json", policies); err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			above, below := ceiling[1]+ceiling[1]/10+0.1, ceiling[0]-0.1
+			for _, w := range append(writes(above), writes(below)...) {
+				if _, err := svc.Put(context.Background(), experiment.GameFlagSet, key, w); err == nil {
+					t.Errorf("C-034 VIOLATION: %s accepted %v outside %v in scope %+v", key, w.Value, ceiling, w.Scope)
+				}
+			}
+			for _, w := range append(writes(ceiling[1]), writes(ceiling[0])...) {
+				if _, err := svc.Put(context.Background(), experiment.GameFlagSet, key, w); err != nil {
+					t.Errorf("%s refused %v at the ceiling in scope %+v: %v", key, w.Value, w.Scope, err)
+				}
+			}
+		})
+	}
 }
 
 // UC: UC-040 BR-019
@@ -540,8 +649,7 @@ func TestC034_ShieldChargeFlagsAreNeverWrittenByTheAgent(t *testing.T) {
 				if _, ok := candidates[key]; ok {
 					t.Errorf("C-034 VIOLATION: %s is in the agent's experiment catalog", key)
 				}
-				// Every declared variant of the key (for shield.activation also `hold`, #2096: no
-				// hold experiment or promotion until FR-162), so only the scope can refuse the write.
+				// Every declared variant of the key, so only the scope can refuse the write.
 				if len(view.Variants) == 0 {
 					t.Fatalf("%s has no declared variants", key)
 				}

@@ -19,27 +19,36 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from lib.colors import Colors
 from lib.flag_service_writer import STEP_AT_LIMIT
 from lib.setting_ladders import (
     AGENT_POLICY_LEVELS,
     AGENT_RESUME_FALLBACK_LEVEL,
     AGENT_SAVED_LEVELS,
+    AUTOMATIC,
+    AUTOMATIC_OPTIONS,
     BACKENDS,
+    KNOB_LADDERS,
     SENSITIVITY_LADDER,
+    SHIELD_KNOB_LADDER,
     clamp_step,
+    knob_start,
 )
 from lib.types import Sound
 from lib.voice_prompts import (  # re-exported: admin mode imports the voice tables from here
     AGENT_LEVEL_VOICES,
     AGENT_SWITCH_VOICES,
+    AUTOMATIC_VOICE,
     FORCE_ALL_START_VOICES,
     INSTRUCTIONS_VOICES,
     NUM_TEAMS_VOICES,
     SENSITIVITY_VOICES,
+    SHIELD_ACTIVATION_VOICES,
 )
 from proto import controller_manager_pb2
 from services.menu.utils.led import DEFAULT_COLOR, GAME_MODE_COLORS
@@ -59,6 +68,8 @@ AGENT_ENABLED_FLAG = "enabled"
 # UC-015 BR-003 (#2093): the agent's write gate (FR-051); only the resume writes it, in memory only.
 AGENT_WRITE_GATE_FLAG = "interventions_enabled"
 DECISION_BACKEND_FLAG = "decision.backend"
+# UC-015 BR-018 (#2215): the shield mode the pad's K6 layer steps; a persisted admin value of the `game` set.
+SHIELD_ACTIVATION_FLAG = "shield.activation"
 
 # Ladders (UC-013, UC-015 BR-004): one source with the pad's preview, lib/setting_ladders.py (#2106).
 DECISION_BACKENDS = tuple(BACKENDS)
@@ -87,6 +98,10 @@ def is_failure(error: str | None) -> bool:
 # UC-015 BR-009: the failure cue is two loud beeps, this far apart so they do not merge.
 FAILURE_CUE_SOUND = Sound.SFX_BEEP_LOUD
 FAILURE_CUE_GAP_SECONDS = 0.3
+# Deadline of the live-roster lookup (GetConnectedControllers) of a force start (#2378,
+# UC-014 A2): a hung controller manager falls back to the menu roster instead of holding
+# the start. A recovery bound, not a stage knob, so a code constant (C-035).
+LIVE_ROSTER_RPC_TIMEOUT_SECONDS = 2.0
 # UC-015 step 8: a short sound at the new master level.
 VOLUME_STEP_SOUND = Sound.SFX_JOIN
 
@@ -128,6 +143,27 @@ def _ladder_step(ladder: list[str], current: str | None, forward: bool, steps: i
 # controller (UC-011 step 3, ``AdminModeHandler.handle_game_mode``).
 MODE_PULSE_MS = 600
 MODE_PULSE_SPEED = 6
+# UC-015 BR-018 (#2215): `automatic` (the operator value cleared) shows as a double white flash, a pattern
+# no mode or shield mode uses (they pulse once).
+AUTOMATIC_FLASH_MS = 150
+AUTOMATIC_FLASH_GAP_SECONDS = 0.3
+# The menu re-reads which settings the operator set at most this often (GetMenuStatus, BR-018, #2222).
+OPERATOR_REFRESH_SECONDS = 2.0
+# UC-012: one pulse colour per sensitivity level (0 Ultra Slow .. 4 Ultra Fast), used by every admin path.
+SENSITIVITY_COLORS = [Colors.Blue, Colors.Turquoise, Colors.Green, Colors.Orange, Colors.Red]
+# Admin agent-policy pulse: red = off (panic), escalating warmth toward full (#819).
+AGENT_LEVEL_COLORS = {
+    "none": Colors.Red,
+    "ambient": Colors.Turquoise,
+    "standard": Colors.Orange,
+    "full": Colors.Green,
+}
+# UC-015 BR-018 (#2215): the colour of each shield mode's pulse on the lobby controllers (the BR-015 pulse).
+SHIELD_MODE_COLORS: dict[str, tuple[int, int, int]] = {
+    "instant": Colors.White.value,
+    "trigger": Colors.Yellow.value,
+    "hold": Colors.Blue.value,
+}
 
 
 # --- Options of step_setting ----------------------------------------------------------------
@@ -142,12 +178,15 @@ class _Option:
 
 STEP_OPTIONS: dict[str, _Option] = {
     "current_game": _Option(None, lobby_only=True),
-    "sensitivity": _Option("game_settings_writer", lobby_only=True),
-    "num_teams": _Option("game_settings_writer", lobby_only=True),
+    # UC-015 BR-018 (#2222): sensitivity and num_teams have the knob ladder with `automatic` first.
+    "sensitivity": _Option("game_settings_writer", order=KNOB_LADDERS["sensitivity"], lobby_only=True),
+    "num_teams": _Option("game_settings_writer", order=KNOB_LADDERS["num_teams"], lobby_only=True),
     "force_all_start": _Option("game_settings_writer", order=["off", "on"], lobby_only=True),
     "game_instructions": _Option("user_prefs_writer", order=["off", "on"], lobby_only=True),
     "audio_volume.master": _Option("user_prefs_writer"),
     "agent_level": _Option(None),
+    # UC-015 BR-018: the knob ladder automatic, instant, trigger, hold (`_step_knob_setting`); persisted.
+    SHIELD_ACTIVATION_FLAG: _Option("game_settings_writer", order=SHIELD_KNOB_LADDER, lobby_only=True),
 }
 # UC-015 A1: refused with game_active while the game lifecycle is live.
 LOBBY_ONLY_OPTIONS = frozenset(name for name, opt in STEP_OPTIONS.items() if opt.lobby_only)
@@ -187,6 +226,14 @@ class SettingsOps:
         self.saved_agent_level: str | None = None
         # Serializes the kill, the resume and the ladder, so a saved level is never read half-written.
         self._agent_lock = asyncio.Lock()
+        # UC-015 BR-018 (#2222): the operator's persisted value of each setting with an `automatic` rung as
+        # last read from the flag service (`automatic` when none; a missing key = unknown), for
+        # GetMenuStatus, which never calls HTTP itself.
+        self.operator_settings: dict[str, str] = {}
+        self._operator_read_at = -OPERATOR_REFRESH_SECONDS
+        # Goes up on every commit: a background read that started before it is dropped (stale).
+        self._operator_generation = 0
+        self.operator_refresh_task: asyncio.Task | None = None
 
     @property
     def state_manager(self) -> StateManager | None:
@@ -209,7 +256,9 @@ class SettingsOps:
 
         try:
             stub = controller_manager_pb2_grpc.ControllerManagerServiceStub(self.controller_channel)
-            response = await stub.GetConnectedControllers(controller_manager_pb2.GetConnectedControllersRequest())
+            response = await stub.GetConnectedControllers(
+                controller_manager_pb2.GetConnectedControllersRequest(), timeout=LIVE_ROSTER_RPC_TIMEOUT_SECONDS
+            )
         except Exception as e:
             logger.warning(f"Live roster query failed, using menu roster as-is: {e}")
             span.set_attribute("force_start.roster_reconciled", False)
@@ -320,6 +369,8 @@ class SettingsOps:
             return await self._step_game_mode(forward, steps)
         if option == "agent_level":
             return await self._step_agent_level(forward, steps)
+        if option in AUTOMATIC_OPTIONS:
+            return await self._step_knob_setting(option, spec.writer_attr, forward, steps)
 
         writer = getattr(self.state_manager, spec.writer_attr, None)
         if writer is None:
@@ -373,6 +424,78 @@ class SettingsOps:
                 # resume restores the level it left.
                 self.saved_agent_level = level
             return Result(level, new)
+
+    # --- settings with an `automatic` rung (UC-015 step 9, BR-018, #2222) -----------------------
+
+    def _read_knob(self, option: str) -> tuple[str | None, str | None]:
+        """One read of ``option``: (operator value, effective variant).
+
+        The operator value is a variant, `automatic` (none) or None (unreadable).
+        """
+        writer = getattr(self.state_manager, STEP_OPTIONS[option].writer_attr, None)
+        view = writer.get_flag_view(option) if writer is not None else None
+        if view is None:
+            return None, None
+        effective = view.get("effective_default")
+        admin = view.get("admin_value")
+        if not admin:
+            return AUTOMATIC, effective
+        variant = admin.get("variant")
+        return (variant if variant in KNOB_LADDERS[option] else None), effective
+
+    def _read_operator(self, option: str) -> str | None:
+        return self._read_knob(option)[0]
+
+    def _read_all_operators(self) -> dict[str, str]:
+        values = {option: self._read_operator(option) for option in KNOB_LADDERS}
+        return {option: value for option, value in values.items() if value is not None}
+
+    async def refresh_operator_settings(self) -> None:
+        """Re-read the operator's values for GetMenuStatus (BR-018); an unreadable one is left out (unknown)."""
+        generation = self._operator_generation
+        self._operator_read_at = time.monotonic()
+        values = await asyncio.to_thread(self._read_all_operators)
+        if generation == self._operator_generation:
+            self.operator_settings = values  # else a commit landed during the read: its value stands
+
+    @staticmethod
+    def _clear(writer, key: str) -> bool:
+        """One clear of a persisted admin value; any error counts as failed (fail closed, never retried)."""
+        try:
+            return bool(writer.clear_persisted(key))
+        except Exception as e:
+            logger.error(f"Clear {key} failed: {e}")
+            return False
+
+    def schedule_operator_refresh(self) -> None:
+        """GetMenuStatus: refresh the cached operator values in the background when one is unknown or old."""
+        running = self.operator_refresh_task is not None and not self.operator_refresh_task.done()
+        fresh = time.monotonic() - self._operator_read_at < OPERATOR_REFRESH_SECONDS
+        if running or (fresh and len(self.operator_settings) == len(KNOB_LADDERS)):
+            return
+        self.operator_refresh_task = asyncio.create_task(self.refresh_operator_settings())
+
+    async def _step_knob_setting(self, option: str, writer_attr: str, forward: bool, steps: int) -> Result:
+        """BR-018: step the operator value along automatic and the value ladder; one write or one clear."""
+        writer = getattr(self.state_manager, writer_attr, None)
+        operator, effective = await asyncio.to_thread(self._read_knob, option)
+        old = knob_start(option, operator, effective)  # the operator value, else where the setting stands
+        if writer is None or old is None:
+            return Result(None, None, FLAG_SERVICE_UNAVAILABLE)  # fail closed: the knob's start is unknown
+        new, at_limit = clamp_step(KNOB_LADDERS[option], old, steps if forward else -steps)
+        if at_limit:
+            return Result(old, old, AT_LIMIT)
+        self._operator_generation += 1  # a background read already in flight must not put the old value back
+        if new == AUTOMATIC:
+            ok = await asyncio.to_thread(self._clear, writer, option)
+        else:
+            ok = await asyncio.to_thread(self._write, writer, option, new)
+        self._operator_generation += 1  # and a read that started during the write may predate it
+        if not ok:
+            self.operator_settings.pop(option, None)  # the outcome is unknown until the next read
+            return Result(old, None, FLAG_SERVICE_UNAVAILABLE)
+        self.operator_settings[option] = new
+        return Result(old, new)
 
     # --- agent_switch (UC-015 step 6, A3, A9, BR-002, BR-003) --------------------------------
 
@@ -444,10 +567,11 @@ class SettingsOps:
 
     # --- Feedback ---------------------------------------------------------------------------
 
-    async def announce(self, option: str, variant: str | None) -> None:
+    async def announce(self, option: str, variant: str | None) -> None:  # noqa: C901 - one branch per option voice; split later
         """The voice line for a new value (UC-012 voices, UC-015 step 4, 5, 8). Best effort.
 
-        A new mode also pulses its colour on every lobby controller (UC-015 BR-015).
+        A new mode also pulses its colour on every lobby controller (UC-015 BR-015), and so does a
+        new shield mode (BR-018).
         """
         manager = self.state_manager
         if manager is None or variant is None:
@@ -457,6 +581,10 @@ class SettingsOps:
             if option == "current_game":
                 await self.show_mode_on_lobby(variant)
                 await audio.play_game_mode_voice(variant)
+            elif variant == AUTOMATIC and option in AUTOMATIC_OPTIONS:
+                # BR-018: one voice line and one double white flash for the `automatic` rung of any setting.
+                await self.show_automatic_on_lobby()
+                await audio.play_voice(AUTOMATIC_VOICE)
             elif option == "sensitivity":
                 index = SENSITIVITY_VALUES.get(variant)
                 if index is not None:
@@ -475,6 +603,11 @@ class SettingsOps:
                     await audio.play_voice(voice)
             elif option == "audio_volume.master":
                 await audio.play_sound(VOLUME_STEP_SOUND)
+            elif option == SHIELD_ACTIVATION_FLAG:
+                await self.show_shield_mode_on_lobby(variant)
+                voice = SHIELD_ACTIVATION_VOICES.get(variant)
+                if voice is not None:
+                    await audio.play_voice(voice)
             elif option == "agent_switch":
                 voice = AGENT_SWITCH_VOICES.get(variant)
                 if voice is not None:
@@ -488,26 +621,43 @@ class SettingsOps:
         The controller manager restores each controller's base colour (its dim / bright lobby
         colour) when the pulse ends; the admin controller and IDLE controllers are left alone.
         """
+        await self._pulse_lobby(GAME_MODE_COLORS.get(game_mode, DEFAULT_COLOR))
+
+    async def show_shield_mode_on_lobby(self, shield_mode: str) -> None:
+        """UC-015 BR-018: the BR-015 pulse in the shield mode's colour; `automatic` a double white flash."""
+        if shield_mode == AUTOMATIC:
+            await self.show_automatic_on_lobby()
+            return
+        color = SHIELD_MODE_COLORS.get(shield_mode)
+        if color is not None:
+            await self._pulse_lobby(color)
+
+    async def show_automatic_on_lobby(self) -> None:
+        """UC-015 BR-018: the `automatic` cue of every setting, two 150 ms white flashes 300 ms apart."""
+        flash = controller_manager_pb2.GAME_EFFECT_FLASH
+        await self._effect_lobby(flash, Colors.White.value, AUTOMATIC_FLASH_MS)
+        await asyncio.sleep(AUTOMATIC_FLASH_GAP_SECONDS)
+        await self._effect_lobby(flash, Colors.White.value, AUTOMATIC_FLASH_MS)
+
+    async def _pulse_lobby(self, color: tuple[int, int, int]) -> None:
+        """One 600 ms pulse of ``color`` on every CONNECTED or READY controller (BR-015, BR-018)."""
+        await self._effect_lobby(controller_manager_pb2.GAME_EFFECT_PULSE, color, MODE_PULSE_MS, MODE_PULSE_SPEED)
+
+    async def _effect_lobby(self, effect: int, color: tuple[int, int, int], duration_ms: int, speed: int = 0) -> None:
+        """One game effect on every CONNECTED or READY controller (not admin, not IDLE)."""
         # Imported here: services.menu.handlers imports this module (admin mode).
         from services.menu.handlers.base import ControllerState
 
         manager = self.state_manager
         if manager is None:
             return
-        color = GAME_MODE_COLORS.get(game_mode, DEFAULT_COLOR)
         for serial, state in list(manager.controller_states.items()):
             if state not in (ControllerState.CONNECTED, ControllerState.READY):
                 continue
             try:
-                await manager.led.send_game_effect(
-                    serial,
-                    controller_manager_pb2.GAME_EFFECT_PULSE,
-                    color=color,
-                    duration_ms=MODE_PULSE_MS,
-                    speed=MODE_PULSE_SPEED,
-                )
+                await manager.led.send_game_effect(serial, effect, color=color, duration_ms=duration_ms, speed=speed)
             except Exception as e:
-                logger.warning(f"Mode pulse for {serial} failed: {e}")
+                logger.warning(f"Lobby pulse for {serial} failed: {e}")
 
     async def play_failure_cue(self) -> None:
         """UC-015 BR-009: two loud beeps for a write that failed. Best effort."""

@@ -30,20 +30,62 @@ import grpc
 from openfeature.evaluation_context import EvaluationContext
 from opentelemetry import context as otel_context
 from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from lib.controller_constants import battery_to_pct
 from lib.feature_flags import (
     GAME_KIND_SHADOW,
     build_session_kind_context,
     read_float_flag,
-    read_int_flag,
+    read_int_flag,  # noqa: F401  games/shields.py reads it as base.read_int_flag (tests patch it here)
     read_object_flag,
-    read_string_flag,
+    read_string_flag,  # noqa: F401  games/shields.py reads it as base.read_string_flag (tests patch it here)
     set_game_transaction_context,
 )
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
-from services.game_coordinator import metrics
+from services.game_coordinator import game_clock, metrics
+from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-exported: games/shields.py and the tests import them from base
+    CHARGE_EXPIRY_MAX_SECONDS,
+    DEFAULT_CHARGE_EXPIRY_SECONDS,
+    DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME,
+    DEFAULT_RAMP_DOWN_SECONDS,
+    DEFAULT_RAMP_UP_SECONDS,
+    DEFAULT_SHIELD_ACTIVATION,
+    DEFAULT_SHIELD_COOLDOWN_SECONDS,
+    END_MAX_MUSIC_FAST_TIME,
+    END_MAX_MUSIC_SLOW_TIME,
+    END_MIN_MUSIC_FAST_TIME,
+    END_MIN_MUSIC_SLOW_TIME,
+    FAST_MAX,
+    FAST_WARNING,
+    MAX_MUSIC_FAST_TIME,
+    MAX_MUSIC_SLOW_TIME,
+    MIN_MUSIC_FAST_TIME,
+    MIN_MUSIC_SLOW_TIME,
+    RAMP_SECONDS_MAX,
+    RAMP_SECONDS_MIN,
+    SENSITIVITY_LEVELS,
+    SHIELD_ACTIVATION_HOLD,
+    SHIELD_ACTIVATION_INSTANT,
+    SHIELD_ACTIVATION_TRIGGER,
+    SHIELD_HOLD_CUE_FLAGS,
+    SHIELD_HOLD_FLAGS,
+    SLOW_MAX,
+    SLOW_WARNING,
+    GameInitFlags,
+    MusicWindows,
+    _read_volume_flag,
+    resolve_base_thresholds,
+    resolve_charge_expiry,
+    resolve_hold_value,
+    resolve_mode_thresholds,
+    resolve_music_windows,
+    resolve_non_negative_duration,
+    resolve_ramp_seconds,
+    resolve_shield_activation,
+    resolve_shield_limit,
+)
 from services.game_coordinator.runtime_config import get_config_manager
 from services.game_coordinator.stream_writes import serialized_write
 
@@ -68,10 +110,6 @@ FAST_MUSIC_SPEED = 1.3  # 30% faster
 # going up and ``tempo.ramp_down_seconds`` going down (game flags, read at each
 # ramp start, never per frame). Thresholds read i every frame; the music is
 # derived from it (one ChangeTempo glide per segment), so it can only trail.
-DEFAULT_RAMP_UP_SECONDS = 3.0  # The maintainer's "slow increase"
-DEFAULT_RAMP_DOWN_SECONDS = 1.5  # The original JoustMania glide, until measured on a Pi
-RAMP_SECONDS_MIN = 0.1  # Flag clamp, matches the registry bounds (flags.md §13.3)
-RAMP_SECONDS_MAX = 10.0
 # Shortest glide sent to the audio service: a transition_duration of 0 means 1.0 s there.
 MIN_GLIDE_SECONDS = 0.05
 # Deadline for one ChangeTempo, so a wedged audio service never stalls the music loop.
@@ -83,40 +121,6 @@ AUDIO_TEMPO_RETRY_MAX_SECONDS = 5.0
 MUSIC_TICK_LOG_INTERVAL_SECONDS = 5.0
 # Track id the audio service returns for PlayMusic while play_audio is off (UC-031 A1).
 MUTED_TRACK_ID = "muted"
-
-# #1109: tempo-schedule SOURCE selector (``game.tempo_schedule_mode`` flag).
-# The tempo-change decision ALWAYS flows through the single pacing-policy seam
-# (``_decide_next_change_delay``); this flag selects which policy that seam runs:
-#   * "rule"  — the rule engine owns the decision. The DEFAULT rule reproduces
-#     the historical random-window timing (``_rng.uniform`` within the lerped
-#     ``music_windows``) byte-for-byte, so the unset/default behavior is
-#     unchanged WITHOUT a second legacy code path. A deterministic non-random
-#     rule is a follow-up policy (#1108) — the default rule simply keeps the RNG.
-#   * "agent" — the seam yields the next-change decision to agent tempo
-#     directives (#1103 ramp_tempo, a follow-up). Until that primitive lands the
-#     mode is a clean STUB: with no directive present it falls back to the
-#     default rule, so selecting "agent" early is safe (never freezes pacing).
-# There is intentionally NO "random" mode: randomness survives as the default
-# RULE, not as a separate mode (maintainer re-scope, #1109).
-TEMPO_MODE_RULE = "rule"
-TEMPO_MODE_AGENT = "agent"
-# Unset / unknown values resolve to the rule engine's default rule => back-compat.
-TEMPO_SCHEDULE_MODE_DEFAULT = TEMPO_MODE_RULE
-_VALID_TEMPO_SCHEDULE_MODES = (TEMPO_MODE_RULE, TEMPO_MODE_AGENT)
-
-
-def resolve_tempo_schedule_mode(value: object) -> str:
-    """Validate the ``game.tempo_schedule_mode`` flag value.
-
-    Any value other than the known modes (``rule``/``agent``) — including a
-    missing flag, a non-string, or a stale ``random`` left over from an older
-    config — resolves to :data:`TEMPO_SCHEDULE_MODE_DEFAULT` (``rule``), whose
-    default policy reproduces today's behavior. This keeps the seam default-safe.
-    """
-    if isinstance(value, str) and value in _VALID_TEMPO_SCHEDULE_MODES:
-        return value
-    return TEMPO_SCHEDULE_MODE_DEFAULT
-
 
 # #1117 (#1103 MVP action 2): ``ramp_tempo`` — a scheduled tempo CURVE that fills
 # the #1114 ``agent``-mode seam. The agent emits a single string directive
@@ -167,32 +171,6 @@ def intensity_from_tempo(tempo: float) -> float:
     return max(0.0, min(1.0, (tempo - SLOW_MUSIC_SPEED) / speed_range))
 
 
-def resolve_ramp_seconds(value: object, default: float) -> float:
-    """Validate a ``tempo.ramp_*_seconds`` flag value (#1833).
-
-    A non-number, a bool, NaN / infinity or a value <= 0 is malformed and gives
-    ``default``; any other value is clamped to [RAMP_SECONDS_MIN, RAMP_SECONDS_MAX].
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return default
-    seconds = float(value)
-    if not math.isfinite(seconds) or seconds <= 0.0:
-        return default
-    return max(RAMP_SECONDS_MIN, min(RAMP_SECONDS_MAX, seconds))
-
-
-# Player-activated shield charge (#1837, FR-160; UC-040 A30-A32, BR-019-BR-021;
-# UC-030 A6, BR-005). The game flag ``shield.activation`` picks how a grant_shield
-# lands: ``instant`` (today's shield) or ``trigger`` (a charge the player activates
-# with the trigger). Both flags are read per grant, never per frame.
-SHIELD_ACTIVATION_INSTANT = "instant"
-SHIELD_ACTIVATION_TRIGGER = "trigger"
-# Hold mode (#2096, FR-161; UC-030 A7, UC-040 A36-A39, BR-024-BR-027): a pool of
-# shield energy that protects while the trigger is held. Latched per game.
-SHIELD_ACTIVATION_HOLD = "hold"
-DEFAULT_SHIELD_ACTIVATION = SHIELD_ACTIVATION_INSTANT
-DEFAULT_CHARGE_EXPIRY_SECONDS = 20.0
-CHARGE_EXPIRY_MAX_SECONDS = 120.0
 # The controller manager caps a charge layer at 120 s (CHARGE_MAX_DURATION_MS);
 # the coordinator re-sends the layer this long before it runs out (BR-021).
 SHIELD_CHARGE_LAYER_MAX_SECONDS = 120.0
@@ -204,39 +182,6 @@ CHARGE_OUTCOME_DEATH = "death"
 CHARGE_OUTCOME_GAME_END = "game_end"
 
 
-def resolve_shield_activation(value: object) -> str:
-    """Validate a ``shield.activation`` flag value: ``trigger``, ``hold`` or else ``instant`` (UC-040 BR-019)."""
-    if isinstance(value, str):
-        mode = value.strip().lower()
-        if mode in (SHIELD_ACTIVATION_TRIGGER, SHIELD_ACTIVATION_HOLD):
-            return mode
-    return SHIELD_ACTIVATION_INSTANT
-
-
-def resolve_charge_expiry(value: object) -> float:
-    """Validate a ``shield.charge_expiry_seconds`` flag value (flags.md §4).
-
-    A non-number, a bool, NaN or a negative value gives the default (20 s); any
-    other value is clamped to [0, CHARGE_EXPIRY_MAX_SECONDS]. 0 means never.
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return DEFAULT_CHARGE_EXPIRY_SECONDS
-    seconds = float(value)
-    if math.isnan(seconds) or seconds < 0.0:
-        return DEFAULT_CHARGE_EXPIRY_SECONDS
-    return min(CHARGE_EXPIRY_MAX_SECONDS, seconds)
-
-
-# Hold-mode flags (flags.md §4, UC-040 BR-024): key -> (default, min, max). The
-# ranges equal the registry bounds (flags.md §13.3), so a stage overlay the
-# registry accepts is never clamped here.
-SHIELD_HOLD_FLAGS: dict[str, tuple[float, float, float]] = {
-    "shield.energy_max_seconds": (5.0, 1.0, 10.0),
-    "shield.energy_budget_seconds": (15.0, 3.0, 30.0),
-    "shield.energy_initial_seconds": (0.0, 0.0, 5.0),
-    "shield.recharge_per_second": (0.0, 0.0, 0.5),
-    "shield.min_burst_seconds": (0.3, 0.1, 1.0),
-}
 # A grant that could add less than this is refused as shield_pool_full (A37).
 SHIELD_HOLD_POOL_FULL_ROOM_SECONDS = 0.05
 # shield.hold_outcome values (telemetry.md §3.2) and game_shield_hold_activations_total{outcome}.
@@ -247,16 +192,6 @@ HOLD_OUTCOME_DEATH = "death"
 HOLD_OUTCOME_GAME_END = "game_end"
 SHIELD_REFUSED_POOL_FULL = "shield_pool_full"
 SHIELD_REFUSED_BUDGET_EXHAUSTED = "shield_budget_exhausted"
-
-
-def resolve_hold_value(value: object, default: float, low: float, high: float) -> float:
-    """Validate a hold-mode flag value (flags.md §4): malformed gives ``default``, else clamped to [low, high]."""
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return default
-    number = float(value)
-    if not math.isfinite(number):
-        return default
-    return max(low, min(high, number))
 
 
 @dataclass(frozen=True)
@@ -270,15 +205,6 @@ class ShieldHoldParams:
     min_burst: float
 
 
-# Hold feedback cue flags (flags.md §4, UC-040 BR-026): key -> (default, min, max), the
-# registry bounds. Latched with the hold values and shipped to the controller manager.
-SHIELD_HOLD_CUE_FLAGS: dict[str, tuple[float, float, float]] = {
-    "shield.charge_rumble_intensity": (255.0, 0.0, 255.0),
-    "shield.charge_rumble_pulse_ms": (150.0, 50.0, 500.0),
-    "shield.ending_rumble_seconds": (1.0, 0.0, 3.0),
-    "shield.hold_rumble_intensity": (70.0, 0.0, 150.0),
-    "shield.empty_pulse_ms": (400.0, 100.0, 800.0),
-}
 # shield_up plays on an activation at most this often per player (UC-040 BR-026).
 SHIELD_HOLD_SOUND_MIN_INTERVAL_SECONDS = 2.0
 # Cue of a hold command (proto ShieldHoldCue); a later send keeps the strongest pending one.
@@ -303,19 +229,8 @@ class ShieldHoldCues:
     empty_pulse_ms: int = 400
 
 
-# Agent shield limits per player per game (#2044, UC-040 A34, BR-022): the
-# coordinator's backstop. Operator flags in the `agent` set, read per grant.
-DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME = 3
-DEFAULT_SHIELD_COOLDOWN_SECONDS = 15
 SHIELD_REFUSED_CAP = "shield_cap_reached"
 SHIELD_REFUSED_COOLDOWN = "shield_cooldown"
-
-
-def resolve_shield_limit(value: object, default: int) -> int:
-    """Validate a shield-limit flag value (flags.md §3): a negative or non-int value gives the default."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return default
-    return value
 
 
 @dataclass(frozen=True)
@@ -368,7 +283,7 @@ class RampDescriptor:
     Attributes:
         start_tempo: Music speed when the ramp began (the interpolation origin).
         target_tempo: Clamped destination tempo, held once reached.
-        start_time: ``time.time()`` when the ramp began.
+        start_time: ``game_clock.now()`` when the ramp began.
         duration: Ramp length in seconds (> 0, capped at RAMP_TEMPO_MAX_SECONDS).
         curve: Interpolation shape — ``linear`` or ``ease`` (smoothstep).
     """
@@ -437,7 +352,7 @@ def parse_ramp_tempo_value(value: object) -> RampDescriptor | None:
     return RampDescriptor(
         start_tempo=0.0,  # filled by the handler from the live music_speed
         target_tempo=target,
-        start_time=0.0,  # filled by the handler from time.time()
+        start_time=0.0,  # filled by the handler from game_clock.now()
         duration=seconds,
         curve=curve,
     )
@@ -462,17 +377,6 @@ _MSG_COUNTDOWN_INTERRUPTED = "Countdown interrupted - game no longer running"
 #   warning = lerp(1.6, 1.9, 0.5) = 1.75g
 #   death   = lerp(1.8, 2.8, 0.5) = 2.3g
 
-# Music timing intervals (seconds) - how long before next tempo change
-MIN_MUSIC_FAST_TIME = 4  # Minimum time at fast speed
-MAX_MUSIC_FAST_TIME = 8  # Maximum time at fast speed
-MIN_MUSIC_SLOW_TIME = 10  # Minimum time at slow speed
-MAX_MUSIC_SLOW_TIME = 23  # Maximum time at slow speed
-
-# End game timing (more frequent changes as game progresses)
-END_MIN_MUSIC_FAST_TIME = 6
-END_MAX_MUSIC_FAST_TIME = 10
-END_MIN_MUSIC_SLOW_TIME = 8
-END_MAX_MUSIC_SLOW_TIME = 12
 
 # Volume levels — module constants double as flagd defaults and as the
 # revert target for the volume_override intervention (interventions.py).
@@ -485,248 +389,6 @@ MAX_INSTRUCTIONS_WAIT_SECONDS = 60.0
 INSTRUCTIONS_POLL_SECONDS = 0.1
 # Deadline for StopSound after a force-end, so a wedged audio service cannot stall teardown (#1586).
 STOP_SOUND_TIMEOUT_SECONDS = 2.0
-
-
-def _read_volume_flag(flag_name: str, default: float) -> float:
-    """Read a per-channel volume from the flagd user domain (F7, #766).
-
-    Validates the value is a number in [0.0, 1.0]; falls back to the hardcoded
-    default on malformed values or any read error, so promotion stays
-    behavior-neutral. Read at game init only (init-frozen).
-    """
-    try:
-        from openfeature.evaluation_context import EvaluationContext
-
-        from lib.feature_flags import get_flag_client, init_flag_domain
-
-        init_flag_domain("user")
-        client = get_flag_client("user")
-        value = client.get_float_value(flag_name, default, EvaluationContext())
-        if not isinstance(value, int | float) or isinstance(value, bool) or not (0.0 <= value <= 1.0):
-            logger.warning(f"Malformed volume {flag_name}={value!r}, using default {default}")
-            return default
-        return float(value)
-    except Exception as e:
-        logger.warning(f"Failed to read volume {flag_name}, using default {default}: {e}")
-        return default
-
-
-# UC-030 BR-001: threshold tables (defaults of the `thresholds` flag, read at game start).
-# Threshold arrays from original JoustMania (in g-force units, 1.0 = 1g)
-# PSMove accelerometer returns g-force values (standing still = ~1.0 on Z axis)
-#
-# Uses LERP between slow/fast thresholds based on music speed:
-#   threshold = lerp(SLOW[sens], FAST[sens], music_speed_percent)
-#
-# Index: 0=ULTRA_SLOW, 1=SLOW, 2=MEDIUM, 3=FAST, 4=ULTRA_FAST
-SLOW_WARNING = [1.2, 1.3, 1.6, 2.0, 2.5]  # Warning thresholds when music is slow
-SLOW_MAX = [1.3, 1.5, 1.8, 2.5, 3.2]  # Death thresholds when music is slow
-FAST_WARNING = [1.4, 1.6, 1.9, 2.7, 2.8]  # Warning thresholds when music is fast
-FAST_MAX = [1.6, 1.8, 2.8, 3.2, 3.5]  # Death thresholds when music is fast
-
-# Number of sensitivity levels (0=ULTRA_SLOW .. 4=ULTRA_FAST); every threshold
-# array must carry exactly this many entries.
-SENSITIVITY_LEVELS = 5
-
-
-def _valid_threshold_row(row) -> bool:
-    """A threshold array must hold exactly SENSITIVITY_LEVELS numeric entries."""
-    if not isinstance(row, (list, tuple)) or len(row) != SENSITIVITY_LEVELS:
-        return False
-    return all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in row)
-
-
-def resolve_base_thresholds(flag_value: dict) -> dict[str, list]:
-    """
-    Validate the ``game.thresholds`` object flag and resolve the four arrays.
-
-    Each of slow_warning/slow_max/fast_warning/fast_max must be a 5-element
-    numeric array, and per sensitivity row warning < max (slow and fast). On
-    ANY malformed entry the corresponding hardcoded module constant is used as
-    the fallback source of truth, keeping the promotion behavior-neutral.
-
-    Args:
-        flag_value: Object value from the ``thresholds`` flag (may be partial/invalid)
-
-    Returns:
-        Dict with keys slow_warning, slow_max, fast_warning, fast_max -> lists.
-    """
-    defaults = {
-        "slow_warning": list(SLOW_WARNING),
-        "slow_max": list(SLOW_MAX),
-        "fast_warning": list(FAST_WARNING),
-        "fast_max": list(FAST_MAX),
-    }
-    if not isinstance(flag_value, dict):
-        return defaults
-
-    resolved = {}
-    for key in ("slow_warning", "slow_max", "fast_warning", "fast_max"):
-        candidate = flag_value.get(key)
-        resolved[key] = list(candidate) if _valid_threshold_row(candidate) else defaults[key]
-
-    # Per-row sanity: warning must be strictly below max at every sensitivity.
-    # If any row violates it, fall back to the matching default pair so we never
-    # ship an unkillable or instant-death configuration.
-    for warn_key, max_key in (("slow_warning", "slow_max"), ("fast_warning", "fast_max")):
-        if any(w >= m for w, m in zip(resolved[warn_key], resolved[max_key], strict=False)):
-            resolved[warn_key] = defaults[warn_key]
-            resolved[max_key] = defaults[max_key]
-
-    return resolved
-
-
-def resolve_mode_thresholds(flag_value: dict, default_table: dict) -> dict:
-    """
-    Validate a per-mode override flag (zombie/werewolf) -> ``{Sensitivity: (warn, max)}``.
-
-    The flag carries two 5-element arrays ``warning`` and ``max`` (indexed by
-    sensitivity 0..4). On any malformed entry or warning>=max row, the supplied
-    ``default_table`` (the mode's hardcoded dict) is returned unchanged.
-
-    Args:
-        flag_value: Object value from ``<mode>.thresholds`` flag
-        default_table: Hardcoded ``{Sensitivity: (warn, max)}`` fallback
-
-    Returns:
-        A ``{Sensitivity: (warn, max)}`` dict.
-    """
-    if not isinstance(flag_value, dict):
-        return default_table
-
-    warning = flag_value.get("warning")
-    death = flag_value.get("max")
-    if not _valid_threshold_row(warning) or not _valid_threshold_row(death):
-        return default_table
-    if any(w >= m for w, m in zip(warning, death, strict=False)):
-        return default_table
-
-    return {Sensitivity(i): (warning[i], death[i]) for i in range(SENSITIVITY_LEVELS)}
-
-
-def resolve_non_negative_duration(value, default: float) -> float:
-    """
-    Validate a promoted duration flag (#766 F2): finite, numeric, ``>= 0``.
-
-    Durations of exactly ``0`` are allowed (e.g. "no grace", "no spawn
-    protection"); negatives, non-numbers and NaN/inf fall back to ``default``
-    so the promotion stays behavior-neutral.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return default
-    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
-        return default
-    return float(value) if value >= 0 else default
-
-
-@dataclass
-class MusicWindows:
-    """Tempo-change scheduling windows (seconds) for the music loop.
-
-    Each field is the min/max delay before the next tempo change in a given
-    phase. The loop draws a uniform delay in ``[min, max]`` (lerping between the
-    early-game and end-game pairs as players are eliminated). #766 F3 promoted
-    these from the module constants to the ``game.windows`` object flag.
-
-    #766 F6 seam (LIVE ``pacing_profile`` intervention): the resolved windows
-    live on ``self.music_windows`` (one ``MusicWindows`` instance). F6's live
-    handler must build a new ``MusicWindows`` from the chosen preset and assign
-    it atomically — ``self.music_windows = new_windows`` — so the music loop,
-    which reads ``self.music_windows`` fresh on each ``_get_music_change_time``
-    call, picks up the swap on the next tempo change without tearing (the field
-    reference flips in a single bytecode store; never mutate the fields in
-    place). Init reads it once (init-frozen calibration); F6 owns the live path.
-    """
-
-    fast_min: float
-    fast_max: float
-    slow_min: float
-    slow_max: float
-    end_fast_min: float
-    end_fast_max: float
-    end_slow_min: float
-    end_slow_max: float
-
-    @classmethod
-    def defaults(cls) -> "MusicWindows":
-        """Build a MusicWindows from the hardcoded module constants."""
-        return cls(
-            fast_min=MIN_MUSIC_FAST_TIME,
-            fast_max=MAX_MUSIC_FAST_TIME,
-            slow_min=MIN_MUSIC_SLOW_TIME,
-            slow_max=MAX_MUSIC_SLOW_TIME,
-            end_fast_min=END_MIN_MUSIC_FAST_TIME,
-            end_fast_max=END_MAX_MUSIC_FAST_TIME,
-            end_slow_min=END_MIN_MUSIC_SLOW_TIME,
-            end_slow_max=END_MAX_MUSIC_SLOW_TIME,
-        )
-
-
-# Maps each MusicWindows field to its game.windows flag key (snake_case after
-# the module constants) and the constant used as the per-field fallback.
-_MUSIC_WINDOW_FIELDS = (
-    ("fast_min", "min_music_fast_time", MIN_MUSIC_FAST_TIME),
-    ("fast_max", "max_music_fast_time", MAX_MUSIC_FAST_TIME),
-    ("slow_min", "min_music_slow_time", MIN_MUSIC_SLOW_TIME),
-    ("slow_max", "max_music_slow_time", MAX_MUSIC_SLOW_TIME),
-    ("end_fast_min", "end_min_music_fast_time", END_MIN_MUSIC_FAST_TIME),
-    ("end_fast_max", "end_max_music_fast_time", END_MAX_MUSIC_FAST_TIME),
-    ("end_slow_min", "end_min_music_slow_time", END_MIN_MUSIC_SLOW_TIME),
-    ("end_slow_max", "end_max_music_slow_time", END_MAX_MUSIC_SLOW_TIME),
-)
-
-# (min_field, max_field) pairs that must satisfy min <= max for the windows to
-# be usable. If any pair is violated after resolution we discard the whole flag
-# value and fall back to the defaults (keeping promotion behavior-neutral).
-_MUSIC_WINDOW_PAIRS = (
-    ("fast_min", "fast_max"),
-    ("slow_min", "slow_max"),
-    ("end_fast_min", "end_fast_max"),
-    ("end_slow_min", "end_slow_max"),
-)
-
-
-def _positive_number(value) -> bool:
-    """A music window must be a finite, strictly-positive (>0) number, not bool."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
-        return False
-    return value > 0
-
-
-def resolve_music_windows(flag_value: dict) -> MusicWindows:
-    """
-    Validate the ``game.windows`` object flag and resolve a :class:`MusicWindows`.
-
-    Each of the eight window values must be a finite, strictly-positive number,
-    and every (min, max) pair must satisfy ``min <= max``. On ANY malformed
-    value or violated ordering the ENTIRE flag value is rejected in favour of
-    the module-constant defaults, keeping the promotion behavior-neutral (a
-    half-applied window set could distort the fast/slow rhythm unexpectedly).
-
-    Args:
-        flag_value: Object value from the ``windows`` flag (may be partial/invalid)
-
-    Returns:
-        A validated :class:`MusicWindows` (defaults on any failure).
-    """
-    defaults = MusicWindows.defaults()
-    if not isinstance(flag_value, dict):
-        return defaults
-
-    resolved: dict[str, float] = {}
-    for field, key, _fallback in _MUSIC_WINDOW_FIELDS:
-        candidate = flag_value.get(key)
-        if not _positive_number(candidate):
-            return defaults  # any malformed value -> whole-set fallback
-        resolved[field] = float(candidate)
-
-    for min_field, max_field in _MUSIC_WINDOW_PAIRS:
-        if resolved[min_field] > resolved[max_field]:
-            return defaults  # any inverted window -> whole-set fallback
-
-    return MusicWindows(**resolved)
 
 
 # Warning feedback duration (seconds) - flash + rumble time
@@ -907,6 +569,14 @@ class Phase:
     execute: callable
 
 
+@dataclass
+class _RunProgress:
+    """How far run()'s teardown got: what its finally must still stop (#2357)."""
+
+    music_stopped: bool = False
+    shield_feedback_ended: bool = False
+
+
 class PollDegradationError(Exception):
     """Synthetic exception for poll degradation span events.
 
@@ -926,7 +596,12 @@ class GameState(Enum):
     ENDED = "ended"
 
 
-class BaseGameMode(ABC):
+# The shield code (#2360) lives in games/shields.py and imports the constants
+# above back from this module, so this import stays below them.
+from services.game_coordinator.games.shields import ShieldMixin  # noqa: E402
+
+
+class BaseGameMode(ShieldMixin, ABC):
     """
     Abstract base class for all game modes.
 
@@ -948,7 +623,9 @@ class BaseGameMode(ABC):
 
     # UC-040 BR-019: ``shield.activation = trigger`` is an allow-list. Only a mode
     # that sets this (Free-for-All) turns a grant_shield into a charge; every other
-    # mode, and every shadow game, always takes the instant path.
+    # mode, and every shadow game whose pattern controllers do not press the
+    # trigger (no ``pattern_trigger_policy``, UC-046 BR-018), always takes the
+    # instant path.
     SHIELD_TRIGGER_ALLOWED: bool = False
 
     def __init__(
@@ -1005,6 +682,9 @@ class BaseGameMode(ABC):
         self.game_kind = "primary"
         self.experiment_id = ""
         self.arm = ""
+        # UC-046 BR-018 / UC-040 BR-019 (#2096): set by the session for a shadow game
+        # whose archetype presses the trigger; such a game honours trigger and hold.
+        self.pattern_trigger_policy = False
         # The flag transaction context _set_flag_eval_context set for this game's
         # run; intervention handlers resolve flags in it (flag_eval_context, #1970).
         self._flag_eval_context: EvaluationContext | None = None
@@ -1043,6 +723,9 @@ class BaseGameMode(ABC):
         # Set when run() exits by an exception: the run-end cleanup labels the
         # player spans it ends ``error`` (UC-030 BR-007, #1997).
         self._run_failed = False
+        # Set once the base run() published game_error, so its session does not
+        # publish it a second time (#2025 S2).
+        self.game_error_published = False
         # The game root span (current when run() starts); the outcome lands on it.
         self._game_root_span: trace.Span | None = None
         self.gameplay_stream = None  # Phase 46: Bidirectional stream for feedback commands
@@ -1109,73 +792,58 @@ class BaseGameMode(ABC):
         # No agent override at game start; effective == baseline.
         self._sensitivity_override: Sensitivity | None = None
 
-        # #766 F1: death/warning threshold tables promoted to the ``game.thresholds``
-        # object flag. Read ONCE here (init-frozen by design — no live re-evaluation);
-        # malformed/missing values fall back to the module constants.
-        flag_thresholds = read_object_flag("game", "thresholds", {}, game_id=self.game_id)
-        tables = resolve_base_thresholds(flag_thresholds)
-        self.slow_warning = tables["slow_warning"]
-        self.slow_max = tables["slow_max"]
-        self.fast_warning = tables["fast_warning"]
-        self.fast_max = tables["fast_max"]
-
+        # Init-latched flags (#2359): every read below happens once, here, and the raw
+        # values are validated and frozen into ``init_flags`` (GameInitFlags.from_raw).
+        # The attributes after it start from the snapshot. The readers are called as
+        # ``read_*_flag`` / ``get_config_manager`` in this module, so tests patch them here.
+        #
+        # #766 F1: death/warning threshold tables, the ``game.thresholds`` object flag
+        # (init-frozen; malformed/missing values fall back to the module constants).
+        #
         # EMA filter weight (#766 F4, agent-domain `perception.ema_weight`).
         # READ ONCE HERE AT GAME INIT and frozen for the life of the game. It is
         # intentionally never re-evaluated mid-game: changing the smoothing
         # weight while running would invalidate the per-player movement variance
-        # baseline that the agent's perception layer relies on (#722 §5 —
+        # baseline that the agent's perception layer relies on (#722 §5 --
         # difficulty/filter changes "invalidate the variance baseline"). Falls
         # back to the hardcoded default (4.0) when flagd is unavailable.
-        self._ema_weight = get_config_manager().read_ema_weight()
-
-        # UC-020 BR-002: read here but consumed only by respawn modes; no effect in FFA.
-        # #766 F2: post-respawn grace period promoted to ``game.death_grace_period_seconds``.
-        # Read ONCE here (init-frozen); malformed/negative values fall back to the
-        # DEATH_GRACE_PERIOD module constant (the source of truth).
         #
-        # SCOPE (#1090): this is the post-respawn/conversion invincibility window for
-        # RESPAWN modes only (zombie conversion + respawn, swapper team-swap). It is
-        # CONSUMED by those modes (zombie.py / swapper.py set ``player.grace_until =
-        # time.time() + self.death_grace_period``). FFA has no respawn, so this flag
-        # has NO effect on FFA — it is NOT an FFA difficulty/pacing lever. The real
-        # FFA difficulty/pacing levers are ``game.thresholds`` (death thresholds) and
-        # ``game.windows`` (tempo cadence), both consumed per-frame in
-        # ``_compute_effective_thresholds``.
-        self.death_grace_period = resolve_non_negative_duration(
-            read_float_flag("game", "death_grace_period_seconds", DEATH_GRACE_PERIOD, game_id=self.game_id),
-            DEATH_GRACE_PERIOD,
+        # UC-020 BR-002 / #766 F2: ``game.death_grace_period_seconds``, the
+        # post-respawn/conversion invincibility window for RESPAWN modes only
+        # (zombie conversion + respawn, swapper team-swap; they set
+        # ``player.grace_until = game_clock.now() + self.death_grace_period``). FFA has
+        # no respawn, so it has NO effect on FFA (#1090). Init-frozen; malformed or
+        # negative values fall back to DEATH_GRACE_PERIOD.
+        #
+        # #766 F3: ``game.windows`` music tempo-change windows (init-frozen calibration;
+        # the ``pacing_profile`` presets are named variants).
+        #
+        # F7, #766: per-channel volumes from the user domain (init-frozen). Defaults
+        # reproduce the original constants; malformed values fall back to them.
+        self.init_flags = GameInitFlags.from_raw(
+            thresholds=read_object_flag("game", "thresholds", {}, game_id=self.game_id),
+            ema_weight=get_config_manager().read_ema_weight(),
+            death_grace_period_seconds=read_float_flag(
+                "game", "death_grace_period_seconds", DEATH_GRACE_PERIOD, game_id=self.game_id
+            ),
+            death_grace_default=DEATH_GRACE_PERIOD,
+            windows=read_object_flag("game", "windows", {}, game_id=self.game_id),
+            game_volume=_read_volume_flag("audio_volume.game", GAME_VOLUME),
+            countdown_music_volume=_read_volume_flag("audio_volume.countdown_music", COUNTDOWN_MUSIC_VOLUME),
         )
-
-        # #766 F3: music tempo-change scheduling windows promoted to the
-        # ``game.windows`` object flag (the ``pacing_profile`` presets live as
-        # named variants). Read ONCE here (init-frozen calibration); malformed
-        # values fall back to the module constants. F6 will add a LIVE
-        # ``pacing_profile`` intervention that atomically swaps
-        # ``self.music_windows`` mid-game — see MusicWindows for the seam.
-        self.music_windows = resolve_music_windows(read_object_flag("game", "windows", {}, game_id=self.game_id))
-        # #766 F6: the init-resolved windows are retained so the LIVE
-        # ``pacing_profile`` intervention can restore them when it reverts to the
-        # neutral profile. Never reassigned after init (the live handler swaps
-        # ``self.music_windows`` only).
+        self.slow_warning = list(self.init_flags.slow_warning)
+        self.slow_max = list(self.init_flags.slow_max)
+        self.fast_warning = list(self.init_flags.fast_warning)
+        self.fast_max = list(self.init_flags.fast_max)
+        self._ema_weight = self.init_flags.ema_weight
+        self.death_grace_period = self.init_flags.death_grace_period_seconds
+        # F6 (#766): the live ``pacing_profile`` intervention swaps ``self.music_windows``
+        # atomically; ``init_music_windows`` is the restore target, never reassigned.
+        self.music_windows = self.init_flags.music_windows
         self.init_music_windows = self.music_windows
+        self.game_volume = self.init_flags.game_volume
+        self.countdown_music_volume = self.init_flags.countdown_music_volume
 
-        # #1109: tempo-schedule SOURCE mode (``game.tempo_schedule_mode``). Read
-        # ONCE here for the initial value, then kept LIVE by the
-        # PROVIDER_CONFIGURATION_CHANGED listener (TempoScheduleManager), which
-        # atomically swaps ``self.tempo_schedule_mode`` mid-game exactly like the
-        # F6 ``music_windows`` seam. The single pacing pathway
-        # (``_decide_next_change_delay``) reads this attribute fresh on every
-        # tempo-change decision, so flipping the flag switches the source LIVE
-        # without a restart. Default/unknown => "rule" (default rule reproduces
-        # today's random-window timing => behavior unchanged).
-        self.tempo_schedule_mode = resolve_tempo_schedule_mode(
-            read_string_flag("game", "tempo_schedule_mode", TEMPO_SCHEDULE_MODE_DEFAULT, game_id=self.game_id)
-        )
-        # #1109 agent-mode seam (#1103 follow-up): the next-change delay an agent
-        # tempo directive (ramp_tempo) wants the schedule to honor. ``None`` =>
-        # no directive present => "agent" mode falls back to the default rule.
-        # Set by the agent primitive in a follow-up PR; never set in this PR.
-        self.agent_tempo_next_delay: float | None = None
         # #1117 (#1103 MVP action 2): active ramp_tempo CURVE descriptor, or None
         # for no ramp (the default-safe state — behavior unchanged). When set, the
         # single tempo owner (``_check_music_speed``) interpolates the live tempo
@@ -1248,12 +916,6 @@ class BaseGameMode(ABC):
         # Tracked async tasks for automatic cleanup on game end
         self._tasks: set[asyncio.Task] = set()
 
-        # Per-channel volumes (F7, #766) — read once at game init from the user
-        # domain (init-frozen). Defaults reproduce the original constants, so
-        # promotion is behavior-neutral. Malformed values fall back to defaults.
-        self.game_volume = _read_volume_flag("audio_volume.game", GAME_VOLUME)
-        self.countdown_music_volume = _read_volume_flag("audio_volume.countdown_music", COUNTDOWN_MUSIC_VOLUME)
-
         logger.info(f"{self.get_game_name()} game initialized: {self.game_id}")
 
     # ========================================================================
@@ -1304,17 +966,17 @@ class BaseGameMode(ABC):
     @property
     def music_speed(self) -> float:
         """Music ratio derived from the tempo intensity now (#1833, UC-031 BR-005)."""
-        return tempo_from_intensity(self._intensity.value_at(time.time()))
+        return tempo_from_intensity(self._intensity.value_at(game_clock.now()))
 
     @music_speed.setter
     def music_speed(self, tempo: float) -> None:
         """Pin the intensity at the given tempo's value (no ramp); used by fixtures and resets."""
-        self._intensity = IntensityRamp.hold(intensity_from_tempo(tempo), time.time())
+        self._intensity = IntensityRamp.hold(intensity_from_tempo(tempo), game_clock.now())
 
     @property
     def tempo_intensity(self) -> float:
         """The tempo intensity in [0, 1] now (0 = slow table, 1 = fast table)."""
-        return self._intensity.value_at(time.time())
+        return self._intensity.value_at(game_clock.now())
 
     def set_baseline_sensitivity(self, value: Sensitivity) -> None:
         """Update the admin baseline; invalidate any active agent override (#816).
@@ -1483,13 +1145,13 @@ class BaseGameMode(ABC):
         logger.info(f"Playing instructions {clip}, waiting {duration:.1f}s before the countdown")
 
         # Wait for the clip to finish; a force-end stops the wait at once.
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + duration
-        for _ in range(math.ceil(duration / INSTRUCTIONS_POLL_SECONDS)):
-            remaining = deadline - loop.time()
+        wait_seconds = duration * self._INSTRUCTIONS_WAIT_SCALE
+        deadline = game_clock.now() + wait_seconds
+        for _ in range(math.ceil(wait_seconds / INSTRUCTIONS_POLL_SECONDS)):
+            remaining = deadline - game_clock.now()
             if not self.running or remaining <= 0:
                 break
-            await asyncio.sleep(min(INSTRUCTIONS_POLL_SECONDS, remaining))
+            await game_clock.sleep(min(INSTRUCTIONS_POLL_SECONDS, remaining))
 
         if not self.running:
             await self._stop_instruction_clip()
@@ -1577,7 +1239,7 @@ class BaseGameMode(ABC):
         per-serial ``player_alive`` gauge is game_id-labeled and stays isolated.
         """
         if self.game_kind != GAME_KIND_SHADOW:
-            metrics.players_alive.set(alive_count)
+            metrics.set_players_alive(self.game_id, alive_count)
 
     async def _initialize_players(self):
         """Initialize players from StartGame RPC payload."""
@@ -1679,7 +1341,7 @@ class BaseGameMode(ABC):
                 if not self.running:
                     logger.info(_MSG_COUNTDOWN_INTERRUPTED)
                     return
-                await asyncio.sleep(0.05)
+                await game_clock.sleep(self._COUNTDOWN_BEEP_POLL_S)
 
         # Play start sound — inherits gameplay_phase as parent span
         await self._play_sound(Sound.SFX_START3, priority=2)
@@ -2122,7 +1784,7 @@ class BaseGameMode(ABC):
             metrics.game_loop_frames_dropped_total.labels(mode=self.get_game_name()).inc()
 
         if loop_iterations % 10 == 0:
-            elapsed = time.time() - loop_start_time
+            elapsed = game_clock.now() - loop_start_time
             actual_hz = loop_iterations / elapsed if elapsed > 0 else 0
             metrics.actual_update_frequency_hz.labels(**self._game_state_labels()).set(actual_hz)
 
@@ -2167,6 +1829,12 @@ class BaseGameMode(ABC):
         return attempt
 
     _RECONNECT_BACKOFF_S = 1.0
+
+    # Real waits a test can shorten (#2361): production keeps these values.
+    # Poll step of the countdown beep wait (one step per 50 ms of beep interval).
+    _COUNTDOWN_BEEP_POLL_S: float = 0.05
+    # Factor on the wait for the instruction clip to finish (1.0 = the clip's length).
+    _INSTRUCTIONS_WAIT_SCALE: float = 1.0
     # Errors of the gameplay call itself, raised by a read or by a write on it
     # (UC-030 BR-006): the game loop reconnects on these. Any other error while a
     # frame is processed ends the game with game_error (UC-020 BR-003, #2001).
@@ -2174,6 +1842,9 @@ class BaseGameMode(ABC):
     # A reopened stream counts as healthy, and the reconnect count starts again, after
     # this many frames (about 1 s at the default 60 Hz; UC-030 BR-006, #1931).
     _RECONNECT_HEALTHY_FRAMES = 60
+
+    # The win hold; a class attribute so tests shorten it (#2361). Production keeps 1 s.
+    _WIN_HOLD_S: float = 1.0
 
     async def _hold_win_display(self) -> None:
         """Latch the outcome and keep the game active 1 s to show the winner (UC-020 BR-003).
@@ -2185,7 +1856,7 @@ class BaseGameMode(ABC):
         if self._latched_outcome is None:
             return
         logger.info("Win condition met, keeping game active for 1 second to show winner")
-        await asyncio.sleep(1.0)
+        await game_clock.sleep(self._WIN_HOLD_S)
 
     async def _game_loop(self):
         """Main game loop - processes controller states and checks for deaths."""
@@ -2204,13 +1875,13 @@ class BaseGameMode(ABC):
             # EMA filters were primed and buffered data drained by _warmup_ema().
             # UC-030 BR-003: startup grace period so any residual spikes can't cause instant death.
             # It never shortens a longer grace (an agent shield) granted before the loop.
-            grace_until = time.time() + 0.3
+            grace_until = game_clock.now() + 0.3
             for player in self.players.values():
                 if player.alive:
                     player.grace_until = max(player.grace_until, grace_until)
             # UC-040 BR-027: hold is latched here at the latest; the recharge starts now.
             self._latch_shield_hold()
-            self._start_shield_hold_clock(time.time())
+            self._start_shield_hold_clock(game_clock.now())
             self._queue_hold_feedback_all()  # UC-040 BR-026: every player's energy layer
 
             # Track current alive set for detecting changes
@@ -2225,7 +1896,7 @@ class BaseGameMode(ABC):
             last_alive_serials = await self._send_alive_filter_update(last_alive_serials)
 
             # Track loop timing for actual Hz calculation (Phase 43)
-            loop_start_time = time.time()
+            loop_start_time = game_clock.now()
             loop_iterations = 0
             last_iteration_time = loop_start_time
 
@@ -2246,7 +1917,7 @@ class BaseGameMode(ABC):
                     async for gameplay_update in self.gameplay_stream:
                         if loop_iterations == 0:
                             logger.info("Received first gameplay update from stream!")
-                            self.start_time = time.time()
+                            self.start_time = game_clock.now()
 
                         # The count starts again only after a healthy run, not after
                         # one frame (UC-030 BR-006, #1931).
@@ -2280,7 +1951,7 @@ class BaseGameMode(ABC):
 
                         # Track loop timing for metrics
                         loop_iterations += 1
-                        iteration_end = time.time()
+                        iteration_end = game_clock.now()
                         iteration_latency_ms = (iteration_end - last_iteration_time) * 1000
 
                         frames_on_target = self._update_frame_metrics(
@@ -2385,7 +2056,7 @@ class BaseGameMode(ABC):
             Tuple of (effective_warning_threshold, effective_death_threshold)
         """
         sens_idx = self.sensitivity.value
-        now = time.time()
+        now = game_clock.now()
 
         # Tempo intensity now (0.0 = slow table, 1.0 = fast table), clamped to [0, 1].
         speed_percent = self._intensity.value_at(now)
@@ -2632,7 +2303,7 @@ class BaseGameMode(ABC):
 
         accel = controller_state.accel
         accel_mag = self._compute_accel_magnitude(accel)
-        current_time = time.time()
+        current_time = game_clock.now()
 
         # UC-030 BR-005: the trigger is evaluated BEFORE the grace and death checks,
         # so an activation in this frame makes this frame a grace frame (A6 step 3).
@@ -2670,7 +2341,7 @@ class BaseGameMode(ABC):
                 await self._process_shield_charge(player, edge, current_time)
 
         # Check grace period first - no death or warning during grace period
-        # Matches original JoustMania: if time.time() > no_rumble. Uses the unified
+        # Matches original JoustMania: if game_clock.now() > no_rumble. Uses the unified
         # effective-grace rule (#817): max(agent shield grace_until, admin
         # invincible_until) so the agent shield and admin baseline compose here too.
         if current_time < self.effective_grace_until(player):
@@ -2730,7 +2401,7 @@ class BaseGameMode(ABC):
 
         # Set warning feedback duration (prevents repeated warnings during flash)
         # This is NOT protection - player can still die during this time!
-        player.warning_until = time.time() + WARNING_DURATION
+        player.warning_until = game_clock.now() + WARNING_DURATION
 
         # Analytics: Record warning event
         if player.analytics is not None:
@@ -2817,177 +2488,8 @@ class BaseGameMode(ABC):
     def is_in_grace(self, player: "Player", now: float | None = None) -> bool:
         """True while the player's effective grace (admin ∪ agent) is still open (#817)."""
         if now is None:
-            now = time.time()
+            now = game_clock.now()
         return now < self.effective_grace_until(player)
-
-    async def grant_shield(self, serial: str, seconds: float) -> bool:
-        """
-        Grant a temporary shield (invulnerability) to a player (#730, N3).
-
-        A shield extends the player's ``grace_until`` timestamp: the per-frame
-        check in ``_process_controller_state`` already skips all death/warning
-        checks while ``time.time() < grace_until``, so this is the natural,
-        mode-agnostic shield primitive (Tournament/Fight Club ``invincible_until``
-        and Nonstop ``spawn_protected`` are the same idea). FFA-first per
-        docs/research/722-intervention-surface.md §3, but the primitive lives on
-        ``BaseGameMode`` so every mode inherits it. Mode-level opt-outs (e.g.
-        hidden-role LED leaks) are enforced by the intervention manager's §9
-        capability matrix BEFORE the handler runs — this primitive does not
-        re-check mode.
-
-        Idempotent-extend semantics: a new shield only ever extends an existing
-        one. If the player is already shielded past ``now + seconds`` the existing
-        (longer) grace is kept; a shorter request never shortens it.
-
-        Shield limits (#2044, UC-040 A34, BR-022): after the alive check (and in
-        trigger mode after ``already_charged``) a grant is refused with
-        ``InterventionNotApplied`` once the player has had
-        ``policy.max_shields_per_player_per_game`` agent shields in this game
-        (``shield_cap_reached``), or while ``now`` is before the end of the last
-        agent shield plus ``policy.shield_cooldown_seconds`` (``shield_cooldown``).
-        So with a cooldown set, a running agent shield is never extended; cooldown
-        0 restores extend-not-shorten. A kept (no-op) grant does not count.
-
-        Shield feedback (#1301, UC-040 A16): the ``shield_up`` sound, a
-        ``GAME_EFFECT_SHIELD`` for the remaining protection (rendered by the
-        controller manager: fade, last-second blink, restore) and a
-        ``player_shielded`` event. A kept (no-op) grant sends no feedback.
-
-        Args:
-            serial: Controller serial number.
-            seconds: Shield duration in seconds. Non-positive durations are a
-                no-op (returns False).
-
-        Returns:
-            True if a shield was granted/extended, False if the player is
-            unknown/dead or the duration was non-positive.
-        """
-        if seconds <= 0:
-            return False
-
-        player = self.players.get(serial)
-        if not player or not player.alive:
-            return False
-
-        # UC-040 BR-027: a hold game adds the grant to the player's energy (A36).
-        latched_here = not self._shield_hold_latched
-        hold = self._latch_shield_hold()
-        if hold is not None:
-            return self._grant_shield_energy(player, seconds, hold)
-
-        # UC-040 BR-019: in trigger mode the grant is a charge the player activates
-        # (A30). Read per grant, so a flip applies to the next grant only; the grant
-        # that latched the game reuses the latch's read.
-        mode, self._shield_mode_at_latch = self._shield_mode_at_latch, None
-        if mode is None or not latched_here:
-            mode = self._shield_activation_mode()
-        trigger = mode == SHIELD_ACTIVATION_TRIGGER
-        if trigger and player.shield_charge_seconds > 0:
-            # UC-040 A31: a held charge is refused before the shield limits.
-            from services.game_coordinator.intervention_errors import InterventionNotApplied
-
-            logger.info(f"Shield charge for {serial} refused: a charge is already held")
-            raise InterventionNotApplied("already_charged")
-
-        now = time.time()
-        self._check_shield_limits(player, now)
-
-        if trigger:
-            granted = await self._grant_shield_charge(player, seconds)
-            # BR-022: in trigger mode the cooldown runs from the grant (the charge
-            # stored), not from the activation.
-            self._record_agent_shield(serial, now, seconds)
-            return granted
-
-        new_grace = now + seconds
-        # Extend-not-shorten (#817): the agent only ever writes its own
-        # grace_until field — never invincible_until (the admin baseline). If the
-        # player's effective grace (max of agent shield + admin invincibility) is
-        # already longer than the request, this shield is a no-op extension: it
-        # adds nothing, and crucially does NOT shorten an active admin baseline.
-        if new_grace <= self.effective_grace_until(player):
-            logger.info(
-                f"Shield for {serial}: existing effective grace "
-                f"({self.effective_grace_until(player):.2f}) already exceeds "
-                f"requested ({new_grace:.2f}); kept"
-            )
-            return True
-
-        # Sound only on the unprotected -> protected transition (#1301, UC-040
-        # BR-010); an extension restarts the LED fade silently.
-        was_protected = self._shield_protected(player, time.time())
-        player.grace_until = new_grace
-        self._record_agent_shield(serial, now, seconds)
-        logger.info(f"Shield granted to {serial} for {seconds:.1f}s (grace_until={new_grace:.2f})")
-
-        if player.span:
-            player.span.add_event(
-                "shield_granted",
-                attributes={"shield_seconds": seconds, **player_identity_attributes(serial, player.name)},
-            )
-
-        # Perceptible feedback for the remaining protection (#1301, UC-040 A16).
-        await self._send_shield_feedback(player, new_grace - time.time(), kind="full", sound=not was_protected)
-
-        return True
-
-    def _shield_limits(self) -> tuple[int, int]:
-        """``(max shields per player per game, cooldown seconds)`` for the next grant (UC-040 BR-022).
-
-        Operator flags in the ``agent`` set, read per grant with the game's context
-        (flags.md §3). 0 means unlimited / off. A read error or a negative value
-        gives the default (3 / 15 s), so the limits stay on.
-        """
-        # Literal flag keys, so the contract scan resolves the reads.
-        max_shields = read_int_flag(
-            "agent",
-            "policy.max_shields_per_player_per_game",
-            DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME,
-            game_id=self.game_id,
-        )
-        cooldown = read_int_flag(
-            "agent", "policy.shield_cooldown_seconds", DEFAULT_SHIELD_COOLDOWN_SECONDS, game_id=self.game_id
-        )
-        return (
-            resolve_shield_limit(max_shields, DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME),
-            resolve_shield_limit(cooldown, DEFAULT_SHIELD_COOLDOWN_SECONDS),
-        )
-
-    def _check_shield_limits(self, player: "Player", now: float) -> None:
-        """Raise ``InterventionNotApplied`` when the cap or the cooldown refuses a grant (UC-040 A34)."""
-        max_shields, cooldown = self._shield_limits()
-        used = self._agent_shield_grants.get(player.serial, 0)
-        if max_shields > 0 and used >= max_shields:
-            self._refuse_shield(player, SHIELD_REFUSED_CAP, used, 0.0)
-        last_end = self._agent_shield_last_end.get(player.serial)
-        if cooldown > 0 and last_end is not None and now < last_end + cooldown:
-            self._refuse_shield(player, SHIELD_REFUSED_COOLDOWN, used, last_end + cooldown - now)
-
-    def _refuse_shield(self, player: "Player", reason: str, used: int, cooldown_remaining: float) -> None:
-        """Log, record ``shield_refused`` on the player's span and raise (UC-040 A34)."""
-        from services.game_coordinator.intervention_errors import InterventionNotApplied
-
-        logger.info(
-            f"Shield for {player.serial} refused: {reason} "
-            f"(grants used {used}, cooldown remaining {cooldown_remaining:.1f}s)"
-        )
-        if player.span:
-            with contextlib.suppress(Exception):
-                player.span.add_event(
-                    "shield_refused",
-                    attributes={
-                        "shield.refusal_reason": reason,
-                        "shield.grants_used": used,
-                        "shield.cooldown_remaining_s": round(cooldown_remaining, 3),
-                        **player_identity_attributes(player.serial, player.name),
-                    },
-                )
-        raise InterventionNotApplied(reason)
-
-    def _record_agent_shield(self, serial: str, now: float, seconds: float) -> None:
-        """Count an applied agent shield and remember its own end (UC-040 BR-022; never ``grace_until``)."""
-        self._agent_shield_grants[serial] = self._agent_shield_grants.get(serial, 0) + 1
-        self._agent_shield_last_end[serial] = now + seconds
 
     # Toughness boost defaults (#1129, #1103 Phase 2). Boost is clamped to the same
     # upper bound as handicap_factor so a toughness boost is "much harder to die"
@@ -3041,13 +2543,13 @@ class BaseGameMode(ABC):
             boost = self.TOUGHNESS_BOOST_DEFAULT_FACTOR
         boost = max(self.TOUGHNESS_BOOST_FACTOR_MIN, min(self.TOUGHNESS_BOOST_FACTOR_MAX, boost))
 
-        new_until = time.time() + seconds
+        new_until = game_clock.now() + seconds
         # Extend-not-shorten / strengthen-not-weaken: keep whichever active window
         # is longer and whichever active boost is higher, so repeated arming never
         # reduces in-flight protection.
         changed = True
-        was_protected = self._shield_protected(player, time.time())
-        if time.time() < player.toughness_boost_until:
+        was_protected = self._shield_protected(player, game_clock.now())
+        if game_clock.now() < player.toughness_boost_until:
             changed = new_until > player.toughness_boost_until or boost > player.toughness_boost_factor
             new_until = max(new_until, player.toughness_boost_until)
             boost = max(boost, player.toughness_boost_factor)
@@ -3069,1029 +2571,9 @@ class BaseGameMode(ABC):
         # the boost (#1301, UC-040 A16, BR-009/BR-010).
         if changed:
             await self._send_shield_feedback(
-                player, new_until - time.time(), kind="toughness_boost", sound=not was_protected
+                player, new_until - game_clock.now(), kind="toughness_boost", sound=not was_protected
             )
 
-        return True
-
-    def _shield_protected(self, player: "Player", now: float) -> bool:
-        """Whether any shield protection (grace / invincibility / toughness boost) is active."""
-        return now < self.effective_grace_until(player) or now < player.toughness_boost_until
-
-    async def _send_shield_feedback(
-        self,
-        player: "Player",
-        remaining_s: float,
-        *,
-        kind: str,
-        sound: bool = True,
-        charge_delay_ms: int | None = None,
-    ) -> None:
-        """Shield LED effect + shield sound + ``player_shielded`` event (#1301).
-
-        UC-040 A16 / BR-008..BR-010. One command per grant: the controller manager
-        renders the fade / last-second blink / restore, so nothing is streamed and
-        no task is kept here. ``sound`` is False for an extension of an already
-        protected player (the LED restarts silently). Each channel is tried on
-        its own, so one failing channel never skips the others; feedback never
-        fails the intervention.
-
-        ``charge_delay_ms`` marks the activation of a shield charge (UC-030 A6,
-        #1837): the swell rumble follows the shield LED, and the span event and
-        ``player_shielded`` carry ``activation=trigger`` and the grant-to-use delay.
-        """
-        if remaining_s <= 0:
-            return
-        serial = player.serial
-        duration_ms = int(round(remaining_s * 1000))
-        until = time.time() + remaining_s
-        # Keep the latest end of any running shield: a shorter toughness boost after
-        # a longer full one must not hide the full one from _end_shield_feedback.
-        self._shield_feedback_until[serial] = max(self._shield_feedback_until.get(serial, 0.0), until)
-        activated = charge_delay_ms is not None
-        if player.span:
-            with contextlib.suppress(Exception):
-                attributes = {
-                    "shield.kind": kind,
-                    "shield.duration_ms": duration_ms,
-                    "shield.sound": Sound.SFX_SHIELD_UP.value if sound else "none",
-                }
-                if activated:
-                    attributes["shield.activation"] = SHIELD_ACTIVATION_TRIGGER
-                player.span.add_event("shield_feedback", attributes=attributes)
-        if self.gameplay_stream:
-            try:
-                from proto import controller_manager_pb2
-
-                trace_parent, trace_state = inject_trace_context(player.span)
-                await serialized_write(
-                    self.gameplay_stream,
-                    controller_manager_pb2.GameplayStreamControl(
-                        game_effect=controller_manager_pb2.GameEffectCommand(
-                            serial=serial,
-                            effect=(
-                                controller_manager_pb2.GAME_EFFECT_TOUGHNESS_BOOST
-                                if kind == "toughness_boost"
-                                else controller_manager_pb2.GAME_EFFECT_SHIELD
-                            ),
-                            duration_ms=duration_ms,
-                            trace_parent=trace_parent,
-                            trace_state=trace_state,
-                        )
-                    ),
-                )
-            except Exception as e:
-                logger.warning(f"Shield LED feedback for {serial} failed (protection unaffected): {e}")
-        if activated:
-            # UC-030 A6 step 2 / BR-021: the activation swell (rumble only) right
-            # after the shield LED, before the slower sound RPC.
-            await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_SWELL", 0)
-        if sound:
-            try:
-                await self._play_sound(
-                    Sound.SFX_SHIELD_UP, priority=2, volume=0.5 if kind == "toughness_boost" else 1.0
-                )
-            except Exception as e:
-                logger.warning(f"Shield sound for {serial} failed (protection unaffected): {e}")
-        try:
-            await self.event_publisher(
-                GameEvent.PLAYER_SHIELDED,
-                {
-                    "serial": serial,
-                    "kind": kind,
-                    "seconds": f"{remaining_s:.1f}",
-                    "until_ms": str(int(until * 1000)),
-                    **(
-                        {"activation": SHIELD_ACTIVATION_TRIGGER, "charge_delay_ms": str(charge_delay_ms)}
-                        if activated
-                        else {}
-                    ),
-                },
-            )
-        except Exception as e:
-            logger.warning(f"player_shielded event for {serial} failed (protection unaffected): {e}")
-
-    async def _end_shield_feedback(self) -> None:
-        """End every shield effect still running before the end-of-game effects (#1301, UC-040 A17).
-
-        A zero-duration SHIELD ends only a running shield on the controller (the
-        controller manager never cancels another effect for it) and restores the
-        base colour. Best-effort; clears the record either way.
-
-        A held shield charge ends here too, with ``game_end`` (UC-040 A32, #1837).
-        """
-        for player in self.players.values():
-            if player.shield_charge_seconds > 0:
-                await self._discard_shield_charge(player, CHARGE_OUTCOME_GAME_END)
-        now = time.time()
-        # UC-040 A39: a hold game drops every pool; an open activation ends game_end.
-        if self._shield_hold is not None:
-            for player in self.players.values():
-                self._drop_shield_hold(player, HOLD_OUTCOME_GAME_END, now)
-        # UC-040 BR-026: no hold command after this point; SHIELD 0 below ends the hold layers too.
-        hold_serials = await self._stop_hold_feedback()
-        running = [serial for serial, until in self._shield_feedback_until.items() if until > now]
-        running += [serial for serial in hold_serials if serial not in running]
-        self._shield_feedback_until.clear()
-        if not running or not self.gameplay_stream:
-            return
-        try:
-            from proto import controller_manager_pb2
-
-            for serial in running:
-                await serialized_write(
-                    self.gameplay_stream,
-                    controller_manager_pb2.GameplayStreamControl(
-                        game_effect=controller_manager_pb2.GameEffectCommand(
-                            serial=serial,
-                            effect=controller_manager_pb2.GAME_EFFECT_SHIELD,
-                            duration_ms=0,
-                        )
-                    ),
-                )
-        except Exception as e:
-            logger.warning(f"Ending shield feedback failed: {e}")
-
-    # ------------------------------------------------------------------
-    # Shield charge (#1837, FR-160; UC-040 A30-A32, BR-019-BR-021; UC-030 A6)
-    # ------------------------------------------------------------------
-
-    def _shield_activation_mode(self) -> str:
-        """``instant``, ``trigger`` or ``hold`` for the next grant_shield (UC-040 BR-019, BR-027).
-
-        Only an allow-listed mode (``SHIELD_TRIGGER_ALLOWED``, Free-for-All) and
-        only a real game reads the flag; every other game is instant. A game
-        latched to hold stays hold; otherwise the flag is read per grant, never per
-        frame, and a ``hold`` read in a game not latched to hold gives the mode the
-        game latched at its start (``instant`` or ``trigger``).
-        """
-        if self._shield_hold is not None:
-            return SHIELD_ACTIVATION_HOLD
-        if not self.SHIELD_TRIGGER_ALLOWED or self.game_kind == GAME_KIND_SHADOW:
-            return SHIELD_ACTIVATION_INSTANT
-        # Literal flag key, so the contract scan resolves the read.
-        value = read_string_flag("game", "shield.activation", DEFAULT_SHIELD_ACTIVATION, game_id=self.game_id)
-        mode = resolve_shield_activation(value)
-        if mode == SHIELD_ACTIVATION_HOLD and self._shield_hold_latched:
-            # BR-027: a game not latched to hold keeps the mode it latched at its start.
-            return self._shield_mode_at_start
-        return mode
-
-    def _read_charge_expiry(self) -> float:
-        """Seconds a new charge is held before it expires, 0 = never (flags.md §4, read per grant)."""
-        value = read_float_flag(
-            "game", "shield.charge_expiry_seconds", DEFAULT_CHARGE_EXPIRY_SECONDS, game_id=self.game_id
-        )
-        return resolve_charge_expiry(value)
-
-    async def _write_shield_effect(
-        self, player: "Player", effect_name: str, duration_ms: int, shield_hold=None
-    ) -> None:
-        """Best-effort ``GameEffectCommand`` for a shield-charge (or hold, #2096) effect on the player's controller."""
-        if not self.gameplay_stream:
-            return
-        try:
-            from proto import controller_manager_pb2
-
-            trace_parent, trace_state = inject_trace_context(player.span)
-            await serialized_write(
-                self.gameplay_stream,
-                controller_manager_pb2.GameplayStreamControl(
-                    game_effect=controller_manager_pb2.GameEffectCommand(
-                        serial=player.serial,
-                        effect=getattr(controller_manager_pb2, effect_name),
-                        duration_ms=duration_ms,
-                        trace_parent=trace_parent,
-                        trace_state=trace_state,
-                        shield_hold=shield_hold,
-                    )
-                ),
-            )
-        except Exception as e:
-            logger.warning(f"{effect_name} for {player.serial} failed (charge state unaffected): {e}")
-
-    async def _grant_shield_charge(self, player: "Player", seconds: float) -> bool:
-        """Store one shield charge for the player (UC-040 A30, BR-020).
-
-        ``grace_until`` is left alone: the player is not protected until they
-        activate the charge with the trigger (UC-030 A6). A grant while a charge
-        is held is refused by ``grant_shield`` before this runs (``already_charged``,
-        A31); the intervention manager records it as blocked and refunds the
-        backstop reservation.
-        """
-        now = time.time()
-        expiry = self._read_charge_expiry()
-        player.shield_charge_seconds = seconds
-        player.shield_charge_granted_at = now
-        player.shield_charge_expires_at = now + expiry if expiry > 0 else 0.0
-        identity = player_identity_attributes(player.serial, player.name)
-        logger.info(f"Shield charge granted to {player.serial}: {seconds:.1f}s, expiry {expiry:.0f}s (0 = never)")
-
-        if player.span:
-            with contextlib.suppress(Exception):
-                player.span.add_event(
-                    "shield_charge_granted",
-                    attributes={"shield.seconds": seconds, "shield.charge_expiry_s": expiry, **identity},
-                )
-            with contextlib.suppress(Exception):
-                player._shield_charge_span = tracer.start_span(
-                    "game.shield_charge",
-                    context=trace.set_span_in_context(player.span),
-                    attributes={
-                        **identity,
-                        "game.id": self.game_id,
-                        "shield.seconds": seconds,
-                        "shield.charge_expiry_s": expiry,
-                    },
-                )
-
-        await self._send_shield_charge_layer(player, now)
-        try:
-            await self.event_publisher(
-                GameEvent.PLAYER_SHIELD_CHARGED,
-                {
-                    "serial": player.serial,
-                    "seconds": f"{seconds:.1f}",
-                    "expires_ms": str(int(player.shield_charge_expires_at * 1000)),
-                },
-            )
-        except Exception as e:
-            logger.warning(f"player_shield_charged event for {player.serial} failed (charge unaffected): {e}")
-        return True
-
-    async def _send_shield_charge_layer(self, player: "Player", now: float) -> None:
-        """Send (or re-send) the charge LED layer for the time left, capped at 120 s (BR-021)."""
-        if player.shield_charge_expires_at:
-            layer_s = min(player.shield_charge_expires_at - now, SHIELD_CHARGE_LAYER_MAX_SECONDS)
-        else:
-            layer_s = SHIELD_CHARGE_LAYER_MAX_SECONDS
-        if layer_s <= 0:
-            return
-        # Recorded before the write, so a failing stream never re-sends every frame.
-        player.shield_charge_layer_until = now + layer_s
-        await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_CHARGE", int(round(layer_s * 1000)))
-
-    async def _process_shield_charge(self, player: "Player", edge: bool, now: float) -> None:
-        """Frame-path work for a player who holds a charge or pressed the trigger (UC-030 BR-005).
-
-        Lazy expiry (no timer, BR-020), the re-send before the 120 s layer cap
-        (BR-021), then the activation when the press is valid: a charge is held
-        and no grace, shield or invincibility window is open. An invalid press does
-        nothing and is not remembered.
-        """
-        if player.shield_charge_seconds > 0:
-            expires_at = player.shield_charge_expires_at
-            if expires_at and now >= expires_at:
-                await self._discard_shield_charge(player, CHARGE_OUTCOME_EXPIRED)
-            elif now >= player.shield_charge_layer_until - SHIELD_CHARGE_RESEND_MARGIN_SECONDS and (
-                not expires_at or expires_at > player.shield_charge_layer_until
-            ):
-                await self._send_shield_charge_layer(player, now)
-        if not edge or player.shield_charge_seconds <= 0:
-            return
-        if now < self.effective_grace_until(player):
-            return
-        await self._activate_shield_charge(player, now)
-
-    def _clear_shield_charge(self, player: "Player") -> None:
-        player.shield_charge_seconds = 0.0
-        player.shield_charge_granted_at = 0.0
-        player.shield_charge_expires_at = 0.0
-        player.shield_charge_layer_until = 0.0
-
-    @staticmethod
-    def _end_shield_charge_span(player: "Player", outcome: str, delay_ms: int | None = None) -> None:
-        span, player._shield_charge_span = player._shield_charge_span, None
-        if span is None:
-            return
-        with contextlib.suppress(Exception):
-            span.set_attribute("shield.charge_outcome", outcome)
-            if delay_ms is not None:
-                span.set_attribute("shield.charge_delay_ms", delay_ms)
-            span.end()
-
-    async def _activate_shield_charge(self, player: "Player", now: float) -> None:
-        """The player activates the charge (UC-030 A6): today's shield plus the swell."""
-        seconds = player.shield_charge_seconds
-        delay_ms = int(round((now - player.shield_charge_granted_at) * 1000))
-        self._clear_shield_charge(player)
-        player.grace_until = max(player.grace_until, now + seconds)
-        logger.info(f"Shield charge activated by {player.serial}: {seconds:.1f}s after {delay_ms} ms")
-
-        # A6 step 2: SHIELD_CHARGE 0, then SHIELD and SWELL (in _send_shield_feedback).
-        await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_CHARGE", 0)
-        if player.span:
-            with contextlib.suppress(Exception):
-                player.span.add_event(
-                    "shield_activated",
-                    attributes={
-                        "shield.seconds": seconds,
-                        "shield.charge_delay_ms": delay_ms,
-                        **player_identity_attributes(player.serial, player.name),
-                    },
-                )
-        self._end_shield_charge_span(player, CHARGE_OUTCOME_ACTIVATED, delay_ms)
-        await self._publish_charge_ended(player, CHARGE_OUTCOME_ACTIVATED)
-        # The player acted, so the sound always plays (UC-040 A16 / UC-030 A6).
-        await self._send_shield_feedback(
-            player, player.grace_until - now, kind="full", sound=True, charge_delay_ms=delay_ms
-        )
-
-    async def _discard_shield_charge(self, player: "Player", reason: str) -> None:
-        """Drop a held charge unused: expired, death or game end (UC-040 A32)."""
-        if player.shield_charge_seconds <= 0:
-            return
-        self._clear_shield_charge(player)
-        logger.info(f"Shield charge of {player.serial} ended unused: {reason}")
-        await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_CHARGE", 0)
-        if player.span:
-            with contextlib.suppress(Exception):
-                player.span.add_event(
-                    "shield_charge_ended",
-                    attributes={
-                        "shield.charge_outcome": reason,
-                        **player_identity_attributes(player.serial, player.name),
-                    },
-                )
-        self._end_shield_charge_span(player, reason)
-        await self._publish_charge_ended(player, reason)
-
-    async def _publish_charge_ended(self, player: "Player", reason: str) -> None:
-        try:
-            await self.event_publisher(
-                GameEvent.PLAYER_SHIELD_CHARGE_ENDED, {"serial": player.serial, "reason": reason}
-            )
-        except Exception as e:
-            logger.warning(f"player_shield_charge_ended event for {player.serial} failed: {e}")
-
-    async def _resend_shield_layers(self) -> None:
-        """Re-send held charges and running shields on a (re)created stream (UC-040 BR-021).
-
-        Nothing is held when the stream is first created, so this only sends
-        after a mid-game reconnect, on every attempt. A running full shield or
-        toughness boost is re-sent with the time left; a charge with its layer.
-        """
-        now = time.time()
-        self._queue_hold_feedback_all()  # UC-040 BR-026: the hold state of every living player
-        for serial, player in self.players.items():
-            if not player.alive:
-                continue
-            if player.shield_charge_seconds > 0:
-                await self._send_shield_charge_layer(player, now)
-            if self._shield_feedback_until.get(serial, 0.0) <= now:
-                continue
-            if player.grace_until > now:
-                await self._write_shield_effect(
-                    player, "GAME_EFFECT_SHIELD", int(round((player.grace_until - now) * 1000))
-                )
-            if player.toughness_boost_until > now:
-                await self._write_shield_effect(
-                    player, "GAME_EFFECT_TOUGHNESS_BOOST", int(round((player.toughness_boost_until - now) * 1000))
-                )
-
-    def _close_shield_charge_spans(self) -> None:
-        """End every open ``game.shield_charge`` and ``game.shield_hold`` span (error teardown path); no I/O."""
-        now = time.time()
-        self._cancel_hold_feedback()
-        for player in self.players.values():
-            if player._shield_charge_span is not None:
-                self._clear_shield_charge(player)
-                self._end_shield_charge_span(player, CHARGE_OUTCOME_GAME_END)
-            if player.hold_started_at:
-                self._drop_shield_hold(player, HOLD_OUTCOME_GAME_END, now)
-
-    # ------------------------------------------------------------------
-    # Shield hold (#2096, FR-161; UC-030 A7, BR-008, BR-009; UC-040 A36-A39,
-    # BR-024-BR-027). Everything here is synchronous: no I/O, nothing awaited.
-    # ------------------------------------------------------------------
-
-    def _latch_shield_hold(self) -> ShieldHoldParams | None:
-        """Latch hold mode and its values once per game (UC-040 BR-027); None = not a hold game.
-
-        Called at the start of the game loop and by the first grant, in the game's
-        flag context, so an experiment arm resolves. Only Free-for-All real games
-        (the BR-019 allow-list) can be hold games. Every player starts with the
-        starting energy, clamped to the cap and the budget.
-        """
-        if self._shield_hold_latched:
-            return self._shield_hold
-        if not self.SHIELD_TRIGGER_ALLOWED or self.game_kind == GAME_KIND_SHADOW:
-            self._shield_hold_latched = True
-            self._publish_shield_mode_metrics(SHIELD_ACTIVATION_INSTANT)
-            return None
-        # Before the latch is set this read keeps `hold` (it is not mapped to instant).
-        mode = self._shield_activation_mode()
-        self._shield_hold_latched = True
-        if mode != SHIELD_ACTIVATION_HOLD:
-            self._shield_mode_at_latch = mode
-            self._shield_mode_at_start = mode
-            self._publish_shield_mode_metrics(mode)
-            return None
-        raw = {
-            "shield.energy_max_seconds": read_float_flag(
-                "game",
-                "shield.energy_max_seconds",
-                SHIELD_HOLD_FLAGS["shield.energy_max_seconds"][0],
-                game_id=self.game_id,
-            ),
-            "shield.energy_budget_seconds": read_float_flag(
-                "game",
-                "shield.energy_budget_seconds",
-                SHIELD_HOLD_FLAGS["shield.energy_budget_seconds"][0],
-                game_id=self.game_id,
-            ),
-            "shield.energy_initial_seconds": read_float_flag(
-                "game",
-                "shield.energy_initial_seconds",
-                SHIELD_HOLD_FLAGS["shield.energy_initial_seconds"][0],
-                game_id=self.game_id,
-            ),
-            "shield.recharge_per_second": read_float_flag(
-                "game",
-                "shield.recharge_per_second",
-                SHIELD_HOLD_FLAGS["shield.recharge_per_second"][0],
-                game_id=self.game_id,
-            ),
-            "shield.min_burst_seconds": read_float_flag(
-                "game",
-                "shield.min_burst_seconds",
-                SHIELD_HOLD_FLAGS["shield.min_burst_seconds"][0],
-                game_id=self.game_id,
-            ),
-        }
-        values = {key: resolve_hold_value(raw[key], *bounds) for key, bounds in SHIELD_HOLD_FLAGS.items()}
-        params = ShieldHoldParams(
-            cap=values["shield.energy_max_seconds"],
-            budget=values["shield.energy_budget_seconds"],
-            initial=values["shield.energy_initial_seconds"],
-            recharge=values["shield.recharge_per_second"],
-            min_burst=values["shield.min_burst_seconds"],
-        )
-        self._shield_hold_cues = self._read_shield_hold_cues()
-        initial = min(params.initial, params.cap, params.budget)
-        for player in self.players.values():
-            player.hold_energy = initial
-            player.hold_energy_at = 0.0
-        self._shield_hold = params
-        self._publish_shield_mode_metrics(SHIELD_ACTIVATION_HOLD, values)
-        logger.info(f"Shield hold latched for {self.game_id}: {params}")
-        return params
-
-    def _shield_metric_labels(self) -> dict[str, str]:
-        return {
-            "game_kind": self.game_kind,
-            "game_id": self.game_id,
-            "experiment_id": self.experiment_id or "",
-            "arm": self.arm or "",
-        }
-
-    def _publish_shield_mode_metrics(self, mode: str, hold_values: dict[str, float] | None = None) -> None:
-        """Set the latched mode and, in a hold game, every latched hold value (telemetry.md §6; #2096).
-
-        The agent reads the mode and the values from these gauges, never from flagd, so an
-        experiment arm or a latched promotion reads right (decide-contract.md §1.2).
-        """
-        with contextlib.suppress(Exception):
-            labels = self._shield_metric_labels()
-            metrics.shield_activation_mode.labels(mode=mode, **labels).set(1)
-            self._shield_metric_mode = mode
-            if hold_values is not None:
-                cues = self._shield_hold_cues or ShieldHoldCues()
-                settings = {
-                    **hold_values,
-                    "shield.charge_rumble_intensity": cues.rumble_intensity,
-                    "shield.charge_rumble_pulse_ms": cues.pulse_ms,
-                    "shield.ending_rumble_seconds": cues.ending_lead_ms / 1000.0,
-                    "shield.hold_rumble_intensity": cues.hold_rumble_intensity,
-                    "shield.empty_pulse_ms": cues.empty_pulse_ms,
-                }
-                for key, value in settings.items():
-                    metrics.shield_hold_setting.labels(setting=key, **labels).set(float(value))
-                self._shield_metric_settings = tuple(settings)
-
-    def _clear_shield_metrics(self) -> None:
-        """Remove this game's shield mode and hold-value series (game end; idempotent)."""
-        labels = tuple(self._shield_metric_labels().values())
-        mode, self._shield_metric_mode = self._shield_metric_mode, None
-        if mode is not None:
-            with contextlib.suppress(KeyError, ValueError):
-                metrics.shield_activation_mode.remove(mode, *labels)
-        settings, self._shield_metric_settings = self._shield_metric_settings, ()
-        for key in settings:
-            with contextlib.suppress(KeyError, ValueError):
-                metrics.shield_hold_setting.remove(key, *labels)
-
-    def _set_hold_gauges(self, player: "Player", now: float) -> None:
-        """Set a player's hold gauges for the agent (telemetry.md §6, UC-040 A37, UC-042 BR-007); no I/O.
-
-        A dead player's pool reads 0 and inactive; the totals keep their last value
-        (energy + used = initial + granted + recharged holds only while the pool lives).
-        """
-        hold = self._shield_hold
-        if hold is None:
-            return
-        with contextlib.suppress(Exception):
-            serial, game_id = player.serial, self.game_id
-            alive = player.alive
-            energy = self._shield_hold_energy(player, now) if alive else 0.0
-            budget_left = self._shield_hold_budget_left(player, now)
-            active = alive and bool(player.hold_started_at) and now < player.hold_until
-            used = max(0.0, hold.budget - budget_left)
-            totals = {
-                "granted_seconds": player.hold_granted_total,
-                "used_seconds": used,
-                "activations": player.hold_activations,
-                "empties": player.hold_empties,
-            }
-            if alive:
-                initial = min(hold.initial, hold.cap, hold.budget)
-                totals["recharged_seconds"] = max(0.0, energy + used - initial - player.hold_granted_total)
-            metrics.player_shield_energy_seconds.labels(serial=serial, game_id=game_id).set(round(energy, 3))
-            metrics.player_shield_budget_remaining_seconds.labels(serial=serial, game_id=game_id).set(
-                round(budget_left, 3)
-            )
-            metrics.player_shield_active.labels(serial=serial, game_id=game_id).set(1 if active else 0)
-            for total, value in totals.items():
-                metrics.player_shield_stats.labels(serial=serial, game_id=game_id, stat=total).set(round(value, 3))
-
-    def _read_shield_hold_cues(self) -> ShieldHoldCues:
-        """Read the hold feedback cue values once, with the hold values (UC-040 BR-026, BR-027)."""
-        # Literal flag keys, so the contract scan resolves each read.
-        raw = {
-            "shield.charge_rumble_intensity": read_int_flag(
-                "game", "shield.charge_rumble_intensity", 255, game_id=self.game_id
-            ),
-            "shield.charge_rumble_pulse_ms": read_int_flag(
-                "game", "shield.charge_rumble_pulse_ms", 150, game_id=self.game_id
-            ),
-            "shield.ending_rumble_seconds": read_float_flag(
-                "game", "shield.ending_rumble_seconds", 1.0, game_id=self.game_id
-            ),
-            "shield.hold_rumble_intensity": read_int_flag(
-                "game", "shield.hold_rumble_intensity", 70, game_id=self.game_id
-            ),
-            "shield.empty_pulse_ms": read_int_flag("game", "shield.empty_pulse_ms", 400, game_id=self.game_id),
-        }
-        values = {key: resolve_hold_value(raw[key], *bounds) for key, bounds in SHIELD_HOLD_CUE_FLAGS.items()}
-        return ShieldHoldCues(
-            rumble_intensity=int(values["shield.charge_rumble_intensity"]),
-            pulse_ms=int(values["shield.charge_rumble_pulse_ms"]),
-            ending_lead_ms=int(round(values["shield.ending_rumble_seconds"] * 1000)),
-            hold_rumble_intensity=int(values["shield.hold_rumble_intensity"]),
-            empty_pulse_ms=int(values["shield.empty_pulse_ms"]),
-        )
-
-    def _start_shield_hold_clock(self, now: float) -> None:
-        """Start the recharge clock of every pool at the start of the game loop (UC-040 A38)."""
-        if self._shield_hold is None:
-            return
-        for player in self.players.values():
-            if not player.hold_energy_at and not player.hold_started_at:
-                player.hold_energy_at = now
-
-    def _shield_hold_budget_left(self, player: "Player", now: float) -> float:
-        """Budget remaining at ``now``, counting the running activation (UC-040 BR-024)."""
-        used = player.hold_budget_used
-        if player.hold_started_at:
-            used += max(0.0, min(now, player.hold_until) - player.hold_started_at)
-        return max(0.0, self._shield_hold.budget - used)
-
-    def _shield_hold_energy(self, player: "Player", now: float) -> float:
-        """The player's energy at ``now``: drained while active, recharged while idle (UC-040 BR-024, BR-025, A38)."""
-        hold = self._shield_hold
-        if player.hold_started_at:
-            spent = max(0.0, min(now, player.hold_until) - player.hold_started_at)
-            return max(0.0, player.hold_energy_start - spent)
-        energy = player.hold_energy
-        if hold.recharge > 0 and player.hold_energy_at and now > player.hold_energy_at:
-            energy += hold.recharge * (now - player.hold_energy_at)
-        return max(0.0, min(energy, hold.cap, self._shield_hold_budget_left(player, now)))
-
-    def _process_shield_hold(self, player: "Player", pressed: bool, now: float, hold: ShieldHoldParams) -> None:
-        """Frame-path state machine of the shield hold (UC-030 A7, BR-008); compares and field writes only."""
-        if player.hold_started_at:
-            if player.hold_pressed:
-                if now >= player.hold_until:
-                    # Held until the usable energy ran out: the budget or the pool.
-                    budget_limited = player.hold_budget_start <= player.hold_energy_start
-                    self._end_shield_hold(
-                        player, HOLD_OUTCOME_BUDGET_EXHAUSTED if budget_limited else HOLD_OUTCOME_EMPTY, now
-                    )
-                    # BR-008: a new activation needs a release first.
-                    player.trigger_armed = False
-                    return
-                if pressed:
-                    player.hold_last_pressed_at = now
-                    return
-                self._release_shield_hold(player, now, hold)
-            elif pressed and now < player.hold_until:
-                # BR-008: a press inside the minimum-burst tail continues the activation.
-                player.hold_pressed = True
-                player.hold_until = player.hold_started_at + player.hold_usable_start
-                player.hold_last_pressed_at = now
-                return
-            if now < player.hold_until:
-                return
-            self._end_shield_hold(player, HOLD_OUTCOME_RELEASED, now)
-        if pressed and player.trigger_armed:
-            self._start_shield_hold(player, now, hold)
-
-    def _start_shield_hold(self, player: "Player", now: float, hold: ShieldHoldParams) -> None:
-        """Start an activation when it is valid (UC-030 A7 trigger); otherwise do nothing."""
-        if player.serial in self._kills_in_progress:
-            return
-        if now < self._other_grace_until(player):
-            return  # BR-008: holding during another grace does not drain
-        energy = self._shield_hold_energy(player, now)
-        budget_left = self._shield_hold_budget_left(player, now)
-        usable = min(energy, budget_left)
-        if usable < hold.min_burst:
-            return
-        player.hold_started_at = now
-        player.hold_pressed = True
-        player.hold_energy_start = energy
-        player.hold_budget_start = budget_left
-        player.hold_usable_start = usable
-        player.hold_until = now + usable
-        player.hold_last_pressed_at = now
-        player.hold_min_burst_applied = False
-        player.hold_activations += 1
-        self._queue_hold_feedback(player)  # UC-040 BR-026: SHIELD_HOLD, sent by the outbound task
-        if player.span:
-            with contextlib.suppress(Exception):
-                player._shield_hold_span = tracer.start_span(
-                    "game.shield_hold",
-                    context=trace.set_span_in_context(player.span),
-                    attributes={
-                        **player_identity_attributes(player.serial, player.name),
-                        "game.id": self.game_id,
-                        "shield.energy_start_s": round(energy, 3),
-                        "shield.budget_remaining_start_s": round(budget_left, 3),
-                        "shield.min_burst_s": hold.min_burst,
-                    },
-                )
-
-    def _release_shield_hold(self, player: "Player", released_at: float, hold: ShieldHoldParams) -> None:
-        """The trigger reads released: the cost is ``max(held, min burst)``, at most the usable energy (BR-024)."""
-        held = max(0.0, released_at - player.hold_started_at)
-        cost = min(max(held, hold.min_burst), player.hold_usable_start)
-        player.hold_min_burst_applied = held < hold.min_burst
-        player.hold_until = player.hold_started_at + cost
-        player.hold_pressed = False
-
-    def _end_shield_hold(self, player: "Player", outcome: str, now: float) -> None:
-        """End the running activation: book its cost, close its span, count it (UC-030 A7 step 4, UC-040 A39)."""
-        hold = self._shield_hold
-        ended_at = min(now, player.hold_until)
-        cost = max(0.0, ended_at - player.hold_started_at)
-        energy_end = max(0.0, player.hold_energy_start - cost)
-        player.hold_budget_used += cost
-        player.hold_energy = energy_end
-        player.hold_energy_at = ended_at
-        player.hold_started_at = 0.0
-        player.hold_until = 0.0
-        player.hold_pressed = False
-        player.hold_energy_start = 0.0
-        player.hold_budget_start = 0.0
-        player.hold_usable_start = 0.0
-        if outcome in (HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED):
-            player.hold_empties += 1
-        if outcome in (HOLD_OUTCOME_RELEASED, HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED):
-            player.hold_prime_cap = True  # UC-030 BR-009
-            # UC-040 BR-026: SHIELD_HOLD 0 and the idle energy, with the empty pulse when it ran out.
-            self._queue_hold_feedback(player, HOLD_CUE_NONE if outcome == HOLD_OUTCOME_RELEASED else HOLD_CUE_EMPTY)
-        span, player._shield_hold_span = player._shield_hold_span, None
-        if span is not None:
-            with contextlib.suppress(Exception):
-                span.set_attribute("shield.hold_outcome", outcome)
-                span.set_attribute("shield.hold_cost_s", round(cost, 3))
-                span.set_attribute("shield.min_burst_applied", player.hold_min_burst_applied)
-                span.set_attribute("shield.energy_end_s", round(energy_end, 3))
-                span.end()
-        player.hold_min_burst_applied = False
-        with contextlib.suppress(Exception):
-            metrics.shield_hold_activations_total.labels(
-                mode=self.get_game_name(), game_kind=self.game_kind, outcome=outcome
-            ).inc()
-        if (
-            hold is not None
-            and not player.hold_budget_exhausted_noted
-            and hold.budget - player.hold_budget_used < hold.min_burst
-        ):
-            player.hold_budget_exhausted_noted = True
-            if player.span:
-                with contextlib.suppress(Exception):
-                    player.span.add_event(
-                        "shield_budget_exhausted",
-                        attributes={
-                            "shield.budget_s": hold.budget,
-                            **player_identity_attributes(player.serial, player.name),
-                        },
-                    )
-
-    def _drop_shield_hold(self, player: "Player", outcome: str, now: float) -> None:
-        """Drop the pool on death, disconnect or game end (UC-040 A39); a running activation ends with ``outcome``."""
-        if player.hold_started_at:
-            self._end_shield_hold(player, outcome, now)
-        player.hold_energy = 0.0
-        player.hold_energy_at = 0.0
-        player.hold_prime_cap = False
-        self._set_hold_gauges(player, now)  # the agent sees the dropped pool
-
-    def _force_release_shield_holds(self) -> None:
-        """Release every held activation at its last held frame (UC-030 BR-008, stream reopen)."""
-        hold = self._shield_hold
-        if hold is None:
-            return
-        for player in self.players.values():
-            if player.hold_started_at and player.hold_pressed:
-                self._release_shield_hold(player, player.hold_last_pressed_at, hold)
-
-    # ------------------------------------------------------------------
-    # Hold feedback (#2096, UC-040 BR-026): one ordered outbound task per hold game.
-    # The frame path only marks a player; nothing here is awaited in the frame.
-    # ------------------------------------------------------------------
-
-    def _queue_hold_feedback(self, player: "Player", cue: int = HOLD_CUE_NONE) -> None:
-        """Mark the player for the outbound task, keeping the strongest pending cue; no I/O."""
-        if self._shield_hold is None or self._hold_feedback_stopped:
-            return
-        pending = self._hold_feedback_pending
-        previous = pending.get(player.serial, HOLD_CUE_NONE)
-        pending[player.serial] = cue if _HOLD_CUE_PRIORITY[cue] >= _HOLD_CUE_PRIORITY[previous] else previous
-        self._wake_hold_feedback()
-
-    def _queue_hold_feedback_all(self) -> None:
-        """Mark every living player (the start of the game loop, a reconnect)."""
-        for player in self.players.values():
-            if player.alive:
-                self._queue_hold_feedback(player)
-
-    def _wake_hold_feedback(self) -> None:
-        """Start the outbound task on the game's loop if needed and wake it."""
-        if self._hold_feedback_stopped:
-            return  # the game ended: a late mark never restarts the task
-        if self._hold_feedback_wakeup is None:
-            self._hold_feedback_wakeup = asyncio.Event()
-        task = self._hold_feedback_task
-        if task is None or task.done():
-            try:
-                task = asyncio.get_running_loop().create_task(self._shield_hold_feedback_loop())
-            except RuntimeError:
-                return  # no running loop (a synchronous test): the mark waits for the next wake
-            self._hold_feedback_task = self._track_task(task)
-        self._hold_feedback_wakeup.set()
-
-    async def _shield_hold_feedback_loop(self) -> None:
-        """Send the marked players' hold state, in mark order, one write at a time (UC-040 BR-026)."""
-        wakeup = self._hold_feedback_wakeup
-        while True:
-            try:
-                await asyncio.wait_for(wakeup.wait(), timeout=HOLD_ENERGY_KEYFRAME_SECONDS)
-            except TimeoutError:
-                await self._publish_hold_energy_keyframes()
-                continue
-            wakeup.clear()
-            await self._publish_hold_energy_keyframes()
-            pending, self._hold_feedback_pending = self._hold_feedback_pending, {}
-            granted, self._hold_granted_pending = self._hold_granted_pending, set()
-            for serial, cue in pending.items():
-                await self._publish_hold_energy(serial, serial in granted)
-                try:
-                    await self._send_hold_feedback(serial, cue)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.warning(f"Hold feedback for {serial} failed (hold state unaffected): {e}")
-
-    def _hold_energy_event(self, player: "Player", now: float, granted: bool) -> dict[str, str]:
-        """The ``player_shield_energy`` payload of a player now (UC-035 BR-008, telemetry.md §5).
-
-        Relative values only (no timestamp): the dashboard interpolates from its own
-        receipt time with the signed rate, up to ``remaining_ms`` or ``full_ms``.
-        """
-        hold = self._shield_hold
-        energy = self._shield_hold_energy(player, now)
-        budget_left = self._shield_hold_budget_left(player, now)
-        full = min(hold.cap, budget_left)
-        remaining = 0.0
-        rate = 0.0
-        if player.hold_started_at and now < player.hold_until:
-            state, rate, remaining = "active", -1.0, player.hold_until - now
-        elif budget_left < hold.min_burst:
-            state = "exhausted"
-        elif hold.recharge > 0 and player.hold_energy_at and energy < full - 1e-9:
-            state, rate = "recharging", hold.recharge
-        elif energy < hold.min_burst:
-            state = "empty"
-        else:
-            state = "charged"
-        source = "agent" if granted else "recharge" if state == "recharging" else "none"
-
-        def ms(seconds: float) -> str:
-            return str(int(round(seconds * 1000)))
-
-        return {
-            "serial": player.serial,
-            "state": state,
-            "source": source,
-            "energy_ms": ms(energy),
-            "full_ms": ms(full),
-            "cap_ms": ms(hold.cap),
-            "min_burst_ms": ms(hold.min_burst),
-            "budget_ms": ms(hold.budget),
-            "budget_remaining_ms": ms(budget_left),
-            "rate_ms_per_s": ms(rate),
-            "remaining_ms": ms(remaining),
-        }
-
-    async def _publish_hold_energy_keyframes(self) -> None:
-        """Re-publish the energy of every living player without an event for a keyframe interval (UC-035 BR-008).
-
-        Pending marks are skipped: their event follows in the same pass of the outbound task.
-        """
-        now = asyncio.get_running_loop().time()
-        for serial, player in list(self.players.items()):
-            if not player.alive or serial in self._hold_feedback_pending:
-                continue
-            if now - self._hold_energy_published_at.get(serial, -math.inf) >= HOLD_ENERGY_KEYFRAME_SECONDS:
-                await self._publish_hold_energy(serial, False)
-
-    async def _publish_hold_energy(self, serial: str, granted: bool) -> None:
-        """Publish a player's ``player_shield_energy`` for the dashboard bar (UC-035 BR-008); best effort.
-
-        Runs in the outbound hold task, never in the frame path. A dead or gone
-        player and an ended game publish nothing: the dashboard clears its bar on
-        ``player_death`` and the game end.
-        """
-        player = self.players.get(serial)
-        if player is None or not player.alive or self._shield_hold is None or self._hold_feedback_stopped:
-            return
-        self._hold_energy_published_at[serial] = asyncio.get_running_loop().time()
-        self._set_hold_gauges(player, time.time())  # the agent's view, with every event and keyframe
-        try:
-            await self.event_publisher(
-                GameEvent.PLAYER_SHIELD_ENERGY, self._hold_energy_event(player, time.time(), granted)
-            )
-        except Exception as e:
-            logger.warning(f"player_shield_energy event for {serial} failed (hold state unaffected): {e}")
-
-    def _hold_state_message(self, player: "Player", now: float, cue: int):
-        """The ``ShieldHoldState`` of a player now: energy, cap, full level, rate, cue and the latched cue values."""
-        from proto import controller_manager_pb2
-
-        hold = self._shield_hold
-        cues = self._shield_hold_cues or ShieldHoldCues()
-        energy = self._shield_hold_energy(player, now)
-        full = min(hold.cap, self._shield_hold_budget_left(player, now))
-        recharging = not player.hold_started_at and player.hold_energy_at and energy < full
-        return controller_manager_pb2.ShieldHoldState(
-            energy_ms=int(round(energy * 1000)),
-            cap_ms=int(round(hold.cap * 1000)),
-            full_ms=int(round(full * 1000)),
-            min_burst_ms=int(round(hold.min_burst * 1000)),
-            rate_ms_per_s=int(round(hold.recharge * 1000)) if recharging else 0,
-            cue=cue,
-            cues=controller_manager_pb2.ShieldCueParams(
-                rumble_intensity=cues.rumble_intensity,
-                pulse_ms=cues.pulse_ms,
-                ending_lead_ms=cues.ending_lead_ms,
-                hold_rumble_intensity=cues.hold_rumble_intensity,
-                empty_pulse_ms=cues.empty_pulse_ms,
-            ),
-        )
-
-    async def _send_hold_feedback(self, serial: str, cue: int) -> None:
-        """Send one player's hold state as it is now (UC-040 BR-026).
-
-        Active: ``SHIELD_HOLD`` with the time until the energy runs out (a new activation
-        also plays ``shield_up``, at most once per 2 s). Idle: ``SHIELD_HOLD`` 0 when one
-        was running, then ``SHIELD_ENERGY``. A dead or gone player gets nothing: the death
-        effect and the disconnect end the layers on the controller.
-        """
-        player = self.players.get(serial)
-        if (
-            player is None
-            or not player.alive
-            or self._shield_hold is None
-            or self._hold_feedback_stopped
-            or not self.gameplay_stream
-        ):
-            return
-        now = time.time()
-        if player.hold_started_at and now < player.hold_until:
-            # Keyed by the activation's start: an end and a new start between two sends coalesce.
-            new_activation = self._hold_layer_sent.get(serial) != player.hold_started_at
-            self._hold_layer_sent[serial] = player.hold_started_at
-            self._hold_commands_sent.add(serial)
-            await self._write_shield_effect(
-                player,
-                "GAME_EFFECT_SHIELD_HOLD",
-                max(1, int(round((player.hold_until - now) * 1000))),
-                self._hold_state_message(player, now, cue),
-            )
-            if (
-                new_activation
-                and now - self._hold_sound_at.get(serial, -math.inf) >= SHIELD_HOLD_SOUND_MIN_INTERVAL_SECONDS
-            ):
-                self._hold_sound_at[serial] = now
-                try:
-                    await self._play_sound(Sound.SFX_SHIELD_UP, priority=2, volume=1.0)
-                except Exception as e:
-                    logger.warning(f"Shield sound for {serial} failed (protection unaffected): {e}")
-            return
-        if serial in self._hold_layer_sent:
-            del self._hold_layer_sent[serial]
-            await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_HOLD", 0)
-            if not player.alive or self._hold_feedback_stopped:
-                return  # died (or the game ended) during the write: the death effect or SHIELD 0 owns the LED
-        self._hold_commands_sent.add(serial)
-        state = self._hold_state_message(player, now, cue)
-        await self._write_shield_effect(player, "GAME_EFFECT_SHIELD_ENERGY", max(1, state.cap_ms), state)
-
-    def _cancel_hold_feedback(self) -> None:
-        """Stop the outbound task for good and drop pending marks (no I/O)."""
-        self._hold_feedback_stopped = True
-        task, self._hold_feedback_task = self._hold_feedback_task, None
-        if task is not None and not task.done():
-            task.cancel()
-        self._hold_feedback_pending.clear()
-        self._hold_granted_pending.clear()
-
-    async def _stop_hold_feedback(self) -> list[str]:
-        """Stop the outbound task at game end; returns the serials whose controller got a hold command."""
-        task = self._hold_feedback_task
-        self._cancel_hold_feedback()
-        if task is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        serials = sorted(self._hold_commands_sent)
-        self._hold_commands_sent.clear()
-        self._hold_layer_sent.clear()
-        return serials
-
-    def _prime_ema_after_hold(self, player: "Player", accel_mag: float) -> bool:
-        """UC-030 BR-009: prime the EMA with min(raw, warning threshold); True when it primed."""
-        player.hold_prime_cap = False
-        if player.smoothed_accel >= 1e-9:
-            return False
-        effective_warn, _ = self._compute_effective_thresholds(player)
-        player.smoothed_accel = min(accel_mag, effective_warn)
-        player.last_accel_mag = player.smoothed_accel
-        return True
-
-    def _grant_shield_energy(self, player: "Player", seconds: float, hold: ShieldHoldParams) -> bool:
-        """Add a grant to the player's energy (UC-040 A36); refuse one that could add nothing (A37).
-
-        Order: budget used up, pool full, then the BR-022 cap and cooldown. A
-        refusal raises ``InterventionNotApplied``, so the backstop is refunded and
-        nothing counts. During a held activation the deadline moves out.
-        """
-        now = time.time()
-        used = self._agent_shield_grants.get(player.serial, 0)
-        budget_left = self._shield_hold_budget_left(player, now)
-        if budget_left < hold.min_burst:
-            self._refuse_shield(player, SHIELD_REFUSED_BUDGET_EXHAUSTED, used, 0.0)
-        energy = self._shield_hold_energy(player, now)
-        full = min(hold.cap, budget_left)
-        room = full - energy
-        if room < SHIELD_HOLD_POOL_FULL_ROOM_SECONDS:
-            self._refuse_shield(player, SHIELD_REFUSED_POOL_FULL, used, 0.0)
-        self._check_shield_limits(player, now)
-
-        added = min(seconds, room)
-        if player.hold_started_at:
-            player.hold_energy_start += added
-            player.hold_usable_start = min(player.hold_energy_start, player.hold_budget_start)
-            if player.hold_pressed:
-                player.hold_until = player.hold_started_at + player.hold_usable_start
-        else:
-            player.hold_energy = energy + added
-            if player.hold_energy_at:
-                player.hold_energy_at = now
-        player.hold_granted_total += added
-        self._record_agent_shield(player.serial, now, seconds)
-        self._hold_granted_pending.add(player.serial)  # UC-035 BR-008: the next energy event says source=agent
-        energy_after = energy + added
-        # UC-040 A36 step 4: the grant pattern when the pool is full, one pulse for a top-up.
-        self._queue_hold_feedback(player, HOLD_CUE_FULL if energy_after >= full - 1e-9 else HOLD_CUE_TOP_UP)
-        logger.info(f"Shield energy granted to {player.serial}: +{added:.2f}s of {seconds:.1f}s ({energy_after:.2f}s)")
-        if player.span:
-            identity = player_identity_attributes(player.serial, player.name)
-            with contextlib.suppress(Exception):
-                player.span.add_event(
-                    "shield_energy_granted",
-                    attributes={
-                        "shield.seconds_requested": seconds,
-                        "shield.seconds_added": round(added, 3),
-                        "shield.energy_s": round(energy_after, 3),
-                        **identity,
-                    },
-                )
-                if energy_after >= full - 1e-9:
-                    player.span.add_event(
-                        "shield_energy_full", attributes={"shield.energy_source": "agent", **identity}
-                    )
         return True
 
     # Soft-penalty defaults (#1134, #1103 Phase 3). The tighten factor is the
@@ -4170,11 +2652,11 @@ class BaseGameMode(ABC):
             factor = self.SOFT_PENALTY_DEFAULT_FACTOR
         factor = max(self.SOFT_PENALTY_FACTOR_MIN, min(self.SOFT_PENALTY_FACTOR_MAX, factor))
 
-        new_until = time.time() + seconds
+        new_until = game_clock.now() + seconds
         # Extend-not-shorten / tighten-not-loosen: keep whichever active window is
         # longer and whichever active factor is LOWER (stronger pressure), so
         # repeated arming never reduces in-flight pressure.
-        if time.time() < player.soft_penalty_until:
+        if game_clock.now() < player.soft_penalty_until:
             new_until = max(new_until, player.soft_penalty_until)
             factor = min(factor, player.soft_penalty_factor)
         player.soft_penalty_until = new_until
@@ -4285,7 +2767,7 @@ class BaseGameMode(ABC):
         if gap <= 1e-9:
             return 0
 
-        now = time.time()
+        now = game_clock.now()
         boosted = 0
         for p in alive:
             headroom, death = headrooms[p.serial]
@@ -4381,7 +2863,7 @@ class BaseGameMode(ABC):
             if await native(serial) is False:
                 return False
             # Ensure spawn grace even if the native path uses its own scheme.
-            player.grace_until = max(player.grace_until, time.time() + grace)
+            player.grace_until = max(player.grace_until, game_clock.now() + grace)
             logger.info(f"revive_player: {serial} revived via native respawn")
             return True
 
@@ -4389,7 +2871,7 @@ class BaseGameMode(ABC):
         player.alive = True
         player.warning_until = 0.0
         player.smoothed_accel = 0.0
-        player.grace_until = time.time() + grace
+        player.grace_until = game_clock.now() + grace
 
         metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
         alive_count = len([p for p in self.players.values() if p.alive])
@@ -4541,7 +3023,7 @@ class BaseGameMode(ABC):
             await self._discard_shield_charge(player, CHARGE_OUTCOME_DEATH)
         # UC-040 A39: the death drops a hold pool; eliminate_player ignores the hold.
         if self._shield_hold is not None:
-            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, time.time())
+            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, game_clock.now())
 
         # Play death explosion sound under the player's span
         player_ctx = trace.set_span_in_context(player.span) if player.span else None
@@ -4554,7 +3036,7 @@ class BaseGameMode(ABC):
             return False
         # Again after the awaits: energy granted while the kill awaited is dropped too.
         if self._shield_hold is not None:
-            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, time.time())
+            self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, game_clock.now())
 
         alive_count_before = len([p for p in self.players.values() if p.alive])
         logger.info(f"Player died: {serial}, {alive_count_before - 1} players remaining")
@@ -4636,7 +3118,7 @@ class BaseGameMode(ABC):
             if not self.running:
                 logger.info(f"Rainbow wait interrupted at {i * 0.1:.1f}s/{rainbow_duration_s}s")
                 return False
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         return True
 
@@ -4973,148 +3455,219 @@ class BaseGameMode(ABC):
             game_kind=self.game_kind,
         )
 
+    async def _teardown_before_end(self, teardown_span: trace.Span, progress: "_RunProgress") -> None:
+        """Teardown steps before ``_end_game_impl`` (the winner effects)."""
+        teardown_span.add_event(
+            "game.state_changed",
+            {
+                "game.state": "ENDING",
+                "game.id": self.game_id,
+            },
+        )
+        # Stop game music first (inside teardown_phase so StopMusic span is a child)
+        await self._stop_game_music()
+        progress.music_stopped = True
+
+        # Shield LEDs end with the game, before the winner effects (#1301).
+        await self._end_shield_feedback()
+        progress.shield_feedback_ended = True
+
+    # A flow that returns before its teardown when force-ended records the
+    # force_ended outcome in run()'s finally (StreamedIntroGameMode).
+    _RUN_RETURNS_EARLY_ON_FORCE_END: bool = False
+
     async def run(self):
         """
-        Main entry point to run the game (Template Method).
+        Main entry point to run the game (Template Method, the only run()).
 
-        Orchestrates all game phases with consistent span hierarchy:
-        1. initialization_phase (setup: players, colors, stream, music)
-        2. gameplay_phase (player_lifecycle spans with countdown_phase children)
-        3. teardown_phase
+        Modes change the flow through the hooks, never by overriding run():
 
-        Phase spans are automatically children of the current game span.
+        - ``_run_span_scope``: the span the run executes in (base: none).
+        - ``_run_until_teardown``: start, initialization and gameplay; returns
+          False when a force-end skips the teardown.
+        - ``_teardown_before_end`` / ``_teardown_after_outcome``: the teardown
+          steps around ``_end_game_impl`` and the outcome record.
+        - ``_on_run_error``: how an error is reported before it is re-raised.
+        - ``_stop_feedback_and_force_end``: the finally's music / shield stop
+          and the force-end hook, in the flow's order.
+
+        The base flow: initialization_phase (setup: players, colors, stream,
+        music), gameplay_phase (player_lifecycle spans with countdown_phase
+        children), teardown_phase. Phase spans are children of the game span.
+
+        A run that raises or is cancelled before the teardown step still stops
+        the game music and ends the shield feedback in ``finally`` (UC-020
+        failure postcondition, #2357).
         """
-        try:
-            # State transitions
-            self.state = GameState.STARTING
-            self.running = True  # Set early to allow force_end during countdown
-            current_span = trace.get_current_span()
-            self._capture_game_root_span()
-            current_span.add_event(
-                "game.state_changed",
-                {
-                    "game.state": "STARTING",
-                    GAME_MODE_ATTR: self.get_game_name(),
-                    "game.id": self.game_id,
-                },
-            )
-            await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
+        progress = _RunProgress()
+        # The session game root span carries the outcome (#1328).
+        self._capture_game_root_span()
+        with self._run_span_scope() as game_span:
+            try:
+                if await self._run_until_teardown():
+                    self._latch_game_outcome()
+                    with self._run_tracer().start_as_current_span("teardown_phase") as teardown_span:
+                        await self._teardown_before_end(teardown_span, progress)
+                        await self._end_game_impl()
+                        # The finally adds no shield end after the winner effects.
+                        progress.shield_feedback_ended = True
+                        self._record_game_outcome(teardown_span)
+                        self._teardown_after_outcome()
+                    if game_span is not None:
+                        game_span.set_status(Status(StatusCode.OK))
+            except Exception as e:
+                self._run_failed = True
+                await self._on_run_error(e, game_span)
+                raise
+            finally:
+                if self._RUN_RETURNS_EARLY_ON_FORCE_END:
+                    self._record_force_ended_outcome_if_unrecorded()
+                force_ended = not self.running
+                self.running = False
+                await self._stop_feedback_and_force_end(force_ended, progress)
+                await self._cleanup_after_run()
+                logger.info(f"{self.get_game_name()} game finished: {self.game_id}")
 
-            # Phase 1: Initialization (setup only — no countdown)
-            with tracer.start_as_current_span("initialization_phase") as init_span:
-                init_span.set_attribute("game.id", self.game_id)
-                init_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
+    def _run_tracer(self) -> trace.Tracer:
+        """The tracer of run()'s own spans (teardown_phase)."""
+        return tracer
 
-                self._emit_sensitivity_metric()
-                logger.info(f"Sensitivity: {self.sensitivity.name} ({self.sensitivity.value})")
+    @contextlib.contextmanager
+    def _run_span_scope(self):
+        """The span run() executes in; yields it, or None (base: the session's game span)."""
+        yield None
 
-                # Initialize players
-                await self._initialize_players()
+    async def _run_until_teardown(self) -> bool:
+        """Start, initialization and gameplay of the base flow; True: run the teardown."""
+        # State transitions
+        self.state = GameState.STARTING
+        self.running = True  # Set early to allow force_end during countdown
+        current_span = trace.get_current_span()
+        current_span.add_event(
+            "game.state_changed",
+            {
+                "game.state": "STARTING",
+                GAME_MODE_ATTR: self.get_game_name(),
+                "game.id": self.game_id,
+            },
+        )
+        await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
 
-                # Validate player count
-                if len(self.players) < 2:
-                    raise ValueError(f"Need at least 2 players, got {len(self.players)}")
+        # Phase 1: Initialization (setup only — no countdown)
+        with tracer.start_as_current_span("initialization_phase") as init_span:
+            init_span.set_attribute("game.id", self.game_id)
+            init_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
 
-                init_span.set_attribute("player_count", len(self.players))
+            self._emit_sensitivity_metric()
+            logger.info(f"Sensitivity: {self.sensitivity.name} ({self.sensitivity.value})")
 
-                self._set_flag_eval_context()
+            # Initialize players
+            await self._initialize_players()
 
-                # A mode whose phases send effects over the stream opens it first
-                # (UC-021 A1, D-G10); a drain discards frames until the start.
-                early_stream = self._opens_stream_before_additional_phases()
+            # Validate player count
+            if len(self.players) < 2:
+                raise ValueError(f"Need at least 2 players, got {len(self.players)}")
+
+            init_span.set_attribute("player_count", len(self.players))
+
+            self._set_flag_eval_context()
+
+            # A mode whose phases send effects over the stream opens it first
+            # (UC-021 A1, D-G10); a drain discards frames until the start.
+            early_stream = self._opens_stream_before_additional_phases()
+            if early_stream:
+                await self._start_gameplay_stream()
+                self._start_early_stream_drain()
+            phases_completed = False
+            try:
+                # Additional phases (e.g., color_assignment, team_formation)
+                # These are children of initialization_phase
+                for phase in self._get_additional_phases():
+                    with tracer.start_as_current_span(phase.name):
+                        await phase.execute()
+
+                # Spoken instructions, when the host switched them on (UC-020 A5):
+                # the clip finishes before the music and the countdown start.
+                await self._play_instructions(init_span)
+                phases_completed = True
+            finally:
                 if early_stream:
+                    await self._stop_early_stream_drain(reopen=phases_completed)
+
+            # A force-end during the instructions skips the start: no stream,
+            # music, game_started or countdown; teardown records force_ended.
+            force_ended_before_start = not self.running
+            if not force_ended_before_start:
+                # Start gameplay stream before countdown (needed for countdown effects)
+                if not early_stream:
                     await self._start_gameplay_stream()
-                    self._start_early_stream_drain()
-                phases_completed = False
-                try:
-                    # Additional phases (e.g., color_assignment, team_formation)
-                    # These are children of initialization_phase
-                    for phase in self._get_additional_phases():
-                        with tracer.start_as_current_span(phase.name):
-                            await phase.execute()
 
-                    # Spoken instructions, when the host switched them on (UC-020 A5):
-                    # the clip finishes before the music and the countdown start.
-                    await self._play_instructions(init_span)
-                    phases_completed = True
-                finally:
-                    if early_stream:
-                        await self._stop_early_stream_drain(reopen=phases_completed)
+                # Start game music BEFORE countdown at low volume.
+                # OGG decode happens during countdown, so music is ready instantly after.
+                await self._start_game_music(volume=self.countdown_music_volume)
 
-                # A force-end during the instructions skips the start: no stream,
-                # music, game_started or countdown; teardown records force_ended.
-                force_ended_before_start = not self.running
-                if not force_ended_before_start:
-                    # Start gameplay stream before countdown (needed for countdown effects)
-                    if not early_stream:
-                        await self._start_gameplay_stream()
+        if force_ended_before_start:
+            # run() latches the outcome before the teardown.
+            logger.info(f"{self.get_game_name()} force-ended before the start: {self.game_id}")
+        else:
+            await self._run_gameplay_phase()
+        return True
 
-                    # Start game music BEFORE countdown at low volume.
-                    # OGG decode happens during countdown, so music is ready instantly after.
-                    await self._start_game_music(volume=self.countdown_music_volume)
+    def _teardown_after_outcome(self) -> None:
+        """Teardown steps after ``_end_game_impl`` and the outcome record."""
+        # Winner effects are sent: close the stream (UC-030 BR-006)
+        self._release_gameplay_stream()
 
-            if force_ended_before_start:
-                logger.info(f"{self.get_game_name()} force-ended before the start: {self.game_id}")
-                self._latch_game_outcome()
-            else:
-                await self._run_gameplay_phase()
+        # Clear THIS session's analytics so dashboards show no data when
+        # the game is over, without clobbering other concurrent sessions
+        # (#775). Game-state gauges are per game_id, so each session
+        # removes only its own series (FR-041).
+        self._clear_shield_metrics()
+        metrics.clear_session_player_analytics(
+            list(self.players.keys()),
+            self.game_id,
+            game_kind=self.game_kind,
+        )
 
-            # Phase 3: Teardown
-            with tracer.start_as_current_span("teardown_phase") as teardown_span:
-                teardown_span.add_event(
-                    "game.state_changed",
-                    {
-                        "game.state": "ENDING",
-                        "game.id": self.game_id,
-                    },
-                )
-                # Stop game music first (inside teardown_phase so StopMusic span is a child)
+    async def _on_run_error(self, error: Exception, game_span: trace.Span | None) -> None:  # noqa: ARG002
+        """Report a run error before run() re-raises it: GAME_ERROR is published here (#2025 S2)."""
+        logger.error(f"{self.get_game_name()} game error: {error}", exc_info=True)
+        self.state = GameState.ENDED
+        current_span = trace.get_current_span()
+        current_span.add_event(
+            "game.state_changed",
+            {
+                "game.state": "ENDED",
+                "game.id": self.game_id,
+                "game.error": str(error),
+            },
+        )
+        await self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(error)})
+        self.game_error_published = True
+
+    async def _stop_feedback_and_force_end(self, force_ended: bool, progress: "_RunProgress") -> None:
+        """The finally's force-end hook, then the music / shield stop the teardown did not reach."""
+        # Call force-end hook if game was externally stopped
+        if force_ended:
+            await self.on_force_end()
+        await self._stop_run_feedback(progress.music_stopped, progress.shield_feedback_ended)
+
+    async def _stop_run_feedback(self, music_stopped: bool, shield_feedback_ended: bool) -> None:
+        """Stop the music and end the shield feedback the teardown step did not reach (#2357).
+
+        Best-effort and guarded, so a failure here neither masks the run's own
+        error nor skips ``_cleanup_after_run``.
+        """
+        if not music_stopped:
+            try:
                 await self._stop_game_music()
-
-                # Shield LEDs end with the game, before the winner effects (#1301).
+            except Exception:
+                logger.exception(f"Stopping the game music after a failed run failed: {self.game_id}")
+        if not shield_feedback_ended:
+            try:
                 await self._end_shield_feedback()
-
-                await self._end_game_impl()
-                self._record_game_outcome(teardown_span)
-
-                # Winner effects are sent: close the stream (UC-030 BR-006)
-                self._release_gameplay_stream()
-
-                # Clear THIS session's analytics so dashboards show no data when
-                # the game is over, without clobbering other concurrent sessions
-                # (#775). Game-state gauges are per game_id, so each session
-                # removes only its own series (FR-041).
-                self._clear_shield_metrics()
-                metrics.clear_session_player_analytics(
-                    list(self.players.keys()),
-                    self.game_id,
-                    game_kind=self.game_kind,
-                )
-
-        except Exception as e:
-            self._run_failed = True
-            logger.error(f"{self.get_game_name()} game error: {e}", exc_info=True)
-            self.state = GameState.ENDED
-            current_span = trace.get_current_span()
-            current_span.add_event(
-                "game.state_changed",
-                {
-                    "game.state": "ENDED",
-                    "game.id": self.game_id,
-                    "game.error": str(e),
-                },
-            )
-            await self.event_publisher(GameEvent.GAME_ERROR, {"game_id": self.game_id, "error": str(e)})
-            raise
-
-        finally:
-            force_ended = not self.running
-            self.running = False
-            # Call force-end hook if game was externally stopped
-            if force_ended:
-                await self.on_force_end()
-            await self._cleanup_after_run()
-            logger.info(f"{self.get_game_name()} game finished: {self.game_id}")
+            except Exception:
+                logger.exception(f"Ending the shield feedback after a failed run failed: {self.game_id}")
 
     # ========================================================================
     # Helper Methods - Span creation utilities
@@ -5212,7 +3765,7 @@ class BaseGameMode(ABC):
                         "game_ended",
                         attributes={
                             "survived": True,
-                            "game_duration": time.time() - self.start_time if self.start_time else 0,
+                            "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
                         },
                     )
                 player.span.set_status(Status(StatusCode.OK))
@@ -5253,7 +3806,7 @@ class BaseGameMode(ABC):
                     attributes={
                         "winner": False,
                         **outcome,
-                        "game_duration": time.time() - self.start_time if self.start_time else 0,
+                        "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
                     },
                 )
                 if self._run_failed:
@@ -5332,7 +3885,7 @@ class BaseGameMode(ABC):
     def _emit_threshold_metrics(self):
         """Emit effective threshold metrics for the current tempo intensity (Phase 80, #1833)."""
         sens_idx = self.sensitivity.value
-        speed_percent = self._intensity.value_at(time.time())
+        speed_percent = self._intensity.value_at(game_clock.now())
 
         effective_warn = self._lerp(self.slow_warning[sens_idx], self.fast_warning[sens_idx], speed_percent)
         effective_death = self._lerp(self.slow_max[sens_idx], self.fast_max[sens_idx], speed_percent)
@@ -5416,7 +3969,7 @@ class BaseGameMode(ABC):
 
     def _next_change_in(self) -> float:
         """Seconds until the next scheduled tempo change (for logs)."""
-        return self.change_time - time.time()
+        return self.change_time - game_clock.now()
 
     async def _stop_game_music(self):
         """Stop game music (Phase 70). A shadow game never started any (#1835)."""
@@ -5438,54 +3991,17 @@ class BaseGameMode(ABC):
         Calculate time of next tempo change based on game progression.
 
         As more players die, tempo changes become more frequent.
-        Returns absolute time (time.time() + delay).
-
-        #1109: this is the SINGLE pacing pathway. The delay is produced by the
-        pacing-policy seam (:meth:`_decide_next_change_delay`), which dispatches
-        on the live ``self.tempo_schedule_mode``. There is no separate legacy RNG
-        branch beside the seam — the historical random-window timing is folded in
-        as the rule engine's default rule (:meth:`_default_rule_delay`).
+        Returns absolute time (game_clock.now() + delay).
         """
-        return time.time() + self._decide_next_change_delay()
+        return game_clock.now() + self._decide_next_change_delay()
 
     def _decide_next_change_delay(self) -> float:
-        """Pacing-policy seam: produce the delay (seconds) until the next change.
+        """Pacing rule: the random-window schedule (relative delay in seconds).
 
-        Dispatches on ``self.tempo_schedule_mode`` (read fresh every call, so the
-        PROVIDER_CONFIGURATION_CHANGED listener's live swap takes effect on the
-        next tempo decision):
-
-        * ``rule`` (default / back-compat) — run the rule engine. The default
-          rule is :meth:`_default_rule_delay`, the windowed RNG that reproduces
-          today's timing exactly.
-        * ``agent`` — yield to an agent tempo directive
-          (``self.agent_tempo_next_delay``, set by the #1103 follow-up). STUB for
-          Phase 1: with no directive present, fall back to the default rule so
-          pacing never freezes when ``agent`` is selected before the primitive
-          ships.
-
-        Any unexpected mode falls through to the default rule (fail-safe).
-        """
-        mode = self.tempo_schedule_mode
-        if mode == TEMPO_MODE_AGENT:
-            directive = self.agent_tempo_next_delay
-            if directive is not None and directive >= 0:
-                return float(directive)
-            # No directive yet (#1103 not shipped) -> hold the established pacing
-            # by falling back to the default rule. (A future variant could hold
-            # the current tempo instead; falling back keeps pacing alive today.)
-            return self._default_rule_delay()
-        # mode == "rule" (and any unknown value): the rule engine's default rule.
-        return self._default_rule_delay()
-
-    def _default_rule_delay(self) -> float:
-        """Default pacing rule: the historical random-window schedule.
-
-        Folds the former ``_get_music_change_time`` body in verbatim so the
-        ``rule`` mode's default policy is byte-for-byte the pre-#1109 timing:
-        a ``_rng.uniform`` draw within the (game-progression-lerped, F6-swappable)
-        ``self.music_windows``. Randomness survives here as a RULE, not a mode.
-        Returns a relative delay in seconds.
+        A ``_rng.uniform`` draw within the (game-progression-lerped, F6-swappable)
+        ``self.music_windows``. The only pacing source since the dead "agent"
+        tempo mode was removed (#2361); the agent shapes tempo through the
+        ``music_tempo_override`` and ``tempo_ramp`` interventions instead.
         """
         # Calculate game progression (0.0 = start, 1.0 = near end)
         min_moves = len(self.players) - 2
@@ -5507,21 +4023,6 @@ class BaseGameMode(ABC):
             max_t = self._lerp(windows.fast_max, windows.end_fast_max, game_percent)
 
         return self._rng.uniform(min_t, max_t)
-
-    def apply_tempo_schedule_mode(self, value: object) -> None:
-        """Atomically swap the live tempo-schedule SOURCE mode (#1109).
-
-        Called by the PROVIDER_CONFIGURATION_CHANGED listener
-        (TempoScheduleManager) with the freshly-resolved ``game.tempo_schedule_mode``
-        flag value for THIS game's ``gameId``. The value is validated and stored
-        in a single attribute store (like the F6 ``music_windows`` swap), so the
-        100ms music loop / ``_decide_next_change_delay`` picks up the new source
-        on its next decision without tearing — live mid-game mode switching.
-        """
-        new_mode = resolve_tempo_schedule_mode(value)
-        if new_mode != self.tempo_schedule_mode:
-            logger.info(f"tempo_schedule_mode: {self.tempo_schedule_mode} -> {new_mode}")
-        self.tempo_schedule_mode = new_mode  # atomic single-store swap
 
     def _read_ramp_seconds(self, rising: bool) -> float:
         """Seconds for a full 0 -> 1 (``rising``) or 1 -> 0 swing (#1833).
@@ -5550,7 +4051,7 @@ class BaseGameMode(ABC):
         the next change ``window`` after the ramp END (as the original JoustMania
         did); an override leaves the schedule state alone.
         """
-        now = time.time()
+        now = game_clock.now()
         old_intensity = self._intensity.value_at(now)
         target = max(0.0, min(1.0, target))
         delta = target - old_intensity
@@ -5629,7 +4130,7 @@ class BaseGameMode(ABC):
                 # First failure of a streak, then once per maximum back-off: no log flood.
                 logger.warning(f"Failed to change music tempo (intensity continues, resending): {e!r}")
             self._audio_synced = False
-            self._audio_retry_at = time.time() + self._audio_retry_backoff
+            self._audio_retry_at = game_clock.now() + self._audio_retry_backoff
             self._audio_retry_backoff = min(self._audio_retry_backoff * 2, AUDIO_TEMPO_RETRY_MAX_SECONDS)
             return
 
@@ -5652,7 +4153,7 @@ class BaseGameMode(ABC):
         the held intensity once the ramp is reverted.
         """
         old_tempo = self.music_speed
-        self._intensity = IntensityRamp.hold(intensity_from_tempo(target_tempo), time.time())
+        self._intensity = IntensityRamp.hold(intensity_from_tempo(target_tempo), game_clock.now())
         with tracer.start_as_current_span("music_tempo_ramp") as span:
             span.set_attribute("old_tempo", old_tempo)
             span.set_attribute("new_tempo", target_tempo)
@@ -5672,7 +4173,7 @@ class BaseGameMode(ABC):
         end is already near or past, the segment takes |delta i| x the flag for
         its direction instead.
         """
-        now = time.time()
+        now = game_clock.now()
         old_intensity = self._intensity.value_at(now)
         target = intensity_from_tempo(ramp.target_tempo)
         delta = target - old_intensity
@@ -5690,7 +4191,7 @@ class BaseGameMode(ABC):
     async def _hold_intensity_now(self) -> None:
         """End an agent-owned segment: hold the intensity reached now and stop the glide there."""
         self._agent_tempo_owned = False
-        now = time.time()
+        now = game_clock.now()
         held = self._intensity.value_at(now)
         if not self._intensity.is_complete(now):
             logger.info(f"Agent tempo control ended mid-ramp: holding intensity {held:.2f}")
@@ -5708,7 +4209,7 @@ class BaseGameMode(ABC):
         Every audio failure is handled in :meth:`_push_audio`; this never raises
         for an audio error.
         """
-        now = time.time()
+        now = game_clock.now()
 
         if self.tempo_override is not None:
             # Agent tempo override (#730 PR C): ramp to the override at the bounded
@@ -5748,7 +4249,7 @@ class BaseGameMode(ABC):
                 await self._start_intensity_ramp(1.0 if self.speed_up else 0.0, scheduled=True)
 
         # Resend the remaining glide after a failed send (back-off in _push_audio).
-        now = time.time()
+        now = game_clock.now()
         if not self._audio_synced and now >= self._audio_retry_at:
             await self._push_audio(self._intensity.target, self._intensity.end_time - now)
 
@@ -5762,7 +4263,7 @@ class BaseGameMode(ABC):
     def _log_tick_failure(self, error: Exception) -> None:
         """Warn about a failed tempo tick: first, on a new error text, then every interval."""
         text = repr(error)
-        now = time.time()
+        now = game_clock.now()
         if text != self._tick_error_text:
             self._tick_error_suppressed = 0  # a stale count must not leak into a new error
         if text == self._tick_error_text and now - self._tick_error_logged_at < MUSIC_TICK_LOG_INTERVAL_SECONDS:
@@ -5796,7 +4297,7 @@ class BaseGameMode(ABC):
                         # A non-audio error (pacing seam, metrics, tracing) must not end
                         # the tempo loop for the rest of the game: log it, retry next tick.
                         self._log_tick_failure(e)
-                    await asyncio.sleep(0.1)  # Check every 100ms
+                    await game_clock.sleep(0.1)  # Check every 100ms
             finally:
                 if token is not None:
                     otel_context.detach(token)

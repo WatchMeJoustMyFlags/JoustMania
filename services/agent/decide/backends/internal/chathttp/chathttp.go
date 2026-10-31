@@ -27,6 +27,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/semconv/v1.41.0/genaiconv"
+
+	"github.com/joustmania/agent/internal/anthropichttp"
 )
 
 // MaxResponseBytes caps the HTTP response body a backend reads. A legitimate
@@ -41,7 +43,7 @@ var ErrTooLarge = errors.New("chathttp: response body too large")
 // the TLS connection to the vendor is pooled across the per-decision New calls
 // (that matters at a 2.5s budget). Its timeout is a backstop; the Decide ctx
 // deadline is the real budget.
-var DefaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var DefaultHTTPClient = anthropichttp.NewHTTPClient(30 * time.Second)
 
 // Post sends body as a JSON POST to url with the given extra headers, injects
 // W3C traceparent from ctx (the caller's chat span) via the global propagator,

@@ -154,6 +154,9 @@ areas:
     - {id: adminop_off, sound: MENU_VOX_ADMINOP_OFF, text: "Off."}
     - {id: adminop_True, sound: MENU_VOX_ADMINOP_TRUE, text: "True."}
     - {id: adminop_False, sound: MENU_VOX_ADMINOP_FALSE, text: "False."}
+    # Admin cues that reinforce an LED cue (#1746): UC-012 / UC-013 write failure, UC-012 BR-006 agent overlay.
+    - {id: admin_not_saved, sound: MENU_VOX_ADMIN_NOT_SAVED, text: "Not saved."}
+    - {id: admin_agent, sound: MENU_VOX_ADMIN_AGENT, text: "Agent."}
 
 
     # word ends with a full stop: without it Piper blurs it.
@@ -172,6 +175,13 @@ areas:
     - {id: backend_claude, sound: MENU_VOX_BACKEND_CLAUDE, text: "Claude."}
     - {id: backend_openai, sound: MENU_VOX_BACKEND_OPENAI, text: "OpenAI.", say: "Open A I."}
     - {id: backend_jev, sound: MENU_VOX_BACKEND_JEV, text: "Jev."}
+
+    # Shield mode layer (#2215, UC-015 BR-018)
+    - {id: label_shield_mode, sound: MENU_VOX_LABEL_SHIELD_MODE, text: "Shield mode."}
+    - {id: shield_instant, sound: MENU_VOX_SHIELD_INSTANT, text: "Instant."}
+    - {id: shield_trigger, sound: MENU_VOX_SHIELD_TRIGGER, text: "Trigger."}
+    - {id: shield_hold, sound: MENU_VOX_SHIELD_HOLD, text: "Hold."}
+    - {id: shield_automatic, sound: MENU_VOX_SHIELD_AUTOMATIC, text: "Automatic."}
 
     # Status words (#2106)
     - {id: status_not_possible, sound: MENU_VOX_STATUS_NOT_POSSIBLE, text: "Not possible."}

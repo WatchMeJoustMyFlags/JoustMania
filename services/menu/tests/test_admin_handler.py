@@ -6,32 +6,37 @@ import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, call, create_autospec, patch
 
+import grpc
 import pytest
+from opentelemetry import trace
 
 from lib.colors import Colors
 from lib.controller_constants import ButtonTrackingKey
+from lib.flag_service_writer import FlagServiceWriter
 from lib.types import Sound
 from proto import menu_pb2
-from services.menu.handlers.admin import AdminModeHandler
-from services.menu.handlers.base import ControllerState
+from services.menu.handlers.admin import AdminModeCallbacks, AdminModeHandler
+from services.menu.handlers.base import ControllerHandler, ControllerState
+from services.menu.idle_monitor import IdleMonitor
+from services.menu.state_manager import StateManager
+from services.menu.utils import AudioHelper, LedController
 
 
 @pytest.fixture
 def mock_tracer():
     """Create mock tracer."""
-    tracer = MagicMock()
-    tracer.start_span = MagicMock(return_value=MagicMock())
-    tracer.start_as_current_span = MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock()))
+    tracer = create_autospec(trace.Tracer, instance=True)
+    tracer.start_span.return_value = MagicMock()
+    tracer.start_as_current_span.return_value = MagicMock(__enter__=MagicMock(), __exit__=MagicMock())
     return tracer
 
 
 @pytest.fixture
 def mock_callbacks():
     """Create mock callbacks."""
-    callbacks = MagicMock()
-    callbacks.get_game_options = MagicMock(return_value=["JoustFFA", "JoustTeams"])
-    callbacks.select_game_mode = AsyncMock()
-    callbacks.start_game = AsyncMock()
+    callbacks = create_autospec(AdminModeCallbacks, instance=True)
+    callbacks.get_game_options.return_value = ["JoustFFA", "JoustTeams"]
+    callbacks.start_game.return_value = True
     return callbacks
 
 
@@ -69,10 +74,10 @@ def set_agent_level(manager, level: str) -> None:
 @pytest.fixture
 def mock_state_manager():
     """Create mock StateManager with FlagServiceWriter mocks."""
-    manager = MagicMock()
+    manager = create_autospec(StateManager, instance=True)
 
     # FlagServiceWriter mocks for game_settings
-    game_writer = MagicMock()
+    game_writer = create_autospec(FlagServiceWriter, instance=True)
     game_writer.get_current_variant = MagicMock(return_value="medium")
     game_writer.cycle_variant = MagicMock(return_value="fast")
     game_writer.get_variant_names = MagicMock(return_value=["ultra_slow", "slow", "medium", "fast", "ultra_fast"])
@@ -82,13 +87,13 @@ def mock_state_manager():
     game_writer.get_flag_view = MagicMock(return_value=flag_view(SENSITIVITY_VALUES, "medium"))
 
     # FlagServiceWriter mocks for user_preferences
-    user_writer = MagicMock()
+    user_writer = create_autospec(FlagServiceWriter, instance=True)
     user_writer.get_current_variant = MagicMock(return_value="on")
     user_writer.cycle_variant = MagicMock(return_value="off")
     manager.user_prefs_writer = user_writer
 
     # FlagServiceWriter + client mocks for agent policy (#819 kill-switch).
-    agent_writer = MagicMock()
+    agent_writer = create_autospec(FlagServiceWriter, instance=True)
     agent_writer.get_flag_view = MagicMock(return_value=flag_view(AGENT_LEVEL_VALUES, "ambient"))
     agent_writer.update_default_variant = MagicMock(return_value=True)
     manager.agent_settings_writer = agent_writer
@@ -99,15 +104,12 @@ def mock_state_manager():
     agent_client.get_string_value = MagicMock(return_value=AGENT_LEVEL_VALUES["ambient"])
     manager.agent_settings_client = agent_client
 
-    manager.led = MagicMock()
-    manager.led.send_game_effect = AsyncMock(return_value=True)
-    manager.led.send_base_color = AsyncMock(return_value=True)
+    manager.led = create_autospec(LedController, instance=True)
+    manager.led.send_game_effect.return_value = True
+    manager.led.send_base_color.return_value = True
     manager.current_game_mode = MagicMock()
     manager.current_game_mode.name = "JoustFFA"
-    manager.audio = MagicMock()
-    manager.audio.play_voice = AsyncMock()
-    manager.audio.play_sound = AsyncMock()
-    manager.audio.play_game_mode_voice = AsyncMock()
+    manager.audio = create_autospec(AudioHelper, instance=True)
     manager.publish_event = AsyncMock()
     return manager
 
@@ -116,7 +118,7 @@ def mock_state_manager():
 def handler(mock_tracer, mock_callbacks, mock_metrics, mock_state_manager):
     """Create AdminModeHandler instance with mocks (pre-activated)."""
     handler = AdminModeHandler(
-        controller_channel=MagicMock(),
+        controller_channel=create_autospec(grpc.aio.Channel, instance=True),
         tracer=mock_tracer,
         callbacks=mock_callbacks,
         metrics=mock_metrics,
@@ -132,7 +134,7 @@ def handler(mock_tracer, mock_callbacks, mock_metrics, mock_state_manager):
 def inactive_handler(mock_tracer, mock_callbacks, mock_metrics, mock_state_manager):
     """Create AdminModeHandler instance that is NOT pre-activated."""
     handler = AdminModeHandler(
-        controller_channel=MagicMock(),
+        controller_channel=create_autospec(grpc.aio.Channel, instance=True),
         tracer=mock_tracer,
         callbacks=mock_callbacks,
         metrics=mock_metrics,
@@ -311,7 +313,7 @@ class TestWriteFailure:
     """UC-012 A5: a flag write that fails persists nothing, gives no success feedback and the error cue."""
 
     @staticmethod
-    def _assert_error_cue_only(manager):
+    def _assert_error_cue_only(manager, not_saved_voice=True):
         from proto import controller_manager_pb2
 
         manager.led.send_game_effect.assert_called_once()
@@ -320,7 +322,10 @@ class TestWriteFailure:
         assert call.kwargs["color"] == Colors.Red.value
         assert call.kwargs["duration_ms"] == 400
         assert call.kwargs["speed"] == 10
-        manager.audio.play_voice.assert_not_called()
+        if not_saved_voice:  # a failed write says so (#1746); a failed read stays LED-only
+            manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
+        else:
+            manager.audio.play_voice.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="A5")
@@ -404,7 +409,7 @@ class TestWriteFailure:
 
         await handler.handle_cycle_option("test_serial")
 
-        self._assert_error_cue_only(mock_state_manager)
+        self._assert_error_cue_only(mock_state_manager, not_saved_voice=False)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="A7")
@@ -863,13 +868,6 @@ class TestEnter:
         assert inactive_handler.current_option == 0
 
     @pytest.mark.asyncio
-    async def test_enter_records_metric(self, inactive_handler, mock_metrics):
-        """enter() should increment button_presses_total for admin_combo."""
-        await inactive_handler.enter("s1")
-        mock_metrics.button_presses_total.labels.assert_called_with(button="admin_combo", action="hold")
-        mock_metrics.button_presses_total.labels().inc.assert_called_once()
-
-    @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[2])
     async def test_enter_sends_admin_enter_effect(self, inactive_handler, mock_state_manager):
         """enter() should send GAME_EFFECT_ADMIN_ENTER."""
@@ -1132,56 +1130,6 @@ class TestHandleButtonEventDispatch:
         assert handler.handle_game_mode.call_count == 1
 
 
-class TestResetOnDisconnect:
-    """Tests for admin mode reset on controller disconnect."""
-
-    def test_clears_state_for_matching_serial(self, handler):
-        """reset_on_disconnect should clear state when serial matches."""
-        handler.reset_on_disconnect("test_serial")
-
-        assert handler.active is False
-        assert handler.controller_serial is None
-        assert handler.entry_time == 0
-
-    def test_ignores_different_serial(self, handler):
-        """reset_on_disconnect should ignore non-admin controller."""
-        handler.reset_on_disconnect("other_serial")
-
-        assert handler.active is True
-        assert handler.controller_serial == "test_serial"
-
-    def test_ignores_when_inactive(self, inactive_handler):
-        """reset_on_disconnect should do nothing when not active."""
-        inactive_handler.reset_on_disconnect("s1")
-        assert inactive_handler.active is False
-
-    def test_cancels_timeout_task(self, handler):
-        """reset_on_disconnect should cancel timeout task."""
-        mock_task = MagicMock()
-        mock_task.done.return_value = False
-        handler._timeout_task = mock_task
-
-        handler.reset_on_disconnect("test_serial")
-
-        mock_task.cancel.assert_called_once()
-
-    def test_ends_session_span(self, handler):
-        """reset_on_disconnect should end the session span."""
-        span = MagicMock()
-        handler.session_span = span
-
-        handler.reset_on_disconnect("test_serial")
-
-        span.set_attribute.assert_called_with("disconnect", True)
-        span.end.assert_called_once()
-        assert handler.session_span is None
-
-
-# ============================================================================
-# Tier 2 — Pure Logic
-# ============================================================================
-
-
 class TestVariantToValue:
     """Tests for _variant_to_value static method."""
 
@@ -1226,24 +1174,6 @@ class TestCheckCombo:
     def test_empty_state(self, handler):
         """Empty dict should return False."""
         assert handler.check_combo_from_state({}) is False
-
-    def test_combo_from_controller(self, handler):
-        """check_combo_from_controller with all pressed should return True."""
-        controller = MagicMock()
-        controller.cross_pressed = True
-        controller.circle_pressed = True
-        controller.square_pressed = True
-        controller.triangle_pressed = True
-        assert handler.check_combo_from_controller(controller) is True
-
-    def test_combo_from_controller_missing(self, handler):
-        """check_combo_from_controller with one missing should return False."""
-        controller = MagicMock()
-        controller.cross_pressed = True
-        controller.circle_pressed = False
-        controller.square_pressed = True
-        controller.triangle_pressed = True
-        assert handler.check_combo_from_controller(controller) is False
 
 
 class TestIsAdminController:
@@ -1344,58 +1274,6 @@ class TestHandleGameMode:
         handler.callbacks.select_game_mode.assert_awaited_once_with("JoustTeams")
 
 
-class TestHandleGameModeChange:
-    """Tests for handle_game_mode_change with direction."""
-
-    @pytest.mark.asyncio
-    async def test_forward_sends_green_pulse(self, handler, mock_state_manager):
-        """Forward mode change should send green pulse."""
-        await handler.handle_game_mode_change("test_serial", forward=True)
-
-        call_kwargs = mock_state_manager.led.send_game_effect.call_args[1]
-        assert call_kwargs["color"] == (0, 255, 0)
-
-    @pytest.mark.asyncio
-    async def test_backward_sends_blue_pulse(self, handler, mock_state_manager):
-        """Backward mode change should send blue pulse."""
-        await handler.handle_game_mode_change("test_serial", forward=False)
-
-        call_kwargs = mock_state_manager.led.send_game_effect.call_args[1]
-        assert call_kwargs["color"] == (0, 0, 255)
-
-    @pytest.mark.asyncio
-    async def test_empty_options_returns_early(self, handler, mock_state_manager):
-        """Should return early if no game options."""
-        handler.callbacks.get_game_options.return_value = []
-
-        await handler.handle_game_mode_change("test_serial")
-
-        mock_state_manager.publish_event.assert_not_called()
-        handler.callbacks.select_game_mode.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_forward_applies_selection_via_callback(self, handler, mock_state_manager):
-        """Forward cycling must actually apply the new selection through the menu
-        (same path as handle_game_mode) — not just publish a fire-and-forget
-        event (#1030). Guards against a future re-wiring reintroducing the bug."""
-        mock_state_manager.current_game_mode.name = "JoustFFA"
-        handler.callbacks.get_game_options.return_value = ["JoustFFA", "JoustTeams", "Werewolf"]
-
-        await handler.handle_game_mode_change("test_serial", forward=True)
-
-        handler.callbacks.select_game_mode.assert_awaited_once_with("JoustTeams")
-
-    @pytest.mark.asyncio
-    async def test_backward_applies_selection_via_callback(self, handler, mock_state_manager):
-        """Backward cycling must also apply the selection through the menu."""
-        mock_state_manager.current_game_mode.name = "JoustFFA"
-        handler.callbacks.get_game_options.return_value = ["JoustFFA", "JoustTeams", "Werewolf"]
-
-        await handler.handle_game_mode_change("test_serial", forward=False)
-
-        handler.callbacks.select_game_mode.assert_awaited_once_with("Werewolf")
-
-
 class TestHandleBattery:
     """Tests for battery display (triangle button)."""
 
@@ -1474,7 +1352,6 @@ class TestTriggerHoldAndRelease:
 
         await handler._start_trigger_hold_tracking("test_serial")
 
-        assert handler._trigger_press_time is not None
         assert handler._trigger_hold_task is not None
         call_args = mock_state_manager.led.send_game_effect.call_args
         assert call_args[0][0] == "test_serial"
@@ -1493,7 +1370,6 @@ class TestTriggerHoldAndRelease:
         # Release
         await handler.handle_trigger_release("test_serial")
 
-        assert handler._trigger_press_time is None
         assert handler._trigger_hold_task is None
         mock_state_manager.led.send_base_color.assert_called_with("test_serial", (255, 255, 255))
 
@@ -1706,26 +1582,6 @@ class TestControllerHandlerProtocol:
 class TestHelperProperties:
     """Tests for StateManager helper properties."""
 
-    def test_connected_controllers_with_manager(self, handler, mock_state_manager):
-        """Should return connected_controllers from state_manager."""
-        mock_state_manager.connected_controllers = {"s1", "s2"}
-        assert handler._connected_controllers == {"s1", "s2"}
-
-    def test_connected_controllers_without_manager(self, handler):
-        """Should return empty set without state_manager."""
-        handler._state_manager = None
-        assert handler._connected_controllers == set()
-
-    def test_ready_controllers_with_manager(self, handler, mock_state_manager):
-        """Should return ready_controllers from state_manager."""
-        mock_state_manager.ready_controllers = {"s1"}
-        assert handler._ready_controllers == {"s1"}
-
-    def test_ready_controllers_without_manager(self, handler):
-        """Should return empty set without state_manager."""
-        handler._state_manager = None
-        assert handler._ready_controllers == set()
-
     def test_current_game_mode_with_manager(self, handler, mock_state_manager):
         """Should return game mode name from state_manager."""
         assert handler._current_game_mode == "JoustFFA"
@@ -1874,8 +1730,8 @@ class TestAgentControlOption:
 
         await handler.handle_increase_value("test_serial")
 
-        # No success feedback (level colour / level voice); the error cue is covered in TestAgentWriteErrorCue.
-        mock_state_manager.audio.play_voice.assert_not_called()
+        # No success feedback (level colour / level voice); only "Not saved" (#1746), cue: TestAgentWriteErrorCue.
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     async def test_reads_agent_state_once(self, handler, mock_state_manager):
@@ -1937,7 +1793,7 @@ class TestAgentControlOption:
         handler.current_option = handler.option_names.index("agent_control")
         mock_state_manager.agent_settings_writer = None
 
-        with caplog.at_level(logging.WARNING, logger="services.menu.handlers.admin"):
+        with caplog.at_level(logging.WARNING, logger="services.menu.handlers.admin_options"):
             await handler.handle_increase_value("test_serial")
 
         assert any(r.levelname == "WARNING" and "Agent control unavailable" in r.getMessage() for r in caplog.records)
@@ -2103,7 +1959,7 @@ class TestForceStartThresholdFlag:
 
     def _build(self, mock_tracer, mock_callbacks, mock_metrics):
         return AdminModeHandler(
-            controller_channel=MagicMock(),
+            controller_channel=create_autospec(grpc.aio.Channel, instance=True),
             tracer=mock_tracer,
             callbacks=mock_callbacks,
             metrics=mock_metrics,
@@ -2143,24 +1999,24 @@ class TestSingleAdminSession:
 
         from services.menu.state_manager import StateManager
 
-        led = MagicMock()
-        led.send_game_effect = AsyncMock(return_value=True)
-        led.send_base_color = AsyncMock(return_value=True)
-        led.set_connected_color = AsyncMock()
-        audio = MagicMock()
-        audio.play_voice = AsyncMock()
-        audio.play_sound = AsyncMock()
-        state_manager = StateManager(led, audio, MagicMock(), MagicMock(), AsyncMock())
+        led = create_autospec(LedController, instance=True)
+        led.send_game_effect.return_value = True
+        led.send_base_color.return_value = True
+        audio = create_autospec(AudioHelper, instance=True)
+        state_manager = StateManager(
+            led,
+            audio,
+            create_autospec(FlagServiceWriter, instance=True),
+            create_autospec(FlagServiceWriter, instance=True),
+            AsyncMock(),
+        )
 
-        connected_handler = MagicMock()
+        connected_handler = create_autospec(ControllerHandler, instance=True)
         connected_handler.state = ControllerState.CONNECTED
-        connected_handler.on_enter = AsyncMock()
-        connected_handler.on_exit = AsyncMock()
-        connected_handler.handle_button = AsyncMock()
         state_manager.register_handler(connected_handler)
 
         admin_handler = AdminModeHandler(
-            controller_channel=MagicMock(),
+            controller_channel=create_autospec(grpc.aio.Channel, instance=True),
             tracer=mock_tracer,
             callbacks=mock_callbacks,
             metrics=mock_metrics,
@@ -2168,7 +2024,7 @@ class TestSingleAdminSession:
         state_manager.register_handler(admin_handler)
 
         servicer = SimpleNamespace(
-            idle_monitor=MagicMock(),
+            idle_monitor=create_autospec(IdleMonitor, instance=True),
             state_manager=state_manager,
             admin_handler=admin_handler,
             state=menu_pb2.MenuState.RUNNING,
@@ -2438,8 +2294,8 @@ class TestAgentWriteErrorCue:
         assert call.kwargs["duration_ms"] == 400
         assert call.kwargs["speed"] == 10
         mock_state_manager.audio.play_sound.assert_not_called()
-        # No level voice line: it must not read as a level change.
-        mock_state_manager.audio.play_voice.assert_not_called()
+        # Only the "Not saved" line (#1746), never a level voice line: it must not read as a level change.
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="A3", steps=[2])
@@ -2452,7 +2308,7 @@ class TestAgentWriteErrorCue:
 
         mock_state_manager.led.send_game_effect.assert_called_once()
         assert mock_state_manager.led.send_game_effect.call_args.kwargs["duration_ms"] == 400
-        mock_state_manager.audio.play_voice.assert_not_called()
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="main", steps=[4])
@@ -2603,7 +2459,7 @@ class TestAgentLadderAgainstTheFlagService:
         await handler.handle_decrease_value("test_serial")
 
         assert self._error_cue_shown(mock_state_manager)
-        mock_state_manager.audio.play_voice.assert_not_called()
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="A5", steps=[1])
@@ -2650,7 +2506,7 @@ class TestAgentLadderAgainstTheFlagService:
             mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMINOP_1)
         else:
             assert self._error_cue_shown(mock_state_manager)
-            mock_state_manager.audio.play_voice.assert_not_called()
+            mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-013", flow="A5", steps=[1])
@@ -2793,17 +2649,48 @@ class TestOptionAnnouncementUsesEffectiveValue:
 
         handler._show_value_feedback = show
         handler._play_value_voice = voice
+
+        async def say(sound):
+            order.append(("say", sound))
+
         handler._send_game_effect = effect
+        handler._play_voice = say
 
         await handler.handle_increase_value("test_serial")
+        await asyncio.gather(*handler._voice_tasks)  # the "Agent" line is detached (may overlap the value LED)
 
-        assert order == [
-            ("show", 3),
-            ("voice", 3),
-            ("cue", Colors.Magenta.value),
-            ("show", 4),
-            ("voice", 4),
-        ]
+        assert order[:3] == [("show", 3), ("voice", 3), ("cue", Colors.Magenta.value)]
+        # #1746: the spoken "Agent" reinforces the magenta pulse; the value LED never waits for it
+        assert order.index(("say", Sound.MENU_VOX_ADMIN_AGENT)) > 2
+        assert order.index(("show", 4)) < order.index(("voice", 4))
+        assert {("say", Sound.MENU_VOX_ADMIN_AGENT), ("show", 4), ("voice", 4)} <= set(order[3:])
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="main", steps=[4, 5], br=["BR-006"])
+    async def test_slow_agent_voice_does_not_delay_the_effective_value_led(self, handler, mock_state_manager):
+        """A hanging audio RPC for the "Agent" line must not hold back the effective-value LED."""
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = "fast"
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = flag_view(SENSITIVITY_VALUES, "ultra_fast")
+        release = asyncio.Event()
+        shown = []
+
+        async def slow_voice(_sound):
+            await release.wait()
+
+        async def show(_serial, _option, value):
+            shown.append(value)
+
+        handler._play_voice = slow_voice
+        handler._show_value_feedback = show
+        handler._play_value_voice = AsyncMock()
+        handler._send_game_effect = AsyncMock()
+
+        await asyncio.wait_for(handler.handle_increase_value("test_serial"), timeout=1)
+
+        assert shown == [3, 4]  # effective-value LED sent while the Agent voice is still pending
+        release.set()
+        await asyncio.gather(*handler._voice_tasks)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-012", flow="main", steps=[4, 5], br=["BR-006"])
@@ -2842,3 +2729,229 @@ class TestOptionAnnouncementUsesEffectiveValue:
         handler._show_value_feedback.assert_awaited_once_with("test_serial", option, values[new])
         handler._play_value_voice.assert_awaited_once_with(option, values[new])
         handler._send_game_effect.assert_not_awaited()
+
+
+class TestWriteFailedVoice:
+    """#1746: the "Not saved" line reinforces the red error pulse on a failed write, never on a failed read."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A5", steps=[2])
+    async def test_failed_value_write_pulses_red_then_says_not_saved(self, handler, mock_state_manager):
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.cycle_variant.return_value = None
+
+        await handler.handle_increase_value("test_serial")
+
+        assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == Colors.Red.value
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A5", steps=[2])
+    @pytest.mark.parametrize(
+        ("handler_method", "writer_name"),
+        [("handle_sensitivity", "game_settings_writer"), ("handle_instructions", "user_prefs_writer")],
+    )
+    async def test_failed_circle_and_square_write_pulses_red_then_says_not_saved(
+        self, handler, mock_state_manager, handler_method, writer_name
+    ):
+        getattr(mock_state_manager, writer_name).cycle_variant.return_value = None
+
+        await getattr(handler, handler_method)("test_serial")
+
+        assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == Colors.Red.value
+        mock_state_manager.audio.play_voice.assert_awaited_once_with(Sound.MENU_VOX_ADMIN_NOT_SAVED)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-012", flow="A7", steps=[1])
+    async def test_unreadable_flag_service_stays_led_only(self, handler, mock_state_manager):
+        handler.current_option = handler.option_names.index("sensitivity")
+        mock_state_manager.game_settings_writer.get_flag_view.return_value = None
+
+        await handler._announce_effective_value("test_serial", "sensitivity")
+
+        assert mock_state_manager.led.send_game_effect.call_args.kwargs["color"] == Colors.Red.value
+        mock_state_manager.audio.play_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-013", flow="A3", steps=[2])
+    async def test_voice_failure_does_not_break_the_error_cue(self, handler, mock_state_manager):
+        handler.current_option = handler.option_names.index("agent_control")
+        set_agent_level(mock_state_manager, "ambient")
+        mock_state_manager.agent_settings_writer.update_default_variant.return_value = False
+        mock_state_manager.audio.play_voice.side_effect = RuntimeError("audio down")
+
+        await handler.handle_increase_value("test_serial")
+
+        mock_state_manager.led.send_game_effect.assert_called_once()
+
+
+class TestForceStartHoldTimerAndRefusal:
+    """#2377: the hold timer dies with the session; a refused start restores the menu state."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A1")
+    @pytest.mark.parametrize("leave", ["exit", "abandon"])
+    async def test_leaving_admin_cancels_trigger_hold_timer(self, handler, leave):
+        """B1: trigger press, leave admin, re-enter within the threshold: no force start."""
+        handler.handle_force_start = AsyncMock()
+        with patch.object(handler, "_force_start_threshold", return_value=0.05):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+
+        if leave == "exit":
+            await handler.exit()
+        else:
+            handler.abandon_session()
+        # Re-enter as the same admin before the threshold elapses.
+        handler.active = True
+        handler.controller_serial = "test_serial"
+        await asyncio.sleep(0.15)
+
+        assert timer.done()
+        assert handler._trigger_hold_task is None
+        handler.handle_force_start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
+    async def test_force_start_exit_does_not_cancel_its_own_timer(self, handler, mock_state_manager):
+        """The hold timer calls exit() through handle_force_start: it must finish the start."""
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        with patch.object(handler, "_force_start_threshold", return_value=0.01):
+            await handler._start_trigger_hold_tracking("test_serial")
+            await handler._trigger_hold_task
+
+        handler.callbacks.start_game.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_refused_force_start_restores_menu_state(self, handler, mock_state_manager):
+        """B3: a refused start (live lifecycle) must not leave the menu in GAME_STARTING."""
+        from proto import menu_pb2
+
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+        # Captured as RUNNING, then still GAME_STARTING when the refusal comes back.
+        handler.callbacks.get_menu_state = MagicMock(
+            side_effect=[menu_pb2.MenuState.RUNNING, menu_pb2.MenuState.GAME_STARTING]
+        )
+        handler.callbacks.start_game = AsyncMock(return_value=False)
+
+        with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
+            await handler.handle_force_start("test_serial")
+
+        states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
+        assert states[-1] == menu_pb2.MenuState.RUNNING
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_refusal_does_not_overwrite_a_newer_menu_state(self, handler, mock_state_manager):
+        """The state moved on during the awaits (not GAME_STARTING any more): leave it alone."""
+        from proto import menu_pb2
+
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+        handler.callbacks.get_menu_state = MagicMock(
+            side_effect=[menu_pb2.MenuState.RUNNING, menu_pb2.MenuState.STOPPED]
+        )
+        handler.callbacks.start_game = AsyncMock(return_value=False)
+
+        with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
+            await handler.handle_force_start("test_serial")
+
+        states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
+        assert states == [menu_pb2.MenuState.GAME_STARTING]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A4")
+    async def test_start_game_raising_restores_menu_state(self, handler, mock_state_manager):
+        from proto import menu_pb2
+
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        handler.exit = AsyncMock()
+        handler.callbacks.get_menu_state = MagicMock(
+            side_effect=[menu_pb2.MenuState.RUNNING, menu_pb2.MenuState.GAME_STARTING]
+        )
+        handler.callbacks.start_game = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch("services.menu.handlers.admin.asyncio.sleep", new_callable=AsyncMock):
+            await handler.handle_force_start("test_serial")
+
+        states = [c.args[0] for c in handler.callbacks.set_menu_state.call_args_list]
+        assert states[-1] == menu_pb2.MenuState.RUNNING
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
+    async def test_exit_from_another_path_does_not_kill_a_force_start_past_its_hold(self, handler, mock_state_manager):
+        """An idle-timeout exit() landing while the start is in flight must not cancel the hold timer."""
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        in_start = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_roster(*_a, **_k):
+            in_start.set()
+            await release.wait()
+            return ["s1", "s2"]
+
+        handler.settings_ops.force_start_roster = slow_roster
+        with patch.object(handler, "_force_start_threshold", return_value=0.01):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+        await in_start.wait()
+
+        await handler.exit()  # e.g. the idle timeout, a different task
+        release.set()
+        await timer
+
+        handler.callbacks.start_game.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="main", steps=[5])
+    async def test_trigger_release_after_hold_does_not_abort_force_start(self, handler, mock_state_manager):
+        """Players release right after the 3 s hold: the in-flight start must still finish (#2377)."""
+        mock_state_manager.connected_controllers = {"s1", "s2"}
+        mock_state_manager.ready_controllers = {"s1", "s2"}
+        handler._publish_event = AsyncMock()
+        in_start = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_roster(*_a, **_k):
+            in_start.set()
+            await release.wait()
+            return ["s1", "s2"]
+
+        handler.settings_ops.force_start_roster = slow_roster
+        with patch.object(handler, "_force_start_threshold", return_value=0.01):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+        await in_start.wait()
+
+        await handler.handle_trigger_release("test_serial")
+        release.set()
+        await timer
+
+        handler.callbacks.start_game.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-014", flow="A1")
+    async def test_trigger_release_before_threshold_cancels_hold(self, handler):
+        """A release before the hold elapses still cancels the pending force start."""
+        handler.handle_force_start = AsyncMock()
+        with patch.object(handler, "_force_start_threshold", return_value=0.05):
+            await handler._start_trigger_hold_tracking("test_serial")
+        timer = handler._trigger_hold_task
+
+        await handler.handle_trigger_release("test_serial")
+        await asyncio.sleep(0.1)
+
+        assert timer.done()
+        handler.handle_force_start.assert_not_awaited()

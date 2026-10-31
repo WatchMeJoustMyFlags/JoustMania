@@ -185,10 +185,11 @@ func TestDynamicDeclarer_ConfigureFromFlags(t *testing.T) {
 // TestDynamicDeclarer_Rotation asserts successive Declares cover DIFFERENT flags
 // via the deterministic cursor (no repeat until the candidate ring is exhausted).
 func TestDynamicDeclarer_Rotation(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	svc := gameServiceForDeclarer(t)
 	d := &dynamicDeclarer{
 		gameFlags:        svc,
-		candidates:       []string{"sensitivity", "invincibility_seconds", "fight_club.min_rounds"},
+		candidates:       []string{"sensitivity", "nonstop.respawn_seconds", "nonstop.spawn_protection_seconds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
 	seen := map[string]int{}
@@ -212,24 +213,25 @@ func TestDynamicDeclarer_Rotation(t *testing.T) {
 // TestDynamicDeclarer_DedupSkipsActiveFlag asserts a flag with an ALREADY-ACTIVE
 // experiment is skipped, so the declarer never stacks a second experiment on it.
 func TestDynamicDeclarer_DedupSkipsActiveFlag(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	svc := gameServiceForDeclarer(t)
 	d := &dynamicDeclarer{
 		gameFlags:        svc,
-		candidates:       []string{"sensitivity", "invincibility_seconds"},
+		candidates:       []string{"sensitivity", "nonstop.respawn_seconds"},
 		defaultObjective: decision.ObjectiveBalanced,
 	}
-	// sensitivity is already under experiment ⇒ the declarer must pick invincibility_seconds.
+	// sensitivity is already under experiment ⇒ the declarer must pick nonstop.respawn_seconds.
 	active := activeFlags{"sensitivity": {}}
 	intent, ok := d.Declare(active)
 	if !ok {
 		t.Fatal("declare returned no intent despite a free candidate")
 	}
-	if intent.FlagKey != "invincibility_seconds" {
-		t.Fatalf("declarer chose %q, want invincibility_seconds (sensitivity is active)", intent.FlagKey)
+	if intent.FlagKey != "nonstop.respawn_seconds" {
+		t.Fatalf("declarer chose %q, want nonstop.respawn_seconds (sensitivity is active)", intent.FlagKey)
 	}
 
 	// With BOTH candidates active, nothing is declarable.
-	active2 := activeFlags{"sensitivity": {}, "invincibility_seconds": {}}
+	active2 := activeFlags{"sensitivity": {}, "nonstop.respawn_seconds": {}}
 	if _, ok := d.Declare(active2); ok {
 		t.Fatal("declarer declared on an all-active candidate set; want no-op")
 	}
@@ -407,10 +409,11 @@ func withCandidates(loop *experimentLoop, keys string) {
 // experiment AND Starts it (writes shadow targeting → RUNNING), and that a second
 // call dedups the now-active flag onto a different one.
 func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(5)
-	cfg.DynamicCandidates = "sensitivity,invincibility_seconds"
+	cfg.DynamicCandidates = "sensitivity,nonstop.respawn_seconds"
 
 	loop.declareDynamicIfEnabled(context.Background(), cfg)
 	if got := loop.registry.LiveCount(); got != 1 {
@@ -421,24 +424,25 @@ func TestDeclareDynamic_DeclaresAndStarts(t *testing.T) {
 		t.Fatalf("first declare did not make sensitivity active: %v", active)
 	}
 
-	// Second call: sensitivity is now active ⇒ the declarer must pick invincibility_seconds.
+	// Second call: sensitivity is now active ⇒ the declarer must pick nonstop.respawn_seconds.
 	loop.declareDynamicIfEnabled(context.Background(), cfg)
 	if got := loop.registry.LiveCount(); got != 2 {
 		t.Fatalf("after 2 dynamic declares LiveCount = %d, want 2", got)
 	}
 	active = loop.registry.ActiveFlags()
-	if _, ok := active["invincibility_seconds"]; !ok {
-		t.Fatalf("second declare did not make invincibility_seconds active: %v", active)
+	if _, ok := active["nonstop.respawn_seconds"]; !ok {
+		t.Fatalf("second declare did not make nonstop.respawn_seconds active: %v", active)
 	}
 }
 
 // TestDeclareDynamic_RespectsConcurrentBackstop asserts the declarer stops once the
 // live set reaches the concurrent-experiment budget.
 func TestDeclareDynamic_RespectsConcurrentBackstop(t *testing.T) {
+	t.Setenv("SHADOW_GAME_MODE", "NonStop") // #2392: NonStop keys are offered only to a NonStop shadow game
 	loop, svc := loopWithRealRegistry(t, 8)
 	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(2) // budget of 2 (well under capacity 8)
-	cfg.DynamicCandidates = "sensitivity,invincibility_seconds,fight_club.min_rounds"
+	cfg.DynamicCandidates = "sensitivity,nonstop.respawn_seconds,nonstop.spawn_protection_seconds"
 
 	for i := 0; i < 5; i++ {
 		loop.declareDynamicIfEnabled(context.Background(), cfg)
@@ -455,7 +459,7 @@ func TestDeclareDynamic_BackstopClampedToCapacity(t *testing.T) {
 	loop, svc := loopWithRealRegistry(t, 1) // capacity 1
 	loop.dynamic = newDynamicDeclarer(svc, nil)
 	cfg := dynCfg(99) // huge — but capacity clamps it to 1
-	cfg.DynamicCandidates = "sensitivity,invincibility_seconds,fight_club.min_rounds"
+	cfg.DynamicCandidates = "sensitivity,nonstop.respawn_seconds,fight_club.round_seconds"
 
 	for i := 0; i < 5; i++ {
 		loop.declareDynamicIfEnabled(context.Background(), cfg)
@@ -478,7 +482,7 @@ func TestDeclareDynamic_ConcurrentCallersRespectBudget(t *testing.T) {
 	loop.dynamic = newDynamicDeclarer(svc, nil)
 	const budget = 2
 	cfg := dynCfg(budget) // well under capacity 16
-	cfg.DynamicCandidates = "sensitivity,invincibility_seconds,fight_club.min_rounds"
+	cfg.DynamicCandidates = "sensitivity,nonstop.respawn_seconds,fight_club.round_seconds"
 
 	const goroutines = 8
 	var wg sync.WaitGroup
@@ -584,13 +588,13 @@ func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 		loop, svc := loopWithRealRegistry(t, 8)
 		loop.dynamic = declarer(svc)
 		withCandidates(loop, "sensitivity")
-		withSeed(loop, testSeed("invincibility_seconds", 6.0, 50))
+		withSeed(loop, testSeed("nonstop.respawn_seconds", 6.0, 50))
 		enabled := true
 		loop.enabledOverride = func(context.Context) bool { return enabled }
 
 		loop.allocateIfEnabled(ctx)
 		active := loop.registry.ActiveFlags()
-		if _, ok := active["invincibility_seconds"]; !ok {
+		if _, ok := active["nonstop.respawn_seconds"]; !ok {
 			t.Fatalf("first tick did not declare the experiment seed: %v", active)
 		}
 		if _, ok := active["sensitivity"]; !ok {
@@ -601,7 +605,7 @@ func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 		enabled = true
 		loop.allocateIfEnabled(ctx)
 		active = loop.registry.ActiveFlags()
-		if _, ok := active["invincibility_seconds"]; ok {
+		if _, ok := active["nonstop.respawn_seconds"]; ok {
 			t.Fatalf("the experiment seed was declared again after the kill switch: %v", active)
 		}
 		if _, ok := active["sensitivity"]; !ok {
@@ -616,7 +620,7 @@ func TestDeclareDynamic_TalkFallbackKeepsAGameInProgress(t *testing.T) {
 // UC: UC-070 A9 BR-008
 func TestDynamicDeclarer_DefaultRotationSkipsPlumbingFlags(t *testing.T) {
 	plumbing := []string{
-		"shadow_policy", "max_concurrent_games", "max_shadow_games", "tempo_schedule_mode",
+		"shadow_policy", "max_concurrent_games", "max_shadow_games",
 		"force_all_start", "force_all_start_seconds", "countdown_phase_duration_ms",
 		"winner_rainbow_duration_ms",
 	}

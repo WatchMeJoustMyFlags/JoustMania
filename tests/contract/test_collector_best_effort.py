@@ -60,7 +60,7 @@ def test_agent_is_never_the_only_sink_of_a_pipeline(collector, pipeline):
     """UC-035 A3: traces still reach Jaeger and metrics VictoriaMetrics when the agent is down."""
     exporters = collector["service"]["pipelines"][pipeline]["exporters"]
     assert "otlp/agent" in exporters
-    storage = {"traces": "otlp/jaeger", "metrics": "prometheusremotewrite"}[pipeline]
+    storage = {"traces": "otlp/jaeger", "metrics": "prometheus_remote_write"}[pipeline]
     assert storage in exporters
 
 
@@ -150,3 +150,38 @@ def test_full_stack_has_every_observability_service_the_lite_stack_lacks():
     assert not observability & lite, (
         f"lite must not carry {sorted(observability & lite)}"
     )
+
+
+def _drops(conditions: list[str], attributes: dict[str, str]) -> bool:
+    """Evaluate the simple OTTL drop conditions (`span.attributes["k"] == "v"` joined by `or`)."""
+    for condition in conditions:
+        for term in condition.split(" or "):
+            match = re.fullmatch(
+                r'span\.attributes\["([^"]+)"\] == "([^"]*)"', term.strip()
+            )
+            assert match, f"unsupported OTTL term {term!r}"
+            if attributes.get(match.group(1)) == match.group(2):
+                return True
+    return False
+
+
+@pytest.mark.uc("UC-035", flow="A3")
+def test_grpc_health_spans_are_dropped_before_the_traces_exporters(collector):
+    """#2286: health-check spans never reach Jaeger or the agent, in the Python and Go forms."""
+    conditions = collector["processors"]["filter/grpc_health"]["trace_conditions"]
+    # What the Python lib records for the health RPC (package stripped). The contract
+    # job has no lib deps; lib/tests/test_grpc_tracing.py pins _parse_method to this form.
+    assert _drops(conditions, {"rpc.service": "Health", "rpc.method": "Check"})
+    # Go otelgrpc keeps the full service name.
+    assert _drops(
+        conditions, {"rpc.service": "grpc.health.v1.Health", "rpc.method": "Check"}
+    )
+    # Real game RPCs and spans without rpc attributes survive.
+    assert not _drops(
+        conditions, {"rpc.service": "GameCoordinator", "rpc.method": "StartGame"}
+    )
+    assert not _drops(conditions, {"rpc.service": "joustmania.game.v1.Health2"})
+    assert not _drops(conditions, {})
+    processors = collector["service"]["pipelines"]["traces"]["processors"]
+    assert "filter/grpc_health" in processors
+    assert processors.index("memory_limiter") == 0

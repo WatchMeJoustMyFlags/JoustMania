@@ -33,7 +33,6 @@ until it is removed, so the PR that fixes a gap also deletes its entry here.
 
 from __future__ import annotations
 
-
 import pytest
 import telemetry_inventory as ti
 

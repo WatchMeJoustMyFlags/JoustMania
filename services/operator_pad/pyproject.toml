@@ -9,7 +9,7 @@ dependencies = [
     "joustmania-lib",
 
     # gRPC (client of the menu, the game coordinator and the audio service)
-    "grpcio>=1.70.0",
+    "grpcio>=1.85.0",
 
     # OpenTelemetry
     "opentelemetry-distro>=0.49b0",

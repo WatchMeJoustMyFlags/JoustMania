@@ -3,14 +3,16 @@ package experiment
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/patterngame"
+	"github.com/joustmania/agent/telemetry/keys"
 )
 
 // progress_test.go covers experiment.progress (#2059, docs/specs/telemetry.md §4.1):
@@ -53,7 +55,7 @@ func armEvents(t *testing.T, s sdktrace.ReadOnlySpan) map[string]armEvent {
 		var a armEvent
 		for _, kv := range ev.Attributes {
 			switch string(kv.Key) {
-			case decision.AttrExperimentArm:
+			case keys.AttrExperimentArm:
 				arm = kv.Value.AsString()
 			case AttrExperimentArmAssigned:
 				a.assigned = kv.Value.AsInt64()
@@ -113,7 +115,7 @@ func TestProgress_EmittedOnEveryStateChange(t *testing.T) {
 	if v, _ := rootSpanAttr(last, AttrExperimentEndReason); v != "operator stop" {
 		t.Errorf("experiment.end_reason = %q, want %q", v, "operator stop")
 	}
-	if v, _ := rootSpanAttr(last, decision.AttrExperimentStatus); v != string(StatusAborted) {
+	if v, _ := rootSpanAttr(last, keys.AttrExperimentStatus); v != string(StatusAborted) {
 		t.Errorf("experiment.status = %q, want %q", v, StatusAborted)
 	}
 	for _, s := range progressSpans(sr)[:len(want)-1] {
@@ -136,13 +138,15 @@ func TestProgress_AttributeSet(t *testing.T) {
 	}
 	in := sampleIntent()
 	want := map[string]string{
-		decision.AttrExperimentID:        id,
-		decision.AttrExperimentStatus:    string(StatusRunning),
-		decision.AttrExperimentFlagKey:   in.FlagKey,
-		decision.AttrExperimentObjective: in.Objective,
-		decision.AttrExperimentTargetN:   strconv.Itoa(r.entries[id].journal.Intent().TargetNPerArm), // reconciled up to min-N
-		decision.AttrExperimentArms:      ArmExperimental + "," + ArmControl,
-		AttrExperimentProgressTrigger:    ProgressTriggerStarted,
+		keys.AttrExperimentID:         id,
+		keys.AttrExperimentStatus:     string(StatusRunning),
+		keys.AttrExperimentFlagKey:    in.FlagKey,
+		keys.AttrExperimentObjective:  in.Objective,
+		keys.AttrExperimentTargetN:    strconv.Itoa(r.entries[id].journal.Intent().TargetNPerArm), // reconciled up to min-N
+		keys.AttrExperimentArms:       ArmExperimental + "," + ArmControl,
+		AttrExperimentProgressTrigger: ProgressTriggerStarted,
+		keys.AttrExperimentThesis:     in.Hypothesis,
+		AttrExperimentValue:           "0.5",
 	}
 	got := map[string]string{}
 	for _, kv := range spans[0].Attributes() {
@@ -316,7 +320,7 @@ func TestProgress_HeartbeatCoversLiveExperimentsOnly(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("heartbeat snapshots = %d, want 1 (the live experiment)", len(spans))
 	}
-	if v, _ := rootSpanAttr(spans[0], decision.AttrExperimentID); v != live {
+	if v, _ := rootSpanAttr(spans[0], keys.AttrExperimentID); v != live {
 		t.Errorf("heartbeat experiment.id = %q, want %q", v, live)
 	}
 	if progressTriggersOf(spans[0]) != ProgressTriggerHeartbeat {
@@ -351,11 +355,11 @@ func TestProgress_ConcludedAndPromotingSnapshots(t *testing.T) {
 	}
 	spans := progressSpans(sr)
 	for i, wantStatus := range map[int]Status{4: StatusConcluded, 5: StatusPromoting} {
-		if v, _ := rootSpanAttr(spans[i], decision.AttrExperimentStatus); v != string(wantStatus) {
+		if v, _ := rootSpanAttr(spans[i], keys.AttrExperimentStatus); v != string(wantStatus) {
 			t.Errorf("%s snapshot experiment.status = %q, want %q", progressTriggersOf(spans[i]), v, wantStatus)
 		}
 	}
-	if v, _ := rootSpanAttr(spans[3], decision.AttrVerdictOutcome); v != CohortOutcomePromote {
+	if v, _ := rootSpanAttr(spans[3], keys.AttrVerdictOutcome); v != CohortOutcomePromote {
 		t.Errorf("game_concluded verdict.outcome = %q, want %q (the verdict of this game)", v, CohortOutcomePromote)
 	}
 }
@@ -379,7 +383,7 @@ func TestProgress_GameConcludedVerdictDoesNotLag(t *testing.T) {
 	if progressTriggersOf(last) != ProgressTriggerGameConcluded {
 		t.Fatalf("last trigger = %q, want game_concluded", progressTriggersOf(last))
 	}
-	if v, ok := rootSpanAttr(last, decision.AttrVerdictOutcome); !ok || v != OutcomeInconclusive {
+	if v, ok := rootSpanAttr(last, keys.AttrVerdictOutcome); !ok || v != OutcomeInconclusive {
 		t.Fatalf("first game_concluded verdict.outcome = %q (set %v), want %q", v, ok, OutcomeInconclusive)
 	}
 }
@@ -522,10 +526,223 @@ func TestProgress_ConcludedSnapshotCarriesFinalVerdict(t *testing.T) {
 	if gameConcluded < 0 || concluded < 0 {
 		t.Fatalf("triggers = %v, want game_concluded and concluded", progressTriggers(sr))
 	}
-	if _, ok := rootSpanAttr(spans[gameConcluded], decision.AttrVerdictOutcome); ok {
+	if _, ok := rootSpanAttr(spans[gameConcluded], keys.AttrVerdictOutcome); ok {
 		t.Fatalf("game_concluded carries a verdict, want none (no interim verdict)")
 	}
-	if v, ok := rootSpanAttr(spans[concluded], decision.AttrVerdictOutcome); !ok || v != OutcomeInconclusive {
+	if v, ok := rootSpanAttr(spans[concluded], keys.AttrVerdictOutcome); !ok || v != OutcomeInconclusive {
 		t.Fatalf("concluded verdict.outcome = %q (set %v), want final %q", v, ok, OutcomeInconclusive)
+	}
+}
+
+func TestCapSpanText(t *testing.T) {
+	if got := capSpanText("short"); got != "short" {
+		t.Fatalf("short text changed: %q", got)
+	}
+	long := strings.Repeat("a", 600)
+	got := capSpanText(long)
+	if len(got) != maxSpanTextLen || !strings.HasSuffix(got, "...") {
+		t.Fatalf("ascii cap: len=%d", len(got))
+	}
+	// multi-byte runes straddling the cut stay valid UTF-8
+	multi := capSpanText(strings.Repeat("\u00e4", 400))
+	if len(multi) > maxSpanTextLen || !utf8.ValidString(multi) || !strings.HasSuffix(multi, "...") {
+		t.Fatalf("utf8 cap: len=%d valid=%v", len(multi), utf8.ValidString(multi))
+	}
+}
+
+func TestProgress_ThesisAndValueCapped(t *testing.T) {
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: &fakeSpawner{}, Verdict: fakeVerdict{concludeAtN: 1000}, Targeting: &fakeTargeting{},
+		MaxShadowGames: 2,
+	})
+	in := sampleIntent()
+	in.Hypothesis = strings.Repeat("h", 2000)
+	in.ExperimentalValue = strings.Repeat("v", 2000)
+	id, err := r.Declare(in)
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if err := r.Start(context.Background(), id); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	spans := progressSpans(sr)
+	if len(spans) == 0 {
+		t.Fatal("no experiment.progress span")
+	}
+	seen := 0
+	for _, kv := range spans[0].Attributes() {
+		k := string(kv.Key)
+		if k == keys.AttrExperimentThesis || k == AttrExperimentValue {
+			seen++
+			if v := kv.Value.AsString(); len(v) != maxSpanTextLen || !strings.HasSuffix(v, "...") {
+				t.Errorf("%s: len=%d, want %d ending in ...", k, len(v), maxSpanTextLen)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d capped attrs, want 2", seen)
+	}
+}
+
+// A promotion refused because another writer owns the real overlay (UC-043 A19,
+// #2276) puts the winning value on the experiment's snapshots as a recommendation.
+// UC: UC-043 A19
+func TestProgress_RefusedPromotionCarriesRecommendation(t *testing.T) {
+	spawner := &fakeSpawner{}
+	promoter := &fakePromoter{result: PromotionResult{
+		Outcome: PromotionDiscarded, Reason: "real_overlay_owned_by_another_writer owner=operator", ForeignOwner: "operator",
+	}}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 1},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2, Promoter: promoter,
+	})
+	startedExperiment(t, r)
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+	spans := progressSpans(sr)
+	last := spans[len(spans)-1]
+	for key, want := range map[string]string{
+		AttrExperimentRecommendationFlag:  "death_grace_period_seconds",
+		AttrExperimentRecommendationValue: "0.5",
+		AttrExperimentRecommendationOwner: "operator",
+	} {
+		if got, _ := rootSpanAttr(last, key); got != want {
+			t.Errorf("terminal snapshot %s = %q, want %q", key, got, want)
+		}
+	}
+	if _, ok := rootSpanAttr(spans[0], AttrExperimentRecommendationOwner); ok {
+		t.Error("started snapshot carries a recommendation")
+	}
+}
+
+// The recommendation value is capped like the thesis and experimental value.
+// UC: UC-043 A19
+func TestProgress_RecommendationValueCapped(t *testing.T) {
+	spawner := &fakeSpawner{}
+	promoter := &fakePromoter{result: PromotionResult{
+		Outcome: PromotionDiscarded, Reason: "real_overlay_owned_by_another_writer owner=operator", ForeignOwner: "operator",
+	}}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 1},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2, Promoter: promoter,
+	})
+	in := sampleIntent()
+	in.ExperimentalValue = strings.Repeat("v", 2000)
+	id, err := r.Declare(in)
+	if err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if err := r.Start(context.Background(), id); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+	spans := progressSpans(sr)
+	got, ok := rootSpanAttr(spans[len(spans)-1], AttrExperimentRecommendationValue)
+	if !ok {
+		t.Fatal("terminal snapshot carries no recommendation value")
+	}
+	if len(got) != maxSpanTextLen || !strings.HasSuffix(got, "...") {
+		t.Errorf("recommendation value len=%d suffix=%q, want %d bytes ending in ...", len(got), got[max(0, len(got)-3):], maxSpanTextLen)
+	}
+}
+
+// A deferred write refused after the experiment ended (RecordPromotion) emits a
+// fresh snapshot with the recommendation; a plain later outcome emits none.
+// UC: UC-043 A19
+func TestProgress_DeferredRefusalEmitsRecommendationSnapshot(t *testing.T) {
+	spawner := &fakeSpawner{}
+	promoter := &fakePromoter{result: PromotionResult{Outcome: PromotionDiscarded, Reason: "deferred"}}
+	r, sr := rootSpanRegistry(t, RegistryConfig{
+		Spawner: spawner, Verdict: fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 1},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2, Promoter: promoter,
+	})
+	id := startedExperiment(t, r)
+	r.AllocateAndSpawn(context.Background())
+	if _, err := r.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+	before := len(progressSpans(sr))
+	r.RecordPromotion(id, PromotionResult{Outcome: PromotionDiscarded, Reason: "other"})
+	if n := len(progressSpans(sr)); n != before {
+		t.Fatalf("a plain later outcome emitted %d snapshots", n-before)
+	}
+	r.RecordPromotion(id, PromotionResult{Outcome: PromotionDiscarded, Reason: "real_overlay_owned_by_another_writer owner=script", ForeignOwner: "script"})
+	spans := progressSpans(sr)
+	if len(spans) != before+1 {
+		t.Fatalf("snapshots = %d, want %d", len(spans), before+1)
+	}
+	last := spans[len(spans)-1]
+	if got, _ := rootSpanAttr(last, AttrExperimentProgressTrigger); got != ProgressTriggerRecommendation {
+		t.Errorf("trigger = %q", got)
+	}
+	if got, _ := rootSpanAttr(last, AttrExperimentRecommendationOwner); got != "script" {
+		t.Errorf("owner = %q, want script", got)
+	}
+	// The dashboard reason line must survive the snapshot becoming the newest.
+	want, _ := rootSpanAttr(spans[before-1], AttrExperimentEndReason)
+	if got, ok := rootSpanAttr(last, AttrExperimentEndReason); !ok || got != want || got == "" {
+		t.Errorf("recommendation end_reason = %q (set %v), want %q", got, ok, want)
+	}
+	if got, _ := rootSpanAttr(last, keys.AttrExperimentStatus); got != string(StatusDiscarded) {
+		t.Errorf("status = %q, want discarded", got)
+	}
+}
+
+// After a restart a done experiment is not in memory: its deferred refusal still
+// emits a recommendation snapshot, built from the journal, with the end reason.
+// UC: UC-043 A19
+func TestProgress_DeferredRefusalAfterRestartEmitsSnapshot(t *testing.T) {
+	root := t.TempDir()
+	spawner := &fakeSpawner{}
+	r1, _ := rootSpanRegistry(t, RegistryConfig{
+		Root: root, Spawner: spawner, Verdict: fakeVerdict{outcome: CohortOutcomePromote, concludeAtN: 1},
+		Targeting: &fakeTargeting{}, MaxShadowGames: 2,
+		Promoter: &fakePromoter{result: PromotionResult{Outcome: PromotionDiscarded, Reason: "deferred"}},
+	})
+	id := startedExperiment(t, r1)
+	r1.AllocateAndSpawn(context.Background())
+	if _, err := r1.ConcludeGame(context.Background(), spawner.calls[0].gameID, 0.9, 60); err != nil {
+		t.Fatal(err)
+	}
+
+	r2, sr2 := rootSpanRegistry(t, RegistryConfig{Root: root, Spawner: &fakeSpawner{}, MaxShadowGames: 2})
+	if err := r2.Rehydrate([]string{id}); err != nil {
+		t.Fatal(err)
+	}
+	r2.RecordPromotion(id, PromotionResult{Outcome: PromotionDiscarded, Reason: "real_overlay_owned_by_another_writer owner=script", ForeignOwner: "script"})
+	spans := progressSpans(sr2)
+	if len(spans) != 1 {
+		t.Fatalf("snapshots after restart = %d, want 1", len(spans))
+	}
+	if got, _ := rootSpanAttr(spans[0], AttrExperimentProgressTrigger); got != ProgressTriggerRecommendation {
+		t.Errorf("trigger = %q", got)
+	}
+	if got, _ := rootSpanAttr(spans[0], AttrExperimentRecommendationOwner); got != "script" {
+		t.Errorf("owner = %q, want script", got)
+	}
+	if got, ok := rootSpanAttr(spans[0], AttrExperimentEndReason); !ok || got == "" {
+		t.Errorf("end_reason = %q (set %v), want the teardown reason", got, ok)
+	}
+	if got, _ := rootSpanAttr(spans[0], keys.AttrExperimentStatus); got != string(StatusDiscarded) {
+		t.Errorf("status = %q, want discarded", got)
+	}
+}
+
+// UC: UC-043 A19
+func TestLastForeignOwner(t *testing.T) {
+	ev := []journal.Event{
+		{Promotion: &PromotionResult{ForeignOwner: "a"}},
+		{Promotion: &PromotionResult{}},
+	}
+	if got := lastForeignOwner(ev); got != "a" {
+		t.Errorf("lastForeignOwner = %q, want a", got)
+	}
+	if got := lastForeignOwner(nil); got != "" {
+		t.Errorf("lastForeignOwner(nil) = %q", got)
 	}
 }

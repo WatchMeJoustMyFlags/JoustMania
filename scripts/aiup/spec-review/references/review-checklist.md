@@ -1,7 +1,7 @@
 <!--
 Vendored for JoustMania (#1263 pattern) from
-  https://github.com/AI-Unified-Process/marketplace/blob/05af8163838df704620ebe1121cd6019dbce276c/aiup-core/skills/spec-review/references/review-checklist.md
-(aiup-core v2.28.0). Derived from the AI Unified Process Marketplace by Simon Martinelli
+  https://github.com/AI-Unified-Process/marketplace/blob/dc1d908725e01dd7d129bc7133c6ff209437b3c1/aiup-core/skills/spec-review/references/review-checklist.md
+(aiup-core v3.10.0). Derived from the AI Unified Process Marketplace by Simon Martinelli
 (see scripts/aiup/NOTICE). The lint script path in this repo is scripts/aiup/spec-review/scripts/spec_lint.py.
 -->
 
@@ -53,7 +53,7 @@ fine when the specification says so. `validate_use_case.py` already flags a fixe
 (`TECHNICAL_TERM`); report what that list misses. Severity: `info`, `warning` when the detail constrains the
 implementation in a way nobody decided.
 
-**Where, too:** the use case as a whole — its name in `docs/use_cases.puml`, its goal, and its Main Success
+**Where, too:** the use case as a whole — its name in `docs/use_cases.puml` (or its module diagram), its goal, and its Main Success
 Scenario.
 
 Every use case should be a user goal: ask *is this use case a complete goal that the primary actor would recognize as
@@ -66,6 +66,8 @@ valuable?* Report a use case that fails the question:
   into. Signs of a summary in the Main Success Scenario: the work is handed over to another role, the scenario waits
   for an outside event or a deadline, or branches run in parallel for different actors. Name the business process
   that connects the split use cases as well, to be modeled in BPMN in `docs/processes/` with `/business-process`.
+  Do not report a "Manage <business object>" use case in which one actor adds, changes, and removes one business
+  object in one sitting (Manage Catalog): that CRUD use case is a user goal.
 
 A subfunction the diagram draws as an `<<include>>` from several use cases is intended; do not report it. Severity:
 `warning` for a technical step modeled as a use case of its own, `info` otherwise. The fix belongs to
@@ -78,7 +80,9 @@ A subfunction the diagram draws as an `<<include>>` from several use cases is in
 - A step that can fail — a validation, a lookup, a payment, a call to another system, a concurrent change — without
   an alternative flow whose trigger references that step (`(step N)`)
 - A failure postcondition that is not a minimum guarantee: a system reaction ("System displays an error message")
-  or a statement true for only one failure path. Failure postconditions must hold for every unsuccessful end
+  or a statement true for only one failure path. Failure postconditions must hold for every unsuccessful end.
+  A use case that changes no data has the placeholder `_None — the use case changes no data._` instead; a
+  guarantee such as "the catalog is unchanged" there is `info`, a placeholder in a use case that writes is `warning`
 - A failure path that would break a failure postcondition — e.g. an alternative flow that ends after a partial
   write the guarantees rule out
 - A precondition that nothing establishes: no other use case produces the state it requires
@@ -86,6 +90,11 @@ A subfunction the diagram draws as an `<<include>>` from several use cases is in
 - A Main Success Scenario that does not lead from the trigger to the goal: it starts somewhere other than the event
   in `**Trigger:**`, or its last step and the success postconditions do not achieve what the Overview `**Goal:**`
   promises (the goal says "books a room", the scenario ends when the availability is shown)
+
+A use case without a `**Mockup:**` line is not incomplete: the line is optional, and the mockup is layout input for
+the UI layer skills, never part of the specification this checklist reviews. The same holds for a use case without
+an `**API:**` line: the agreed API contract is input for the API layer skills, and field names, paths, and status
+codes belong in the contract, not in the steps.
 
 Severity: `warning`.
 
@@ -119,7 +128,7 @@ Weak words from the fixed list are the lint's job (`WEAK_WORD`); report what the
 
 ## 7. Entity model consistency
 
-**Where:** steps, rules, and postconditions against `docs/entity_model.md`.
+**Where:** steps, rules, and postconditions against `docs/entity_model.md` and its module files.
 
 Specifications name data in business words, so judge from context, not from spelling: "the guest's email" matches
 `GUEST.email`; "the booking" matches `RESERVATION` when the model has no other candidate. Report:
@@ -157,7 +166,7 @@ precondition the use case evaluates itself, `info` otherwise.
 ## 9. Actors
 
 **Where:** the Overview's `**Primary Actor:**` and `**Secondary Actors:**` lines against the steps, the alternative
-flows, `docs/use_cases.puml`, and the roles in `requirements.md` and `glossary.md`.
+flows, `docs/use_cases.puml` (or the module diagram), and the roles in `requirements.md` and `glossary.md`.
 
 A use case may have several primary actors, listed comma-separated: roles that can each start the use case on their
 own and pursue the same goal through the same main success scenario. Report:
@@ -196,3 +205,19 @@ be an NFR or a constraint instead.
 
 Skip this check when there is no `requirements.md` or it has no NFRs and constraints. Severity: `info`, `warning`
 when the missing NFR or constraint sets a limit a test would check (a response time, a maximum, a mandatory system).
+
+## 11. Architecture decisions
+
+**Where:** the `Accepted` ADRs (`ADR-*.md` under a `decisions/`, `adr/`, or `adrs/` folder) against each other and against the `NFR-*` and `C-*` rows of
+`requirements.md`.
+
+The lint checks that every ADR links an NFR or a constraint, that the links resolve, and that a supersession is
+recorded on both sides; it cannot tell whether the decisions agree. Report two `Accepted` ADRs that cannot both hold
+(one decides server-side sessions, another keeps the session in the browser) and name both; an `Accepted` ADR whose
+Decision breaks a constraint it does not link (a decision for MySQL next to `C-002 System must use PostgreSQL 16`); an
+ADR whose Consequences put the threshold of an NFR at risk without saying how it is still met; and an ADR that links
+an NFR or constraint its Context and Decision never address — a link added to silence the lint.
+
+Skip this check when the project has no ADRs. Severity: `warning` for two contradicting `Accepted` ADRs and for a
+broken constraint, `info` otherwise. The fix is `/architecture-decision` (supersede, or add the link) or
+`/requirements` when the constraint itself has to change.

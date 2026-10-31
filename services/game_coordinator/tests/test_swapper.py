@@ -24,10 +24,11 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream
 
 from lib.types import Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.swapper import SwapperGame
 from services.game_coordinator.intervention_errors import InterventionNotApplied
@@ -154,7 +155,7 @@ class TestSwapperTeamSwapping:
         await game._assign_team_colors()
 
         # Record time before swap
-        time_before = time.time()
+        time_before = game_clock.now()
 
         # Swap player
         await game._kill_player_impl("mock_controller_0", accel_mag=5.0)
@@ -291,14 +292,6 @@ class TestSwapperTeamSwapping:
         assert await game._check_win_condition()
 
 
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
-
-
 class RecordingGameplayStream:
     """Mock gameplay stream that records all writes."""
 
@@ -432,7 +425,7 @@ class TestSwapperGracePeriod:
         await game._assign_team_colors()
 
         player = game.players["mock_controller_1"]
-        before = time.time()
+        before = game_clock.now()
 
         await game._kill_player_impl("mock_controller_1", accel_mag=5.0)
 
@@ -481,7 +474,7 @@ class TestSwapperEndGameImpl:
 
         stream = RecordingGameplayStream()
         game.gameplay_stream = stream
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         assert await game._check_win_condition()  # latches the win (UC-024 BR-004)
         game.running = False
@@ -513,7 +506,7 @@ class TestSwapperEndGameImpl:
 
         stream = RecordingGameplayStream()
         game.gameplay_stream = stream
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         assert await game._check_win_condition()  # latches the win (UC-024 BR-004)
         game.running = False
@@ -543,7 +536,7 @@ class TestSwapperEndGameImpl:
 
         game.last_death_serial = None
         game.gameplay_stream = RecordingGameplayStream()
-        game.start_time = time.time() - 30
+        game.start_time = game_clock.now() - 30
         game.state = GameState.RUNNING
         assert await game._check_win_condition()  # latches the win (UC-024 BR-004)
         game.running = False
@@ -569,7 +562,7 @@ class TestSwapperEndGameImpl:
             game.players[serial].team = 0
 
         game.gameplay_stream = RecordingGameplayStream()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         assert await game._check_win_condition()  # latches the win (UC-024 BR-004)
         game.running = False
@@ -740,7 +733,7 @@ class TestSwapperDisconnect:
         g.gameplay_stream = RecordingGameplayStream()
         g.running = True
         g.state = GameState.RUNNING
-        g.start_time = time.time() - 5.0
+        g.start_time = game_clock.now() - 5.0
         events.clear()
 
         async def no_sound(*_args, **_kwargs):
@@ -1351,6 +1344,7 @@ class TestSwapperMotionLoop:
             player.grace_until = 0.0
         return game, events
 
+    @pytest.mark.real_game_time
     @pytest.mark.uc("UC-024", flow="main", steps=[2])
     @pytest.mark.asyncio
     async def test_lethal_motion_inside_the_grace_does_not_swap_again(self):
@@ -1365,7 +1359,7 @@ class TestSwapperMotionLoop:
         assert events.count_events_of_type("player_swapped") == 1
         grace = game.death_grace_period  # the configured death_grace_period_seconds (FR-170)
         assert grace > 0
-        remaining = game.players[serial].grace_until - time.time()
+        remaining = game.players[serial].grace_until - game_clock.now()
         assert grace - 1.0 < remaining <= grace
 
         # Keep moving hard inside the grace: no second swap, the player stays alive.

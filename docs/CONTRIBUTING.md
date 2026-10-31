@@ -226,6 +226,7 @@ Adding or removing `no-spec-change` or `spec-baseline-growth` re-runs the Spec G
 - prefer `path:Symbol`: it survives edits. New `path:line` refs are allowed but a growth in their total versus the base branch raises a `::warning` with suggestions.
 - every Go `Span*` / `Attr*` constant value must appear in `telemetry.md` as its exact key. Undocumented ones sit in `docs/specs/notes/spec-refs-baseline.json`; the baseline may only grow with the `spec-baseline-growth` label, and a stale entry (now documented or gone) fails: run `make spec-refs` to prune it.
 - an example that is not a real reference: put `<!-- spec-refs: ignore -->` on its line.
+- drift (#1918): `make spec-refs-report` (`scripts/spec_refs.py --report`) lists broken refs and line refs whose cited lines changed after the spec line was last edited. The weekly `spec-refs-drift.yml` workflow runs it and opens or updates ONE issue titled `Spec reference drift report` (label `documentation`); it never gates a PR.
 
 A reference fix is not a spec change: it satisfies the "spec touched" check mechanically, but does not replace the `no-spec-change` reasoning for a behaviour change.
 
@@ -320,6 +321,7 @@ All pull requests must pass CI checks before merging:
 7. **Spec Gate** - Spec lint over `docs/` and the spec-touched check (see [CI spec gate](#ci-spec-gate))
 8. **Spec references** - `make spec-refs-check` in the same job (see [Spec references](#spec-references))
 9. **Generated specs** - `docs/specs/generated/` (metric catalog, RPC tables, flag sets, `ci/` flag diffs) must match the code: run `make specs` and commit (checked by `make specs-check` in the Telemetry Contract job). Totals (flags, RPCs, metrics) are not committed, so parallel PRs do not conflict on them (#2152): `make specs-counts` prints them. After a rebase that conflicts in a generated file, take either side and run `make specs`
+10. **Registry vs pinned release** (#2403) - a change to `services/flag-service/registry.yaml`, `services/flagd/**` or `.env` loads the checkout's registry with the `registry.LoadFile` of the release tag pinned in `.env` (`scripts/ci/check-registry-pinned.sh`, go only, no docker). Compose mounts the checkout's registry next to that release image and the parser is strict, so a new field must ship in a tolerant parser first (release, bump `IMAGE_TAG`), then land in the yaml
 
 **When the full-stack e2e job runs (#1583).** `Integration Tests` (one job, one
 compose stack, about 5-8 minutes) starts the whole docker-compose stack, so it
@@ -456,6 +458,23 @@ make protos
 git add proto/
 git commit -m "chore: Regenerate proto files"
 ```
+
+### Release PR token (one-time setup, #2270)
+
+`release.yml` runs release-please. Events created with the default `GITHUB_TOKEN` start no workflows, so
+the release PR would get no CI and stay blocked. When a GitHub App is configured, the workflow mints an
+installation token (`actions/create-github-app-token`) and uses it for release-please and for the
+release fallback step; without it the workflow falls back to `GITHUB_TOKEN` (forks, unconfigured repos).
+
+Maintainer setup, once:
+
+1. Create a GitHub App (Settings > Developer settings > GitHub Apps) with repository permissions
+   Contents: read and write, Pull requests: read and write. No webhook needed.
+2. Install the App on this repository only.
+3. Repository Settings > Secrets and variables > Actions: add the variable `RELEASE_APP_ID` (the App ID)
+   and the secret `RELEASE_APP_PRIVATE_KEY` (the full generated PEM private key).
+
+Both must be set; if either is missing the workflow silently uses `GITHUB_TOKEN`.
 
 ## Code Style
 

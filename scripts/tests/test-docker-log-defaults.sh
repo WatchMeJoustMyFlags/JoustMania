@@ -12,6 +12,7 @@
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-docker-log-defaults.sh
 # UC: UC-060 A6
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="${ROOT}/scripts/setup/docker-log-defaults.sh"

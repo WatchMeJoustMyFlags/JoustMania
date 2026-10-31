@@ -27,6 +27,27 @@ export class ConnectStreamError extends Error {
   }
 }
 
+/**
+ * The error of a failed unary call (#2387): a Connect error body is
+ * `{"code": "unavailable", "message": "..."}`; keep both instead of the bare HTTP
+ * status. A body that is not Connect JSON (a proxy's HTML page) gives
+ * `http_<status>` and the status text.
+ */
+export async function unaryRpcError(response: Pick<Response, "status" | "statusText" | "text">): Promise<ConnectStreamError> {
+  let code = `http_${response.status}`;
+  let message = response.statusText;
+  try {
+    const body = JSON.parse(await response.text());
+    if (body && typeof body.code === "string" && body.code) {
+      code = body.code;
+      message = typeof body.message === "string" ? body.message : "";
+    }
+  } catch {
+    // not JSON: keep the HTTP status
+  }
+  return new ConnectStreamError(code, message);
+}
+
 export interface Frame {
   flags: number;
   payload: Uint8Array;

@@ -30,19 +30,20 @@ from services.game_coordinator.interventions import (
     SessionView,
     run_in_game_flag_context,
 )
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 
 SPEC = next(s for s in INTERVENTION_SPECS if s.flag_key == "pacing_profile")
 MAIN_CONTEXT = EvaluationContext(attributes={"marker": "main"})
 
 
-class _Game:
-    """Only what the wrapper reads: the game's flag context."""
-
-    def __init__(self, name: str):
-        self.flag_eval_context = EvaluationContext(
+def _game(name: str) -> FakeInterventionGame:
+    """A shared fake whose flag context carries the game's marker."""
+    return FakeInterventionGame(
+        flag_eval_context=EvaluationContext(
             targeting_key="FFA",
             attributes={"marker": name, "game_kind": "shadow", "experiment_id": f"exp_{name}", "arm": "experimental"},
         )
+    )
 
 
 class _GameLoop:
@@ -102,7 +103,7 @@ def _marker() -> str | None:
 async def test_cross_loop_effect_sees_the_game_context_and_leaks_nowhere(game_loop):
     """Cross-loop: the effect sees its game's context; the main loop's and the game
     task's own transaction contexts are unchanged afterwards."""
-    game = _Game("a")
+    game = _game("a")
     api.set_transaction_context(MAIN_CONTEXT)
 
     game_task_ready = threading.Event()
@@ -137,7 +138,7 @@ async def test_cross_loop_effect_sees_the_game_context_and_leaks_nowhere(game_lo
 async def test_inline_effect_restores_the_callers_context_even_when_it_raises():
     """Inline path (no game loop): the effect runs in the caller's task, so the caller's
     transaction context is restored after it, also when the effect raises."""
-    game = _Game("inline")
+    game = _game("inline")
     api.set_transaction_context(MAIN_CONTEXT)
     seen = []
 
@@ -162,7 +163,7 @@ async def test_inline_effect_restores_the_callers_context_even_when_it_raises():
 async def test_two_games_dispatched_together_each_see_their_own_context():
     """Two games on two loops, effects overlapping in time: each sees only its game's context."""
     loops = (_GameLoop(), _GameLoop())
-    games = (_Game("one"), _Game("two"))
+    games = (_game("one"), _game("two"))
     both_started = threading.Barrier(2, timeout=2.0)
     seen: dict[str, list] = {"one": [], "two": []}
 
@@ -190,9 +191,8 @@ async def test_two_games_dispatched_together_each_see_their_own_context():
 
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", flow="A26", br=["BR-018"])
-async def test_a_game_without_a_flag_context_runs_the_effect_unchanged():
-    """None-safe: no game, or a game without ``flag_eval_context`` (a fake), leaves the
-    caller's context as it is."""
+async def test_no_game_runs_the_effect_unchanged():
+    """None-safe: no game leaves the caller's context as it is."""
     api.set_transaction_context(MAIN_CONTEXT)
     seen = []
 
@@ -201,6 +201,5 @@ async def test_a_game_without_a_flag_context_runs_the_effect_unchanged():
         return value
 
     assert await run_in_game_flag_context(None, effect, 1) == 1
-    assert await run_in_game_flag_context(object(), effect, 2) == 2
-    assert seen == [(1, "main"), (2, "main")]
+    assert seen == [(1, "main")]
     assert api.get_transaction_context() == MAIN_CONTEXT

@@ -8,11 +8,10 @@ Last team standing wins.
 Phase 36b: Refactored to extend TeamsGameBase, eliminating ~550 lines of duplicate code.
 """
 
-import asyncio
 import logging
-import time
 
 from lib.types import Sound
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import Phase, Player
 from services.game_coordinator.games.teams_base import TEAM_COLORS, TeamsGameBase
@@ -132,7 +131,7 @@ class RandomTeamsGame(TeamsGameBase):
             controllers: List of controller protobuf messages from GetReadyControllers
         """
         config = get_config_manager().get_config()
-        game_start_time = time.time()
+        game_start_time = game_clock.now()
 
         # Sort serials before any RNG-driven team assignment consumes the order
         # (#1003 CRN alignment): a seed-matched pair shares the team-pool
@@ -212,7 +211,7 @@ class RandomTeamsGame(TeamsGameBase):
             if not self.running:
                 logger.info("Team formation interrupted by force_end")
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         # Set persistent team colors after pulse completes
         await self._set_team_colors(pulse_effect=False, duration_ms=0)

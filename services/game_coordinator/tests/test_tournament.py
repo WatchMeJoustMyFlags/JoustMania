@@ -20,11 +20,11 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-import time
 
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from lib.types import Sound
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.tournament import (
     WAITING_COLOR,
     Match,
@@ -32,14 +32,6 @@ from services.game_coordinator.games.tournament import (
     TournamentPlayer,
     TournamentState,
 )
-
-
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
 
 
 class TestTournamentGameMode:
@@ -276,6 +268,31 @@ class TestTournamentBracket:
         # 6 players rounds up to 8 slots (2 byes)
         bye_count = sum(1 for m in bracket if m.is_bye)
         assert bye_count == 2  # 8 - 6 = 2 byes
+
+    @pytest.mark.uc("UC-025", flow="main", steps=[1])
+    @pytest.mark.parametrize("n", range(2, 33))
+    def test_byes_seeded_to_meet_round_one_winners(self, tournament_game, n):
+        """UC-025 step 1 (#1994): no bye-vs-bye in round 2 where avoidable, every player seated once."""
+        game, _ = tournament_game
+        game.players = {f"p{i:02d}": TournamentPlayer(serial=f"p{i:02d}") for i in range(n)}
+
+        bracket = game._generate_bracket(n)
+
+        slots = 1
+        while slots < n:
+            slots *= 2
+        first_round = [m for m in bracket if m.round_number == 1]
+        round_two = [m for m in bracket if m.round_number == 2]
+        # shape unchanged: power-of-two slots, slots - n byes
+        assert len(first_round) == slots // 2
+        assert sum(m.is_bye for m in first_round) == slots - n
+        seated = [s for m in first_round for s in (m.player1_serial, m.player2_serial) if s]
+        assert sorted(seated) == sorted(game.players)
+        # bye-vs-bye matches in round 2: both slots already filled before any match is played
+        bye_vs_bye = sum(1 for m in round_two if m.player1_serial and m.player2_serial)
+        byes = slots - n
+        round_two_count = slots // 4
+        assert bye_vs_bye == max(0, byes - round_two_count)
 
     def test_generate_bracket_2_players(self, tournament_game):
         """Test bracket for minimum 2 players."""
@@ -580,7 +597,7 @@ class TestKillPlayerInvincibility:
         p1, p2 = serials[0], serials[1]
 
         game.players[p1].tournament_state = TournamentState.FIGHTING
-        game.players[p1].invincible_until = time.time() + 100  # Far future
+        game.players[p1].invincible_until = game_clock.now() + 100  # Far future
         game.players[p2].tournament_state = TournamentState.FIGHTING
 
         game.current_match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
@@ -600,9 +617,9 @@ class TestKillPlayerInvincibility:
         p1, p2 = serials[0], serials[1]
 
         game.players[p1].tournament_state = TournamentState.FIGHTING
-        game.players[p1].invincible_until = time.time() - 1  # Past
+        game.players[p1].invincible_until = game_clock.now() - 1  # Past
         game.players[p2].tournament_state = TournamentState.FIGHTING
-        game.players[p2].invincible_until = time.time() - 1
+        game.players[p2].invincible_until = game_clock.now() - 1
 
         game.current_match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
 
@@ -622,7 +639,7 @@ class TestKillPlayerInvincibility:
         p1, p2, p3 = serials[0], serials[1], serials[2]
 
         game.players[p3].tournament_state = TournamentState.FIGHTING
-        game.players[p3].invincible_until = time.time() - 1
+        game.players[p3].invincible_until = game_clock.now() - 1
 
         game.current_match = Match(match_id=0, round_number=1, player1_serial=p1, player2_serial=p2)
 
@@ -639,7 +656,7 @@ class TestKillPlayerInvincibility:
 
         serial = list(game.players.keys())[0]
         game.players[serial].tournament_state = TournamentState.FIGHTING
-        game.players[serial].invincible_until = time.time() - 1
+        game.players[serial].invincible_until = game_clock.now() - 1
 
         game.current_match = None
 
@@ -681,7 +698,7 @@ class TestTournamentIntroPhase:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._tournament_intro_phase()
 
         intro_events = event_collector.get_events_of_type("tournament_intro")
@@ -703,7 +720,7 @@ class TestTournamentIntroPhase:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._tournament_intro_phase()
 
         color_serials = set()
@@ -737,7 +754,7 @@ class TestTournamentIntroPhase:
             if call_count >= 2:
                 game.running = False
 
-        with patch("services.game_coordinator.games.tournament.asyncio.sleep", side_effect=stop_after_first):
+        with patch("services.game_coordinator.game_clock.sleep", side_effect=stop_after_first):
             await game._tournament_intro_phase()
 
         # Intro event is published before the loop, so it will exist
@@ -774,11 +791,11 @@ class TestTournamentEndGame:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
         game.state = GameState.RUNNING
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.gameplay_stream = RecordingGameplayStream()
         game._play_sound = AsyncMock()
         # Patch asyncio.sleep to be instant for the celebration loop
-        self._sleep_patcher = patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock)
+        self._sleep_patcher = patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock)
         self._sleep_patcher.start()
 
     def _teardown(self):

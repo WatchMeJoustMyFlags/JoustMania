@@ -65,8 +65,6 @@ var defaultDynamicDenylist = map[string]struct{}{
 	// Session capacity (#1018): how many games may run at once, not how one plays.
 	"max_concurrent_games": {},
 	"max_shadow_games":     {},
-	// Tempo-schedule source selection (#1109): which writer drives the tempo, plumbing.
-	"tempo_schedule_mode": {},
 	// Lobby / admin start controls: when the menu force-starts, not the game itself.
 	"force_all_start":         {},
 	"force_all_start_seconds": {},
@@ -125,6 +123,8 @@ type dynamicDeclarer struct {
 	targetN int
 	// pressure is the optional fitness-pressure selection signal (may be nil).
 	pressure pressureFunc
+	// hold gates the hold-mode shield keys (UC-043 A17); nil offers none of them.
+	hold *holdGate
 
 	// cursor is the in-memory round-robin position across candidate flags (resets to
 	// 0 on restart — not journaled). It only advances when a declaration is actually
@@ -185,20 +185,28 @@ type activeFlags map[string]struct{}
 // cover different flags. It performs NO writes and consults NO clock — given the
 // same inputs (file, active set, cursor, pressure) it is fully deterministic.
 //
+// A key the shadow game's mode does not read (catalogKeyModes, #2392) is never
+// offered: an arm value on it could not change a shadow game (UC-043 BR-009).
+//
 // The caller (the loop) is responsible for the capacity check (registry caps) and
 // for actually calling Registry.Declare/Start with the returned Intent; this
 // keeps the heuristic pure and unit-testable in isolation from the registry.
 func (d *dynamicDeclarer) Declare(active activeFlags) (experiment.Intent, bool) {
-	flags := d.readCandidateFlags()
+	catalog := readGameCatalog(d.gameFlags)
+	flags := candidatesOf(catalog)
 	if len(flags) == 0 {
 		return experiment.Intent{}, false
 	}
+	// UC-043 A17 step 1: a hold key only under its conditions (nil gate: none).
+	offerable := d.hold.filter(context.Background(), catalog)
 	order := d.candidateOrder(flags)
 	if len(order) == 0 {
 		return experiment.Intent{}, false
 	}
 
 	objective := d.selectObjective()
+	// UC-043 BR-009 (#2392): only a key the shadow game's mode reads can change it.
+	mode := shadowGameMode()
 
 	// Round-robin scan from the persisted cursor: the FIRST candidate that has no
 	// active experiment and a distinct alternate value wins. Scanning the whole
@@ -213,7 +221,14 @@ func (d *dynamicDeclarer) Declare(active activeFlags) (experiment.Intent, bool) 
 				continue
 			}
 		}
+		if !offerable(key) || !offeredInShadowMode(key, mode) {
+			continue
+		}
 		value, ok := perturbValue(flags[key])
+		if key == experiment.HoldActivationKey {
+			// UC-043 A17 step 1: toward hold only, never the next variant in sort order.
+			value, ok = experiment.HoldValue, true
+		}
 		if !ok {
 			continue // no distinct alternate value to try (e.g. single-variant flag).
 		}
@@ -268,10 +283,18 @@ func (d *dynamicDeclarer) candidateOrder(flags map[string]candidateFlag) []strin
 // defaultDynamicDenylist, which always applies, plus the flag's additions
 // (UC-070 BR-008, C-034: the flag can only tighten, #1907).
 func (d *dynamicDeclarer) denied(key string) bool {
-	if _, ok := defaultDynamicDenylist[key]; ok {
+	if builtinDenied(key) {
 		return true
 	}
 	_, ok := d.denylist[key]
+	return ok
+}
+
+// builtinDenied reports whether key is on the built-in floor
+// defaultDynamicDenylist. The declarer and the proposer vocabulary both apply it
+// (UC-070 BR-008, C-034, #1961).
+func builtinDenied(key string) bool {
+	_, ok := defaultDynamicDenylist[key]
 	return ok
 }
 
@@ -320,14 +343,24 @@ const experimentScope = "experiment+arm"
 // (fail-closed: nothing is declarable or proposable until the flag service
 // answers again).
 func readGameCatalog(r gameFlagReader) map[string]flagservice.FlagView {
-	if r == nil {
+	catalog, err := readGameCatalogCtx(context.Background(), r)
+	if err != nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), flagservice.RequestTimeout)
+	return catalog
+}
+
+// readGameCatalogCtx is readGameCatalog with the read error (a nil reader is an
+// empty catalog, not an error).
+func readGameCatalogCtx(ctx context.Context, r gameFlagReader) (map[string]flagservice.FlagView, error) {
+	if r == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, flagservice.RequestTimeout)
 	defer cancel()
 	set, err := r.GetSet(ctx, experiment.GameFlagSet)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make(map[string]flagservice.FlagView, len(set.Flags))
 	for _, f := range set.Flags {
@@ -335,14 +368,18 @@ func readGameCatalog(r gameFlagReader) map[string]flagservice.FlagView {
 			out[f.Flag] = f
 		}
 	}
-	return out
+	return out, nil
 }
 
 // readCandidateFlags returns every TUNABLE flag of the experiment catalog (one
 // with at least two variants — a single-variant flag has no alternate value to
 // experiment toward) as a candidateFlag (its baseline default value + variants).
 func (d *dynamicDeclarer) readCandidateFlags() map[string]candidateFlag {
-	catalog := readGameCatalog(d.gameFlags)
+	return candidatesOf(readGameCatalog(d.gameFlags))
+}
+
+// candidatesOf is readCandidateFlags over an already-read catalog.
+func candidatesOf(catalog map[string]flagservice.FlagView) map[string]candidateFlag {
 	out := make(map[string]candidateFlag, len(catalog))
 	for key, f := range catalog {
 		if len(f.VariantValues) < 2 {

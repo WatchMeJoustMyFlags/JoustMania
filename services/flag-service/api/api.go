@@ -12,7 +12,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -23,19 +25,24 @@ import (
 
 	"github.com/joustmania/flag-service/fserr"
 	"github.com/joustmania/flag-service/state"
-	"github.com/joustmania/flag-service/syncserver"
 	"github.com/joustmania/flag-service/telemetry"
 )
 
 // MaxBodyBytes bounds a request body.
 const MaxBodyBytes = 64 << 10
 
+// HeaderPersisted is set on the 204 of a DELETE ?persist=true that cleared a
+// value: "true" when the state file was written, "false" when a kill switch was
+// cleared in memory only because the save failed, or its clear could not reach
+// a state file unreadable at start (#2368, services.md §7.2).
+const HeaderPersisted = "X-Flag-Persisted"
+
 // API serves the HTTP/JSON endpoints.
 type API struct {
 	State   *state.State
 	Metrics *telemetry.Metrics
 	Tracer  trace.Tracer
-	Links   *syncserver.Links
+	Links   *telemetry.Links
 	Logger  *slog.Logger
 	// Ready reports whether the gRPC sync listener is up (GET /healthz).
 	Ready func() bool
@@ -171,6 +178,23 @@ type postBody struct {
 	Reason     string         `json:"reason"`
 }
 
+// beginWrite marks a write in flight for the sync push's trace link. Every
+// handler that calls it follows with `defer a.endWrite()`, so a panic in State
+// (recovered by net/http) cannot leave the mark set for good.
+func (a *API) beginWrite() {
+	if a.Links != nil {
+		a.Links.Begin()
+	}
+}
+
+// endWrite clears the in-flight mark; as a defer it runs after finishWrite has
+// remembered the version.
+func (a *API) endWrite() {
+	if a.Links != nil {
+		a.Links.End()
+	}
+}
+
 // finishWrite ends a flagservice.write span and records the write metrics.
 func (a *API) finishWrite(ctx context.Context, span trace.Span, op string, req state.WriteRequest, res state.WriteResult, ferr *fserr.Error, start time.Time) {
 	result, reason := telemetry.ResultOK, fserr.ReasonOK
@@ -199,6 +223,8 @@ func (a *API) finishWrite(ctx context.Context, span trace.Span, op string, req s
 func (a *API) put(w http.ResponseWriter, r *http.Request) {
 	start := a.now()
 	ctx, span := a.Tracer.Start(r.Context(), telemetry.SpanWrite)
+	a.beginWrite()
+	defer a.endWrite()
 	req := state.WriteRequest{Set: r.PathValue("set"), Flag: r.PathValue("flag")}
 	var body putBody
 	ferr := decode(r, w, &body)
@@ -206,14 +232,21 @@ func (a *API) put(w http.ResponseWriter, r *http.Request) {
 	if ferr == nil {
 		req.Variant, req.Scope, req.TTLSeconds, req.Persist = body.Variant, body.Scope, body.TTLSeconds, body.Persist
 		req.Writer, req.DecisionID = body.Writer, body.DecisionID
-		req.DryRun = r.URL.Query().Get("dry_run") == "true"
+		req.DryRun, ferr = boolParam(r.URL.Query(), "dry_run")
 		if v := bytes.TrimSpace(body.Value); len(v) > 0 && !bytes.Equal(v, []byte("null")) {
 			req.Value = v
 		}
 		if body.Reason != "" {
 			span.SetAttributes(attribute.String("flagservice.write_reason", body.Reason))
 		}
-		res, ferr = a.State.Put(req)
+		if ferr == nil {
+			req.IfWriterIn, ferr = ifWriterIn(r)
+		}
+		if ferr == nil {
+			res, ferr = a.State.Put(req)
+		} else {
+			res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: req.Scope.Name()}
+		}
 	} else {
 		res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch()}
 	}
@@ -229,9 +262,26 @@ func (a *API) put(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// ifWriterIn parses ?if_writer_in=<label>,<label>,... (#2260, flags.md §13):
+// the PUT write precondition. nil = absent. An empty entry means "no real
+// overlay present", so "promotion," is the promotion's own overlay or none.
+// Strict: a repeated parameter is malformed, it must not silently pick one.
+func ifWriterIn(r *http.Request) ([]string, *fserr.Error) {
+	vals, ok := r.URL.Query()["if_writer_in"]
+	if !ok {
+		return nil, nil
+	}
+	if len(vals) != 1 {
+		return nil, fserr.BadRequest("if_writer_in must be given once")
+	}
+	return strings.Split(vals[0], ","), nil
+}
+
 func (a *API) post(w http.ResponseWriter, r *http.Request) {
 	start := a.now()
 	ctx, span := a.Tracer.Start(r.Context(), telemetry.SpanWrite)
+	a.beginWrite()
+	defer a.endWrite()
 	req := state.WriteRequest{Set: r.PathValue("set"), Flag: r.PathValue("flag")}
 	var body postBody
 	ferr := decode(r, w, &body)
@@ -256,31 +306,85 @@ func (a *API) post(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-func scopeFromQuery(r *http.Request) state.Scope {
+// boolParam parses one boolean query parameter, strictly (#2367, services.md
+// flag-service API): true|false|1|0, absent = false. Anything else (yes, True,
+// empty, a repeated parameter) is a 400 naming the parameter: a loose parse
+// would turn a dry run into a real write or pick the wrong scope or layer.
+func boolParam(q url.Values, name string) (bool, *fserr.Error) {
+	vals, ok := q[name]
+	if !ok {
+		return false, nil
+	}
+	if len(vals) == 1 {
+		switch vals[0] {
+		case "true", "1":
+			return true, nil
+		case "false", "0":
+			return false, nil
+		}
+	}
+	return false, fserr.BadRequest("%s must be true, false, 1 or 0", name)
+}
+
+func scopeFromQuery(r *http.Request) (state.Scope, *fserr.Error) {
 	q := r.URL.Query()
 	sc := state.Scope{
 		GameID: q.Get("game_id"), Serial: q.Get("serial"),
 		ExperimentID: q.Get("experiment_id"), Arm: q.Get("arm"), GameKind: q.Get("game_kind"),
 	}
-	if q.Has("fraction") || q.Has("fraction_percent") {
+	fraction, ferr := boolParam(q, "fraction")
+	if fraction || q.Has("fraction_percent") {
 		zero := 0
 		sc.FractionPercent = &zero
 	}
-	return sc
+	return sc, ferr
 }
 
 func (a *API) clear(w http.ResponseWriter, r *http.Request) {
 	start := a.now()
 	ctx, span := a.Tracer.Start(r.Context(), telemetry.SpanWrite)
-	sc := scopeFromQuery(r)
-	persist, _ := strconv.ParseBool(r.URL.Query().Get("persist"))
+	a.beginWrite()
+	defer a.endWrite()
+	sc, ferr := scopeFromQuery(r)
+	var persist, guarded bool
+	if ferr == nil {
+		persist, ferr = boolParam(r.URL.Query(), "persist")
+	}
 	req := state.WriteRequest{Set: r.PathValue("set"), Flag: r.PathValue("flag"), Scope: sc, Writer: r.URL.Query().Get("writer")}
-	res, ferr := a.State.Clear(state.ClearRequest{Set: req.Set, Flag: req.Flag, Scope: sc, Writer: req.Writer, Persist: persist})
+	// ?unless_real_game=true: the agent's guarded revert (#2236, flags.md §13).
+	// Strict parse: a typo must not silently turn the guard off.
+	if ferr == nil {
+		guarded, ferr = boolParam(r.URL.Query(), "unless_real_game")
+	}
+	var res state.WriteResult
+	if ferr != nil {
+		res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: sc.Name()}
+	}
+	// ?if_writer=<label>: the compare-and-delete precondition (#1877, flags.md
+	// §13). Strict: an empty value must not silently drop the precondition.
+	ifWriter := r.URL.Query().Get("if_writer")
+	if ferr == nil && r.URL.Query().Has("if_writer") && ifWriter == "" {
+		ferr = fserr.BadRequest("if_writer must not be empty")
+		res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: sc.Name()}
+	}
+	if ferr == nil && len(ifWriter) > state.MaxIDLength {
+		ferr = fserr.BadRequest("if_writer is longer than %d characters", state.MaxIDLength)
+		res = state.WriteResult{FlagSet: req.Set, Flag: req.Flag, Epoch: a.State.Epoch(), ScopeKey: sc.Name()}
+	}
+	if ferr == nil {
+		res, ferr = a.State.Clear(state.ClearRequest{Set: req.Set, Flag: req.Flag, Scope: sc, Writer: req.Writer, Persist: persist, UnlessRealGame: guarded, IfWriter: ifWriter})
+	}
 	span.SetAttributes(attribute.Int("flagservice.cleared", res.Cleared))
 	a.finishWrite(ctx, span, telemetry.OpClear, req, res, ferr, start)
 	if ferr != nil {
 		writeError(w, ferr)
 		return
+	}
+	if persist && (res.Cleared > 0 || res.PersistFailed) {
+		// #2368: a persisted clear says whether it reached the state file; a
+		// kill switch cleared in memory only, or whose clear could not reach
+		// an unreadable state file, answers "false".
+		w.Header().Set(HeaderPersisted, strconv.FormatBool(!res.PersistFailed))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -288,6 +392,8 @@ func (a *API) clear(w http.ResponseWriter, r *http.Request) {
 func (a *API) clearWriter(w http.ResponseWriter, r *http.Request) {
 	start := a.now()
 	ctx, span := a.Tracer.Start(r.Context(), telemetry.SpanWrite)
+	a.beginWrite()
+	defer a.endWrite()
 	req := state.WriteRequest{Set: r.PathValue("set"), Writer: r.URL.Query().Get("writer")}
 	n, ferr := a.State.ClearWriter(req.Set, req.Writer)
 	span.SetAttributes(attribute.Int("flagservice.cleared", n))

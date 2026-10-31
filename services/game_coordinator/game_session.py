@@ -34,7 +34,7 @@ from contextlib import suppress
 from opentelemetry import trace
 from opentelemetry.context import Context
 
-from lib.feature_flags import eval_game_kind, set_game_session_kind_context
+from lib.feature_flags import eval_game_kind, read_string_flag, set_game_session_kind_context
 from lib.otel_metrics import get_export_interval_ms
 from lib.telemetry import get_tracer
 from lib.types import get_game_display_name
@@ -62,6 +62,23 @@ OUTCOME_COMPLETED = "completed"
 OUTCOME_FORCE_ENDED = "force_ended"
 OUTCOME_ERROR = "error"
 GAME_OUTCOMES = frozenset({"winner", "tie", OUTCOME_COMPLETED, OUTCOME_FORCE_ENDED, OUTCOME_ERROR})
+
+
+# Trace shape of an experiment shadow game (#2223, flags.md §10). ``child`` nests the
+# game root under the agent's long-lived ``agent.experiment`` span (#1182), so one
+# experiment trace grows with every shadow game; ``link`` roots each game as its own
+# trace with a Link back to the experiment. The code default matches the flag
+# default: the game root starts before the readiness wait, and ``observability`` is
+# not waited on at all, so the first game after a restart may read the code default.
+EXPERIMENT_GAME_PARENT_FLAG = "telemetry.experiment_game_parent"
+EXPERIMENT_GAME_PARENT_CHILD = "child"
+EXPERIMENT_GAME_PARENT_LINK = "link"
+
+
+def experiment_game_parent_mode() -> str:
+    """Read ``telemetry.experiment_game_parent``; anything but ``child`` is ``link``."""
+    value = read_string_flag("observability", "telemetry.experiment_game_parent", EXPERIMENT_GAME_PARENT_LINK)
+    return EXPERIMENT_GAME_PARENT_CHILD if value == EXPERIMENT_GAME_PARENT_CHILD else EXPERIMENT_GAME_PARENT_LINK
 
 
 def completed_game_outcome(game) -> str:
@@ -130,6 +147,7 @@ class GameSession:
         experiment_id: str = "",
         arm: str = "",
         rng_seed: int = 0,
+        pattern_trigger_policy: bool = False,
     ):
         self.game_id = game_id
         self.game_name = game_name
@@ -162,6 +180,10 @@ class GameSession:
         # primary game is structurally unable to be seeded — same real-protection
         # guard as experiment_id/arm.
         self.rng_seed = rng_seed
+        # UC-046 BR-018 / UC-040 BR-019 (#2096): the shadow game's pattern controllers
+        # press the trigger by themselves, so it honours trigger and hold. The
+        # servicer forces False for a real (primary) session, like rng_seed.
+        self.pattern_trigger_policy = pattern_trigger_policy
 
         self.game_start_time = time.time()
         self.game_state = game_coordinator_pb2.GameState.STARTING
@@ -560,12 +582,14 @@ class GameSession:
         # it. The inbound call stays navigable via the Link above.
         #
         # A SHADOW + experiment-bound game whose spawn carried the agent's
-        # experiment traceparent is instead made a CHILD of that experiment span
-        # (causal parent-child), so it nests under the long-lived experiment span
-        # in the same trace. The gate is STRICT (shadow AND experiment_id AND a
-        # valid injected parent) so the real-game own-root structure is never
-        # touched. We still keep the Link (harmless for shadow, navigability for
-        # real).
+        # experiment traceparent follows telemetry.experiment_game_parent (#2223),
+        # read once here: ``link`` (default) keeps it its own trace and adds a Link
+        # ``link.kind=experiment`` to the experiment span, so a trace holds one game;
+        # ``child`` makes it a CHILD of that span (#1182), nesting every shadow game
+        # in the experiment trace. The gate is STRICT (shadow AND experiment_id AND
+        # a valid injected parent) so the real-game own-root structure is never
+        # touched. The stream Link above is kept either way, unless it names the
+        # experiment span itself (``link`` then carries one Link to it).
         parent_context = Context()
         if (
             self.game_kind == GAME_KIND_SHADOW
@@ -573,7 +597,18 @@ class GameSession:
             and self.experiment_parent_span_context is not None
             and self.experiment_parent_span_context.trace_id != 0
         ):
-            parent_context = trace.set_span_in_context(trace.NonRecordingSpan(self.experiment_parent_span_context))
+            if experiment_game_parent_mode() == EXPERIMENT_GAME_PARENT_CHILD:
+                parent_context = trace.set_span_in_context(trace.NonRecordingSpan(self.experiment_parent_span_context))
+            else:
+                # One Link per target: without grpc_rpc_spans the stream span IS the
+                # injected experiment context, so its plain Link is replaced, not doubled.
+                exp = self.experiment_parent_span_context
+                links = [
+                    link
+                    for link in links
+                    if (link.context.trace_id, link.context.span_id) != (exp.trace_id, exp.span_id)
+                ]
+                links.append(trace.Link(exp, {"link.kind": "experiment"}))
 
         with tracer.start_as_current_span(
             game_span_name,
@@ -675,6 +710,7 @@ class GameSession:
                 # set_game_transaction_context carries it for flag evaluation (#975).
                 game.experiment_id = self.experiment_id
                 game.arm = self.arm
+                game.pattern_trigger_policy = self.pattern_trigger_policy
                 # Let the game publish its gameplay_phase span_id back to the
                 # correlation gauge (#1195) when that span opens, so the agent can
                 # re-parent its in-game decision chain under gameplay_phase. The
@@ -689,7 +725,18 @@ class GameSession:
                 # game_duration_seconds live while RUNNING (#1305); it is stopped
                 # before the final value is set below so a late tick cannot
                 # overwrite it.
-                self.current_game = game
+                # Publish the game atomically with force_end's check (#2025 S1): a
+                # force-end that already ran found no game to stop and reported
+                # ENDED, so this game must not run; one that runs later finds it.
+                with self._state_lock:
+                    force_ended_while_building = self._force_ending
+                    if not force_ended_while_building:
+                        self.current_game = game
+                if force_ended_while_building:
+                    logger.info(f"Game {self.game_id} was force-ended while it was being created")
+                    session_outcome = OUTCOME_FORCE_ENDED
+                    await self.clients.close()
+                    return
                 self.publish_game_mode(game.get_game_name())
                 duration_ticker = asyncio.create_task(self._publish_duration_while_running())
                 try:
@@ -710,7 +757,9 @@ class GameSession:
                 with self._state_lock:
                     self.game_state = game_coordinator_pb2.GameState.ENDED
                 session_outcome = OUTCOME_ERROR
-                await self.event_bus.publish("game_error", {"error": str(e)})
+                # A base-run mode already published it before re-raising (#2025 S2).
+                if getattr(game, "game_error_published", False) is not True:
+                    await self.event_bus.publish("game_error", {"error": str(e)})
             finally:
                 # Thread-safe state cleanup
                 with self._state_lock:
@@ -744,8 +793,10 @@ class GameSession:
                 self._set_gauges_unless_retired(self._zero_lifecycle_gauges)
                 if self.is_primary:
                     # players_alive is a single global gauge (not yet per-kind);
-                    # only the primary session resets it.
-                    metrics.players_alive.set(0)
+                    # only the primary session resets it, and only while its own
+                    # game wrote it last: a force-ended session ending after the
+                    # next game started leaves that game's count alone (#2244).
+                    metrics.reset_players_alive_if_owner(self.game_id)
                 if self.game_name:
                     # games_completed_total is a CUMULATIVE counter: it deliberately
                     # does NOT carry experiment_id/arm (a label on a cumulative

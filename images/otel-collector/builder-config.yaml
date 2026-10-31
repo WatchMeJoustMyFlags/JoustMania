@@ -1,6 +1,6 @@
 # Custom OpenTelemetry Collector build.
 #
-# Based on contrib v0.153.0, trimmed to only the components used by
+# Based on contrib v0.164.1, trimmed to only the components used by
 # config.yaml.
 #
 # To update: bump the version numbers below and rebuild the image.
@@ -12,46 +12,45 @@ dist:
   module: github.com/watchmejoustmyflags/joustmania/otel-collector
   name: otelcol-joustmania
   description: JoustMania OpenTelemetry Collector (contrib)
-  version: 0.153.0
+  version: 0.164.0
   output_path: /build/_output
 
 extensions:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.164.1
 
 receivers:
   # OTLP (gRPC + HTTP) — all services push here
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.153.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.164.0
   # Prometheus scrape — flagd, victoria-metrics, self-telemetry
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver v0.164.1
   # Filelog — tail Docker container JSON logs for non-OTLP services
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.164.1
   # Host metrics — CPU, memory, disk, filesystem, load, network (replaces node-exporter)
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.164.1
   # Docker stats — per-container CPU, memory, network, block I/O
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/dockerstatsreceiver v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/dockerstatsreceiver v0.164.1
 
 processors:
-  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.153.0
-  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.153.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.153.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.153.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/cumulativetodeltaprocessor v0.153.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.164.0
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.164.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.164.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.164.1
   # Transform — OTTL-based attribute manipulation (promote Docker labels to resource attributes)
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.164.1
   # Resource detection — auto-enrich signals with host, OS, and container metadata
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor v0.164.1
 
 exporters:
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.153.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.153.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.153.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter v0.153.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.164.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.164.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.164.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusremotewriteexporter v0.164.1
 
 connectors:
   # Span metrics: decide backend x outcome from agent.decide spans (#1427)
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector v0.153.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector v0.164.1
 
 providers:
-  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.59.0
-  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.59.0
-  - gomod: go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.59.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.70.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.70.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.70.0

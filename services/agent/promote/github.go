@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joustmania/agent/internal/anthropichttp"
 	"github.com/joustmania/agent/keysafe"
 )
 
@@ -88,17 +89,12 @@ func NewGitHubClientFromEnv(target Target, log *slog.Logger) (*httpGitHubClient,
 	log.Warn("code_improvement GitHub real client ENABLED (#936): promotions with target=github WILL open real issues/PRs",
 		"repo", owner+"/"+repo)
 	return &httpGitHubClient{
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-			// A redirect is returned as the response: the token is never
-			// forwarded to another host (C-016, #1886).
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
-		baseURL: baseURL,
-		token:   token,
-		owner:   owner,
-		repo:    repo,
-		log:     log,
+		httpClient: anthropichttp.NewHTTPClient(15 * time.Second),
+		baseURL:    baseURL,
+		token:      token,
+		owner:      owner,
+		repo:       repo,
+		log:        log,
 	}, nil
 }
 

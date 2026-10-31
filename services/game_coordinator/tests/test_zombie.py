@@ -10,7 +10,6 @@ Tests the core Zombie mechanics:
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,10 +23,11 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, async_noop
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream, async_noop
 
 from lib.types import Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.zombie import (
     HUMAN_COLOR,
     INITIAL_ZOMBIES,
@@ -36,14 +36,6 @@ from services.game_coordinator.games.zombie import (
     ZombiePlayer,
     calculate_game_duration,
 )
-
-
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
 
 
 class TestZombieGameMode:
@@ -319,14 +311,14 @@ class TestZombieKillMechanics:
 
         human_serial = game.human_serials[0]
         player = game.players[human_serial]
-        assert player.grace_until <= time.time()
+        assert player.grace_until <= game_clock.now()
 
-        before = time.time()
+        before = game_clock.now()
         await game._kill_player_impl(human_serial, accel_mag=3.0)
 
         # Grace should extend ~2s past the conversion
         assert player.grace_until >= before + 1.9
-        assert player.grace_until <= time.time() + 2.1
+        assert player.grace_until <= game_clock.now() + 2.1
 
     @pytest.mark.uc("UC-023", flow="main", steps=[4])
     @pytest.mark.asyncio
@@ -732,7 +724,7 @@ class TestZombieIntroPhase:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.zombie.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._zombie_intro_phase()
 
         start_events = event_collector.get_events_of_type("zombie_intro_start")
@@ -753,7 +745,7 @@ class TestZombieIntroPhase:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.zombie.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._zombie_intro_phase()
 
         # Extract serials from base_color messages
@@ -767,6 +759,7 @@ class TestZombieIntroPhase:
             assert serial in color_serials, f"Missing base_color for {serial}"
 
     @pytest.mark.asyncio
+    @pytest.mark.real_durations
     async def test_zombie_intro_stops_if_not_running(self, zombie_game):
         """If game.running becomes False during intro, zombie_intro_end should NOT be published."""
         from unittest.mock import AsyncMock, patch
@@ -786,7 +779,7 @@ class TestZombieIntroPhase:
             if call_count >= 2:
                 game.running = False
 
-        with patch("services.game_coordinator.games.zombie.asyncio.sleep", side_effect=stop_after_first_call):
+        with patch("services.game_coordinator.game_clock.sleep", side_effect=stop_after_first_call):
             await game._zombie_intro_phase()
 
         end_events = event_collector.get_events_of_type("zombie_intro_end")
@@ -1231,7 +1224,7 @@ class TestZombieGameTimer:
             if call_count >= 2:
                 game.running = False
 
-        with patch("services.game_coordinator.games.zombie.asyncio.sleep", side_effect=counting_sleep):
+        with patch("services.game_coordinator.game_clock.sleep", side_effect=counting_sleep):
             await game._game_timer()
 
         # After 2 ticks of sleep(1.0), time_remaining should have decreased by 2
@@ -1259,7 +1252,7 @@ class TestZombieGameTimer:
             if call_count >= 3:
                 game.running = False
 
-        with patch("services.game_coordinator.games.zombie.asyncio.sleep", side_effect=counting_sleep):
+        with patch("services.game_coordinator.game_clock.sleep", side_effect=counting_sleep):
             await game._game_timer()
 
         time_events = event_collector.get_events_of_type("time_announcement")
@@ -1331,7 +1324,7 @@ class TestZombieLedAfterKill:
         async def fast(_delay, *_args, **_kwargs):
             await real_sleep(0)
 
-        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", fast)
+        monkeypatch.setattr("services.game_coordinator.game_clock.sleep", fast)
 
     @pytest.mark.uc("UC-023", flow="main", steps=[3])
     @pytest.mark.asyncio
@@ -1390,7 +1383,7 @@ class TestZombieLedAfterKill:
         await game._kill_player(zombie, 5.0)
         task = game._respawn_tasks[zombie]
 
-        before = time.time()
+        before = game_clock.now()
         assert await game.revive_player(zombie) is True
         await asyncio.gather(task, return_exceptions=True)
 
@@ -1465,7 +1458,7 @@ class TestZombieLedAfterKill:
             sleeping.set()
             await gate.wait()
 
-        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", gated_sleep)
+        monkeypatch.setattr("services.game_coordinator.game_clock.sleep", gated_sleep)
         human = game.human_serials[0]
         kill = asyncio.create_task(game._kill_player(human, 0.0, reason="agent_intervention"))
         await asyncio.wait_for(sleeping.wait(), timeout=1.0)
@@ -1531,7 +1524,7 @@ class TestZombieSpecUnits:
         expected_delay = expected_rng.uniform(3.0, 7.0)
 
         zombie = game.zombie_serials[0]
-        before = time.time()
+        before = game_clock.now()
         await game._kill_player_impl(zombie, 5.0)
         delay = game.players[zombie].respawn_until - before
 
@@ -1612,7 +1605,7 @@ class TestZombieRespawnSpanAndGrace:
         async def fast(_delay, *_a, **_k):
             await real_sleep(0)
 
-        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", fast)
+        monkeypatch.setattr("services.game_coordinator.game_clock.sleep", fast)
         zombie = game.zombie_serials[0]
         await game._kill_player(zombie, 5.0)
         await game._respawn_tasks[zombie]
@@ -1642,7 +1635,7 @@ class TestZombieRespawnSpanAndGrace:
         assert game.REVIVE_SPAWN_GRACE == 2.0
         zombie = game.zombie_serials[0]
         await game._kill_player(zombie, 5.0)
-        monkeypatch.setattr(time, "time", lambda: 1000.0)
+        monkeypatch.setattr(game_clock, "now", lambda: 1000.0)
 
         assert await game.revive_player(zombie) is True
 
@@ -1672,7 +1665,7 @@ class TestZombieLoopWinCheckAndDisconnect:
         async def fast(_delay, *_a, **_k):
             await real_sleep(0)
 
-        monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", fast)
+        monkeypatch.setattr("services.game_coordinator.game_clock.sleep", fast)
         yield g, events
         await g.cleanup()
 

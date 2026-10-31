@@ -70,7 +70,7 @@ func TestUC043_Step7_RewatchRevertJournaledByLoop(t *testing.T) {
 		loop := buildExperimentLoop(nil, promoter, nil, gameServiceForDeclarer(t), nil, testLogger())
 		loop.registry = seeded.registry // the journal is read at call time
 
-		proposal := experiment.Proposal{FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, ExperimentID: live[0]}
+		proposal := experiment.Proposal{FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, ExperimentID: live[0]}
 		cfg := promote.Config{Mode: promote.ModeAutonomous, Target: promote.TargetLocal, Enabled: true}
 		ev := promote.Evidence{FitnessBefore: 0.5, RealDefaultValue: 6.0}
 		if res := promoter.Promote(context.Background(), proposal, experiment.Decision{Outcome: experiment.OutcomePromote}, cfg, ev); res.Outcome != promote.OutcomeApplied {

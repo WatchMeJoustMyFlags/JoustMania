@@ -15,10 +15,11 @@ steps so far. It computes the value the release would commit from the status rea
 It writes nothing and sends no `step_setting` (BR-005): the release commits as before. Every clip
 plays in a background task, so a knob step never waits on the audio service (BR-009).
 
-The mode (K1) also shows on the LEDs (LED first, BR-009): after the debounce, without waiting for
-the label, the menu's `preview_setting` pulses the previewed mode's colour on every lobby
-controller (services.md §3.1; no write, no selection). A hold that ends without committing another
-mode, after it showed one, pulses the selected mode once more.
+The mode (K1) and the shield mode (K6, BR-018, #2215) also show on the LEDs (LED first, BR-009):
+after the debounce, without waiting for the label, the menu's `preview_setting` pulses the
+previewed mode's colour on every lobby controller (services.md §3.1; no write, no selection). A
+hold that ends without committing another mode, after it showed one, pulses the selected mode once
+more.
 """
 
 from __future__ import annotations
@@ -34,11 +35,13 @@ from lib import setting_ladders
 from lib.types import Sound
 from lib.voice_prompts import (
     AGENT_LEVEL_VOICES,
+    AUTOMATIC_VOICE,
     BACKEND_VOICES,
     GAME_MODE_VOICE,
     LABEL_VOICES,
     NUM_TEAMS_VOICES,
     SENSITIVITY_VOICES,
+    SHIELD_ACTIVATION_VOICES,
 )
 from proto import menu_pb2
 from services.operator_pad import metrics
@@ -49,8 +52,12 @@ logger = logging.getLogger(__name__)
 
 # The audio clip group of the preview (PlaySoundRequest.group / StopSoundRequest.group, #2107).
 PREVIEW_GROUP = "pad_preview"
-# The option whose preview also shows on the lobby LEDs (menu `preview_setting`, BR-017).
+# The options whose preview also shows on the lobby LEDs (menu `preview_setting`, BR-017, BR-018).
 MODE_OPTION = "current_game"
+SHIELD_OPTION = setting_ladders.SHIELD_OPTION
+# K2 and K5 have no LED colour per value: only their `automatic` rung shows (the double white flash, #2245).
+AUTOMATIC_LED_OPTIONS = frozenset(setting_ladders.AUTOMATIC_OPTIONS) - {SHIELD_OPTION}
+LED_OPTIONS = frozenset({MODE_OPTION, SHIELD_OPTION}) | AUTOMATIC_LED_OPTIONS
 # A `preview_setting` is cosmetic: a short deadline, never retried (BR-010), no cue on failure.
 MODE_PREVIEW_TIMEOUT_SECONDS = 1.0
 
@@ -67,6 +74,8 @@ def value_voice(option: str, value: str | None) -> Sound | None:
     """The voice line of a ladder value, the same tables the menu voices its commits with."""
     if value is None:
         return None
+    if value == setting_ladders.AUTOMATIC and option in setting_ladders.AUTOMATIC_OPTIONS:
+        return AUTOMATIC_VOICE  # one shared line for every setting's `automatic` rung (BR-018)
     if option == "sensitivity" and value in setting_ladders.SENSITIVITY_LADDER:
         return SENSITIVITY_VOICES[setting_ladders.SENSITIVITY_LADDER.index(value)]
     if option == "num_teams" and value in setting_ladders.TEAMS_LADDER:
@@ -77,6 +86,8 @@ def value_voice(option: str, value: str | None) -> Sound | None:
         return AGENT_LEVEL_VOICES.get(value)
     if option == "decision.backend":
         return BACKEND_VOICES.get(value)
+    if option == SHIELD_OPTION:
+        return SHIELD_ACTIVATION_VOICES.get(value)
     return None
 
 
@@ -91,8 +102,9 @@ class _Pending:
 
 @dataclass
 class _ModeLeds:
-    """The LED preview of one K1 hold: the mode at the press, the last one queued and the last one sent."""
+    """The LED preview of one K1 or K6 hold: the mode at the press, the last one queued and the last one sent."""
 
+    option: str  # MODE_OPTION or SHIELD_OPTION: what `preview_setting` shows
     start: str
     queued: str  # the last mode queued for a pulse (a step back to it queues it again)
     sent: str  # the last mode whose `preview_setting` went out to the menu
@@ -134,7 +146,7 @@ class Previewer:
         self._timer: asyncio.Task | None = None  # waiting out the debounce; restarted by a step
         self._option: str | None = None
         self._status = None  # the status read at the press
-        self._leds: _ModeLeds | None = None  # K1 with a menu stub: this hold's LED preview
+        self._leds: _ModeLeds | None = None  # K1 or K6 with a menu stub: this hold's LED preview
 
     # --- entry points ---------------------------------------------------------------------
 
@@ -175,7 +187,7 @@ class Previewer:
         """Release, chord or lost input: drop what is still to come and stop the preview clip.
 
         ``commit_steps`` is the net the release commits (0: nothing is sent). A K1 hold that showed
-        another mode on the LEDs and commits no other mode pulses the selected mode again.
+        another mode on the LEDs and commits no other mode pulses the selected mode again (K6 the same).
         """
         if self.hold_key is None:
             return
@@ -217,13 +229,15 @@ class Previewer:
     def _restore_wanted(self, commit_steps: int) -> bool:
         if self._leds is None:
             return False
-        committed = setting_ladders.preview_value(MODE_OPTION, self._status, commit_steps).value
+        committed = setting_ladders.preview_value(self._leds.option, self._status, commit_steps).value
         # A commit of another mode: the menu's commit pulses the new mode itself (BR-015).
         return commit_steps == 0 or committed == self._leds.start
 
     async def _restore(self, leds: _ModeLeds) -> None:
+        if leds.option in AUTOMATIC_LED_OPTIONS and leds.start != setting_ladders.AUTOMATIC:
+            return  # nothing to restore: a value of K2 / K5 has no LED cue
         if leds.sent != leds.start:
-            await self._show_mode(leds.start)
+            await self._show_mode(leds.option, leds.start)
 
     def _queue_pulse(self, make: Callable[[], Awaitable[None]]) -> None:
         """Run ``make()`` after the previous pulse has finished; never cancelled by the end of a hold."""
@@ -266,8 +280,8 @@ class Previewer:
             return
         self._last_value = start.value
         self._option, self._status = option, status
-        if option == MODE_OPTION and self._menu is not None:
-            self._leds = _ModeLeds(start.value, start.value, start.value)
+        if option in LED_OPTIONS and self._menu is not None:
+            self._leds = _ModeLeds(option, start.value, start.value, start.value)
         label = LABEL_VOICES.get(option)
         if label is not None:
             self._label_task = self._spawn(self._play_label(label))
@@ -306,7 +320,13 @@ class Previewer:
         pending = self._pending
         leds = self._leds
         if leds is None or pending is None or pending.sound is None:
-            return  # not a K1 hold with the LED preview, or the limit word (the mode is unchanged)
+            return  # not a hold with the LED preview, or the limit word (the mode is unchanged)
+        if leds.option in AUTOMATIC_LED_OPTIONS and pending.value != setting_ladders.AUTOMATIC:
+            # K2 / K5: only the `automatic` rung has an LED cue. A value supersedes a pulse not yet
+            # sent and lets a later return to `automatic` flash again.
+            leds.queued = pending.value
+            leds.seq += 1
+            return
         if pending.value == leds.queued:
             return  # the same as the last one shown
         leds.queued = mode = pending.value
@@ -318,15 +338,15 @@ class Previewer:
         if leds.ended or seq != leds.seq:
             return  # superseded by a newer step, or the hold ended first: at most one call waits (BR-010)
         leds.sent = mode  # set as it goes out, never at queueing: the restore reads it
-        await self._show_mode(mode)
+        await self._show_mode(leds.option, mode)
 
-    async def _show_mode(self, mode: str) -> None:
+    async def _show_mode(self, option: str, mode: str) -> None:
         """One `preview_setting` (services.md §3.1): the menu pulses ``mode`` on the lobby; never retried."""
         try:
             response = await self._menu.ProcessInput(
                 menu_pb2.ProcessInputRequest(
                     input_type="web_command",
-                    data={"command": "preview_setting", "option": MODE_OPTION, "mode": mode},
+                    data={"command": "preview_setting", "option": option, "mode": mode},
                 ),
                 timeout=MODE_PREVIEW_TIMEOUT_SECONDS,
             )

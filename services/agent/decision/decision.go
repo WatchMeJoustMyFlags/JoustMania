@@ -87,6 +87,11 @@ type Decision struct {
 	// game on the flag service (UC-053, FR-136/FR-137), so it reaches only this
 	// game and dies with it; a decision without a game id is not written.
 	GameID string `json:",omitempty"`
+	// GameKind is the deciding game's kind in the flag vocabulary ("real" /
+	// "shadow", GameContext.GameKind), stamped with GameID before the ActionSink
+	// call so the writer can label agent_intervention_writes_total{game_kind}
+	// (#2294). Engines leave it empty.
+	GameKind string `json:",omitempty"`
 }
 
 // RulesEngine turns a context snapshot into zero or more Decisions. The
@@ -333,6 +338,11 @@ type Loop struct {
 	// the ledger inert.
 	charges          chargeLedger
 	shieldChargeMode ShieldChargeMode
+	// shieldSeconds is the grant_shield length source (UC-040 BR-029, #2395): the
+	// interventions/shield_seconds "default" variant, read per grant. nil (the golden
+	// harness, every older test) leaves the decision's value empty, so the writer and
+	// the ledger use DefaultShieldSeconds.
+	shieldSeconds ShieldSecondsSource
 
 	// flagState is this partition's agent.flag_state digest (#2059, flag_state.go).
 	flagState flagStateTracker
@@ -342,6 +352,11 @@ type Loop struct {
 	applied                appliedLedger
 	suppressReapplied      bool
 	alreadyAppliedRecorder func(intervention, serial string)
+	// experimentFlag looks up the flag under test in a game (UC-040 A40, BR-028;
+	// experimentflag.go). nil skips nothing.
+	experimentFlag func(c gamecontext.GameContext) string
+	// experimentFlagSeen quiets repeated experiment_flag blocks (UC-040 A40 step 6).
+	experimentFlagSeen experimentFlagRefusals
 }
 
 // NewLoop builds a Loop with the no-op rules/actions stubs, the global tracer,
@@ -497,12 +512,14 @@ func metricAction(intervention string) string {
 // recordDecision bumps agent_decisions_total for one decision the engine returned
 // (#790), applied OR blocked. block_reason is empty when applied and the specific
 // BlockReason ("not_allowed"/"battery_threshold"/"rate_limit") when blocked, so the
-// dashboard can split applied vs blocked by reason. Labels are bounded: action (the
+// dashboard can split applied vs blocked by reason. Labels are bounded: game_kind
+// (primary|shadow, #2294), action (the
 // intervention vocabulary), blocked (bool), block_reason (the closed BlockReason
 // set). The counter is never nil (NewLoop seeds a no-op), so this is safe from the
 // concurrent Export-handler goroutines that drive runDecision.
-func (l *Loop) recordDecision(ctx context.Context, action string, blocked bool, reason BlockReason) {
+func (l *Loop) recordDecision(ctx context.Context, gameKind, action string, blocked bool, reason BlockReason) {
 	l.decisions.Add(ctx, 1, otelmetric.WithAttributes(
+		attribute.String("game_kind", gamecontext.TelemetryGameKind(gameKind)),
 		attribute.String("action", metricAction(action)),
 		attribute.Bool("blocked", blocked),
 		attribute.String("block_reason", string(reason)),
@@ -666,6 +683,7 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 	if decideRec != nil {
 		state.DecideBackend = decideRec.used // rides every agent.decision span
 	}
+	decisions = l.stampShieldSeconds(rootCtx, snapshot, decisions, decideRec)
 	before := len(state.Outcomes)
 	for _, d := range decisions {
 		l.runDecision(rootCtx, snapshot, c, d, now(), &state)
@@ -762,7 +780,7 @@ func (l *Loop) decide(ctx context.Context, snapshot flags.Snapshot, rules RulesE
 	// The remote call gate is not reached on rules: leave the empty-allow-list
 	// state so its "entering" debug line fires again on a later remote cycle (#1298).
 	l.llmGate.Lock()
-	l.noteNoInterventions(c, false)
+	l.noteNoInterventions(c, false, false)
 	l.noteMisconfigured(c, flags.DecisionBackendRules, "")
 	l.llmGate.Unlock()
 	return l.rulesDecide(ctx, snapshot, rules, c, flags.DecisionBackendRules, "")
@@ -789,7 +807,7 @@ func (l *Loop) nowOrDefault() func() time.Time {
 // decision.blocked=true (and the BlockReason) on both spans and in the
 // LayerState — recorded, never silently dropped.
 func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, now time.Time, state *LayerState) {
-	allowed := snapshot.InterventionsAllowed
+	d = l.withShieldSeconds(ctx, snapshot, d)
 	cost := interventionCost(d.Intervention)
 	perm := l.evaluatePermission(ctx, snapshot, c, d, now, cost, state)
 	reason, blocked := perm.reason, perm.blocked
@@ -798,51 +816,15 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// refusal in the chain included, releases it.
 	applied := false
 	defer perm.shield.finish(&applied)
-	if blocked && reason == ReasonRateLimit && l.repeatRefusal(d, now) {
-		// UC-040 A21: the budget already refused this decision and has not
-		// changed since; count it, but emit no span, warning or timeline entry.
-		l.recordRepeatRefusal(ctx, d, cost, state, ReasonRateLimit)
-		return
-	}
-	if blocked && perm.repeatApplied {
-		// UC-040 A35 (as A21): the same value was already suppressed against this
-		// entry; count it, but emit no span, log line or timeline entry.
-		l.recordRepeatRefusal(ctx, d, cost, state, ReasonAlreadyApplied)
-		return
-	}
-	if blocked && perm.repeatShield {
-		// UC-040 A31 step 1, A33 (as A21): the shield ledger already refused a
-		// grant with this reason against this entry; count it, but emit no span,
-		// warning or timeline entry.
-		l.recordRepeatRefusal(ctx, d, cost, state, reason)
-		return
+	if blocked {
+		if repeatReason, repeat := l.repeatRefusalReason(perm, d, now); repeat {
+			// A repeated refusal is counted, but emits no span, warning or timeline entry.
+			l.recordRepeatRefusal(ctx, c.GameKind, d, cost, state, repeatReason)
+			return
+		}
 	}
 
-	// Trace correlation Phase 2 (#1133): when the game-coordinator's root game-span
-	// trace_id is known (ingested from the game_trace_correlation signal into
-	// GameContext.GameTraceID), add an OTel span LINK from this agent.decision span to
-	// that game trace. A Link (not parent-child) because the relationship is async /
-	// cross-trace: the agent's decision is its own root trace that REFERENCES the game.
-	// This complements — does not replace — the #1095 game.id attribute (still emitted
-	// via decisionAttributes). gameTraceLink returns no options when the id is absent or
-	// invalid, so the span is created exactly as before (graceful fallback, no error).
-	target := l.targetAttributes(d.TargetSerial, c.GameKind)
-	startOpts := []trace.SpanStartOption{
-		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind, c.SessionID)...),
-		// player.serial / player.name of a targeted decision, blocked or applied (#1295).
-		trace.WithAttributes(target...),
-	}
-	startOpts = append(startOpts, gameTraceLink(c.GameTraceID, c.GameTraceSpanID)...)
-	if c.GameTraceID != "" {
-		// Also stamp the originating trace_id as a span ATTRIBUTE (not only the Link
-		// attribute), so it is searchable as a span tag in Jaeger even on backends
-		// that don't surface Link attributes in search (#1133 review).
-		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
-	}
-	if c.GameTraceSpanID != "" {
-		// Likewise stamp the originating span_id as a searchable span attribute (#1157).
-		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceSpanID, c.GameTraceSpanID)))
-	}
+	startOpts, target := l.decisionSpanOptions(c, d, state, blocked, reason)
 	dCtx, dSpan := l.Tracer.Start(ctx, SpanDecision, startOpts...)
 	defer dSpan.End()
 	// UC-046 step 7 / NFR-042: record the decision in the pattern game's sequence.
@@ -858,7 +840,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	dSpan.AddEvent("feature_flag", trace.WithAttributes(
 		semconv.FeatureFlagKey(interventionsAllowedFlagKey),
 		semconv.FeatureFlagProviderName(flagProviderName),
-		semconv.FeatureFlagResultVariant(allowedSummary(allowed)),
+		semconv.FeatureFlagResultVariant(allowedSummary(snapshot.InterventionsAllowed)),
 	))
 
 	_, aSpan := l.Tracer.Start(dCtx, SpanAction, trace.WithAttributes(
@@ -875,13 +857,68 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// branching — block_reason is empty when applied, the BlockReason when blocked —
 	// so the demo dashboard can split applied vs blocked by reason. Emitted alongside
 	// the existing audit span/log, not in place of it.
-	l.recordDecision(ctx, d.Intervention, blocked, reason)
+	l.recordDecision(ctx, c.GameKind, d.Intervention, blocked, reason)
 
-	if blocked && reason == ReasonAlreadyApplied {
-		// UC-040 A35: not a refusal by a gate, the value is already in place. Info,
-		// not the agent.decision_blocked warning, and the timeline says "already in
-		// place", so the narrative does not read as the agent being stopped.
-		state.recordBlocked(d, reason, cost)
+	if blocked {
+		l.recordBlockedDecision(d, reason, cost, snapshot.InterventionsAllowed, state)
+		return
+	}
+	l.dispatchDecision(ctx, dCtx, snapshot, c, d, cost, state, dSpan, aSpan, &applied)
+}
+
+// repeatRefusalReason reports the reason of a blocked decision that repeats an
+// earlier refusal, to be counted without a span, warning or timeline entry.
+// Checked in order: UC-040 A21 (budget unchanged since the refusal), A40 step 6
+// (same experiment flag already blocked this lever in this game), A35 (the same
+// value already suppressed against this entry), A31 step 1 / A33 (the shield
+// ledger already refused a grant with this reason).
+func (l *Loop) repeatRefusalReason(perm permission, d Decision, now time.Time) (BlockReason, bool) {
+	switch {
+	case perm.reason == ReasonRateLimit && l.repeatRefusal(d, now):
+		return ReasonRateLimit, true
+	case perm.repeatExperimentFlag:
+		return ReasonExperimentFlag, true
+	case perm.repeatApplied:
+		return ReasonAlreadyApplied, true
+	case perm.repeatShield:
+		return perm.reason, true
+	}
+	return "", false
+}
+
+// decisionSpanOptions builds the agent.decision start options and returns the
+// target (player.*) attributes the agent.action span reuses.
+func (l *Loop) decisionSpanOptions(c gamecontext.GameContext, d Decision, state *LayerState, blocked bool, reason BlockReason) ([]trace.SpanStartOption, []attribute.KeyValue) {
+	// Trace correlation Phase 2 (#1133): when the game's root trace_id is known, add
+	// an OTel span LINK to it (a Link, not parent-child: the relationship is async /
+	// cross-trace). gameTraceLink returns no options when the id is absent or invalid.
+	target := l.targetAttributes(d.TargetSerial, c.GameKind)
+	startOpts := []trace.SpanStartOption{
+		trace.WithAttributes(decisionAttributes(state, d, blocked, reason, c.GameKind, c.SessionID)...),
+		// player.serial / player.name of a targeted decision, blocked or applied (#1295).
+		trace.WithAttributes(target...),
+	}
+	startOpts = append(startOpts, gameTraceLink(c.GameTraceID, c.GameTraceSpanID)...)
+	if c.GameTraceID != "" {
+		// Also a searchable span ATTRIBUTE, for backends that don't surface Link
+		// attributes in search (#1133 review).
+		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceID, c.GameTraceID)))
+	}
+	if c.GameTraceSpanID != "" {
+		// Likewise the originating span_id (#1157).
+		startOpts = append(startOpts, trace.WithAttributes(attribute.String(AttrGameTraceSpanID, c.GameTraceSpanID)))
+	}
+	return startOpts, target
+}
+
+// recordBlockedDecision records a decision a gate refused (or, UC-040 A35, one
+// whose value is already in place) in state and the #916 narrative timeline.
+func (l *Loop) recordBlockedDecision(d Decision, reason BlockReason, cost float64, allowed []string, state *LayerState) {
+	state.recordBlocked(d, reason, cost)
+	if reason == ReasonAlreadyApplied {
+		// UC-040 A35: not a refusal by a gate. Info, not the agent.decision_blocked
+		// warning, and no timeline entry, so the narrative does not read as the agent
+		// being stopped.
 		l.recordAlreadyApplied(d.Intervention, d.TargetSerial)
 		l.Log.Info("agent.decision_already_applied",
 			"intervention", d.Intervention,
@@ -889,24 +926,23 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 			"decision_reason", d.Reason)
 		return
 	}
-	if blocked {
-		state.recordBlocked(d, reason, cost)
-		// Feed the BLOCKED outcome into this game's #916 rolling narrative timeline
-		// (#945): blocked interventions are recorded, never silently dropped, so the
-		// timeline (and the #916/#928/#929 narratives + the #960 proposer prompt)
-		// shows what the agent WANTED to do but a permission gate refused. The
-		// recorder closes over THIS loop's game_id (per-game isolation, #845/#917).
-		l.recordIntervention(d.Intervention, d.TargetSerial, true)
-		l.Log.Warn("agent.decision_blocked",
-			"blocked", true,
-			"reason", string(reason),
-			"intervention", d.Intervention,
-			"target_serial", d.TargetSerial,
-			"decision_reason", d.Reason,
-			"allowed", allowed)
-		return
-	}
+	// Feed the BLOCKED outcome into this game's #916 rolling narrative timeline
+	// (#945): blocked interventions are recorded, never silently dropped.
+	l.recordIntervention(d.Intervention, d.TargetSerial, true)
+	l.Log.Warn("agent.decision_blocked",
+		"blocked", true,
+		"reason", string(reason),
+		"intervention", d.Intervention,
+		"target_serial", d.TargetSerial,
+		"decision_reason", d.Reason,
+		"allowed", allowed)
+}
 
+// dispatchDecision records and writes a decision that passed every gate, stamps
+// the outcome on both spans and schedules the effect sample. It sets *applied
+// as soon as the write is known to have gone out (right after the applied span
+// stamps), so a panic in the later hooks still leaves the permission shield kept.
+func (l *Loop) dispatchDecision(ctx, dCtx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext, d Decision, cost float64, state *LayerState, dSpan, aSpan trace.Span, applied *bool) {
 	state.recordDispatched(d, cost)
 	// Feed the DISPATCHED outcome into this game's #916 rolling narrative timeline
 	// (#945): recorded BEFORE the action sink applies it (it passed every gate, so it
@@ -921,6 +957,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// BR-011): the sink needs it so end_game can never end another game (#1310).
 	addressed := d
 	addressed.GameID = c.SessionID
+	addressed.GameKind = c.GameKind
 	// UC-040 A35: an applied state or level value is recorded only after the write
 	// went out; a failed write or an overlapping one deletes the entry.
 	flight := l.beginApplied(d)
@@ -961,7 +998,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	}
 	dSpan.SetAttributes(attribute.Bool(AttrDecisionApplied, true))
 	aSpan.SetAttributes(attribute.Bool(AttrDecisionApplied, true))
-	applied = true
+	*applied = true
 	l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeApplied)
 	l.recordInterventionApplied(ctx, d.Intervention)
 	// Intervention-effect MEASUREMENT (#918): stamp a baseline of this game's
@@ -1034,10 +1071,14 @@ type permission struct {
 	// repeatApplied marks an already_applied suppression that repeats an earlier one
 	// against the same entry (quiet, UC-040 A35).
 	repeatApplied bool
+	// repeatExperimentFlag marks an experiment_flag block of a lever already
+	// blocked on the same flag in this game (quiet, UC-040 A40 step 6).
+	repeatExperimentFlag bool
 }
 
 // evaluatePermission runs the permission chain over one decision in order:
-// allow-list gate (#727), battery threshold, the already-applied check (UC-040
+// allow-list gate (#727), battery threshold, the experiment-flag check (UC-040
+// A40), the already-applied check (UC-040
 // A35), the shield ledger (UC-040 A31, A33), then the weighted rate limit (#728). It returns the verdict. The
 // rate limit is charged ONLY when the decision passes the allow-list and
 // battery gates AND fits the budget — so the budget is spent on decisions the
@@ -1057,6 +1098,15 @@ func (l *Loop) evaluatePermission(ctx context.Context, snapshot flags.Snapshot, 
 	// not block, but is noted).
 	if l.batteryBlocks(snapshot, c, d) {
 		return permission{reason: ReasonBatteryThreshold, blocked: true}
+	}
+	// 2a. Experiment flag (UC-040 A40, BR-028): in a game of an experiment, either
+	// arm, a lever of the flag under test is blocked experiment_flag. Check-only and
+	// before the rate limit, so it charges no budget and does not end rank-order
+	// admission.
+	// A repeat of a block already emitted in this game is quiet (A40 step 6).
+	if flag := l.experimentFlagBlocks(c, d); flag != "" {
+		return permission{reason: ReasonExperimentFlag, blocked: true,
+			repeatExperimentFlag: !l.experimentFlagSeen.first(d.Intervention, flag)}
 	}
 	// 3. Already applied (UC-040 A35, BR-023): a state or level decision that
 	// repeats the value this loop last wrote for its key is blocked already_applied.

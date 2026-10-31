@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
-from services.controller_manager.multiplexer.motion_patterns import Archetype, SignalHasher
+from services.controller_manager.multiplexer.motion_patterns import POLICY_THRESHOLD, Archetype, SignalHasher
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +41,32 @@ class PatternRuntime:
     overruns: int = 0
     last_value: float = 1.0
     hasher: SignalHasher = field(init=False)
+    # Threshold policy lookback (UC-046 BR-018): the newest frame j scanned and the
+    # newest j whose intensity reached the level, so each frame is evaluated once.
+    _scanned_to: int = field(default=-1, init=False)
+    _last_hit: int = field(default=-(10**9), init=False)
 
     def __post_init__(self) -> None:
         self.hasher = SignalHasher(self.archetype.stream_rate_hz)
+
+    def trigger(self, k: int) -> bool:
+        """``archetype.trigger(slot, k)`` for a non-decreasing k, in O(1) amortised per frame.
+
+        k only grows (it advances once per owned frame, also across a reconnect),
+        so a threshold lookback scans every frame j at most once.
+        """
+        policy = self.archetype.trigger_policy
+        if policy is None:
+            return False
+        if policy.kind != POLICY_THRESHOLD:
+            return self.archetype.trigger(self.slot, k)
+        newest = k - policy.reaction_frames
+        oldest = max(0, newest - policy.hold_frames + 1)
+        for j in range(max(oldest, self._scanned_to + 1), newest + 1):
+            if self.archetype.value(self.slot, j) >= policy.level:
+                self._last_hit = j
+        self._scanned_to = max(self._scanned_to, newest)
+        return self._last_hit >= oldest and newest >= 0
 
     def record(self) -> dict:
         """The replay record of UC-046 step 8 (RemoveController / pattern_release)."""
@@ -168,7 +191,6 @@ class MockAdapter(ControllerIOAdapter):
     def discover(
         self,
         force: bool = False,  # noqa: ARG002
-        verify_only: bool = False,  # noqa: ARG002
         exclude_serials: list[str] | None = None,  # noqa: ARG002
     ) -> list[str]:
         """Return all mock controller serials.
@@ -326,11 +348,14 @@ class MockAdapter(ControllerIOAdapter):
         controller = self.controllers.get(serial)
         return controller.get("pattern") if controller else None
 
-    def pattern_frame(self, serial: str, subscriber_id: str, explicit: bool) -> dict | None:
-        """Acceleration to DELIVER for a pattern controller on one stream frame.
+    def pattern_frame(self, serial: str, subscriber_id: str, explicit: bool) -> tuple[dict, bool] | None:
+        """Acceleration and trigger to DELIVER for a pattern controller on one stream frame.
 
         Returns None for a controller without a pattern (the caller keeps the
-        polled state). The first stream that names the controller in its explicit
+        polled state), else ``(accel, trigger)``. The trigger is the archetype's
+        policy at frame k (UC-046 BR-018), taken from k only, never from the
+        delivered value (a death latch does not change it); it is True only on the
+        owning stream, so an observer never sees a press. The first stream that names the controller in its explicit
         filter becomes its owner; only the owner advances k (UC-046 BR-001), so a
         dashboard stream (no filter) never perturbs the game's signal and just sees
         the last delivered value. Precedence (BR-012): an active SimulateDeath latch
@@ -346,7 +371,7 @@ class MockAdapter(ControllerIOAdapter):
         if pattern.owner is None and explicit:
             pattern.owner = subscriber_id
         if pattern.owner != subscriber_id:
-            return {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: pattern.last_value}
+            return {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: pattern.last_value}, False
 
         death = controller["death_accel"]
         if death and controller["death_frames_remaining"] > 0:
@@ -355,10 +380,12 @@ class MockAdapter(ControllerIOAdapter):
         else:
             value = pattern.archetype.value(pattern.slot, pattern.frame_index)
             accel = {AxisKey.X: 0.0, AxisKey.Y: 0.0, AxisKey.Z: value}
-        pattern.hasher.update(value)
+        has_policy = pattern.archetype.has_trigger_policy
+        trigger = pattern.trigger(pattern.frame_index) if has_policy else False
+        pattern.hasher.update(value, trigger if has_policy else None)
         pattern.frame_index += 1
         pattern.last_value = value
-        return accel
+        return accel, trigger
 
     def pattern_stream_rate(self, serials) -> int | None:
         """Pinned rate of a stream naming pattern controllers (UC-046 FR-103), else None."""

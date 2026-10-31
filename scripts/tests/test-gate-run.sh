@@ -9,6 +9,7 @@
 #
 # Runs as part of `make lint`, or directly: ./scripts/tests/test-gate-run.sh
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 # Hermetic: a fail-loud fake docker first on PATH, no COMPOSE / DOCKER override.
 unset COMPOSE DOCKER
 # Hermetic: no detach state from a caller (e.g. this test run inside a gate-run job).
@@ -23,6 +24,8 @@ GATE_RUN="${SCRIPT_DIR}/../ci/gate-run.sh"
 WORK="$(realpath "$(mktemp -d)")"
 trap 'rm -rf "${WORK}" "${FAKE_DOCKER_DIR}"' EXIT
 
+# Own gate slots: this test may itself run inside a gate-run job holding a host slot.
+export JOUSTMANIA_GATE_SLOT_DIR="${WORK}/slots"
 MAIN="${WORK}/main"
 WT="${MAIN}/.worktrees/wt"
 LOGS="${WORK}/logs"
@@ -320,13 +323,43 @@ rm -f "$SLOW_COUNTER"
 mkfifo "${WORK}/dead-gate"
 exec 7<>"${WORK}/dead-gate"
 SLOW_GATE="${WORK}/dead-gate" GATE_RUN_WAIT=0 run_gr 3 'VERDICT: PENDING' --worktree "$WT" --logs "$LOGS" --name dead -- scripts/tests/test-slow.sh
-for _ in $(seq 300); do [[ -f "${NS}/dead.job/pid" && "$(starts)" == 1 ]] && break; sleep 0.1; done
-[[ "$(starts)" == 1 ]] || fail "dead job did not start"
-pkill -KILL -s "$(cat "${NS}/dead.job/pid")" || true
-for _ in $(seq 300); do flock -n "${NS}/dead.job/lock" true && break; sleep 0.1; done
+# Wait on conditions (up to 60 s), not a fixed window: a loaded host is slow, not wrong.
+wait_for() { local i; for ((i = 0; i < 600; i++)); do "$@" && return 0; sleep 0.1; done; return 1; }
+dead_started() { [[ -f "${NS}/dead.job/pid" && "$(starts)" == 1 ]]; }
+wait_for dead_started || fail "dead job did not start"
+dead_pid="$(cat "${NS}/dead.job/pid")"
+pkill -KILL -s "$dead_pid" || kill -KILL "-${dead_pid}" 2>/dev/null || kill -KILL "$dead_pid" 2>/dev/null || true
+dead_lock_free() { flock -n "${NS}/dead.job/lock" true; }
+wait_for dead_lock_free || fail "killed job still holds its lock"
+[[ ! -f "${NS}/dead.job/rc" ]] || fail "killed job wrote rc"
 exec 7>&-
 run_gr 0 'VERDICT: PASS' --worktree "$WT" --logs "$LOGS" --name dead -- scripts/tests/test-slow.sh
 [[ "$(starts)" == 2 ]] || fail "killed job was not replaced (starts: $(starts))"
+# The rc re-check (#2073/#2081): a job that finishes between the rc test and the lock
+# probe is finished, not killed. The test seam pauses the second call in that window.
+rm -f "$SLOW_COUNTER"
+mkfifo "${WORK}/race-gate"
+exec 7<>"${WORK}/race-gate"
+SLOW_GATE="${WORK}/race-gate" GATE_RUN_WAIT=0 run_gr 3 'VERDICT: PENDING' --worktree "$WT" --logs "$LOGS" --name race -- scripts/tests/test-slow.sh
+race_started() { [[ -f "${NS}/race.job/pid" && "$(starts)" == 1 ]]; }
+wait_for race_started || fail "race job did not start"
+PAUSE="${WORK}/pause"; mkdir -p "$PAUSE"; : >"$PAUSE/hold"
+GATE_RUN_TEST_PAUSE_DIR="$PAUSE" timeout 60 "${GATE_RUN}" --worktree "$WT" --logs "$LOGS" --name race \
+  -- scripts/tests/test-slow.sh >"${WORK}/race.out" 2>&1 &
+racer=$!
+race_reached() { [[ -f "$PAUSE/reached" ]]; }
+wait_for race_reached || fail "second call never reached the re-check seam"
+echo go >&7
+race_done() { [[ -f "${NS}/race.job/rc" ]]; }
+wait_for race_done || fail "released race job did not finish"
+race_unlocked() { flock -n "${NS}/race.job/lock" true; }
+wait_for race_unlocked || fail "finished race job still holds its lock"
+rm -f "$PAUSE/hold"
+wait "$racer" || fail "second call failed: $(cat "${WORK}/race.out")"
+grep -q 'VERDICT: PASS' "${WORK}/race.out" || fail "second call: no PASS: $(cat "${WORK}/race.out")"
+[[ "$(starts)" == 1 ]] || fail "finished job was replaced as killed (starts: $(starts))"
+exec 7>&-
+rm -rf "$PAUSE"
 # Concurrent identical calls after the worktree changed: one fresh job, not one each.
 rm -f "$SLOW_COUNTER"
 echo mutated >"${WT}/mutant.txt"

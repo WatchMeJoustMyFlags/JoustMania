@@ -13,26 +13,28 @@ Original JoustMania behavior preserved (minus weapon system).
 
 import asyncio
 import logging
-import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from lib.colors import Colors
 from lib.feature_flags import read_float_flag, read_int_flag, read_object_flag
-from lib.types import GameEvent, Sound
+from lib.types import Sound
 from proto import controller_manager_pb2
-from services.game_coordinator import metrics
+from services.game_coordinator import game_clock, metrics
 from services.game_coordinator.games.base import (
     GAME_MODE_ATTR,
-    BaseGameMode,
     Phase,
     Player,
     Sensitivity,
     resolve_mode_thresholds,
     resolve_non_negative_duration,
 )
+from services.game_coordinator.games.streamed_intro import StreamedIntroGameMode
 from services.game_coordinator.stream_writes import serialized_write
 
 logger = logging.getLogger(__name__)
@@ -83,7 +85,38 @@ class ZombiePlayer(Player):
     respawn_until: float = 0.0  # Time when zombie can respawn (0 = not respawning)
 
 
-class ZombieGame(BaseGameMode):
+@dataclass(frozen=True)
+class ZombieInitFlags:
+    """The zombie flags latched at game init, validated and immutable (#2359)."""
+
+    thresholds: Mapping[Sensitivity, tuple[float, float]]
+    initial_count: int
+    respawn_min_seconds: float
+    respawn_max_seconds: float
+
+    @classmethod
+    def from_raw(
+        cls, *, thresholds: Any, initial_count: Any, respawn_min_seconds: Any, respawn_max_seconds: Any
+    ) -> "ZombieInitFlags":
+        """Validate the raw flag values; a malformed one gives the module default (fail closed).
+
+        ``initial_count`` must be a positive int. The respawn bounds are non-negative and the
+        min must not exceed the max, else both fall back together to keep a sane window.
+        """
+        respawn_min = resolve_non_negative_duration(respawn_min_seconds, ZOMBIE_RESPAWN_MIN)
+        respawn_max = resolve_non_negative_duration(respawn_max_seconds, ZOMBIE_RESPAWN_MAX)
+        if respawn_min > respawn_max:
+            respawn_min, respawn_max = ZOMBIE_RESPAWN_MIN, ZOMBIE_RESPAWN_MAX
+        count_ok = isinstance(initial_count, int) and initial_count >= 1
+        return cls(
+            thresholds=MappingProxyType(dict(resolve_mode_thresholds(thresholds, ZOMBIE_THRESHOLDS))),
+            initial_count=initial_count if count_ok else INITIAL_ZOMBIES,
+            respawn_min_seconds=respawn_min,
+            respawn_max_seconds=respawn_max,
+        )
+
+
+class ZombieGame(StreamedIntroGameMode):
     """
     Zombie game mode using gRPC communication.
 
@@ -98,6 +131,8 @@ class ZombieGame(BaseGameMode):
 
     Note: Weapon system not implemented (requires button events in gameplay stream).
     """
+
+    RUN_SPAN_NAME = "zombie_game"
 
     def __init__(
         self,
@@ -144,30 +179,26 @@ class ZombieGame(BaseGameMode):
 
         # #766 F1: zombie threshold overrides promoted to ``game.zombie.thresholds``.
         # Read once at init (init-frozen); malformed values fall back to ZOMBIE_THRESHOLDS.
-        self.zombie_thresholds = resolve_mode_thresholds(
-            read_object_flag("game", "zombie.thresholds", {}, game_id=self.game_id), ZOMBIE_THRESHOLDS
+        self.mode_flags = ZombieInitFlags.from_raw(
+            thresholds=read_object_flag("game", "zombie.thresholds", {}, game_id=self.game_id),
+            initial_count=read_int_flag("game", "zombie.initial_count", INITIAL_ZOMBIES, game_id=self.game_id),
+            respawn_min_seconds=read_float_flag(
+                "game", "zombie.respawn_min_seconds", ZOMBIE_RESPAWN_MIN, game_id=self.game_id
+            ),
+            respawn_max_seconds=read_float_flag(
+                "game", "zombie.respawn_max_seconds", ZOMBIE_RESPAWN_MAX, game_id=self.game_id
+            ),
         )
+        self.zombie_thresholds = dict(self.mode_flags.thresholds)
 
         # #766 F2: initial zombie count and respawn delay window promoted to game
         # flags. Read ONCE here (init-frozen); malformed values fall back to the
         # module constants. ``initial_count`` must be a positive int; respawn
         # bounds are non-negative and the min must not exceed the max (else both
         # fall back together to preserve a sane window).
-        initial = read_int_flag("game", "zombie.initial_count", INITIAL_ZOMBIES, game_id=self.game_id)
-        self.initial_zombies = initial if isinstance(initial, int) and initial >= 1 else INITIAL_ZOMBIES
-
-        respawn_min = resolve_non_negative_duration(
-            read_float_flag("game", "zombie.respawn_min_seconds", ZOMBIE_RESPAWN_MIN, game_id=self.game_id),
-            ZOMBIE_RESPAWN_MIN,
-        )
-        respawn_max = resolve_non_negative_duration(
-            read_float_flag("game", "zombie.respawn_max_seconds", ZOMBIE_RESPAWN_MAX, game_id=self.game_id),
-            ZOMBIE_RESPAWN_MAX,
-        )
-        if respawn_min > respawn_max:
-            respawn_min, respawn_max = ZOMBIE_RESPAWN_MIN, ZOMBIE_RESPAWN_MAX
-        self.zombie_respawn_min = respawn_min
-        self.zombie_respawn_max = respawn_max
+        self.initial_zombies = self.mode_flags.initial_count
+        self.zombie_respawn_min = self.mode_flags.respawn_min_seconds
+        self.zombie_respawn_max = self.mode_flags.respawn_max_seconds
 
         self.zombie_serials: list[str] = []
         self.human_serials: list[str] = []
@@ -315,7 +346,7 @@ class ZombieGame(BaseGameMode):
         for _ in range(round(ZOMBIE_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         await self.event_publisher("zombie_intro_end", {})
         logger.info("Zombie intro phase complete")
@@ -345,7 +376,7 @@ class ZombieGame(BaseGameMode):
         }
 
         while self.running and self.time_remaining > 0:
-            await asyncio.sleep(1.0)
+            await game_clock.sleep(1.0)
             previous_remaining = self.time_remaining
             self.time_remaining -= 1.0
 
@@ -443,7 +474,7 @@ class ZombieGame(BaseGameMode):
             # Zombie killed - set respawn timer
             zombie_player.alive = False
             respawn_delay = self._rng.uniform(self.zombie_respawn_min, self.zombie_respawn_max)
-            zombie_player.respawn_until = time.time() + respawn_delay
+            zombie_player.respawn_until = game_clock.now() + respawn_delay
 
             logger.info(f"Zombie {serial} killed, respawning in {respawn_delay:.1f}s")
 
@@ -477,7 +508,7 @@ class ZombieGame(BaseGameMode):
             # instantly re-kill the fresh zombie (#757). Sourced from the
             # ``game.death_grace_period_seconds`` flag (#766 F2 / #1090), frozen per
             # game at init in BaseGameMode; matches the respawn grace below.
-            zombie_player.grace_until = time.time() + self.death_grace_period
+            zombie_player.grace_until = game_clock.now() + self.death_grace_period
 
             # Update lists
             if serial in self.human_serials:
@@ -541,7 +572,7 @@ class ZombieGame(BaseGameMode):
         (UC-020 BR-003), so a winning conversion's grey lands before the rainbow.
         """
         try:
-            await asyncio.sleep(CONVERSION_COLOUR_DELAY)
+            await game_clock.sleep(CONVERSION_COLOUR_DELAY)
             player = self.players.get(serial)
             if not self.running or player is None or not player.alive or not player.is_zombie:
                 return
@@ -579,7 +610,7 @@ class ZombieGame(BaseGameMode):
             serial: Controller serial number
             delay: Respawn delay in seconds
         """
-        await asyncio.sleep(delay)
+        await game_clock.sleep(delay)
         await self._respawn_player(serial, cause="timer")
 
     async def _respawn_player(self, serial: str, cause: str = "revive") -> bool:
@@ -615,7 +646,7 @@ class ZombieGame(BaseGameMode):
         player.smoothed_accel = 0.0
         # Grace period after respawn, sourced from ``game.death_grace_period_seconds``
         # (#766 F2 / #1090), frozen per game at init in BaseGameMode.
-        player.grace_until = time.time() + self.death_grace_period
+        player.grace_until = game_clock.now() + self.death_grace_period
         self._mark_alive_in_metrics(serial)
 
         logger.info(f"Zombie {serial} respawned ({cause})")
@@ -711,7 +742,7 @@ class ZombieGame(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "winner": winner,
             "time_remaining": self.time_remaining,
             "outcome": self.game_outcome(),
@@ -730,89 +761,13 @@ class ZombieGame(BaseGameMode):
         # A task cancelled before its first step never runs its own removal.
         self._conversion_colour_tasks.clear()
 
-    async def run(self):
-        """
-        Run the zombie game with timer.
+    async def _run_streamed_gameplay(self) -> bool:
+        # The game timer counts from gameplay start, after the warm-up
+        self.timer_task = self._track_task(asyncio.create_task(self._game_timer()))
+        return await super()._run_streamed_gameplay()
 
-        Override to start the game timer during gameplay.
-        """
-        from services.game_coordinator.games.base import GameState
+    async def _teardown_before_end(self, teardown_span, progress) -> None:
+        """Zombies ends no shield feedback before its winner effects (the finally skips it after them)."""
 
-        # The session game root span carries the outcome (#1328).
-        self._capture_game_root_span()
-        with tracer.start_as_current_span("zombie_game") as game_span:
-            self.game_span = game_span
-            game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
-
-            try:
-                self.running = True
-                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
-
-                # Initialization phase
-                with tracer.start_as_current_span("initialization_phase") as init_span:
-                    await self._initialize_players()
-                    if len(self.players) < 2:
-                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
-                    # Before any task is created: tasks copy the context (#1273).
-                    self._set_flag_eval_context()
-                    self._create_player_spans(None)
-                    # The intro colours go over the stream, so it opens first; a drain
-                    # discards the intro's frames and keeps disconnects (UC-023 step 1).
-                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
-                    await self._run_streamed_intro_and_instructions(init_span)
-
-                if not self.running:
-                    return
-
-                # Countdown
-                with tracer.start_as_current_span("countdown_phase"):
-                    await self._countdown()
-
-                if not self.running:
-                    return
-
-                # Start gameplay
-                self.state = GameState.RUNNING
-                self.start_time = time.time()
-
-                # Zombies publishes game_started after the countdown (UC-023 step 1).
-                await self.event_publisher(
-                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
-                )
-
-                # Start music (no tempo loop by design, UC-023 BR-002)
-                await self._start_game_music()
-
-                # Prime the EMA filters before death detection (UC-030 BR-003)
-                await self._warmup_ema()
-
-                # The game timer counts from gameplay start, after the warm-up
-                self.timer_task = self._track_task(asyncio.create_task(self._game_timer()))
-
-                # Game loop (gameplay stream already started before intro)
-                with tracer.start_as_current_span("gameplay_phase"):
-                    await self._game_loop()
-                self._latch_game_outcome()
-
-                # End game
-                with tracer.start_as_current_span("teardown_phase") as teardown_span:
-                    await self._end_game_impl()
-                    self._record_game_outcome(teardown_span)
-
-                game_span.set_status(Status(StatusCode.OK))
-
-            except Exception as e:
-                self._run_failed = True
-                logger.error(f"Game error: {e}", exc_info=True)
-                game_span.record_exception(e)
-                game_span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-            finally:
-                self._record_force_ended_outcome_if_unrecorded()
-                force_ended = not self.running
-                self.running = False
-                await self._stop_game_music()
-                if force_ended:
-                    await self.on_force_end()
-                await self._cleanup_after_run()
+    def _teardown_after_outcome(self) -> None:
+        """Zombies leaves the stream to the run-end cleanup (UC-030 BR-006)."""

@@ -6,11 +6,14 @@
  * CONTROLLER_STREAM_LOST. Built on keepStreamOpen so the retry is testable.
  */
 import { keepStreamOpen } from "./stream.js";
+import type { VisibilityGate } from "./visibilityGate.js";
 
 export const CONTROLLER_STREAM_LOST = "Connection lost. Retrying...";
 
 export interface ControllerStreamOptions<T> {
-  open: () => AsyncIterable<T>;
+  open: (signal?: AbortSignal) => AsyncIterable<T>;
+  /** Pauses the stream while the page is hidden (UC-035 BR-012). */
+  gate?: VisibilityGate;
   onUpdate: (update: T) => void;
   grid: { setLoading(loading: boolean): void; setError(message: string): void };
   /** Mirrors the stream state (main.ts state.isStreaming). */
@@ -22,10 +25,11 @@ export interface ControllerStreamOptions<T> {
 
 export function keepControllerStreamOpen<T>(opts: ControllerStreamOptions<T>): Promise<void> {
   return keepStreamOpen({
-    open: () => {
+    gate: opts.gate,
+    open: (signal) => {
       opts.setStreaming(true);
       opts.grid.setLoading(false);
-      return opts.open();
+      return opts.open(signal);
     },
     onEvent: opts.onUpdate,
     onLost: (error) => {

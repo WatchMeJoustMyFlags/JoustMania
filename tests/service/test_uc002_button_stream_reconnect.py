@@ -8,8 +8,8 @@ lobby, two of them READY. No button is pressed after the drop, so nothing but
 the replayed connect events can register a controller again:
 
 - step 2: the menu processes one connect event per controller on the new
-  stream (``menu_button_frames_processed_total`` grows by 3; the counter
-  counts connect and disconnect events only, never button presses);
+  stream (the ``menu_button_dispatch_seconds{event_type="connect"}`` observation
+  count grows by 3; the label keeps the READY presses out of the proof, #2380);
 - steps 1 and 3: the READY controllers show the dim lobby colour again
   (CONNECTED, un-readied), and every controller does.
 """
@@ -27,7 +27,8 @@ from tests.service.lobby_flow import start_lobby
 pytestmark = pytest.mark.tier("service")
 
 MENU = SERVICES["menu"][2]
-CONNECT_EVENTS_METRIC = "menu_button_frames_processed_total"
+CONNECT_EVENTS_METRIC = "menu_button_dispatch_seconds"
+CONNECT_ATTRS = {"event_type": "connect"}
 LED_TIMEOUT_SECONDS = 15.0
 RECONNECT_TIMEOUT_SECONDS = 15.0
 # The metric reader exports on an interval (5 s by default).
@@ -72,11 +73,12 @@ async def test_button_stream_reconnect_re_registers_every_controller(proxied_sta
         connects_before = (
             await sink.wait_metric_async(
                 CONNECT_EVENTS_METRIC,
+                CONNECT_ATTRS,
                 service=MENU,
-                predicate=lambda p: p.value >= CONTROLLERS,
+                predicate=lambda p: (p.count or 0) >= CONTROLLERS,
                 timeout=EXPORT_TIMEOUT_SECONDS,
             )
-        ).value
+        ).count
 
         # Two of three READY: their LEDs leave the dim lobby colour; no game starts.
         await mark_controllers_ready(mock_client, readied)
@@ -97,11 +99,12 @@ async def test_button_stream_reconnect_re_registers_every_controller(proxied_sta
         # Step 2: a replayed connect per controller reached the menu (no press since the drop).
         replayed = await sink.wait_metric_async(
             CONNECT_EVENTS_METRIC,
+            CONNECT_ATTRS,
             service=MENU,
-            predicate=lambda p: p.value >= connects_before + CONTROLLERS,
+            predicate=lambda p: (p.count or 0) >= connects_before + CONTROLLERS,
             timeout=EXPORT_TIMEOUT_SECONDS,
         )
-        assert replayed.value >= connects_before + CONTROLLERS
+        assert (replayed.count or 0) >= connects_before + CONTROLLERS
 
         # Steps 1 and 3: every controller is CONNECTED again with the dim lobby colour (READY cleared).
         last = {}

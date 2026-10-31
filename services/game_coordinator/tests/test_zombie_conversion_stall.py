@@ -91,7 +91,7 @@ def held_delay(monkeypatch):
             return None
         return await real_sleep(delay, *args, **kwargs)
 
-    monkeypatch.setattr("services.game_coordinator.games.zombie.asyncio.sleep", sleep)
+    monkeypatch.setattr("services.game_coordinator.game_clock.sleep", sleep)
     return release
 
 
@@ -176,6 +176,7 @@ async def test_cleanup_cancels_the_pending_zombie_colour(game, held_delay):
 
 @pytest.mark.uc("UC-023", flow="main", steps=[3, 5])
 @pytest.mark.asyncio
+@pytest.mark.real_durations
 async def test_winning_conversion_turns_grey_before_the_winner_rainbow(game):
     # Real clock: the conversion delay (0.5 s) ends inside the 1 s post-win hold
     # (UC-020 BR-003), so the last convert shows grey, then the rainbow.

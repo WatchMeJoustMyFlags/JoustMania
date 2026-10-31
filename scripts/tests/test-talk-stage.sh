@@ -10,6 +10,7 @@
 # UC: UC-070 main A7 A8 A9 BR-001 BR-003 BR-007 Pre-3 Post-S-2
 # UC: UC-053 A1
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -117,7 +118,13 @@ if grep -q '^DELETE /agent/decision.backend?persist=true' "${FAKE_FLAG_LOG}"; th
 # the flag service in Python), and no real container is inspected.
 mkdir -p "${WORK}/bin"
 printf '#!/usr/bin/env bash\nexit 1\n' >"${WORK}/bin/docker"
-printf '#!/usr/bin/env bash\nexit 1\n' >"${WORK}/bin/curl"
+REAL_CURL="$(command -v curl)"
+# curl "unavailable" except for the flag service (flagservice.py uses curl, #2057)
+cat >"${WORK}/bin/curl" <<SH
+#!/usr/bin/env bash
+case "\${@: -1}" in "${FLAG_SERVICE_URL}"*) exec "${REAL_CURL}" "\$@" ;; esac
+exit 1
+SH
 chmod +x "${WORK}/bin/docker" "${WORK}/bin/curl"
 TALK_CLOCK_URLS="" PATH="${WORK}/bin:${PATH}" "${SCRIPT_DIR}/../talk-preflight.sh" >"${WORK}/pf.out" 2>&1 || true
 if grep -q "stage baseline is\|nothing can act\|allows nothing" "${WORK}/pf.out" \

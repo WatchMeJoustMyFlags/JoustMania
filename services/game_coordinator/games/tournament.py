@@ -8,27 +8,25 @@ with byes (automatically advance to next round).
 Original JoustMania behavior preserved.
 """
 
-import asyncio
 import logging
 import math
-import time
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from lib.feature_flags import read_float_flag
-from lib.types import GameEvent, Sound
+from lib.types import Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import (
-    GAME_MODE_ATTR,
-    BaseGameMode,
-    GameState,
     Phase,
     Player,
     resolve_non_negative_duration,
 )
+from services.game_coordinator.games.streamed_intro import StreamedIntroGameMode
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -84,7 +82,26 @@ class Match:
     is_bye: bool = False  # True if only one player (automatic advance)
 
 
-class TournamentGame(BaseGameMode):
+@dataclass(frozen=True)
+class TournamentInitFlags:
+    """The tournament flags latched at game init, validated and immutable (#2359)."""
+
+    match_seconds: float
+    time_between_matches_seconds: float
+
+    @classmethod
+    def from_raw(cls, *, match_seconds: Any, time_between_matches_seconds: Any) -> "TournamentInitFlags":
+        """Validate the raw flag values. A 0 s match would break play, so it falls back; a 0 s pause is allowed."""
+        match = resolve_non_negative_duration(match_seconds, MATCH_DURATION)
+        return cls(
+            match_seconds=match if match > 0 else MATCH_DURATION,
+            time_between_matches_seconds=resolve_non_negative_duration(
+                time_between_matches_seconds, TIME_BETWEEN_MATCHES
+            ),
+        )
+
+
+class TournamentGame(StreamedIntroGameMode):
     """
     Tournament game mode using gRPC communication.
 
@@ -94,6 +111,8 @@ class TournamentGame(BaseGameMode):
     Handles odd player counts with byes (some players automatically
     advance to next round).
     """
+
+    RUN_SPAN_NAME = "tournament_game"
 
     def __init__(
         self,
@@ -134,7 +153,7 @@ class TournamentGame(BaseGameMode):
         self.total_rounds = 0
         self.match_span: trace.Span | None = None
         # The bracket is a state machine stepped on every gameplay frame of the base
-        # game loop (UC-025 steps 2-4, D-G33): deadlines are time.monotonic().
+        # game loop (UC-025 steps 2-4, D-G33): deadlines are on the game clock (UC-030 BR-010).
         self._match_deadline: float = 0.0  # the match time limit (A1)
         self._next_action_at: float = 0.0  # the end of the round pause or the pause between matches
         self._bracket_finished: bool = False  # no match left to play: the win condition
@@ -154,17 +173,14 @@ class TournamentGame(BaseGameMode):
         # Read ONCE here (init-frozen); malformed values fall back to module
         # constants. A 0s match would break play, so it must be strictly positive;
         # a 0s inter-match pause is acceptable.
-        match_seconds = resolve_non_negative_duration(
-            read_float_flag("game", "tournament.match_seconds", MATCH_DURATION, game_id=self.game_id),
-            MATCH_DURATION,
-        )
-        self._match_duration: float = match_seconds if match_seconds > 0 else MATCH_DURATION
-        self._time_between_matches: float = resolve_non_negative_duration(
-            read_float_flag(
+        self.mode_flags = TournamentInitFlags.from_raw(
+            match_seconds=read_float_flag("game", "tournament.match_seconds", MATCH_DURATION, game_id=self.game_id),
+            time_between_matches_seconds=read_float_flag(
                 "game", "tournament.time_between_matches_seconds", TIME_BETWEEN_MATCHES, game_id=self.game_id
             ),
-            TIME_BETWEEN_MATCHES,
         )
+        self._match_duration: float = self.mode_flags.match_seconds
+        self._time_between_matches: float = self.mode_flags.time_between_matches_seconds
 
     def get_game_name(self) -> str:
         """Return game mode identifier."""
@@ -173,6 +189,18 @@ class TournamentGame(BaseGameMode):
     def get_instruction_clip(self) -> Sound | None:
         """Spoken instructions before the countdown (UC-025 A5, UC-020 A5)."""
         return Sound.MENU_VOX_TOURNAMENT_INSTRUCTIONS
+
+    @staticmethod
+    def _bye_match_indices(first_round_matches: int, num_byes: int) -> set[int]:
+        """First-round match indices that are byes, spread so byes rarely meet in round 2 (#1994).
+
+        Round-2 match j takes first-round matches 2j and 2j+1, so byes packed at the front
+        pair up bye-vs-bye. Taking indices in bit-reversed order gives every round-2 match
+        one bye before any gets a second (and spreads them over later rounds too).
+        """
+        bits = max(first_round_matches.bit_length() - 1, 0)
+        order = sorted(range(first_round_matches), key=lambda i: int(format(i, f"0{bits}b")[::-1] or "0", 2))
+        return set(order[:num_byes])
 
     def _generate_bracket(self, player_count: int) -> list[Match]:
         """
@@ -215,6 +243,7 @@ class TournamentGame(BaseGameMode):
 
         # First round matches
         first_round_matches = total_slots // 2
+        bye_matches = self._bye_match_indices(first_round_matches, num_byes)
         player_idx = 0
 
         for i in range(first_round_matches):
@@ -229,7 +258,7 @@ class TournamentGame(BaseGameMode):
                 match.player1_serial = serials[player_idx]
                 player_idx += 1
 
-            if num_byes > 0 and i < num_byes:
+            if i in bye_matches:
                 # This match is a bye - player1 auto-advances
                 match.is_bye = True
                 match.winner_serial = match.player1_serial
@@ -408,7 +437,7 @@ class TournamentGame(BaseGameMode):
         for _ in range(round(TOURNAMENT_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         logger.info("Tournament intro phase complete")
 
@@ -442,6 +471,12 @@ class TournamentGame(BaseGameMode):
         p1.alive = True
         p2.alive = True
         self.current_match = match
+        # Invincible from the seating on, before the first await below: a kill or an
+        # eliminate_player the loop runs during match_start or the colour writes is
+        # declined (UC-025 step 2, BR-006; #2025 S3). Duration: invincibility_seconds.
+        invincible_until = game_clock.now() + self._invincibility_duration
+        p1.invincible_until = invincible_until
+        p2.invincible_until = invincible_until
 
         # Create match span (inherits current active context: gameplay_phase)
         self.match_span = tracer.start_span(
@@ -470,16 +505,11 @@ class TournamentGame(BaseGameMode):
         await self._set_base_color(match.player1_serial, MATCH_COLORS[0])
         await self._set_base_color(match.player2_serial, MATCH_COLORS[1])
 
-        # Set invincibility (duration configurable via tournament_invincibility setting)
-        invincible_until = time.time() + self._invincibility_duration
-        p1.invincible_until = invincible_until
-        p2.invincible_until = invincible_until
-
         # Play match start sound (use beep - no dedicated fight sound exists)
         await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)
 
         # The match time limit (A1) runs from here
-        self._match_deadline = time.monotonic() + self._match_duration
+        self._match_deadline = game_clock.now() + self._match_duration
 
     async def _finalize_match(self, match: Match) -> None:
         """End a decided match: winner effect, loser off, ``match_end``, advance (UC-025 steps 3-4).
@@ -490,7 +520,7 @@ class TournamentGame(BaseGameMode):
         """
         match.is_complete = True
         self.current_match = None
-        self._next_action_at = time.monotonic() + self._time_between_matches
+        self._next_action_at = game_clock.now() + self._time_between_matches
 
         # Determine loser
         loser_serial = match.player2_serial if match.winner_serial == match.player1_serial else match.player1_serial
@@ -629,7 +659,7 @@ class TournamentGame(BaseGameMode):
         match = self.current_match
         if match is not None:
             if not match.is_complete:
-                if time.monotonic() < self._match_deadline:
+                if game_clock.now() < self._match_deadline:
                     return
                 # Time's up - both survive, random winner (A1)
                 match.winner_serial = self._rng.choice([match.player1_serial, match.player2_serial])
@@ -641,7 +671,7 @@ class TournamentGame(BaseGameMode):
             await self._announce_champion()
             return
 
-        if time.monotonic() < self._next_action_at:
+        if game_clock.now() < self._next_action_at:
             return
 
         self._resolve_walkovers()
@@ -676,7 +706,7 @@ class TournamentGame(BaseGameMode):
             )
             # Play round start sound (use start - no dedicated round sound exists)
             await self._play_sound(Sound.SFX_START, priority=2)
-            self._next_action_at = time.monotonic() + ROUND_PAUSE_S
+            self._next_action_at = game_clock.now() + ROUND_PAUSE_S
             return
 
         await self._start_match(next_match)
@@ -1000,7 +1030,7 @@ class TournamentGame(BaseGameMode):
         self.state = self.state.__class__.ENDED
         ended_payload = {
             "game_id": self.game_id,
-            "duration": time.time() - self.start_time if self.start_time else 0,
+            "duration": game_clock.now() - self.start_time if self.start_time else 0,
             "champion": champion_serial or "none",
             "total_matches": len([m for m in self.bracket if m.is_complete and not m.is_bye]),
             "outcome": self.game_outcome(),
@@ -1018,98 +1048,17 @@ class TournamentGame(BaseGameMode):
             self.match_span = None
         await super().cleanup()
 
-    async def run(self):
+    async def _run_streamed_gameplay(self) -> bool:
+        """The bracket runs on the base game loop (UC-025 step 1, BR-002, D-G33, #1882).
+
+        One stream read for the whole game, a bracket step per frame; match spans
+        start inside gameplay_phase. The end step closes the player spans with
+        tournament_ended; an early exit or an error leaves them to the run-end
+        cleanup (#1997).
         """
-        Run the Tournament game.
-
-        Same start and teardown as Fight Club and Werewolf (UC-025 step 1, Pre-1,
-        BR-002): the bracket runs on the base game loop (D-G33, #1882).
-        """
-        # The session game root span carries the outcome (#1328).
-        self._capture_game_root_span()
-        with tracer.start_as_current_span("tournament_game") as game_span:
-            self.game_span = game_span
-            game_span.set_attribute("game.id", self.game_id)
-            game_span.set_attribute(GAME_MODE_ATTR, self.get_game_name())
-
-            try:
-                self.running = True
-                await self.event_publisher(GameEvent.GAME_STARTING, {"game_id": self.game_id})
-
-                # Initialization phase
-                with tracer.start_as_current_span("initialization_phase") as init_span:
-                    await self._initialize_players()
-                    if len(self.players) < 2:
-                        raise ValueError(f"Need at least 2 players, got {len(self.players)}")
-                    # Before any task is created: tasks copy the context (#1273).
-                    self._set_flag_eval_context()
-                    self._create_player_spans(None)  # Uses current context
-                    # The intro colours go over the stream, so it opens first; a drain
-                    # discards the intro's frames and keeps disconnects (UC-025 step 1).
-                    # The instruction clip follows the intro, before the countdown (UC-020 A5).
-                    await self._run_streamed_intro_and_instructions(init_span)
-
-                if not self.running:
-                    return
-
-                # Countdown
-                with tracer.start_as_current_span("countdown_phase"):
-                    await self._countdown()
-
-                if not self.running:
-                    return
-
-                # Start gameplay
-                self.state = GameState.RUNNING
-                self.start_time = time.time()
-
-                # Emit game_started event (required for integration tests)
-                await self.event_publisher(
-                    GameEvent.GAME_STARTED, {"game_id": self.game_id, "player_count": len(self.players)}
-                )
-
-                # Start music (no tempo loop by design, UC-025 BR-002)
-                await self._start_game_music()
-
-                # Prime the EMA filters before death detection (UC-030 BR-003)
-                await self._warmup_ema()
-
-                if not self.running:
-                    return
-
-                # The bracket runs on the base game loop: one stream read for the whole
-                # game, a bracket step per frame (D-G33, #1882). Match spans start
-                # inside gameplay_phase.
-                with tracer.start_as_current_span("gameplay_phase"):
-                    await self._game_loop()
-                if self._bracket_error is not None:
-                    raise self._bracket_error
-                self._latch_game_outcome()
-                # The end step closes the player spans with tournament_ended; an early
-                # exit or an error leaves them to the run-end cleanup (#1997).
-
-                # End game
-                with tracer.start_as_current_span("teardown_phase") as teardown_span:
-                    # Shield LEDs end with the game, before the winner effects (#1301).
-                    await self._end_shield_feedback()
-                    await self._end_game_impl()
-                    self._record_game_outcome(teardown_span)
-                    # Winner effects are sent: close the stream (as base run(), UC-030 BR-006).
-                    self._release_gameplay_stream()
-
-                game_span.set_status(Status(StatusCode.OK))
-
-            except Exception as e:
-                self._run_failed = True
-                logger.error(f"Game error: {e}", exc_info=True)
-                game_span.record_exception(e)
-                game_span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
-            finally:
-                self._record_force_ended_outcome_if_unrecorded()
-                force_ended = not self.running
-                self.running = False
-                await self._stop_game_music()
-                if force_ended:
-                    await self.on_force_end()
-                await self._cleanup_after_run()
+        if not self.running:
+            return False
+        await super()._run_streamed_gameplay()
+        if self._bracket_error is not None:
+            raise self._bracket_error
+        return True

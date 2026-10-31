@@ -8,6 +8,7 @@
 # Runs as part of `make lint` (needs bash, jq, python3-free), or directly:
 #   ./scripts/tests/test-safe-merge.sh
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 # Hermetic: a fail-loud fake docker first on PATH, no COMPOSE / DOCKER override.
 unset COMPOSE DOCKER
 FAKE_DOCKER_DIR="$(mktemp -d)"
@@ -48,6 +49,15 @@ case "$1 $2" in
     if [[ "$(cat "${qs[0]}")" == FAIL ]]; then rc=1; else jq -r "$jqexpr" "${qs[0]}"; fi
     [[ ${#qs[@]} -gt 1 ]] && rm -f "${qs[0]}"
     exit "$rc" ;;
+  "api -X")
+    # #1809: the "Reviewed head" status POST; status-fail makes it fail.
+    [[ -f "$STUB_DIR/status-fail" ]] && exit 1; exit 0 ;;
+  "api repos/{owner}/{repo}/rules/branches/main")
+    # #1809 ruleset guard: rules.json (missing = API error).
+    jqexpr=""; prev=""
+    for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
+    [[ -f "$STUB_DIR/rules.json" ]] || exit 1
+    jq -r "$jqexpr" "$STUB_DIR/rules.json" ;;
   "pr merge") exit "$(cat "$STUB_DIR/merge-rc" 2>/dev/null || echo 0)" ;;
   "run view") cat "$STUB_DIR/log.txt" 2>/dev/null ;;
   "run rerun") echo x >>"$STUB_DIR/reruns"; [[ -f "$STUB_DIR/view-after-rerun.json" ]] && mv "$STUB_DIR/view-after-rerun.json" "$STUB_DIR/view.json"; exit 0 ;;
@@ -462,6 +472,149 @@ reset; view "$GREEN"; touch "${STUB_DIR}/title-fail"
 run 42 abcdef1 --close 7
 [[ $RC -eq 0 && "$OUT" == *"closed #7"* ]] || fail "title read fails: rc=$RC $OUT"
 calls | grep -qxF 'gh issue close 7 --comment Done in #42' || fail "comment without title must be exactly 'Done in #42': $(calls)"
+ok
+
+# 18. #1809 --arm: ruleset guard, then the status POST, then auto-merge; exit 8, no waiting.
+rules() {  # contexts... -> rules.json: required_status_checks + merge_queue (RULES_GROUPING, default ALLGREEN)
+  local ctx="" c
+  for c in "$@"; do ctx+="${ctx:+,}{\"context\":\"$c\"}"; done
+  printf '[{"type":"deletion"},{"type":"required_status_checks","parameters":{"required_status_checks":[%s]}},{"type":"merge_queue","parameters":{"grouping_strategy":"%s"}}]' \
+    "$ctx" "${RULES_GROUPING:-ALLGREEN}" >"${STUB_DIR}/rules.json"
+}
+REVIEW_URL=https://github.com/o/r/pull/42#issuecomment-1
+# Happy path: POST before the merge, full SHA, ARMED, no issue calls.
+reset; view "$GREEN"; rules "CI Complete" "Reviewed head"
+queue_fx 1 OPEN false "" "" 2026-10-31T10:00:00Z
+run 42 "$HEAD" --arm --review-url "$REVIEW_URL" --depth full
+[[ $RC -eq 8 && "$OUT" == "#42 ARMED (head abcdef12, auto-merge: auto-merge enabled at 2026-10-31T10:00:00Z)" ]] \
+  || fail "arm: rc=$RC $OUT ($(cat "${WORK}/stderr"))"
+post_line="$(grep -n "api -X POST repos/{owner}/{repo}/statuses/$HEAD -f state=success -f context=Reviewed head -f description=review-pr full abcdef12 -f target_url=$REVIEW_URL" "${STUB_DIR}/calls" | cut -d: -f1 || true)"
+merge_line="$(grep -n "pr merge 42 --auto --squash --match-head-commit $HEAD" "${STUB_DIR}/calls" | cut -d: -f1 || true)"
+[[ -n "$post_line" && -n "$merge_line" ]] || fail "arm calls (status POST and auto-merge): $(calls)"
+(( post_line < merge_line )) || fail "status must be posted before arming: $(calls)"
+calls | grep -q '^gh issue' && fail "--arm must not touch issues: $(calls)"
+# In the queue already: ARMED (queued).
+reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true AWAITING_CHECKS ""
+run 42 "$HEAD" --arm
+[[ $RC -eq 8 && "$OUT" == *"ARMED (head abcdef12, queued: entry AWAITING_CHECKS)"* ]] || fail "arm queued: rc=$RC $OUT"
+# CI red or pending: still arms (GitHub queues once the required checks pass).
+for ci in "$(check 'Integration Tests' COMPLETED FAILURE 300)" "$(check 'CI Complete' IN_PROGRESS '' 300)"; do
+  reset; view "$ci"; rules "Reviewed head"; queue_fx 1 OPEN false "" "" 2026-10-31T10:00:00Z
+  run 42 "$HEAD" --arm
+  [[ $RC -eq 8 && "$OUT" == *ARMED* ]] || fail "arm with CI not green: rc=$RC $OUT"
+  calls | grep -q 'pr merge 42 --auto' || fail "arm with CI not green must arm: $(calls)"
+done
+# The state read after arming fails: ARMED (state unverified).
+reset; view "$GREEN"; rules "Reviewed head"; queue_fail 1
+run 42 "$HEAD" --arm
+[[ $RC -eq 8 && "$OUT" == *"ARMED (head abcdef12, state unverified)"* ]] || fail "arm unverified: rc=$RC $OUT"
+# gh pr merge --auto fails and the PR is not armed: ARM FAILED, exit 1.
+reset; view "$GREEN"; rules "Reviewed head"; echo 1 >"${STUB_DIR}/merge-rc"; queue_fx 1 OPEN false "" ""
+run 42 "$HEAD" --arm
+[[ $RC -eq 1 && "$OUT" == *"ARM FAILED"* ]] || fail "arm failed: rc=$RC $OUT"
+# The status POST fails: no arm.
+reset; view "$GREEN"; rules "Reviewed head"; touch "${STUB_DIR}/status-fail"
+run 42 "$HEAD" --arm
+[[ $RC -eq 1 && "$OUT" == *"NOT ARMED"*"could not post"* ]] || fail "status post fails: rc=$RC $OUT"
+calls | grep -q 'pr merge' && fail "failed status post must not arm: $(calls)"
+# Moved head: exit 3, nothing posted, no merge.
+reset; view "$GREEN"; rules "Reviewed head"
+run 42 1111111111111111111111111111111111111111 --arm
+[[ $RC -eq 3 && "$OUT" == *"does not match 11111111"* ]] || fail "arm moved head: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge' && fail "moved head must not post or arm: $(calls)"
+# CONFLICTING: exit 5, nothing posted.
+reset; rules "Reviewed head"
+printf '{"headRefOid":"%s","state":"OPEN","mergeable":"CONFLICTING","statusCheckRollup":[%s]}' "$HEAD" "$GREEN" \
+  >"${STUB_DIR}/view.json"
+run 42 "$HEAD" --arm
+[[ $RC -eq 5 && "$OUT" == *"CONFLICTING"* ]] || fail "arm conflicting: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge' && fail "conflicting must not post or arm: $(calls)"
+# Ruleset lacks the context, or the rules read fails: exit 2 "not enforced", nothing posted.
+# Queue grouping other than ALLGREEN: refuse too (fail closed).
+reset; view "$GREEN"; RULES_GROUPING=HEADGREEN rules "Reviewed head"
+run 42 "$HEAD" --arm
+[[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "HEADGREEN grouping: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge|pr view' && fail "HEADGREEN must not post or arm: $(calls)"
+# No grouping_strategy on the merge_queue rule, or no merge_queue rule at all: refuse (fail closed).
+reset; view "$GREEN"
+printf '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Reviewed head"}]}},{"type":"merge_queue","parameters":{}}]' \
+  >"${STUB_DIR}/rules.json"
+run 42 "$HEAD" --arm
+[[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "missing grouping_strategy: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge|pr view' && fail "missing grouping must not post or arm: $(calls)"
+reset; view "$GREEN"
+printf '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Reviewed head"}]}}]' \
+  >"${STUB_DIR}/rules.json"
+run 42 "$HEAD" --arm
+[[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "no merge_queue rule: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge|pr view' && fail "no merge_queue rule must not post or arm: $(calls)"
+reset; view "$GREEN"; rules "CI Complete" "Reviewed head (old)"
+run 42 "$HEAD" --arm
+[[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "ruleset without context: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge|pr view' && fail "unenforced ruleset must not read, post or arm: $(calls)"
+reset; view "$GREEN"
+run 42 "$HEAD" --arm
+[[ $RC -eq 2 && "$OUT" == *"not enforced"* ]] || fail "rules read fails: rc=$RC $OUT"
+calls | grep -qE 'api -X|pr merge' && fail "failed rules read must not post or arm: $(calls)"
+# Usage: short prefix, combined with waiting / issue options, --arm with --revoke: exit 2, no gh call.
+reset; view "$GREEN"; rules "Reviewed head"
+for args in "abcdef1 --arm" "abcdef12 --revoke" "$HEAD --arm --close 7" "$HEAD --arm --wait-ci" \
+  "$HEAD --arm --wait-queue" "$HEAD --arm --rerun-failed-once" "$HEAD --arm --revoke" \
+  "$HEAD --arm --note-issue 9 --note-file ${WORK}/note.md" "$HEAD --depth full" \
+  "$HEAD --review-url $REVIEW_URL" "$HEAD --arm --review-url http://x" "$HEAD --arm --depth Full;x"; do
+  read -r -a argv <<<"$args"
+  run 42 "${argv[@]}"
+  [[ $RC -eq 2 ]] || fail "usage '$args': exit $RC ($OUT)"
+done
+[[ -z "$(calls)" ]] || fail "--arm usage errors must not call gh: $(calls)"
+ok
+
+# 19. #1809 --revoke posts a failure status on the full SHA; no merge, no PR read.
+reset
+run 42 "$HEAD" --revoke --review-url "$REVIEW_URL"
+[[ $RC -eq 0 && "$OUT" == *"REVOKED review of abcdef12"* ]] || fail "revoke: rc=$RC $OUT"
+calls | grep -qF "api -X POST repos/{owner}/{repo}/statuses/$HEAD -f state=failure -f context=Reviewed head" \
+  || fail "revoke must post state=failure: $(calls)"
+calls | grep -qE 'pr merge|pr view|^gh issue' && fail "revoke must only post the status: $(calls)"
+reset; touch "${STUB_DIR}/status-fail"
+run 42 "$HEAD" --revoke
+[[ $RC -eq 1 && "$OUT" == *"REVOKE FAILED"* ]] || fail "revoke post fails: rc=$RC $OUT"
+ok
+
+# 20. #1809: the plain merge path posts the "Reviewed head" status before merging,
+# and a failed POST does not block the merge.
+reset; view "$GREEN"
+run 42 abcdef1
+[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "merge with status: rc=$RC $OUT"
+post_line="$(grep -n "api -X POST repos/{owner}/{repo}/statuses/$HEAD -f state=success -f context=Reviewed head" "${STUB_DIR}/calls" | cut -d: -f1 || true)"
+merge_line="$(grep -n "pr merge 42 --squash --match-head-commit $HEAD" "${STUB_DIR}/calls" | cut -d: -f1 || true)"
+[[ -n "$post_line" && -n "$merge_line" ]] && (( post_line < merge_line )) || fail "status before merge: $(calls)"
+# ... and before the CI wait: with CI pending the status is posted already.
+reset; SAFE_MERGE_MAX_WAIT=0
+view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'CI Complete' QUEUED '' 100)"
+run 42 abcdef1
+[[ $RC -eq 4 ]] || fail "pending CI times out: rc=$RC $OUT"
+SAFE_MERGE_MAX_WAIT=5
+calls | grep -q "api -X POST repos/{owner}/{repo}/statuses/$HEAD -f state=success -f context=Reviewed head" \
+  || fail "status must be posted before the CI wait (rc=$RC $OUT): $(calls)"
+# ... and only once: several pending polls produce exactly one POST.
+# The timeout compares whole-second `date +%s` values, so MAX_WAIT=1 can fire
+# after one poll when the start lands on a second boundary (#2443). With
+# MAX_WAIT=2 the loop runs for more than one real second at POLL=0: many polls.
+reset; SAFE_MERGE_MAX_WAIT=2
+view "$(check 'Lint' COMPLETED SUCCESS 100)" "$(check 'CI Complete' QUEUED '' 100)"
+run 42 abcdef1
+SAFE_MERGE_MAX_WAIT=5
+[[ $RC -eq 4 ]] || fail "pending CI times out (multi-poll): rc=$RC $OUT"
+(( $(grep -c 'statusCheckRollup' "${STUB_DIR}/calls") >= 2 )) || fail "expected at least two polls: $(calls)"
+(( $(grep -c 'api -X POST' "${STUB_DIR}/calls") == 1 )) || fail "status must be posted exactly once: $(calls)"
+reset; view "$GREEN"; touch "${STUB_DIR}/status-fail"
+run 42 abcdef1
+[[ $RC -eq 0 && "$OUT" == *"MERGED as 98765432"* ]] || fail "failed status post must not block the merge: rc=$RC $OUT"
+# --wait-ci posts nothing.
+reset; view "$GREEN"
+run 42 abcdef1 --wait-ci
+calls | grep -q 'api -X' && fail "--wait-ci must not post a status: $(calls)"
 ok
 
 echo "test-safe-merge: ${pass} groups passed"

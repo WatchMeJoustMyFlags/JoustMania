@@ -436,13 +436,13 @@ func TestShieldLimits_NewGameAndInert(t *testing.T) {
 			t.Fatalf("views = %v / %v, want nil / nil", charged, noShield)
 		}
 	})
-	t.Run("UC-040/A33 a capped player is not marked shield_charged", func(t *testing.T) {
+	t.Run("UC-040/A33 a capped player is marked shield_limited, not shield_charged (#2066)", func(t *testing.T) {
 		l, _, _, _ := limitLoop(t, 100, 1, 0, budgetShield("WEAK"))
 		_ = runCycle(l, budgetCtx())
 		got := l.buildDecideRequest(budgetCtx(), allInterventions(), false).State
-		want := decide.BuildState(budgetCtx())
+		want := decide.BuildStateWith(budgetCtx(), decide.Annotations{NoShield: map[string]bool{"WEAK": true}})
 		if got.Digest != want.Digest {
-			t.Fatalf("decide state digest changed for a capped player: %q, want %q", got.Digest, want.Digest)
+			t.Fatalf("decide state digest for a capped player: %q, want the shield_limited-only %q", got.Digest, want.Digest)
 		}
 	})
 	t.Run("UC-040/A33 shield seconds fall back to the default", func(t *testing.T) {

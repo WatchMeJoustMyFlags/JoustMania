@@ -2,9 +2,11 @@ package experiment
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/joustmania/agent/flagservice"
 	"github.com/joustmania/agent/llm"
 )
 
@@ -217,7 +220,7 @@ type Proposer struct {
 	// and the prompt lists it so the model picks an existing flag. Returning a
 	// fresh map each call keeps the Proposer free of a file dependency (the caller/
 	// Gate's Writer owns the file).
-	vocab func() map[string]struct{}
+	vocab func() map[string]flagservice.FlagView
 	// admission is the shared LLM call gate (#1270), consulted after the cadence
 	// floor and before Infer, only when the cycle's backend is real (a stub cycle
 	// makes no model call and must not charge the budget). nil = ungated.
@@ -242,7 +245,7 @@ type Proposer struct {
 // directly), and a vocab provider (the live game-flag key set). tracer nil uses
 // the global tracer; log nil uses slog.Default(). The clock defaults to time.Now;
 // tests inject a fake via SetClock.
-func NewProposer(backend Backend, sink ProposalSink, vocab func() map[string]struct{}, tracer trace.Tracer, log *slog.Logger) *Proposer {
+func NewProposer(backend Backend, sink ProposalSink, vocab func() map[string]flagservice.FlagView, tracer trace.Tracer, log *slog.Logger) *Proposer {
 	if tracer == nil {
 		tracer = otel.Tracer(instrumentationName)
 	}
@@ -252,7 +255,7 @@ func NewProposer(backend Backend, sink ProposalSink, vocab func() map[string]str
 	if vocab == nil {
 		// Fail-closed: no vocabulary means nothing is proposable (decodeProposal
 		// rejects every flag), so a nil provider degrades to "never propose".
-		vocab = func() map[string]struct{} { return nil }
+		vocab = func() map[string]flagservice.FlagView { return nil }
 	}
 	return &Proposer{
 		backend: backend,
@@ -372,7 +375,7 @@ func (p *Proposer) ProposeOnce(ctx context.Context, n Narrative, cfg ProposerCon
 		return Result{Outcome: ProposeNoBackend, Err: err}
 	}
 
-	proposal, err := decodeProposal(raw, vocab)
+	proposal, err := decodeProposal(raw, vocabKeys(vocab))
 	if err != nil {
 		// Untrusted-output rule (#739): unparseable / incomplete / out-of-vocab =>
 		// NO proposal, never fabricated. Recorded; no Gate.Review.
@@ -475,16 +478,16 @@ func summarizeProposal(p Proposal) string {
 // the prompt is stable for golden/round-trip tests, matching llm.Build's
 // determinism contract. It reuses llm.Prompt as the carrier so the same Backend
 // implementations drive both the #739 intervention path and the proposal path.
-func buildProposalPrompt(n Narrative, vocab map[string]struct{}) llm.Prompt {
+func buildProposalPrompt(n Narrative, vocab map[string]flagservice.FlagView) llm.Prompt {
 	var sys strings.Builder
 	sys.WriteString("You are the JoustMania game-balance agent. From the game narrative and ")
 	sys.WriteString("fitness signals below, propose EXACTLY ONE experiment that tunes a single ")
 	sys.WriteString("game flag to a new value, with a one-sentence hypothesis.\n\n")
 
-	sys.WriteString("You MUST choose a flag from this list (any other flag is rejected):\n")
-	for _, k := range sortedKeys(vocab) {
-		sys.WriteString("  - ")
-		sys.WriteString(k)
+	sys.WriteString("You MUST choose a flag from this list (any other flag is rejected). Each line gives ")
+	sys.WriteString("what the flag does in the game, its declared variants (name=value) and its allowed range:\n")
+	for _, k := range sortedKeys(vocabKeys(vocab)) {
+		sys.WriteString(catalogLine(k, vocab[k]))
 		sys.WriteString("\n")
 	}
 	sys.WriteString("\n")
@@ -519,6 +522,104 @@ func buildProposalPrompt(n Narrative, vocab map[string]struct{}) llm.Prompt {
 	}
 
 	return llm.Prompt{System: sys.String(), User: usr.String()}
+}
+
+// Prompt bounds for one catalog line (#2345): the flag service caps a
+// description at 120 characters at load; the agent applies its own cap too, so
+// an older or misconfigured service can never grow the prompt unboundedly.
+const (
+	maxPromptDescription  = 120
+	maxPromptVariants     = 10
+	maxPromptVariantValue = 24
+)
+
+// catalogLine renders one catalog flag for the proposer prompt: key, the
+// registry description, the allowed declared variants with their values and
+// the numeric range (flags.md §13, UC-042 BR-008). A flag without a policy or
+// a description renders what it has: the key alone at least.
+func catalogLine(key string, f flagservice.FlagView) string {
+	var b strings.Builder
+	b.WriteString("  - ")
+	b.WriteString(key)
+	var desc string
+	var bounds flagservice.Bounds
+	if f.Policy != nil {
+		desc = oneLine(f.Policy.Description, maxPromptDescription)
+		bounds = f.Policy.Bounds
+	}
+	if desc != "" {
+		b.WriteString(": ")
+		b.WriteString(desc)
+	}
+	var details []string
+	names := bounds.Variants
+	if len(names) == 0 {
+		names = f.Variants
+	}
+	if len(names) > 0 {
+		shown := names
+		if len(shown) > maxPromptVariants {
+			shown = shown[:maxPromptVariants]
+		}
+		parts := make([]string, 0, len(shown)+1)
+		for _, name := range shown {
+			parts = append(parts, oneLine(name, maxPromptVariantValue)+"="+variantValue(f.VariantValues[name]))
+		}
+		if len(names) > len(shown) {
+			parts = append(parts, "...")
+		}
+		details = append(details, "variants "+strings.Join(parts, ", "))
+	}
+	if r := bounds.Range; len(r) == 2 {
+		rng := "range " + strconv.FormatFloat(r[0], 'g', -1, 64) + " to " + strconv.FormatFloat(r[1], 'g', -1, 64)
+		if bounds.Integer {
+			rng += " (whole numbers)"
+		}
+		details = append(details, rng)
+	}
+	if len(details) > 0 {
+		b.WriteString(" (")
+		b.WriteString(strings.Join(details, "; "))
+		b.WriteString(")")
+	}
+	return b.String()
+}
+
+// variantValue renders a declared variant's value compactly: a scalar as its
+// JSON (capped), an object or array by its kind only.
+func variantValue(raw json.RawMessage) string {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 {
+		return "?"
+	}
+	switch raw[0] {
+	case '{':
+		return "object"
+	case '[':
+		return "array"
+	}
+	return oneLine(string(raw), maxPromptVariantValue)
+}
+
+// oneLine folds line breaks into spaces and caps s at max runes.
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max-3]) + "..."
+	}
+	return s
+}
+
+// vocabKeys returns the flag keys of the catalog as a set (the decoder's input).
+func vocabKeys(vocab map[string]flagservice.FlagView) map[string]struct{} {
+	if vocab == nil {
+		return nil
+	}
+	set := make(map[string]struct{}, len(vocab))
+	for k := range vocab {
+		set[k] = struct{}{}
+	}
+	return set
 }
 
 // sortedKeys returns the keys of a set in a stable order for a deterministic

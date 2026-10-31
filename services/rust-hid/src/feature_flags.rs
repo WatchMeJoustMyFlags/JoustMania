@@ -15,7 +15,7 @@
 //! #2125); a 1 s follower copies it into the writers' shared `OutputRate`.
 
 use open_feature::{EvaluationContext, OpenFeature};
-use open_feature_flagd::{FlagdOptions, FlagdProvider, ResolverType};
+use open_feature_flagd::{CacheSettings, CacheType, FlagdOptions, FlagdProvider, ResolverType};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -37,8 +37,9 @@ const MAX_PAUSE: Duration = Duration::from_secs(5);
 /// Sync-stream reconnect backoff once built (the crate's default caps it at 120 s).
 const STREAM_RETRY_BACKOFF_MS: u32 = 500;
 const STREAM_RETRY_BACKOFF_MAX_MS: u32 = 2000;
-/// Background read interval: keeps the crate's store-change channel drained while no
-/// RPC arrives (its stream listener blocks once 1000 changes are unread).
+/// Background read interval: every read drains the crate's store-change channel (see
+/// `draining_cache`), so this keeps it drained while no RPC arrives (its stream listener
+/// blocks, holding the flag write lock, once 1000 changes are unread).
 const DRAIN_INTERVAL: Duration = Duration::from_secs(1);
 
 static STARTED: OnceLock<()> = OnceLock::new();
@@ -73,10 +74,25 @@ fn set_provider_options(host: String, port: u16, flag_set: &str) -> FlagdOptions
         selector: Some(format!("flagSetId={flag_set}")),
         retry_backoff_ms: STREAM_RETRY_BACKOFF_MS,
         retry_backoff_max_ms: STREAM_RETRY_BACKOFF_MAX_MS,
-        // The cache stays on (crate default): on the in-process resolver it is purged on
-        // every flag sync before a read, so it serves no stale value, and those reads are
-        // what drain the store-change channel.
+        cache_settings: Some(draining_cache()),
         ..Default::default()
+    }
+}
+
+/// A cache of type `Disabled`: it stores and serves nothing, but it is `Some` (#2280).
+///
+/// open-feature-flagd 0.3 sets `cache_settings` to `None` for the in-process resolver
+/// (`FlagdOptions::default`). The resolver drains its flag store's bounded (1000)
+/// state-change channel only on a read that has a cache (`check_for_updates`); with
+/// `None` nothing ever reads it, and the store's sync task, which holds the flag write
+/// lock while it waits for room on that channel, blocks for good after about 1000
+/// syncs: every later read hangs. A disabled cache keeps the drain on every read and
+/// serves each read from the flag store, so a flip is seen on the next read.
+fn draining_cache() -> CacheSettings {
+    CacheSettings {
+        cache_type: CacheType::Disabled,
+        max_size: 0,
+        ttl: None,
     }
 }
 
@@ -409,5 +425,129 @@ mod output_rate_tests {
             "default variant is not normal"
         );
         assert_eq!(CONTROLLER_SET, "controller");
+    }
+}
+
+/// #2280: the crate's flag store reports every sync on a bounded (1000) state-change
+/// channel and holds its flag write lock while it waits for room there. Nothing reads
+/// that channel unless the resolver has a cache, so once it is full every read hangs.
+/// A fake flagd sync server sends more syncs than the channel holds; the provider must
+/// still serve the last one.
+#[cfg(test)]
+mod sync_queue_tests {
+    use super::*;
+    use open_feature::provider::FeatureProvider;
+    use open_feature_flagd::flagd::sync::v1::flag_sync_service_server::{
+        FlagSyncService, FlagSyncServiceServer,
+    };
+    #[allow(deprecated)]
+    use open_feature_flagd::flagd::sync::v1::{
+        FetchAllFlagsRequest, FetchAllFlagsResponse, GetMetadataRequest, GetMetadataResponse,
+        SyncFlagsRequest, SyncFlagsResponse,
+    };
+    use std::time::Instant;
+    use tokio::net::TcpListener;
+    use tokio::sync::{Mutex, mpsc};
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    use tonic::{Request, Response, Status};
+
+    /// More syncs than the crate's state-change channel holds (1000).
+    const SYNCS: usize = 1500;
+    const READ_BOUND: Duration = Duration::from_secs(2);
+
+    type Sync = Result<SyncFlagsResponse, Status>;
+
+    /// Serves one sync stream fed by the test.
+    struct FakeFlagd {
+        syncs: Mutex<Option<mpsc::UnboundedReceiver<Sync>>>,
+    }
+
+    #[tonic::async_trait]
+    impl FlagSyncService for FakeFlagd {
+        type SyncFlagsStream = UnboundedReceiverStream<Sync>;
+
+        async fn sync_flags(
+            &self,
+            _: Request<SyncFlagsRequest>,
+        ) -> Result<Response<Self::SyncFlagsStream>, Status> {
+            let syncs = self.syncs.lock().await.take();
+            let syncs = syncs.ok_or_else(|| Status::unavailable("one stream only"))?;
+            Ok(Response::new(UnboundedReceiverStream::new(syncs)))
+        }
+
+        async fn fetch_all_flags(
+            &self,
+            _: Request<FetchAllFlagsRequest>,
+        ) -> Result<Response<FetchAllFlagsResponse>, Status> {
+            Err(Status::unimplemented("fetch_all_flags"))
+        }
+
+        #[allow(deprecated)]
+        async fn get_metadata(
+            &self,
+            _: Request<GetMetadataRequest>,
+        ) -> Result<Response<GetMetadataResponse>, Status> {
+            Err(Status::unimplemented("get_metadata"))
+        }
+    }
+
+    fn sync(value: &str) -> Sync {
+        Ok(SyncFlagsResponse {
+            flag_configuration: format!(
+                r#"{{"flags":{{"probe":{{"state":"ENABLED","variants":{{"v":"{value}"}},"defaultVariant":"v"}}}}}}"#
+            ),
+            sync_context: None,
+        })
+    }
+
+    // UC: UC-035 (FR-080..082, grpc_rpc_spans), UC-002 BR-005 (rust_hid.output_rate_hz), #2280
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_provider_follows_flag_changes_past_the_crate_queue_size() {
+        let (feed, syncs) = mpsc::unbounded_channel();
+        feed.send(sync("v0")).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let flagd = FakeFlagd {
+            syncs: Mutex::new(Some(syncs)),
+        };
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(FlagSyncServiceServer::new(flagd))
+                .serve_with_incoming(tonic::transport::server::TcpIncoming::from(listener)),
+        );
+        // The options rust-hid builds both of its providers with.
+        let provider = FlagdProvider::new(set_provider_options("127.0.0.1".into(), port, FLAG_SET))
+            .await
+            .expect("first sync from the fake flagd");
+        let ctx = EvaluationContext::default();
+
+        for i in 1..=SYNCS {
+            feed.send(sync(&format!("v{i}"))).unwrap();
+        }
+        let want = format!("v{SYNCS}");
+        let start = Instant::now();
+        loop {
+            let read = tokio::time::timeout(
+                READ_BOUND,
+                provider.resolve_string_value("probe", &ctx),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "a read hung for {READ_BOUND:?} after {SYNCS} syncs: the crate's store is \
+                         blocked on its full state-change channel (#2280)"
+                )
+            })
+            .expect("probe resolves");
+            if read.value == want {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "still {} after 20 s, want {want}",
+                read.value
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

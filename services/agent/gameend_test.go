@@ -95,7 +95,7 @@ func TestOnGameEnd_StaleEndExcludedFromExperiments(t *testing.T) {
 			countingFitness(&scored, armFitness()))
 		loop.fitnessStore = experiment.NewFitnessStore(0)
 		id, err := loop.registry.Declare(experiment.Intent{
-			FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+			FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 		})
 		if err != nil {
 			t.Fatalf("declare: %v", err)
@@ -139,7 +139,7 @@ func TestOnGameEnd_StaleEndExcludedFromExperiments(t *testing.T) {
 		}
 		loop := buildLoopForTest(t, spawner, resolve, &recordingRealDefault{}, &recordingGitHub{}, armFitness())
 		id, err := loop.registry.Declare(experiment.Intent{
-			FlagKey: "invincibility_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
+			FlagKey: "nonstop.respawn_seconds", ExperimentalValue: 6.0, Objective: "balanced", TargetNPerArm: 3,
 		})
 		if err != nil {
 			t.Fatalf("declare: %v", err)
@@ -200,8 +200,8 @@ func TestGameEndChain_StaleEndSkippedAndCounted(t *testing.T) {
 		if consumed != 2 {
 			t.Errorf("consumer saw %d game ends, want 2 (zero and root_span, not stale)", consumed)
 		}
-		if got := staleCounterValue(t, reader, "real"); got != 1 {
-			t.Errorf("%s{game_kind=real} = %d, want 1", metricGameEndStale, got)
+		if got := staleCounterValue(t, reader, "primary"); got != 1 {
+			t.Errorf("%s{game_kind=primary} = %d, want 1", metricGameEndStale, got)
 		}
 	})
 }

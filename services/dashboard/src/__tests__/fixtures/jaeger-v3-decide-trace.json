@@ -1,0 +1,2794 @@
+{
+ "result": {
+  "resourceSpans": [
+   {
+    "resource": {
+     "attributes": [
+      {
+       "key": "container.name",
+       "value": {
+        "stringValue": "agent"
+       }
+      },
+      {
+       "key": "deployment.environment",
+       "value": {
+        "stringValue": "development"
+       }
+      },
+      {
+       "key": "host.name",
+       "value": {
+        "stringValue": "joustmania"
+       }
+      },
+      {
+       "key": "process.executable.name",
+       "value": {
+        "stringValue": "agent"
+       }
+      },
+      {
+       "key": "process.pid",
+       "value": {
+        "intValue": "1"
+       }
+      },
+      {
+       "key": "process.runtime.name",
+       "value": {
+        "stringValue": "go"
+       }
+      },
+      {
+       "key": "process.runtime.version",
+       "value": {
+        "stringValue": "go1.26.10"
+       }
+      },
+      {
+       "key": "service.instance.id",
+       "value": {
+        "stringValue": "7722f8ee31f7"
+       }
+      },
+      {
+       "key": "service.name",
+       "value": {
+        "stringValue": "agent"
+       }
+      },
+      {
+       "key": "service.namespace",
+       "value": {
+        "stringValue": "infrastructure"
+       }
+      },
+      {
+       "key": "service.version",
+       "value": {
+        "stringValue": "aa6c699d20390ecd7d2f384654219542c9fd381d"
+       }
+      },
+      {
+       "key": "telemetry.sdk.language",
+       "value": {
+        "stringValue": "go"
+       }
+      },
+      {
+       "key": "telemetry.sdk.name",
+       "value": {
+        "stringValue": "opentelemetry"
+       }
+      }
+     ]
+    },
+    "scopeSpans": [
+     {
+      "scope": {
+       "name": "github.com/joustmania/agent"
+      },
+      "spans": [
+       {
+        "traceId": "6941c034ab0b93c2af2e439d02580244",
+        "spanId": "13ece9df0f50770b",
+        "parentSpanId": "1f54e012cef076de",
+        "name": "agent.signal_received",
+        "kind": 2,
+        "startTimeUnixNano": "1793139266960484052",
+        "endTimeUnixNano": "1793139266961978796",
+        "attributes": [
+         {
+          "key": "game.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         },
+         {
+          "key": "game.trace_id",
+          "value": {
+           "stringValue": "6941c034ab0b93c2af2e439d02580244"
+          }
+         },
+         {
+          "key": "game.trace_span_id",
+          "value": {
+           "stringValue": "f277ac5bf682b103"
+          }
+         },
+         {
+          "key": "otlp.signal",
+          "value": {
+           "stringValue": "metrics"
+          }
+         },
+         {
+          "key": "rpc.method",
+          "value": {
+           "stringValue": "Export"
+          }
+         },
+         {
+          "key": "rpc.service",
+          "value": {
+           "stringValue": "opentelemetry.proto.collector.metrics.v1.MetricsService"
+          }
+         },
+         {
+          "key": "rpc.system",
+          "value": {
+           "stringValue": "grpc"
+          }
+         },
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         }
+        ],
+        "status": {}
+       },
+       {
+        "traceId": "6941c034ab0b93c2af2e439d02580244",
+        "spanId": "c66f7c2a844e006d",
+        "parentSpanId": "13ece9df0f50770b",
+        "name": "agent.decide",
+        "kind": 1,
+        "startTimeUnixNano": "1793139266961628980",
+        "endTimeUnixNano": "1793139266961834721",
+        "attributes": [
+         {
+          "key": "decide.answers",
+          "value": {
+           "stringValue": "[{\"question_id\":\"ffa.intervention\",\"choice\":\"adjust_player_sensitivity\",\"probabilities\":{\"adjust_player_sensitivity\":0.8331433343419617,\"noop\":0.16685666565803828},\"score\":0,\"confidence\":0.8331433343419617},{\"question_id\":\"ffa.target\",\"choice\":\"MOCK0016\",\"probabilities\":{\"MOCK0016\":1,\"MOCK0017\":0,\"MOCK0018\":0,\"MOCK0019\":0,\"none\":0},\"score\":0,\"confidence\":1},{\"question_id\":\"ffa.magnitude\",\"score\":1,\"confidence\":0.8331433343419617}]"
+          }
+         },
+         {
+          "key": "decide.backend",
+          "value": {
+           "stringValue": "rules"
+          }
+         },
+         {
+          "key": "decide.backend.requested",
+          "value": {
+           "stringValue": "claude"
+          }
+         },
+         {
+          "key": "decide.block_reason",
+          "value": {
+           "stringValue": "not_allowed"
+          }
+         },
+         {
+          "key": "decide.blocked",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "decide.confidence",
+          "value": {
+           "doubleValue": 0.8331433343419617
+          }
+         },
+         {
+          "key": "decide.confidence.min",
+          "value": {
+           "doubleValue": 0.8331433343419617
+          }
+         },
+         {
+          "key": "decide.fallback_reason",
+          "value": {
+           "stringValue": "llm_not_eligible"
+          }
+         },
+         {
+          "key": "decide.latency_ms",
+          "value": {
+           "intValue": "0"
+          }
+         },
+         {
+          "key": "decide.outcome",
+          "value": {
+           "stringValue": "fallback"
+          }
+         },
+         {
+          "key": "decide.questions",
+          "value": {
+           "stringValue": "[{\"id\":\"ffa.intervention\",\"kind\":\"choice\",\"options\":[\"noop\",\"adjust_player_sensitivity\"]},{\"id\":\"ffa.target\",\"kind\":\"choice\",\"options\":[\"none\",\"MOCK0016\",\"MOCK0017\",\"MOCK0018\",\"MOCK0019\"]},{\"id\":\"ffa.magnitude\",\"kind\":\"score\",\"range\":[0,1]}]"
+          }
+         },
+         {
+          "key": "decide.rationale",
+          "value": {
+           "stringValue": ""
+          }
+         },
+         {
+          "key": "decide.state.digest",
+          "value": {
+           "stringValue": "5b180441a0739669660eca284522a319b2b72af21756e7a87bd20ab9c6050b90"
+          }
+         },
+         {
+          "key": "game.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         },
+         {
+          "key": "game.kind",
+          "value": {
+           "stringValue": "shadow"
+          }
+         },
+         {
+          "key": "gen_ai.agent.name",
+          "value": {
+           "stringValue": "joustmania-agent"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         },
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         }
+        ],
+        "status": {}
+       },
+       {
+        "traceId": "6941c034ab0b93c2af2e439d02580244",
+        "spanId": "6e8cd0e782c02ca6",
+        "parentSpanId": "13ece9df0f50770b",
+        "name": "agent.decision",
+        "kind": 1,
+        "startTimeUnixNano": "1793139266961871962",
+        "endTimeUnixNano": "1793139266961938222",
+        "attributes": [
+         {
+          "key": "agent.enabled",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "agent.objectives",
+          "value": {
+           "stringValue": "accelerate=0.1,balanced=0.7,chaos=0.1,endurance=0.1"
+          }
+         },
+         {
+          "key": "decide.backend",
+          "value": {
+           "stringValue": "rules"
+          }
+         },
+         {
+          "key": "decision.action",
+          "value": {
+           "stringValue": "adjust_player_sensitivity"
+          }
+         },
+         {
+          "key": "decision.block_reason",
+          "value": {
+           "stringValue": "not_allowed"
+          }
+         },
+         {
+          "key": "decision.blocked",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "decision.chaos_draw_index",
+          "value": {
+           "intValue": "19"
+          }
+         },
+         {
+          "key": "decision.objective_served",
+          "value": {
+           "stringValue": "balanced"
+          }
+         },
+         {
+          "key": "decision.reason",
+          "value": {
+           "stringValue": "skill gap 0.53 exceeds 0.40: handicap the outlier"
+          }
+         },
+         {
+          "key": "fitness.evaluated",
+          "value": {
+           "stringValue": "[\"accelerate.session_progress=1\",\"accelerate.session_seconds=19.03009057044983\",\"accelerate.target_session_seconds=60\",\"balanced.max_skill_gap=0.4\",\"balanced.skill_gap=0.5340566210780933\",\"balanced.skill_gap_progress=0.3324292236523835\",\"balanced.spike_survival_progress=1\",\"balanced.spike_survival_ratio=1\",\"balanced.spike_survival_threshold=0.8\",\"endurance.min_session_seconds=120\",\"endurance.session_progress=0.1585840880870819\",\"endurance.session_seconds=19.03009057044983\"]"
+          }
+         },
+         {
+          "key": "game.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         },
+         {
+          "key": "game.kind",
+          "value": {
+           "stringValue": "shadow"
+          }
+         },
+         {
+          "key": "game.trace_id",
+          "value": {
+           "stringValue": "6941c034ab0b93c2af2e439d02580244"
+          }
+         },
+         {
+          "key": "game.trace_span_id",
+          "value": {
+           "stringValue": "f277ac5bf682b103"
+          }
+         },
+         {
+          "key": "gen_ai.agent.name",
+          "value": {
+           "stringValue": "joustmania-agent"
+          }
+         },
+         {
+          "key": "interventions.allowed",
+          "value": {
+           "stringValue": "none"
+          }
+         },
+         {
+          "key": "pattern.target_slot",
+          "value": {
+           "intValue": "0"
+          }
+         },
+         {
+          "key": "player.serial",
+          "value": {
+           "stringValue": "MOCK0016"
+          }
+         },
+         {
+          "key": "policy.battery_threshold",
+          "value": {
+           "intValue": "20"
+          }
+         },
+         {
+          "key": "policy.max_interventions_per_minute",
+          "value": {
+           "intValue": "2"
+          }
+         },
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         }
+        ],
+        "events": [
+         {
+          "timeUnixNano": "1793139266961879795",
+          "name": "feature_flag",
+          "attributes": [
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "interventions.allowed"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "none"
+            }
+           }
+          ]
+         }
+        ],
+        "links": [
+         {
+          "traceId": "6941c034ab0b93c2af2e439d02580244",
+          "spanId": "f277ac5bf682b103",
+          "attributes": [
+           {
+            "key": "opentracing.ref_type",
+            "value": {
+             "stringValue": "follows_from"
+            }
+           }
+          ]
+         }
+        ],
+        "status": {}
+       },
+       {
+        "traceId": "6941c034ab0b93c2af2e439d02580244",
+        "spanId": "af0ad0f462f4b225",
+        "parentSpanId": "6e8cd0e782c02ca6",
+        "name": "agent.action",
+        "kind": 1,
+        "startTimeUnixNano": "1793139266961881758",
+        "endTimeUnixNano": "1793139266961906925",
+        "attributes": [
+         {
+          "key": "decision.action",
+          "value": {
+           "stringValue": "adjust_player_sensitivity"
+          }
+         },
+         {
+          "key": "decision.blocked",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "game.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         },
+         {
+          "key": "player.serial",
+          "value": {
+           "stringValue": "MOCK0016"
+          }
+         },
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         }
+        ],
+        "status": {}
+       },
+       {
+        "traceId": "6941c034ab0b93c2af2e439d02580244",
+        "spanId": "b950e9c8e9463be4",
+        "parentSpanId": "1f54e012cef076de",
+        "name": "agent.flag_state",
+        "kind": 1,
+        "startTimeUnixNano": "1793139268072431317",
+        "endTimeUnixNano": "1793139268072461188",
+        "attributes": [
+         {
+          "key": "agent.enabled",
+          "value": {
+           "boolValue": false
+          }
+         },
+         {
+          "key": "agent.flag_state.trigger",
+          "value": {
+           "stringValue": "changed"
+          }
+         },
+         {
+          "key": "agent.objectives",
+          "value": {
+           "stringValue": "accelerate=0.1,balanced=0.7,chaos=0.1,endurance=0.1"
+          }
+         },
+         {
+          "key": "decide.act_confidence_threshold",
+          "value": {
+           "doubleValue": 0.8
+          }
+         },
+         {
+          "key": "decide.backend.requested",
+          "value": {
+           "stringValue": "claude"
+          }
+         },
+         {
+          "key": "game.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         },
+         {
+          "key": "game.kind",
+          "value": {
+           "stringValue": "shadow"
+          }
+         },
+         {
+          "key": "game.mode",
+          "value": {
+           "stringValue": "FFA"
+          }
+         },
+         {
+          "key": "interventions.allowed",
+          "value": {
+           "stringValue": "none"
+          }
+         },
+         {
+          "key": "interventions.enabled",
+          "value": {
+           "boolValue": false
+          }
+         },
+         {
+          "key": "policy.battery_threshold",
+          "value": {
+           "intValue": "20"
+          }
+         },
+         {
+          "key": "policy.max_interventions_per_minute",
+          "value": {
+           "intValue": "2"
+          }
+         },
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         }
+        ],
+        "events": [
+         {
+          "timeUnixNano": "1793139268071664019",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "enabled"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "boolValue": false
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "off"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071709149",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "objectives"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "balanced_focused"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071736816",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "interventions_allowed"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "none"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071762427",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "policy.battery_threshold"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "20"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071782890",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "policy.max_interventions_per_minute"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "2"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071807816",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "policy.max_shields_per_player_per_game"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "3"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071827760",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "policy.shield_cooldown_seconds"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "15"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071850649",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "llm.eligible_game_kinds"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "real"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "real_only"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071867001",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "llm.max_requests_per_minute"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "6"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071887761",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "fitness.endurance.min_session_seconds"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "120"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071909075",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "fitness.balanced.max_skill_gap"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "doubleValue": 0.4
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071926094",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "fitness.balanced.spike_survival_threshold"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "doubleValue": 0.8
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071941779",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "fitness.accelerate.target_session_seconds"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "60"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071961650",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "fitness.bluetooth.max_event_gap_ms"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "doubleValue": 50
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071977742",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "fitness.bluetooth.max_dropped_events_pct"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "doubleValue": 0.02
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268071996316",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "fitness.bluetooth.min_movement_update_hz"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "doubleValue": 10
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072016631",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.backend"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "claude"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "claude"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072034020",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.act_confidence_threshold"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "doubleValue": 0.8
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072053594",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.capture_content"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "boolValue": false
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "off"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072072798",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.min_interval_ms"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "3000"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072088761",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.min_gap_after_answer_ms"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "1000"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072107854",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.max_state_age_ms"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "10000"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072124854",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.claude.base_url"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "https://api.anthropic.com"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072143965",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.claude.model"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "claude-haiku-4-5-20251001"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "haiku"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072161372",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.claude.timeout_ms"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "5000"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072180817",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.openai.base_url"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "https://api.openai.com/v1"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072200798",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.openai.model"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "unset"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072217520",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.openai.timeout_ms"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "2500"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072242595",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.openai.reasoning_effort"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "auto"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "auto"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072263724",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.jev.base_url"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "https://api.typesafe.ai/v1"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072281687",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.jev.model"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "jev-latest"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "latest"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072300021",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.jev.timeout_ms"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "intValue": "2500"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072322317",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.jev.act_confidence_threshold"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "doubleValue": 0.6
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "gate"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072345521",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "decision.probe_decisions"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "boolValue": false
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "off"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139268072362984",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.context.id",
+            "value": {
+             "stringValue": ""
+            }
+           },
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "interventions_enabled"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "flagd"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "boolValue": false
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "off"
+            }
+           },
+           {
+            "key": "feature_flag.set.id",
+            "value": {
+             "stringValue": "agent"
+            }
+           }
+          ]
+         }
+        ],
+        "status": {}
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "resource": {
+     "attributes": [
+      {
+       "key": "container.name",
+       "value": {
+        "stringValue": "game-coordinator-service"
+       }
+      },
+      {
+       "key": "deployment.environment",
+       "value": {
+        "stringValue": "development"
+       }
+      },
+      {
+       "key": "host.name",
+       "value": {
+        "stringValue": "joustmania"
+       }
+      },
+      {
+       "key": "process.executable.name",
+       "value": {
+        "stringValue": "python"
+       }
+      },
+      {
+       "key": "process.pid",
+       "value": {
+        "intValue": "1"
+       }
+      },
+      {
+       "key": "process.runtime.name",
+       "value": {
+        "stringValue": "cpython"
+       }
+      },
+      {
+       "key": "process.runtime.version",
+       "value": {
+        "stringValue": "3.14.2"
+       }
+      },
+      {
+       "key": "service.instance.id",
+       "value": {
+        "stringValue": "8bba4eeeae55"
+       }
+      },
+      {
+       "key": "service.name",
+       "value": {
+        "stringValue": "game-coordinator-service"
+       }
+      },
+      {
+       "key": "service.namespace",
+       "value": {
+        "stringValue": "joustmania"
+       }
+      },
+      {
+       "key": "service.version",
+       "value": {
+        "stringValue": "aa6c699d20390ecd7d2f384654219542c9fd381d"
+       }
+      },
+      {
+       "key": "telemetry.sdk.language",
+       "value": {
+        "stringValue": "python"
+       }
+      },
+      {
+       "key": "telemetry.sdk.name",
+       "value": {
+        "stringValue": "opentelemetry"
+       }
+      }
+     ]
+    },
+    "scopeSpans": [
+     {
+      "scope": {
+       "name": "services.game_coordinator.game_session"
+      },
+      "spans": [
+       {
+        "traceId": "6941c034ab0b93c2af2e439d02580244",
+        "spanId": "f277ac5bf682b103",
+        "parentSpanId": "711cf17e7c57c25b",
+        "name": "Joust Free-for-All",
+        "kind": 1,
+        "startTimeUnixNano": "1793139247882959545",
+        "endTimeUnixNano": "1793139285132095503",
+        "attributes": [
+         {
+          "key": "experiment.arm",
+          "value": {
+           "stringValue": "experimental"
+          }
+         },
+         {
+          "key": "experiment.id",
+          "value": {
+           "stringValue": "exp_3bd084a608f1"
+          }
+         },
+         {
+          "key": "feature_flag.providers_wait_ms",
+          "value": {
+           "intValue": "0"
+          }
+         },
+         {
+          "key": "game.end_reason",
+          "value": {
+           "stringValue": "pattern_kill_switch"
+          }
+         },
+         {
+          "key": "game.id",
+          "value": {
+           "stringValue": "game_d1a30cc80da4"
+          }
+         },
+         {
+          "key": "game.kind",
+          "value": {
+           "stringValue": "shadow"
+          }
+         },
+         {
+          "key": "game.name",
+          "value": {
+           "stringValue": "JoustFFA"
+          }
+         },
+         {
+          "key": "game.outcome",
+          "value": {
+           "stringValue": "force_ended"
+          }
+         },
+         {
+          "key": "player.count",
+          "value": {
+           "intValue": "4"
+          }
+         }
+        ],
+        "events": [
+         {
+          "timeUnixNano": "1793139247883601657",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "thresholds"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "FlagdProvider"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "{\"fast_max\": [1.6, 1.8, 2.8, 3.2, 3.5], \"fast_warning\": [1.4, 1.6, 1.9, 2.7, 2.8], \"slow_max\": [1.3, 1.5, 1.8, 2.5, 3.2], \"slow_warning\": [1.2, 1.3, 1.6, 2, 2.5]}"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247883808305",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "perception.ema_weight"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "FlagdProvider"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "4.0"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247883976065",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "death_grace_period_seconds"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "FlagdProvider"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "2.0"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247884249065",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "windows"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "FlagdProvider"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "targeting_match"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "{\"end_max_music_fast_time\": 14, \"end_max_music_slow_time\": 8, \"end_min_music_fast_time\": 8, \"end_min_music_slow_time\": 5, \"max_music_fast_time\": 11, \"max_music_slow_time\": 14, \"min_music_fast_time\": 6, \"min_music_slow_time\": 6}"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "r4e97e90b_2"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247884525603",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "tempo_schedule_mode"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "FlagdProvider"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "\"rule\""
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "rule"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247885018715",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "audio_volume.game"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "FlagdProvider"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "0.7"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247885219271",
+          "name": "feature_flag.evaluation",
+          "attributes": [
+           {
+            "key": "feature_flag.key",
+            "value": {
+             "stringValue": "audio_volume.countdown_music"
+            }
+           },
+           {
+            "key": "feature_flag.provider.name",
+            "value": {
+             "stringValue": "FlagdProvider"
+            }
+           },
+           {
+            "key": "feature_flag.result.reason",
+            "value": {
+             "stringValue": "static"
+            }
+           },
+           {
+            "key": "feature_flag.result.value",
+            "value": {
+             "stringValue": "0.15"
+            }
+           },
+           {
+            "key": "feature_flag.result.variant",
+            "value": {
+             "stringValue": "default"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247885786216",
+          "name": "game.state_changed",
+          "attributes": [
+           {
+            "key": "game.id",
+            "value": {
+             "stringValue": "game_d1a30cc80da4"
+            }
+           },
+           {
+            "key": "game.mode",
+            "value": {
+             "stringValue": "FFA"
+            }
+           },
+           {
+            "key": "game.state",
+            "value": {
+             "stringValue": "STARTING"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247895210493",
+          "name": "game.state_changed",
+          "attributes": [
+           {
+            "key": "game.id",
+            "value": {
+             "stringValue": "game_d1a30cc80da4"
+            }
+           },
+           {
+            "key": "game.state",
+            "value": {
+             "stringValue": "RUNNING"
+            }
+           },
+           {
+            "key": "player.count",
+            "value": {
+             "intValue": "4"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247895508457",
+          "name": "game_started",
+          "attributes": [
+           {
+            "key": "event.type",
+            "value": {
+             "stringValue": "game_started"
+            }
+           },
+           {
+            "key": "game_id",
+            "value": {
+             "stringValue": "game_d1a30cc80da4"
+            }
+           },
+           {
+            "key": "player_count",
+            "value": {
+             "stringValue": "4"
+            }
+           },
+           {
+            "key": "subscribers.count",
+            "value": {
+             "intValue": "1"
+            }
+           }
+          ]
+         },
+         {
+          "timeUnixNano": "1793139247885827235",
+          "name": "game_starting",
+          "attributes": [
+           {
+            "key": "event.type",
+            "value": {
+             "stringValue": "game_starting"
+            }
+           },
+           {
+            "key": "game_id",
+            "value": {
+             "stringValue": "game_d1a30cc80da4"
+            }
+           },
+           {
+            "key": "subscribers.count",
+            "value": {
+             "intValue": "1"
+            }
+           }
+          ]
+         }
+        ],
+        "links": [
+         {
+          "traceId": "6941c034ab0b93c2af2e439d02580244",
+          "spanId": "711cf17e7c57c25b",
+          "attributes": [
+           {
+            "key": "opentracing.ref_type",
+            "value": {
+             "stringValue": "follows_from"
+            }
+           }
+          ]
+         }
+        ],
+        "status": {}
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

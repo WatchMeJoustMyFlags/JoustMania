@@ -63,7 +63,7 @@ class MockSpan:
         return False
 
 
-def _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="", arm=""):
+def _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="", arm="", pattern_trigger_policy=False):
     """Build a GameSession with mocked clients + event bus for loop testing."""
     event_bus = MagicMock()
     event_bus.publish = AsyncMock()
@@ -81,6 +81,7 @@ def _make_session(game_kind=GAME_KIND_PRIMARY, experiment_id="", arm=""):
         stream_span_context=None,
         experiment_id=experiment_id,
         arm=arm,
+        pattern_trigger_policy=pattern_trigger_policy,
     )
 
     mock_clients = MagicMock()
@@ -197,7 +198,7 @@ class TestGameSessionLoop:
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         swapper = SwapperGame(
             controller_manager_client=MagicMock(),
-            event_publisher=AsyncMock(),
+            event_publisher=session.event_bus.publish,  # as GameFactory wires it (#2025 S2)
             audio_client=None,
             game_id="game_abc123",
             initial_players=[game_coordinator_pb2.Player(serial="p1")],
@@ -337,7 +338,7 @@ class TestGameSessionLoop:
         mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
         nonstop = NonstopJoustGame(
             controller_manager_client=MagicMock(),
-            event_publisher=AsyncMock(),
+            event_publisher=session.event_bus.publish,  # as GameFactory wires it (#2025 S2)
             audio_client=None,
             game_id="game_abc123",
             initial_players=[game_coordinator_pb2.Player(serial="p1")],
@@ -426,8 +427,9 @@ class TestGameSessionLoop:
         )
         mock_metrics.active_game.labels.return_value.set.assert_any_call(0)
         mock_metrics.active_players.labels.return_value.set.assert_any_call(0)
-        # players_alive (still a single global gauge) reset only by primary.
-        mock_metrics.players_alive.set.assert_any_call(0)
+        # players_alive (still a single global gauge) reset only by primary,
+        # and only while this game wrote it last (#2244).
+        mock_metrics.reset_players_alive_if_owner.assert_called_once_with("game_abc123")
 
     def test_eval_game_kind_maps_session_kind_to_real_or_shadow(self):
         """Session kind (primary/shadow, #775) maps to eval game_kind (real/shadow,
@@ -524,6 +526,26 @@ class TestGameSessionLoop:
         # The game object is threaded the attribution for its in-loop flag eval.
         assert mock_game.experiment_id == "exp_abc123"
         assert mock_game.arm == "experimental"
+
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-019"])
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy", [True, False])
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_loop_threads_pattern_trigger_policy_to_the_game(
+        self, mock_tracer_mod, mock_factory, mock_metrics, policy
+    ):
+        """UC-040 BR-019 (#2096): the session hands its pattern_trigger_policy to the game mode."""
+        session = _make_session(game_kind=GAME_KIND_SHADOW, pattern_trigger_policy=policy)
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        assert mock_game.pattern_trigger_policy is policy
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.metrics")
@@ -691,16 +713,20 @@ class TestGameSessionLoop:
             assert kwargs["links"] == []
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @patch("services.game_coordinator.game_session.read_string_flag", return_value="child")
     @patch("services.game_coordinator.game_session.metrics")
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
     async def test_shadow_experiment_game_span_is_child_of_injected_parent(
-        self, mock_tracer_mod, mock_factory, mock_metrics
+        self, mock_tracer_mod, mock_factory, mock_metrics, _mock_flag
     ):
-        """#1182: a SHADOW + experiment-bound game whose spawn carried the agent's
-        experiment traceparent starts its game span as a CHILD of that remote parent
-        (causal parent-child), so it nests under the long-lived experiment span. The
-        parent context is a real, NON-empty Context containing the experiment span."""
+        """#1182, #2223 `child`: with telemetry.experiment_game_parent=child a SHADOW +
+        experiment-bound game whose spawn carried the agent's experiment traceparent
+        starts its game span as a CHILD of that remote parent (causal parent-child),
+        so it nests under the long-lived experiment span. The parent context is a
+        real, NON-empty Context containing the experiment span, and no experiment
+        Link is added."""
         from opentelemetry import trace as ot_trace
         from opentelemetry.context import Context
 
@@ -726,12 +752,140 @@ class TestGameSessionLoop:
         sc = parent_span.get_span_context()
         assert sc.trace_id == exp_trace_id
         assert sc.span_id == exp_span_id
+        assert kwargs["links"] == []
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @patch("services.game_coordinator.game_session.read_string_flag", return_value="link")
     @patch("services.game_coordinator.game_session.metrics")
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
-    async def test_real_game_stays_own_root_even_with_parent_context(self, mock_tracer_mod, mock_factory, mock_metrics):
+    async def test_shadow_experiment_game_span_links_to_experiment(
+        self, mock_tracer_mod, mock_factory, mock_metrics, mock_flag
+    ):
+        """#2223 `link`: the shadow + experiment game root is its OWN trace (empty
+        Context, so a new trace id) with exactly one Link, `link.kind=experiment`,
+        to the injected agent.experiment span context. The flag is read from the
+        observability set with the code default `link`."""
+        from opentelemetry.context import Context
+
+        parent_ctx = MockSpanContext(trace_id=0x9999AAAABBBBCCCCDDDDEEEEFFFF0000, span_id=0x1122334455667788)
+        session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp-1", arm="experimental")
+        session.experiment_parent_span_context = parent_ctx
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        await session._run_game_loop_async()
+
+        mock_flag.assert_called_once_with("observability", "telemetry.experiment_game_parent", "link")
+        _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+        ctx = kwargs["context"]
+        assert isinstance(ctx, Context)
+        assert len(ctx) == 0, "with `link` the shadow game root must be its own trace"
+        links = kwargs["links"]
+        assert len(links) == 1
+        assert links[0].context is parent_ctx
+        assert dict(links[0].attributes) == {"link.kind": "experiment"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_experiment_game_parent_link_keeps_stream_link(self, mock_tracer_mod, mock_factory, mock_metrics):
+        """#2223: with `link` the inbound stream Link (#1157) stays first and the
+        experiment Link is added after it."""
+        stream_ctx = MockSpanContext(trace_id=0x11112222333344445555666677778888, span_id=0xAABBCCDDEEFF0011)
+        parent_ctx = MockSpanContext(trace_id=0x9999AAAABBBBCCCCDDDDEEEEFFFF0000, span_id=0x1122334455667788)
+        session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp-1", arm="control")
+        session.stream_span_context = stream_ctx
+        session.experiment_parent_span_context = parent_ctx
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        with patch("services.game_coordinator.game_session.read_string_flag", return_value="link"):
+            await session._run_game_loop_async()
+
+        _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+        assert [link.context for link in kwargs["links"]] == [stream_ctx, parent_ctx]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_experiment_game_parent_link_does_not_duplicate_the_stream_link(
+        self, mock_tracer_mod, mock_factory, mock_metrics
+    ):
+        """#2223: without grpc_rpc_spans the stream span context IS the injected
+        experiment context; `link` then carries exactly one Link to it, the
+        `link.kind=experiment` one, not a second plain Link to the same span."""
+        exp_ctx = MockSpanContext(trace_id=0x9999AAAABBBBCCCCDDDDEEEEFFFF0000, span_id=0x1122334455667788)
+        session = _make_session(game_kind=GAME_KIND_SHADOW, experiment_id="exp-1", arm="control")
+        session.stream_span_context = MockSpanContext(trace_id=exp_ctx.trace_id, span_id=exp_ctx.span_id)
+        session.experiment_parent_span_context = exp_ctx
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        with patch("services.game_coordinator.game_session.read_string_flag", return_value="link"):
+            await session._run_game_loop_async()
+
+        _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+        links = kwargs["links"]
+        assert len(links) == 1, links
+        assert links[0].context is exp_ctx
+        assert dict(links[0].attributes) == {"link.kind": "experiment"}
+
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @pytest.mark.parametrize(
+        ("flag_value", "expected"),
+        [("child", "child"), ("link", "link"), ("", "link"), ("nested", "link")],
+    )
+    def test_experiment_game_parent_mode_unknown_value_reads_as_link(self, flag_value, expected):
+        """#2223: only `child` keeps the nesting; any other value (empty, unknown) is `link`."""
+        from services.game_coordinator.game_session import experiment_game_parent_mode
+
+        with patch("services.game_coordinator.game_session.read_string_flag", return_value=flag_value):
+            assert experiment_game_parent_mode() == expected
+
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    def test_experiment_game_parent_mode_not_ready_provider_reads_code_default_link(self):
+        """#2223 How this breaks: the coordinator does not wait for the observability
+        provider, so a game started before its first sync must get the code default
+        `link`. A provider that answers PROVIDER_NOT_READY stands in for it."""
+        from openfeature import api
+        from openfeature.exception import ProviderNotReadyError
+        from openfeature.provider.in_memory_provider import InMemoryProvider
+
+        from services.game_coordinator.game_session import experiment_game_parent_mode
+
+        class _NotReadyProvider(InMemoryProvider):
+            def resolve_string_details(self, flag_key, default_value, evaluation_context=None):
+                raise ProviderNotReadyError("no first sync yet")
+
+        domain = "observability_not_ready_2223"
+        api.set_provider(_NotReadyProvider({}), domain=domain)
+        with (
+            patch("lib.feature_flags.init_flag_domain"),
+            patch("lib.feature_flags.get_flag_client", return_value=api.get_client(domain=domain)),
+        ):
+            assert experiment_game_parent_mode() == "link"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @pytest.mark.parametrize("variant", ["child", "link"])
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_real_game_stays_own_root_even_with_parent_context(
+        self, mock_tracer_mod, mock_factory, mock_metrics, variant
+    ):
         """#1182 real-game protection: a PRIMARY (real) game is own-rooted (#1157/#1164)
         even if an experiment parent context and experiment_id are erroneously present.
         The strict shadow+experiment gate keeps the real-game trace structure UNCHANGED."""
@@ -747,18 +901,24 @@ class TestGameSessionLoop:
         mock_game.run = AsyncMock()
         mock_factory.create_game.return_value = mock_game
 
-        await session._run_game_loop_async()
+        with patch("services.game_coordinator.game_session.read_string_flag", return_value=variant):
+            await session._run_game_loop_async()
 
         _, kwargs = mock_tracer_mod.start_as_current_span.call_args
         ctx = kwargs["context"]
         assert isinstance(ctx, Context)
         assert len(ctx) == 0, "real game must stay own-rooted (#1157/#1164), never parented"
+        assert kwargs["links"] == [], "real game gets no experiment Link (#2223)"
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @pytest.mark.parametrize("variant", ["child", "link"])
     @patch("services.game_coordinator.game_session.metrics")
     @patch("services.game_coordinator.game_session.GameFactory")
     @patch("services.game_coordinator.game_session.tracer")
-    async def test_shadow_experiment_game_own_root_when_no_parent(self, mock_tracer_mod, mock_factory, mock_metrics):
+    async def test_shadow_experiment_game_own_root_when_no_parent(
+        self, mock_tracer_mod, mock_factory, mock_metrics, variant
+    ):
         """#1182 graceful: a shadow + experiment game with NO injected parent
         (telemetry off, or no traceparent on the spawn) stays own-rooted — the
         own-root #1164 path is preserved when there is nothing valid to parent under.
@@ -773,12 +933,44 @@ class TestGameSessionLoop:
             mock_game.run = AsyncMock()
             mock_factory.create_game.return_value = mock_game
 
-            await session._run_game_loop_async()
+            with patch("services.game_coordinator.game_session.read_string_flag", return_value=variant):
+                await session._run_game_loop_async()
 
             _, kwargs = mock_tracer_mod.start_as_current_span.call_args
             ctx = kwargs["context"]
             assert isinstance(ctx, Context)
             assert len(ctx) == 0, "shadow+experiment with no valid parent must stay own-rooted"
+            assert kwargs["links"] == [], "no valid parent: no experiment Link either (#2223)"
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-035", flow="main", steps=[5])
+    @pytest.mark.parametrize("variant", ["child", "link"])
+    @patch("services.game_coordinator.game_session.metrics")
+    @patch("services.game_coordinator.game_session.GameFactory")
+    @patch("services.game_coordinator.game_session.tracer")
+    async def test_unbound_shadow_game_stays_own_root_with_parent_context(
+        self, mock_tracer_mod, mock_factory, mock_metrics, variant
+    ):
+        """#2223: a shadow game NOT bound to an experiment (no experiment_id) stays
+        own-rooted with no experiment Link under both variants, even if a parent
+        context is present."""
+        from opentelemetry.context import Context
+
+        parent_ctx = MockSpanContext(trace_id=0x9999AAAABBBBCCCCDDDDEEEEFFFF0000, span_id=0x1122334455667788)
+        session = _make_session(game_kind=GAME_KIND_SHADOW)
+        session.experiment_parent_span_context = parent_ctx
+        mock_tracer_mod.start_as_current_span = _tracer_mock().start_as_current_span
+        mock_game = MagicMock()
+        mock_game.run = AsyncMock()
+        mock_factory.create_game.return_value = mock_game
+
+        with patch("services.game_coordinator.game_session.read_string_flag", return_value=variant):
+            await session._run_game_loop_async()
+
+        _, kwargs = mock_tracer_mod.start_as_current_span.call_args
+        assert isinstance(kwargs["context"], Context)
+        assert len(kwargs["context"]) == 0
+        assert kwargs["links"] == []
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.metrics")
@@ -795,6 +987,7 @@ class TestGameSessionLoop:
         await session._run_game_loop_async()
 
         mock_metrics.players_alive.set.assert_not_called()
+        mock_metrics.reset_players_alive_if_owner.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("services.game_coordinator.game_session.GameFactory")

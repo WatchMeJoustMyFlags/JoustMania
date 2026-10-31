@@ -23,8 +23,20 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
+from lib.controller_constants import ButtonKey
 from proto import controller_manager_pb2
 from services.controller_manager.discovery_loop import DiscoveryLoop
+from services.controller_manager.multiplexer.press_latch import latch_presses, merge_latched_presses
+from services.controller_manager.tests.backend_doubles import (
+    InertBackendHooks,
+    autospec_backend,
+    autospec_button_detector,
+    autospec_discovery_loop,
+    autospec_feedback_manager,
+    autospec_monitoring,
+    autospec_publisher,
+    autospec_rescan_timer,
+)
 
 LAG_METRIC = "services.controller_manager.metrics.controller_input_lag_seconds"
 TIME_FN = "services.controller_manager.discovery_loop.time.time"
@@ -36,13 +48,13 @@ def _make_loop(backend) -> DiscoveryLoop:
         backend=backend,
         tracked_controllers={SERIAL: {}},
         controller_states={},
-        button_detector=MagicMock(),
-        feedback_manager=MagicMock(),
-        monitoring=MagicMock(last_battery_check=0),
-        rescan_timer=MagicMock(),
+        button_detector=autospec_button_detector(),
+        feedback_manager=autospec_feedback_manager(),
+        monitoring=autospec_monitoring(),
+        rescan_timer=autospec_rescan_timer(),
         paired_serials=[],
         base_colors={},
-        event_publisher=MagicMock(),
+        event_publisher=autospec_publisher(),
     )
     loop.backend_initialized = True
     return loop
@@ -62,7 +74,7 @@ class TestSampleAge:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     @pytest.mark.asyncio
     async def test_fresh_sample_age_counts_from_poll_pickup(self):
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_controller_state = AsyncMock(side_effect=lambda _serial: {"accel": (0, 0, 1)})
         loop = _make_loop(backend)
 
@@ -78,13 +90,67 @@ class TestSampleAge:
     async def test_stale_replay_keeps_aging(self):
         """Same frame object returned again (stalled backend) is not a new sample."""
         frame = {"accel": (0, 0, 1)}
-        backend = MagicMock()
+        backend = autospec_backend()
         backend.get_controller_state = AsyncMock(return_value=frame)
         loop = _make_loop(backend)
 
         await _poll_at(loop, 100.0)
         await _poll_at(loop, 100.080)
         assert loop.sample_age_seconds(SERIAL, 100.090) == pytest.approx(0.090)
+
+
+class TestLatchedTapIsNotAFreshFrame:
+    """#2352 B3: the tap-latch copy (UC-010 BR-012) must not reset the sample's pick-up time."""
+
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
+    @pytest.mark.asyncio
+    async def test_latched_copy_keeps_aging_and_counts_no_fresh_frame(self):
+        real = {"accel": {"x": 0, "y": 0, "z": 1}, ButtonKey.TRIGGER: False}
+        latch: dict[str, set[str]] = {}
+        backend = autospec_backend()
+        backend.get_controller_state.side_effect = lambda _serial: merge_latched_presses(latch, SERIAL, real)
+        loop = _make_loop(backend)
+
+        await _poll_at(loop, 100.0)  # first sample
+        fresh_before = loop._records[SERIAL].hw_fresh
+
+        # A tap landed between two polls, but the backend has no new sample: the poll returns a copy.
+        latch_presses(latch, SERIAL, {ButtonKey.TRIGGER: True})
+        await _poll_at(loop, 100.050)
+        assert loop.controller_states[SERIAL][ButtonKey.TRIGGER] is True  # the tap reached the loop
+        await _poll_at(loop, 100.060)  # the release poll: the real sample again
+
+        assert loop._records[SERIAL].hw_fresh == fresh_before
+        assert loop.sample_age_seconds(SERIAL, 100.070) == pytest.approx(0.070)
+
+    @pytest.mark.uc("UC-035", flow="main", steps=[6])
+    @pytest.mark.asyncio
+    async def test_new_sample_together_with_a_tap_counts_fresh_once(self):
+        first = {"accel": {"x": 0, "y": 0, "z": 1}, ButtonKey.TRIGGER: False}
+        second = {"accel": {"x": 0, "y": 0, "z": 2}, ButtonKey.TRIGGER: False}
+        latch: dict[str, set[str]] = {}
+        current = {"sample": first}
+        backend = autospec_backend()
+        backend.get_controller_state.side_effect = lambda _serial: merge_latched_presses(
+            latch, SERIAL, current["sample"]
+        )
+        loop = _make_loop(backend)
+
+        await _poll_at(loop, 100.0)
+        fresh_before = loop._records[SERIAL].hw_fresh
+
+        # A tap and a genuinely new sample land together: the latched copy wraps the NEW sample.
+        latch_presses(latch, SERIAL, {ButtonKey.TRIGGER: True})
+        current["sample"] = second
+        await _poll_at(loop, 100.050)
+        assert loop.controller_states[SERIAL][ButtonKey.TRIGGER] is True
+        assert loop._records[SERIAL].hw_fresh == fresh_before + 1
+        assert loop.sample_age_seconds(SERIAL, 100.060) == pytest.approx(0.010)
+
+        # The next poll returns that same sample itself: not a new frame.
+        await _poll_at(loop, 100.070)
+        assert loop._records[SERIAL].hw_fresh == fresh_before + 1
+        assert loop.sample_age_seconds(SERIAL, 100.080) == pytest.approx(0.030)
 
 
 class TestGameplayFrameObservesLag:
@@ -94,11 +160,11 @@ class TestGameplayFrameObservesLag:
             patch("services.controller_manager.servicer.create_backend") as create_backend,
             patch("services.controller_manager.servicer.DiscoveryLoop") as discovery_cls,
         ):
-            create_backend.return_value = MagicMock(spec=[])
-            mock_loop = MagicMock()
-            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
-            mock_loop.drain_disconnects = MagicMock(return_value=[])
-            mock_loop.connection_quality = MagicMock(return_value=None)
+            create_backend.return_value = autospec_backend()
+            mock_loop = autospec_discovery_loop()
+            mock_loop.drain_health_counters.return_value = (0, 0, 0)
+            mock_loop.drain_disconnects.return_value = []
+            mock_loop.connection_quality.return_value = None
             discovery_cls.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -121,7 +187,7 @@ class TestGameplayFrameObservesLag:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_frame_observes_sample_age_per_controller(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
+        mock_loop.sample_age_seconds.return_value = 0.012
 
         with patch(LAG_METRIC) as lag:
             servicer._build_gameplay_update({SERIAL}, "game")
@@ -135,7 +201,7 @@ class TestGameplayFrameObservesLag:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_unfiltered_dashboard_stream_records_nothing(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=0.5)
+        mock_loop.sample_age_seconds.return_value = 0.5
 
         with patch(LAG_METRIC) as lag:
             update = servicer._build_gameplay_update(None, "dashboard")
@@ -147,11 +213,11 @@ class TestGameplayFrameObservesLag:
     def test_pattern_controller_records_nothing(self, servicer):
         """Pattern controllers synthesise accel per delivered frame; the polled sample's age is meaningless."""
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
+        mock_loop.sample_age_seconds.return_value = 0.012
 
-        class PatternBackend:
+        class PatternBackend(InertBackendHooks):
             def pattern_frame(self, _serial, _subscriber_id, _explicit):
-                return {"x": 0.0, "y": 0.0, "z": 1.0}
+                return {"x": 0.0, "y": 0.0, "z": 1.0}, False
 
             def pattern_serials(self):
                 return {SERIAL}
@@ -166,7 +232,7 @@ class TestGameplayFrameObservesLag:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_no_sample_yet_records_nothing(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=None)
+        mock_loop.sample_age_seconds.return_value = None
 
         with patch(LAG_METRIC) as lag:
             servicer._build_gameplay_update({SERIAL}, "game")
@@ -176,7 +242,7 @@ class TestGameplayFrameObservesLag:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_filtered_out_controller_records_nothing(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
+        mock_loop.sample_age_seconds.return_value = 0.012
 
         with patch(LAG_METRIC) as lag:
             servicer._build_gameplay_update({"OTHER"})

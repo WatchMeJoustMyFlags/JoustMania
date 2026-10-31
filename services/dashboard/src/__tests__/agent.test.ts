@@ -1,7 +1,8 @@
 /**
  * Agent tab data from spans (#2059; UC-035 step 3, UC-040 A21, UC-070 BR-005).
  *
- * Fixtures are shaped like Jaeger's /api/traces JSON:
+ * Fixtures are in the folds' input shape (the legacy /api/traces JSON); fetch stubs
+ * serve them as Jaeger v3 OTLP answers through ./otlp.ts toOtlp (#2283):
  *   jaeger-flag-state-games   two game traces (a real game, then a newer shadow
  *                             game): game_cycle -> agent.flag_state, and
  *                             agent.signal_received -> agent.decide + agent.decision
@@ -19,12 +20,13 @@ import {
   RolloutStore,
   activityFeed,
   blockedRowsFrom,
-  fetchDecideFeed,
+  pollDecides,
   fetchFlagStates,
   fetchInterventionCounts,
   fetchRollouts,
   needsFlagStateFallback,
   parseAppliedCounts,
+  APPLIED_UNAVAILABLE,
   parseBlockedCounts,
   parseDecideTraces,
   parseFlagStates,
@@ -33,6 +35,8 @@ import {
 import type { JaegerTracesResponse, VmQueryResponse } from "../agent.js";
 import { WRITE_GATE_OFF_HINT, renderFlagPanel } from "../components/AgentView.js";
 import { FLAG_STATE_NO_DATA } from "../degrade.js";
+import { COLD_START_TIME_MIN, SEARCH_TIME_MAX } from "../jaeger.js";
+import { toOtlp } from "./otlp.js";
 import gamesFixture from "./fixtures/jaeger-flag-state-games.json";
 import expandFixture from "./fixtures/jaeger-rollout-expand.json";
 import rollbackFixture from "./fixtures/jaeger-rollout-rollback.json";
@@ -205,15 +209,15 @@ describe("UC-070: BR-005 the flag panel follows the stage game", () => {
   it("UC-035/main step 3 the fallback search asks for agent.flag_state, limit 2, without a browser-clock time", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2031-01-01T00:00:00Z")); // a browser clock far off the agent's
-    const urls = stubFetch(() => json(games));
+    const urls = stubFetch(() => json(toOtlp(games)));
     const states = await fetchFlagStates();
     expect(states.length).toBe(2);
     const params = new URL(urls[0], "http://x").searchParams;
-    expect(params.get("service")).toBe("agent");
-    expect(params.get("operation")).toBe("agent.flag_state");
-    expect(params.get("limit")).toBe(String(FLAG_STATE_FALLBACK_LIMIT));
-    expect(params.has("start")).toBe(false);
-    expect(params.has("end")).toBe(false);
+    expect(params.get("query.serviceName")).toBe("agent");
+    expect(params.get("query.operationName")).toBe("agent.flag_state");
+    expect(params.get("query.searchDepth")).toBe(String(FLAG_STATE_FALLBACK_LIMIT));
+    expect(params.get("query.startTimeMin")).toBe(COLD_START_TIME_MIN);
+    expect(params.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
   });
 });
 
@@ -221,13 +225,13 @@ describe("UC-070: BR-005 the flag-state search and store keep the live real game
   const live = { realGameLive: true, followGameId: "", primaryGameId: "game_real000002" };
 
   it("UC-035/main step 3 while a real game is live the fallback search filters by its game.id", async () => {
-    const urls = stubFetch(() => json(games));
+    const urls = stubFetch(() => json(toOtlp(games)));
     await fetchFlagStates(undefined, live);
     await fetchFlagStates(undefined, { realGameLive: false, followGameId: "game_shadow00001", primaryGameId: "game_real000002" });
     const [withGame, without] = urls.map((u) => new URL(u, "http://x").searchParams);
-    expect(JSON.parse(withGame.get("tags") ?? "null")).toEqual({ "game.id": "game_real000002" });
-    expect(withGame.get("operation")).toBe("agent.flag_state");
-    expect(without.has("tags")).toBe(false);
+    expect(JSON.parse(withGame.get("query.attributes") ?? "null")).toEqual({ "game.id": "game_real000002" });
+    expect(withGame.get("query.operationName")).toBe("agent.flag_state");
+    expect(without.has("query.attributes")).toBe(false);
   });
 
   it("UC-070/BR-005 newer shadow games never evict the live primary game's flag state", () => {
@@ -274,26 +278,33 @@ describe("UC-035: main step 3, activity feed (blocked decisions + rollout)", () 
     vi.setSystemTime(new Date("2031-01-01T00:00:00Z"));
     const store = new RolloutStore();
     const urls = stubFetch((url) => {
-      const tags = new URL(url, "http://x").searchParams.get("tags") ?? "";
-      if (tags.includes('"expand"')) return json(expand);
-      if (tags.includes('"rollback"')) return json(rollback);
+      const tags = new URL(url, "http://x").searchParams.get("query.attributes") ?? "";
+      if (tags.includes('"expand"')) return json(toOtlp(expand));
+      if (tags.includes('"rollback"')) return json(toOtlp(rollback));
       return json({ data: [] });
     });
 
     await fetchRollouts(store);
     const first = urls.map((u) => new URL(u, "http://x").searchParams);
-    expect(first.map((p) => JSON.parse(p.get("tags")!)["remediation.action"])).toEqual([...ROLLOUT_ACTIONS]);
-    expect(first.every((p) => p.get("operation") === "agent.infrastructure.decision" && !p.has("start") && !p.has("end"))).toBe(true);
+    expect(first.map((p) => JSON.parse(p.get("query.attributes")!)["remediation.action"])).toEqual([...ROLLOUT_ACTIONS]);
+    expect(
+      first.every(
+        (p) =>
+          p.get("query.operationName") === "agent.infrastructure.decision" &&
+          p.get("query.startTimeMin") === COLD_START_TIME_MIN &&
+          p.get("query.startTimeMax") === SEARCH_TIME_MAX,
+      ),
+    ).toBe(true);
 
     urls.length = 0;
     await fetchRollouts(store);
     const second = new Map(urls.map((u) => {
       const p = new URL(u, "http://x").searchParams;
-      return [JSON.parse(p.get("tags")!)["remediation.action"], p.get("start")];
+      return [JSON.parse(p.get("query.attributes")!)["remediation.action"], p.get("query.startTimeMin")];
     }));
-    expect(second.get("expand")).toBe(String((T0_MS + 70_000 - ROLLOUT_OVERLAP_MS) * 1000));
-    expect(second.get("rollback")).toBe(String((T0_MS + 80_000 - ROLLOUT_OVERLAP_MS) * 1000));
-    expect(second.get("recommended_only")).toBeNull();
+    expect(second.get("expand")).toBe(new Date(T0_MS + 70_000 - ROLLOUT_OVERLAP_MS).toISOString());
+    expect(second.get("rollback")).toBe(new Date(T0_MS + 80_000 - ROLLOUT_OVERLAP_MS).toISOString());
+    expect(second.get("recommended_only")).toBe(COLD_START_TIME_MIN);
     expect(store.list().map((r) => r.signal)).toEqual(["rollout rollback (dry run)", "rollout expand"]);
   });
 
@@ -311,15 +322,16 @@ describe("UC-035: main step 3, no browser clock in a Jaeger request", () => {
   it("UC-035/main step 3 the decide search sends neither the browser's now nor an end", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2031-01-01T00:00:00Z"));
-    const browserNowUs = String(Date.now() * 1000);
-    const urls = stubFetch(() => json(games));
+    const browserDay = new Date().toISOString().slice(0, 10);
+    const urls = stubFetch(() => json(toOtlp(games)));
     const store = new DecideStore();
-    store.merge((await fetchDecideFeed(store.queryStartMs())).rows);
-    await fetchDecideFeed(store.queryStartMs());
-    expect(new URL(urls[0], "http://x").searchParams.has("start")).toBe(false);
+    await pollDecides(store, 0);
+    await pollDecides(store, 0);
+    expect(new URL(urls[0], "http://x").searchParams.get("query.startTimeMin")).toBe(COLD_START_TIME_MIN);
     for (const u of urls) {
-      expect(u).not.toContain(browserNowUs.slice(0, 8));
-      expect(new URL(u, "http://x").searchParams.has("end")).toBe(false);
+      const params = new URL(u, "http://x").searchParams;
+      expect(params.get("query.startTimeMin")).not.toContain(browserDay);
+      expect(params.get("query.startTimeMax")).toBe(SEARCH_TIME_MAX);
     }
   });
 });
@@ -333,12 +345,59 @@ describe("UC-035: main step 3, parseAppliedCounts", () => {
         { metric: { result: "error", job: "a/agent" }, value: [1, "1"] },
       ]),
     );
-    expect(out).toEqual({ appliedOk: 5, appliedError: 1 });
+    expect(out).toEqual({ appliedOk: 5, appliedError: 1, shadowAppliedOk: 0, shadowAppliedError: 0 });
   });
 
-  it("returns nulls when VM has no samples or a malformed body", () => {
-    expect(parseAppliedCounts(vm([]))).toEqual({ appliedOk: null, appliedError: null });
-    expect(parseAppliedCounts({ status: "error" })).toEqual({ appliedOk: null, appliedError: null });
+  it("UC-035/A3 game_kind splits real (primary) from shadow; an unlabelled series counts as real", () => {
+    const out = parseAppliedCounts(
+      vm([
+        { metric: { result: "ok", game_kind: "primary" }, value: [1, "4"] },
+        { metric: { result: "ok" }, value: [1, "1"] },
+        { metric: { result: "ok", game_kind: "shadow" }, value: [1, "9"] },
+        { metric: { result: "error", game_kind: "shadow" }, value: [1, "2"] },
+      ]),
+    );
+    expect(out).toEqual({ appliedOk: 5, appliedError: 0, shadowAppliedOk: 9, shadowAppliedError: 2 });
+  });
+
+  it("UC-035/A3 the applied query groups by game_kind", async () => {
+    const urls = stubFetch(() => json(games));
+    await fetchInterventionCounts();
+    const q = new URL(urls.find((u) => u.includes("agent_intervention_writes_total"))!, "http://x").searchParams.get("query") ?? "";
+    expect(q).toContain("game_kind");
+  });
+
+  it("UC-035/A3 an empty answer is zero applied, not n/a; a malformed body is n/a", () => {
+    expect(parseAppliedCounts(vm([]))).toEqual({ appliedOk: 0, appliedError: 0, shadowAppliedOk: 0, shadowAppliedError: 0 });
+    expect(parseAppliedCounts({ status: "error" })).toEqual(APPLIED_UNAVAILABLE);
+  });
+});
+
+describe("UC-035: A3/#2288 interventions panel windows and fetch results", () => {
+  it("UC-035/A3 VM up but empty for both queries: zero applied, zero blocked", async () => {
+    stubFetch(() => json(vm([])));
+    const overlay = await fetchInterventionCounts();
+    expect(overlay.appliedOk).toBe(0);
+    expect(overlay.totalBlocked).toBe(0);
+  });
+
+  it("UC-035/A3 an HTTP error from VM is unreachable (n/a)", async () => {
+    stubFetch(() => json({}, 502));
+    const overlay = await fetchInterventionCounts();
+    expect(overlay.appliedOk).toBeNull();
+    expect(overlay.totalBlocked).toBeNull();
+  });
+
+  it("UC-035/A3 applied and blocked use the same 600 s window; blocked leaves out already_applied", async () => {
+    const urls = stubFetch(() => json(vm([])));
+    await fetchInterventionCounts();
+    const queries = urls.map((u) => new URL(u, "http://x").searchParams.get("query") ?? "");
+    const applied = queries.find((q) => q.includes("agent_intervention_writes_total")) ?? "";
+    const blocked = queries.find((q) => q.includes("agent_decisions_total")) ?? "";
+    expect(applied).toContain("increase(");
+    expect(applied).toContain("[600s]");
+    expect(blocked).toContain("[600s]");
+    expect(blocked).toContain('block_reason!="already_applied"');
   });
 });
 
@@ -356,7 +415,25 @@ describe("UC-040: A21 blocked tallies from agent_decisions_total", () => {
   });
 
   it("UC-040/A21 no samples in the window is zero blocked, not n/a", () => {
-    expect(parseBlockedCounts(vm([]))).toEqual({ blockedByAction: [], blockedByReason: [], totalBlocked: 0 });
+    expect(parseBlockedCounts(vm([]))).toEqual({
+      blockedByAction: [],
+      blockedByReason: [],
+      totalBlocked: 0,
+      shadowBlocked: 0,
+    });
+  });
+
+  it("UC-035/A3 shadow-game refusals are tallied apart and stay out of the real breakdowns", () => {
+    const out = parseBlockedCounts(
+      vm([
+        { metric: { action: "grant_shield", block_reason: "rate_limit", game_kind: "primary" }, value: [1, "2"] },
+        { metric: { action: "grant_shield", block_reason: "rate_limit", game_kind: "shadow" }, value: [1, "30"] },
+      ]),
+    );
+    expect(out.totalBlocked).toBe(2);
+    expect(out.shadowBlocked).toBe(30);
+    expect(out.blockedByAction).toEqual([{ action: "grant_shield", blocked: 2 }]);
+    expect(out.blockedByReason).toEqual([{ reason: "rate_limit", count: 2 }]);
   });
 
   it("UC-040/A21 asks VictoriaMetrics over 600 s; unreachable shows Blocked as n/a, never a span fold", async () => {
@@ -366,9 +443,9 @@ describe("UC-040: A21 blocked tallies from agent_decisions_total", () => {
     });
     const overlay = await fetchInterventionCounts();
     const query = new URL(urls.find((u) => u.includes("agent_decisions_total"))!, "http://x").searchParams.get("query") ?? "";
-    expect(query).toContain('agent_decisions_total{blocked="true"}');
+    expect(query).toContain('agent_decisions_total{blocked="true",block_reason!="already_applied"}');
     expect(query).toContain("[600s]");
-    expect(overlay).toEqual({ ...BLOCKED_UNAVAILABLE, appliedOk: null, appliedError: null });
+    expect(overlay).toEqual({ ...BLOCKED_UNAVAILABLE, ...APPLIED_UNAVAILABLE });
     expect(overlay.totalBlocked).toBeNull();
     expect(urls.some((u) => u.includes("/jaeger/"))).toBe(false);
   });

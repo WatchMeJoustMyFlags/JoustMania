@@ -18,6 +18,9 @@
 #          fraction: [lo, hi] fraction_percent range of a fraction write
 #          shape: true    an object with the keys and value kinds of the default variant
 # persist: true = an admin setting a write MAY persist with "persist": true
+# description: one line in game terms, at most 120 characters; required on every row
+#          with scope experiment+arm (the experiment proposer shows it, #2345), optional
+#          elsewhere; the same text as the flags.md §13.3 description table
 #
 # A declared variant name is always accepted (within a variants subset). Numeric
 # ranges match the readers' clamps (services/game_coordinator/interventions.py,
@@ -93,7 +96,7 @@ flags:
   - {set: agent, key: experiment_dynamic_target_n, kind: overlay, scope: [stack], bounds: {range: [0, 1000], integer: true}}
   # The experiment seed (#1907): declared variants only, so every seed is a reviewed variant
   # (TestExperimentSeedVariants checks each against its game key's bounds).
-  - {set: agent, key: experiment_seed, kind: overlay, scope: [stack], bounds: {variants: ["off", windows_frantic, invincibility_4_5]}}
+  - {set: agent, key: experiment_seed, kind: overlay, scope: [stack], bounds: {variants: ["off", windows_frantic]}}
   # Agent tuning migrated from env (#1788, flags.md §15): operator-written, never by the agent.
   - {set: agent, key: inference.backend, kind: overlay, scope: [stack], persist: true, bounds: {variants: [stub, claude]}}
   - {set: agent, key: inference.model, kind: overlay, scope: [stack], bounds: {free_string: true}}
@@ -109,35 +112,39 @@ flags:
   # The experiment catalog (#1415): gameplay calibration flags an experiment arm
   # may change (FR-138) and a promotion may set for real games (W5). Capacity,
   # lobby, team-structure and presentation flags are not in it.
-  - {set: game, key: sensitivity, kind: overlay, scope: [stack, experiment+arm, real], persist: true}
-  - {set: game, key: nonstop.time_limit_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 600], integer: true}}
-  - {set: game, key: invincibility_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 10]}}
-  - {set: game, key: fight_club.min_rounds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 30], integer: true}}
-  - {set: game, key: werewolf.reveal_time_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [10, 90]}}
-  - {set: game, key: death_grace_period_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 5]}}
-  - {set: game, key: nonstop.respawn_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.5, 10]}}
-  - {set: game, key: nonstop.spawn_protection_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 6]}}
-  - {set: game, key: fight_club.round_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [5, 60]}}
-  - {set: game, key: tournament.match_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [5, 60]}}
-  - {set: game, key: tournament.time_between_matches_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 15]}}
-  - {set: game, key: werewolf.werewolf_fraction, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.1, 0.6]}}
-  - {set: game, key: zombie.initial_count, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 5], integer: true}}
-  - {set: game, key: zombie.respawn_min_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.5, 10]}}
-  - {set: game, key: zombie.respawn_max_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [2, 30]}}
-  - {set: game, key: windows, kind: overlay, scope: [experiment+arm, real], bounds: {shape: true}}
+  - {set: game, key: sensitivity, kind: overlay, scope: [stack, experiment+arm, real], persist: true, description: "movement a player survives: 0 ultra_slow (strictest) to 4 ultra_fast (most lenient)"}
+  - {set: game, key: nonstop.time_limit_seconds, kind: overlay, scope: [real], bounds: {range: [0, 600], integer: true}}
+  - {set: game, key: invincibility_seconds, kind: overlay, scope: [real], bounds: {range: [0, 10]}}
+  - {set: game, key: fight_club.min_rounds, kind: overlay, scope: [real], bounds: {range: [1, 30], integer: true}}
+  - {set: game, key: werewolf.reveal_time_seconds, kind: overlay, scope: [real], bounds: {range: [10, 90]}}
+  - {set: game, key: death_grace_period_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 5]}, description: "seconds a player cannot die after swapping team, turning zombie or respawning"}
+  - {set: game, key: nonstop.respawn_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.5, 10]}, description: "seconds a dead Non-Stop Joust player waits before respawning"}
+  - {set: game, key: nonstop.spawn_protection_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0, 6]}, description: "seconds a respawned Non-Stop Joust player cannot die"}
+  - {set: game, key: fight_club.round_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [5, 60]}, description: "length of one Fight Club round in seconds"}
+  - {set: game, key: tournament.match_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [5, 60]}, description: "seconds a Tournament match lasts before a random fighter wins"}
+  - {set: game, key: tournament.time_between_matches_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 15]}, description: "pause in seconds between two Tournament matches"}
+  - {set: game, key: werewolf.werewolf_fraction, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.1, 0.6]}, description: "share of Werewolf players who are werewolves (0.44 = 44 percent)"}
+  - {set: game, key: zombie.initial_count, kind: overlay, scope: [experiment+arm, real], bounds: {range: [1, 5], integer: true}, description: "players who start a Zombies game as zombies"}
+  - {set: game, key: zombie.respawn_min_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [0.5, 10]}, description: "shortest wait in seconds before a killed zombie respawns"}
+  - {set: game, key: zombie.respawn_max_seconds, kind: overlay, scope: [experiment+arm, real], bounds: {range: [2, 30]}, description: "longest wait in seconds before a killed zombie respawns"}
+  - {set: game, key: windows, kind: overlay, scope: [experiment+arm, real], bounds: {shape: true}, description: "min and max seconds of the fast and slow music phases, in the game and in its end phase"}
   - {set: game, key: num_teams, kind: overlay, scope: [stack], persist: true}
   - {set: game, key: force_all_start, kind: overlay, scope: [stack], persist: true, bounds: {variants: ["on", "off"]}}
   # shadow_policy: an overlay may only tighten admission to "block"; loosening to
   # "allow" stays a reviewed baseline edit (C-033). Clearing it restores the baseline.
   - {set: game, key: shadow_policy, kind: overlay, scope: [stack], bounds: {variants: [block]}}
-  - {set: game, key: tempo_schedule_mode, kind: state, scope: [game]}
   # Tempo intensity ramp (#1833, UC-031 BR-005): changeable on stage; the bounds
   # are the coordinator's own clamp (games/base.py RAMP_SECONDS_MIN/MAX).
   - {set: game, key: tempo.ramp_up_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 10]}}
   - {set: game, key: tempo.ramp_down_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 10]}}
-  # Shield charge (#1837, UC-040 BR-019): human flags, changeable on stage; never
-  # experiment+arm or real, so no agent writer can reach them (C-034).
-  - {set: game, key: shield.activation, kind: overlay, scope: [stack], bounds: {variants: [instant, trigger, hold]}}
+  # Shield charge (#1837, UC-040 BR-019): charge_expiry and the #2094 cue flags are human
+  # flags, changeable on stage; never experiment+arm or real, so no agent writer can reach
+  # them (C-034). shield.activation and the hold keys below are agent-tunable as
+  # experiment+arm and real values (FR-162, UC-043 A17); their bounds are the ceilings.
+  # real_write: no_live_real_game (#2096, UC-043 A17): a write in scope real is refused
+  # with 409 real_game_live while a real game is registered (flags.md §13).
+  # persist: the operator pad's value (UC-015 BR-018).
+  - {set: game, key: shield.activation, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {variants: [instant, trigger, hold]}, real_write: no_live_real_game, description: "how a granted shield works: on at grant, on a trigger press, or while the trigger is held"}
   - {set: game, key: shield.charge_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 120]}}
   # Shield charge rumble pattern (#2094, UC-040 BR-021): read by the controller manager per charge.
   - {set: game, key: shield.charge_rumble_intensity, kind: overlay, scope: [stack], bounds: {range: [0, 255]}}
@@ -146,15 +153,16 @@ flags:
   - {set: game, key: shield.charge_pre_expiry_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 8]}}
   - {set: game, key: shield.ending_rumble_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 3]}}
   # Hold-mode shield energy (#2096, UC-040 BR-024, BR-027): latched per hold game.
-  # Stack-only until FR-162 widens them (flags.md §4a), so no agent writer reaches them (C-034).
-  - {set: game, key: shield.energy_max_seconds, kind: overlay, scope: [stack], bounds: {range: [1, 10]}}
-  - {set: game, key: shield.energy_budget_seconds, kind: overlay, scope: [stack], bounds: {range: [3, 30]}}
-  - {set: game, key: shield.energy_initial_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 5]}}
-  - {set: game, key: shield.recharge_per_second, kind: overlay, scope: [stack], bounds: {range: [0, 0.5]}}
-  - {set: game, key: shield.min_burst_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 1]}}
+  # Agent-tunable since FR-162 (UC-043 A17); the ranges are the ceilings (C-034).
+  # persist: an operator/admin value may be persisted (#2452); the agent writes in memory only.
+  - {set: game, key: shield.energy_max_seconds, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [1, 10]}, real_write: no_live_real_game, description: "hold mode: most shield energy in seconds a player can store"}
+  - {set: game, key: shield.energy_budget_seconds, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [3, 30]}, real_write: no_live_real_game, description: "hold mode: total seconds of active shield a player may use in one game"}
+  - {set: game, key: shield.energy_initial_seconds, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [0, 5]}, real_write: no_live_real_game, description: "hold mode: shield energy in seconds each player starts the game with"}
+  - {set: game, key: shield.recharge_per_second, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [0, 0.5]}, real_write: no_live_real_game, description: "hold mode: shield energy regained per second while the shield is not held"}
+  - {set: game, key: shield.min_burst_seconds, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [0.1, 1]}, real_write: no_live_real_game, description: "hold mode: least shield energy in seconds one activation costs"}
   # Hold feedback (#2096, UC-040 BR-026): latched per hold game and shipped to the controller.
-  - {set: game, key: shield.hold_rumble_intensity, kind: overlay, scope: [stack], bounds: {range: [0, 150]}}
-  - {set: game, key: shield.empty_pulse_ms, kind: overlay, scope: [stack], bounds: {range: [100, 800]}}
+  - {set: game, key: shield.hold_rumble_intensity, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [0, 150]}, real_write: no_live_real_game, description: "hold mode: rumble strength while a player holds the shield, 0 = none"}
+  - {set: game, key: shield.empty_pulse_ms, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [100, 800]}, real_write: no_live_real_game, description: "hold mode: length in ms of the pulse when a held shield runs out"}
 
   # --- user, controller, rollout (flags.md §13.4) ------------------------------
   - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}
@@ -176,3 +184,5 @@ flags:
   # The logging group of the env-to-flag migration (flags.md §15, #1788): operator-written, read by every service.
   - {set: observability, key: log_level, kind: overlay, scope: [stack]}
   - {set: observability, key: debug, kind: overlay, scope: [stack]}
+  # The trace shape of experiment shadow games (#2223): own root + Link (link) or child of agent.experiment (child).
+  - {set: observability, key: telemetry.experiment_game_parent, kind: overlay, scope: [stack]}

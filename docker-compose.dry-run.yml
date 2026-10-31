@@ -23,8 +23,8 @@
 #    both; #1907 removed the env gates). The same step seeds ONE experiment (the
 #    experiment_seed flag, variant windows_frantic; #1907 removed the
 #    AGENT_EXPERIMENT_SEED_* env vars) so the declare->spawn->conclude->verdict
-#    loop has work once enabled. Another seed is another reviewed variant:
-#      ./scripts/flags.sh set agent experiment_seed invincibility_4_5
+#    loop has work once enabled. Another seed is another reviewed variant of
+#    experiment_seed (agent.json), selected with ./scripts/flags.sh set.
 #    The refill tick is the experiment_tick_seconds flag (default 30 s; the former
 #    15 s env override is gone, #1907).
 #

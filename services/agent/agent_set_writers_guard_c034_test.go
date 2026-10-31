@@ -48,7 +48,7 @@ var c034FlagServiceWrites = map[string]bool{
 	"experiment/writer.go:Writer.DryRun":                                true,
 	"experiment/writer.go:Writer.Strip":                                 true,
 	"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault":    true,
-	"promote/realdefault.go:serviceRealDefaultWriter.RevertRealDefault": true,
+	"promote/realdefault.go:serviceRealDefaultWriter.revert": true,
 }
 
 // c034OtherPostSites are Put/Post/Delete selectors that are not flag-service writes.
@@ -62,7 +62,7 @@ var c034ClientSites = map[string]bool{
 	"actions/rollout_writer.go:NewRolloutWriterFromEnv":  true,
 	"experiment/writer.go:NewWriterFromEnv":              true,
 	"promote/realdefault.go:NewRealDefaultWriterFromEnv": true,
-	"main.go:main": true,
+	"main.go:run":  true,
 }
 
 // c034RawWriteSites send a raw HTTP write that is not to the flag service.

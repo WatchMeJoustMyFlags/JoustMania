@@ -5,6 +5,7 @@ Tracks game state, player performance, audio playback, and game quality metrics.
 Uses OTLP push at 100ms intervals for real-time dashboard updates.
 """
 
+import threading
 from contextlib import suppress
 
 from lib.otel_metrics import Counter, Gauge, Histogram
@@ -173,6 +174,39 @@ active_players = Gauge(
 )
 
 players_alive = Gauge("game_players_alive", "Number of players currently alive")
+
+# Last writer of the unlabeled players_alive aggregate: (game_id, value). A
+# finishing session resets the gauge only while its own game is still the last
+# writer: a force-ended session whose thread ends after the next game started
+# must not zero that game's count (#2244). One module lock makes the write and
+# the compare-and-zero atomic; it is held only for the gauge set (writers run
+# per init, death or revive, never per frame), never across an await or IO.
+_players_alive_lock = threading.Lock()
+_players_alive_last: tuple[str, int] | None = None
+
+
+def set_players_alive(game_id: str, alive_count: int) -> None:
+    """Set the players_alive aggregate on behalf of ``game_id`` (primary games only)."""
+    global _players_alive_last
+    with _players_alive_lock:
+        _players_alive_last = (game_id, alive_count)
+        players_alive.set(alive_count)
+
+
+def reset_players_alive_if_owner(game_id: str) -> bool:
+    """Zero the players_alive aggregate when ``game_id`` wrote it last (#2244).
+
+    Returns True when the gauge was reset.
+    """
+    global _players_alive_last
+    with _players_alive_lock:
+        last = _players_alive_last
+        if last is None or last[0] != game_id:
+            return False
+        _players_alive_last = (game_id, 0)
+        players_alive.set(0)
+        return True
+
 
 # Aggregate death count (UC-030 step 9). A cumulative counter, so it carries no
 # serial / game_id: those would leave one permanent series per (serial, game) with
@@ -565,7 +599,7 @@ def clear_session_player_analytics(
 #                 'low_battery', 'mode_unsupported', 'no_game', 'handler_error',
 #                 'already_charged' (#1837, UC-040 A31), 'shield_cap_reached', 'shield_cooldown'
 #                 (#2044, UC-040 A34), 'shield_pool_full', 'shield_budget_exhausted'
-#                 (#2096, UC-040 A37), 'revive_refused', 'experiment_override',
+#                 (#2096, UC-040 A37), 'game_ending' (#2395, UC-040 A42), 'revive_refused', 'experiment_override',
 #                 'eliminate_refused' (UC-040 A22)); empty
 #                 string for applied (blocked='false') attempts. Cardinality is bounded
 #                 to this fixed reason set, so it is safe as a label.

@@ -10,7 +10,6 @@ Tests the core Nonstop mechanics:
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import create_autospec, patch
@@ -25,11 +24,12 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
-from conftest import EventCollector, MockControllerManagerService, async_noop
+from conftest import EventCollector, MockControllerManagerService, MockGameplayStream, async_noop
 from test_random_teams_formation import SERIALS, QueueControllerManager, QueueStream, RecordingLog, _players, _wait_for
 
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games import nonstop_joust as nonstop_mod
 from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.nonstop_joust import (
@@ -38,14 +38,6 @@ from services.game_coordinator.games.nonstop_joust import (
     NonstopPlayer,
 )
 from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
-
-
-class MockGameplayStream:
-    """Minimal mock for gameplay stream writes."""
-
-    async def write(self, message):
-        """Accept writes silently."""
-        pass
 
 
 class TestNonstopJoustGameMode:
@@ -204,7 +196,7 @@ class TestNonstopJoustGameMode:
 
         # Set time limit
         game.time_limit = 60
-        game.start_time = time.time()  # Just started
+        game.start_time = game_clock.now()  # Just started
 
         # Time hasn't expired
         assert not await game._check_win_condition()
@@ -218,7 +210,7 @@ class TestNonstopJoustGameMode:
 
         # Set time limit and pretend it expired
         game.time_limit = 60
-        game.start_time = time.time() - 70  # 70 seconds ago
+        game.start_time = game_clock.now() - 70  # 70 seconds ago
 
         # Time expired
         assert await game._check_win_condition()
@@ -321,7 +313,7 @@ class TestNonstopRespawn:
         await game._respawn_player(serial)
 
         assert player.spawn_protected is True
-        assert player.spawn_protection_end > time.time()
+        assert player.spawn_protection_end > game_clock.now()
 
     @pytest.mark.asyncio
     async def test_respawn_resets_warning_state(self, nonstop_game):
@@ -335,7 +327,7 @@ class TestNonstopRespawn:
         player = game.players[serial]
 
         # Set some warning state
-        player.warning_until = time.time() + 5.0
+        player.warning_until = game_clock.now() + 5.0
         player.smoothed_accel = 2.5
         player.alive = False
 
@@ -491,7 +483,7 @@ class TestNonstopScoring:
 
         # Setup required state for _end_game_impl
         game.gameplay_stream = MockGameplayStream()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
 
         await game._end_game_impl()
@@ -767,7 +759,7 @@ class TestNonstopUpdateRespawnTimers:
         # Set player as alive with spawn protection that already expired
         player.alive = True
         player.spawn_protected = True
-        player.spawn_protection_end = time.time() - 1.0  # Expired 1s ago
+        player.spawn_protection_end = game_clock.now() - 1.0  # Expired 1s ago
 
         await game._update_respawn_timers()
 
@@ -819,7 +811,7 @@ class TestNonstopEndGameImpl:
         game.players[serials[3]].deaths = 10  # score=0
 
         game.gameplay_stream = RecordingGameplayStream()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         game._time_limit_reached = True  # only a time-limit end has a winner (UC-026 BR-003)
         game.running = False  # Skip celebration sleep
@@ -848,7 +840,7 @@ class TestNonstopEndGameImpl:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         game.gameplay_stream = RecordingGameplayStream()
-        game.start_time = time.time() - 60  # 60 seconds ago
+        game.start_time = game_clock.now() - 60  # 60 seconds ago
         game.state = GameState.RUNNING
         game.running = False
 
@@ -873,7 +865,7 @@ class TestNonstopEndGameImpl:
 
         stream = RecordingGameplayStream()
         game.gameplay_stream = stream
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         game._time_limit_reached = True  # only a time-limit end has a winner (UC-026 BR-003)
         game.running = False
@@ -896,7 +888,7 @@ class TestNonstopEndGameImpl:
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
         game.gameplay_stream = RecordingGameplayStream()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         game.running = False
 
@@ -1654,7 +1646,7 @@ class TestNonstopRespawnClock:
         config = GamePerformanceConfig(update_frequency_hz=30)
         with (
             patch.object(get_config_manager(), "get_config", return_value=config),
-            patch.object(nonstop_mod.asyncio, "sleep", recording_sleep),
+            patch.object(game_clock, "sleep", recording_sleep),
         ):
             await asyncio.wait_for(game._game_loop(), timeout=5)
 
@@ -1864,7 +1856,7 @@ class TestNonstopDisconnects:
         serial = next(iter(game.players))
         player = game.players[serial]
         player.spawn_protected = True
-        player.spawn_protection_end = time.time() - 1  # protection would expire now
+        player.spawn_protection_end = game_clock.now() - 1  # protection would expire now
 
         await game._handle_disconnect(serial)
         stream.messages.clear()
@@ -1878,7 +1870,7 @@ class TestNonstopDisconnects:
     async def test_the_startup_grace_never_shortens_a_longer_grace(self):
         game, log = await self._game()
         serial = next(iter(game.players))
-        shield_until = time.time() + 60  # an agent shield granted during the countdown
+        shield_until = game_clock.now() + 60  # an agent shield granted during the countdown
         game.players[serial].grace_until = shield_until
 
         await self._run_loop(game, _FiniteFrameCall(frames=1))

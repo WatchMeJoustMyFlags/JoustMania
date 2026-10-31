@@ -273,8 +273,14 @@ body {
   box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
 }
 
+.controller-name {
+  font-size: 1rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .controller-id {
-  font-size: 0.9rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-secondary);
 }
@@ -831,6 +837,12 @@ body {
   white-space: nowrap;
 }
 
+.experiment-recommendation {
+  font-size: 0.82rem;
+  color: var(--text-primary, inherit);
+  font-weight: 600;
+}
+
 /* ===== Agent tab (#792) ===== */
 
 .agent-header {
@@ -1045,6 +1057,15 @@ body {
 
 .agent-stat-blocked {
   color: var(--accent-primary);
+}
+
+.agent-stat-shadow {
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+}
+
+.agent-overlay-shadow {
+  opacity: 0.85;
 }
 
 .agent-stat-na {
@@ -1484,4 +1505,39 @@ body {
   font-size: 0.8rem;
   margin-bottom: 8px;
   opacity: 0.85;
+}
+
+/* Live stage settings strip (UC-035 BR-010) */
+.stage-settings {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.stage-settings.stale {
+  opacity: 0.55;
+}
+
+/* Experiment card detail (#2291) */
+.experiment-tested {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+  font-size: 0.8rem;
+}
+.experiment-flag {
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.experiment-thesis {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.experiment-trace {
+  font-size: 0.78rem;
 }

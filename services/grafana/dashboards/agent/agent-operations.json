@@ -614,7 +614,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Why a remote decision backend (decision.backend != rules) or a post-game retro was not called, by gate reason: llm_not_eligible (game kind not in llm.eligible_game_kinds, e.g. shadow games), decide_interval (decision.min_interval_ms cadence), llm_budget_exhausted (llm.max_requests_per_minute spent), no_interventions_allowed (interventions_allowed is none / noop only, #1298), and the configuration fallbacks unknown_backend, backend_unavailable (no API key / model / base URL) and async_not_wired, counted every cycle. 0 (none) while nothing is gated. Source: agent_llm_gated_total.",
+      "description": "Why a remote decision backend (decision.backend != rules) or a post-game retro was not called, by gate reason: llm_not_eligible (game kind not in llm.eligible_game_kinds, e.g. shadow games), decide_interval (decision.min_interval_ms cadence), llm_budget_exhausted (llm.max_requests_per_minute spent), no_interventions_allowed (interventions_allowed is none / noop only, or in an experiment game only levers of the flag under test, #1298, #2251), and the configuration fallbacks unknown_backend, backend_unavailable (no API key / model / base URL) and async_not_wired, counted every cycle. 0 (none) while nothing is gated. Source: agent_llm_gated_total.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -696,17 +696,18 @@
     },
     {
       "datasource": {
-        "type": "jaeger",
-        "uid": "jaeger"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "description": "The 20 most recent agent.decide traces in Jaeger (service agent). Open one to see the backend call (chat {model} span), decide.* attributes and the resulting agent.decision / agent.action spans.",
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 25
+      "description": "Agent decisions in the selected time range by game kind (primary = real games, shadow = shadow games), action, blocked and block reason (increase of agent_decisions_total). Replaces the Jaeger trace-search table that Grafana 13 cannot run against Jaeger 2.21+ (jaeger#7594); open a single trace from the Jaeger UI at /jaeger/.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
       },
-      "id": 11,
       "options": {
         "cellHeight": "sm",
         "showHeader": true
@@ -714,18 +715,38 @@
       "targets": [
         {
           "datasource": {
-            "type": "jaeger",
-            "uid": "jaeger"
+            "type": "prometheus",
+            "uid": "prometheus"
           },
-          "queryType": "search",
-          "service": "agent",
-          "operation": "agent.decide",
-          "limit": 20,
+          "expr": "sum by (game_kind, action, blocked, block_reason) (increase(agent_decisions_total[$__range])) > 0",
+          "format": "table",
+          "instant": true,
+          "range": false,
           "refId": "A"
         }
       ],
-      "title": "Recent agent.decide Traces (Jaeger)",
-      "type": "table"
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "decisions"
+            }
+          }
+        }
+      ],
+      "title": "Agent decisions by game kind and action",
+      "type": "table",
+      "id": 11,
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      }
     },
     {
       "collapsed": false,

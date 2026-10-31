@@ -7,18 +7,22 @@ import grpc
 import pytest
 
 from lib.controller_constants import AxisKey, ButtonKey, StateKey
+from proto import psmove_hid_pb2
 from services.controller_manager.multiplexer.adapter import DiscoveryFailedError
 from services.controller_manager.multiplexer.rust_adapter import (
     RPC_TIMEOUT_S,
     RustServiceAdapter,
     _sensor_data_to_dict,
 )
+from services.controller_manager.tests.backend_doubles import autospec_channel
+from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 
 def _make_adapter():
     """Create a RustServiceAdapter bypassing __init__ gRPC imports."""
     adapter = RustServiceAdapter.__new__(RustServiceAdapter)
-    adapter._channel = MagicMock()
+    adapter._init_stream_state()
+    adapter._channel = autospec_channel()
     adapter._stub = MagicMock()
     adapter._command_queue = queue.Queue(maxsize=256)
     adapter._latest_data = {}
@@ -45,16 +49,16 @@ class TestDiscover:
 
     def test_discover_returns_serials(self):
         adapter = _make_adapter()
-        mock_response = MagicMock()
-        mock_ctrl1 = MagicMock()
+        mock_response = psmove_hid_pb2.DiscoverResponse()
+        mock_ctrl1 = psmove_hid_pb2.DiscoveredController()
         mock_ctrl1.serial = "AABBCCDDEEFF"
         mock_ctrl1.adapter_name = "hci0"
         mock_ctrl1.product_id = 0x03D5
-        mock_ctrl2 = MagicMock()
+        mock_ctrl2 = psmove_hid_pb2.DiscoveredController()
         mock_ctrl2.serial = "112233445566"
         mock_ctrl2.adapter_name = "hci1"
         mock_ctrl2.product_id = 0x03D5
-        mock_response.controllers = [mock_ctrl1, mock_ctrl2]
+        mock_response.controllers.extend([mock_ctrl1, mock_ctrl2])
         adapter._stub.Discover.return_value = mock_response
         adapter._stream_running = True  # Skip stream start
 
@@ -64,23 +68,7 @@ class TestDiscover:
         adapter._stub.Discover.assert_called_once()
         call_args = adapter._stub.Discover.call_args[0][0]
         assert call_args.force is True
-        assert call_args.verify_only is False
-
-    def test_discover_verify_only(self):
-        adapter = _make_adapter()
-        mock_response = MagicMock()
-        mock_ctrl = MagicMock()
-        mock_ctrl.serial = "AABBCCDDEEFF"
-        mock_ctrl.adapter_name = "hci0"
-        mock_ctrl.product_id = 0x03D5
-        mock_response.controllers = [mock_ctrl]
-        adapter._stub.Discover.return_value = mock_response
-        adapter._stream_running = True
-
-        adapter.discover(verify_only=True)
-
-        call_args = adapter._stub.Discover.call_args[0][0]
-        assert call_args.verify_only is True
+        assert call_args.verify_only is False  # proto field kept; never set (#2352)
 
     def test_discover_rpc_error_raises_discovery_failed(self):
         """A failed Discover is not "no controllers" (UC-002 A1, #2125)."""
@@ -99,12 +87,12 @@ class TestGetAdapterForSerial:
 
     def test_returns_cached_adapter_name(self):
         adapter = _make_adapter()
-        mock_response = MagicMock()
-        mock_ctrl = MagicMock()
+        mock_response = psmove_hid_pb2.DiscoverResponse()
+        mock_ctrl = psmove_hid_pb2.DiscoveredController()
         mock_ctrl.serial = "AABBCCDDEEFF"
         mock_ctrl.adapter_name = "hci0"
         mock_ctrl.product_id = 0x03D5
-        mock_response.controllers = [mock_ctrl]
+        mock_response.controllers.extend([mock_ctrl])
         adapter._stub.Discover.return_value = mock_response
         adapter._stream_running = True
 
@@ -115,11 +103,11 @@ class TestGetAdapterForSerial:
     @pytest.mark.uc("UC-035", br=["BR-009"])
     def test_label_is_exactly_the_adapter_name_from_rust_hid(self):
         adapter = _make_adapter()
-        mock_ctrl = MagicMock()
+        mock_ctrl = psmove_hid_pb2.DiscoveredController()
         mock_ctrl.serial = "AABBCCDDEEFF"
         mock_ctrl.adapter_name = "hci7"
         mock_ctrl.product_id = 0x03D5
-        adapter._stub.Discover.return_value = MagicMock(controllers=[mock_ctrl])
+        adapter._stub.Discover.return_value = psmove_hid_pb2.DiscoverResponse(controllers=[mock_ctrl])
         adapter._stream_running = True
 
         adapter.discover()
@@ -131,15 +119,16 @@ class TestGetAdapterForSerial:
     def test_rediscovery_with_empty_adapter_name_clears_the_old_adapter(self):
         adapter = _make_adapter()
         adapter._stream_running = True
-        ctrl = MagicMock()
+        ctrl = psmove_hid_pb2.DiscoveredController()
         ctrl.serial = "AABBCCDDEEFF"
         ctrl.product_id = 0x03D5
         ctrl.adapter_name = "hci1"
-        adapter._stub.Discover.return_value = MagicMock(controllers=[ctrl])
+        response = psmove_hid_pb2.DiscoverResponse(controllers=[ctrl])
+        adapter._stub.Discover.return_value = response
         adapter.discover()
         assert adapter.get_adapter_for_serial("AABBCCDDEEFF") == "hci1"
 
-        ctrl.adapter_name = ""  # reconnect whose sysfs lookup failed
+        response.controllers[0].adapter_name = ""  # reconnect whose sysfs lookup failed
         adapter.discover()
 
         assert adapter.get_adapter_for_serial("AABBCCDDEEFF") is None
@@ -150,12 +139,12 @@ class TestGetAdapterForSerial:
 
     def test_returns_none_for_empty_adapter_name(self):
         adapter = _make_adapter()
-        mock_response = MagicMock()
-        mock_ctrl = MagicMock()
+        mock_response = psmove_hid_pb2.DiscoverResponse()
+        mock_ctrl = psmove_hid_pb2.DiscoveredController()
         mock_ctrl.serial = "AABBCCDDEEFF"
         mock_ctrl.adapter_name = ""
         mock_ctrl.product_id = 0x03D5
-        mock_response.controllers = [mock_ctrl]
+        mock_response.controllers.extend([mock_ctrl])
         adapter._stub.Discover.return_value = mock_response
         adapter._stream_running = True
 
@@ -187,7 +176,7 @@ class TestOpen:
 
     def test_open_success(self):
         adapter = _make_adapter()
-        mock_response = MagicMock()
+        mock_response = psmove_hid_pb2.OpenResponse()
         mock_response.success = True
         adapter._stub.Open.return_value = mock_response
         adapter._stream_running = True
@@ -196,7 +185,7 @@ class TestOpen:
 
     def test_open_failure(self):
         adapter = _make_adapter()
-        mock_response = MagicMock()
+        mock_response = psmove_hid_pb2.OpenResponse()
         mock_response.success = False
         adapter._stub.Open.return_value = mock_response
         adapter._stream_running = True
@@ -336,12 +325,12 @@ class TestSerialNormalization:
 
     def test_discover_normalizes_serials(self):
         adapter = _make_adapter()
-        mock_response = MagicMock()
-        mock_ctrl = MagicMock()
+        mock_response = psmove_hid_pb2.DiscoverResponse()
+        mock_ctrl = psmove_hid_pb2.DiscoveredController()
         mock_ctrl.serial = "aa:bb:cc:dd:ee:ff"
         mock_ctrl.adapter_name = "hci0"
         mock_ctrl.product_id = 0x03D5
-        mock_response.controllers = [mock_ctrl]
+        mock_response.controllers.extend([mock_ctrl])
         adapter._stub.Discover.return_value = mock_response
         adapter._stream_running = True
 
@@ -352,12 +341,12 @@ class TestSerialNormalization:
 
     def test_discover_adapter_name_stored_under_normalized_serial(self):
         adapter = _make_adapter()
-        mock_response = MagicMock()
-        mock_ctrl = MagicMock()
+        mock_response = psmove_hid_pb2.DiscoverResponse()
+        mock_ctrl = psmove_hid_pb2.DiscoveredController()
         mock_ctrl.serial = "aa:bb:cc:dd:ee:ff"
         mock_ctrl.adapter_name = "hci1"
         mock_ctrl.product_id = 0x03D5
-        mock_response.controllers = [mock_ctrl]
+        mock_response.controllers.extend([mock_ctrl])
         adapter._stub.Discover.return_value = mock_response
         adapter._stream_running = True
 
@@ -408,10 +397,10 @@ class TestStreamReconnection:
             if len(stream_calls) == 1:
                 raise grpc.RpcError()  # rust-hid exited (watchdog, code 70)
             second_stream_open.set()
-            return iter(())
+            return FakeStreamCall()
 
         adapter._stub.StreamIO.side_effect = stream_io
-        adapter._stub.Discover.return_value = MagicMock(controllers=[])
+        adapter._stub.Discover.return_value = psmove_hid_pb2.DiscoverResponse(controllers=[])
 
         adapter._ensure_stream()
         adapter._stream_thread.join(timeout=2.0)
@@ -423,8 +412,8 @@ class TestStreamReconnection:
         assert len(stream_calls) == 2
 
         # Controllers reappear once rust-hid has re-enumerated them (A4)
-        ctrl = MagicMock(serial="AABBCCDDEEFF", adapter_name="hci0", product_id=0x03D5)
-        adapter._stub.Discover.return_value = MagicMock(controllers=[ctrl])
+        ctrl = psmove_hid_pb2.DiscoveredController(serial="AABBCCDDEEFF", adapter_name="hci0", product_id=0x03D5)
+        adapter._stub.Discover.return_value = psmove_hid_pb2.DiscoverResponse(controllers=[ctrl])
         adapter._stream_thread.join(timeout=2.0)
         assert adapter.discover(force=True) == ["AABBCCDDEEFF"]
 
@@ -509,7 +498,7 @@ class TestUnaryCallsCarryADeadline:
     def test_stream_io_has_no_deadline(self):
         """The long-lived StreamIO stream must not inherit the unary deadline."""
         adapter = _make_adapter()
-        adapter._stub.StreamIO.return_value = iter([])
+        adapter._stub.StreamIO.return_value = FakeStreamCall()
         adapter._stream_running = True
 
         adapter._stream_loop()

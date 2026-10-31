@@ -533,7 +533,7 @@ convention play mode (the agent on the rules backend).
 ```bash
 sudo raspi-config nonint do_wifi_country DE   # your country; reboot afterwards
 sudo scripts/setup/install_hotspot.sh          # asks for the password twice
-# options: --ssid "JoustMania" --channel 36|40|44|48 --uplink eth0 --psk-file FILE
+# options: --ssid "JoustMania" --channel 36|40|44|48 --uplink eth0 --psk-file FILE --pause-wifi-client
 ```
 
 The setup checks the Pi first and changes nothing when a check fails: the
@@ -546,6 +546,11 @@ server, and ufw or firewalld (it prints the exact allow rules; re-run with
 (`enabled=yes` in `/etc/joustmania/hotspot.conf`); a refused or interrupted
 setup leaves `enabled=no`. That includes a re-run with the cable on a Pi that
 was already armed: a refused re-run disarms it, so re-run until it passes.
+With a Wi-Fi client up on `wlan0` the self-test refuses (it needs the radio):
+re-run with `--pause-wifi-client` (or answer `y` to the prompt) and the setup
+disconnects that Wi-Fi connection for the self-test and reconnects the same one
+afterwards, also when the self-test fails. It refuses when your SSH session
+itself runs over `wlan0`; use the cable LAN then.
 A re-run over the hotspot itself never disarms it and keeps the old profile
 when it is refused or your session drops.
 

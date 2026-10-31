@@ -7,7 +7,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/telemetry/keys"
 )
 
 // #1188 (epic #1181 PR2): the registry owns a long-lived agent.experiment ROOT span
@@ -31,7 +31,7 @@ func rootSpanRegistry(t *testing.T, cfg RegistryConfig) (*Registry, *tracetest.S
 func rootSpans(sr *tracetest.SpanRecorder) []sdktrace.ReadOnlySpan {
 	var out []sdktrace.ReadOnlySpan
 	for _, s := range sr.Ended() {
-		if s.Name() == decision.SpanExperiment {
+		if s.Name() == keys.SpanExperiment {
 			out = append(out, s)
 		}
 	}
@@ -156,12 +156,12 @@ func TestRootSpan_CarriesIdentifyingAttrs(t *testing.T) {
 		t.Fatalf("agent.experiment spans = %d, want 1", len(spans))
 	}
 	s := spans[0]
-	if v, ok := rootSpanAttr(s, decision.AttrExperimentID); !ok || v != id {
-		t.Errorf("%s = %q, want %q", decision.AttrExperimentID, v, id)
+	if v, ok := rootSpanAttr(s, keys.AttrExperimentID); !ok || v != id {
+		t.Errorf("%s = %q, want %q", keys.AttrExperimentID, v, id)
 	}
 	for _, key := range []string{
-		decision.AttrExperimentFlagKey, decision.AttrExperimentObjective,
-		decision.AttrExperimentTargetN, decision.AttrExperimentArms,
+		keys.AttrExperimentFlagKey, keys.AttrExperimentObjective,
+		keys.AttrExperimentTargetN, keys.AttrExperimentArms,
 	} {
 		if _, ok := rootSpanAttr(s, key); !ok {
 			t.Errorf("agent.experiment must carry %s", key)
@@ -266,9 +266,9 @@ func TestRootSpan_CarriesThesisAttr(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("agent.experiment ended spans = %d, want 1", len(spans))
 	}
-	got, ok := rootSpanAttr(spans[0], decision.AttrExperimentThesis)
+	got, ok := rootSpanAttr(spans[0], keys.AttrExperimentThesis)
 	if !ok {
-		t.Fatalf("root span missing %s attribute", decision.AttrExperimentThesis)
+		t.Fatalf("root span missing %s attribute", keys.AttrExperimentThesis)
 	}
 	if want := sampleIntent().Hypothesis; got != want {
 		t.Errorf("experiment.thesis = %q, want %q", got, want)
@@ -298,7 +298,7 @@ func TestRootSpan_OmitsEmptyThesis(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("agent.experiment ended spans = %d, want 1", len(spans))
 	}
-	if _, ok := rootSpanAttr(spans[0], decision.AttrExperimentThesis); ok {
+	if _, ok := rootSpanAttr(spans[0], keys.AttrExperimentThesis); ok {
 		t.Errorf("experiment.thesis attr must be omitted for an empty thesis")
 	}
 }

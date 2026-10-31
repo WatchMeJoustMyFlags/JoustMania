@@ -39,7 +39,10 @@ class MockGrpcContext:
         return self._cancelled
 
 
-class MockBackend:
+from services.controller_manager.tests.backend_doubles import InertBackendHooks, autospec_discovery_loop, autospec_span
+
+
+class MockBackend(InertBackendHooks):
     """Mock backend for testing without hardware."""
 
     def __init__(self):
@@ -84,11 +87,9 @@ class TestRenameController:
             mock_backend = MockBackend()
             mock_create_backend.return_value = mock_backend
 
-            mock_loop = MagicMock()
-            mock_loop.start = MagicMock()
-            mock_loop.stop = MagicMock()
+            mock_loop = autospec_discovery_loop()
             mock_loop.wait_stopped = AsyncMock()
-            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
+            mock_loop.drain_health_counters.return_value = (0, 0, 0)
             mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
@@ -225,11 +226,9 @@ class TestGetConnectedControllers:
             mock_backend = MockBackend()
             mock_create_backend.return_value = mock_backend
 
-            mock_loop = MagicMock()
-            mock_loop.start = MagicMock()
-            mock_loop.stop = MagicMock()
+            mock_loop = autospec_discovery_loop()
             mock_loop.wait_stopped = AsyncMock()
-            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
+            mock_loop.drain_health_counters.return_value = (0, 0, 0)
             mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
@@ -354,11 +353,9 @@ class TestServicerInitialization:
             mock_backend = MockBackend()
             mock_create_backend.return_value = mock_backend
 
-            mock_loop = MagicMock()
-            mock_loop.start = MagicMock()
-            mock_loop.stop = MagicMock()
+            mock_loop = autospec_discovery_loop()
             mock_loop.wait_stopped = AsyncMock()
-            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
+            mock_loop.drain_health_counters.return_value = (0, 0, 0)
             mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
@@ -400,11 +397,9 @@ class TestServicerShutdown:
             mock_backend = MockBackend()
             mock_create_backend.return_value = mock_backend
 
-            mock_loop = MagicMock()
-            mock_loop.start = MagicMock()
-            mock_loop.stop = MagicMock()
+            mock_loop = autospec_discovery_loop()
             mock_loop.wait_stopped = AsyncMock()
-            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
+            mock_loop.drain_health_counters.return_value = (0, 0, 0)
             mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
@@ -421,30 +416,6 @@ class TestServicerShutdown:
         servicer.discovery_loop.stop.assert_called_once()
         servicer.discovery_loop.wait_stopped.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_shutdown_terminates_controller_processes(self, servicer):
-        """Shutdown should terminate controller processes."""
-        # Add mock process
-        mock_proc = MagicMock()
-        mock_proc.is_alive.return_value = True
-        servicer.controller_processes["test_serial"] = mock_proc
-
-        await servicer.shutdown()
-
-        mock_proc.terminate.assert_called_once()
-        mock_proc.join.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_shutdown_skips_dead_processes(self, servicer):
-        """Shutdown should skip already-dead processes."""
-        mock_proc = MagicMock()
-        mock_proc.is_alive.return_value = False
-        servicer.controller_processes["test_serial"] = mock_proc
-
-        await servicer.shutdown()
-
-        mock_proc.terminate.assert_not_called()
-
 
 class TestExtractedHelpers:
     """Tests for extracted helper methods used by stream RPCs."""
@@ -459,11 +430,9 @@ class TestExtractedHelpers:
             mock_backend = MockBackend()
             mock_create_backend.return_value = mock_backend
 
-            mock_loop = MagicMock()
-            mock_loop.start = MagicMock()
-            mock_loop.stop = MagicMock()
+            mock_loop = autospec_discovery_loop()
             mock_loop.wait_stopped = AsyncMock()
-            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
+            mock_loop.drain_health_counters.return_value = (0, 0, 0)
             mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
             mock_discovery_loop.return_value = mock_loop
 
@@ -647,7 +616,7 @@ class TestExtractedHelpers:
     def test_process_filter_update_changes_filter(self, servicer_components):
         """_process_filter_update should return new filter when it changes."""
         servicer, _ = servicer_components
-        span = MagicMock()
+        span = autospec_span()
 
         filter_update = MagicMock()
         filter_update.serials = ["AA:BB", "CC:DD"]
@@ -660,7 +629,7 @@ class TestExtractedHelpers:
     def test_process_filter_update_no_change(self, servicer_components):
         """_process_filter_update should return same filter when unchanged."""
         servicer, _ = servicer_components
-        span = MagicMock()
+        span = autospec_span()
 
         existing = {"AA:BB"}
         filter_update = MagicMock()
@@ -674,7 +643,7 @@ class TestExtractedHelpers:
     def test_process_filter_update_empty_to_none(self, servicer_components):
         """_process_filter_update with empty serials should return None (all controllers)."""
         servicer, _ = servicer_components
-        span = MagicMock()
+        span = autospec_span()
 
         filter_update = MagicMock()
         filter_update.serials = []
@@ -758,9 +727,7 @@ class TestExtractedHelpers:
 
         servicer.state_builder.build_state = MagicMock(return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
-        # MockBackend has no consume_death_frame — must not raise.
-        if hasattr(servicer.backend, "consume_death_frame"):
-            del servicer.backend.consume_death_frame
+        # MockBackend inherits the inert death hook — must not raise.
 
         update = servicer._build_gameplay_update(None)
 
@@ -772,7 +739,7 @@ class TestExtractedHelpers:
         servicer, _ = servicer_components
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.feedback_manager.set_controller_color = AsyncMock(return_value=True)
-        span = MagicMock()
+        span = autospec_span()
 
         config = MagicMock()
         config.update_frequency_hz = 60
@@ -796,7 +763,7 @@ class TestExtractedHelpers:
     async def test_process_gameplay_config_without_colors(self, servicer_components):
         """_process_gameplay_config without colors should return None filter (all controllers)."""
         servicer, _ = servicer_components
-        span = MagicMock()
+        span = autospec_span()
 
         config = MagicMock()
         config.update_frequency_hz = 30
@@ -813,7 +780,7 @@ class TestExtractedHelpers:
     async def test_process_gameplay_config_default_hz(self, servicer_components):
         """UC-030 step 2 / NFR-003: the controller manager streams at 30 Hz when the game requests no rate."""
         servicer, _ = servicer_components
-        span = MagicMock()
+        span = autospec_span()
 
         config = MagicMock()
         config.update_frequency_hz = 0
@@ -870,11 +837,9 @@ def _make_servicer():
         mock_backend = MockBackend()
         mock_create_backend.return_value = mock_backend
 
-        mock_loop = MagicMock()
-        mock_loop.start = MagicMock()
-        mock_loop.stop = MagicMock()
+        mock_loop = autospec_discovery_loop()
         mock_loop.wait_stopped = AsyncMock()
-        mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
+        mock_loop.drain_health_counters.return_value = (0, 0, 0)
         mock_loop.connection_quality.return_value = None  # UC-035 BR-005: no window yet
         mock_discovery_loop_cls.return_value = mock_loop
 

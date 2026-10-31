@@ -14,6 +14,7 @@ discovery cycle — no reconnect needed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -24,6 +25,15 @@ from services.controller_manager.multiplexer.adapter import ControllerIOAdapter,
 from services.controller_manager.multiplexer.rollout_router import RolloutRouter
 
 logger = logging.getLogger(__name__)
+
+# The LED batch resends an unchanged output at least this often, so the
+# controller's LED (which times out on the hardware) stays lit.
+LED_KEEPALIVE_S = 2.0
+# Bound on one adapter's startup Discover + Open pass (#2351). The adapters start
+# concurrently, so this is also the bound on the whole startup: under the server's
+# 10 s wait, a wedged HID service leaves its adapter with no controllers (the
+# discovery loop finds them later) instead of holding startup.
+INIT_ADAPTER_TIMEOUT_S = 8.0
 
 # Consecutive failed discovery passes of one adapter before its controllers are
 # dropped (UC-002 A1, #2125). Until then the adapter keeps its previous routes,
@@ -84,8 +94,16 @@ class MultiplexerBackend(ControllerBackend):
         # Centralized state
         self._led_colors: dict[str, tuple[int, int, int]] = {}
         self._rumble: dict[str, int] = {}
+        # Last output (colour + rumble) a write accepted, and when (#2355).
+        # Only a successful write updates them, so the batch resends a
+        # changed or failed output on its next tick.
         self._last_sent_color: dict[str, tuple[int, int, int]] = {}
+        self._last_sent_rumble: dict[str, int] = {}
         self._last_led_update: dict[str, float] = {}
+        # Time of the last failure counted in _led_failures: a failing
+        # controller is retried every tick but counted once per keep-alive
+        # interval, whatever its output does meanwhile.
+        self._led_failures_counted: dict[str, float] = {}
         self._effect_active: set[str] = set()
         self._led_lock = threading.Lock()
 
@@ -98,10 +116,6 @@ class MultiplexerBackend(ControllerBackend):
 
         # Rollout routing (rollout flagd domain). Evaluated per cycle.
         self._rollout_router = RolloutRouter()
-
-        # Discovery throttle: only run full enumeration every N seconds
-        self._last_full_discovery: float = 0.0
-        self._full_discovery_interval: float = 0.5  # seconds
 
         # Consecutive failed discovery passes per adapter (UC-002 A1, #2125).
         # Only the discovery worker thread reads and writes it.
@@ -133,25 +147,52 @@ class MultiplexerBackend(ControllerBackend):
     # -- Fleet-level methods --------------------------------------------------
 
     async def initialize(self) -> bool:
+        """Discover and open each adapter's controllers, off the event loop (#2351).
+
+        Discover / Open are blocking gRPC calls (5 s deadline each against a wedged
+        rust-hid): they run in a worker thread, bounded by ``INIT_ADAPTER_TIMEOUT_S``,
+        so the event loop stays free and the server's startup timeout can fire. Routes
+        are set here, on the loop, only for a pass that finished in time; an adapter
+        that timed out starts with no controllers and the discovery loop retries.
+        """
         with self._routing_lock:
             self._closed = False
-        any_success = False
-        for adapter in self._adapters:
-            try:
-                try:
-                    serials = adapter.discover()
-                except DiscoveryFailedError as e:
-                    # Backend not up yet: start with no controllers, discovery retries.
-                    logger.warning(f"{adapter.adapter_type} discovery failed at startup: {e}")
-                    serials = []
-                for serial in serials:
-                    adapter.open(serial)
-                    self._set_route(serial, adapter)
-                any_success = True
-                logger.info(f"Initialized {adapter.adapter_type} adapter with {len(serials)} controllers")
-            except Exception:
-                logger.exception(f"Failed to initialize {adapter.adapter_type} adapter")
-        return any_success
+        results = await asyncio.gather(*(self._initialize_adapter(adapter) for adapter in self._adapters))
+        return any(results)
+
+    async def _initialize_adapter(self, adapter: ControllerIOAdapter) -> bool:
+        """One adapter's bounded startup pass; True when the adapter counts as started."""
+        try:
+            serials = await asyncio.wait_for(
+                asyncio.to_thread(self._discover_and_open, adapter), timeout=INIT_ADAPTER_TIMEOUT_S
+            )
+        except TimeoutError:
+            # Like a failed Discover: the backend is not answering yet, discovery retries.
+            logger.warning(
+                f"{adapter.adapter_type} startup discovery took over {INIT_ADAPTER_TIMEOUT_S}s; "
+                "starting with no controllers"
+            )
+            return True
+        except Exception:
+            logger.exception(f"Failed to initialize {adapter.adapter_type} adapter")
+            return False
+        for serial in serials:
+            self._set_route(serial, adapter)
+        logger.info(f"Initialized {adapter.adapter_type} adapter with {len(serials)} controllers")
+        return True
+
+    @staticmethod
+    def _discover_and_open(adapter: ControllerIOAdapter) -> list[str]:
+        """Worker thread: one adapter's startup Discover and Open calls; returns the serials to route."""
+        try:
+            serials = adapter.discover()
+        except DiscoveryFailedError as e:
+            # Backend not up yet: start with no controllers, discovery retries.
+            logger.warning(f"{adapter.adapter_type} discovery failed at startup: {e}")
+            return []
+        for serial in serials:
+            adapter.open(serial)
+        return serials
 
     async def shutdown(self):
         # Mark closed BEFORE closing the adapters: a discovery pass that reopens
@@ -171,7 +212,9 @@ class MultiplexerBackend(ControllerBackend):
             self._led_colors.clear()
             self._rumble.clear()
             self._last_sent_color.clear()
+            self._last_sent_rumble.clear()
             self._last_led_update.clear()
+            self._led_failures_counted.clear()
             self._led_failures.clear()
             self._effect_active.clear()
         # Remove the controller_*_info series too, so a stopped service does not
@@ -229,17 +272,11 @@ class MultiplexerBackend(ControllerBackend):
         Phase 2 — Route: for serials seen by multiple adapters, pick one via
                   OpenFeature targeting. Close handles on non-winning adapters.
         """
-        now = time.monotonic()
-        if force or (now - self._last_full_discovery >= self._full_discovery_interval):
-            verify_only = False
-            self._last_full_discovery = now
-        else:
-            verify_only = True
-
-        if verify_only:
-            metrics.discovery_verify_only_total.inc()
-        else:
-            metrics.discovery_full_enumerate_total.inc()
+        # Every pass is a full enumeration (the discovery check runs at 1 Hz,
+        # NFR-002), which UC-002 step 3 needs to find a new controller on the next
+        # check. It is cheap: rust-hid enumerates but opens only controllers that
+        # are not open yet and never reads a polled one (UC-002 BR-006, #2314).
+        metrics.discovery_full_enumerate_total.inc()
 
         # Phase 1: all adapters discover independently.
         # Each adapter receives exclude_serials — serials claimed by other adapters
@@ -253,7 +290,7 @@ class MultiplexerBackend(ControllerBackend):
         for adapter in self._adapters:
             claimed_by_others = [s for s, a in previous.items() if a is not adapter]
             try:
-                serials = adapter.discover(force=force, verify_only=verify_only, exclude_serials=claimed_by_others)
+                serials = adapter.discover(force=force, exclude_serials=claimed_by_others)
             except DiscoveryFailedError as e:
                 carried.update(self._carry_routes_after_failed_discovery(adapter, previous, e))
                 continue
@@ -423,6 +460,10 @@ class MultiplexerBackend(ControllerBackend):
         adapter = self._serial_to_adapter.get(serial)
         return adapter.adapter_type if adapter else "unknown"
 
+    def take_led_failures(self, serial: str) -> int:
+        """Return and clear the failed LED writes counted for a serial (lock-free, as the dict pop was)."""
+        return self._led_failures.pop(serial, 0)
+
     def get_controller_metadata(self, serial: str) -> dict | None:
         """Return adapter-supplied metadata (e.g. reserved/tag) for a serial.
 
@@ -456,15 +497,18 @@ class MultiplexerBackend(ControllerBackend):
     def _cleanup_stale_state(self, seen: dict[str, ControllerIOAdapter]) -> None:
         """Remove centralized state for controllers no longer present."""
         # Union of every per-serial table: a controller that never received an
-        # LED colour still has backend / adapter info series to remove (#1468).
-        tracked = set(self._led_colors) | set(self._last_backend) | set(self._last_adapter)
+        # LED colour still has backend / adapter info series to remove (#1468),
+        # and a rumble-only serial is replayed by the LED batch (#2365).
+        tracked = set(self._led_colors) | set(self._rumble) | set(self._last_backend) | set(self._last_adapter)
         stale = tracked - set(seen)
         for serial in stale:
             self._led_colors.pop(serial, None)
             self._rumble.pop(serial, None)
             self._last_sent_color.pop(serial, None)
+            self._last_sent_rumble.pop(serial, None)
             self._last_led_update.pop(serial, None)
             self._led_failures.pop(serial, None)
+            self._led_failures_counted.pop(serial, None)
             self._effect_active.discard(serial)
             # Remove the info series so disconnected controllers don't
             # appear in dashboard counts
@@ -512,64 +556,76 @@ class MultiplexerBackend(ControllerBackend):
             if prev_hci:
                 metrics.controller_adapter_info.remove(serial, prev_hci)
 
+    def _mark_output_sent(self, serial: str, color: tuple[int, int, int], rumble: int, now: float) -> None:
+        """Record a successful write. Caller holds _led_lock."""
+        self._last_sent_color[serial] = color
+        self._last_sent_rumble[serial] = rumble
+        self._last_led_update[serial] = now
+        self._led_failures_counted.pop(serial, None)
+
+    def _count_led_failure(self, serial: str, now: float) -> None:
+        """Count a failed write at most once per keep-alive interval per serial. Caller holds _led_lock."""
+        counted = self._led_failures_counted.get(serial)
+        if counted is not None and now - counted < LED_KEEPALIVE_S:
+            return
+        self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
+        self._led_failures_counted[serial] = now
+
     def update_all_leds(self) -> int:
-        """Centralized LED refresh with keep-alive and color-change detection."""
+        """Send each controller's desired output (colour + rumble) on change or keep-alive.
+
+        An output counts as sent only after the adapter accepted it, so a
+        failed write, or a direct write skipped because the lock was busy, is
+        sent on the next tick (#2355). The batch writes each controller at
+        most once per tick.
+        """
         current_time = time.time()
         updated_count = 0
 
         # list() is intentional: discovery or shutdown may modify the dict meanwhile
-        for serial in list(self._led_colors):  # NOSONAR(S7504)
+        # Every serial with any desired output: a rumble set before any colour
+        # is retried like a colour (#2365).
+        for serial in list({*self._led_colors, *self._rumble}):  # NOSONAR(S7504)
             if serial in self._effect_active:
                 continue
 
+            output = None
             try:
-                # Re-read colour and adapter under the lock: discovery swaps the
-                # routing table and drops stale serials under the same lock
+                # Re-read the output and adapter under the lock: discovery swaps
+                # the routing table and drops stale serials under the same lock
                 # (#1447), so a serial removed mid-batch is skipped, not revived.
                 with self._led_lock:
-                    stored_color = self._led_colors.get(serial)
                     adapter = self._serial_to_adapter.get(serial)
-                    if stored_color is None or adapter is None:
+                    if adapter is None or (serial not in self._led_colors and serial not in self._rumble):
                         continue
+                    stored_color = self._led_colors.get(serial, (0, 0, 0))
 
-                    last_sent = self._last_sent_color.get(serial)
+                    rumble = self._rumble.get(serial, 0)
+                    output = (stored_color, rumble)
+                    last_sent = (self._last_sent_color.get(serial), self._last_sent_rumble.get(serial, 0))
                     last_update = self._last_led_update.get(serial, 0)
-                    color_changed = stored_color != last_sent
-                    keepalive_needed = current_time - last_update >= 2.0
-                    if not (color_changed or keepalive_needed):
+                    output_changed = output != last_sent
+                    keepalive_needed = current_time - last_update >= LED_KEEPALIVE_S
+                    if not (output_changed or keepalive_needed):
                         continue
 
                     r, g, b = stored_color
-                    rumble = self._rumble.get(serial, 0)
-                    result = adapter.set_output(serial, r, g, b, rumble)
-                    if not result:
-                        self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
-                    self._last_sent_color[serial] = stored_color
-                    self._last_led_update[serial] = current_time
+                    if adapter.set_output(serial, r, g, b, rumble):
+                        self._mark_output_sent(serial, stored_color, rumble, current_time)
+                    else:
+                        self._count_led_failure(serial, current_time)
                 updated_count += 1
 
-                if color_changed:
-                    logger.debug(f"LED color changed for {serial}: {last_sent} -> {stored_color}")
+                if output_changed:
+                    logger.debug(f"LED output changed for {serial}: {last_sent} -> {output}")
 
             except Exception as e:
                 logger.debug(f"Error updating LED for {serial}: {e}")
                 with self._led_lock:
-                    if serial in self._led_colors:
-                        self._led_failures[serial] = self._led_failures.get(serial, 0) + 1
+                    if serial in self._led_colors or serial in self._rumble:
+                        self._count_led_failure(serial, current_time)
 
         return updated_count
-
-    async def scan_controllers(self) -> list[dict]:
-        results: list[dict] = []
-        for adapter in self._adapters:
-            try:
-                serials = adapter.discover(force=True)
-            except DiscoveryFailedError as e:
-                logger.warning(f"{adapter.adapter_type} scan failed: {e}")
-                continue
-            for serial in serials:
-                results.append({"address": serial, "serial": serial, "name": f"Controller {serial[-4:]}"})
-        return results
 
     # -- Per-controller methods -----------------------------------------------
 
@@ -588,15 +644,13 @@ class MultiplexerBackend(ControllerBackend):
         frame-budget death latch — see mock_adapter.consume_death_frame.
         """
         adapter = self._serial_to_adapter.get(serial)
-        consume = getattr(adapter, "consume_death_frame", None)
-        if consume is not None:
-            consume(serial)
+        if adapter is not None:
+            adapter.consume_death_frame(serial)
 
     def consume_trigger_press(self, serial: str) -> bool:
         """Route the per-game-frame trigger latch read to the owning adapter (#1837)."""
         adapter = self._serial_to_adapter.get(serial)
-        consume = getattr(adapter, "consume_trigger_press", None)
-        return consume(serial) is True if consume is not None else False
+        return adapter.consume_trigger_press(serial) is True if adapter is not None else False
 
     # -- Motion patterns (UC-046, #1258): only the MockAdapter implements them --
 
@@ -604,36 +658,29 @@ class MultiplexerBackend(ControllerBackend):
         """Serials that carry a motion pattern, across adapters (cheap per-frame check)."""
         out: set[str] = set()
         for adapter in self._adapters:
-            out |= getattr(adapter, "pattern_serials", set())
+            out |= adapter.pattern_serials
         return out
 
-    def pattern_frame(self, serial: str, subscriber_id: str, explicit: bool) -> dict | None:
+    def pattern_frame(self, serial: str, subscriber_id: str, explicit: bool) -> tuple[dict, bool] | None:
         """Route a delivered-frame pattern evaluation to the owning adapter."""
-        frame = getattr(self._serial_to_adapter.get(serial), "pattern_frame", None)
-        return frame(serial, subscriber_id, explicit) if frame is not None else None
+        adapter = self._serial_to_adapter.get(serial)
+        return adapter.pattern_frame(serial, subscriber_id, explicit) if adapter is not None else None
 
     def pattern_stream_rate(self, serials) -> int | None:
         """Pinned stream rate when the stream names a pattern controller, else None."""
         for serial in serials:
-            rate_of = getattr(self._serial_to_adapter.get(serial), "pattern_stream_rate", None)
-            if rate_of is not None:
-                rate = rate_of([serial])
-                if rate is not None:
-                    return rate
+            adapter = self._serial_to_adapter.get(serial)
+            rate = adapter.pattern_stream_rate([serial]) if adapter is not None else None
+            if rate is not None:
+                return rate
         return None
 
     def record_pattern_overrun(self, subscriber_id: str) -> int:
-        return sum(
-            adapter.record_pattern_overrun(subscriber_id)
-            for adapter in self._adapters
-            if hasattr(adapter, "record_pattern_overrun")
-        )
+        return sum(adapter.record_pattern_overrun(subscriber_id) for adapter in self._adapters)
 
     def release_pattern_stream(self, subscriber_id: str) -> None:
         for adapter in self._adapters:
-            release = getattr(adapter, "release_pattern_stream", None)
-            if release is not None:
-                release(subscriber_id)
+            adapter.release_pattern_stream(subscriber_id)
 
     async def set_led_color(self, serial: str, r: int, g: int, b: int) -> bool:
         adapter = self._serial_to_adapter.get(serial)
@@ -648,8 +695,9 @@ class MultiplexerBackend(ControllerBackend):
             try:
                 result = adapter.set_output(serial, r, g, b, rumble)
                 if result:
-                    self._last_sent_color[serial] = (r, g, b)
-                    self._last_led_update[serial] = time.time()
+                    self._mark_output_sent(serial, (r, g, b), rumble, time.time())
+                else:
+                    self._count_led_failure(serial, time.time())
                 return result
             finally:
                 self._led_lock.release()
@@ -663,10 +711,16 @@ class MultiplexerBackend(ControllerBackend):
         r, g, b = self._led_colors.get(serial, (0, 0, 0))
         # Non-blocking lock: same pattern as set_led_color() — skip direct
         # USB write if batch is in progress. Rumble + color state is stored,
-        # next update_all_leds() cycle sends the combined output.
+        # next update_all_leds() cycle sends the combined output; a failed
+        # write is not marked as sent, so that cycle retries it (#2355).
         if self._led_lock.acquire(blocking=False):
             try:
-                return adapter.set_output(serial, r, g, b, intensity)
+                result = adapter.set_output(serial, r, g, b, intensity)
+                if result:
+                    self._mark_output_sent(serial, (r, g, b), intensity, time.time())
+                else:
+                    self._count_led_failure(serial, time.time())
+                return result
             finally:
                 self._led_lock.release()
         return True

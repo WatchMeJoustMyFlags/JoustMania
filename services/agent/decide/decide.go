@@ -131,6 +131,18 @@ type PlayerState struct {
 	// UC-040 A31; #1870): the player holds an agent shield charge or has just
 	// used it, and another grant_shield is refused.
 	ShieldCharged bool `json:"shield_charged,omitempty"`
+	// ShieldLimited is true while the agent would refuse another grant_shield to
+	// this alive player for a reason other than already_charged at the moment the
+	// state is built: the per-game cap or the cooldown (UC-040 A33), and in a hold
+	// game a full pool or a used-up budget (A37). Never set with ShieldCharged
+	// (#2066; decide-contract.md §1.2).
+	ShieldLimited bool `json:"shield_limited,omitempty"`
+	// SensitivityFactor and HandicapFactor are the per-player levels the agent
+	// itself last wrote to this game (adjust_player_sensitivity,
+	// set_player_handicap; applied-value ledger, UC-040 A35), set for an alive
+	// player only when not the neutral 1.0 (#2066).
+	SensitivityFactor *float64 `json:"sensitivity_factor,omitempty"`
+	HandicapFactor    *float64 `json:"handicap_factor,omitempty"`
 
 	// Hold mode only (#2096, UC-040 A36, A37; decide-contract.md §1.2), set for alive
 	// players of a game whose game_shield_activation_mode is hold, from the

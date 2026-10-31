@@ -318,3 +318,69 @@ def test_runtime_config_flag_keys_match_the_keys_read():
     source = inspect.getsource(RuntimeConfigManager._refresh_from_flags)
     read_keys = set(re.findall(r'get_\w+_value\(\s*"([^"]+)"', source))
     assert read_keys == set(RUNTIME_CONFIG_FLAG_KEYS)
+
+
+@pytest.mark.nfr("NFR-003")
+@pytest.mark.parametrize("bad", [0, -5, float("nan"), float("inf"), "fast", None])
+@patch("openfeature.api.add_handler")
+@patch("lib.feature_flags.get_flag_client")
+def test_invalid_update_frequency_falls_back_to_60(mock_get_client, _mock_add_handler, bad, caplog):
+    """#2356: a non-positive, non-finite or non-numeric rate falls back to 60 Hz (no division by zero)."""
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_client.get_integer_value.side_effect = lambda key, default, _ctx: (
+        bad if key == "game_loop.update_frequency_hz" else default
+    )
+
+    with caplog.at_level(logging.WARNING):
+        manager = RuntimeConfigManager()
+        manager._refresh_from_flags()
+
+    assert manager.get_config().update_frequency_hz == 60
+    warnings = [r for r in caplog.records if "update_frequency_hz" in r.getMessage() and r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+
+
+def _manager_with_hz(mock_get_client, values):
+    """Manager whose update_frequency_hz flag returns the next item of `values` per refresh."""
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    it = iter(values)
+    mock_client.get_integer_value.side_effect = lambda key, default, _ctx: (
+        next(it) if key == "game_loop.update_frequency_hz" else default
+    )
+    return RuntimeConfigManager()
+
+
+@pytest.mark.nfr("NFR-003")
+@patch("openfeature.api.add_handler")
+@patch("lib.feature_flags.get_flag_client")
+def test_bad_update_frequency_keeps_previous_value(mock_get_client, _mock_add_handler):
+    """#2356: a mid-game bad push (0) keeps 30, it does not jump to 60."""
+    manager = _manager_with_hz(mock_get_client, [30, 0])
+    assert manager.get_config().update_frequency_hz == 30
+    manager._refresh_from_flags()
+    assert manager.get_config().update_frequency_hz == 30
+
+
+@pytest.mark.nfr("NFR-003")
+@patch("openfeature.api.add_handler")
+@patch("lib.feature_flags.get_flag_client")
+def test_update_frequency_above_100_clamps(mock_get_client, _mock_add_handler):
+    """#2356: values above 100 clamp to 100, as controller-manager does."""
+    manager = _manager_with_hz(mock_get_client, [500])
+    assert manager.get_config().update_frequency_hz == 100
+
+
+@pytest.mark.nfr("NFR-003")
+@patch("openfeature.api.add_handler")
+@patch("lib.feature_flags.get_flag_client")
+def test_same_bad_update_frequency_warns_once_across_refreshes(mock_get_client, _mock_add_handler, caplog):
+    """#2356: the same bad value on separate refreshes warns only once."""
+    with caplog.at_level(logging.WARNING):
+        manager = _manager_with_hz(mock_get_client, [-1, -1, -1])
+        manager._refresh_from_flags()
+        manager._refresh_from_flags()
+    warnings = [r for r in caplog.records if "update_frequency_hz" in r.getMessage() and r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert manager.get_config().update_frequency_hz == 60

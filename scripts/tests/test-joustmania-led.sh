@@ -21,12 +21,12 @@
 # UC: UC-060 BR-005 A1 A5 Post-S-4
 # UC: UC-061 A10 BR-011
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LED="${ROOT}/scripts/setup/joustmania-led.sh"
 unset SERVICE_RESULT EXIT_CODE EXIT_STATUS || true
 # A test that reaches for the real docker fails instead of using it
-export PATH="${ROOT}/scripts/tests/lib/fail-docker:${PATH}"
 fails=0
 fail() {
   echo "FAIL $*"

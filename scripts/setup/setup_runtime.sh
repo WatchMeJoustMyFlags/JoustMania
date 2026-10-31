@@ -99,6 +99,10 @@ if [[ "$DIST_REL" -ge 12 ]]; then
 else
     config_loc=/boot/config.txt
 fi
+# JOUSTMANIA_BOOT_CONFIG and JOUSTMANIA_BT_INPUT_CONF are test seams for
+# scripts/tests/test-setup-scripts.sh (fake files, no host): unset in production, not a tunable (C-035)
+config_loc="${JOUSTMANIA_BOOT_CONFIG:-$config_loc}"
+BT_INPUT_CONF="${JOUSTMANIA_BT_INPUT_CONF:-/etc/bluetooth/input.conf}"
 
 # Disable internal Bluetooth (use USB adapters for better performance)
 if [[ -f "$config_loc" ]]; then
@@ -114,19 +118,19 @@ if [[ -f "$config_loc" ]]; then
 fi
 
 # Configure ClassicBondedOnly for PS Move controllers
-if [[ -f "/etc/bluetooth/input.conf" ]]; then
-    if grep -q "ClassicBondedOnly=true" /etc/bluetooth/input.conf 2>/dev/null; then
+if [[ -f "$BT_INPUT_CONF" ]]; then
+    if grep -q "ClassicBondedOnly=true" "$BT_INPUT_CONF" 2>/dev/null; then
         echo "  → Setting ClassicBondedOnly=false..."
-        sudo sed -i 's/ClassicBondedOnly=true/ClassicBondedOnly=false/' /etc/bluetooth/input.conf
-    elif ! grep -q "ClassicBondedOnly" /etc/bluetooth/input.conf 2>/dev/null; then
+        sudo sed -i 's/ClassicBondedOnly=true/ClassicBondedOnly=false/' "$BT_INPUT_CONF"
+    elif ! grep -q "ClassicBondedOnly" "$BT_INPUT_CONF" 2>/dev/null; then
         echo "  → Adding ClassicBondedOnly=false..."
-        echo "ClassicBondedOnly=false" | sudo tee -a /etc/bluetooth/input.conf > /dev/null
+        echo "ClassicBondedOnly=false" | sudo tee -a "$BT_INPUT_CONF" > /dev/null
     else
         echo "  → Bluetooth already configured"
     fi
 else
-    echo "  → Creating /etc/bluetooth/input.conf..."
-    echo -e "[General]\nClassicBondedOnly=false" | sudo tee /etc/bluetooth/input.conf > /dev/null
+    echo "  → Creating $BT_INPUT_CONF..."
+    echo -e "[General]\nClassicBondedOnly=false" | sudo tee "$BT_INPUT_CONF" > /dev/null
 fi
 echo -e "  → ${GREEN}Bluetooth configured${NC}"
 

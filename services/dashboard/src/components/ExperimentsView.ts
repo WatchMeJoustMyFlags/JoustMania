@@ -6,7 +6,9 @@
  * comes from the newest experiment.progress span per experiment in Jaeger (see
  * ../experiments.ts, #2059); the view polls to update live during a shadow run.
  */
-import type { ArmAggregate, ExperimentView } from "../experiments.js";
+import { renderFreshness } from "../freshness.js";
+import { html, setHtml, type SafeHtml } from "../html.js";
+import type { ArmAggregate, ExperimentView, Recommendation } from "../experiments.js";
 import { EXPERIMENT_PROGRESS_NO_DATA } from "../degrade.js";
 
 /**
@@ -33,7 +35,7 @@ export class ExperimentsView {
   }
 
   setError(message: string) {
-    this.container.innerHTML = `<div class="loading">${escapeHtml(message)}</div>`;
+    setHtml(this.container, html`<div class="loading">${message}</div>`);
     this.hasRendered = true;
   }
 
@@ -50,31 +52,20 @@ export class ExperimentsView {
   updateFreshness() {
     const el = this.freshnessEl;
     if (!el || this.lastUpdatedMs === null) return;
-
-    const ageMs = Date.now() - this.lastUpdatedMs;
-    const ageSec = Math.max(0, Math.round(ageMs / 1000));
-    const stale = ageMs >= STALE_AFTER_MS;
-
-    el.textContent = stale
-      ? `stale — last updated ${ageSec}s ago`
-      : `updated ${ageSec}s ago`;
-    el.classList.toggle("stale", stale);
-    el.hidden = false;
+    renderFreshness(el, this.lastUpdatedMs, STALE_AFTER_MS);
   }
 
   render(experiments: ExperimentView[]) {
     this.hasRendered = true;
-    this.lastUpdatedMs = Date.now();
+    this.lastUpdatedMs = performance.now();
     this.updateFreshness();
 
     if (experiments.length === 0) {
-      this.container.innerHTML = `<div class="loading">${escapeHtml(EXPERIMENT_PROGRESS_NO_DATA)}</div>`;
+      setHtml(this.container, html`<div class="loading">${EXPERIMENT_PROGRESS_NO_DATA}</div>`);
       return;
     }
 
-    this.container.innerHTML = experiments
-      .map((exp) => this.renderCard(exp))
-      .join("");
+    setHtml(this.container, html`${experiments.map((exp) => this.renderCard(exp))}`);
   }
 
   /** True once any render/error has painted (so we don't flash the loader). */
@@ -82,57 +73,93 @@ export class ExperimentsView {
     return this.hasRendered;
   }
 
-  private renderCard(exp: ExperimentView): string {
-    const verdict = normalizeVerdict(exp.verdict, exp.live);
-    const armsHtml = exp.arms.map((arm) => this.renderArm(arm)).join("");
+  private renderCard(exp: ExperimentView): SafeHtml {
+    const verdict = normalizeVerdict(exp.verdict, exp.live, exp.status);
+    const armsHtml = exp.arms.map((arm) => this.renderArm(arm));
     const deltaHtml = this.renderDelta(exp.delta);
 
-    return `
+    return html`
       <div class="experiment-card">
         <div class="experiment-header">
-          <span class="experiment-id" title="${escapeHtml(exp.experimentId)}">
-            ${escapeHtml(exp.experimentId)}
+          <span class="experiment-id" title="${exp.experimentId}">
+            ${exp.experimentId}
           </span>
-          <span class="experiment-verdict ${verdict.cssClass}">${escapeHtml(verdict.label)}</span>
+          <span class="experiment-verdict ${verdict.cssClass}">${verdict.label}</span>
         </div>
+        ${renderTested(exp)}
         <div class="experiment-arms">
           ${armsHtml}
         </div>
         <div class="experiment-footer">
           ${deltaHtml}
-          ${exp.reason ? `<div class="experiment-reason" title="${escapeHtml(exp.reason)}">${escapeHtml(exp.reason)}</div>` : ""}
+          ${exp.recommendation ? html`<div class="experiment-recommendation">${recommendationText(exp.recommendation)}</div>` : ""}
+          ${exp.reason ? html`<div class="experiment-reason" title="${exp.reason}">${endedText(exp)}</div>` : ""}
+          ${renderTraceLink(exp)}
         </div>
       </div>
     `;
   }
 
-  private renderArm(arm: ArmAggregate): string {
+  private renderArm(arm: ArmAggregate): SafeHtml {
     const inFlight = Math.max(0, arm.inFlight);
-    return `
+    return html`
       <div class="experiment-arm">
-        <div class="arm-name">${escapeHtml(prettyArm(arm.arm))}</div>
+        <div class="arm-name">${prettyArm(arm.arm)}</div>
         <div class="arm-stats">
           <span class="arm-count" title="games concluded with a fitness sample">
             n=${arm.sampleCount}
           </span>
           <span class="arm-mean" title="mean fitness across this arm's samples">
-            x&#772;=${arm.sampleCount > 0 ? arm.meanFitness.toFixed(3) : "&mdash;"}
+            x&#772;=${arm.sampleCount > 0 ? arm.meanFitness.toFixed(3) : html`&mdash;`}
           </span>
-          ${inFlight > 0 ? `<span class="arm-inflight" title="games assigned but not yet concluded">+${inFlight} in&nbsp;flight</span>` : ""}
+          ${inFlight > 0 ? html`<span class="arm-inflight" title="games assigned but not yet concluded">+${inFlight} in&nbsp;flight</span>` : ""}
         </div>
       </div>
     `;
   }
 
-  private renderDelta(delta: number | null): string {
+  private renderDelta(delta: number | null): SafeHtml {
     if (delta === null) {
-      return `<div class="experiment-delta delta-neutral">&Delta; &mdash; <span class="delta-label">(awaiting both arms)</span></div>`;
+      return html`<div class="experiment-delta delta-neutral">&Delta; &mdash; <span class="delta-label">(awaiting both arms)</span></div>`;
     }
     const sign = delta > 0 ? "+" : "";
     const cssClass =
       delta > 0 ? "delta-positive" : delta < 0 ? "delta-negative" : "delta-neutral";
-    return `<div class="experiment-delta ${cssClass}">&Delta; ${sign}${delta.toFixed(3)} <span class="delta-label">(experimental &minus; control fitness)</span></div>`;
+    return html`<div class="experiment-delta ${cssClass}">&Delta; ${sign}${delta.toFixed(3)} <span class="delta-label">(experimental &minus; control fitness)</span></div>`;
   }
+}
+
+/** What is tested (#2291): the flag, the experimental value and the objective, then the thesis. */
+export function testedText(exp: ExperimentView): string {
+  const parts: string[] = [];
+  if (exp.flagKey) parts.push(exp.experimentalValue ? `${exp.flagKey} = ${exp.experimentalValue}` : exp.flagKey);
+  if (exp.objective) parts.push(`objective: ${exp.objective}`);
+  return parts.join(" · ");
+}
+
+/** How it ended (#2291): the status and the end reason, e.g. "aborted: operator stop". */
+export function endedText(exp: ExperimentView): string {
+  return exp.reason ? `${exp.status || "ended"}: ${exp.reason}` : "";
+}
+
+function renderTested(exp: ExperimentView): SafeHtml | "" {
+  const tested = testedText(exp);
+  if (!tested && !exp.thesis) return "";
+  return html`<div class="experiment-tested">
+          ${tested ? html`<div class="experiment-flag" title="${tested}">${tested}</div>` : ""}
+          ${exp.thesis ? html`<div class="experiment-thesis" title="${exp.thesis}">${exp.thesis}</div>` : ""}
+        </div>`;
+}
+
+/** Link to the snapshot's trace in the embedded Jaeger (same host, UC-035 BR-001). */
+function renderTraceLink(exp: ExperimentView): SafeHtml | "" {
+  if (!exp.traceId) return "";
+  return html`<a class="experiment-trace" href="/jaeger/trace/${encodeURIComponent(exp.traceId)}" target="_blank" rel="noopener">trace</a>`;
+}
+
+/** UC-035 step 4 / UC-043 A19 (#2276): the refused promotion as a recommendation. */
+export function recommendationText(rec: Recommendation): string {
+  return `would promote ${rec.flag}=${rec.value}; real value owned by ${rec.owner}`;
 }
 
 function prettyArm(arm: string): string {
@@ -141,14 +168,22 @@ function prettyArm(arm: string): string {
   return arm;
 }
 
-interface NormalizedVerdict {
+export interface NormalizedVerdict {
   label: string;
   cssClass: string;
 }
 
-function normalizeVerdict(verdict: string, live: boolean): NormalizedVerdict {
+/**
+ * The card's verdict label. A status of `done` is NOT a promotion: the span does
+ * not say whether the dossier decision was promoted, reverted or deferred (#2291),
+ * so a `done` without a promote outcome reads "Done".
+ */
+export function normalizeVerdict(verdict: string, live: boolean, status = ""): NormalizedVerdict {
   const v = verdict.toLowerCase();
-  if (v === "promote" || v === "promoted" || v === "done") {
+  if (v === "done") {
+    return { label: "Done", cssClass: "verdict-inconclusive" };
+  }
+  if (v === "promote" || v === "promoted") {
     return { label: "Promote", cssClass: "verdict-promote" };
   }
   if (v === "discard" || v === "discarded" || v === "rejected") {
@@ -158,15 +193,7 @@ function normalizeVerdict(verdict: string, live: boolean): NormalizedVerdict {
     return { label: "Inconclusive", cssClass: "verdict-inconclusive" };
   }
   if (!live) {
-    return { label: verdict || "Concluded", cssClass: "verdict-inconclusive" };
+    return { label: verdict || status || "Concluded", cssClass: "verdict-inconclusive" };
   }
   return { label: "Running", cssClass: "verdict-running" };
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }

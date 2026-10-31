@@ -65,6 +65,7 @@ const (
 	claimOwned      claimResult = iota // the caller reverts
 	claimKilled                        // the kill switch reverted it already
 	claimSuperseded                    // a newer promotion of the flag replaced it
+	claimDeferred                      // a real game is live: the revert waits (UC-043 A17)
 )
 
 // KillSwitchEpoch returns the number of kill-switch ticks so far. A caller that
@@ -138,6 +139,9 @@ func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 		}
 	}
 	pr.mu.Unlock()
+	// UC-043 A17: waiting promotion writes are dropped (journaled by the caller,
+	// outside killMu) and waiting reverts too (the overlay is reverted below).
+	dropped := pr.takeKillSwitchedLocked()
 
 	flags := map[string]struct{}{}
 	for flag := range tracked {
@@ -158,7 +162,8 @@ func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 	}
 	sort.Strings(ordered)
 
-	out := make([]KillSwitchRevert, 0, len(ordered))
+	out := make([]KillSwitchRevert, 0, len(ordered)+len(dropped))
+	out = append(out, dropped...)
 	for _, flag := range ordered {
 		entry := tracked[flag]
 		rv := KillSwitchRevert{FlagKey: flag, Outcome: OutcomeApplied}
@@ -170,7 +175,9 @@ func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 		case pr.reverter == nil:
 			rv.Reason = KillSwitchReason + "; no real-default reverter wired"
 		default:
-			if err := pr.reverter.RevertRealDefault(ctx, flag); err != nil {
+			err := pr.reverter.RevertRealDefault(ctx, flag)
+			superseded := errors.Is(err, ErrSupersededByAnotherWriter)
+			if err != nil && !superseded {
 				rv.Reason = fmt.Sprintf("%s; revert failed: %v", KillSwitchReason, err)
 				if entry != nil {
 					pr.retrack(entry)
@@ -180,6 +187,9 @@ func (pr *Promoter) RevertOnKillSwitch(ctx context.Context) []KillSwitchRevert {
 				pr.markReverted(flag)
 				rv.Outcome = OutcomeReverted
 				rv.Reason = KillSwitchReason
+				if superseded {
+					rv.Reason += SupersededReasonSuffix
+				}
 			}
 		}
 		pr.log.Warn("autonomous promotion: kill switch", "flag", flag,
@@ -252,6 +262,25 @@ func (pr *Promoter) claimApplied(entry *appliedPromotion) claimResult {
 		return claimKilled
 	}
 	return claimSuperseded
+}
+
+// appliedState reports, without claiming, whether entry is still the applied
+// promotion of its flag (claimOwned), was killed or was superseded. A nil entry is
+// owned.
+func (pr *Promoter) appliedState(entry *appliedPromotion) claimResult {
+	if entry == nil {
+		return claimOwned
+	}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	switch {
+	case pr.applied[entry.proposal.FlagKey] == entry:
+		return claimOwned
+	case entry.killed:
+		return claimKilled
+	default:
+		return claimSuperseded
+	}
 }
 
 // setCancel attaches the re-watch cancel to entry while it is still applied, and

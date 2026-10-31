@@ -17,6 +17,8 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 
+from services.controller_manager.tests.backend_doubles import InertBackendHooks
+
 test_dir = Path(__file__).parent
 project_root = test_dir.parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -27,7 +29,7 @@ SLOW_STEP_SECONDS = 0.25
 MAX_POLL_GAP_SECONDS = 0.12
 
 
-class SlowBackend:
+class SlowBackend(InertBackendHooks):
     """Backend whose discovery and LED batch block their worker thread."""
 
     def __init__(self, discovery_delay: float = 0.0, led_delay: float = 0.0):
@@ -190,7 +192,7 @@ class TestLoopLateness:
         loop = _make_loop(SlowBackend())
         loop._record_fresh_frame("AA", 0.0, stall_total=0.0)
         loop._record_fresh_frame("AA", 0.06, stall_total=0.04)
-        assert loop._hw_max_gap_ms["AA"] == pytest.approx(20.0)
+        assert loop._record("AA").hw_max_gap_ms == pytest.approx(20.0)
         # Input lag still uses the real pick-up time.
         assert loop.sample_age_seconds("AA", 0.07) == pytest.approx(0.01)
 

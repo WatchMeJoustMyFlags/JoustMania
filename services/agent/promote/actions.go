@@ -2,10 +2,12 @@ package promote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/flagservice"
 )
 
 // actions.go holds the per-mode promotion logic. Each helper mutates the passed
@@ -130,17 +132,47 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 		return
 	}
 
+	// UC-043 A17 step 3 (#2096): a hold key's real value changes only while no real
+	// game runs. With a real game live (the probe is a prefilter; nil or failing
+	// counts as live) the write waits in the deferred queue (deferred.go).
+	if deferUntilIdle(p.FlagKey) && pr.realGameLive(ctx) {
+		pr.deferPromotion(p, ev, cfg, res)
+		return
+	}
+
 	// The one sanctioned real-player-affecting write, through the gated seam. It is
 	// serialised with the kill switch (#1704): a kill-switch tick since this
 	// promotion's config was resolved refuses the write, and a tick that starts
 	// after it finds the written overlay.
 	entry, err := pr.writeTracked(ctx, p, ev.RealDefaultValue, cfg)
+	if flagservice.IsReason(err, flagservice.ReasonRealGameLive) {
+		// The flag service's authoritative guard: a real game registered after the
+		// probe looked (UC-043 A17, opposer m1). The write waits, it is not discarded.
+		pr.deferPromotion(p, ev, cfg, res)
+		return
+	}
+	if errors.Is(err, ErrRealOverlayOwnedByAnotherWriter) {
+		// UC-043 A19 (#2260): another writer owns the real overlay; the promotion
+		// is not made and not retried. No cooldown: nothing was reverted.
+		res.Outcome = OutcomeDiscarded
+		res.Reason = foreignReason(err)
+		res.ForeignOwner = foreignOwner(err)
+		return
+	}
 	if err != nil {
 		res.Outcome = OutcomeDiscarded
 		res.Reason = err.Error()
 		return
 	}
 	res.Outcome = OutcomeApplied
+	pr.applyAndWatch(ctx, p, ev, entry, res)
+}
+
+// applyAndWatch watches an applied real-default write and acts on the verdict
+// (revert, re-watch or keep). It owns the entry's endSync: when the kill switch
+// reverted the write while this ran, res reports that revert (#1704). Both the
+// synchronous promotion and the deferred queue's write call it (UC-043 A17).
+func (pr *Promoter) applyAndWatch(ctx context.Context, p experiment.Proposal, ev Evidence, entry *appliedPromotion, res *Result) {
 	defer func() {
 		// The kill switch reverted it while this call ran: report that here, once.
 		if pr.endSync(entry) && res.Outcome == OutcomeApplied {
@@ -160,9 +192,9 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 	case err != nil:
 		// Cannot CONFIRM healthy — fail safe by reverting rather than leaving a
 		// real-player change unverified.
-		pr.revertReal(ctx, p, entry, res, err)
+		pr.revertReal(ctx, p, entry, res, err, false)
 	case verdict == VerdictDegraded:
-		pr.revertReal(ctx, p, entry, res, nil)
+		pr.revertReal(ctx, p, entry, res, nil, false)
 	case verdict == VerdictInsufficient:
 		// Apply stands, but unverified. Schedule a background re-watch (if wired) that
 		// reverts later if degradation is confirmed as more real games complete.
@@ -213,12 +245,19 @@ func (pr *Promoter) scheduleRewatch(ctx context.Context, p experiment.Proposal, 
 		"flag", p.FlagKey)
 	revert := func(rctx context.Context) {
 		rres := Result{Outcome: OutcomeApplied}
-		claim := pr.revertReal(rctx, p, entry, &rres, nil)
+		claim := pr.revertReal(rctx, p, entry, &rres, nil, true)
 		// Log and journal after revertReal released killMu: the journal sink takes
 		// the registry lock and must never run under killMu (#1893).
-		pr.log.Warn("autonomous re-watch confirmed degradation; reverted real default (#1065)",
-			"flag", p.FlagKey, "outcome", string(rres.Outcome), "reason", rres.Reason)
-		if claim == claimOwned {
+		switch claim {
+		case claimOwned:
+			pr.log.Warn("autonomous re-watch confirmed degradation; reverted real default (#1065)",
+				"flag", p.FlagKey, "outcome", string(rres.Outcome), "reason", rres.Reason)
+			pr.journalRewatch(p.ExperimentID, rres)
+		case claimDeferred:
+			// UC-043 A17: the revert waits for the end of the real game; journal it
+			// write-ahead so a restart re-queues it.
+			pr.log.Warn("autonomous re-watch confirmed degradation; revert deferred until no real game runs (UC-043 A17)",
+				"flag", p.FlagKey)
 			pr.journalRewatch(p.ExperimentID, rres)
 		}
 	}
@@ -272,6 +311,23 @@ func (pr *Promoter) clock() time.Time {
 	return time.Now()
 }
 
+// watchRevert is the revert of a watch or re-watch: for a hold key the guarded
+// DELETE when the reverter offers it (#2236), so the flag service refuses it while a
+// real game is registered; otherwise the plain revert. The kill switch does not
+// come here.
+func (pr *Promoter) watchRevert(ctx context.Context, flagKey string) error {
+	var err error
+	if g, ok := pr.reverter.(GuardedRealDefaultReverter); ok && deferUntilIdle(flagKey) {
+		err = g.RevertRealDefaultUnlessRealGame(ctx, flagKey)
+	} else {
+		err = pr.reverter.RevertRealDefault(ctx, flagKey)
+	}
+	if errors.Is(err, ErrSupersededByAnotherWriter) {
+		return nil // dropped: the other writer owns the overlay, the revert is done
+	}
+	return err
+}
+
 // revertReal rolls the autonomous real-default change back on a degradation (or an
 // unconfirmable watch). A nil RealDefaultReverter (no rollback wired) records the
 // degradation but cannot undo it — logged + reasoned so it is visible, never
@@ -289,9 +345,25 @@ func (pr *Promoter) clock() time.Time {
 // read and delete, so a tick waited for an in-flight revert before as well; the
 // lock adds no latency there. Never call revertReal while holding killMu
 // (writeTracked, RevertOnKillSwitch): Go mutexes are not re-entrant.
-func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry *appliedPromotion, res *Result, watchErr error) claimResult {
+//
+// A revert of a hold key while a real game is live waits in the deferred queue
+// (UC-043 A17 step 3, opposer B2): it returns claimDeferred, res keeps its outcome
+// with DeferredRevertReason, and DrainDeferred runs it once no real game is live.
+// The same holds when the guarded DELETE (watchRevert, #2236) gets 409
+// real_game_live: a game registered between the probe and the DELETE.
+// rewatch marks a re-watch revert (its journal reason prefix).
+func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry *appliedPromotion, res *Result, watchErr error, rewatch bool) claimResult {
+	defer pr.flushReplacedReverts() // after killMu is released (deferred LIFO)
 	pr.killMu.Lock()
 	defer pr.killMu.Unlock()
+	if deferUntilIdle(p.FlagKey) && pr.appliedState(entry) == claimOwned && pr.realGameLive(ctx) {
+		// Journaled write-ahead by the caller (RevertPending), so a restart re-queues
+		// it; after a shutdown started it is not queued here (DropDeferred ran).
+		pr.queueRevertLocked(p, entry, watchErr, rewatch)
+		res.Reason = DeferredRevertReason
+		res.RevertPending = true
+		return claimDeferred
+	}
 	claim := pr.claimApplied(entry)
 	switch claim {
 	case claimKilled:
@@ -315,7 +387,19 @@ func (pr *Promoter) revertReal(ctx context.Context, p experiment.Proposal, entry
 		res.Reason = reason + "; no real-default reverter wired"
 		return claim
 	}
-	if err := pr.reverter.RevertRealDefault(ctx, p.FlagKey); err != nil {
+	if err := pr.watchRevert(ctx, p.FlagKey); err != nil {
+		if deferUntilIdle(p.FlagKey) && flagservice.IsReason(err, flagservice.ReasonRealGameLive) {
+			// The flag service's guard (#2236): a real game registered after the
+			// probe looked. Nothing was cleared; the revert keeps waiting, like a
+			// probe that says live (the caller journals it write-ahead).
+			if entry != nil {
+				pr.retrack(entry)
+			}
+			pr.queueRevertLocked(p, entry, watchErr, rewatch)
+			res.Reason = DeferredRevertReason
+			res.RevertPending = true
+			return claimDeferred
+		}
 		res.Reason = fmt.Sprintf("%s; revert failed: %v", reason, err)
 		// Still applied: the kill switch may revert it later (#1704).
 		if entry != nil {

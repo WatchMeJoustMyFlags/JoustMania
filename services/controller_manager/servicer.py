@@ -75,7 +75,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # per-frame path skips the labels() lookup (same idea as _accel_gauges, #542).
         self._input_lag_histograms: dict[str, Any] = {}
         self.paired_serials: list[str] = []
-        self.controller_processes: dict[str, Any] = {}  # serial -> process (for cleanup)
 
         # Note: state_lock removed - no longer needed with async discovery loop
         # All operations run on the same event loop, so no cross-thread coordination required
@@ -414,18 +413,17 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         """
         gameplay_data = []
         # Mock death latch is drained per DELIVERED frame, not by wall-clock
-        # (#926): hold a reference once (duck-typed — only MockAdapter has it,
-        # real hardware backends do not need it) and call it for each streamed
-        # controller below.
-        consume_death = getattr(self.backend, "consume_death_frame", None)
+        # (#926): only MockAdapter does anything, every other backend inherits
+        # the no-op, so it is called for each streamed controller below.
+        consume_death = self.backend.consume_death_frame
         # Trigger latch (#1837): a press since the previous delivered frame, drained per
         # game frame like the death latch so observer streams never steal it.
-        consume_trigger = getattr(self.backend, "consume_trigger_press", None)
+        consume_trigger = self.backend.consume_trigger_press
         # Motion patterns (UC-046, #1258): a pattern controller's DELIVERED frame k
         # carries f(k / r), evaluated here (once per delivered frame) rather than in
         # the 100 Hz poll, so game time follows delivered frames, not polls.
-        pattern_frame = getattr(self.backend, "pattern_frame", None)
-        pattern_serials = self._pattern_serials() if pattern_frame is not None else set()
+        pattern_frame = self.backend.pattern_frame
+        pattern_serials = self.backend.pattern_serials()
         now = time.time()
         # Input lag is a game-path signal: only game streams (which always send a
         # controller filter) record it, not the dashboard's unfiltered stream, so
@@ -448,11 +446,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             full_state = self.state_builder.build_state(serial, info)
             accel = full_state.accel
+            pattern_trigger = False
             if serial in pattern_serials:
                 # Evaluated BEFORE consume_death so an active latch is delivered first (BR-012).
                 explicit = current_filter is not None and serial in current_filter
-                pattern_accel = pattern_frame(serial, subscriber_id, explicit)
-                if pattern_accel is not None:
+                pattern_out = pattern_frame(serial, subscriber_id, explicit)
+                if pattern_out is not None:
+                    pattern_accel, pattern_trigger = pattern_out
                     accel = controller_manager_pb2.Vector3(
                         x=pattern_accel["x"], y=pattern_accel["y"], z=pattern_accel["z"]
                     )
@@ -461,12 +461,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             # mock deaths are held until they have been STREAMED to the game
             # enough times to cross the EMA threshold, rather than for a fixed
             # wall-clock window a starved send loop could skip entirely (#926).
-            if consume_death is not None and game_stream and serial in roster:
+            if game_stream and serial in roster:
                 consume_death(serial)
 
             # The trigger is the level OR a press latched since the last game frame.
-            trigger_pressed = full_state.trigger_pressed
-            if consume_trigger is not None and game_stream and serial in roster and consume_trigger(serial) is True:
+            # A pattern controller presses by its trigger policy (UC-046 BR-018), owner stream only.
+            trigger_pressed = full_state.trigger_pressed or pattern_trigger
+            if game_stream and serial in roster and consume_trigger(serial) is True:
                 trigger_pressed = True
 
             # Drain health counters accumulated since last frame (game streams only)
@@ -550,19 +551,29 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             self._input_lag_histograms[serial] = histogram
         histogram.observe(age)
 
-    def _pattern_serials(self) -> set:
-        """Serials with a motion pattern; empty for backends without patterns."""
-        serials = getattr(self.backend, "pattern_serials", None)
-        if serials is None:
-            return set()
-        return serials() if callable(serials) else serials
-
     def _pattern_stream_rate(self, current_filter: set | None) -> int | None:
         """Pinned rate when the stream's explicit filter names a pattern controller."""
         if not current_filter:
             return None
-        rate_of = getattr(self.backend, "pattern_stream_rate", None)
-        return rate_of(current_filter) if rate_of is not None else None
+        return self.backend.pattern_stream_rate(current_filter)
+
+    async def _process_gameplay_control(
+        self, control_msg, subscriber_id: str, span, current_filter: set | None
+    ) -> tuple[int | None, set | None]:
+        """Apply one GameplayStreamControl message.
+
+        Returns (the config's rate or None when the message is not a config, the stream's filter
+        afterwards). Only a config or a filter update changes the filter.
+        """
+        if control_msg.HasField("config"):
+            return await self._process_gameplay_config(control_msg.config, subscriber_id, span)
+        if control_msg.HasField("filter_update"):
+            return None, self._process_filter_update(control_msg.filter_update, subscriber_id, span, current_filter)
+        if control_msg.HasField("base_color"):
+            await self._process_base_color_command(control_msg.base_color, subscriber_id, "GameplayStream")
+        elif control_msg.HasField("game_effect"):
+            await self._process_game_effect_command(control_msg.game_effect, subscriber_id)
+        return None, current_filter
 
     async def StreamGameplayData(self, request_iterator, context):
         """
@@ -603,19 +614,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             try:
                 async for control_msg in request_iterator:
-                    if control_msg.HasField("config"):
-                        requested_hz, current_filter = await self._process_gameplay_config(
-                            control_msg.config, subscriber_id, span
-                        )
-                        current_hz = requested_hz
-                    elif control_msg.HasField("filter_update"):
-                        current_filter = self._process_filter_update(
-                            control_msg.filter_update, subscriber_id, span, current_filter
-                        )
-                    elif control_msg.HasField("base_color"):
-                        await self._process_base_color_command(control_msg.base_color, subscriber_id, "GameplayStream")
-                    elif control_msg.HasField("game_effect"):
-                        await self._process_game_effect_command(control_msg.game_effect, subscriber_id)
+                    config_hz, current_filter = await self._process_gameplay_control(
+                        control_msg, subscriber_id, span, current_filter
+                    )
+                    if config_hz is not None:
+                        requested_hz = current_hz = config_hz
             except Exception as e:
                 logger.error(f"[{subscriber_id}] Error reading client updates: {e}", exc_info=True)
 
@@ -672,9 +675,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                         metrics.stream_frame_overruns_total.inc()
                         # UC-046 A10: the pattern signal stays frame-indexed, but the
                         # game is no longer exact; count it per pattern controller.
-                        record_overrun = getattr(self.backend, "record_pattern_overrun", None)
-                        if pattern_hz is not None and record_overrun is not None:
-                            record_overrun(subscriber_id)
+                        if pattern_hz is not None:
+                            self.backend.record_pattern_overrun(subscriber_id)
 
                     await asyncio.sleep(sleep_time)
 
@@ -698,9 +700,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             self._schedule_shield_cleanup(closed_roster)
 
             # A reconnecting game stream may claim this stream's pattern controllers.
-            release_patterns = getattr(self.backend, "release_pattern_stream", None)
-            if release_patterns is not None:
-                release_patterns(subscriber_id)
+            self.backend.release_pattern_stream(subscriber_id)
 
             # Update stream metrics
             metrics.active_streams.dec()
@@ -903,12 +903,6 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
         # Stop discovery loop
         self.discovery_loop.stop()
-
-        # Stop all controller processes
-        for _serial, proc in self.controller_processes.items():
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(timeout=2.0)
 
         await self.discovery_loop.wait_stopped(timeout_seconds=5.0)
 

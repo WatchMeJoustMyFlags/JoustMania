@@ -41,6 +41,8 @@ BASELINE = {
     ("game", "sensitivity"): ({"ultra_slow": 0, "slow": 1, "medium": 2, "fast": 3, "ultra_fast": 4}, "medium"),
     ("game", "num_teams"): ({"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}, "two"),
     ("game", "force_all_start"): ({"on": True, "off": False}, "off"),
+    # Listed in reverse: the commit ladder must come from the menu's `order`, not the listing (UC-015 BR-018).
+    ("game", "shield.activation"): ({"hold": "hold", "trigger": "trigger", "instant": "instant"}, "trigger"),
     ("user", "game_instructions"): ({"on": True, "off": False}, "off"),
     ("user", "current_game"): ({name: name for name in GAME_MODES}, "JoustFFA"),
     (
@@ -68,9 +70,13 @@ class FakeFlagService:
         # Keys whose PUT lands but answers after the client deadline (#2095).
         self.slow_put: set[tuple[str, str]] = set()
         self.down = False
+        # Persisted admin values (GET `admin_value`; DELETE ?persist=true clears one, UC-015 BR-018).
+        self.admin: dict[tuple[str, str], str] = {}
+        self.deletes: list[tuple[str, str, str]] = []
 
     def __call__(self, method, url, body):
-        flag_set, key = url.split("/")[-2:]
+        path, _, query = url.partition("?")
+        flag_set, key = path.split("/")[-2:]
         key = urllib.parse.unquote(key)
         if self.down:
             raise urllib.error.URLError("connection refused")
@@ -78,17 +84,30 @@ class FakeFlagService:
         if method == "GET":
             if (flag_set, key) in self.failing_get:
                 return 503, {"error": "no_sync_stream"}
-            return 200, {
+            view = {
                 "variants": list(variants),
                 "variant_values": dict(variants),
                 "effective_default": self.values[(flag_set, key)],
             }
+            if (flag_set, key) in self.admin:
+                view["admin_value"] = {"variant": self.admin[(flag_set, key)]}
+            return 200, view
+        if method == "DELETE":
+            self.deletes.append((flag_set, key, query))
+            if (flag_set, key) in self.failing:
+                return 503, {"error": "no_sync_stream"}
+            if query == "persist=true":
+                self.admin.pop((flag_set, key), None)
+                self.values[(flag_set, key)] = _default
+            return 204, {}
         self.puts.append((flag_set, key, dict(body)))
         if (flag_set, key) in self.failing:
             return 503, {"error": "no_sync_stream"}
         if body.get("persist") and (flag_set, key) in NO_PERSIST:
             return 400, {"error": "bad_request", "detail": f"{key} cannot persist in scope stack"}
         self.values[(flag_set, key)] = body["variant"]
+        if body.get("persist"):
+            self.admin[(flag_set, key)] = body["variant"]
         if (flag_set, key) in self.slow_put:
             raise TimeoutError("timed out")
         return 200, {"variant": body["variant"], "persisted": bool(body.get("persist"))}
@@ -203,6 +222,17 @@ async def test_force_start_starts_with_the_ready_roster_and_no_host_serial(servi
 
 
 @pytest.mark.asyncio
+@pytest.mark.uc("UC-015", flow="A1", br=["BR-008"])
+async def test_force_start_reports_a_refused_start(servicer):
+    servicer.state_manager.controller_states = {"a": ControllerState.READY, "b": ControllerState.READY}
+    with live_roster({"a", "b"}), patch.object(servicer, "_start_game", autospec=True, return_value=False):
+        reply = await pad(servicer, "force_start")
+
+    assert not reply.success
+    assert servicer.state != menu_pb2.MenuState.GAME_STARTING
+
+
+@pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="main", br=["BR-008"])
 async def test_force_start_prunes_ghosts_and_keeps_no_serial(servicer):
     servicer.state_manager.controller_states = {"a": ControllerState.READY, "ghost": ControllerState.READY}
@@ -260,7 +290,7 @@ async def test_force_start_refuses_when_a_start_wins_during_the_roster_lookup(se
     state_before = servicer.state
     started: list[asyncio.Future] = []
 
-    async def roster_lookup(_request):
+    async def roster_lookup(_request, **_kwargs):
         started.append(live_lifecycle(servicer))
         return controller_manager_pb2.GetConnectedControllersResponse(connected_serials=["a", "b"])
 
@@ -287,6 +317,7 @@ async def test_force_start_refuses_when_a_start_wins_during_the_roster_lookup(se
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="main", br=["BR-005"])
 async def test_step_setting_writes_once_for_n_steps_and_announces(servicer, flags):
+    flags.admin[("game", "sensitivity")] = flags.values[("game", "sensitivity")] = "medium"  # the knob starts here
     reply = await pad(servicer, "step_setting", option="sensitivity", direction="up", steps=2)
 
     assert (reply.success, reply.error) == (True, "")
@@ -299,7 +330,6 @@ async def test_step_setting_writes_once_for_n_steps_and_announces(servicer, flag
 @pytest.mark.parametrize(
     ("option", "direction", "start"),
     [
-        ("num_teams", "down", "two"),
         ("num_teams", "up", "six"),
         ("sensitivity", "up", "ultra_fast"),
         ("force_all_start", "down", "off"),
@@ -310,6 +340,8 @@ async def test_step_setting_writes_once_for_n_steps_and_announces(servicer, flag
 async def test_step_setting_stops_at_the_end_without_writing(servicer, flags, option, direction, start):
     flag_set = "user" if option in ("game_instructions", "audio_volume.master") else "game"
     flags.values[(flag_set, option)] = start
+    if option in ("num_teams", "sensitivity"):
+        flags.admin[(flag_set, option)] = start
 
     reply = await pad(servicer, "step_setting", option=option, direction=direction, steps=3)
 
@@ -321,7 +353,7 @@ async def test_step_setting_stops_at_the_end_without_writing(servicer, flags, op
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-015", flow="A7", br=["BR-005"])
 async def test_step_setting_clamps_a_partial_step_to_the_end(servicer, flags):
-    flags.values[("game", "num_teams")] = "five"
+    flags.values[("game", "num_teams")] = flags.admin[("game", "num_teams")] = "five"
     reply = await pad(servicer, "step_setting", option="num_teams", direction="up", steps=4)
     assert reply.success
     assert flags.written() == [("game", "num_teams", "six")]
@@ -987,6 +1019,7 @@ async def test_step_setting_while_admin_mode_is_open_writes_and_leaves_the_sessi
     span = create_autospec(trace.Span, instance=True)
     admin.session_span = span
 
+    flags.values[("game", "sensitivity")] = flags.admin[("game", "sensitivity")] = "medium"
     reply = await pad(servicer, "step_setting", option="sensitivity", direction="up")
 
     assert (reply.success, reply.error) == (True, "")

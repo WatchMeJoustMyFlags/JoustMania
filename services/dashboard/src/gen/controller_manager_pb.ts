@@ -27,6 +27,8 @@ export interface GameplayData {
   accel?: Vector3;
   gyro?: Vector3;
   rssi: number;
+  /** Human-readable controller name (UC-004 BR-007); proto3 JSON omits it when empty. */
+  name?: string;
   /** Unset until the controller's 10 s gap window has data (UC-035 BR-005). */
   connectionQuality?: ConnectionQuality;
 }

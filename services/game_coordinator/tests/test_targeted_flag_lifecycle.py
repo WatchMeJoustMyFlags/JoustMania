@@ -27,12 +27,12 @@ test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
 
 from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 from services.game_coordinator.tests.test_intervention_scoping import (
     GRANT_FLAGS,
     REAL,
     SHADOW,
     SPEC_BY_KEY,
-    FakeGame,
     Harness,
     _grant,
 )
@@ -48,7 +48,7 @@ class LevelHarness(Harness):
         super().__init__(**kwargs)
         register_difficulty_handlers(self.mgr)
 
-    def start_game(self, game_id, *, real, serials=("p1", "p2")) -> FakeGame:
+    def start_game(self, game_id, *, real, serials=("p1", "p2")) -> FakeInterventionGame:
         game = super().start_game(game_id, real=real, serials=serials)
         for player in game.players.values():
             player.sensitivity_factor = 1.0

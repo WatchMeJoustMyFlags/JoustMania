@@ -8,7 +8,7 @@ receivers:
 
   # Scrape receivers for targets that don't push via OTLP.
   # Split by namespace so each pipeline gets the correct service.namespace tag.
-  # Metrics flow to VictoriaMetrics via prometheusremotewrite.
+  # Metrics flow to VictoriaMetrics via prometheus_remote_write.
 
   # Observability stack: monitoring tools that observe the system
   prometheus/observability:
@@ -20,7 +20,7 @@ receivers:
             - targets: ['victoria-metrics:8428']
         # Self-telemetry: the collector exposes its own metrics on :8888.
         # Rename otelcol_process_* to standard process_* for unified dashboards.
-        # v0.153.0 exposes them unsuffixed (otelcol_process_cpu_seconds,
+        # v0.153.0 exposed them unsuffixed (otelcol_process_cpu_seconds,
         # otelcol_process_memory_rss); the optional suffix keeps the rename
         # working if a later version adds _total / _bytes (regexes are anchored).
         - job_name: 'otel-collector'
@@ -170,7 +170,7 @@ processors:
   # thresholds are env-substituted with LEAN DEFAULTS equal to the #1161 base
   # values, using the OTel Collector confmap env provider's default-value syntax
   # `${env:VAR:-default}` (supported since collector v0.108.0; this image is
-  # built with OCB 0.153.0, well past that — see images/otel-collector/Dockerfile).
+  # built with OCB 0.164.0, well past that — see images/otel-collector/Dockerfile).
   # If the env vars are unset (base/Pi/prod + ci) the limiter stays at 600/150
   # under the lean 768 MiB ceiling.
   #
@@ -193,7 +193,7 @@ processors:
     spike_limit_mib: ${env:OTEL_MEMSPIKE_MIB:-150}
 
   # Resource processors set service.namespace per pipeline.
-  # The prometheusremotewrite exporter prefixes job labels with the namespace
+  # The prometheus_remote_write exporter prefixes job labels with the namespace
   # (e.g. "joustmania/game-coordinator", "infrastructure/flagd", "host/node").
   # All dashboard queries use these prefixed job names.
   resource/observability:
@@ -233,6 +233,19 @@ processors:
     trace_conditions:
       - span.name != "agent.decide" or resource.attributes["service.name"] != "agent"
 
+  # Drop gRPC health-check spans (#2286): docker healthchecks and watchdog
+  # probes call grpc.health.v1.Health/Check every few seconds, and on the Pi
+  # they were 1362 of 1500 Jaeger spans. The probes only need the RPC to
+  # answer; no service records its own span for it, so one drop here covers
+  # the Python, Go and Rust instrumentation alike. Only the main traces
+  # pipeline uses it (the span_metrics pipeline keeps agent.decide only).
+  filter/grpc_health:
+    error_mode: ignore
+    trace_conditions:
+      # Full name (Go otelgrpc, rust) or the package-stripped name that
+      # lib/grpc_tracing.py records for the Python services.
+      - span.attributes["rpc.service"] == "grpc.health.v1.Health" or span.attributes["rpc.service"] == "Health"
+
   # Resource processor to add common attributes for OTLP-pushed metrics
   resource:
     attributes:
@@ -247,7 +260,7 @@ connectors:
   # Decision backend x outcome as metrics, derived from the agent.decide spans
   # (#1427, maintainer decision 2: no agent-side counter; "traces -> metrics"
   # is a talk beat). Fed only agent.decide spans by filter/agent_decide.
-  # Exported to VictoriaMetrics (prometheusremotewrite) as
+  # Exported to VictoriaMetrics (prometheus_remote_write) as
   #   traces_span_metrics_calls_total
   #   traces_span_metrics_duration_seconds_bucket / _sum / _count
   # with labels decide_backend (rules, jev, claude, openai), decide_outcome
@@ -286,7 +299,7 @@ exporters:
       insecure: true
 
   # Prometheus remote write to VictoriaMetrics for high-frequency metrics storage
-  prometheusremotewrite:
+  prometheus_remote_write:
     endpoint: "http://victoria-metrics:8428/api/v1/write"
     tls:
       insecure: true
@@ -315,7 +328,7 @@ service:
     # Traces pipeline
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch/traces, resource]
+      processors: [memory_limiter, filter/grpc_health, batch/traces, resource]
       exporters: [otlp/jaeger, otlp/agent, debug]
 
     # agent.decide spans -> span_metrics connector (#1427). Same receiver as
@@ -329,38 +342,38 @@ service:
     metrics/span_metrics:
       receivers: [span_metrics]
       processors: [memory_limiter, batch/fast, resource]
-      exporters: [prometheusremotewrite]
+      exporters: [prometheus_remote_write]
 
     # Metrics pipeline - uses fast batch processor for sub-second updates
     # Fan-out to VictoriaMetrics (storage) and the agent
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch/fast, resource]
-      exporters: [prometheusremotewrite, otlp/agent]
+      exporters: [prometheus_remote_write, otlp/agent]
 
     # Observability metrics — victoria-metrics, otel-collector
     metrics/observability:
       receivers: [prometheus/observability]
       processors: [memory_limiter, resource/observability, batch/fast]
-      exporters: [prometheusremotewrite]
+      exporters: [prometheus_remote_write]
 
     # Infrastructure metrics — flagd (scraped, not OTLP-pushed)
     metrics/infrastructure:
       receivers: [prometheus/infrastructure]
       processors: [memory_limiter, resource/infrastructure, batch/fast]
-      exporters: [prometheusremotewrite]
+      exporters: [prometheus_remote_write]
 
     # Host metrics — OTEL hostmetrics receiver (replaces node-exporter)
     metrics/host:
       receivers: [hostmetrics/1m, hostmetrics/5m, hostmetrics/1h]
       processors: [memory_limiter, resource/host, batch/fast]
-      exporters: [prometheusremotewrite]
+      exporters: [prometheus_remote_write]
 
     # Container metrics — per-container resource usage from Docker API
     metrics/containers:
       receivers: [docker_stats]
       processors: [memory_limiter, resource/containers, batch/fast]
-      exporters: [prometheusremotewrite]
+      exporters: [prometheus_remote_write]
 
     # Logs pipeline: no log backend since Loki was removed (#2059, FR-082
     # Obsolete). The pipeline stays so the Python OTLPLogExporter gets an

@@ -21,6 +21,7 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from opentelemetry import context as otel_context
@@ -75,6 +76,43 @@ _BUTTON_KEYS = (
     ButtonKey.SELECT,
     ButtonKey.START,
 )
+
+
+@dataclass
+class _ControllerRecord:
+    """Everything the loop keeps per connected controller.
+
+    One record per serial replaces the per-serial dicts the loop used to clean up
+    by hand: dropping the record on disconnect forgets all of it at once.
+    """
+
+    # Activity tracking for metrics
+    last_activity_time: float | None = None
+    previous_accel: tuple[float, float, float] | None = None
+    # Cached metric label children (Issue #542: avoid 10K+ label lookups/sec),
+    # populated at spawn.
+    accel_gauges: dict | None = None
+    # Health counters: accumulated between stream frames, reset on drain
+    poll_drops: int = 0
+    poll_errors: int = 0
+    # Bluetooth-health window counters, reset every window. ``hw_polls`` > 0
+    # means the serial was polled this window.
+    hw_polls: int = 0  # polls attempted
+    hw_fresh: int = 0  # polls returning a genuinely-new frame
+    hw_drops: int = 0  # polls returning None
+    hw_max_gap_ms: float = 0.0  # max gap between fresh frames
+    # Kept across windows. Wall-clock (time.time()) ts of the last fresh frame.
+    hw_last_fresh_ts: float | None = None
+    # Identity of the last poll object — distinguishes a stale replay (same
+    # object, e.g. UnstableAdapter throttle window) from a fresh frame. The poll
+    # dict carries no sequence/timestamp, so identity is the cheapest reliable
+    # freshness signal.
+    hw_last_obj_id: int | None = None
+    # Cumulative loop stall at the last fresh frame (bluetooth.event_gap_ms
+    # excludes loop stalls, #1447).
+    hw_stall_at_last: float | None = None
+    # Connection quality (UC-035 BR-005): stats computed at the last health emission.
+    connection_quality: GapStats | None = None
 
 
 class DiscoveryLoop:
@@ -152,25 +190,16 @@ class DiscoveryLoop:
         # There's always either a menu or game stream active, so no need for idle mode
         self._poll_interval = 0.010  # 100Hz
 
-        # Activity tracking for metrics
-        self._last_activity_time: dict[str, float] = {}
-        self._previous_accel: dict[str, tuple[float, float, float]] = {}
+        # One record per tracked controller; popped on disconnect.
+        self._records: dict[str, _ControllerRecord] = {}
         self._idle_threshold_seconds = 5.0
         self._accel_movement_threshold = 0.05
-
-        # Cached metric label children (Issue #542: avoid 10K+ label lookups/sec)
-        # Populated at spawn, cleaned up on disconnect
-        self._accel_gauges: dict[str, dict] = {}
 
         # Cached serial list — rebuilt on connect/disconnect, reused at 100Hz
         self._cached_serials: list[str] | None = None
 
         # Debug logging throttle
         self._last_controller_count_log = 0.0
-
-        # Health counters: accumulated between stream frames, reset on drain
-        self._poll_drops: dict[str, int] = {}
-        self._poll_errors: dict[str, int] = {}
 
         # Bluetooth-health window accumulation (#732 M3). The window is the
         # ~1s span-emission interval, decoupled from the 100Hz discovery cadence.
@@ -183,28 +212,15 @@ class DiscoveryLoop:
         # True while the rollout flags cannot be read (#1489): edge-triggers one
         # warning on entering and one info on leaving, not one log per window.
         self._rollout_read_failing = False
-        # Per-serial counters reset every window.
-        self._hw_polls: dict[str, int] = {}  # polls attempted
-        self._hw_fresh: dict[str, int] = {}  # polls returning a genuinely-new frame
-        self._hw_drops: dict[str, int] = {}  # polls returning None
-        self._hw_max_gap_ms: dict[str, float] = {}  # max gap between fresh frames
-        self._hw_last_fresh_ts: dict[str, float] = {}  # wall-clock (time.time()) ts of last fresh frame
-        # Identity of the last poll object per serial — distinguishes a stale
-        # replay (same object, e.g. UnstableAdapter throttle window) from a fresh
-        # frame. The poll dict carries no sequence/timestamp, so identity is the
-        # cheapest reliable freshness signal.
-        self._hw_last_obj_id: dict[str, int] = {}
         # Connection quality (UC-035 BR-005): rolling 10 s window of fresh-frame
-        # gaps per serial, and the stats computed at the last health emission.
+        # gaps per serial.
         self._gap_window = ReportGapWindow()
-        self._connection_quality: dict[str, GapStats] = {}
         # Monotonic pick-up time of the previous poll batch: lateness beyond the
         # poll interval is the loop's own stall, not the link's (UC-035 BR-005).
         self._last_pickup_mono: float | None = None
-        # Cumulative loop stall (seconds), and its value at each serial's last
+        # Cumulative loop stall (seconds); each record keeps its value at the last
         # fresh frame, so bluetooth.event_gap_ms excludes loop stalls too (#1447).
         self._loop_stall_total = 0.0
-        self._hw_stall_at_last: dict[str, float] = {}
 
         # Gameplay disconnect events: accumulated between stream frames, drained by servicer (#580)
         self._gameplay_disconnects: list[str] = []
@@ -455,22 +471,10 @@ class DiscoveryLoop:
                     del self.controller_states[serial]
                 self.button_detector.clear_controller(serial)
                 # Note: Keep base_colors[serial] so we can restore on reconnect!
-                # Activity tracking cleanup
-                self._last_activity_time.pop(serial, None)
-                self._previous_accel.pop(serial, None)
-                self._accel_gauges.pop(serial, None)
-                self._poll_drops.pop(serial, None)
-                self._poll_errors.pop(serial, None)
-                # Bluetooth-health window counters
-                self._hw_polls.pop(serial, None)
-                self._hw_fresh.pop(serial, None)
-                self._hw_drops.pop(serial, None)
-                self._hw_max_gap_ms.pop(serial, None)
-                self._hw_last_fresh_ts.pop(serial, None)
-                self._hw_last_obj_id.pop(serial, None)
-                self._hw_stall_at_last.pop(serial, None)
+                # Activity, poll counters, health window and connection quality
+                # all live in the record.
+                self._records.pop(serial, None)
                 self._gap_window.forget(serial)
-                self._connection_quality.pop(serial, None)
                 # Clear per-serial health metric labels so disconnected
                 # controllers don't linger in dashboards.
                 metrics.controller_bluetooth_dropped_events_ratio.remove(serial)
@@ -558,30 +562,9 @@ class DiscoveryLoop:
 
             current_time = time.time()
 
-            # Count active vs idle controllers for the periodic log (based on recent activity)
-            active_count = 0
-            idle_count = 0
-            for serial in all_serials:
-                last_activity = self._last_activity_time.get(serial, current_time)
-                is_idle = (current_time - last_activity) > self._idle_threshold_seconds
-                if is_idle:
-                    idle_count += 1
-                else:
-                    active_count += 1
-
             # Debug: Log tracked controller count periodically (every 5 seconds)
             if current_time - self._last_controller_count_log >= 5.0:
-                adapter_info = ""
-                if hasattr(self.backend, "get_adapter_type"):
-                    adapter_counts: dict[str, int] = {}
-                    for s in all_serials:
-                        atype = self.backend.get_adapter_type(s)
-                        adapter_counts[atype] = adapter_counts.get(atype, 0) + 1
-                    adapter_info = ", adapters=" + "+".join(f"{k}:{v}" for k, v in sorted(adapter_counts.items()))
-                msg = f"Polling {len(all_serials)} controllers at 100Hz"
-                msg += f", active={active_count}, idle={idle_count}{adapter_info}"
-                logger.info(msg)
-                self._last_controller_count_log = current_time
+                self._log_controller_count(all_serials, current_time)
 
             # Poll all controllers — direct loop instead of asyncio.gather()
             # Post-PR #677, get_controller_state() is async but does zero I/O
@@ -599,12 +582,7 @@ class DiscoveryLoop:
             # Pick-up time of this batch for the connection-quality window; any
             # lateness beyond one poll interval is the loop's own stall.
             pickup_mono = time.monotonic()
-            if self._last_pickup_mono is not None:
-                stall = pickup_mono - self._last_pickup_mono - self._poll_interval
-                self._gap_window.note_loop_stall(stall)
-                if stall > 0:
-                    self._loop_stall_total += stall
-            self._last_pickup_mono = pickup_mono
+            self._note_batch_pickup(pickup_mono)
 
             # Record metrics
             poll_duration = time.time() - start_time
@@ -617,36 +595,41 @@ class DiscoveryLoop:
                 if serial not in self.tracked_controllers:
                     continue
 
+                record = self._record(serial)
                 # Bluetooth-health: every processed serial counts as one attempt.
-                self._hw_polls[serial] = self._hw_polls.get(serial, 0) + 1
+                record.hw_polls += 1
 
                 # Handle exceptions from individual controller reads
                 if isinstance(state, Exception):
                     logger.debug(f"Error updating state for {serial}: {state}")
-                    self._poll_errors[serial] = self._poll_errors.get(serial, 0) + 1
+                    record.poll_errors += 1
                     metrics.controller_poll_errors_total.labels(serial=serial).inc()
                     # An exception yields no fresh frame — count as a drop for health.
-                    self._hw_drops[serial] = self._hw_drops.get(serial, 0) + 1
+                    record.hw_drops += 1
                     continue
 
                 if not state:
-                    self._poll_drops[serial] = self._poll_drops.get(serial, 0) + 1
+                    record.poll_drops += 1
                     metrics.controller_poll_drops_total.labels(serial=serial).inc()
-                    self._hw_drops[serial] = self._hw_drops.get(serial, 0) + 1
+                    record.hw_drops += 1
                     continue
 
                 # Truthy dict: fresh frame only if the poll returned a *different*
                 # object than last time. A stale replay (same object, e.g. an
                 # UnstableAdapter throttle window) is NOT a new movement update.
-                obj_id = id(state)
-                if self._hw_last_obj_id.get(serial) != obj_id:
-                    self._hw_last_obj_id[serial] = obj_id
+                # A tap-latch copy (press_latch.LatchedState) is judged by the real sample it copies,
+                # so the copy is neither a fresh frame nor makes the next poll look like one (#2352 B3).
+                # id() is only safe while the previous sample stays referenced (controller_states[serial], directly or
+                # via LatchedState.sample, and the adapter's _last_state); dropping or copying them would reuse ids.
+                obj_id = id(getattr(state, "sample", state))
+                if record.hw_last_obj_id != obj_id:
+                    record.hw_last_obj_id = obj_id
                     self._record_fresh_frame(serial, current_time, self._loop_stall_total)
                     self._gap_window.record(serial, pickup_mono)
                 else:
                     # Stale replay: no new frame, but not a hardware drop either.
-                    # Counts against the update rate via _hw_polls without bumping
-                    # _hw_fresh, so movement_update_hz reflects the degradation.
+                    # Counts against the update rate via hw_polls without bumping
+                    # hw_fresh, so movement_update_hz reflects the degradation.
                     pass
 
                 # Update stored state
@@ -666,6 +649,42 @@ class DiscoveryLoop:
         except Exception as e:
             logger.error(f"Error updating controller states: {e}", exc_info=True)
 
+    def _log_controller_count(self, all_serials: list[str], current_time: float) -> None:
+        """The 5 s poll log: controller count, active / idle split (by recent activity) and adapters."""
+        active_count = 0
+        idle_count = 0
+        for serial in all_serials:
+            record = self._records.get(serial)
+            last_activity = (
+                record.last_activity_time if record and record.last_activity_time is not None else current_time
+            )
+            is_idle = (current_time - last_activity) > self._idle_threshold_seconds
+            if is_idle:
+                idle_count += 1
+            else:
+                active_count += 1
+
+        adapter_info = ""
+        adapter_counts: dict[str, int] = {}
+        for s in all_serials:
+            atype = self.backend.get_adapter_type(s)
+            adapter_counts[atype] = adapter_counts.get(atype, 0) + 1
+        if any(adapter_counts):  # a backend without adapters reports "" for all
+            adapter_info = ", adapters=" + "+".join(f"{k}:{v}" for k, v in sorted(adapter_counts.items()))
+        msg = f"Polling {len(all_serials)} controllers at 100Hz"
+        msg += f", active={active_count}, idle={idle_count}{adapter_info}"
+        logger.info(msg)
+        self._last_controller_count_log = current_time
+
+    def _note_batch_pickup(self, pickup_mono: float) -> None:
+        """Feed the batch's pick-up lateness beyond one poll interval (the loop's own stall) to the window."""
+        if self._last_pickup_mono is not None:
+            stall = pickup_mono - self._last_pickup_mono - self._poll_interval
+            self._gap_window.note_loop_stall(stall)
+            if stall > 0:
+                self._loop_stall_total += stall
+        self._last_pickup_mono = pickup_mono
+
     def _update_activity_tracking(self, serial: str, state: dict, current_time: float) -> None:
         """
         Update activity tracking for adaptive polling.
@@ -676,6 +695,7 @@ class DiscoveryLoop:
 
         Issue #62: Also records acceleration metrics for 100Hz visualization.
         """
+        record = self._record(serial)
         activity_detected = False
 
         # Check for any button activity
@@ -697,14 +717,14 @@ class DiscoveryLoop:
             magnitude = math.sqrt(ax * ax + ay * ay + az * az)
 
             # Issue #542: Use cached label children (avoids 5× label lookup per poll)
-            gauges = self._accel_gauges.get(serial)
+            gauges = record.accel_gauges
             if gauges:
                 gauges["magnitude"].set(magnitude)
                 gauges["x"].set(ax)
                 gauges["y"].set(ay)
                 gauges["z"].set(az)
 
-            prev_accel = self._previous_accel.get(serial)
+            prev_accel = record.previous_accel
             if prev_accel and not activity_detected:
                 # Calculate magnitude of acceleration change
                 dx = abs(current_accel[0] - prev_accel[0])
@@ -715,11 +735,11 @@ class DiscoveryLoop:
                 if movement > self._accel_movement_threshold:
                     activity_detected = True
 
-            self._previous_accel[serial] = current_accel
+            record.previous_accel = current_accel
 
         # Update last activity time if activity detected
         if activity_detected:
-            self._last_activity_time[serial] = current_time
+            record.last_activity_time = current_time
 
     def _record_fresh_frame(self, serial: str, now: float, stall_total: float = 0.0) -> None:
         """Record a genuinely-new frame for the bluetooth-health window.
@@ -731,15 +751,16 @@ class DiscoveryLoop:
         cumulative poll-loop stall: the part of a gap the loop itself ran late
         is not charged to the link (#1447, as in UC-035 BR-005).
         """
-        self._hw_fresh[serial] = self._hw_fresh.get(serial, 0) + 1
-        last_ts = self._hw_last_fresh_ts.get(serial)
+        record = self._record(serial)
+        record.hw_fresh += 1
+        last_ts = record.hw_last_fresh_ts
         if last_ts is not None:
-            stalled = stall_total - self._hw_stall_at_last.get(serial, stall_total)
+            stalled = stall_total - (record.hw_stall_at_last if record.hw_stall_at_last is not None else stall_total)
             gap_ms = max(0.0, (now - last_ts - stalled) * 1000.0)
-            if gap_ms > self._hw_max_gap_ms.get(serial, 0.0):
-                self._hw_max_gap_ms[serial] = gap_ms
-        self._hw_last_fresh_ts[serial] = now
-        self._hw_stall_at_last[serial] = stall_total
+            if gap_ms > record.hw_max_gap_ms:
+                record.hw_max_gap_ms = gap_ms
+        record.hw_last_fresh_ts = now
+        record.hw_stall_at_last = stall_total
 
     def sample_age_seconds(self, serial: str, now: float) -> float | None:
         """Seconds since the poll loop picked up ``serial``'s current sample.
@@ -749,24 +770,29 @@ class DiscoveryLoop:
         growing lag. ``None`` until the first fresh frame. ``now`` must be
         wall-clock (time.time()), matching the poll loop's timestamps.
         """
-        picked_up = self._hw_last_fresh_ts.get(serial)
+        record = self._records.get(serial)
+        picked_up = record.hw_last_fresh_ts if record else None
         if picked_up is None:
             return None
         return max(0.0, now - picked_up)
 
     def connection_quality(self, serial: str) -> GapStats | None:
         """Connection quality of ``serial`` at the last health emission (UC-035 BR-005)."""
-        return self._connection_quality.get(serial)
+        record = self._records.get(serial)
+        return record.connection_quality if record else None
 
     def _update_connection_quality(self, serials: list[str], now: float) -> None:
         """Refresh the rolling-window gap stats and their metrics for ``serials``."""
         for serial in serials:
             stats = self._gap_window.snapshot(serial, now)
+            record = self._records.get(serial)
             if stats is None:
-                self._connection_quality.pop(serial, None)
+                if record is not None:
+                    record.connection_quality = None
                 _remove_quality_series(serial)
                 continue
-            self._connection_quality[serial] = stats
+            if record is not None:
+                record.connection_quality = stats
             metrics.controller_bluetooth_report_gap_p95_seconds.labels(serial=serial).set(stats.p95_ms / 1000.0)
             metrics.controller_bluetooth_report_gap_max_seconds.labels(serial=serial).set(stats.max_ms / 1000.0)
             metrics.controller_connection_quality.labels(serial=serial).set(QUALITY_LEVEL[stats.quality])
@@ -785,17 +811,18 @@ class DiscoveryLoop:
         """
         duration = max(window_seconds, 1e-6)
         per_serial: dict[str, dict] = {}
-        serials = list(self._hw_polls.keys())
+        polled = {serial: record for serial, record in self._records.items() if record.hw_polls > 0}
+        serials = list(polled)
 
         total_events = 0  # event-bearing cycles: fresh + dropped
         total_drops = 0
         max_gap_ms = 0.0
         min_hz: float | None = None
 
-        for serial in serials:
-            fresh = self._hw_fresh.get(serial, 0)
-            drops = self._hw_drops.get(serial, 0)
-            gap_ms = self._hw_max_gap_ms.get(serial, 0.0)
+        for serial, record in polled.items():
+            fresh = record.hw_fresh
+            drops = record.hw_drops
+            gap_ms = record.hw_max_gap_ms
 
             update_hz = fresh / duration
             # Dropped-event ratio: drops as a fraction of event-bearing poll
@@ -830,11 +857,12 @@ class DiscoveryLoop:
 
     def _reset_health_window(self, now: float) -> None:
         """Clear per-serial window counters and start a new window at ``now``."""
-        self._hw_polls.clear()
-        self._hw_fresh.clear()
-        self._hw_drops.clear()
-        self._hw_max_gap_ms.clear()
-        # Keep _hw_last_fresh_ts / _hw_last_obj_id across windows so the first
+        for record in self._records.values():
+            record.hw_polls = 0
+            record.hw_fresh = 0
+            record.hw_drops = 0
+            record.hw_max_gap_ms = 0.0
+        # Keep hw_last_fresh_ts / hw_last_obj_id across windows so the first
         # fresh frame of the next window measures its gap from the real previous
         # frame, and stale replays spanning the boundary are still detected.
         self._window_start = now
@@ -872,13 +900,11 @@ class DiscoveryLoop:
         target_backend = ""
         rollout_count = 0
         rollout_read_error = False
-        rollout_summary = getattr(self.backend, "rollout_summary", None)
-        if rollout_summary is not None:
-            try:
-                target_backend, rollout_count = rollout_summary()
-            except Exception:
-                rollout_read_error = True
-                logger.debug("Failed to read rollout summary for health span", exc_info=True)
+        try:
+            target_backend, rollout_count = self.backend.rollout_summary()
+        except Exception:
+            rollout_read_error = True
+            logger.debug("Failed to read rollout summary for health span", exc_info=True)
         self._log_rollout_read_transition(rollout_read_error)
 
         # Active rollout strategy ("off"/"immediate"/"progressive"). The agent
@@ -886,12 +912,10 @@ class DiscoveryLoop:
         # on any error so a flagd outage never breaks span emission; the agent
         # treats absence as "behave as before" (progressive ladder).
         rollout_strategy = ""
-        rollout_strategy_fn = getattr(self.backend, "rollout_strategy", None)
-        if rollout_strategy_fn is not None:
-            try:
-                rollout_strategy = rollout_strategy_fn()
-            except Exception:
-                logger.debug("Failed to read rollout strategy for health span", exc_info=True)
+        try:
+            rollout_strategy = self.backend.rollout_strategy()
+        except Exception:
+            logger.debug("Failed to read rollout strategy for health span", exc_info=True)
 
         self._update_connection_quality(
             list(signals["per_serial"]), now_mono if now_mono is not None else time.monotonic()
@@ -914,16 +938,14 @@ class DiscoveryLoop:
 
             # One event per active serial with per-serial signals.
             for serial, s in signals["per_serial"].items():
-                adapter_type = ""
-                if hasattr(self.backend, "get_adapter_type"):
-                    adapter_type = self.backend.get_adapter_type(serial)
+                adapter_type = self.backend.get_adapter_type(serial)
                 sample = {
                     "controller.serial": serial,
                     "bluetooth.movement_update_hz": float(s["update_hz"]),
                     "bluetooth.dropped_events_pct": float(s["dropped_pct"]),
                     "controller.adapter": adapter_type,
                 }
-                quality = self._connection_quality.get(serial)
+                quality = self.connection_quality(serial)
                 if quality is not None:
                     sample["bluetooth.report_gap_p95_ms"] = float(quality.p95_ms)
                     sample["bluetooth.report_gap_max_ms"] = float(quality.max_ms)
@@ -954,11 +976,12 @@ class DiscoveryLoop:
         Returns:
             Tuple of (poll_drops, poll_errors, led_failures).
         """
-        drops = self._poll_drops.pop(serial, 0)
-        errors = self._poll_errors.pop(serial, 0)
-        led = 0
-        if hasattr(self.backend, "_led_failures"):
-            led = self.backend._led_failures.pop(serial, 0)
+        record = self._records.get(serial)
+        drops = errors = 0
+        if record is not None:
+            drops, errors = record.poll_drops, record.poll_errors
+            record.poll_drops = record.poll_errors = 0
+        led = self.backend.take_led_failures(serial)
         return drops, errors, led
 
     def drain_disconnects(self) -> list[str]:
@@ -978,6 +1001,13 @@ class DiscoveryLoop:
         disconnects = self._gameplay_disconnects
         self._gameplay_disconnects = []
         return disconnects
+
+    def _record(self, serial: str) -> _ControllerRecord:
+        """The record of ``serial``, created on first use."""
+        record = self._records.get(serial)
+        if record is None:
+            record = self._records[serial] = _ControllerRecord()
+        return record
 
     async def _spawn_controller_process(self, serial: str) -> None:
         """
@@ -1006,22 +1036,18 @@ class DiscoveryLoop:
             if self.name_manager:
                 name = self.name_manager.get_name(serial)
 
-            # Resolve adapter type if backend supports it (MultiplexerBackend)
-            adapter_type = ""
-            if hasattr(self.backend, "get_adapter_type"):
-                adapter_type = self.backend.get_adapter_type(serial)
+            adapter_type = self.backend.get_adapter_type(serial)
 
-            # Resolve reservation metadata if backend supports it. Reserved
+            # Resolve reservation metadata (None when the backend has none). Reserved
             # controllers are hidden from button-stream consumers (the menu)
             # but stay fully usable via gameplay-data streams and explicit-serial
             # LED/feedback commands (#777).
             reserved = False
             tag = ""
-            if hasattr(self.backend, "get_controller_metadata"):
-                metadata = self.backend.get_controller_metadata(serial)
-                if metadata:
-                    reserved = metadata.get(ControllerInfoKey.RESERVED, False)
-                    tag = metadata.get(ControllerInfoKey.TAG, "")
+            metadata = self.backend.get_controller_metadata(serial)
+            if metadata:
+                reserved = metadata.get(ControllerInfoKey.RESERVED, False)
+                tag = metadata.get(ControllerInfoKey.TAG, "")
 
             # Track controller
             self.tracked_controllers[serial] = {
@@ -1055,7 +1081,7 @@ class DiscoveryLoop:
 
             # Cache metric label children for this serial (Issue #542)
             # Avoids 5× _validate_labels + _make_key per poll cycle per controller
-            self._accel_gauges[serial] = {
+            self._record(serial).accel_gauges = {
                 "magnitude": metrics.controller_accel_magnitude.labels(serial=serial),
                 "x": metrics.controller_accel_x.labels(serial=serial),
                 "y": metrics.controller_accel_y.labels(serial=serial),

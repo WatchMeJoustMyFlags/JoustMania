@@ -51,6 +51,20 @@
 # this script with the Bash tool's run_in_background: loop on exit 3 in the
 # foreground instead.
 #
+# Host-wide slots (#2210): at most JOUSTMANIA_GATE_SLOTS (default 2, 1-16, a safety ceiling
+# for developer-host stability, C-035) workers run at once across ALL worktrees and callers.
+# The worker (not the polling caller) takes the first free flock on
+# ${XDG_CACHE_HOME:-~/.cache}/joustmania/gate-slots/slot.<i> (dir override for tests:
+# JOUSTMANIA_GATE_SLOT_DIR); otherwise it prints `waiting for a gate slot` once and polls.
+# The kernel releases the lock when the worker exits, also when it is killed.
+# Memory cap: every run is a systemd user scope with MemoryMax=${JOUSTMANIA_GATE_MEM:-3G}
+# (256M-99999G, else the default) and MemorySwapMax=0; a runaway pytest grew to 14.5 GB and
+# froze the host (a safety ceiling, C-035). Without `systemd-run --user` the run is uncapped
+# and prints `memory cap: none`. When the cap was active, exit 137 (cgroup OOM kill) or 143
+# (systemd stops the scope; the normal case on systemd 255) is reported as `killed: memory cap`.
+# Docker containers and a nested `systemd-run --user` in a command are NOT under the cap.
+# The commands inherit the slot fd, so children of a killed worker keep the slot until they exit.
+#
 # Exit: 0 verdict as expected (PASS, or MUTATION CAUGHT (assertion) with --expect-fail),
 #       1 any other verdict (also ERROR: killed), 2 REFUSED, 3 PENDING.
 #
@@ -287,6 +301,15 @@ tree_fingerprint() {
 # - A killed job (no rc, its lock free) is replaced the same way.
 # The check, the removal and the start run under a flock on $JOB.lock, so two
 # concurrent callers never remove each other's fresh job.
+# Test-only seam (#2081): with GATE_RUN_TEST_PAUSE_DIR set, stop between the rc test and
+# the lock probe so scripts/tests/test-gate-run.sh can finish the job in that window.
+# Writes $DIR/reached, then waits while $DIR/hold exists. Unset: a no-op that returns 0.
+recheck_seam() {
+  [[ -n "${GATE_RUN_TEST_PAUSE_DIR:-}" ]] || return 0
+  : >"$GATE_RUN_TEST_PAUSE_DIR/reached"
+  while [[ -e "$GATE_RUN_TEST_PAUSE_DIR/hold" ]]; do sleep 0.05; done
+  return 0
+}
 if ((!WORKER)); then
   SELF="$(realpath -e -- "${BASH_SOURCE[0]}")"
   DETACH="$(dirname -- "$SELF")/detach.sh"
@@ -305,7 +328,7 @@ if ((!WORKER)); then
       "$(cat -- "$JOB/tree" 2>/dev/null)" != "$(tree_fingerprint)" ]]; then
       rm -rf -- "$JOB"
     fi
-  elif [[ -f "$JOB/lock" ]] && flock -n "$JOB/lock" true 2>/dev/null && [[ ! -f "$JOB/rc" ]]; then
+  elif [[ -f "$JOB/lock" ]] && recheck_seam && flock -n "$JOB/lock" true 2>/dev/null && [[ ! -f "$JOB/rc" ]]; then
     # killed: ended without rc and nobody holds its lock. The rc re-check matters: a job
     # that finished between the rc test above and the probe is finished, not killed (#2073).
     rm -rf -- "$JOB"
@@ -324,6 +347,38 @@ fi
 # Worker (inside the detached job): nothing of the caller's detach state reaches the
 # run (a nested gate-run, e.g. test-gate-run.sh under `make lint`, detaches itself).
 unset GATE_RUN_WORKER GATE_RUN_WAIT GATE_RUN_DRY_RUN DETACH_WAIT
+# Host-wide gate slot (#2210): held by this worker's fd 7 until it exits.
+SLOTS="${JOUSTMANIA_GATE_SLOTS:-2}"
+[[ "$SLOTS" =~ ^[0-9]{1,2}$ ]] && ((SLOTS >= 1 && SLOTS <= 16)) || SLOTS=2
+SLOT_DIR="${JOUSTMANIA_GATE_SLOT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/joustmania/gate-slots}"
+mkdir -p -- "$SLOT_DIR" || { echo "VERDICT: ERROR: cannot create $SLOT_DIR"; exit 1; }
+announced=0 have_slot=0
+while ((!have_slot)); do
+  for ((s = 1; s <= SLOTS; s++)); do
+    exec 7>>"$SLOT_DIR/slot.$s"
+    if flock -n 7; then have_slot=1; break; fi
+    exec 7>&-
+  done
+  ((have_slot)) && break
+  ((announced)) || { echo "waiting for a gate slot ($SLOTS in use on this host)"; announced=1; }
+  sleep 1
+done
+# Memory cap (#2210): [0-9]+[MG] of at least 256M, else the default.
+MEM="${JOUSTMANIA_GATE_MEM:-3G}"
+if [[ "$MEM" =~ ^([0-9]{1,5})([MG])$ ]]; then
+  mem_mb=$((BASH_REMATCH[1])); [[ "${BASH_REMATCH[2]}" == G ]] && mem_mb=$((mem_mb * 1024))
+  ((mem_mb >= 256)) || MEM=3G
+else
+  MEM=3G
+fi
+CAP=() CAP_ON=0
+if systemd-run --user --scope -q -p MemoryMax="$MEM" -p MemorySwapMax=0 -- true >/dev/null 2>&1; then
+  CAP=(systemd-run --user --scope -q -p MemoryMax="$MEM" -p MemorySwapMax=0 --)
+  CAP_ON=1
+  echo "memory cap: $MEM (systemd scope, no swap)"
+else
+  echo "memory cap: none"
+fi
 # Record the state this run sees, then run.
 { tree_fingerprint >"$JOB/tree"; } 2>/dev/null
 
@@ -333,15 +388,19 @@ TEST_FAIL_RE='FAILED|AssertionError|\bassert\b|--- FAIL|panicked'
 [[ "${CMD[0]}" == bash ]] && TEST_FAIL_RE+='|^[[:space:]]*FAIL(ED)?([: ]|$)'
 NON_TEST_RE='ERROR collecting|errors? during collection|SyntaxError|IndentationError|ModuleNotFoundError|ImportError while|command not found|No such file or directory|Cannot connect to the Docker daemon|could not compile|build failed|no Go files|cannot find package|setup failed|No rule to make target'
 
-failed=0 non_test=0
+failed=0 non_test=0 oom=0
 declare -a logs=() failed_logs=()
 for ((i = 1; i <= REPEAT; i++)); do
   log="$LOGS/$NAME-$i.log"
   logs+=("$log")
   start=$SECONDS
-  (cd "$RUN_DIR" && exec "${CMD[@]}") >"$log" 2>&1 </dev/null
+  (cd "$RUN_DIR" && exec "${CAP[@]}" "${CMD[@]}") >"$log" 2>&1 </dev/null
   rc=$?
   echo "run $i/$REPEAT: exit $rc $((SECONDS - start))s"
+  if ((CAP_ON && (rc == 137 || rc == 143))); then
+    oom=$((oom + 1))
+    echo "run $i/$REPEAT: killed: memory cap $MEM"
+  fi
   if ((rc != 0)); then
     failed=$((failed + 1))
     failed_logs+=("$log")
@@ -372,6 +431,7 @@ if ((EXPECT_FAIL)); then
     verdict+="  CAUGHT? (non-test error in $non_test/$REPEAT: collection, syntax, tool or docker; read the log)"
   fi
 fi
+((oom)) && verdict+="  (killed: memory cap $MEM in $oom/$REPEAT)"
 echo "VERDICT: $verdict"
 ((REPEAT == 1 && EXPECT_FAIL)) &&
   echo "note: N=1 expect-fail = one run failed; it does not show the failure is deterministic (use --repeat 3+ for timing-sensitive tests)."

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import urllib.error
 import urllib.parse
@@ -35,16 +36,22 @@ class FlagServiceUnreachable(Exception):
 
 
 class FlagService:
-    def __init__(self, base_url: str, timeout: float = 5.0, use_curl: bool = False):
+    def __init__(
+        self, base_url: str, timeout: float = 5.0, use_curl: bool | None = None
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.use_curl = use_curl
+        # None (default): curl when it is installed, else urllib.
+        self.use_curl = (
+            shutil.which("curl") is not None if use_curl is None else use_curl
+        )
 
     @classmethod
-    def from_env(cls, use_curl: bool = False) -> "FlagService":
-        """use_curl: send requests with curl, resolving the host exactly like
-        scripts/flags.sh (localhost may be ::1 under WSL where urllib reaches
-        another listener on 127.0.0.1, #2039)."""
+    def from_env(cls, use_curl: bool | None = None) -> FlagService:
+        """use_curl: None (default) sends requests with curl when it is installed
+        and falls back to urllib otherwise; False forces urllib, True forces curl.
+        curl resolves the host exactly like scripts/flags.sh (localhost may be ::1
+        under WSL where urllib reaches another listener on 127.0.0.1, #2039, #2057)."""
         return cls(os.environ.get("FLAG_SERVICE_URL") or DEFAULT_URL, use_curl=use_curl)
 
     def _request_curl(self, method: str, path: str, body: dict | None = None) -> dict:
@@ -65,7 +72,9 @@ class FlagService:
             cmd += ["-H", "Content-Type: application/json", "--data", json.dumps(body)]
         cmd += ["--", url]
         try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=self.timeout + 5)
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=self.timeout + 5, check=False
+            )
         except (OSError, subprocess.TimeoutExpired) as err:
             raise FlagServiceUnreachable(
                 f"flag service unreachable at {self.base_url}: {err}"

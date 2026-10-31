@@ -22,6 +22,7 @@ from services.controller_manager.backend_factory import (
 from services.controller_manager.multiplexer.adapter import DiscoveryFailedError
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
+from services.controller_manager.tests.backend_doubles import autospec_adapter, autospec_channel, autospec_flag_client
 
 
 def _mock_details(value, reason="STATIC", error_code=None, error_message=None):
@@ -37,7 +38,8 @@ def _mock_details(value, reason="STATIC", error_code=None, error_message=None):
 def _make_rust_adapter():
     """Create a RustServiceAdapter bypassing __init__ gRPC imports."""
     adapter = RustServiceAdapter.__new__(RustServiceAdapter)
-    adapter._channel = MagicMock()
+    adapter._init_stream_state()
+    adapter._channel = autospec_channel()
     adapter._stub = MagicMock()
     adapter._command_queue = queue.Queue(maxsize=256)
     adapter._latest_data = {}
@@ -56,7 +58,7 @@ class TestFactoryCreatesRustAdapter:
 
     def test_factory_creates_rust_adapter(self):
         """flag='rust' -> MultiplexerBackend with RustServiceAdapter + MockAdapter."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("rust")
 
         with (
@@ -64,7 +66,7 @@ class TestFactoryCreatesRustAdapter:
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
             rust_adapter = _make_rust_adapter()
-            mock_adapter = MagicMock()
+            mock_adapter = autospec_adapter()
             mock_adapter.adapter_type = "mock"
             mock_create.side_effect = [rust_adapter, mock_adapter]
 
@@ -93,14 +95,14 @@ class TestFactoryCreatesMixedAdapters:
 
     def test_comma_separated_mock_rust(self):
         """flag='mock,rust' -> MultiplexerBackend with both adapters."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("mock,rust")
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            mock_adapter = MagicMock()
+            mock_adapter = autospec_adapter()
             mock_adapter.adapter_type = "mock"
             rust_adapter = _make_rust_adapter()
             mock_create.side_effect = [mock_adapter, rust_adapter]
@@ -160,23 +162,23 @@ class TestBackendSwitchHidapiToRust:
     def test_backend_switch_produces_different_adapter_types(self):
         """Switching flag from 'python' to 'rust' produces different adapter types."""
         # First creation: python
-        mock_client_python = MagicMock()
+        mock_client_python = autospec_flag_client()
         mock_client_python.get_string_details.return_value = _mock_details("python")
 
         with (
             patch("lib.feature_flags.get_flag_client", return_value=mock_client_python),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            python_adapter = MagicMock()
+            python_adapter = autospec_adapter()
             python_adapter.adapter_type = "python"
-            mock_adapter_1 = MagicMock()
+            mock_adapter_1 = autospec_adapter()
             mock_adapter_1.adapter_type = "mock"
             mock_create.side_effect = [python_adapter, mock_adapter_1]
 
             backend_1 = create_backend()
 
         # Second creation: rust
-        mock_client_rust = MagicMock()
+        mock_client_rust = autospec_flag_client()
         mock_client_rust.get_string_details.return_value = _mock_details("rust")
 
         with (
@@ -184,7 +186,7 @@ class TestBackendSwitchHidapiToRust:
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
             rust_adapter = _make_rust_adapter()
-            mock_adapter_2 = MagicMock()
+            mock_adapter_2 = autospec_adapter()
             mock_adapter_2.adapter_type = "mock"
             mock_create.side_effect = [rust_adapter, mock_adapter_2]
 
@@ -205,7 +207,7 @@ class TestBackendSwitchHidapiToRust:
     def test_mock_auto_injected_in_both_modes(self):
         """Mock adapter is always auto-injected regardless of backend flag."""
         for flag_value in ("python", "rust"):
-            mock_client = MagicMock()
+            mock_client = autospec_flag_client()
             mock_client.get_string_details.return_value = _mock_details(flag_value)
 
             with (
@@ -214,7 +216,7 @@ class TestBackendSwitchHidapiToRust:
             ):
                 primary = MagicMock()
                 primary.adapter_type = flag_value
-                mock_adapter = MagicMock()
+                mock_adapter = autospec_adapter()
                 mock_adapter.adapter_type = "mock"
                 mock_create.side_effect = [primary, mock_adapter]
 
@@ -244,7 +246,7 @@ class TestRustIsTheDefaultBackend:
             patch("lib.feature_flags.get_flag_client", return_value=flag_client()),
             patch("services.controller_manager.backend_factory._create_adapter_by_name") as mock_create,
         ):
-            mock_adapter = MagicMock()
+            mock_adapter = autospec_adapter()
             mock_adapter.adapter_type = "mock"
             mock_create.side_effect = [_make_rust_adapter(), mock_adapter]
 
@@ -272,12 +274,12 @@ class TestRustIsTheDefaultBackend:
 
 
 def _client_returning(details):
-    client = MagicMock()
+    client = autospec_flag_client()
     client.get_string_details.return_value = details
     return client
 
 
 def _client_raising(exc):
-    client = MagicMock()
+    client = autospec_flag_client()
     client.get_string_details.side_effect = exc
     return client

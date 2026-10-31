@@ -664,6 +664,13 @@ func (f *Flags) experimentSeed(ctx context.Context) any {
 	return v
 }
 
+// ExperimentSeed resolves only experiment_seed (#1966): the seed decision
+// re-reads it under the declarer lock so a caller holding an older
+// ExperimentConfig never acts on a stale seed. nil = unresolved (no seed).
+func (f *Flags) ExperimentSeed(ctx context.Context) any {
+	return f.experimentSeed(ctx)
+}
+
 // ExperimentProposerEnabled resolves only experiment_proposer_enabled (#1810), the
 // flag half of the proposer gate the M7-4 proposer reads at each game end. An
 // unresolved flag reads false (closed, C-034).
@@ -724,6 +731,10 @@ type Snapshot struct {
 	// loop swaps the rules engine for the probe engine (synthetic noop only),
 	// except in pattern games. Read every cycle.
 	ProbeDecisions bool
+	// ExperimentsEnabled is the live experiments_enabled gate (fail-closed false),
+	// carried for agent.flag_state (#2291): the stage fallback (UC-070 A9) turns it
+	// on. The experiment loop reads the gate itself at use time.
+	ExperimentsEnabled bool
 }
 
 // Permits reports whether the named intervention is in the allow-list.
@@ -750,6 +761,9 @@ type Flags struct {
 	// gameModes keeps the first shield.activation read per game, so a `hold` read
 	// follows the coordinator's per-game latch (UC-040 A31, BR-027, #2096).
 	gameModes gameModeLatch
+	// gameAttrs returns a game's kind, experiment id and arm as the agent has seen
+	// them (main.go wires the Multiplexer); nil means a real game (#2096).
+	gameAttrs func(gameID string) GameAttrs
 	// now is the clock of gameModes; nil means time.Now (tests inject one).
 	now func() time.Time
 	log *slog.Logger
@@ -791,6 +805,7 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 		ProbeDecisions:   f.probeDecisions(ctx),
 
 		InterventionsEnabled: f.InterventionsEnabled(ctx),
+		ExperimentsEnabled:   f.boolFlag(ctx, keyExperimentsEnabled, false),
 	}
 }
 
