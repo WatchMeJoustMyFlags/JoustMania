@@ -2188,7 +2188,7 @@ class BaseGameMode(ShieldMixin, ABC):
             frame_duration_ms=1000.0 / config.update_frequency_hz,
         )
 
-        # Emit Prometheus metrics periodically (every ~1 second)
+        # Emit the analytics gauges every metrics_emit_interval_frames frames (6: ~10 Hz at 60 Hz)
         if player.analytics.sample_count % config.analytics.metrics_emit_interval_frames == 0:
             metrics.player_accel_magnitude.labels(serial=serial, game_id=self.game_id).set(accel_mag)
             metrics.player_movement_zone.labels(serial=serial, game_id=self.game_id).set(zone.value)

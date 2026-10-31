@@ -2,8 +2,10 @@ package decision
 
 import (
 	"fmt"
+	"math"
 	"sort"
 
+	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -29,6 +31,9 @@ type candidate struct {
 	// shieldCatch marks an R4 grant_shield candidate: rankLocked keeps only one of
 	// them (pickShieldCatchUp, UC-040 A41, BR-030).
 	shieldCatch bool
+	// danger marks an R4 candidate of the danger path (UC-040 A43, BR-032): a player
+	// in sustained danger before the first elimination, skill level optional.
+	danger bool
 }
 
 // statueVarianceEpsilon is the movement-variance level below which a player is
@@ -211,6 +216,57 @@ func balancedCandidates(c gamecontext.GameContext, fit FitnessThresholds) []cand
 			}
 		}
 	}
+	// R4 before the first elimination: shield a player in sustained danger (UC-040
+	// A43, BR-032). The elimination path above needs ef > 0, so the two never both
+	// propose, and after the first elimination R4 is exactly the path above.
+	if len(c.Session.EliminationSequence) == 0 {
+		out = append(out, dangerShieldCandidates(c, active, fit)...)
+	}
+	return out
+}
+
+// dangerShieldCandidates is R4's danger path (UC-040 A43, BR-032; #2461): with no
+// elimination yet and at least two alive players, one grant_shield candidate per
+// alive player whose newest readings stay at or above the clamped
+// policy.shield_danger_ratio of the death threshold for policy.shield_danger_samples
+// consecutive readings (decide.SustainedDanger, fail closed on missing or stale
+// data). Urgency is the window's lowest ratio, at most 1. The candidates are
+// shieldCatch, so they pass the same filters and rotation as the elimination path.
+func dangerShieldCandidates(c gamecontext.GameContext, active []*gamecontext.PlayerSignals, fit FitnessThresholds) []candidate {
+	if len(active) < 2 || fit.ShieldDangerOff {
+		return nil
+	}
+	level, n := shieldDangerParams(fit)
+	var out []candidate
+	for _, p := range active {
+		ratio, ok := decide.SustainedDanger(p.History, c.SpeedTrack, c.Session.DeathThreshold, c.UpdatedAt, level, n)
+		if !ok {
+			continue
+		}
+		urgency := clamp01(ratio)
+		fitness := map[string]float64{
+			"danger_ratio":   urgency,
+			"danger_samples": float64(n),
+			"active_players": float64(len(active)),
+		}
+		if p.SkillLevel != nil {
+			fitness["target_skill"] = *p.SkillLevel
+		}
+		out = append(out, candidate{
+			decision: Decision{
+				Intervention:    InterventionGrantShield,
+				TargetSerial:    p.Serial,
+				Reason:          fmt.Sprintf("shield a player in sustained danger (%d readings at or above %.2f of the death threshold) before the first elimination", n, level),
+				ObjectiveServed: ObjectiveBalanced,
+				Fitness:         fitness,
+			},
+			objective:   ObjectiveBalanced,
+			urgency:     urgency,
+			cost:        costOf(InterventionGrantShield),
+			shieldCatch: true,
+			danger:      true,
+		})
+	}
 	return out
 }
 
@@ -245,7 +301,14 @@ func shieldCandidates(skilled []*gamecontext.PlayerSignals) []*gamecontext.Playe
 // fitness carries shield_grants. nil grants: every count is 0, so the weakest
 // surviving candidate.
 func pickShieldCatchUp(ranked []scoredCandidate, c gamecontext.GameContext, grants map[string]int) []scoredCandidate {
-	skill := func(sc scoredCandidate) float64 { return *c.Players[sc.decision.TargetSerial].SkillLevel }
+	// A danger candidate may have no skill level (A43): it sorts after the skilled
+	// ones on a tie.
+	skill := func(sc scoredCandidate) float64 {
+		if p := c.Players[sc.decision.TargetSerial]; p != nil && p.SkillLevel != nil {
+			return *p.SkillLevel
+		}
+		return math.Inf(1)
+	}
 	best, weakest, top := -1, -1, -1
 	for i, sc := range ranked {
 		if !sc.shieldCatch {
@@ -278,7 +341,11 @@ func pickShieldCatchUp(ranked []scoredCandidate, c gamecontext.GameContext, gran
 		if best != weakest && sc.shieldCatch {
 			d := sc.decision
 			n := grants[d.TargetSerial]
-			d.Reason = fmt.Sprintf("catch-up: shield the player with the fewest agent shields (skill %.2f, %d shields) while the field shrinks", skill(sc), n)
+			if sc.danger {
+				d.Reason = fmt.Sprintf("catch-up: shield the player in sustained danger with the fewest agent shields (%d shields) before the first elimination", n)
+			} else {
+				d.Reason = fmt.Sprintf("catch-up: shield the player with the fewest agent shields (skill %.2f, %d shields) while the field shrinks", skill(sc), n)
+			}
 			fit := make(map[string]float64, len(d.Fitness)+1)
 			for k, v := range d.Fitness {
 				fit[k] = v

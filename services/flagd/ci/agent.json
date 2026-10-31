@@ -127,6 +127,32 @@
       },
       "defaultVariant": "default"
     },
+    "policy.shield_danger_enabled": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
+    "policy.shield_danger_ratio": {
+      "state": "ENABLED",
+      "variants": {
+        "early": 0.75,
+        "default": 0.85,
+        "late": 0.95
+      },
+      "defaultVariant": "default"
+    },
+    "policy.shield_danger_samples": {
+      "state": "ENABLED",
+      "variants": {
+        "quick": 2,
+        "default": 3,
+        "patient": 5
+      },
+      "defaultVariant": "default"
+    },
     "fitness.endurance.min_session_seconds": {
       "state": "ENABLED",
       "variants": {

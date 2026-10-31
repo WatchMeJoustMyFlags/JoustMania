@@ -67,7 +67,8 @@ func TestEvaluate_WithInMemoryProvider(t *testing.T) {
 	}
 	// The shield limits are not in this provider: they resolve to their defaults.
 	wantPolicy := Policy{BatteryThreshold: 30, MaxInterventionsPerMinute: 4,
-		MaxShieldsPerPlayerPerGame: DefaultMaxShieldsPerPlayerPerGame, ShieldCooldownSeconds: DefaultShieldCooldownSeconds}
+		MaxShieldsPerPlayerPerGame: DefaultMaxShieldsPerPlayerPerGame, ShieldCooldownSeconds: DefaultShieldCooldownSeconds,
+		ShieldDangerRatio: DefaultShieldDangerRatio, ShieldDangerSamples: DefaultShieldDangerSamples}
 	if got.Policy != wantPolicy {
 		t.Errorf("Policy = %+v, want %+v", got.Policy, wantPolicy)
 	}

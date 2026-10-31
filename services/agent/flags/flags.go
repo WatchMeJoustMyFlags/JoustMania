@@ -37,6 +37,13 @@ const (
 	// agent's empty context resolves the coordinator's value.
 	keyMaxShieldsPerPlayerPerGame = "policy.max_shields_per_player_per_game"
 	keyShieldCooldownSeconds      = "policy.shield_cooldown_seconds"
+	// R4's danger shield before the first elimination (UC-040 A43, BR-032; #2461):
+	// operator flags the agent reads and never writes (C-034); the rules clamp them.
+	keyShieldDangerRatio   = "policy.shield_danger_ratio"
+	keyShieldDangerSamples = "policy.shield_danger_samples"
+	// keyShieldDangerEnabled switches the danger path off on its own (on by default;
+	// an unreadable value reads on, like the other two).
+	keyShieldDangerEnabled = "policy.shield_danger_enabled"
 
 	// LLM call gate (#847): the flag-controlled gate in FRONT of every remote
 	// decide call (#1226) and post-game retro. Both are read EVERY cycle (never
@@ -175,6 +182,11 @@ const (
 	// games/base.py defaults.
 	DefaultMaxShieldsPerPlayerPerGame = 3
 	DefaultShieldCooldownSeconds      = 15
+	// DefaultShieldDangerRatio and DefaultShieldDangerSamples are the danger-shield
+	// thresholds (UC-040 A43, BR-032) when the flag cannot be read; they match
+	// services/flagd/agent.json and decision.DefaultShieldDanger*.
+	DefaultShieldDangerRatio   = 0.85
+	DefaultShieldDangerSamples = 3
 
 	// LLM call-gate default (#847), mirroring the services/flagd/agent.json
 	// defaultVariant: the fail-closed safe value when flagd is unreachable.
@@ -328,6 +340,16 @@ type Policy struct {
 	// ShieldCooldownSeconds is the pause after the end of a player's last agent
 	// shield before the next grant (UC-040 A33, BR-022). 0 = off.
 	ShieldCooldownSeconds int
+	// ShieldDangerRatio and ShieldDangerSamples are R4's danger-shield thresholds
+	// (UC-040 A43, BR-032): the fraction of the death threshold and the number of
+	// consecutive readings at or above it. 0 (a hand-built Snapshot) means the
+	// rules' default; the rules clamp both.
+	ShieldDangerRatio   float64
+	ShieldDangerSamples int
+	// ShieldDangerOff is policy.shield_danger_enabled = off: R4's danger path
+	// proposes nothing (UC-040 A43, BR-032). Inverted so the zero value (a
+	// hand-built Snapshot) keeps the path on, like the flag's default.
+	ShieldDangerOff bool
 }
 
 // LLMGate is the call gate in FRONT of every remote decide call and retro (#847,
@@ -792,6 +814,9 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			MaxShieldsPerPlayerPerGame: f.nonNegativeIntFlag(ctx, keyMaxShieldsPerPlayerPerGame,
 				DefaultMaxShieldsPerPlayerPerGame),
 			ShieldCooldownSeconds: f.nonNegativeIntFlag(ctx, keyShieldCooldownSeconds, DefaultShieldCooldownSeconds),
+			ShieldDangerRatio:     f.floatFlag(ctx, keyShieldDangerRatio, DefaultShieldDangerRatio),
+			ShieldDangerSamples:   f.intFlag(ctx, keyShieldDangerSamples, DefaultShieldDangerSamples),
+			ShieldDangerOff:       !f.boolFlag(ctx, keyShieldDangerEnabled, true),
 		},
 		LLMGate: f.llmGate(ctx),
 		Fitness: Fitness{
