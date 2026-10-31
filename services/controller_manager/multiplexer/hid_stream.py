@@ -143,40 +143,65 @@ class HidStreamMixin:
         if thread is not None and thread is not threading.current_thread() and thread.is_alive():
             thread.join(timeout=STOP_JOIN_TIMEOUT_S)
 
-    def _stream_loop(self, generation: int | None = None) -> None:  # noqa: C901
+    def _command_iterator(self, generation: int):
+        """The request side of one StreamIO call: commands until the stream stops."""
+        while self._stream_is_current(generation):
+            with self._take_lock:
+                cmd = self._take_command()
+                if cmd is None:
+                    continue
+                if not self._stream_is_current(generation):
+                    # Taken while this stream stopped: gRPC would drop it, so the next
+                    # stream sends it, ahead of anything queued after it (#2275). Under
+                    # _take_lock, so the next stream has not sent anything newer (#2351).
+                    self._unsent_commands.appendleft(cmd)
+                    return
+            yield cmd
+
+    def _open_stream_call(self, generation: int) -> tuple[Any, bool]:
+        """Open the StreamIO call for ``generation``: (call or None, whether to read it).
+
+        A call opened after the stream stopped comes back cancelled and not to be read;
+        the reader's cleanup still gets it, as before the split (#2354)."""
+        with self._stream_lock:
+            opening = self._stream_is_current(generation)
+        if not opening:
+            return None, False  # stopped or closed (close bumps the generation) before the open: open nothing (#2275)
+        self._coalesce_pending_commands()
+        call = self._stub.StreamIO(self._command_iterator(generation))
+        with self._stream_lock:
+            current = self._stream_is_current(generation)
+            if current:
+                self._stream_call = call
+        if not current:
+            # Stopped while the call was being opened: nobody else holds it.
+            call.cancel()
+            return call, False
+        return call, True
+
+    def _end_stream_call(self, call, generation: int) -> None:
+        """Release what the reader of ``generation`` held, however it ended."""
+        # Whatever ended the reader (stop, stream error, a bad frame), its call must
+        # not stay live on the HID service; a no-op when the call already finished.
+        # Cancelled before _stream_running drops, so a reopen never overlaps it.
+        if call is not None:
+            call.cancel()
+        with self._stream_lock:
+            if self._stream_generation == generation:
+                self._stream_running = False
+                if self._stream_call is call:
+                    self._stream_call = None
+        logger.info("Bidir stream ended")
+
+    def _stream_loop(self, generation: int | None = None) -> None:
         """Background thread: read one StreamIO call until it ends or is cancelled."""
         if generation is None:
             generation = self._stream_generation
 
-        def command_iterator():
-            while self._stream_is_current(generation):
-                with self._take_lock:
-                    cmd = self._take_command()
-                    if cmd is None:
-                        continue
-                    if not self._stream_is_current(generation):
-                        # Taken while this stream stopped: gRPC would drop it, so the next
-                        # stream sends it, ahead of anything queued after it (#2275). Under
-                        # _take_lock, so the next stream has not sent anything newer (#2351).
-                        self._unsent_commands.appendleft(cmd)
-                        return
-                yield cmd
-
         call = None
         try:
-            with self._stream_lock:
-                opening = self._stream_is_current(generation)
-            if not opening:
-                return  # stopped or closed (close bumps the generation) before the open: open nothing (#2275)
-            self._coalesce_pending_commands()
-            call = self._stub.StreamIO(command_iterator())
-            with self._stream_lock:
-                current = self._stream_is_current(generation)
-                if current:
-                    self._stream_call = call
-            if not current:
-                # Stopped while the call was being opened: nobody else holds it.
-                call.cancel()
+            call, live = self._open_stream_call(generation)
+            if not live:
                 return
             for sensor_data in call:
                 if self._stream_generation != generation:
@@ -195,17 +220,7 @@ class HidStreamMixin:
             if self._stream_is_current(generation):
                 logger.warning(f"StreamIO error: {e}")
         finally:
-            # Whatever ended the reader (stop, stream error, a bad frame), its call must
-            # not stay live on the HID service; a no-op when the call already finished.
-            # Cancelled before _stream_running drops, so a reopen never overlaps it.
-            if call is not None:
-                call.cancel()
-            with self._stream_lock:
-                if self._stream_generation == generation:
-                    self._stream_running = False
-                    if self._stream_call is call:
-                        self._stream_call = None
-            logger.info("Bidir stream ended")
+            self._end_stream_call(call, generation)
 
     def _coalesce_pending_commands(self) -> None:
         """Drop the stale LED states a previous stream left queued (#2304); hand-backs stay first."""

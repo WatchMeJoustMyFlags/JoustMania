@@ -538,7 +538,7 @@ class DiscoveryLoop:
         except Exception as e:
             logger.error(f"Error discovering controllers: {e}", exc_info=True)
 
-    async def _update_controller_states(self) -> None:  # noqa: C901
+    async def _update_controller_states(self) -> None:
         """
         Update states for all tracked controllers from backend.
 
@@ -562,33 +562,9 @@ class DiscoveryLoop:
 
             current_time = time.time()
 
-            # Count active vs idle controllers for the periodic log (based on recent activity)
-            active_count = 0
-            idle_count = 0
-            for serial in all_serials:
-                record = self._records.get(serial)
-                last_activity = (
-                    record.last_activity_time if record and record.last_activity_time is not None else current_time
-                )
-                is_idle = (current_time - last_activity) > self._idle_threshold_seconds
-                if is_idle:
-                    idle_count += 1
-                else:
-                    active_count += 1
-
             # Debug: Log tracked controller count periodically (every 5 seconds)
             if current_time - self._last_controller_count_log >= 5.0:
-                adapter_info = ""
-                adapter_counts: dict[str, int] = {}
-                for s in all_serials:
-                    atype = self.backend.get_adapter_type(s)
-                    adapter_counts[atype] = adapter_counts.get(atype, 0) + 1
-                if any(adapter_counts):  # a backend without adapters reports "" for all
-                    adapter_info = ", adapters=" + "+".join(f"{k}:{v}" for k, v in sorted(adapter_counts.items()))
-                msg = f"Polling {len(all_serials)} controllers at 100Hz"
-                msg += f", active={active_count}, idle={idle_count}{adapter_info}"
-                logger.info(msg)
-                self._last_controller_count_log = current_time
+                self._log_controller_count(all_serials, current_time)
 
             # Poll all controllers — direct loop instead of asyncio.gather()
             # Post-PR #677, get_controller_state() is async but does zero I/O
@@ -606,12 +582,7 @@ class DiscoveryLoop:
             # Pick-up time of this batch for the connection-quality window; any
             # lateness beyond one poll interval is the loop's own stall.
             pickup_mono = time.monotonic()
-            if self._last_pickup_mono is not None:
-                stall = pickup_mono - self._last_pickup_mono - self._poll_interval
-                self._gap_window.note_loop_stall(stall)
-                if stall > 0:
-                    self._loop_stall_total += stall
-            self._last_pickup_mono = pickup_mono
+            self._note_batch_pickup(pickup_mono)
 
             # Record metrics
             poll_duration = time.time() - start_time
@@ -677,6 +648,42 @@ class DiscoveryLoop:
 
         except Exception as e:
             logger.error(f"Error updating controller states: {e}", exc_info=True)
+
+    def _log_controller_count(self, all_serials: list[str], current_time: float) -> None:
+        """The 5 s poll log: controller count, active / idle split (by recent activity) and adapters."""
+        active_count = 0
+        idle_count = 0
+        for serial in all_serials:
+            record = self._records.get(serial)
+            last_activity = (
+                record.last_activity_time if record and record.last_activity_time is not None else current_time
+            )
+            is_idle = (current_time - last_activity) > self._idle_threshold_seconds
+            if is_idle:
+                idle_count += 1
+            else:
+                active_count += 1
+
+        adapter_info = ""
+        adapter_counts: dict[str, int] = {}
+        for s in all_serials:
+            atype = self.backend.get_adapter_type(s)
+            adapter_counts[atype] = adapter_counts.get(atype, 0) + 1
+        if any(adapter_counts):  # a backend without adapters reports "" for all
+            adapter_info = ", adapters=" + "+".join(f"{k}:{v}" for k, v in sorted(adapter_counts.items()))
+        msg = f"Polling {len(all_serials)} controllers at 100Hz"
+        msg += f", active={active_count}, idle={idle_count}{adapter_info}"
+        logger.info(msg)
+        self._last_controller_count_log = current_time
+
+    def _note_batch_pickup(self, pickup_mono: float) -> None:
+        """Feed the batch's pick-up lateness beyond one poll interval (the loop's own stall) to the window."""
+        if self._last_pickup_mono is not None:
+            stall = pickup_mono - self._last_pickup_mono - self._poll_interval
+            self._gap_window.note_loop_stall(stall)
+            if stall > 0:
+                self._loop_stall_total += stall
+        self._last_pickup_mono = pickup_mono
 
     def _update_activity_tracking(self, serial: str, state: dict, current_time: float) -> None:
         """
