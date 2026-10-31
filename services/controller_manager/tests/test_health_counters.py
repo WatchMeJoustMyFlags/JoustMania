@@ -10,7 +10,6 @@ Tests:
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -198,7 +197,7 @@ class TestLedFailureTracking:
     def test_led_failure_on_set_output_false(self):
         """set_output() returning False should increment LED failure counter."""
         adapter = _make_adapter()
-        adapter.set_output = MagicMock(return_value=False)
+        adapter.set_output.return_value = False
         mux = MultiplexerBackend(adapters=[adapter])
 
         serial = "S1"
@@ -212,7 +211,7 @@ class TestLedFailureTracking:
     def test_led_failure_on_exception(self):
         """Exception in set_output() should increment LED failure counter."""
         adapter = _make_adapter()
-        adapter.set_output = MagicMock(side_effect=OSError("USB error"))
+        adapter.set_output.side_effect = OSError("USB error")
         mux = MultiplexerBackend(adapters=[adapter])
 
         serial = "S1"
@@ -240,7 +239,7 @@ class TestLedFailureTracking:
     def test_led_failures_accumulate(self):
         """Failures accumulate, one count per keep-alive interval (#2355)."""
         adapter = _make_adapter()
-        adapter.set_output = MagicMock(return_value=False)
+        adapter.set_output.return_value = False
         mux = MultiplexerBackend(adapters=[adapter])
 
         serial = "S1"

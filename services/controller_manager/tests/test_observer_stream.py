@@ -10,7 +10,7 @@ stream may drain them; an observer frame in between must leave them for it.
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -30,24 +30,24 @@ from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.servicer import _stream_rate_hz
-from services.controller_manager.tests.backend_doubles import autospec_backend, autospec_servicer_context
+from services.controller_manager.tests.backend_doubles import autospec_backend, autospec_servicer_context, stub_method
 
 SERIAL = "mock_controller_0"
 
 
-def _state() -> MagicMock:
-    state = MagicMock()
-    state.serial = SERIAL
-    state.move_num = 0
-    state.battery = 80
-    state.team = 0
-    state.color = controller_manager_pb2.RGB(r=255, g=0, b=0)
-    state.accel = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
-    state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
-    state.rssi = 0
-    state.name = "P1"
-    state.trigger_pressed = False
-    return state
+def _state() -> controller_manager_pb2.ControllerState:
+    return controller_manager_pb2.ControllerState(
+        serial=SERIAL,
+        move_num=0,
+        battery=80,
+        team=0,
+        color=controller_manager_pb2.RGB(r=255, g=0, b=0),
+        accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+        gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+        rssi=0,
+        name="P1",
+        trigger_pressed=False,
+    )
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ def rig():
         event_publisher=create_autospec(EventPublisher, instance=True),
     )
     servicer.discovery_loop = loop
-    servicer.state_builder.build_state = MagicMock(return_value=_state())
+    stub_method(servicer.state_builder, "build_state", return_value=_state())
     servicer.tracked_controllers[SERIAL] = {}
 
     loop._record(SERIAL).poll_drops = 2
@@ -180,7 +180,7 @@ async def _frame_intervals(servicer, config, frames: int = 6) -> list[float]:
 async def test_stream_loop_applies_the_per_stream_rate(rig):
     """The send loop uses _stream_rate_hz: observer at its 30 Hz request, game at the 60 Hz flag."""
     servicer, _ = rig
-    servicer._ensure_discovery_started = MagicMock()
+    stub_method(servicer, "_ensure_discovery_started")
     feedback = create_autospec(FeedbackManager, instance=True)
     feedback.base_colors = {}
     servicer.feedback_manager = feedback

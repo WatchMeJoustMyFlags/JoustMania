@@ -1,7 +1,7 @@
 """UC-046: pattern-driven mock controllers in the adapter, the gameplay stream and the mock RPCs."""
 
 import json
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import create_autospec, patch
 
 import grpc
 import pytest
@@ -11,7 +11,7 @@ from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.mock_control_service import MockControllerService
 from services.controller_manager.multiplexer import motion_patterns as mp
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-from services.controller_manager.tests.backend_doubles import AdapterAsBackend
+from services.controller_manager.tests.backend_doubles import AdapterAsBackend, stub_method
 
 ARCHETYPE = "unit_cascade"
 PARAMS = {
@@ -176,7 +176,7 @@ class TestUC046GameplayStream:
         """UC-046 step 5: each delivered frame of a pattern controller carries (0, 0, intensity(k / r))."""
         serials = [adapter.add_controller(reserved=True) for _ in range(4)]
         adapter.install_pattern(serials, archetype)
-        servicer.state_builder.build_state = MagicMock(side_effect=self._state)
+        stub_method(servicer.state_builder, "build_state", side_effect=self._state)
         for s in serials:
             servicer.tracked_controllers[s] = {}
         servicer.tracked_controllers["REAL01"] = {}

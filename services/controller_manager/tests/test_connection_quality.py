@@ -35,6 +35,7 @@ from services.controller_manager.tests.backend_doubles import (
     autospec_publisher,
     autospec_rescan_timer,
     autospec_span,
+    stub_method,
 )
 
 SERIAL = "00:06:F7:AA:BB:CC"
@@ -318,8 +319,8 @@ class TestDiscoveryLoopExport:
         assert loop.connection_quality(SERIAL) is not None
 
         # Discovery no longer sees the controller: the disconnect path untracks it.
-        loop.backend.get_connected_controllers = MagicMock(return_value=[])
-        loop.rescan_timer.should_force_rescan = MagicMock(return_value=False)
+        loop.backend.get_connected_controllers.return_value = []
+        loop.rescan_timer.should_force_rescan.return_value = False
         with patch(METRICS) as metrics:
             await loop._check_for_new_controllers()
 
@@ -348,26 +349,25 @@ class TestGameplayFrameCarriesQuality:
             from services.controller_manager.servicer import ControllerManagerServicer
 
             servicer = ControllerManagerServicer()
-            state = MagicMock()
-            state.serial = SERIAL
-            state.move_num = 0
-            state.battery = 80
-            state.team = 0
-            state.color = controller_manager_pb2.RGB(r=255, g=0, b=0)
-            state.accel = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0)
-            state.gyro = controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0)
-            state.rssi = 0
-            state.name = "P1"
-            servicer.state_builder.build_state = MagicMock(return_value=state)
+            state = controller_manager_pb2.ControllerState(
+                serial=SERIAL,
+                move_num=0,
+                battery=80,
+                team=0,
+                color=controller_manager_pb2.RGB(r=255, g=0, b=0),
+                accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
+                gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+                rssi=0,
+                name="P1",
+            )
+            stub_method(servicer.state_builder, "build_state", return_value=state)
             servicer.tracked_controllers[SERIAL] = {}
             yield servicer, mock_loop
 
     @pytest.mark.uc("UC-035", flow="main", steps=[2], br=["BR-005"])
     def test_dashboard_stream_carries_class_and_gaps(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.connection_quality = MagicMock(
-            return_value=GapStats(p95_ms=24.0, max_ms=41.0, quality=FAIR, samples=900)
-        )
+        mock_loop.connection_quality.return_value = GapStats(p95_ms=24.0, max_ms=41.0, quality=FAIR, samples=900)
 
         update = servicer._build_gameplay_update(None, "dashboard")
 
@@ -402,9 +402,7 @@ class TestGameplayFrameCarriesQuality:
     @pytest.mark.uc("UC-035", br=["BR-005"])
     def test_game_stream_does_not_carry_it(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.connection_quality = MagicMock(
-            return_value=GapStats(p95_ms=10.0, max_ms=10.0, quality=GOOD, samples=900)
-        )
+        mock_loop.connection_quality.return_value = GapStats(p95_ms=10.0, max_ms=10.0, quality=GOOD, samples=900)
 
         update = servicer._build_gameplay_update({SERIAL}, "game")
 

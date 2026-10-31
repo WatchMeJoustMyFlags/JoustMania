@@ -17,12 +17,10 @@ sys.path.insert(0, str(project_root))
 from openfeature.flag_evaluation import ErrorCode, FlagEvaluationDetails, Reason
 
 from services.controller_manager.multiplexer.rollout_router import RolloutReadError, RolloutRouter
+from services.controller_manager.tests.backend_doubles import autospec_flag_client
 
 ALL = ["C", "A", "F", "B", "E", "D"]  # unsorted on purpose
 SORTED = ["A", "B", "C", "D", "E", "F"]
-
-
-from services.controller_manager.tests.backend_doubles import autospec_flag_client
 
 
 def _client(strategy="off", target="unstable", count=0, error_key=None):

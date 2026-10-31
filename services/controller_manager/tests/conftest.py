@@ -14,6 +14,15 @@ disable_metrics_for_tests()
 disable_logging_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _stop_stubs():
+    """Undo every ``stub_method`` patch after the test."""
+    from services.controller_manager.tests.backend_doubles import stop_stubs
+
+    yield
+    stop_stubs()
+
+
 class FakeMove:
     """Mock PS Move controller for testing without hardware.
 

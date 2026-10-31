@@ -25,7 +25,7 @@ from proto import controller_manager_pb2, psmove_hid_pb2
 from services.controller_manager.button_detector import ButtonDetector
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
-from services.controller_manager.tests.backend_doubles import autospec_channel, autospec_publisher
+from services.controller_manager.tests.backend_doubles import autospec_channel, autospec_publisher, autospec_queue
 from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 HID_SERIAL = normalize_serial("AA:BB:CC:DD:EE:01")
@@ -73,7 +73,7 @@ def _poll_events(adapter, detector, publisher):
 def detector():
     publisher = autospec_publisher()
     button_detector = ButtonDetector(publisher)
-    button_detector._subscribers = {"menu": MagicMock()}
+    button_detector._subscribers = {"menu": autospec_queue()}
     with patch("services.controller_manager.button_detector.metrics"):
         yield button_detector, publisher
 

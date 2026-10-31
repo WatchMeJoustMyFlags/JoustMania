@@ -1,6 +1,7 @@
 """Shared backend doubles: the servicer calls the mock-only hooks without probing."""
 
-from unittest.mock import MagicMock, create_autospec
+import asyncio
+from unittest.mock import MagicMock, create_autospec, patch
 
 import grpc
 import grpc.aio
@@ -133,3 +134,24 @@ def autospec_servicer_context():
 def autospec_channel():
     """An autospec'd grpc.Channel."""
     return create_autospec(grpc.Channel, instance=True)
+
+
+_active_patchers: list = []
+
+
+def stub_method(obj, name, **kwargs):
+    """Replace ``obj.name`` with an autospec'd mock; the autouse ``_stop_stubs`` fixture undoes it."""
+    patcher = patch.object(obj, name, autospec=True, **kwargs)
+    mock = patcher.start()
+    _active_patchers.append(patcher)
+    return mock
+
+
+def stop_stubs():
+    while _active_patchers:
+        _active_patchers.pop().stop()
+
+
+def autospec_queue():
+    """A subscriber queue placeholder: the publisher is a double, so nothing is ever put on it."""
+    return create_autospec(asyncio.Queue, instance=True)

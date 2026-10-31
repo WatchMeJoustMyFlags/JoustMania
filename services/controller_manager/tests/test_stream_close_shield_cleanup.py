@@ -8,7 +8,7 @@ lobby. A coordinator reconnect re-claims the controllers within the delay and ke
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -20,11 +20,9 @@ from test_identify_controller import SERIAL, _game_config, servicer  # noqa: F40
 
 from proto import controller_manager_pb2
 from services.controller_manager import servicer as servicer_module
+from services.controller_manager.tests.backend_doubles import autospec_span, stub_method
 
 CHARGE = controller_manager_pb2.GAME_EFFECT_SHIELD_CHARGE
-
-
-from services.controller_manager.tests.backend_doubles import autospec_span
 
 
 class _Context:
@@ -54,8 +52,10 @@ async def _run_stream(svc, stop_after_frames=1):
 
 @pytest.fixture
 def stream_servicer(servicer, monkeypatch):  # noqa: F811
-    servicer.state_builder.build_state = MagicMock(
-        side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial)
+    stub_method(
+        servicer.state_builder,
+        "build_state",
+        side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial),
     )
     servicer.discovery_loop.drain_health_counters.return_value = (0, 0, 0)
     monkeypatch.setattr(servicer_module, "STREAM_CLOSE_SHIELD_CLEANUP_DELAY_S", 0.05)

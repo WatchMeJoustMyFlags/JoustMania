@@ -5,13 +5,13 @@ Tests button state transition detection and event publishing.
 """
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from lib.controller_constants import ButtonKey, ButtonTrackingKey, ControllerInfoKey
 from proto import controller_manager_pb2
 from services.controller_manager.button_detector import ButtonDetector
 from services.controller_manager.event_publisher import EventPublisher
-from services.controller_manager.tests.backend_doubles import autospec_publisher
+from services.controller_manager.tests.backend_doubles import autospec_publisher, autospec_queue
 
 
 class TestButtonDetectorInitialization:
@@ -116,7 +116,7 @@ class TestButtonTransitionDetection:
         """Button press (False -> True) generates press event."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         # First poll - initialize with move=False
         state1 = {ButtonKey.MOVE: False}
@@ -140,7 +140,7 @@ class TestButtonTransitionDetection:
         """Button release (True -> False) generates release event."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         # First poll - initialize with trigger=True
         state1 = {ButtonKey.TRIGGER: True}
@@ -163,7 +163,7 @@ class TestButtonTransitionDetection:
         """No event published when button state doesn't change."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         # First poll
         state = {ButtonKey.MOVE: True}
@@ -181,7 +181,7 @@ class TestButtonTransitionDetection:
         """Multiple button changes generate multiple events."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         # Initialize all buttons as unpressed
         state1 = {}
@@ -200,7 +200,7 @@ class TestButtonTransitionDetection:
         """Each button type maps to correct protobuf enum."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         button_mapping = {
             ButtonKey.TRIGGER: controller_manager_pb2.BUTTON_TRIGGER,
@@ -235,7 +235,7 @@ class TestButtonTransitionDetection:
         """Button events include battery level from controller info."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         tracked_controllers = {"SERIAL1": {"battery": 4}}
 
@@ -276,7 +276,7 @@ class TestConnectionEvents:
         """publish_connection_event sends connect event with correct fields."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         detector.publish_connection_event("SERIAL1", is_connect=True, battery=5)
 
@@ -292,7 +292,7 @@ class TestConnectionEvents:
         """publish_connection_event sends disconnect event."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         detector.publish_connection_event("SERIAL1", is_connect=False)
 
@@ -306,7 +306,7 @@ class TestConnectionEvents:
         """Connection events are published with 'connection' event type label."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         detector.publish_connection_event("SERIAL1", is_connect=True)
 
@@ -318,7 +318,7 @@ class TestConnectionEvents:
         """Connection event includes connected_serials when provided."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         detector.publish_connection_event(
             "SERIAL1", is_connect=True, battery=5, connected_serials=["SERIAL1", "SERIAL2"]
@@ -333,7 +333,7 @@ class TestConnectionEvents:
         """Connection event has empty connected_serials when not provided."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         detector.publish_connection_event("SERIAL1", is_connect=True)
 
@@ -351,7 +351,7 @@ class TestMultipleControllers:
         """Each controller has independent button state."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         # Initialize both controllers
         detector.detect_transitions_from_state("SERIAL1", {ButtonKey.MOVE: False}, {})
@@ -408,7 +408,7 @@ class TestReservedControllerSuppression:
         """A reserved controller's button press is never sent to subscribers."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         tracked = self._tracked("RESERVED1", reserved=True)
 
@@ -427,7 +427,7 @@ class TestReservedControllerSuppression:
         """A normal (non-reserved) controller's button press is still published."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         tracked = self._tracked("VISIBLE1", reserved=False)
 
@@ -445,7 +445,7 @@ class TestReservedControllerSuppression:
         """Absent reserved metadata is treated as visible (backward compatible)."""
         publisher = autospec_publisher()
         detector = ButtonDetector(publisher)
-        detector._subscribers = {"sub1": MagicMock()}
+        detector._subscribers = {"sub1": autospec_queue()}
 
         # No reservation info at all (e.g. older info dicts / empty tracking).
         detector.detect_transitions_from_state("LEGACY1", {ButtonKey.TRIGGER: False}, {})
