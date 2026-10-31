@@ -718,7 +718,7 @@ class TestUC040BR019ActivationMode:
             await game.grant_shield("p1", 5.0)
         assert game.players["p1"].grace_until == T0 + 5.0
         assert [e[1] for e in game.gameplay_stream.effects()] == [SHIELD]
-        # Only the shield end grace, latched in every mode (UC-040 BR-034); never shield.activation.
+        # Only the shield end grace, latched in every mode (UC-040 BR-035); never shield.activation.
         assert flags.keys[-flags.reads :] == ["shield.end_grace_seconds"]
 
     @pytest.mark.asyncio
@@ -730,7 +730,7 @@ class TestUC040BR019ActivationMode:
         await game.grant_shield("p1", 5.0)
         assert game.players["p1"].grace_until == T0 + 5.0
         assert effects_of(game, CHARGE, SWELL) == []
-        # Only the shield end grace, latched in every mode (UC-040 BR-034); never shield.activation.
+        # Only the shield end grace, latched in every mode (UC-040 BR-035); never shield.activation.
         assert flags.keys[-flags.reads :] == ["shield.end_grace_seconds"]
 
     @pytest.mark.asyncio

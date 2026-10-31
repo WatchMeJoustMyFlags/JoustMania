@@ -1,7 +1,7 @@
 """
 Shield end grace (#2464): a short window after a shield ends in which movement cannot kill.
 
-UC-040 BR-034 (the window: when it opens, no stacking, death, latch), A39 step 1
+UC-040 BR-035 (the window: when it opens, no stacking, death, latch), A39 step 1
 (hold runs out), A16 (instant shield), A30 / UC-030 A6 (activated charge);
 UC-030 A1 (the frame gate), BR-009 (the first unprotected frame after a window
 primes the EMA with min(raw, warning)).
@@ -229,11 +229,11 @@ async def assert_dies_after_capped_prime(game, clock, accel, trigger=False, done
 
 
 # --------------------------------------------------------------------------- #
-# BR-034: a window after the energy runs out, an instant expiry and a charge expiry
+# BR-035: a window after the energy runs out, an instant expiry and a charge expiry
 # --------------------------------------------------------------------------- #
 class TestUC040BR033WindowOpens:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A39", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
     async def test_hold_runs_out_while_moving_hard_then_the_window_then_the_prime(self, game, clock):
         """A39 step 1: no death for G, none on the first frame after it (prime), death a few frames later."""
@@ -245,7 +245,7 @@ class TestUC040BR033WindowOpens:
         await assert_dies_after_capped_prime(game, clock, accel, trigger=True)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A39", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     async def test_budget_exhausted_opens_the_window_too(self, game, clock, flags):  # noqa: ARG002
         """``budget_exhausted`` is a run-out like ``empty``."""
         game._shield_hold = dataclasses.replace(game._shield_hold, budget=1.0)
@@ -253,7 +253,7 @@ class TestUC040BR033WindowOpens:
         assert game.players["p1"].end_grace_until == pytest.approx(ended + G)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A16", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-035"])
     async def test_an_instant_shield_expiry_gets_a_window(self, instant_game, clock):
         """A16: the instant shield's end is known at the grant, so the window follows it."""
         assert await instant_game.grant_shield("p1", 1.0) is True
@@ -265,7 +265,7 @@ class TestUC040BR033WindowOpens:
         await assert_dies_after_capped_prime(instant_game, clock, accel)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A30", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A6", br=["BR-009"])
     async def test_an_activated_charge_expiry_gets_a_window(self, trigger_game, clock):
         """UC-030 A6: the activated charge's protection ends, then the window."""
@@ -282,7 +282,7 @@ class TestUC040BR033WindowOpens:
         await assert_dies_after_capped_prime(trigger_game, clock, accel)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A16", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-035"])
     async def test_windows_never_stack(self, instant_game, clock):
         """No stacking: a new shield end assigns the window, it never adds to the one left."""
         assert await instant_game.grant_shield("p1", 1.0) is True
@@ -293,11 +293,11 @@ class TestUC040BR033WindowOpens:
 
 
 # --------------------------------------------------------------------------- #
-# BR-034: inside the window the player can act at once
+# BR-035: inside the window the player can act at once
 # --------------------------------------------------------------------------- #
 class TestUC040BR033ActInsideTheWindow:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A39", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-008"])
     async def test_a_re_hold_inside_the_window_starts_at_once_and_clears_it(self, game, clock):
         """Release, then press inside the window: the activation starts on that frame; the window is gone."""
@@ -311,7 +311,7 @@ class TestUC040BR033ActInsideTheWindow:
         assert p1.end_grace_until == 0.0
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A30", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A30", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A6")
     async def test_a_charge_press_inside_the_window_activates(self, trigger_game, clock):
         """A charge granted in the window and pressed in it activates; it is not ignored as 'in grace'."""
@@ -331,11 +331,11 @@ class TestUC040BR033ActInsideTheWindow:
 
 
 # --------------------------------------------------------------------------- #
-# BR-034: what never opens a window
+# BR-035: what never opens a window
 # --------------------------------------------------------------------------- #
 class TestUC040BR033NoWindow:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", br=["BR-034"])
+    @pytest.mark.uc("UC-040", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
     async def test_a_voluntary_release_gets_no_window(self, game, clock):
         """``released`` (the minimum-burst tail included): BR-009 only, so a hard movement kills on time."""
@@ -354,7 +354,7 @@ class TestUC040BR033NoWindow:
         await assert_dies_after_capped_prime(game, clock, accel, done=1)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", br=["BR-034"])
+    @pytest.mark.uc("UC-040", br=["BR-035"])
     async def test_toughness_spawn_and_startup_grace_open_no_window(self, instant_game, clock):
         p1 = instant_game.players["p1"]
         await instant_game.grant_toughness_boost("p1", 2.0)
@@ -372,11 +372,11 @@ class TestUC040BR033NoWindow:
 
 
 # --------------------------------------------------------------------------- #
-# BR-034: G = 0, the latch, the death
+# BR-035: G = 0, the latch, the death
 # --------------------------------------------------------------------------- #
 class TestUC040BR033LatchAndDeath:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A39", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-009"])
     async def test_g_zero_is_today(self, clock, flags, events):
         """G = 0: no window; the release tail's prime and the EMA kill as before #2464."""
@@ -391,14 +391,14 @@ class TestUC040BR033LatchAndDeath:
             await assert_dies_after_capped_prime(g, clock, accel, trigger=True, done=1)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", br=["BR-034", "BR-027"])
+    @pytest.mark.uc("UC-040", br=["BR-035", "BR-027"])
     async def test_a_flag_flip_mid_game_changes_nothing(self, game, clock, flags):
         flags.values["shield.end_grace_seconds"] = 0.0
         ended = await hold_until_empty(game, clock)
         assert game.players["p1"].end_grace_until == pytest.approx(ended + G)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A39", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     async def test_eliminate_in_the_window_kills_and_a_respawn_starts_without_one(self, game, clock):
         await hold_until_empty(game, clock)
         p1 = game.players["p1"]
@@ -409,7 +409,7 @@ class TestUC040BR033LatchAndDeath:
         assert await game.revive_player("p1", spawn_grace=0.5) is True
         assert p1.end_grace_until == 0.0
 
-    @pytest.mark.uc("UC-040", br=["BR-034", "BR-027"])
+    @pytest.mark.uc("UC-040", br=["BR-035", "BR-027"])
     def test_every_mode_and_a_shadow_game_latch_it_in_the_game_context(self, clock, flags, events):
         """Latched in every branch of the latch (a shadow game is never a hold game), with the game id."""
         flags.values["shield.end_grace_seconds"] = 1.5
@@ -436,7 +436,7 @@ class TestUC040BR033LatchAndDeath:
             (True, DEFAULT_SHIELD_END_GRACE_SECONDS),
         ],
     )
-    @pytest.mark.uc("UC-040", br=["BR-034"])
+    @pytest.mark.uc("UC-040", br=["BR-035"])
     def test_resolver(self, raw, expected):
         assert DEFAULT_SHIELD_END_GRACE_SECONDS == 0.75
         assert resolve_end_grace(raw) == expected
@@ -447,7 +447,7 @@ class TestUC040BR033LatchAndDeath:
 # --------------------------------------------------------------------------- #
 class TestUC040BR033Telemetry:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A39", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     async def test_the_hold_span_carries_the_window(self, game, clock):
         p1 = game.players["p1"]
         p1.span = create_autospec(Span, instance=True)
@@ -459,7 +459,7 @@ class TestUC040BR033Telemetry:
         assert attrs["shield.end_grace_s"] == G
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A39", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     async def test_a_released_hold_span_carries_zero(self, game, clock):
         p1 = game.players["p1"]
         p1.span = create_autospec(Span, instance=True)
@@ -474,7 +474,7 @@ class TestUC040BR033Telemetry:
         assert attrs["shield.end_grace_s"] == 0.0
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A16", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A16", br=["BR-035"])
     async def test_shield_granted_carries_the_window(self, instant_game):
         p1 = instant_game.players["p1"]
         p1.span = create_autospec(Span, instance=True)
@@ -483,7 +483,7 @@ class TestUC040BR033Telemetry:
         assert granted[0].kwargs["attributes"]["shield.end_grace_s"] == G
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A39", br=["BR-034"])
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-035"])
     async def test_player_death_carries_the_time_since_the_shield_ended(self, game, clock):
         ended = await hold_until_empty(game, clock)
         p1 = game.players["p1"]
@@ -496,7 +496,7 @@ class TestUC040BR033Telemetry:
         assert death[0].kwargs["attributes"]["shield.since_end_ms"] == 1200
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", br=["BR-034"])
+    @pytest.mark.uc("UC-040", br=["BR-035"])
     async def test_player_death_omits_it_three_seconds_after_the_end(self, game, clock):
         ended = await hold_until_empty(game, clock)
         p1 = game.players["p1"]
@@ -508,7 +508,7 @@ class TestUC040BR033Telemetry:
         death = [c for c in span.add_event.call_args_list if c.args[0] == "player_death"]
         assert "shield.since_end_ms" not in death[0].kwargs["attributes"]
 
-    @pytest.mark.uc("UC-040", br=["BR-034", "BR-027"])
+    @pytest.mark.uc("UC-040", br=["BR-035", "BR-027"])
     def test_the_setting_gauge_carries_it_in_a_hold_game(self, clock, flags, events):  # noqa: ARG002
         with patch.object(base_module.metrics, "shield_hold_setting") as gauge:
             g = _make_ffa(events)
