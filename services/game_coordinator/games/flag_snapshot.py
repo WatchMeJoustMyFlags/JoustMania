@@ -115,6 +115,26 @@ SHIELD_HOLD_CUE_FLAGS: dict[str, tuple[float, float, float]] = {
 }
 
 
+# Shield end grace (flags.md §4, UC-040 BR-033, #2464): seconds after a shield ends in
+# which movement cannot kill. Latched per game in every mode; 0 = no window.
+DEFAULT_SHIELD_END_GRACE_SECONDS = 0.75
+SHIELD_END_GRACE_MAX_SECONDS = 2.0
+
+
+def resolve_end_grace(value: object) -> float:
+    """Validate a ``shield.end_grace_seconds`` flag value (flags.md §4).
+
+    A non-number, a bool, NaN, infinity or a negative value gives the default
+    (0.75 s); any other value is clamped to [0, SHIELD_END_GRACE_MAX_SECONDS].
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return DEFAULT_SHIELD_END_GRACE_SECONDS
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds < 0.0:
+        return DEFAULT_SHIELD_END_GRACE_SECONDS
+    return min(SHIELD_END_GRACE_MAX_SECONDS, seconds)
+
+
 # Agent shield limits per player per game (UC-040 A34, BR-022): the
 # coordinator's backstop. Operator flags in the `agent` set, read per grant.
 DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME = 3

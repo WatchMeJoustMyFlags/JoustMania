@@ -199,6 +199,16 @@
       },
       "defaultVariant": "default"
     },
+    "shield.end_grace_seconds": {
+      "state": "ENABLED",
+      "variants": {
+        "none": 0,
+        "short": 0.5,
+        "default": 0.75,
+        "long": 1.5
+      },
+      "defaultVariant": "none"
+    },
     "sensitivity": {
       "state": "ENABLED",
       "variants": {
