@@ -43,7 +43,6 @@ flags:
   - {set: interventions, key: eliminate_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}
   - {set: interventions, key: revive_player, kind: event, scope: [game], bounds: {payload: {serial: serial}}}
   - {set: interventions, key: controller_effect, kind: event, scope: [game], bounds: {payload: {serial: serial_or_empty, effect: "enum rumble|pulse|flash|show_battery"}}}
-  - {set: interventions, key: group_shield, kind: event, scope: [game], bounds: {payload: {serials: serial_set, seconds: "float 1 10"}}}
   - {set: interventions, key: audio_cue, kind: event, scope: [game], bounds: {payload: {sound: sound}}}
   - {set: interventions, key: end_game, kind: event, scope: [game], bounds: {payload: {}}}
 

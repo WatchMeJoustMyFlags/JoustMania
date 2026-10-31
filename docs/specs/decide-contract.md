@@ -656,7 +656,7 @@ reads is logged and counted (`game_intervention_event_gaps_total`)
 `end_game_fn(game_id, reason)` = `GameCoordinatorServicer._force_end_session`, the same path as
 `ForceEndGame` with a `game_id`) ([UC-040 BR-011](../use_cases/UC-040.md#br-011-end_game-ends-only-the-game-it-was-decided-for), #1310).
 
-**Group shield event** (planned, #2467; today only the flag exists): `group_shield` is a sixth event flag with the payload
+**Group shield event** (planned, #2467 PR 3; the flag and its registry row land with the coordinator handler): `group_shield` is a sixth event flag with the payload
 `{"serials":"A,B,C","seconds":"5"}` (`serials` 2 to 6 distinct players of the game, `seconds` 1 to 10; the flag service
 checks both, [flags.md §13.1](flags.md#131-interventions-all-writes-are-game-scoped)). Like every event it is applied at
 most once per event seq: the seq advances before dispatch, so a failed dispatch is not retried, and an agent restart
