@@ -93,6 +93,10 @@ type Decision struct {
 	// call so the writer can label agent_intervention_writes_total{game_kind}
 	// (#2294). Engines leave it empty.
 	GameKind string `json:",omitempty"`
+	// TargetSerials is the set of players of a group intervention
+	// (grant_group_shield, #2467 UC-040 A46): 2 to 6 distinct serials, sorted.
+	// Empty for every other intervention, which uses TargetSerial.
+	TargetSerials []string `json:",omitempty"`
 }
 
 // RulesEngine turns a context snapshot into zero or more Decisions. The

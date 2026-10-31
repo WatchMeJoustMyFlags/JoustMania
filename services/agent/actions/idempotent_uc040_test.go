@@ -51,13 +51,16 @@ func TestIdempotentInterventionsMatchRegistryKinds(t *testing.T) {
 			decision.InterventionAdjustGlobalDifficulty, decision.InterventionSetPacingProfile,
 			decision.InterventionRampTempo, decision.InterventionAutoRubberband,
 			decision.InterventionEliminatePlayer, decision.InterventionRevivePlayer,
-			decision.InterventionEndGame,
+			decision.InterventionEndGame, decision.InterventionGrantGroupShield,
 		}
 		var want []string
 		covered := map[string]bool{}
 		for _, intervention := range all {
 			w, svc := newTestWriter(t)
 			d := decision.Decision{Intervention: intervention, GameID: "game_1", TargetSerial: "MOCK0001"}
+			if intervention == decision.InterventionGrantGroupShield {
+				d.TargetSerials = []string{"MOCK0001", "MOCK0002"} // a group needs two (#2467)
+			}
 			if err := w.Apply(context.Background(), d); err != nil {
 				t.Fatalf("%s: write failed: %v", intervention, err)
 			}

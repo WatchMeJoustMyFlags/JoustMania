@@ -222,6 +222,16 @@ shield_hold_activations_total = Counter(
     ["mode", "game_kind", "outcome"],
 )
 
+# Group shields the coordinator refused as a whole (UC-040 A47, BR-033, #2467): one per
+# refused group_shield event. reason = the suffix of the group_refused:<reason> block
+# reason (disabled, real_game, bad_set, target_gone, game_ending, cap_reached,
+# low_battery, or a per-target shield reason such as shield_cap_reached).
+group_shield_refused_total = Counter(
+    "game_group_shield_refused_total",
+    "Group shields refused as a whole, by reason",
+    ["mode", "game_kind", "reason"],
+)
+
 # Hold-mode shield state for the agent (UC-040 A36, A37; UC-042 BR-007). Set at
 # every hold transition and with the 2 s energy keyframe, removed at game end.
 # Per player (serial, game_id), like game_player_alive:

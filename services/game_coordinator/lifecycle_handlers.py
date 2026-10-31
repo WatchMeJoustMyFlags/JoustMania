@@ -39,6 +39,8 @@ from .interventions import (
     BLOCK_REVIVE_REFUSED,
     InterventionContext,
     InterventionManager,
+    _event_group_seconds,
+    _event_target_serials,
 )
 
 logger = logging.getLogger(__name__)
@@ -321,6 +323,30 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
         raise not_applied
 
 
+async def handle_group_shield(ctx: InterventionContext, manager: InterventionManager) -> None:
+    """Shield every player of a ``group_shield`` event, or nobody (UC-040 A46, A47, BR-033).
+
+    The payload string is ``"<serials>|<seconds>"`` (``_event_payload_string``).
+    The battery guard of a single grant applies per serial: the serials below
+    ``policy.battery_threshold`` are passed to ``game.grant_group_shield``, which
+    refuses the whole group (``group_refused:low_battery``). Every other check,
+    the gate flags included, is the game's, in one game-loop turn. A malformed
+    payload reaches the game too, which refuses it ``group_refused:bad_set``
+    after the gate, so a disabled gate always reads ``disabled``.
+    """
+    game = ctx.game
+    if game is None:
+        logger.debug("group_shield: no live game, ignoring")
+        return
+    serials = _event_target_serials(ctx.spec, ctx.payload or "")
+    seconds = _event_group_seconds(ctx.payload or "")
+    threshold = manager._battery_threshold()
+    low_battery = frozenset(
+        serial for serial in serials if (pct := manager._battery_pct(serial)) is not None and pct < threshold
+    )
+    await game.grant_group_shield(serials, float("nan") if seconds is None else seconds, low_battery=low_battery)
+
+
 async def handle_eliminate_player(ctx: InterventionContext) -> None:
     """Force-eliminate the targeted player through the natural kill path (N4).
 
@@ -408,5 +434,10 @@ def register_lifecycle_handlers(manager: InterventionManager) -> None:
     # auto_rubberband is a GLOBAL state decision (not per-serial), so it
     # needs no targeting helper — register the plain handler directly.
     manager.register_handler("auto_rubberband", handle_auto_rubberband)
+    # group_shield needs the manager for the per-serial battery guard (#2467).
+    manager.register_handler(
+        "group_shield",
+        lambda ctx: handle_group_shield(ctx, manager),
+    )
     manager.register_handler("eliminate_player", handle_eliminate_player)
     manager.register_handler("revive_player", handle_revive_player)

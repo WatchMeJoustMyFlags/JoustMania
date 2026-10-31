@@ -95,6 +95,33 @@ SHIELD_REFUSED_GAME_ENDING = "game_ending"
 # A grant to a player who holds a shield charge (UC-040 A31, BR-020).
 SHIELD_REFUSED_ALREADY_CHARGED = "already_charged"
 
+# Group shield (UC-040 A46, A47, BR-033, #2467): one decision shields 2 to
+# policy.group_grant.max_targets alive players, all or nothing. A refusal raises
+# InterventionNotApplied("group_refused:<reason>"); a per-target refusal uses the single
+# grant's reason (e.g. group_refused:shield_cap_reached) and names the refused serial.
+GROUP_REFUSED_PREFIX = "group_refused:"
+GROUP_REFUSED_DISABLED = "disabled"
+GROUP_REFUSED_REAL_GAME = "real_game"
+GROUP_REFUSED_BAD_SET = "bad_set"
+GROUP_REFUSED_TARGET_GONE = "target_gone"
+GROUP_REFUSED_CAP_REACHED = "cap_reached"
+GROUP_REFUSED_LOW_BATTERY = "low_battery"
+GROUP_MIN_TARGETS = 2
+GROUP_MAX_TARGETS = 6  # the registry's ceiling of policy.group_grant.max_targets
+GROUP_MAX_PER_GAME = 3  # the registry's ceiling of policy.group_grant.max_per_game
+# The flag service bounds the payload's seconds to 1..10 (flags.md §13.1); the
+# coordinator re-checks the same bounds (fail closed).
+GROUP_MIN_SECONDS = 1.0
+GROUP_MAX_SECONDS = 10.0
+
+
+def resolve_group_max_targets(value: int) -> int:
+    """``policy.group_grant.max_targets`` clamped to 2..6; 0 or less (a read error reads 0) means off."""
+    if value <= 0:
+        return 0
+    return max(GROUP_MIN_TARGETS, min(GROUP_MAX_TARGETS, value))
+
+
 # player_death carries `shield.since_end_ms` only when the player's last shield ended
 # less than this long ago (telemetry.md §4, UC-040 BR-035): the stage fairness check.
 SHIELD_SINCE_END_REPORT_SECONDS = 3.0
@@ -166,17 +193,7 @@ class ShieldMixin:
             logger.info(f"Shield for {serial} refused: the game is ending")
             raise InterventionNotApplied(SHIELD_REFUSED_GAME_ENDING)
 
-        # UC-040 BR-027: a hold game adds the grant to the player's energy (A36).
-        latched_here = not self._shield_hold_latched
-        hold = self._latch_shield_hold()
-        mode = None
-        if hold is None:
-            # UC-040 BR-019: in trigger mode the grant is a charge the player activates
-            # (A30). Read per grant, so a flip applies to the next grant only; the grant
-            # that latched the game reuses the latch's read.
-            mode, self._shield_mode_at_latch = self._shield_mode_at_latch, None
-            if mode is None or not latched_here:
-                mode = self._shield_activation_mode()
+        hold, mode = self._grant_hold_and_mode()
 
         now = game_clock.now()
         # Every check before any write or await (UC-040 A31, A34, A37, BR-022).
@@ -234,6 +251,195 @@ class ShieldMixin:
         await self._send_shield_help_cue(player)
         await self._send_shield_feedback(player, new_grace - game_clock.now(), kind="full", sound=not was_protected)
 
+        return True
+
+    def _grant_hold_and_mode(self) -> tuple[ShieldHoldParams | None, str | None]:
+        """``(hold values, activation mode)`` for the grant being applied now; synchronous.
+
+        UC-040 BR-027: a hold game adds the grant to the player's energy (A36), so
+        ``mode`` is None when ``hold`` is set. UC-040 BR-019: otherwise, in trigger
+        mode the grant is a charge the player activates (A30). Read per grant, so a
+        flip applies to the next grant only; the grant that latched the game reuses
+        the latch's read.
+        """
+        latched_here = not self._shield_hold_latched
+        hold = self._latch_shield_hold()
+        mode = None
+        if hold is None:
+            mode, self._shield_mode_at_latch = self._shield_mode_at_latch, None
+            if mode is None or not latched_here:
+                mode = self._shield_activation_mode()
+        return hold, mode
+
+    # ------------------------------------------------------------------ #
+    # Group shield (UC-040 A46, A47, BR-033; #2467)
+    # ------------------------------------------------------------------ #
+    def _group_grant_policy(self) -> tuple[bool, bool, int, int]:
+        """``(enabled, real_games, max_per_game, max_targets)`` read at the grant (BR-033).
+
+        Operator flags in the ``agent`` set with no targeting (flags.md §3), read in
+        the game's flag context like the shield limits. A missing or unreadable flag
+        reads off: ``False``, ``False``, 0 and 0 (max_targets 0 = off).
+        """
+        # Literal flag keys, so the contract scan resolves the reads.
+        enabled = _base.read_bool_flag("agent", "policy.group_grant.enabled", False, game_id=self.game_id)
+        real_games = _base.read_bool_flag("agent", "policy.group_grant.real_games", False, game_id=self.game_id)
+        max_per_game = _base.read_int_flag("agent", "policy.group_grant.max_per_game", 0, game_id=self.game_id)
+        max_targets = _base.read_int_flag("agent", "policy.group_grant.max_targets", 0, game_id=self.game_id)
+        return (
+            enabled is True,
+            real_games is True,
+            max(0, min(GROUP_MAX_PER_GAME, max_per_game)),
+            resolve_group_max_targets(max_targets),
+        )
+
+    def _refuse_group(self, reason: str, serial: str | None = None, detail: str = "") -> None:
+        """Count, log and raise a whole-group refusal (UC-040 A47); nothing is applied."""
+        from services.game_coordinator.intervention_errors import InterventionNotApplied
+
+        logger.info(
+            f"Group shield refused for {self.game_id}: {reason}"
+            + (f" (serial {serial})" if serial else "")
+            + (f": {detail}" if detail else "")
+        )
+        with contextlib.suppress(Exception):
+            metrics.group_shield_refused_total.labels(
+                mode=self.get_game_name(), game_kind=self.game_kind, reason=reason
+            ).inc()
+        player = self.players.get(serial) if serial else None
+        if player is not None and player.span:
+            with contextlib.suppress(Exception):
+                player.span.add_event(
+                    "shield_refused",
+                    attributes={
+                        "shield.refusal_reason": GROUP_REFUSED_PREFIX + reason,
+                        "shield.grants_used": self._agent_shield_grants.get(player.serial, 0),
+                        "shield.cooldown_remaining_s": 0.0,
+                        **player_identity_attributes(player.serial, player.name),
+                    },
+                )
+        raise InterventionNotApplied(GROUP_REFUSED_PREFIX + reason, detail or reason, refused_serial=serial or "")
+
+    def _group_set_refusal(self, serials: list[str], seconds: float, max_targets: int) -> tuple[str, str | None] | None:
+        """The payload check of a group (A47): ``(reason, serial)`` or None; pure."""
+        if not math.isfinite(seconds) or not GROUP_MIN_SECONDS <= seconds <= GROUP_MAX_SECONDS:
+            return GROUP_REFUSED_BAD_SET, None
+        if len(serials) < GROUP_MIN_TARGETS or len(serials) > max_targets:
+            return GROUP_REFUSED_BAD_SET, None
+        if len(set(serials)) != len(serials) or any(not serial for serial in serials):
+            return GROUP_REFUSED_BAD_SET, None
+        for serial in serials:
+            player = self.players.get(serial)
+            if player is None or not player.alive:
+                return GROUP_REFUSED_TARGET_GONE, serial
+        return None
+
+    async def grant_group_shield(
+        self, serials: list[str], seconds: float, *, low_battery: frozenset[str] = frozenset()
+    ) -> bool:
+        """Shield every player of ``serials`` for ``seconds``, or nobody (UC-040 A46, A47, BR-033).
+
+        One event, one game-loop turn. Phases 0 to 2 run without an await, so no
+        frame, no other handler and no other grant can run between the first check
+        and the last write:
+
+        0. Game-level refusals, in order: the gate (``enabled``, then
+           ``enabled && (shadow || real_games)``; any kind but shadow is real),
+           the payload (2 to ``max_targets`` distinct serials, 1 to 10 s), every
+           target an alive player, battery (``low_battery``, computed by the
+           handler), the game ending, the per-game backstop (``max_per_game``,
+           0 = nothing allowed).
+        1. Every target is checked with ``_shield_grant_refusal`` (the single
+           grant's checks and order) before anything is written; the first refusal
+           refuses the whole group and names that serial.
+        2. Every target is committed: the instant protection (or kept, when a
+           longer protection runs: success, not counted, as for a single grant),
+           the stored charge, or the added energy, each counted as one agent
+           shield; then the game's group count.
+        3. Awaits: per applied target the helped cue and the shield's feedback.
+
+        Raises ``InterventionNotApplied("group_refused:<reason>")``: the manager
+        records the group as blocked and refunds its backstop reservation.
+        """
+        enabled, real_games, max_per_game, max_targets = self._group_grant_policy()
+        # Phase 0: game-level refusals.
+        if not enabled or max_targets == 0:
+            self._refuse_group(GROUP_REFUSED_DISABLED)
+        if self.game_kind != GAME_KIND_SHADOW and not real_games:
+            self._refuse_group(GROUP_REFUSED_REAL_GAME, detail=f"game kind {self.game_kind!r} counts as real")
+        set_refusal = self._group_set_refusal(serials, seconds, max_targets)
+        if set_refusal is not None:
+            self._refuse_group(set_refusal[0], set_refusal[1], detail=f"serials {serials}, seconds {seconds}")
+        for serial in serials:
+            if serial in low_battery:
+                self._refuse_group(GROUP_REFUSED_LOW_BATTERY, serial)
+        if self._shield_grants_closed():
+            self._refuse_group(SHIELD_REFUSED_GAME_ENDING)
+        if self._agent_group_grants >= max_per_game:
+            self._refuse_group(
+                GROUP_REFUSED_CAP_REACHED, detail=f"{self._agent_group_grants} of {max_per_game} group shields used"
+            )
+
+        hold, mode = self._grant_hold_and_mode()
+        now = game_clock.now()
+        players = [self.players[serial] for serial in serials]
+
+        # Phase 1: every target is checked before anything is written (all or nothing).
+        for player in players:
+            reason = self._shield_grant_refusal(player, seconds, now, mode, hold)
+            if reason is not None:
+                self._refuse_group(reason, player.serial)
+
+        # Phase 2: commit every target, synchronously.
+        applied: list[tuple[Player, bool]] = []  # (player, was protected) of each instant grant applied
+        for player in players:
+            if hold is not None:
+                self._apply_shield_energy(player, seconds, now, hold)
+                applied.append((player, False))
+            elif mode == SHIELD_ACTIVATION_TRIGGER:
+                self._store_shield_charge(player, seconds, now)
+                self._record_agent_shield(player.serial, now, seconds)
+                applied.append((player, False))
+            else:
+                new_grace = now + seconds
+                if new_grace <= self.effective_grace_until(player):
+                    logger.info(f"Group shield for {player.serial}: a longer protection runs; kept")
+                    continue
+                was_protected = self._shield_protected(player, now)
+                player.grace_until = new_grace
+                self._arm_shield_end_grace(player, new_grace)  # UC-040 BR-035
+                self._record_agent_shield(player.serial, now, seconds)
+                if player.span:
+                    with contextlib.suppress(Exception):
+                        player.span.add_event(
+                            "shield_granted",
+                            attributes={
+                                "shield_seconds": seconds,
+                                "shield.end_grace_s": self._shield_end_grace,
+                                **player_identity_attributes(player.serial, player.name),
+                            },
+                        )
+                applied.append((player, was_protected))
+        self._agent_group_grants += 1
+        logger.info(
+            f"Group shield applied in {self.game_id}: {len(players)} players, {seconds:.1f}s, "
+            f"{len(applied)} new ({self._agent_group_grants} of {max_per_game} group shields)"
+        )
+
+        # Phase 3: feedback, per applied target. Best-effort: the shields stand.
+        for player, was_protected in applied:
+            try:
+                if hold is not None:
+                    await self._send_shield_help_cue(player)
+                elif mode == SHIELD_ACTIVATION_TRIGGER:
+                    await self._shield_charge_feedback(player, seconds, now)
+                else:
+                    await self._send_shield_help_cue(player)
+                    await self._send_shield_feedback(
+                        player, player.grace_until - game_clock.now(), kind="full", sound=not was_protected
+                    )
+            except Exception as e:
+                logger.warning(f"Group shield feedback for {player.serial} failed (shield unaffected): {e}")
         return True
 
     async def _send_shield_help_cue(self, player: "Player") -> None:

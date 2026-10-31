@@ -62,6 +62,7 @@ const (
 	flagAudioCue                  = "audio_cue"
 	flagControllerEffect          = "controller_effect"
 	flagEndGame                   = "end_game"
+	flagGroupShield               = "group_shield" // #2467 (UC-040 A46, BR-033)
 )
 
 // Neutral variant names per flag in interventions.json: the baseline value a
@@ -227,6 +228,14 @@ func (w *Writer) write(ctx context.Context, d decision.Decision) error {
 	case decision.InterventionEndGame:
 		// The game is the scope (UC-040 BR-011): only the deciding game ends.
 		return w.post(ctx, d, flagEndGame, map[string]any{})
+	case decision.InterventionGrantGroupShield: // #2467: all or nothing at the coordinator (BR-033)
+		if len(d.TargetSerials) < 2 {
+			return fmt.Errorf("group intervention on %q requires at least two target serials", flagGroupShield)
+		}
+		return w.post(ctx, d, flagGroupShield, map[string]any{
+			"serials": strings.Join(d.TargetSerials, ","),
+			"seconds": strconv.FormatFloat(w.numOr(d.Value, defaultShieldSeconds), 'f', -1, 64),
+		})
 
 	// Game-scoped state.
 	case decision.InterventionAdjustMusicTempo:

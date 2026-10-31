@@ -12,6 +12,8 @@ class InterventionNotApplied(Exception):  # noqa: N818 - an outcome, not an erro
     ``block_reason`` and refunds the backstop reservation (UC-040 A22, A31).
     """
 
-    def __init__(self, reason: str, detail: str = "") -> None:
+    def __init__(self, reason: str, detail: str = "", *, refused_serial: str = "") -> None:
         super().__init__(detail or reason)
         self.reason = reason
+        # The player whose check refused a group shield (UC-040 A47); "" otherwise.
+        self.refused_serial = refused_serial
