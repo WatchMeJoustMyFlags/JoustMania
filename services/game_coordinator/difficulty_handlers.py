@@ -40,6 +40,7 @@ not conflict structurally.
 
 import logging
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from lib.feature_flags import GAME_KIND_REAL, GAME_KIND_VAR, read_object_flag_variant
 from lib.types import Sensitivity
@@ -54,6 +55,9 @@ from .games.base import (
 )
 from .intervention_errors import InterventionNotApplied
 from .interventions import InterventionContext, InterventionManager
+
+if TYPE_CHECKING:
+    from .intervention_target import InterventionPlayer, InterventionTarget
 
 # UC-043 BR-005 (#1970): the game's experiment sets other windows than the preset.
 BLOCK_EXPERIMENT_OVERRIDE = "experiment_override"
@@ -157,7 +161,7 @@ async def handle_global_sensitivity_override(ctx: InterventionContext) -> None:
     game.apply_sensitivity_override(sensitivity)
 
 
-def _record_factor_event(player: object, serial: str, event: str, key: str, value: float) -> None:
+def _record_factor_event(player: "InterventionPlayer", serial: str, event: str, key: str, value: float) -> None:
     """Record a changed per-player factor on the player's span (#1295).
 
     Only a CHANGED value is recorded (the handler re-applies the whole per-serial
@@ -165,10 +169,10 @@ def _record_factor_event(player: object, serial: str, event: str, key: str, valu
     it" is visible on the span where it happened. No span (headless / closed) = no
     event.
     """
-    span = getattr(player, "span", None)
+    span = player.span
     if span is None:
         return
-    span.add_event(event, attributes={key: value, **player_identity_attributes(serial, getattr(player, "name", ""))})
+    span.add_event(event, attributes={key: value, **player_identity_attributes(serial, player.name)})
 
 
 def _changed_levels(ctx: InterventionContext) -> dict | None:
@@ -203,7 +207,7 @@ async def handle_player_sensitivity_factor(ctx: InterventionContext, manager: In
         game_id=ctx.game_id,
     )
 
-    players = getattr(game, "players", {})
+    players = game.players
     for serial, factor in factors.items():
         player = players.get(serial)
         if player is None:
@@ -248,7 +252,7 @@ async def handle_player_handicap_factor(ctx: InterventionContext, manager: Inter
         game_id=ctx.game_id,
     )
 
-    players = getattr(game, "players", {})
+    players = game.players
     for serial, factor in factors.items():
         player = players.get(serial)
         if player is None:
@@ -269,13 +273,13 @@ def _reset_player_factor(ctx: InterventionContext, attr: str, neutral: float, ev
     game = ctx.game
     if game is None:
         return
-    players = getattr(game, "players", {})
+    players = game.players
     serials = list(ctx.value) if isinstance(ctx.value, dict) else list(players)
     for serial in serials:
         player = players.get(serial)
         if player is None:
             continue
-        previous = getattr(player, attr, neutral)
+        previous = getattr(player, attr)
         setattr(player, attr, neutral)
         if previous != neutral:
             logger.info(f"{attr}: {serial} reset to {neutral:.2f}")
@@ -359,7 +363,7 @@ async def handle_pacing_profile(ctx: InterventionContext) -> None:
         _restore_init_windows(game)
         return
 
-    init_windows = getattr(game, "init_music_windows", game.music_windows)
+    init_windows = game.init_music_windows
     # A read that fails returns the supplied default object itself, so identity tells a
     # flag error from a real (possibly empty) value.
     read_failed: dict = {}
@@ -379,14 +383,14 @@ async def handle_pacing_profile(ctx: InterventionContext) -> None:
         logger.info("pacing_profile: unknown preset, restored init windows")
 
 
-def _refuse_experiment_override(game: object, profile: str, resolved: object) -> None:
+def _refuse_experiment_override(game: "InterventionTarget", profile: str, resolved: object) -> None:
     """Raise ``experiment_override`` when the game's experiment changed the preset's windows (#1970).
 
     Only a game bound to an experiment can resolve an experiment rung, so any
     other game never pays the second read. A failed baseline read is a flag error, not
     an override: it is logged and the first read's windows apply, as before #1970.
     """
-    experiment_id = getattr(game, "experiment_id", "")
+    experiment_id = game.experiment_id
     if not (isinstance(experiment_id, str) and experiment_id):
         return
     read_failed: dict = {}
@@ -399,7 +403,7 @@ def _refuse_experiment_override(game: object, profile: str, resolved: object) ->
     baseline = resolve_music_windows(baseline_variant)
     if resolved == baseline:
         return
-    arm = getattr(game, "arm", "")
+    arm = game.arm
     logger.info(
         f"pacing_profile: experiment {experiment_id} (arm {arm}) sets other windows than preset "
         f"'{profile}'; the experiment's windows stay (experiment_override)"
@@ -418,9 +422,9 @@ async def handle_pacing_profile_revert(ctx: InterventionContext) -> None:
     _restore_init_windows(game)
 
 
-def _restore_init_windows(game: object) -> None:
+def _restore_init_windows(game: "InterventionTarget") -> None:
     """Atomically restore the game's init-resolved music windows."""
-    init_windows = getattr(game, "init_music_windows", None)
+    init_windows = game.init_music_windows
     if init_windows is None:
         logger.debug("pacing_profile: no init windows recorded, leaving current windows")
         return
