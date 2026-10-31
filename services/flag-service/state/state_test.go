@@ -557,26 +557,26 @@ func TestExperimentArm_NeverResolvesForReal(t *testing.T) {
 	t.Run("UC-053/A3 an arm value resolves only for non-real games of that experiment and arm", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
 		// The registry declares no experiment+arm row before #1415; give one flag the scope for the test.
-		f.state.flags["tempo_schedule_mode"].policy.Scopes = append(f.state.flags["tempo_schedule_mode"].policy.Scopes, "experiment+arm")
-		res := f.put(WriteRequest{Set: "game", Flag: "tempo_schedule_mode", Variant: "agent", Scope: Scope{ExperimentID: "exp_42", Arm: "experimental"}})
+		f.state.flags["shadow_policy"].policy.Scopes = append(f.state.flags["shadow_policy"].policy.Scopes, "experiment+arm")
+		res := f.put(WriteRequest{Set: "game", Flag: "shadow_policy", Variant: "block", Scope: Scope{ExperimentID: "exp_42", Arm: "experimental"}})
 		cases := []struct {
 			ctx  map[string]any
 			want string
 		}{
 			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_42", "arm": "experimental"}, res.Variant},
-			{map[string]any{"game_kind": "real", "experiment_id": "exp_42", "arm": "experimental"}, "rule"},
-			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_42", "arm": "control"}, "rule"},
-			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_7", "arm": "experimental"}, "rule"},
+			{map[string]any{"game_kind": "real", "experiment_id": "exp_42", "arm": "experimental"}, "allow"},
+			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_42", "arm": "control"}, "allow"},
+			{map[string]any{"game_kind": "shadow", "experiment_id": "exp_7", "arm": "experimental"}, "allow"},
 		}
 		for _, c := range cases {
-			if v, _ := f.resolve("tempo_schedule_mode", c.ctx); v != c.want {
+			if v, _ := f.resolve("shadow_policy", c.ctx); v != c.want {
 				t.Errorf("context %v resolved %s, want %s", c.ctx, v, c.want)
 			}
 		}
-		if _, err := f.state.Clear(ClearRequest{Set: "game", Flag: "tempo_schedule_mode", Scope: Scope{ExperimentID: "exp_42", Arm: "experimental"}}); err != nil {
+		if _, err := f.state.Clear(ClearRequest{Set: "game", Flag: "shadow_policy", Scope: Scope{ExperimentID: "exp_42", Arm: "experimental"}}); err != nil {
 			t.Fatal(err)
 		}
-		if v, _ := f.resolve("tempo_schedule_mode", cases[0].ctx); v != "rule" {
+		if v, _ := f.resolve("shadow_policy", cases[0].ctx); v != "allow" {
 			t.Fatal("the cleared arm value still resolves")
 		}
 	})

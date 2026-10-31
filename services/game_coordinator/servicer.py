@@ -57,7 +57,6 @@ from services.game_coordinator.flag_service_client import FlagServiceLifecycle, 
 from services.game_coordinator.game_session import GAME_KIND_PRIMARY, GAME_KIND_SHADOW, GameSession
 from services.game_coordinator.interventions import InterventionManager, SessionView
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
-from services.game_coordinator.tempo_schedule import TempoScheduleManager
 
 logger = logging.getLogger(__name__)
 
@@ -218,14 +217,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
         # shield_seconds (per-player grace shield), eliminate_player, revive_player.
         register_lifecycle_handlers(self.intervention_manager)
         self.intervention_manager.start()
-
-        # Tempo-schedule SOURCE listener (#1109): subscribes to flagd's
-        # PROVIDER_CONFIGURATION_CHANGED event and re-reads `game.tempo_schedule_mode`
-        # for every live session's gameId, atomically swapping each game's
-        # `tempo_schedule_mode` so the pacing SOURCE (rule | agent) switches LIVE
-        # mid-game. Reuses the same per-session seam as the InterventionManager.
-        self.tempo_schedule_manager = TempoScheduleManager(get_sessions=self.get_intervention_sessions)
-        self.tempo_schedule_manager.start()
 
         # Flag service game lifecycle (FR-135, #1410): register each game before
         # it runs (bounded 200 ms, outside _sessions_lock), report its end, and
@@ -1231,12 +1222,6 @@ class GameCoordinatorServicer(game_coordinator_pb2_grpc.GameCoordinatorServiceSe
             self.intervention_manager.stop()
         except Exception as e:
             logger.debug(f"InterventionManager stop failed: {e}")
-
-        # Stop tempo-schedule SOURCE subscription (#1109)
-        try:
-            self.tempo_schedule_manager.stop()
-        except Exception as e:
-            logger.debug(f"TempoScheduleManager stop failed: {e}")
 
         with self._sessions_lock:
             sessions = list(self.sessions.values())

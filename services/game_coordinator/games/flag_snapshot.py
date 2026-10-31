@@ -27,40 +27,6 @@ RAMP_SECONDS_MIN = 0.1  # Flag clamp, matches the registry bounds (flags.md §13
 RAMP_SECONDS_MAX = 10.0
 
 
-# #1109: tempo-schedule SOURCE selector (``game.tempo_schedule_mode`` flag).
-# The tempo-change decision ALWAYS flows through the single pacing-policy seam
-# (``_decide_next_change_delay``); this flag selects which policy that seam runs:
-#   * "rule"  — the rule engine owns the decision. The DEFAULT rule reproduces
-#     the historical random-window timing (``_rng.uniform`` within the lerped
-#     ``music_windows``) byte-for-byte, so the unset/default behavior is
-#     unchanged WITHOUT a second legacy code path. A deterministic non-random
-#     rule is a follow-up policy (#1108) — the default rule simply keeps the RNG.
-#   * "agent" — the seam yields the next-change decision to agent tempo
-#     directives (#1103 ramp_tempo, a follow-up). Until that primitive lands the
-#     mode is a clean STUB: with no directive present it falls back to the
-#     default rule, so selecting "agent" early is safe (never freezes pacing).
-# There is intentionally NO "random" mode: randomness survives as the default
-# RULE, not as a separate mode (maintainer re-scope, #1109).
-TEMPO_MODE_RULE = "rule"
-TEMPO_MODE_AGENT = "agent"
-# Unset / unknown values resolve to the rule engine's default rule => back-compat.
-TEMPO_SCHEDULE_MODE_DEFAULT = TEMPO_MODE_RULE
-_VALID_TEMPO_SCHEDULE_MODES = (TEMPO_MODE_RULE, TEMPO_MODE_AGENT)
-
-
-def resolve_tempo_schedule_mode(value: object) -> str:
-    """Validate the ``game.tempo_schedule_mode`` flag value.
-
-    Any value other than the known modes (``rule``/``agent``) — including a
-    missing flag, a non-string, or a stale ``random`` left over from an older
-    config — resolves to :data:`TEMPO_SCHEDULE_MODE_DEFAULT` (``rule``), whose
-    default policy reproduces today's behavior. This keeps the seam default-safe.
-    """
-    if isinstance(value, str) and value in _VALID_TEMPO_SCHEDULE_MODES:
-        return value
-    return TEMPO_SCHEDULE_MODE_DEFAULT
-
-
 def resolve_ramp_seconds(value: object, default: float) -> float:
     """Validate a ``tempo.ramp_*_seconds`` flag value (#1833).
 
@@ -423,9 +389,7 @@ class GameInitFlags:
     result. The snapshot is built once per game; the game's attributes
     (``slow_max``, ``music_windows``, ...) start from it. Keys that docs/specs/flags.md
     marks live (per ramp, per grant, per tempo change) are not in here: they are
-    read at use time. ``tempo_schedule_mode`` is the init value of an attribute the
-    config-change listener swaps live.
-    """
+    read at use time."""
 
     slow_warning: tuple[float, ...]
     slow_max: tuple[float, ...]
@@ -434,7 +398,6 @@ class GameInitFlags:
     ema_weight: float
     death_grace_period_seconds: float
     music_windows: MusicWindows
-    tempo_schedule_mode: str
     game_volume: float
     countdown_music_volume: float
 
@@ -447,7 +410,6 @@ class GameInitFlags:
         death_grace_period_seconds: Any,
         death_grace_default: float,
         windows: Any,
-        tempo_schedule_mode: Any,
         game_volume: float,
         countdown_music_volume: float,
     ) -> "GameInitFlags":
@@ -461,7 +423,6 @@ class GameInitFlags:
             ema_weight=ema_weight,
             death_grace_period_seconds=resolve_non_negative_duration(death_grace_period_seconds, death_grace_default),
             music_windows=resolve_music_windows(windows),
-            tempo_schedule_mode=resolve_tempo_schedule_mode(tempo_schedule_mode),
             game_volume=game_volume,
             countdown_music_volume=countdown_music_volume,
         )

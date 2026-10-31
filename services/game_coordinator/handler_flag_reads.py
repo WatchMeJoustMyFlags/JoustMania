@@ -27,8 +27,6 @@
 #
 # tests/test_handler_flag_reads.py drives every registered handler and fails when one
 # reads a flag that is not listed here, or when a handler has no census case.
-# tempo_schedule_mode is read on the flagd event thread (tempo_schedule.py), not in a
-# handler, so it is not listed.
 HANDLER_FLAG_READS = {
     # Agent-tunable since FR-162 (#2096, UC-043 A17): an experiment arm reaches the read.
     ("game", "shield.activation"): {

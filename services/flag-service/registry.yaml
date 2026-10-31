@@ -133,7 +133,6 @@ flags:
   # shadow_policy: an overlay may only tighten admission to "block"; loosening to
   # "allow" stays a reviewed baseline edit (C-033). Clearing it restores the baseline.
   - {set: game, key: shadow_policy, kind: overlay, scope: [stack], bounds: {variants: [block]}}
-  - {set: game, key: tempo_schedule_mode, kind: state, scope: [game]}
   # Tempo intensity ramp (#1833, UC-031 BR-005): changeable on stage; the bounds
   # are the coordinator's own clamp (games/base.py RAMP_SECONDS_MIN/MAX).
   - {set: game, key: tempo.ramp_up_seconds, kind: overlay, scope: [stack], bounds: {range: [0.1, 10]}}

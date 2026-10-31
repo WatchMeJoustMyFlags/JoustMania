@@ -29,7 +29,6 @@ def _raw(**overrides):
         "death_grace_period_seconds": DEATH_GRACE_PERIOD,
         "death_grace_default": DEATH_GRACE_PERIOD,
         "windows": {},
-        "tempo_schedule_mode": "rule",
         "game_volume": GAME_VOLUME,
         "countdown_music_volume": 0.15,
     }
@@ -50,13 +49,11 @@ def test_malformed_raw_values_give_the_defaults():
             thresholds="junk",
             death_grace_period_seconds=-1.0,
             windows=[1],
-            tempo_schedule_mode="random",
         )
     )
     assert snapshot.slow_max == tuple(SLOW_MAX)
     assert snapshot.death_grace_period_seconds == DEATH_GRACE_PERIOD
     assert snapshot.music_windows == MusicWindows.defaults()
-    assert snapshot.tempo_schedule_mode == "rule"
 
 
 def test_game_attributes_start_from_one_snapshot_read_once():
@@ -68,15 +65,12 @@ def test_game_attributes_start_from_one_snapshot_read_once():
         patch.object(base, "_read_volume_flag", return_value=0.5) as volumes,
         patch.object(base, "read_object_flag", return_value={}) as objects,
         patch.object(base, "read_float_flag", return_value=0.25) as floats,
-        patch.object(base, "read_string_flag", return_value="agent") as strings,
     ):
         game = _make_ffa()
     assert [c.args[1] for c in objects.call_args_list] == ["thresholds", "windows"]
     assert [c.args[1] for c in floats.call_args_list] == ["death_grace_period_seconds"]
-    assert [c.args[1] for c in strings.call_args_list] == ["tempo_schedule_mode"]
     assert get_manager.call_count == 1
     manager.read_ema_weight.assert_called_once_with()
     assert [c.args[0] for c in volumes.call_args_list] == ["audio_volume.game", "audio_volume.countdown_music"]
     assert game.death_grace_period == game.init_flags.death_grace_period_seconds == 0.25
-    assert game.tempo_schedule_mode == game.init_flags.tempo_schedule_mode == "agent"
     assert game.music_windows is game.init_music_windows is game.init_flags.music_windows

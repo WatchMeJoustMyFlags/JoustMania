@@ -65,8 +65,6 @@ var defaultDynamicDenylist = map[string]struct{}{
 	// Session capacity (#1018): how many games may run at once, not how one plays.
 	"max_concurrent_games": {},
 	"max_shadow_games":     {},
-	// Tempo-schedule source selection (#1109): which writer drives the tempo, plumbing.
-	"tempo_schedule_mode": {},
 	// Lobby / admin start controls: when the menu force-starts, not the game itself.
 	"force_all_start":         {},
 	"force_all_start_seconds": {},

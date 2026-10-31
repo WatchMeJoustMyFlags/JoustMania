@@ -31,14 +31,6 @@
       },
       "defaultVariant": "four"
     },
-    "tempo_schedule_mode": {
-      "state": "ENABLED",
-      "variants": {
-        "rule": "rule",
-        "agent": "agent"
-      },
-      "defaultVariant": "rule"
-    },
     "tempo.ramp_up_seconds": {
       "state": "ENABLED",
       "variants": {
