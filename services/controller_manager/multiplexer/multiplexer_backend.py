@@ -655,13 +655,18 @@ class MultiplexerBackend(ControllerBackend):
 
         The backend still lists it, so discovery's stale-state cleanup never runs for it; without
         this the forced resend of its next registration would replay a stale game or death colour.
-        Single dict operations from the event loop, as in ``set_led_color``: no lock needed.
+        Under the same locks as the discovery swap's cleanup (_led_lock, then
+        _routing_lock), so a running LED batch never re-sends the dropped output (#2471).
         """
-        self._led_colors.pop(serial, None)
-        self._rumble.pop(serial, None)
-        self._last_sent_color.pop(serial, None)
-        self._last_sent_rumble.pop(serial, None)
-        self._last_led_update.pop(serial, None)
+        with self._led_lock, self._routing_lock:
+            self._led_colors.pop(serial, None)
+            self._rumble.pop(serial, None)
+            self._last_sent_color.pop(serial, None)
+            self._last_sent_rumble.pop(serial, None)
+            self._last_led_update.pop(serial, None)
+            self._force_led_resend.discard(serial)
+            self._effect_active.discard(serial)
+            self._unrouted_output.discard(serial)
 
     # -- Per-controller methods -----------------------------------------------
 

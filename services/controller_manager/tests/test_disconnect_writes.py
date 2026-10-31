@@ -4,20 +4,32 @@ Writes during a disconnect and feedback left over after one (#2471).
 UC-002 A1 (disconnect), A4 / BR-008 (reconnect LED):
 - H1: an LED or rumble write for a serial with no adapter route is kept and sent
   once the serial is routed again; the owner's newer write still wins;
-- the output from before the disconnect is still dropped.
+- the output from before the disconnect is still dropped;
+- H2: a disconnect ends the controller's feedback (effects, layers, timers);
+- D1: a second registration cancels the first delayed LED resend;
+- D2: ``clear_led_output`` takes the LED lock and drops the forced resend and effect marks;
+- D3: a dead player is off from the death effect's first moment, and a closed game
+  drops the output it wrote to a player that is away.
 """
 
+import asyncio
 import sys
+import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
 test_dir = Path(__file__).parent
 sys.path.insert(0, str(test_dir.parent.parent.parent))
 
+from proto import controller_manager_pb2
+from services.controller_manager import discovery_loop as discovery_module
+from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-from services.controller_manager.tests.backend_doubles import autospec_adapter
+from services.controller_manager.tests.backend_doubles import autospec_adapter, autospec_backend
+from services.controller_manager.tests.test_silent_link_disconnect import SERIAL as RIG_SERIAL
+from services.controller_manager.tests.test_silent_link_disconnect import Rig
 
 SERIAL = "AA:AA"
 
@@ -99,6 +111,23 @@ class TestUC002H1WritesDuringADisconnect:
         assert SERIAL not in mux._led_colors
 
     @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A1")
+    async def test_a_kept_write_is_dropped_like_any_output_at_the_next_disconnect(self, routed):
+        """Once routed again the serial is ordinary: its output from before a later disconnect is not replayed."""
+        mux, adapter = routed
+        await mux.set_led_color(SERIAL, 0, 0, 255)  # kept while away
+        _reroute(mux, adapter)
+        adapter.discover.return_value = []  # gone again, with nothing written meanwhile
+        mux.get_connected_controllers()
+        _reroute(mux, adapter)
+        adapter.set_output.reset_mock()
+
+        mux.update_all_leds()
+
+        adapter.set_output.assert_not_called()
+        assert SERIAL not in mux._led_colors
+
+    @pytest.mark.asyncio
     @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
     async def test_the_owners_write_after_the_reroute_wins(self, routed):
         """A write kept from the disconnect never overrides the colour the owner writes on reconnect."""
@@ -121,3 +150,181 @@ class TestUC002H1WritesDuringADisconnect:
         await mux.shutdown()
         assert SERIAL not in mux._led_colors
         assert not mux._unrouted_output
+
+
+# --- H2 / D1: the discovery loop ----------------------------------------------------------
+
+
+@pytest.fixture
+def rig():
+    rig = Rig()
+    with (
+        patch.object(discovery_module, "read_silent_disconnect_seconds", return_value=3.0),
+        patch.object(discovery_module, "time", rig.clock),
+    ):
+        yield rig
+
+
+class TestUC002H2DisconnectEndsFeedback:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A1")
+    async def test_a_disconnect_clears_the_controllers_feedback(self, rig):
+        await rig.discover()
+        rig.feedback.clear_controller.assert_not_called()
+
+        rig.backend.get_connected_controllers.return_value = []
+        await rig.discover()
+
+        rig.feedback.clear_controller.assert_called_once_with(RIG_SERIAL)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A1")
+    async def test_clear_controller_ends_effects_layers_and_timers(self):
+        """The background rumble, shield layers, cue tasks and stop timers end; the LED is no longer an effect's."""
+        backend = autospec_backend()
+        feedback = FeedbackManager(backend=backend, tracked_controllers={SERIAL: {}})
+        sleeper = asyncio.create_task(asyncio.sleep(10))
+        timer = asyncio.create_task(asyncio.sleep(10))
+        cue = asyncio.create_task(asyncio.sleep(10))
+        feedback.vibration_tasks[SERIAL] = timer
+        feedback._shield_tasks[SERIAL] = sleeper
+        feedback._hold_cue_tasks[SERIAL] = cue
+        feedback._shield_layers[SERIAL] = {"shield": object()}
+        feedback._background_rumble[SERIAL] = 80
+
+        feedback.clear_controller(SERIAL)
+        await asyncio.sleep(0)
+
+        assert sleeper.cancelled() and timer.cancelled() and cue.cancelled()
+        assert SERIAL not in feedback._shield_layers
+        assert SERIAL not in feedback._background_rumble
+        backend.set_effect_active.assert_called_with(SERIAL, False)
+
+
+class TestUC002D1SecondRegistration:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    async def test_a_second_registration_cancels_the_first_delayed_resend(self, rig):
+        rig.loop._led_resend_delay = 0.05
+        await rig.discover()
+        first = rig.loop._led_resend_handles[RIG_SERIAL]
+
+        await rig.loop._restore_led(RIG_SERIAL)  # re-registered within the delay
+
+        assert first.cancelled()
+        assert rig.loop._led_resend_handles[RIG_SERIAL] is not first
+        await asyncio.sleep(0.1)
+        assert rig.backend.force_led_resend.call_count == 3  # two registrations + one delayed resend
+
+
+# --- D2: clear_led_output -------------------------------------------------------------------
+
+
+class TestUC002D2ClearLedOutput:
+    @pytest.mark.uc("UC-002", br=["BR-007", "BR-008"])
+    def test_clear_led_output_drops_the_forced_resend_and_effect_marks(self):
+        adapter = _adapter([SERIAL])
+        mux = MultiplexerBackend(adapters=[adapter])
+        mux.get_connected_controllers()
+        mux._led_colors[SERIAL] = (0, 255, 0)
+        mux.force_led_resend(SERIAL)
+        mux.set_effect_active(SERIAL, True)
+
+        mux.clear_led_output(SERIAL)
+
+        assert SERIAL not in mux._led_colors
+        assert SERIAL not in mux._force_led_resend
+        assert SERIAL not in mux._effect_active
+
+    @pytest.mark.uc("UC-002", br=["BR-007", "BR-008"])
+    def test_clear_led_output_waits_for_a_running_led_batch(self):
+        """A batch holding the LED lock finishes before the output is dropped."""
+        adapter = _adapter([SERIAL])
+        mux = MultiplexerBackend(adapters=[adapter])
+        mux.get_connected_controllers()
+        mux._led_colors[SERIAL] = (0, 255, 0)
+        done = threading.Event()
+
+        mux._led_lock.acquire()
+        worker = threading.Thread(target=lambda: (mux.clear_led_output(SERIAL), done.set()))
+        worker.start()
+        try:
+            assert not done.wait(0.1)
+            assert mux._led_colors[SERIAL] == (0, 255, 0)
+        finally:
+            mux._led_lock.release()
+        worker.join(1.0)
+        assert done.is_set()
+        assert SERIAL not in mux._led_colors
+
+
+# --- D3: a dead player stays off -----------------------------------------------------------
+
+
+class TestUC002D3DeadPlayerStaysOff:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    async def test_the_death_effect_marks_the_player_off_before_the_red_hold(self):
+        """A reconnect during the red hold restores off (base colour), not the game colour."""
+        backend = autospec_backend()
+        feedback = FeedbackManager(backend=backend, tracked_controllers={SERIAL: {}})
+        feedback.base_colors[SERIAL] = (0, 255, 0)
+
+        task = asyncio.create_task(feedback._effect_player_death(SERIAL))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        try:
+            assert not task.done()  # still in the red hold
+            assert feedback.base_colors[SERIAL] == (0, 0, 0)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    def test_a_closed_game_drops_the_output_it_wrote_to_an_absent_player(self):
+        with (
+            patch("services.controller_manager.servicer.create_backend", return_value=autospec_backend()),
+            patch("services.controller_manager.servicer.DiscoveryLoop"),
+        ):
+            from services.controller_manager.servicer import ControllerManagerServicer
+
+            servicer = ControllerManagerServicer()
+        servicer.discovery_loop.drain_disconnects.return_value = []
+        servicer.tracked_controllers["present"] = {}
+        servicer._open_game_stream("game", {SERIAL, "present"})
+
+        servicer._release_game_stream("game")
+
+        servicer.backend.clear_led_output.assert_called_once_with(SERIAL)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    async def test_a_reopened_stream_makes_a_dead_player_reconnect_off(self):
+        """After a reopen (no disconnect handed to the new stream) the config's off is the reconnect colour."""
+        backend = autospec_backend()
+        with (
+            patch("services.controller_manager.servicer.create_backend", return_value=backend),
+            patch("services.controller_manager.servicer.DiscoveryLoop"),
+        ):
+            from services.controller_manager.servicer import ControllerManagerServicer
+
+            servicer = ControllerManagerServicer()
+        servicer.discovery_loop.drain_disconnects.return_value = []
+        config = controller_manager_pb2.GameplayStreamConfig(
+            colors=[
+                controller_manager_pb2.ControllerColorConfig(serial=SERIAL, color=controller_manager_pb2.RGB()),
+                controller_manager_pb2.ControllerColorConfig(
+                    serial="alive", color=controller_manager_pb2.RGB(r=0, g=255, b=0)
+                ),
+            ]
+        )
+        span = create_autospec(_Span, instance=True)
+
+        await servicer._process_gameplay_config(config, "reopened", span)
+
+        assert servicer._reconnect_color(SERIAL) == (0, 0, 0)
+        assert servicer._reconnect_color("alive") == (0, 255, 0)
+
+
+class _Span:
+    def set_attribute(self, key, value): ...

@@ -812,6 +812,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         for serial in roster:
             if serial not in self.tracked_controllers and not self._in_game(serial):
                 self.feedback_manager.base_colors.pop(serial, None)
+                # Nor an output the game wrote while it was away (#2471).
+                self.backend.clear_led_output(serial)
 
     def _reconnect_color(self, serial: str) -> tuple[int, int, int] | None:
         """The LED colour of a controller that (re)registers, from its current owner (UC-002 BR-008, #2466).
