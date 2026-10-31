@@ -232,7 +232,8 @@ class GameLifecycleMixin:
             except Exception as e:
                 logger.error(f"Game start failed during preparation: {e}", exc_info=True)
                 span.record_exception(e)
-                if self.state == menu_pb2.MenuState.GAME_STARTING:
+                # UC-010 A11 (#2379): a menu stopped meanwhile still needs its button stream back.
+                if self.state in (menu_pb2.MenuState.GAME_STARTING, menu_pb2.MenuState.STOPPED):
                     await self._restart_lobby()
                 raise
 
@@ -311,6 +312,12 @@ class GameLifecycleMixin:
             logger.error(f"Game stream error: {e}", exc_info=True)
             span.record_exception(e)
             await self._restart_lobby()
+            if self._followed_game_id is None:
+                # UC-010 A3 (#2379): the start stream failed before the coordinator answered.
+                await self.event_publisher.publish(
+                    "game_start_cancelled",
+                    {"game_name": request.start_config.game_name, "reason": "coordinator_unreachable"},
+                )
         finally:
             self._cancel_stream(stream)
 
@@ -426,7 +433,6 @@ class GameLifecycleMixin:
             error = event.data.get("error", "Unknown error")
             logger.error(f"Game start failed: {error}")
             span.set_attribute("error", error)
-            self.state = menu_pb2.MenuState.RUNNING
             await self._restart_lobby()
             return _GameEventResult(game_started=False, should_return=True)
 
@@ -478,7 +484,8 @@ class GameLifecycleMixin:
         """Restart lobby state after game ends.
 
         UC-010 BR-010: every step is bounded; a step that times out is logged and skipped, so the
-        restore always ends and the idle monitor always starts.
+        restore always ends and the idle monitor always starts. UC-010 A11 (#2379): a menu stopped
+        during the game stays STOPPED and gets no idle monitor; the rest of the restore still runs.
         """
 
         async def start_button_monitor_and_wait() -> None:
@@ -487,8 +494,10 @@ class GameLifecycleMixin:
 
         # UC-010 A8: a start refused in this window beeps (the players are back in the lobby).
         self._lobby_restarting = True
+        menu_stopped = self.state == menu_pb2.MenuState.STOPPED
         try:
-            self.state = menu_pb2.MenuState.RUNNING
+            if not menu_stopped:
+                self.state = menu_pb2.MenuState.RUNNING
 
             # Start button monitor with fresh trace context (not chained to game trace)
             with tracer.start_as_current_span("restart_button_monitor", context=otel_context.Context()):
@@ -502,12 +511,13 @@ class GameLifecycleMixin:
             with tracer.start_as_current_span("restart_lobby_music"):
                 await _bounded_restore_step("lobby music", self.audio.start_lobby_music)
 
-            # Restart idle monitor with fresh timer
-            self.idle_monitor.start()
+            # Restart idle monitor with fresh timer (StopMenu stopped it for a stopped menu)
+            if not menu_stopped:
+                self.idle_monitor.start()
         finally:
             self._lobby_restarting = False
 
-        logger.info("Lobby restarted after game")
+        logger.info("Lobby restored after game" + (" (menu stays stopped)" if menu_stopped else ""))
 
     def _build_game_config(self, game_mode, players: list):
         """
