@@ -34,6 +34,11 @@ type candidate struct {
 	// danger marks an R4 candidate of the danger path (UC-040 A43, BR-032): a player
 	// in sustained danger before the first elimination, skill level optional.
 	danger bool
+	// rule is the id of the rule that proposed the candidate ("R1".."R9", "R4d"
+	// for R4's danger path); the decide answer's prediction comes from it (#2479,
+	// UC-040 A44, BR-034, rulesPrediction). Unexported and never serialized, so
+	// the rules golden is unchanged.
+	rule string
 }
 
 // statueVarianceEpsilon is the movement-variance level below which a player is
@@ -118,6 +123,7 @@ func enduranceCandidates(c gamecontext.GameContext, fit FitnessThresholds) []can
 			urgency:    urgency,
 			cost:       costOf(InterventionAdjustMusicTempo),
 			difficulty: true,
+			rule:       "R1",
 		},
 		{
 			decision: Decision{
@@ -132,6 +138,7 @@ func enduranceCandidates(c gamecontext.GameContext, fit FitnessThresholds) []can
 			objective: ObjectiveEndurance,
 			urgency:   clamp01(urgency * 0.5),
 			cost:      costOf(InterventionPlayAudioCue),
+			rule:      "R2",
 		},
 	}
 }
@@ -179,6 +186,7 @@ func balancedCandidates(c gamecontext.GameContext, fit FitnessThresholds) []cand
 				urgency:    clamp01((gap - fit.BalancedMaxSkillGap) / (1 - fit.BalancedMaxSkillGap)),
 				cost:       costOf(InterventionAdjustPlayerSensitivity),
 				difficulty: true,
+				rule:       "R3",
 			})
 		}
 	}
@@ -212,6 +220,7 @@ func balancedCandidates(c gamecontext.GameContext, fit FitnessThresholds) []cand
 					urgency:     urgency,
 					cost:        costOf(InterventionGrantShield),
 					shieldCatch: true,
+					rule:        "R4",
 				})
 			}
 		}
@@ -265,6 +274,7 @@ func dangerShieldCandidates(c gamecontext.GameContext, active []*gamecontext.Pla
 			cost:        costOf(InterventionGrantShield),
 			shieldCatch: true,
 			danger:      true,
+			rule:        "R4d",
 		})
 	}
 	return out
@@ -398,6 +408,7 @@ func accelerateCandidates(c gamecontext.GameContext, fit FitnessThresholds, weig
 		urgency:    clamp01((dur - target) / target),
 		cost:       costOf(InterventionAdjustMusicTempo),
 		difficulty: true,
+		rule:       "R5",
 	}}
 
 	// R6: eliminate the least-moving player.
@@ -428,6 +439,7 @@ func accelerateCandidates(c gamecontext.GameContext, fit FitnessThresholds, weig
 				objective: ObjectiveAccelerate,
 				urgency:   clamp01((dur - 1.5*target) / target),
 				cost:      costOf(InterventionEliminatePlayer),
+				rule:      "R6",
 			})
 		}
 	}
@@ -444,6 +456,7 @@ func accelerateCandidates(c gamecontext.GameContext, fit FitnessThresholds, weig
 			objective: ObjectiveAccelerate,
 			urgency:   clamp01((dur - 2*target) / target),
 			cost:      costOf(InterventionEndGame),
+			rule:      "R7",
 		})
 	}
 	return out
@@ -483,6 +496,7 @@ func chaosCandidates(c gamecontext.GameContext, pol Policy, roll float64, rollTa
 				objective: ObjectiveChaos,
 				urgency:   clamp01(1 - *p.MovementVariance/statueVarianceEpsilon),
 				cost:      costOf(InterventionSendControllerEffect),
+				rule:      "R8",
 			})
 		}
 	}
@@ -500,6 +514,7 @@ func chaosCandidates(c gamecontext.GameContext, pol Policy, roll float64, rollTa
 			objective: ObjectiveChaos,
 			urgency:   clamp01(0.6 * roll),
 			cost:      costOf(InterventionSendControllerEffect),
+			rule:      "R9",
 		})
 	}
 	return out

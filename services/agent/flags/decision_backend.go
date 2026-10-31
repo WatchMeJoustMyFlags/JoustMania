@@ -28,6 +28,7 @@ const (
 	keyDecisionMinIntervalMs             = "decision.min_interval_ms"
 	keyDecisionMinGapAfterAnswerMs       = "decision.min_gap_after_answer_ms"
 	keyDecisionMaxStateAgeMs             = "decision.max_state_age_ms"
+	keyDecisionPredictionsEnabled        = "decision.predictions_enabled"
 	keyDecisionClaudeModel               = "decision.claude.model"
 	keyDecisionClaudeTimeoutMs           = "decision.claude.timeout_ms"
 	keyDecisionClaudeBaseURL             = "decision.claude.base_url"
@@ -188,9 +189,15 @@ type DecisionBackend struct {
 	// remote answer was built on may be when the answer lands and would act.
 	// Zero disables the check; a negative value falls back to the default.
 	MaxStateAge time.Duration
-	Claude      RemoteBackendConfig
-	OpenAI      RemoteBackendConfig
-	Jev         RemoteBackendConfig
+	// PredictionsOff is decision.predictions_enabled = off (#2479, UC-040 A44,
+	// BR-034): the agent registers, times and scores no decision prediction and no
+	// base-rate control. Default on; a missing or unreadable value reads on (it
+	// only observes and cannot widen anything). Inverted so the zero value of a
+	// hand-built snapshot matches the default.
+	PredictionsOff bool
+	Claude         RemoteBackendConfig
+	OpenAI         RemoteBackendConfig
+	Jev            RemoteBackendConfig
 }
 
 // IsRules reports whether the rules engine is the selected backend. A zero-value
@@ -243,6 +250,7 @@ func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
 		MinInterval:            f.minIntervalFlag(ctx),
 		MinGapAfterAnswer:      f.nonNegativeMsFlag(ctx, keyDecisionMinGapAfterAnswerMs, DefaultDecisionMinGapAfterAnswerMs),
 		MaxStateAge:            f.nonNegativeMsFlag(ctx, keyDecisionMaxStateAgeMs, DefaultDecisionMaxStateAgeMs),
+		PredictionsOff:         !f.boolFlag(ctx, keyDecisionPredictionsEnabled, true),
 		Claude: RemoteBackendConfig{
 			BaseURL: f.stringFlag(ctx, keyDecisionClaudeBaseURL, DefaultDecisionClaudeBaseURL),
 			Model:   f.stringFlag(ctx, keyDecisionClaudeModel, DefaultDecisionClaudeModel),

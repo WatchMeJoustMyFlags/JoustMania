@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -191,6 +192,17 @@ type decideRecord struct {
 	permissionKnown bool
 	blocked         bool
 	blockReason     BlockReason
+	// applied is true when that decision's write was applied (#2479).
+	applied bool
+
+	// Prediction (#2479, UC-040 A44, BR-034; prediction_hook.go): the decision's
+	// prediction, the context its baseline is taken from (nil = do not register),
+	// whether decision.predictions_enabled was off, and what registration returned.
+	prediction       *decide.Prediction
+	predictionCtx    *gamecontext.GameContext
+	predictionsOff   bool
+	predictionID     string
+	predictionMerged bool
 }
 
 // notePermission records what the permission chain did with the first decision
@@ -204,6 +216,7 @@ func (rec *decideRecord) notePermission(state *LayerState, before int) {
 	rec.permissionKnown = true
 	rec.blocked = !first.Dispatched
 	rec.blockReason = first.BlockReason
+	rec.applied = slices.Contains(state.appliedOutcomes, before)
 }
 
 // buildDecideRequest builds the FFA decide request for c with the shield-ledger
@@ -284,6 +297,9 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, rules R
 		end:            now(),
 		outcome:        DecideOutcomeAct,
 		threshold:      snapshot.Decision.ActConfidenceThreshold,
+		prediction:     resp.Prediction,
+		predictionCtx:  &c,
+		predictionsOff: snapshot.Decision.PredictionsOff,
 	}
 	iv, hasIV := resp.Find(decide.QuestionFFAIntervention)
 	if hasIV {
@@ -667,6 +683,7 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 	// flip of decision.jev.act_confidence_threshold (or the global) mid-flight
 	// applies to the in-flight answer.
 	rec.threshold, rec.thresholdSource = live.Decision.ActThreshold(rec.used)
+	rec.predictionsOff = live.Decision.PredictionsOff
 	if !live.Enabled {
 		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DecideDiscardKillSwitch
 		return
@@ -723,6 +740,7 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 			if iv, found := resp.Find(decide.QuestionFFAIntervention); found {
 				rec.confidence = iv.Confidence
 			}
+			rec.prediction, rec.predictionCtx = resp.Prediction, &current
 		}
 	} else {
 		decisions = rules.Evaluate(ctx, current)
@@ -757,6 +775,12 @@ func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, c
 		return
 	}
 	rec.routed = true
+	// #2479: the remote answer's prediction (lever default while no model states
+	// one), registered when the record ends: acted, or a counterfactual when held,
+	// blocked or discarded. Not when the game is gone: nothing could be scored.
+	if ok && gameActive(current) {
+		rec.prediction, rec.predictionCtx = remotePrediction(rec.resp, d, current), &current
+	}
 	if rec.confidence < rec.threshold {
 		rec.outcome = DecideOutcomeHeld
 		return
@@ -871,6 +895,7 @@ func (l *Loop) emitDecideSpan(parent context.Context, rec *decideRecord, c gamec
 	_, span := l.Tracer.Start(parent, SpanDecide,
 		trace.WithTimestamp(rec.start),
 		trace.WithSpanKind(trace.SpanKindInternal))
+	l.registerPrediction(span, rec)
 	l.setDecideAttributes(span, rec, c)
 	span.End(trace.WithTimestamp(rec.end))
 }
@@ -880,6 +905,7 @@ func (l *Loop) endDecideSpan(span trace.Span, rec *decideRecord, c gamecontext.G
 	if rec.end.IsZero() {
 		rec.end = l.nowOrDefault()()
 	}
+	l.registerPrediction(span, rec)
 	l.setDecideAttributes(span, rec, c)
 	span.End()
 }
@@ -929,6 +955,7 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 			attrs = append(attrs, attribute.String(AttrDecideBlockReason, string(rec.blockReason)))
 		}
 	}
+	attrs = append(attrs, predictionAttributes(rec)...)
 	if rec.err != nil {
 		attrs = append(attrs, semconv.ErrorTypeKey.String(decideErrorType(rec)))
 		span.SetStatus(codes.Error, rec.fallbackReason)

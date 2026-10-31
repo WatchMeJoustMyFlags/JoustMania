@@ -40,6 +40,7 @@ import (
 	"github.com/joustmania/agent/keysafe"
 	"github.com/joustmania/agent/llm"
 	"github.com/joustmania/agent/patterngame"
+	"github.com/joustmania/agent/prediction"
 	"github.com/joustmania/agent/promote"
 	otelmetric "go.opentelemetry.io/otel/metric"
 )
@@ -522,7 +523,9 @@ type components struct {
 	text          *textBackends
 	window        *gamewindow.Store
 
-	decideBackends  *decision.DecideRegistry
+	decideBackends *decision.DecideRegistry
+	// predictions is the shared prediction book (#2479, UC-040 A44, BR-034).
+	predictions     *prediction.Book
 	experimentFlags *experimentFlagLookup
 	loops           *decision.LoopSet
 	infraStore      *infracontext.Store
@@ -664,6 +667,13 @@ func (c *components) buildDecisionLoops() {
 	c.decideBackends = newDecideRegistry(decideEnv, newDecideHTTPClient())
 	// experimentFlags is installed once the experiment registry exists (buildExperimentStack).
 	c.experimentFlags = &experimentFlagLookup{}
+	// Prediction book (#2479, UC-040 A44, BR-034): one per process, shared by every
+	// loop and the game-end chain. Its horizon timers are bounded by c.ctx and joined
+	// at shutdown; the horizon check re-reads the game from the multiplexer (late
+	// bound: c.mux is assigned before any signal arrives).
+	c.predictions = prediction.New(c.ctx, func(gameID string) (gamecontext.GameContext, bool) {
+		return decision.MuxContextProvider{Mux: c.mux}.Current(gameID)
+	})
 	c.loops = decision.NewLoopSet(c.newDecisionLoop)
 
 	// Infrastructure observe + rollout path (#733/#734, M3): a parallel store fed
@@ -792,6 +802,9 @@ func (c *components) newDecisionLoop(gameID string) *decision.Loop {
 	c.agentFlags.LatchShieldMode(context.Background(), gameID)
 	// Shared decision-backend registry (#1226): decision.backend selects who decides.
 	loop.SetDecideRegistry(c.decideBackends)
+	// Decision predictions (#2479): registered with the shared book while
+	// decision.predictions_enabled is on (default; read per cycle).
+	loop.SetPredictionBook(c.predictions)
 	// The objective-weighted rules engine (#726) is the active default, built
 	// FRESH per loop (see the factory doc above). Its objective weights are driven
 	// live from the `objectives` flag each cycle; policy/fitness run on
@@ -1122,6 +1135,7 @@ func (c *components) buildPipeline(listenAddr, healthAddr string) *serverCompone
 		mux:              c.mux,
 		loops:            c.loops,
 		retro:            c.retro,
+		predictions:      c.predictions,
 		evictInterval:    c.lifecycleHolder.EvictInterval(),
 		evictIntervalSrc: c.lifecycleHolder.EvictInterval,
 		shadow:           shadow,
@@ -1174,7 +1188,7 @@ func (c *components) newStore(staleEnds otelmetric.Int64Counter) func(gameID str
 		// A stale end (UC-041 A4, #1494: the game's game_active series went silent,
 		// so its telemetry broke) is counted, kept out of experiments by
 		// expLoop.onGameEnd itself, and skipped by retro, summary and proposer.
-		s.OnGameEnd = buildGameEndChain(staleEnds,
+		s.OnGameEnd = buildGameEndChain(staleEnds, c.predictions.OnGameEnd,
 			experimentOnGameEnd, c.retro.OnGameEnd, c.summaries.OnGameEnd, c.proposeOnGameEnd)
 		return s
 	}

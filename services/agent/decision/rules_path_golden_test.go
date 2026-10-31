@@ -40,6 +40,32 @@ type rulesGoldenFixture struct {
 }
 
 func TestRulesPathGolden(t *testing.T) {
+	gotJSON := rulesGoldenJSON(t, false, nil)
+	path := filepath.Join("testdata", "rules_path_golden.json")
+	if *updateRulesGolden {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(gotJSON, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read golden: %v (run with -update-rules-golden on main to create it)", err)
+	}
+	if string(append(gotJSON, '\n')) != string(want) {
+		t.Fatalf("rules path diverged from the pre-#1234 golden.\n got: %s\nwant: %s", gotJSON, want)
+	}
+}
+
+// rulesGoldenJSON runs the golden fixtures and returns the marshalled outcomes
+// and applied decisions. predictionsOff and wire (called on every loop, e.g. to
+// attach a prediction book, #2479) let a test run the same fixtures with
+// predictions on and off.
+func rulesGoldenJSON(t *testing.T, predictionsOff bool, wire func(*Loop, *time.Time)) []byte {
+	t.Helper()
 	var got []rulesGoldenFixture
 	for _, fx := range decideFixtures() {
 		clock := time.Unix(10_000, 0)
@@ -50,8 +76,12 @@ func TestRulesPathGolden(t *testing.T) {
 			Decision: flags.DecisionBackend{
 				Backend:                flags.DecisionBackendRules,
 				ActConfidenceThreshold: flags.DefaultDecisionActConfidenceThreshold,
+				PredictionsOff:         predictionsOff,
 			},
 		})
+		if wire != nil {
+			wire(l, &clock)
+		}
 		engine := newTestEngine(fx.cfg, &clock)
 		// R4's catch-up reads the loop's shield grants as main.go wires it (UC-040
 		// A41, BR-030; #2395): the one intended golden change, in the balanced fixture.
@@ -81,21 +111,5 @@ func TestRulesPathGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join("testdata", "rules_path_golden.json")
-	if *updateRulesGolden {
-		if err := os.MkdirAll("testdata", 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, append(gotJSON, '\n'), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden: %v (run with -update-rules-golden on main to create it)", err)
-	}
-	if string(append(gotJSON, '\n')) != string(want) {
-		t.Fatalf("rules path diverged from the pre-#1234 golden.\n got: %s\nwant: %s", gotJSON, want)
-	}
+	return gotJSON
 }

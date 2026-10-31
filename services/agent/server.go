@@ -47,6 +47,10 @@ type serverComponents struct {
 	// nil (tests that do not exercise the retro path).
 	retro *decision.RetroCoordinator
 
+	// predictions is the prediction book (#2479); its horizon timer goroutines are
+	// bounded by the root context and joined on shutdown. May be nil (tests).
+	predictions interface{ Await() }
+
 	// evictInterval is the eviction ticker cadence. main() hot-reloads it from the
 	// lifecycle holder via evictIntervalSrc; tests pass a fixed value.
 	evictInterval time.Duration
@@ -166,6 +170,10 @@ func (c *serverComponents) run(ctx context.Context) error {
 		// then joins them. No retro outlives the process.
 		if c.retro != nil {
 			c.retro.AwaitInflight()
+		}
+		// The prediction book's timers stop without scoring on ctx cancellation (#2479).
+		if c.predictions != nil {
+			c.predictions.Await()
 		}
 		// Join the game-end proposer goroutines (#2323) and the shadow game (#2318),
 		// which ctx bounds. GracefulStop above ended the OTLP intake, so no new game end

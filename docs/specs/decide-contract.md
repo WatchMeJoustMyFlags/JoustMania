@@ -816,12 +816,15 @@ the writer or the rules weights: the worst a wrong prediction or goal can do is 
 
 One pure `Measure(context, scope, window)` per characteristic, returning a value and an `ok` flag. A window needs samples for at least
 half of its seconds and at least 2 players, otherwise the result is `data_missing`. Windows are at most 15 s so
-the before and after windows both fit the 32-sample (about 32 s) movement history. Hard bounds of the characteristics are in §14.4.
+the before and after windows both fit the 32-sample (about 32 s) movement history. A field prediction (`activity_rises` field,
+`closeness_rises`) fixes its player set at registration: the alive players covered in the before window. The after window is
+measured on the same set; when one of them is no longer alive it is `data_missing`, so a spread that shrank because the outlier
+left is never a hit. Hard bounds of the characteristics are in §14.4.
 
 | Characteristic | Definition | Signal | Scopes |
 |---|---|---|---|
 | `duration` | Game seconds elapsed, and whether the game ended (end reason zero or `root_span`; a stale end is no data) | `Session.DurationSeconds`, the game-end consumer | game |
-| `activity` | Mean of (movement intensity / death threshold) over the window's movement samples (at least half of the window's seconds must have a sample), for the players alive when it is measured; normalised, so tempo changes do not move the scale | `History`, `SpeedTrack.DeathThreshold`, `Session.DeathThreshold` | field, target |
+| `activity` | Mean of (movement intensity / death threshold) over the window's movement samples (at least half of the window's distinct seconds must have a sample), for the players alive when it is measured; normalised, so tempo changes do not move the scale | `History`, `SpeedTrack.DeathThreshold`, `Session.DeathThreshold` | field, target |
 | `change` | Swing of field `activity`: max minus min of the 5 s sub-window means inside the window | the same buckets | field |
 | `elimination_pace` | Eliminations observed in (t, t+w], per minute; predictions use the count | `Timeline` elimination events (agent receipt time), `EliminationSequence` length as fallback | game |
 | `survival` | The target is alive at t+w and was never eliminated in between | `EliminationSequence`, `Active` | target |
@@ -854,12 +857,12 @@ as a prior and not a claim; the value is in the table):
 
 | Rule | Prediction |
 |---|---|
-| R1 slow music | `no_elimination` 15, P 0.6. Direction unverified: slower music lowers the death threshold (eliminations may come faster); scored by lift against the control, not assumed |
+| R1 slow music | none: the tempo effect on eliminations is confounded with the threshold change (the death threshold slides from SLOW_MAX to FAST_MAX with the tempo, so slowing makes the same motion more deadly); see #2487 |
 | R2 calming cue | `no_elimination` 15, P 0.55 |
 | R3 handicap outlier | `closeness_rises` 15, P 0.55 |
 | R4 catch-up shield | `survives` 15, P 0.7 |
 | R4d danger shield | `survives` 10, P 0.7 |
-| R5 speed up | `elimination` 30, P 0.6 |
+| R5 speed up | `elimination` 30, P 0.6 (kept as a prior, but the tempo-threshold confound applies here too: a faster tempo raises the death threshold, so eliminations can get rarer; scored by lift against the control, see #2487) |
 | R6 eliminate least-moving | `game_ends` 60, P 0.5, only when at least 3 players stay alive after the action, otherwise none (trivially true) |
 | R7 end game | none (the action is the outcome) |
 | R8 statue rumble | `activity_rises` target 10, P 0.6 |
@@ -867,15 +870,14 @@ as a prior and not a claim; the value is in the table):
 
 **Lever defaults** (a pure mapping from the chosen intervention, stamped `Source=lever_default`; used for jev, which has no
 free text, and for claude and openai when the ask is off; `P` is fixed at 0.6). It scores the lever map, not the model, and reports keep the two
-apart. Directions marked unverified are scored by lift against the control:
+apart. Every lever default is scored by lift against the control:
 
 | Intervention | Prediction |
 |---|---|
 | `grant_shield`, `toughness_boost` (with a target) | `survives` 15 |
 | `adjust_player_sensitivity` with a value < 1 (easing), with a target | `survives` 15 |
 | `set_player_handicap` with a value > 1 (help; `rein_in` < 1 gets none), with a target | `survives` 15 |
-| `adjust_music_tempo` below the current tempo | `no_elimination` 15 (direction unverified) |
-| `adjust_music_tempo` above the current tempo | `activity_rises` field 10 (direction unverified); equal or unknown tempo: none |
+| `adjust_music_tempo` (either direction) | none: the tempo effect on eliminations is confounded with the threshold change, and `activity` (intensity / threshold) moves with the threshold too; see #2487 |
 | `send_controller_effect` | `activity_rises` target 10 |
 | `adjust_global_difficulty` < 1; `adjust_global_sensitivity` > 2; `set_pacing_profile` `calm` | `no_elimination` 15 (sensitivity is read against the middle level 2, the context has no current level) |
 | `adjust_global_difficulty` > 1; `adjust_global_sensitivity` < 2; `set_pacing_profile` `frantic` | `elimination` 30 |
@@ -896,7 +898,7 @@ per game and 256 overall (the oldest is evicted as unscorable `overflow`); an id
 Pending predictions are in memory only and are lost on a restart; the loss shows as registered minus scored counts and a
 decide span with no outcome span. A late game end for an unknown game is a no-op.
 
-**Controls (base rates).** Per real or shadow game, every 15 s of play, one `Source=control` prediction (P 0.5, `decide.backend` `none`), cycling through the six templates in turn (target templates on a deterministic hash-chosen alive player), at most 12 per game. Control horizons: `survives` 15, `no_elimination` 15, `elimination` 30, `activity_rises` 10, `closeness_rises` 15, `game_ends` 60. They are scored by the same code and give each
+**Controls (base rates).** Per real or shadow game, every 15 s of play, one `Source=control` prediction (P 0.5, `decide.backend` `none`), cycling through the six templates in turn from a per-game offset (a hash of the game id, so a template's base rate is not always sampled at the same game times) (target templates on a deterministic hash-chosen alive player), at most 12 per game. Control horizons: `survives` 15, `no_elimination` 15, `elimination` 30, `activity_rises` 10, `closeness_rises` 15, `game_ends` 60. They are scored by the same code and give each
 template's base rate; **lift = hit rate minus base rate**. A reported hit rate always sits next to its base rate, its unscorable
 rate and `game_kind`; the headline uses `acted=true` and real games, and shadow results are labelled "shadow calibration".
 

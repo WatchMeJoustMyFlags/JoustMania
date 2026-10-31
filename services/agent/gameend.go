@@ -68,17 +68,21 @@ func skipStaleGameEnd(fn func(gamecontext.GameContext)) func(gamecontext.GameCon
 }
 
 // buildGameEndChain composes the per-partition game-end chain (#928, #1100,
-// #1494): the stale counter, then the experiment conclusion hook (first, so it
-// records fitness before the retro reads it back), then the retro, the game
-// summary and the proposer. A stale end (UC-041 A4) is counted and reaches the
-// experiment hook, which releases its slot itself, but never the retro, the
-// summary or the proposer. nil consumers are skipped.
+// #1494, #2479): the stale counter, then the prediction book (second, so every
+// pending prediction of the game is scored before any consumer reads the game,
+// UC-040 A44), then the experiment conclusion hook (so it records fitness before
+// the retro reads it back), then the retro, the game summary and the proposer. A
+// stale end (UC-041 A4) is counted and reaches the prediction book (which scores
+// its pending predictions stale_end) and the experiment hook, which releases its
+// slot itself, but never the retro, the summary or the proposer. nil consumers
+// are skipped.
 func buildGameEndChain(
 	staleEnds otelmetric.Int64Counter,
-	experimentOnGameEnd, retroOnGameEnd, summaryOnGameEnd, proposeOnGameEnd func(gamecontext.GameContext),
+	predictionsOnGameEnd, experimentOnGameEnd, retroOnGameEnd, summaryOnGameEnd, proposeOnGameEnd func(gamecontext.GameContext),
 ) func(gamecontext.GameContext) {
 	return chainGameEnd(
 		countStaleGameEnd(staleEnds),
+		predictionsOnGameEnd,
 		experimentOnGameEnd,
 		skipStaleGameEnd(retroOnGameEnd),
 		skipStaleGameEnd(summaryOnGameEnd),

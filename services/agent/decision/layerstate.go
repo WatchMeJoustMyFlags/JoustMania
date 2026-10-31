@@ -106,6 +106,10 @@ type LayerState struct {
 	// window was refused by the rate limit: every lower-ranked decision of the
 	// cycle is then refused without charge (UC-040 BR-014, budget.go).
 	budgetHeld bool
+	// appliedOutcomes holds the indexes of Outcomes whose write was applied (not
+	// gated off, not failed): a prediction is acted only then (#2479). Unexported,
+	// so the rules golden (which marshals Outcomes) is unchanged.
+	appliedOutcomes []int
 }
 
 // newLayerState seeds a LayerState from the evaluated flag snapshot. Outcomes
