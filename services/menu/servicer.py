@@ -88,6 +88,8 @@ class MenuServicer(GameLifecycleMixin, menu_pb2_grpc.MenuServiceServicer):
         self._lobby_restarting = False
         # Set when a lobby restore begins; a failed start never restores twice (UC-010 A3, #2379).
         self._lobby_restore_started = False
+        # Set when a StartMenu during the lifecycle undid a StopMenu (UC-010 A12, #2449).
+        self._start_menu_deferred = False
         # game_id of the game the lifecycle follows once its start is confirmed; None before (UC-010 BR-009).
         self._followed_game_id: str | None = None
 
@@ -271,6 +273,15 @@ class MenuServicer(GameLifecycleMixin, menu_pb2_grpc.MenuServiceServicer):
         start_time = time.time()
         span = trace.get_current_span()
         try:
+            if self._lifecycle_live():
+                # UC-010 A12 (#2449): no lobby mid-game, whatever the state; the lifecycle's end applies
+                # the request (checked before RUNNING, so the answer during a lifecycle is always success).
+                if self.start_menu_during_game():
+                    await self.event_publisher.publish("menu_started", {})
+                logger.info("StartMenu during a game: the lobby restore will start the menu")
+                metrics.grpc_requests_total.labels(method="StartMenu", status="deferred").inc()
+                return menu_pb2.StartMenuResponse(success=True, error="")
+
             if self.state == menu_pb2.MenuState.RUNNING:
                 metrics.grpc_requests_total.labels(method="StartMenu", status="already_running").inc()
                 return menu_pb2.StartMenuResponse(success=False, error="Menu already running")

@@ -91,7 +91,7 @@ def build_menu(servicer) -> None:
 
     # Register handlers with state manager
     servicer.connected_handler = ConnectedHandler()
-    servicer.ready_handler = ReadyHandler(start_game_callback=servicer._start_game)
+    servicer.ready_handler = ReadyHandler(start_game_callback=servicer._ready_start_game)
     servicer.state_manager.register_handler(servicer.connected_handler)
     servicer.state_manager.register_handler(servicer.ready_handler)
 
