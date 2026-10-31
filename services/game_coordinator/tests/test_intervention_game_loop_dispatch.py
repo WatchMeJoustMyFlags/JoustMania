@@ -30,6 +30,7 @@ from services.game_coordinator.game_loop_dispatch import (
 )
 from services.game_coordinator.games.base import GAME_VOLUME
 from services.game_coordinator.interventions import InterventionManager, SessionView
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 UC040_A26 = pytest.mark.uc("UC-040", flow="A26", br=["BR-018"])
@@ -125,20 +126,13 @@ class LoopBoundStream:
         self.writes.append(msg)
 
 
-class FakePlayer:
-    def __init__(self, serial, alive=True):
-        self.serial = serial
-        self.alive = alive
-
-
-class FakeGame:
-    def __init__(self, game_loop: GameLoopThread):
-        self.audio_client = game_loop.call(LoopBoundAudioClient)
-        self.gameplay_stream = game_loop.call(LoopBoundStream)
-        self.players = {"S1": FakePlayer("S1"), "S2": FakePlayer("S2")}
-
-    def get_game_name(self):
-        return "Nonstop Joust"
+def _loop_bound_game(game_loop: GameLoopThread) -> FakeInterventionGame:
+    """A shared fake whose audio client and stream are bound to ``game_loop``."""
+    return FakeInterventionGame(
+        serials=("S1", "S2"),
+        audio_client=game_loop.call(LoopBoundAudioClient),
+        gameplay_stream=game_loop.call(LoopBoundStream),
+    )
 
 
 class FakeFlagClient:
@@ -239,7 +233,7 @@ async def _set_volume_and_evaluate(mgr, volume):
 async def test_volume_override_cross_loop_fails_when_run_on_main_loop(game_loop):
     """Pre-#1250 behaviour: no game loop on the view, handler awaited inline on
     the main loop, the game-loop client fails with the cross-loop error."""
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, None, events, is_real=True)  # loop unknown -> inline (old path)
     mgr, _ = make_manager(lambda: [view], interventions={"volume_override": -1})
@@ -257,7 +251,7 @@ async def test_volume_override_cross_loop_fails_when_run_on_main_loop(game_loop)
 @UC040_A26
 @pytest.mark.asyncio
 async def test_volume_override_runs_on_owning_game_loop(game_loop, metrics_patched):
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
     mgr, _ = make_manager(lambda: [view], interventions={"volume_override": -1})
@@ -274,7 +268,7 @@ async def test_volume_override_runs_on_owning_game_loop(game_loop, metrics_patch
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("metrics_patched")
 async def test_volume_revert_runs_on_owning_game_loop(game_loop):
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
     mgr, _ = make_manager(lambda: [view], interventions={"volume_override": -1})
@@ -290,7 +284,7 @@ async def test_volume_revert_runs_on_owning_game_loop(game_loop):
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("metrics_patched")
 async def test_controller_effect_writes_stream_on_owning_game_loop(game_loop):
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
     mgr, _ = make_manager(lambda: [view], interventions={})
@@ -308,7 +302,7 @@ async def test_controller_effect_writes_stream_on_owning_game_loop(game_loop):
 @pytest.mark.usefixtures("metrics_patched")
 async def test_end_game_stays_on_main_loop(game_loop):
     """end_game joins the game thread, so it must not run on that thread's loop."""
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
     seen = {}
@@ -331,7 +325,7 @@ async def test_end_game_stays_on_main_loop(game_loop):
 @UC040_A26
 @pytest.mark.asyncio
 async def test_closed_game_loop_fails_closed_without_hanging(game_loop, metrics_patched):
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     game_loop.stop()  # the game ended: loop closed
     assert game_loop.loop.is_closed()
     events = []
@@ -354,7 +348,7 @@ async def test_closed_game_loop_fails_closed_without_hanging(game_loop, metrics_
 async def test_started_effect_is_never_cancelled_and_reported_late(game_loop, metrics_patched):
     """Half-apply guard: an effect still running at the deadline finishes on the
     game loop (both halves applied) and is reported game_loop_late, not blocked."""
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
     mgr, _ = make_manager(lambda: [view], interventions={"volume_override": -1}, timeout_s=0.1)
@@ -439,7 +433,7 @@ async def test_game_loop_stopping_mid_effect_reports_late(game_loop):
 async def test_end_game_that_closes_the_loop_logs_no_failure(game_loop, metrics_patched):
     """end_game ends the game (its loop closes): no cue is dispatched to the dead
     loop, so no false 'not applied' warning and no failure count."""
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
 
@@ -464,7 +458,7 @@ async def test_end_game_that_closes_the_loop_logs_no_failure(game_loop, metrics_
 @UC040_A26
 @pytest.mark.asyncio
 async def test_agent_cue_runs_on_game_loop_and_respects_mute(game_loop, metrics_patched):
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
     mgr, _ = make_manager(lambda: [view], interventions={})
@@ -492,7 +486,7 @@ async def test_agent_cue_runs_on_game_loop_and_respects_mute(game_loop, metrics_
 @UC040_A26
 @pytest.mark.asyncio
 async def test_revert_failure_is_logged_and_counted_once(game_loop, metrics_patched):
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
     mgr, _ = make_manager(lambda: [view], interventions={"volume_override": -1})
@@ -511,7 +505,7 @@ async def test_revert_failure_is_logged_and_counted_once(game_loop, metrics_patc
 @UC040_A26
 @pytest.mark.asyncio
 async def test_handler_exception_still_propagates_as_handler_error(game_loop, metrics_patched):
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
     mgr, _ = make_manager(lambda: [view], interventions={"volume_override": -1})
@@ -572,7 +566,7 @@ async def test_inline_when_already_on_game_loop():
 async def test_real_and_shadow_games_each_use_their_own_loop():
     real_loop, shadow_loop = GameLoopThread(), GameLoopThread()
     try:
-        real_game, shadow_game = FakeGame(real_loop), FakeGame(shadow_loop)
+        real_game, shadow_game = _loop_bound_game(real_loop), _loop_bound_game(shadow_loop)
         events = []
         views = [
             _session("real-1", real_game, real_loop.loop, events, is_real=True),
@@ -599,7 +593,7 @@ async def test_real_and_shadow_games_each_use_their_own_loop():
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("metrics_patched")
 async def test_retired_session_drops_its_dispatcher(game_loop):
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     events = []
     views = [_session("g1", game, game_loop.loop, events, is_real=True)]
     mgr, _ = make_manager(lambda: views, interventions={"volume_override": -1})
@@ -687,7 +681,7 @@ async def test_factor_revert_runs_on_game_loop_after_queued_apply(game_loop, fla
     it: the player ends neutral, not stuck on the applied factor."""
     from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
 
-    game = FakeGame(game_loop)
+    game = _loop_bound_game(game_loop)
     game.players = {"S1": FactorPlayer("S1")}
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)

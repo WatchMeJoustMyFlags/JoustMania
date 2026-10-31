@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from lib.types import GameEvent
 from services.game_coordinator.interventions import InterventionManager, SessionView
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 
 AMBIENT = "play_audio_cue,send_controller_effect,adjust_volume"
 STANDARD = AMBIENT + ",adjust_music_tempo,set_pacing_profile,adjust_player_sensitivity,grant_shield"
@@ -107,30 +108,10 @@ class AgentStore(_Store):
         return default
 
 
-class FakePlayer:
-    def __init__(self, serial):
-        self.serial = serial
-        self.alive = True
-        self.sensitivity_factor = 1.0
-
-
-class FakeGame:
-    def __init__(self):
-        self.players = {s: FakePlayer(s) for s in SERIALS}
-        self.killed: list[str] = []
-
-    def get_game_name(self):
-        return "Joust Free-for-All"
-
-    async def _kill_player(self, serial, _accel, reason=None):
-        self.killed.append(serial)
-        self.players[serial].alive = False
-
-
 class Harness:
     def __init__(self, interventions, agent, time_fn=None):
         self.events: list[dict] = []
-        self.game = FakeGame()
+        self.game = FakeInterventionGame(serials=SERIALS)
 
         async def publish(event_type, data):
             if event_type == GameEvent.AGENT_INTERVENTION:

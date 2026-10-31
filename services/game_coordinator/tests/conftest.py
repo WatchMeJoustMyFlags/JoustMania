@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
+from openfeature.evaluation_context import EvaluationContext
 
 # Setup paths for imports
 test_dir = Path(__file__).parent
@@ -33,6 +34,8 @@ disable_logging_for_tests()
 # Import protobufs from proto package (must be after path setup)
 from proto import controller_manager_pb2
 from services.game_coordinator import game_clock
+from services.game_coordinator.games.base import SLOW_MUSIC_SPEED, Player
+from services.game_coordinator.games.flag_snapshot import resolve_music_windows
 
 
 async def async_noop(*_args, **_kwargs):
@@ -48,6 +51,114 @@ class MockGameplayStream:
 
     async def write(self, message):
         self.messages.append(message)
+
+
+class FakeInterventionGame:
+    """The one game double for intervention handler tests (#2361).
+
+    Implements the surface of ``intervention_target.InterventionTarget`` with the
+    same method names and parameter names as ``BaseGameMode``; the Protocol is
+    deliberately not a base class (its ``...`` bodies would return None silently).
+    ``tests/test_intervention_target.py`` fails when this fake drifts from the
+    Protocol. Players are the real ``games.base.Player`` dataclass. Every effect
+    is recorded in the lists below.
+    """
+
+    def __init__(
+        self,
+        name="Nonstop Joust",
+        *,
+        serials=("p1", "p2"),
+        players=None,
+        audio_client=None,
+        gameplay_stream=None,
+        flag_eval_context=None,
+        game_kind="primary",
+        experiment_id="",
+        arm="",
+        revive_result=True,
+        kill_result=True,
+    ):
+        self._name = name
+        self.players = dict(players) if players is not None else {s: Player(serial=s) for s in serials}
+        self.audio_client = audio_client
+        self.gameplay_stream = gameplay_stream
+        self._flag_eval_context = flag_eval_context if flag_eval_context is not None else EvaluationContext()
+        self.game_kind = game_kind
+        self.experiment_id = experiment_id
+        self.arm = arm
+        self.revive_result = revive_result
+        self.kill_result = kill_result
+        self.music_speed = SLOW_MUSIC_SPEED
+        self.music_windows = resolve_music_windows({})
+        self.init_music_windows = self.music_windows
+        self.tempo_override = None
+        self.tempo_ramp = None
+        self.global_difficulty_factor = 1.0
+        self.killed: list[str] = []
+        self.revived: list[str] = []
+        self.shields: list[tuple[str, float]] = []
+        self.toughness_boosts: list[tuple[str, float, float | None]] = []
+        self.warned: list[str] = []
+        self.tightened: list[str] = []
+        self.rubberbands: list[tuple[str, float | None]] = []
+        self.sounds: list[tuple[object, int]] = []
+        self.sensitivity_overrides: list[object] = []
+
+    @property
+    def flag_eval_context(self):
+        return self._flag_eval_context
+
+    def get_game_name(self):
+        return self._name
+
+    def apply_sensitivity_override(self, value):
+        self.sensitivity_overrides.append(value)
+
+    def clear_sensitivity_override(self):
+        self.sensitivity_overrides.append(None)
+
+    async def _play_sound(self, sound, priority=2, parent_context=None, volume=1.0):  # noqa: ARG002
+        self.sounds.append((sound, priority))
+
+    async def _kill_player(self, serial, accel_mag, reason="motion"):  # noqa: ARG002
+        self.killed.append(serial)
+        self.players[serial].alive = False
+        return self.kill_result
+
+    async def revive_player(self, serial, spawn_grace=None):  # noqa: ARG002
+        self.revived.append(serial)
+        if self.revive_result:
+            self.players[serial].alive = True
+        return self.revive_result
+
+    async def grant_shield(self, serial, seconds):
+        self.shields.append((serial, seconds))
+        return True
+
+    async def grant_toughness_boost(self, serial, seconds, boost=None):
+        self.toughness_boosts.append((serial, seconds, boost))
+        return True
+
+    async def warn_player(self, serial):
+        self.warned.append(serial)
+        return True
+
+    async def apply_soft_penalty(self, serial, seconds, factor=None):  # noqa: ARG002
+        self.tightened.append(serial)
+        return True
+
+    async def apply_auto_rubberband(self, strength, seconds=None):
+        self.rubberbands.append((strength, seconds))
+        return 0
+
+    def grants(self, flag_key) -> list[str]:
+        """Serials granted by ``flag_key``, in order."""
+        if flag_key == "shield_seconds":
+            return [s for s, _ in self.shields]
+        if flag_key == "toughness_boost_seconds":
+            return [s for s, _, _ in self.toughness_boosts]
+        return self.warned + self.tightened
 
 
 class MockBidirectionalStream:

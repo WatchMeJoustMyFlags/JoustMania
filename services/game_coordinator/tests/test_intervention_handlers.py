@@ -16,7 +16,7 @@ from openfeature.flag_evaluation import FlagEvaluationDetails
 
 from lib.types import GameEvent
 from proto import controller_manager_pb2
-from services.game_coordinator.games.base import GAME_VOLUME
+from services.game_coordinator.games.base import GAME_VOLUME, Player
 from services.game_coordinator.interventions import (
     INTERVENTION_SPECS,
     InterventionContext,
@@ -24,6 +24,7 @@ from services.game_coordinator.interventions import (
     _parse_effect_payload,
     _resolve_effect,
 )
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 
@@ -55,29 +56,6 @@ class FakeFlagClient:
 
     def get_object_value(self, key, default, _ctx=None):
         return self.values.get(key, default)
-
-
-class FakePlayer:
-    def __init__(self, serial, alive=True):
-        self.serial = serial
-        self.alive = alive
-
-
-class FakeGame:
-    """Stand-in for a live BaseGameMode with an audio client + gameplay stream."""
-
-    def __init__(self, name="Nonstop Joust", players=None, with_audio=True, with_stream=True):
-        self._name = name
-        self.players = players or {}
-        self.audio_client = AsyncMock() if with_audio else None
-        self.gameplay_stream = AsyncMock() if with_stream else None
-        self.played_sounds = []
-
-    def get_game_name(self):
-        return self._name
-
-    async def _play_sound(self, sound, priority=2, parent_context=None):
-        self.played_sounds.append((sound, priority))
 
 
 ALL_TYPES = {
@@ -143,34 +121,34 @@ def test_resolve_effect():
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_audio_cue_plays_sound_via_game():
-    game = FakeGame()
+    game = FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"audio_cue": edge_event("audio_cue", "wolfdown")}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
-    assert game.played_sounds == [("wolfdown", 2)]
+    assert game.sounds == [("wolfdown", 2)]
 
 
 @pytest.mark.asyncio
 async def test_audio_cue_applies_once_per_event():
-    game = FakeGame()
+    game = FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"audio_cue": edge_event("audio_cue", "wolfdown")}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
         await mgr.evaluate_all()  # same event list -> no replay
-    assert len(game.played_sounds) == 1
+    assert len(game.sounds) == 1
     with patch("services.game_coordinator.metrics.interventions_total"):
         mgr._interventions_client.set("audio_cue", edge_event("audio_cue", "wolfdown", seq=2))
         await mgr.evaluate_all()  # new event -> plays again
-    assert len(game.played_sounds) == 2
+    assert len(game.sounds) == 2
 
 
 @pytest.mark.asyncio
 async def test_audio_cue_empty_sound_is_defensive_noop():
-    game = FakeGame()
+    game = FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"audio_cue": edge_event("audio_cue", " ")}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
-    assert game.played_sounds == []
+    assert game.sounds == []
 
 
 @pytest.mark.asyncio
@@ -191,7 +169,7 @@ async def test_audio_cue_no_game_is_noop():
 async def test_volume_override_applies_value():
     from proto import audio_pb2
 
-    game = FakeGame()
+    game = FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"volume_override": -1}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # prime baseline (none)
@@ -206,7 +184,7 @@ async def test_volume_override_applies_value():
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-031", flow="A3")
 async def test_volume_override_restores_game_volume_on_revert():
-    game = FakeGame()
+    game = FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"volume_override": 0.3}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # 0.3 applied
@@ -220,7 +198,7 @@ async def test_volume_override_restores_game_volume_on_revert():
 
 @pytest.mark.asyncio
 async def test_volume_override_no_audio_client_is_noop():
-    game = FakeGame(with_audio=False)
+    game = FakeInterventionGame(players={}, gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"volume_override": -1}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -233,8 +211,8 @@ async def test_volume_override_no_audio_client_is_noop():
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_controller_effect_per_serial_routing():
-    players = {"ctrl_a": FakePlayer("ctrl_a"), "ctrl_b": FakePlayer("ctrl_b")}
-    game = FakeGame(players=players)
+    players = {"ctrl_a": Player("ctrl_a"), "ctrl_b": Player("ctrl_b")}
+    game = FakeInterventionGame(players=players, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(
         interventions={"controller_effect": edge_event("controller_effect", "ctrl_a:pulse")}, game=game
     )
@@ -249,11 +227,11 @@ async def test_controller_effect_per_serial_routing():
 @pytest.mark.asyncio
 async def test_controller_effect_broadcast_to_alive_players():
     players = {
-        "ctrl_a": FakePlayer("ctrl_a", alive=True),
-        "ctrl_b": FakePlayer("ctrl_b", alive=True),
-        "ctrl_c": FakePlayer("ctrl_c", alive=False),  # dead -> excluded
+        "ctrl_a": Player("ctrl_a", alive=True),
+        "ctrl_b": Player("ctrl_b", alive=True),
+        "ctrl_c": Player("ctrl_c", alive=False),  # dead -> excluded
     }
-    game = FakeGame(players=players)
+    game = FakeInterventionGame(players=players, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"controller_effect": edge_event("controller_effect", ":flash")}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -263,8 +241,8 @@ async def test_controller_effect_broadcast_to_alive_players():
 
 @pytest.mark.asyncio
 async def test_controller_effect_unknown_effect_is_noop():
-    players = {"ctrl_a": FakePlayer("ctrl_a")}
-    game = FakeGame(players=players)
+    players = {"ctrl_a": Player("ctrl_a")}
+    game = FakeInterventionGame(players=players, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(
         interventions={"controller_effect": edge_event("controller_effect", "ctrl_a:disco")}, game=game
     )
@@ -275,8 +253,8 @@ async def test_controller_effect_unknown_effect_is_noop():
 
 @pytest.mark.asyncio
 async def test_controller_effect_malformed_payload_is_noop():
-    players = {"ctrl_a": FakePlayer("ctrl_a")}
-    game = FakeGame(players=players)
+    players = {"ctrl_a": Player("ctrl_a")}
+    game = FakeInterventionGame(players=players, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(
         interventions={"controller_effect": edge_event("controller_effect", "ctrl_a")}, game=game
     )  # no effect
@@ -287,8 +265,8 @@ async def test_controller_effect_malformed_payload_is_noop():
 
 @pytest.mark.asyncio
 async def test_controller_effect_no_stream_is_noop():
-    players = {"ctrl_a": FakePlayer("ctrl_a")}
-    game = FakeGame(players=players, with_stream=False)
+    players = {"ctrl_a": Player("ctrl_a")}
+    game = FakeInterventionGame(players=players, audio_client=AsyncMock())
     mgr, _ = make_manager(
         interventions={"controller_effect": edge_event("controller_effect", "ctrl_a:pulse")}, game=game
     )
@@ -311,8 +289,8 @@ def _effect_ctx(game, payload):
 @pytest.mark.asyncio
 async def test_controller_effect_stops_when_the_game_end_closes_the_stream():
     """The game end cancels the call under the write (#1914): stop, do not raise."""
-    players = {"ctrl_a": FakePlayer("ctrl_a"), "ctrl_b": FakePlayer("ctrl_b")}
-    game = FakeGame(players=players)
+    players = {"ctrl_a": Player("ctrl_a"), "ctrl_b": Player("ctrl_b")}
+    game = FakeInterventionGame(players=players, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     game.gameplay_stream.write.side_effect = asyncio.CancelledError()
     mgr, _ = make_manager(game=game)
     try:
@@ -326,8 +304,8 @@ async def test_controller_effect_stops_when_the_game_end_closes_the_stream():
 @pytest.mark.asyncio
 async def test_controller_effect_propagates_a_cancel_of_its_own_task():
     """A cancel of the dispatching task itself is not swallowed."""
-    players = {"ctrl_a": FakePlayer("ctrl_a")}
-    game = FakeGame(players=players)
+    players = {"ctrl_a": Player("ctrl_a")}
+    game = FakeInterventionGame(players=players, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     writing = asyncio.Event()
 
     async def blocked_write(_cmd):
@@ -348,8 +326,8 @@ async def test_controller_effect_propagates_a_cancel_of_its_own_task():
 @pytest.mark.asyncio
 async def test_controller_effect_stops_on_a_stream_that_finished_before_the_write():
     """grpc.aio rejects a write on a finished call with InvalidStateError (#1913): stop, do not raise."""
-    players = {"ctrl_a": FakePlayer("ctrl_a"), "ctrl_b": FakePlayer("ctrl_b")}
-    game = FakeGame(players=players)
+    players = {"ctrl_a": Player("ctrl_a"), "ctrl_b": Player("ctrl_b")}
+    game = FakeInterventionGame(players=players, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     game.gameplay_stream.write.side_effect = asyncio.InvalidStateError("RPC already finished")
     mgr, _ = make_manager(game=game)
     try:
@@ -363,8 +341,8 @@ async def test_controller_effect_stops_on_a_stream_that_finished_before_the_writ
 @pytest.mark.asyncio
 async def test_controller_effect_writes_to_the_stream_a_reopen_swapped_in():
     """A reopen during a broadcast: the remaining writes go to the new call (#1913)."""
-    players = {"ctrl_a": FakePlayer("ctrl_a"), "ctrl_b": FakePlayer("ctrl_b")}
-    game = FakeGame(players=players)
+    players = {"ctrl_a": Player("ctrl_a"), "ctrl_b": Player("ctrl_b")}
+    game = FakeInterventionGame(players=players, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     old_stream, new_stream = game.gameplay_stream, AsyncMock()
 
     async def write_then_reopen(_cmd):
@@ -383,7 +361,7 @@ async def test_controller_effect_writes_to_the_stream_a_reopen_swapped_in():
 @pytest.mark.asyncio
 async def test_end_game_delegates_to_force_end():
     end = AsyncMock(return_value=(True, ""))
-    game = FakeGame()
+    game = FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"end_game": edge_event("end_game")}, game=game, end_game_fn=end)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -394,7 +372,7 @@ async def test_end_game_delegates_to_force_end():
 @pytest.mark.asyncio
 async def test_end_game_applies_once_per_event():
     end = AsyncMock(return_value=(True, ""))
-    game = FakeGame()
+    game = FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"end_game": edge_event("end_game")}, game=game, end_game_fn=end)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()
@@ -418,7 +396,11 @@ async def test_end_game_no_game_is_safe_noop():
 
 @pytest.mark.asyncio
 async def test_end_game_no_fn_wired_is_noop():
-    mgr, _ = make_manager(interventions={"end_game": edge_event("end_game")}, game=FakeGame(), end_game_fn=None)
+    mgr, _ = make_manager(
+        interventions={"end_game": edge_event("end_game")},
+        game=FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock()),
+        end_game_fn=None,
+    )
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # no end_game_fn -> defensive no-op (no crash)
 
@@ -429,7 +411,7 @@ async def test_end_game_no_fn_wired_is_noop():
 @pytest.mark.asyncio
 async def test_volume_revert_runs_even_when_not_allowed():
     """Restoring the default volume on revert is not gated by the allow-list."""
-    game = FakeGame()
+    game = FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(interventions={"volume_override": 0.3}, game=game)
     with patch("services.game_coordinator.metrics.interventions_total"):
         await mgr.evaluate_all()  # apply 0.3
@@ -454,7 +436,7 @@ def test_register_ambient_handlers_wires_all_four():
 @pytest.mark.asyncio
 async def test_handle_volume_revert_direct():
     """Direct unit test of the revert handler restoring GAME_VOLUME."""
-    game = FakeGame()
+    game = FakeInterventionGame(players={}, audio_client=AsyncMock(), gameplay_stream=AsyncMock())
     mgr, _ = make_manager(game=game)
     spec = next(s for s in INTERVENTION_SPECS if s.flag_key == "volume_override")
     ctx = InterventionContext(spec=spec, value=-1, payload="", target_serial=None, game=game, objective="balanced")

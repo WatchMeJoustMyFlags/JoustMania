@@ -36,6 +36,7 @@ from services.game_coordinator.interventions import (
 )
 from services.game_coordinator.lifecycle_handlers import register_lifecycle_handlers
 from services.game_coordinator.servicer import GameCoordinatorServicer
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 from services.game_coordinator.tests.event_list_helpers import BASELINE, EDGE_FLAGS, edge_event
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
@@ -129,32 +130,6 @@ class AgentStub:
         return default
 
 
-class FakePlayer:
-    def __init__(self, serial):
-        self.serial = serial
-        self.alive = True
-        self.sensitivity_factor = 1.0
-
-
-class FakeGame:
-    """Records the effects the one-shot handlers apply to a live game."""
-
-    def __init__(self):
-        self.players = {"p1": FakePlayer("p1"), "p2": FakePlayer("p2")}
-        self.killed: list[str] = []
-        self.sounds: list[str] = []
-
-    def get_game_name(self):
-        return "Joust Free-for-All"
-
-    async def _kill_player(self, serial, _accel, reason=None):
-        self.killed.append(serial)
-        self.players[serial].alive = False
-
-    async def _play_sound(self, sound_id, priority=0):
-        self.sounds.append(sound_id)
-
-
 class Harness:
     """A manager plus a mutable live-session list, mimicking the servicer."""
 
@@ -184,8 +159,8 @@ class Harness:
 
         return publish
 
-    def start_game(self, game_id: str, *, real: bool = True) -> FakeGame:
-        game = FakeGame()
+    def start_game(self, game_id: str, *, real: bool = True) -> FakeInterventionGame:
+        game = FakeInterventionGame()
         self.views.append(SessionView(game_id=game_id, game=game, publish=self._publisher(game_id), is_real=real))
         return game
 
@@ -387,7 +362,7 @@ async def _start_through_servicer(game_kind: str):
     assert ok, game_id
     session = servicer.sessions[game_id]
     assert session.game_kind == ("primary" if game_kind == "real" else "shadow")
-    game = FakeGame()
+    game = FakeInterventionGame()
     session.current_game = game  # the game thread built the instance
     return servicer, flags, end_game_fn, game_id, game
 
