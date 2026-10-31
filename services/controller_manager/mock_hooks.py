@@ -52,3 +52,6 @@ class MockFeatureHooks:
     def take_led_failures(self, serial: str) -> int:  # noqa: ARG002
         """Return and clear the count of failed LED writes of a serial. Default: none are counted."""
         return 0
+
+    def force_led_resend(self, serial: str) -> None:  # noqa: ARG002, B027
+        """Send the serial's LED output on the next LED tick even if unchanged (UC-002 BR-008). Default: no dedupe."""

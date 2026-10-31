@@ -105,6 +105,12 @@ class MultiplexerBackend(ControllerBackend):
         # interval, whatever its output does meanwhile.
         self._led_failures_counted: dict[str, float] = {}
         self._effect_active: set[str] = set()
+        # Serials whose output the next batch sends even when unchanged: a controller
+        # that (re)registered, whose first write after the re-open may have been
+        # dropped (UC-002 BR-008, #2466). Only a batch write that the adapter accepted
+        # clears it; a direct write does not, so the batch always repeats it once.
+        # set.add / discard from the event loop need no lock.
+        self._force_led_resend: set[str] = set()
         self._led_lock = threading.Lock()
 
         # Build adapter_type -> adapter lookup for targeting resolution.
@@ -216,6 +222,7 @@ class MultiplexerBackend(ControllerBackend):
             self._last_led_update.clear()
             self._led_failures_counted.clear()
             self._led_failures.clear()
+            self._force_led_resend.clear()
             self._effect_active.clear()
         # Remove the controller_*_info series too, so a stopped service does not
         # leave its controllers counted (#1726). Under the lock: a worker set(1)
@@ -510,6 +517,7 @@ class MultiplexerBackend(ControllerBackend):
             self._led_failures.pop(serial, None)
             self._led_failures_counted.pop(serial, None)
             self._effect_active.discard(serial)
+            self._force_led_resend.discard(serial)
             # Remove the info series so disconnected controllers don't
             # appear in dashboard counts
             self._remove_info_series(serial)
@@ -606,12 +614,14 @@ class MultiplexerBackend(ControllerBackend):
                     last_update = self._last_led_update.get(serial, 0)
                     output_changed = output != last_sent
                     keepalive_needed = current_time - last_update >= LED_KEEPALIVE_S
-                    if not (output_changed or keepalive_needed):
+                    forced = serial in self._force_led_resend
+                    if not (output_changed or keepalive_needed or forced):
                         continue
 
                     r, g, b = stored_color
                     if adapter.set_output(serial, r, g, b, rumble):
                         self._mark_output_sent(serial, stored_color, rumble, current_time)
+                        self._force_led_resend.discard(serial)
                     else:
                         self._count_led_failure(serial, current_time)
                 updated_count += 1
@@ -626,6 +636,10 @@ class MultiplexerBackend(ControllerBackend):
                         self._count_led_failure(serial, current_time)
 
         return updated_count
+
+    def force_led_resend(self, serial: str) -> None:
+        """Send the serial's output on the next LED batch even if unchanged (UC-002 BR-008, #2466)."""
+        self._force_led_resend.add(serial)
 
     # -- Per-controller methods -----------------------------------------------
 

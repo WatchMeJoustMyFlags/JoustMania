@@ -1318,6 +1318,67 @@ class TestLedBatchSendsTheDesiredOutputState:
         assert mux._led_failures[self.SERIAL] == 2
 
 
+class TestReRegisteredLedIsSentAgain:
+    """UC-002 BR-008 (#2466): a (re)registered controller's output is sent again although unchanged.
+
+    The first write after a re-open can be dropped by a device that is not ready yet;
+    the batch then still believes the colour is out and would only resend at the 2 s
+    keep-alive.
+    """
+
+    SERIAL = "AA:AA"
+
+    def _mux_with_colour_sent(self):
+        adapter = _specced_adapter([self.SERIAL])
+        mux = MultiplexerBackend(adapters=[adapter])
+        mux.get_connected_controllers()
+        mux._led_colors[self.SERIAL] = (0, 51, 255)
+        assert mux.update_all_leds() == 1
+        adapter.set_output.reset_mock()
+        return mux, adapter
+
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_forced_resend_goes_out_once_on_the_next_tick(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        mux.update_all_leds()
+        adapter.set_output.assert_not_called()  # unchanged: deduplicated
+
+        mux.force_led_resend(self.SERIAL)
+        mux.update_all_leds()
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 0, 51, 255, 0)
+
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    @pytest.mark.asyncio
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    async def test_a_direct_write_does_not_cancel_the_forced_resend(self, _metrics):
+        """The restore's own direct write is the one that may be dropped: the batch repeats it."""
+        mux, adapter = self._mux_with_colour_sent()
+
+        mux.force_led_resend(self.SERIAL)
+        assert await mux.set_led_color(self.SERIAL, 0, 51, 255) is True
+        adapter.set_output.reset_mock()
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 0, 51, 255, 0)
+
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_failed_forced_resend_is_tried_again(self, _metrics):
+        mux, adapter = self._mux_with_colour_sent()
+        mux.force_led_resend(self.SERIAL)
+        adapter.set_output.return_value = False
+        mux.update_all_leds()
+
+        adapter.set_output.reset_mock()
+        adapter.set_output.return_value = True
+        mux.update_all_leds()
+
+        adapter.set_output.assert_called_once_with(self.SERIAL, 0, 51, 255, 0)
+
+
 class TestRumbleWithoutAColour:
     """#2365: rumble is a desired output of its own; direct-write failures are counted."""
 

@@ -21,6 +21,7 @@ import contextlib
 import grpc
 from opentelemetry import trace
 
+from lib.colors import Colors
 from lib.controller_constants import ControllerInfoKey, normalize_serial
 from lib.telemetry import get_tracer
 from proto import controller_manager_pb2, controller_manager_pb2_grpc
@@ -37,6 +38,9 @@ from services.controller_manager.feedback_manager import FeedbackManager, clamp_
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.name_manager import NameManager
 from services.controller_manager.state_builder import StateBuilder
+
+# LED of a game's player that reconnects while the game runs: it is out (UC-002 BR-008).
+OUT_OF_GAME_COLOR = Colors.Black.value
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +153,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             base_colors=self.feedback_manager.base_colors,
             event_publisher=self.event_publisher,
             name_manager=self.name_manager,
+            reconnect_color=self._reconnect_color,
         )
         self._discovery_started = False
         # serial -> (GapStats, ConnectionQuality) last sent on dashboard frames (UC-035 BR-005)
@@ -782,9 +787,29 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         return pending
 
     def _release_game_stream(self, subscriber_id: str) -> None:
-        """Forget a closed game stream's players (UC-004 BR-003)."""
-        self._game_stream_serials.pop(subscriber_id, None)
+        """Forget a closed game stream's players (UC-004 BR-003).
+
+        A player that is not connected keeps no game colour: it would be its LED when it
+        reconnects in the lobby, which owns it then (UC-002 BR-008, #2466).
+        """
+        roster = self._game_stream_serials.pop(subscriber_id, None) or set()
         self._pending_disconnects.pop(subscriber_id, None)
+        for serial in roster:
+            if serial not in self.tracked_controllers and not self._in_game(serial):
+                self.feedback_manager.base_colors.pop(serial, None)
+
+    def _reconnect_color(self, serial: str) -> tuple[int, int, int] | None:
+        """The LED colour of a controller that (re)registers, from its current owner (UC-002 BR-008, #2466).
+
+        A player of an open game was eliminated by its disconnect (UC-020 A2, UC-002 BR-004),
+        so it gets the out state (off), never its cached game colour; effects restore to off
+        too. Any other controller belongs to the lobby: its last lobby colour, if one was set
+        (the menu repaints it on the connect event, UC-002 step 6).
+        """
+        if self._in_game(serial):
+            self.feedback_manager.base_colors[serial] = OUT_OF_GAME_COLOR
+            return OUT_OF_GAME_COLOR
+        return self.feedback_manager.base_colors.get(serial)
 
     def _schedule_shield_cleanup(self, serials: set[str]) -> None:
         """End the shield and charge layers of a closed game stream's players after a short delay.
