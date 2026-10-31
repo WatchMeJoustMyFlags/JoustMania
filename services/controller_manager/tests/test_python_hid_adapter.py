@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import grpc
 import pytest
 
+from proto import psmove_hid_pb2
 from services.controller_manager.multiplexer.adapter import DiscoveryFailedError
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RPC_TIMEOUT_S
@@ -15,11 +16,14 @@ from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 SERIAL = "AABBCCDDEEFF"
 
 
+from services.controller_manager.tests.backend_doubles import autospec_channel
+
+
 def _make_adapter() -> PythonHidAdapter:
     """PythonHidAdapter without __init__ (no gRPC channel), stream marked running."""
     adapter = PythonHidAdapter.__new__(PythonHidAdapter)
     adapter._init_stream_state()
-    adapter._channel = MagicMock()
+    adapter._channel = autospec_channel()
     adapter._stub = MagicMock(spec_set=["Discover", "Open", "Close", "CloseAll", "StreamIO"])
     adapter._command_queue = queue.Queue(maxsize=256)
     adapter._latest_data = {}
@@ -84,15 +88,16 @@ class TestAdapterNameOnRediscovery:
     @pytest.mark.uc("UC-035", br=["BR-009"])
     def test_rediscovery_with_empty_adapter_name_clears_the_old_adapter(self):
         adapter = _make_adapter()
-        ctrl = MagicMock()
+        ctrl = psmove_hid_pb2.DiscoveredController()
         ctrl.serial = SERIAL
         ctrl.product_id = 0x03D5
         ctrl.adapter_name = "hci1"
-        adapter._stub.Discover.return_value = MagicMock(controllers=[ctrl])
+        response = psmove_hid_pb2.DiscoverResponse(controllers=[ctrl])
+        adapter._stub.Discover.return_value = response
         adapter.discover()
         assert adapter.get_adapter_for_serial(SERIAL) == "hci1"
 
-        ctrl.adapter_name = ""
+        response.controllers[0].adapter_name = ""
         adapter.discover()
 
         assert adapter.get_adapter_for_serial(SERIAL) is None

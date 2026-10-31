@@ -19,7 +19,7 @@ sys.path.insert(0, str(project_root))
 
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
-from services.controller_manager.tests.backend_doubles import autospec_adapter
+from services.controller_manager.tests.backend_doubles import autospec_adapter, autospec_flag_client
 
 
 def _make_adapter(adapter_type="mock", serials=None):
@@ -888,7 +888,7 @@ class TestResolveAdapterForSerial:
         a2 = _make_adapter("rust")
         mux = MultiplexerBackend(adapters=[a1, a2])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("rust", "TARGETING_MATCH")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
@@ -903,7 +903,7 @@ class TestResolveAdapterForSerial:
         a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("python", "DEFAULT")
         # No rollout in play
         with (
@@ -923,7 +923,7 @@ class TestResolveAdapterForSerial:
         a_un = _make_adapter("unstable")
         mux = MultiplexerBackend(adapters=[a_py], routing_only_adapters=[a_un])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         # bluetooth_backend resolves to default variant (no TARGETING_MATCH)
         mock_client.get_string_details.return_value = _details("python", "DEFAULT")
 
@@ -945,7 +945,7 @@ class TestResolveAdapterForSerial:
         a_un = _make_adapter("unstable")
         mux = MultiplexerBackend(adapters=[a_py], routing_only_adapters=[a_un])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("python", "TARGETING_MATCH")
 
         with (
@@ -963,7 +963,7 @@ class TestResolveAdapterForSerial:
         a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("nonexistent", "DEFAULT")
 
         with (
@@ -979,7 +979,7 @@ class TestResolveAdapterForSerial:
         a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("", "DEFAULT")
 
         with (
@@ -1005,7 +1005,7 @@ class TestResolveAdapterForSerial:
         a1 = _make_adapter("python")
         mux = MultiplexerBackend(adapters=[a1])
 
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _details("python", "TARGETING_MATCH")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):

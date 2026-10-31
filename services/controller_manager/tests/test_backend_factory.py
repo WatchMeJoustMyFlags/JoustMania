@@ -22,7 +22,7 @@ from services.controller_manager.backend_factory import (
     _resolve_backend_name,
     create_backend,
 )
-from services.controller_manager.tests.backend_doubles import autospec_adapter
+from services.controller_manager.tests.backend_doubles import autospec_adapter, autospec_flag_client
 
 
 def _mock_details(value, reason="STATIC", error_code=None, error_message=None):
@@ -40,7 +40,7 @@ class TestResolveBackendName:
 
     def test_openfeature_flag_used(self):
         """OpenFeature flag should be used as primary selection."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("python")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
@@ -49,7 +49,7 @@ class TestResolveBackendName:
 
     def test_openfeature_flag_case_insensitive(self):
         """Flag value should be lowercased."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("Mock")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
@@ -64,7 +64,7 @@ class TestResolveBackendName:
 
     def test_returns_none_when_flag_returns_empty(self):
         """Empty flag value should fall through to platform detection."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
@@ -100,7 +100,7 @@ class TestCreateBackendIntegration:
 
     def test_openfeature_selects_mock(self):
         """OpenFeature flag 'mock' should create MultiplexerBackend with mock adapter."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("mock")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
@@ -133,7 +133,7 @@ class TestMultiAdapterCreation:
 
     def test_duplicate_backend_names_rejected(self):
         """flag='mock,mock' -> ValueError."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("mock,mock")
 
         with (
@@ -144,7 +144,7 @@ class TestMultiAdapterCreation:
 
     def test_mock_python_creates_two_adapters(self):
         """flag='mock,python' -> MultiplexerBackend with 2 adapters."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("mock,python")
 
         with (
@@ -168,7 +168,7 @@ class TestMultiAdapterCreation:
     def test_python_registers_unstable_routing_only_adapter(self):
         """When python is loaded, an UnstableAdapter sharing it is registered
         as a routing-only target (not as a discoverer)."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("python")
 
         with (
@@ -196,7 +196,7 @@ class TestMultiAdapterCreation:
 
     def test_no_python_means_no_unstable_adapter(self):
         """rust-only -> no unstable routing-only adapter registered."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("rust")
 
         with (
@@ -217,7 +217,7 @@ class TestMultiAdapterCreation:
 
     def test_single_name_creates_adapter(self):
         """flag='mock' -> MultiplexerBackend with 1 adapter."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("mock")
 
         with patch("lib.feature_flags.get_flag_client", return_value=mock_client):
@@ -229,7 +229,7 @@ class TestMultiAdapterCreation:
 
     def test_rust_flag_creates_rust_adapter(self):
         """flag='rust' -> MultiplexerBackend with rust + mock adapters."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("rust")
 
         with (
@@ -251,7 +251,7 @@ class TestMultiAdapterCreation:
 
     def test_whitespace_in_comma_separated_is_trimmed(self):
         """flag='mock , python' -> names trimmed properly."""
-        mock_client = MagicMock()
+        mock_client = autospec_flag_client()
         mock_client.get_string_details.return_value = _mock_details("mock , python")
 
         with (
