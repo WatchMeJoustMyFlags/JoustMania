@@ -706,7 +706,7 @@ class TestTournamentIntroPhase:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._tournament_intro_phase()
 
         intro_events = event_collector.get_events_of_type("tournament_intro")
@@ -728,7 +728,7 @@ class TestTournamentIntroPhase:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._tournament_intro_phase()
 
         color_serials = set()
@@ -762,7 +762,7 @@ class TestTournamentIntroPhase:
             if call_count >= 2:
                 game.running = False
 
-        with patch("services.game_coordinator.games.tournament.asyncio.sleep", side_effect=stop_after_first):
+        with patch("services.game_coordinator.game_clock.sleep", side_effect=stop_after_first):
             await game._tournament_intro_phase()
 
         # Intro event is published before the loop, so it will exist
@@ -803,7 +803,7 @@ class TestTournamentEndGame:
         game.gameplay_stream = RecordingGameplayStream()
         game._play_sound = AsyncMock()
         # Patch asyncio.sleep to be instant for the celebration loop
-        self._sleep_patcher = patch("services.game_coordinator.games.tournament.asyncio.sleep", new_callable=AsyncMock)
+        self._sleep_patcher = patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock)
         self._sleep_patcher.start()
 
     def _teardown(self):

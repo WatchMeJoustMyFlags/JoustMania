@@ -8,7 +8,6 @@ with byes (automatically advance to next round).
 Original JoustMania behavior preserved.
 """
 
-import asyncio
 import logging
 import math
 from dataclasses import dataclass
@@ -438,7 +437,7 @@ class TournamentGame(StreamedIntroGameMode):
         for _ in range(round(TOURNAMENT_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         logger.info("Tournament intro phase complete")
 

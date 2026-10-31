@@ -281,7 +281,7 @@ class FightClubGame(StreamedIntroGameMode):
         for _ in range(round(FC_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         logger.info("Fight Club intro complete")
 
@@ -426,7 +426,7 @@ class FightClubGame(StreamedIntroGameMode):
             if remaining <= COUNTDOWN_BEEPS and remaining > 0:
                 await self._play_sound(Sound.SFX_BEEP_LOUD, priority=2)
 
-            await asyncio.sleep(1.0)
+            await game_clock.sleep(1.0)
 
     async def _handle_timeout(self):
         """
@@ -856,9 +856,9 @@ class FightClubGame(StreamedIntroGameMode):
     async def _pause_between_rounds(self) -> None:
         """Brief pause between a round's kill and the next round.
 
-        A seam: tests replace it on the instance instead of patching ``asyncio.sleep``.
+        A seam: tests replace it on the instance instead of patching ``game_clock.sleep``.
         """
-        await asyncio.sleep(ROUND_PAUSE_SECONDS)
+        await game_clock.sleep(ROUND_PAUSE_SECONDS)
 
     def _sends_death_effect(self, serial: str) -> bool:  # noqa: ARG002
         """No base death effect: a Fight Club loser stays in the game (D-G32, #1342 class).

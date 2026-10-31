@@ -583,7 +583,7 @@ class TestWerewolfRevealMechanics:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._reveal_werewolves()
 
         assert game.revealed is True
@@ -600,7 +600,7 @@ class TestWerewolfRevealMechanics:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._reveal_werewolves()
 
         for serial in game.werewolf_serials:
@@ -622,7 +622,7 @@ class TestWerewolfRevealMechanics:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._reveal_werewolves()
 
         reveal_events = event_collector.get_events_of_type("werewolf_reveal")
@@ -644,7 +644,7 @@ class TestWerewolfRevealMechanics:
         async def stop_game(*_args, **_kwargs):
             game.running = False
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", side_effect=stop_game):
+        with patch("services.game_coordinator.game_clock.sleep", side_effect=stop_game):
             await game._reveal_werewolves()
 
         assert game.revealed is False
@@ -661,7 +661,7 @@ class TestWerewolfRevealMechanics:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._reveal_werewolves()
 
         calls = game._play_sound.call_args_list
@@ -684,7 +684,7 @@ class TestWerewolfRevealMechanics:
         dead_wolf = game.werewolf_serials[0]
         game.players[dead_wolf].alive = False
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._reveal_werewolves()
 
         # Dead werewolf should NOT have color changed or revealed set
@@ -726,7 +726,7 @@ class TestWerewolfIntroPhase:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._werewolf_intro_phase()
 
         start_events = event_collector.get_events_of_type("werewolf_intro_start")
@@ -747,7 +747,7 @@ class TestWerewolfIntroPhase:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._werewolf_intro_phase()
 
         # Check base_color commands for all players
@@ -775,7 +775,7 @@ class TestWerewolfIntroPhase:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", new_callable=AsyncMock):
+        with patch("services.game_coordinator.game_clock.sleep", new_callable=AsyncMock):
             await game._werewolf_intro_phase()
 
         # Find rumble messages
@@ -808,7 +808,7 @@ class TestWerewolfIntroPhase:
             if call_count >= 2:
                 game.running = False
 
-        with patch("services.game_coordinator.games.werewolf.asyncio.sleep", side_effect=stop_after_first):
+        with patch("services.game_coordinator.game_clock.sleep", side_effect=stop_after_first):
             await game._werewolf_intro_phase()
 
         end_events = event_collector.get_events_of_type("werewolf_intro_end")

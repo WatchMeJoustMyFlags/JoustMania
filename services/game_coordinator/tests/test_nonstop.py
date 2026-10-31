@@ -30,6 +30,7 @@ from test_random_teams_formation import SERIALS, QueueControllerManager, QueueSt
 
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games import nonstop_joust as nonstop_mod
 from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.nonstop_joust import (
@@ -1654,7 +1655,7 @@ class TestNonstopRespawnClock:
         config = GamePerformanceConfig(update_frequency_hz=30)
         with (
             patch.object(get_config_manager(), "get_config", return_value=config),
-            patch.object(nonstop_mod.asyncio, "sleep", recording_sleep),
+            patch.object(game_clock, "sleep", recording_sleep),
         ):
             await asyncio.wait_for(game._game_loop(), timeout=5)
 

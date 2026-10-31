@@ -311,7 +311,7 @@ class WerewolfGame(StreamedIntroGameMode):
         for _ in range(round(WEREWOLF_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         await self.event_publisher("werewolf_intro_end", {})
         logger.info("Werewolf intro phase complete")
@@ -335,7 +335,7 @@ class WerewolfGame(StreamedIntroGameMode):
         Called as a background task during gameplay.
         """
         # Wait for reveal time (configurable via werewolf_reveal_time setting)
-        await asyncio.sleep(self._reveal_time)
+        await game_clock.sleep(self._reveal_time)
 
         # Nothing is revealed once a side has won (the win hold, UC-022 BR-006, #2022).
         if not self._reveal_allowed():
@@ -374,7 +374,7 @@ class WerewolfGame(StreamedIntroGameMode):
                 )
                 await self._write_effect_guarded(flash_cmd, "Werewolf reveal flash")
 
-                await asyncio.sleep(0.3)
+                await game_clock.sleep(0.3)
 
                 base_color_cmd = controller_manager_pb2.GameplayStreamControl(
                     base_color=controller_manager_pb2.ControllerColorConfig(

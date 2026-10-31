@@ -346,7 +346,7 @@ class ZombieGame(StreamedIntroGameMode):
         for _ in range(round(ZOMBIE_INTRO_DURATION_S / 0.1)):
             if not self.running:
                 return
-            await asyncio.sleep(0.1)
+            await game_clock.sleep(0.1)
 
         await self.event_publisher("zombie_intro_end", {})
         logger.info("Zombie intro phase complete")
@@ -376,7 +376,7 @@ class ZombieGame(StreamedIntroGameMode):
         }
 
         while self.running and self.time_remaining > 0:
-            await asyncio.sleep(1.0)
+            await game_clock.sleep(1.0)
             previous_remaining = self.time_remaining
             self.time_remaining -= 1.0
 
@@ -572,7 +572,7 @@ class ZombieGame(StreamedIntroGameMode):
         (UC-020 BR-003), so a winning conversion's grey lands before the rainbow.
         """
         try:
-            await asyncio.sleep(CONVERSION_COLOUR_DELAY)
+            await game_clock.sleep(CONVERSION_COLOUR_DELAY)
             player = self.players.get(serial)
             if not self.running or player is None or not player.alive or not player.is_zombie:
                 return
@@ -610,7 +610,7 @@ class ZombieGame(StreamedIntroGameMode):
             serial: Controller serial number
             delay: Respawn delay in seconds
         """
-        await asyncio.sleep(delay)
+        await game_clock.sleep(delay)
         await self._respawn_player(serial, cause="timer")
 
     async def _respawn_player(self, serial: str, cause: str = "revive") -> bool:
