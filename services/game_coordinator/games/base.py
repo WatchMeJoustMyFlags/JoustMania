@@ -227,6 +227,9 @@ class ShieldHoldCues:
     ending_lead_ms: int = 1000
     hold_rumble_intensity: int = 70
     empty_pulse_ms: int = 400
+    # #2463: the rumble ramp top (at or below hold_rumble_intensity = flat) and the LED dimming floor.
+    hold_rumble_max_intensity: int = 200
+    hold_led_floor_pct: int = 20
 
 
 SHIELD_REFUSED_CAP = "shield_cap_reached"

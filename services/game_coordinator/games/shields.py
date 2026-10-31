@@ -827,6 +827,8 @@ class ShieldMixin:
                     "shield.ending_rumble_seconds": cues.ending_lead_ms / 1000.0,
                     "shield.hold_rumble_intensity": cues.hold_rumble_intensity,
                     "shield.empty_pulse_ms": cues.empty_pulse_ms,
+                    "shield.hold_rumble_max_intensity": cues.hold_rumble_max_intensity,
+                    "shield.hold_led_floor_percent": cues.hold_led_floor_pct,
                 }
                 for key, value in settings.items():
                     metrics.shield_hold_setting.labels(setting=key, **labels).set(float(value))
@@ -894,6 +896,12 @@ class ShieldMixin:
                 "game", "shield.hold_rumble_intensity", 70, game_id=self.game_id
             ),
             "shield.empty_pulse_ms": _base.read_int_flag("game", "shield.empty_pulse_ms", 400, game_id=self.game_id),
+            "shield.hold_rumble_max_intensity": _base.read_int_flag(
+                "game", "shield.hold_rumble_max_intensity", 200, game_id=self.game_id
+            ),
+            "shield.hold_led_floor_percent": _base.read_int_flag(
+                "game", "shield.hold_led_floor_percent", 20, game_id=self.game_id
+            ),
         }
         values = {key: resolve_hold_value(raw[key], *bounds) for key, bounds in SHIELD_HOLD_CUE_FLAGS.items()}
         return ShieldHoldCues(
@@ -902,6 +910,8 @@ class ShieldMixin:
             ending_lead_ms=int(round(values["shield.ending_rumble_seconds"] * 1000)),
             hold_rumble_intensity=int(values["shield.hold_rumble_intensity"]),
             empty_pulse_ms=int(values["shield.empty_pulse_ms"]),
+            hold_rumble_max_intensity=int(values["shield.hold_rumble_max_intensity"]),
+            hold_led_floor_pct=int(values["shield.hold_led_floor_percent"]),
         )
 
     def _start_shield_hold_clock(self, now: float) -> None:
@@ -1202,7 +1212,11 @@ class ShieldMixin:
             logger.warning(f"player_shield_energy event for {serial} failed (hold state unaffected): {e}")
 
     def _hold_state_message(self, player: "Player", now: float, cue: int):
-        """The ``ShieldHoldState`` of a player now: energy, cap, full level, rate, cue and the latched cue values."""
+        """The ``ShieldHoldState`` of a player now: energy, cap, full level, rate, cue and the latched cue values.
+
+        A running activation also carries its activation energy (the usable energy at its start plus
+        any grant during it), the reference of the controller's rumble ramp and LED dimming (#2463).
+        """
         from proto import controller_manager_pb2
 
         hold = self._shield_hold
@@ -1223,7 +1237,10 @@ class ShieldMixin:
                 ending_lead_ms=cues.ending_lead_ms,
                 hold_rumble_intensity=cues.hold_rumble_intensity,
                 empty_pulse_ms=cues.empty_pulse_ms,
+                hold_rumble_max_intensity=cues.hold_rumble_max_intensity,
+                hold_led_floor_pct=cues.hold_led_floor_pct,
             ),
+            activation_ms=int(round(player.hold_usable_start * 1000)) if player.hold_started_at else 0,
         )
 
     async def _send_hold_feedback(self, serial: str, cue: int) -> None:

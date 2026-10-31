@@ -78,6 +78,15 @@ HANDLER_FLAG_READS = {
         "experiment_rung": "applies",
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
+    # Hold feedback of #2463: stack-only (no experiment arm), latched with the hold values.
+    ("game", "shield.hold_rumble_max_intensity"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
+    ("game", "shield.hold_led_floor_percent"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
+    },
     ("game", "shield.charge_rumble_intensity"): {
         "targeting": ["gameId"],
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",

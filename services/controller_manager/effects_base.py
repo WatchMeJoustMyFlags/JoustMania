@@ -83,12 +83,19 @@ HOLD_LOW_MIN = 0.20
 HOLD_LOW_HZ = 1.0
 HOLD_FULL_WHITE_BLEND = 0.50
 HOLD_FULL_HZ = 0.5
-HOLD_ACTIVE_FLOOR = 0.30
 HOLD_COLOR = (255, 255, 255)  # protected, as every shield (BR-008)
 DEFAULT_HOLD_RUMBLE_INTENSITY = 70
 HOLD_RUMBLE_MAX = 150
 DEFAULT_EMPTY_PULSE_MS = 400
 EMPTY_PULSE_MS_RANGE = (100, 800)
+# Hold rumble ramp and LED dimming (#2463, UC-040 BR-026): the rumble rises from hold_rumble to
+# the ramp top as the energy drains; at or below hold_rumble the rumble is flat (the cues before #2463).
+DEFAULT_HOLD_RUMBLE_MAX_INTENSITY = 200
+DEFAULT_HOLD_LED_FLOOR_PCT = 20
+HOLD_LED_FLOOR_PCT_RANGE = (10, 100)  # never below 10 %: an LED that looks off means death
+# The ramp writes the motor only on a step this big and this far apart (HID budget, #2462).
+HOLD_RAMP_MIN_STEP = 8
+HOLD_RAMP_MIN_INTERVAL_S = 0.1
 
 
 @dataclass(frozen=True)
@@ -147,11 +154,22 @@ class HoldCues:
     ending_lead_s: float = DEFAULT_SHIELD_ENDING_LEAD_S
     hold_rumble: int = DEFAULT_HOLD_RUMBLE_INTENSITY
     empty_pulse_ms: int = DEFAULT_EMPTY_PULSE_MS
+    ramp_max: int = DEFAULT_HOLD_RUMBLE_MAX_INTENSITY
+    led_floor_pct: int = DEFAULT_HOLD_LED_FLOOR_PCT
 
     @property
     def empty_pulse(self) -> ChargeCues:
         """One pulse of ``empty_pulse_ms`` at the cue intensity."""
         return ChargeCues(intensity=self.pulses.intensity, pulse_ms=self.empty_pulse_ms)
+
+    @property
+    def ramp(self) -> bool:
+        """Ramp mode (#2463): the rumble rises to ``ramp_max``; no ending and no empty pulse."""
+        return self.ramp_max > self.hold_rumble
+
+    @property
+    def led_floor(self) -> float:
+        return self.led_floor_pct / 100.0
 
 
 def resolve_hold_rumble_intensity(value: object) -> int:
@@ -168,6 +186,41 @@ def resolve_empty_pulse_ms(value: object) -> int:
     if pulse is None or pulse <= 0:
         return DEFAULT_EMPTY_PULSE_MS
     return int(max(EMPTY_PULSE_MS_RANGE[0], min(EMPTY_PULSE_MS_RANGE[1], pulse)))
+
+
+def resolve_hold_rumble_max_intensity(value: object) -> int:
+    """Validate ``shield.hold_rumble_max_intensity`` (flags.md §4): bad -> 200, clamped to 0..255."""
+    level = _finite_number(value)
+    if level is None or level < 0:
+        return DEFAULT_HOLD_RUMBLE_MAX_INTENSITY
+    return int(min(255.0, level))
+
+
+def resolve_hold_led_floor_pct(value: object) -> int:
+    """Validate ``shield.hold_led_floor_percent`` (flags.md §4): bad -> 20, clamped to 10..100."""
+    pct = _finite_number(value)
+    if pct is None:
+        return DEFAULT_HOLD_LED_FLOOR_PCT
+    return int(max(HOLD_LED_FLOOR_PCT_RANGE[0], min(HOLD_LED_FLOOR_PCT_RANGE[1], pct)))
+
+
+def hold_fill(remaining_s: float, ref_s: float) -> float:
+    """Share of the activation energy left, 0..1 (#2463); 1 without a reference."""
+    if ref_s <= 0:
+        return 1.0
+    return max(0.0, min(1.0, remaining_s / ref_s))
+
+
+def hold_ramp_intensity(fill: float, base: int, top: int) -> int:
+    """Rumble of a held activation with ``fill`` of its energy left (#2463, UC-040 BR-026).
+
+    ``base`` at a full activation, ``top`` when the energy runs out; flat ``base`` when
+    ``top`` is not above it.
+    """
+    if top <= base:
+        return base
+    fill = max(0.0, min(1.0, fill))
+    return int(round(base + (top - base) * (1.0 - fill)))
 
 
 @dataclass(frozen=True)
@@ -233,19 +286,23 @@ def hold_energy_frame(elapsed_s: float, state: str, color: tuple[int, int, int])
     return tuple(color)  # type: ignore[return-value]
 
 
-def hold_active_frame(remaining_s: float, cap_s: float) -> tuple[int, int, int] | None:
-    """LED colour of a running hold activation with ``remaining_s`` of energy left (UC-040 BR-026).
+def hold_active_frame(
+    remaining_s: float, ref_s: float, floor: float = DEFAULT_HOLD_LED_FLOOR_PCT / 100.0
+) -> tuple[int, int, int] | None:
+    """LED colour of a running hold activation with ``remaining_s`` of energy left (UC-040 BR-026, #2463).
 
-    White at 30 % + 70 % x (energy left / cap); the last second blinks at 4 Hz like a
-    shield (BR-008). None once the energy is gone: the layer below shows.
+    White, dimming as the energy drains: ``floor + (1 - floor) x fill²``, with ``fill`` the energy
+    left above the last second as a share of the activation energy ``ref_s`` above it, so every
+    activation starts at 100 % and reaches the floor when the last second starts. The last second
+    blinks at 4 Hz like a shield (BR-008). None once the energy is gone: the layer below shows.
     """
     if remaining_s <= 0:
         return None
     if remaining_s <= SHIELD_BLINK_WINDOW_S:
         phase = ((SHIELD_BLINK_WINDOW_S - remaining_s) * SHIELD_BLINK_HZ) % 1.0
         return (0, 0, 0) if phase >= 0.5 else HOLD_COLOR
-    fill = min(1.0, remaining_s / cap_s) if cap_s > 0 else 1.0
-    return _scale(HOLD_COLOR, HOLD_ACTIVE_FLOOR + (1.0 - HOLD_ACTIVE_FLOOR) * fill)
+    fill = hold_fill(remaining_s - SHIELD_BLINK_WINDOW_S, ref_s - SHIELD_BLINK_WINDOW_S)
+    return _scale(HOLD_COLOR, floor + (1.0 - floor) * fill * fill)
 
 
 def shield_frame(

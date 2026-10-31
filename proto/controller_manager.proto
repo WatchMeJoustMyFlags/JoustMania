@@ -258,10 +258,13 @@ enum GameEffect {
   // Shield swell (#1837, UC-040 BR-021): rumble only, 0->180->0 over 600 ms when a charge is activated.
   // Shares the rumble slot, so any later rumble (warning, death) replaces it. No LED, no layer.
   GAME_EFFECT_SHIELD_SWELL = 18;
-  // Shield hold (#2096, UC-040 BR-026): a running hold activation. White, brightness by the energy
-  // left (30-100% of the cap), last 1000ms blinks 4 Hz; duration_ms = ms until the energy runs out.
-  // A background rumble (cues.hold_rumble_intensity) while it runs, restored after one-shot rumbles;
-  // the "ending soon" double pulse cues.ending_lead_ms before its end. duration_ms=0 ends only this layer.
+  // Shield hold (#2096, UC-040 BR-026): a running hold activation. White, dimming from 100% to
+  // cues.hold_led_floor_pct as the energy drains against shield_hold.activation_ms (#2463), last 1000ms
+  // blinks 4 Hz; duration_ms = ms until the energy runs out. A background rumble while it runs, restored
+  // after one-shot rumbles: ramp mode (cues.hold_rumble_max_intensity > cues.hold_rumble_intensity, #2463)
+  // rises from hold_rumble_intensity to hold_rumble_max_intensity, no ending and no empty pulse; flat mode
+  // stays at hold_rumble_intensity with the "ending soon" double pulse cues.ending_lead_ms before its end.
+  // duration_ms=0 ends only this layer.
   GAME_EFFECT_SHIELD_HOLD = 19;
   // Shield energy (#2096, UC-040 BR-026): the idle energy of a hold game, the lowest shield layer, in the
   // base colour by state (empty steady, low / charged / full breathing). Persistent: any duration_ms > 0
@@ -274,7 +277,7 @@ enum ShieldHoldCue {
   SHIELD_HOLD_CUE_NONE = 0;
   SHIELD_HOLD_CUE_FULL = 1;    // a grant filled the pool: the #2094 grant pattern
   SHIELD_HOLD_CUE_TOP_UP = 2;  // a grant added energy without filling the pool: one pulse
-  SHIELD_HOLD_CUE_EMPTY = 3;   // an activation ran out of energy or budget: one empty pulse
+  SHIELD_HOLD_CUE_EMPTY = 3;   // an activation ran out of energy or budget: one empty pulse (flat mode only, #2463)
 }
 
 // Cue values a hold game latched at its start (UC-040 BR-026, BR-027). An absent field means the
@@ -284,7 +287,9 @@ message ShieldCueParams {
   optional int32 pulse_ms = 2;               // shield.charge_rumble_pulse_ms
   optional int32 ending_lead_ms = 3;         // shield.ending_rumble_seconds
   optional int32 hold_rumble_intensity = 4;  // shield.hold_rumble_intensity (background while active)
-  optional int32 empty_pulse_ms = 5;         // shield.empty_pulse_ms
+  optional int32 empty_pulse_ms = 5;         // shield.empty_pulse_ms (flat mode only)
+  optional int32 hold_rumble_max_intensity = 6;  // shield.hold_rumble_max_intensity (#2463; <= field 4 = flat)
+  optional int32 hold_led_floor_pct = 7;     // shield.hold_led_floor_percent (#2463; 100 = no dimming)
 }
 
 // State of a player's shield energy at the send (#2096, UC-040 BR-024, BR-026).
@@ -296,6 +301,9 @@ message ShieldHoldState {
   int32 rate_ms_per_s = 5;  // idle recharge (0 = none)
   ShieldHoldCue cue = 6;
   ShieldCueParams cues = 7;
+  // SHIELD_HOLD (#2463): usable energy at the start of the activation plus grants during it, the
+  // reference of the rumble ramp and the LED dimming. 0 on SHIELD_ENERGY and from an older coordinator.
+  int32 activation_ms = 8;
 }
 
 // Trigger a game effect via stream

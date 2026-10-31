@@ -47,6 +47,10 @@ def _cues(**overrides) -> pb.ShieldCueParams:
         "ending_lead_ms": 1000,
         "hold_rumble_intensity": 70,
         "empty_pulse_ms": 400,
+        # Flat mode (#2463): these tests pin the exact cue sequence before the ramp;
+        # test_shield_hold_ramp.py covers ramp mode.
+        "hold_rumble_max_intensity": 0,
+        "hold_led_floor_pct": 30,
     }
     values.update(overrides)
     return pb.ShieldCueParams(**values)
@@ -204,14 +208,13 @@ class TestUC040HoldLedStates:
     @pytest.mark.uc("UC-030", flow="A7", br=["BR-008"])
     @pytest.mark.uc("UC-040", br=["BR-026"])
     def test_active_frame_is_white_by_the_energy_left_and_blinks_in_the_last_second(self):
-        """UC-040 BR-026: 30 % + 70 % x (left / cap) white; the last second blinks at 4 Hz; None at 0."""
-        assert hold_active_frame(5.0, 5.0) == WHITE
-        assert hold_active_frame(2.5, 5.0) == (166, 166, 166)  # 0.3 + 0.7 * 0.5 = 65 %
-        assert hold_active_frame(1.5, 5.0) == (130, 130, 130)  # 0.3 + 0.7 * 0.3 = 51 %
-        assert hold_active_frame(1.0, 5.0) == WHITE  # the blink window starts on
-        assert hold_active_frame(0.85, 5.0) == (0, 0, 0)  # second half of the first 250 ms period
-        assert hold_active_frame(0.7, 5.0) == WHITE
-        assert hold_active_frame(0.0, 5.0) is None
+        """UC-040 BR-026 (#2463): floor + (1 - floor) x fill² white above the last second; 4 Hz blink; None at 0."""
+        assert hold_active_frame(5.0, 5.0, 0.3) == WHITE
+        assert hold_active_frame(3.0, 5.0, 0.3) == (121, 121, 121)  # fill 0.5: 0.3 + 0.7 * 0.25 = 47.5 %
+        assert hold_active_frame(1.0, 5.0, 0.3) == WHITE  # the blink window starts on
+        assert hold_active_frame(0.85, 5.0, 0.3) == (0, 0, 0)  # second half of the first 250 ms period
+        assert hold_active_frame(0.7, 5.0, 0.3) == WHITE
+        assert hold_active_frame(0.0, 5.0, 0.3) is None
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A38", br=["BR-026"])
