@@ -6,7 +6,6 @@ main scenario runs unchanged. The other modes' clips: test_game_instructions_mod
 """
 
 import asyncio
-import time
 from unittest.mock import create_autospec, patch
 
 import pytest
@@ -27,6 +26,7 @@ from services.game_coordinator.tests.test_ffa_uc020 import (
     _initial_players,
     fast_config,  # noqa: F401 - pytest fixture
 )
+from services.game_coordinator.tests.test_game_clock_waits import SleepRecorder
 
 INSTRUCTIONS = Sound.MENU_VOX_FFA_INSTRUCTIONS.value
 CLIP_SECONDS = 0.4
@@ -152,26 +152,24 @@ class TestUC020InstructionsOn:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A5", steps=[2])
-    async def test_force_end_stops_the_wait(self):
+    async def test_force_end_stops_the_wait(self, monkeypatch):
         """A5 step 2: a force-end during the clip stops the wait at once."""
         audio = TimedAudio(clip_seconds=30.0)
         game, _ = _ffa(audio)
         game.running = True
         span = create_autospec(trace.Span, instance=True)
         flag_patch, init_patch = _patch_flag(_flag_client(True))
+        # Force-end fires during the first poll; the wait must not take a second one.
+        sleeps = SleepRecorder(monkeypatch, on_sleep=lambda: game.force_end("test"))
 
         with flag_patch, init_patch:
-            task = asyncio.create_task(game._play_instructions(span))
-            await asyncio.sleep(0.15)
-            game.force_end("test")
-            started = time.monotonic()
-            await asyncio.wait_for(task, timeout=2.0)
+            await game._play_instructions(span)
 
-        assert time.monotonic() - started < 0.5
+        assert len(sleeps.waits) == 1
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A5", steps=[2])
-    async def test_clip_not_heard_means_no_wait(self):
+    async def test_clip_not_heard_means_no_wait(self, monkeypatch):
         """A5 step 2: a clip the audio service reports as 0 s (muted, silent) does not hold the game."""
         audio = TimedAudio(clip_seconds=0.0)
         game, _ = _ffa(audio)
@@ -179,11 +177,11 @@ class TestUC020InstructionsOn:
         span = create_autospec(trace.Span, instance=True)
         flag_patch, init_patch = _patch_flag(_flag_client(True))
 
-        started = time.monotonic()
+        sleeps = SleepRecorder(monkeypatch)
         with flag_patch, init_patch:
             await game._play_instructions(span)
 
-        assert time.monotonic() - started < 0.1
+        assert [w for w in sleeps.waits if w > 0] == []
         assert audio.sounds() == [INSTRUCTIONS]
 
     @pytest.mark.asyncio
@@ -211,7 +209,7 @@ class TestUC020InstructionsOn:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-020", flow="A5", steps=[2, 3])
-    async def test_play_sound_failure_records_failed_and_does_not_wait(self):
+    async def test_play_sound_failure_records_failed_and_does_not_wait(self, monkeypatch):
         """A5 step 3: PlaySound raising (audio unreachable) records failed, no played event, no wait."""
         audio = FailingInstructionsAudio()
         game, _ = _ffa(audio)
@@ -219,11 +217,11 @@ class TestUC020InstructionsOn:
         span = create_autospec(trace.Span, instance=True)
         flag_patch, init_patch = _patch_flag(_flag_client(True))
 
-        started = time.monotonic()
+        sleeps = SleepRecorder(monkeypatch)
         with flag_patch, init_patch:
             await game._play_instructions(span)
 
-        assert time.monotonic() - started < 0.1
+        assert sleeps.waits == []
         span.set_attribute.assert_called_once_with("game.instructions", "failed")
         span.add_event.assert_not_called()
 
