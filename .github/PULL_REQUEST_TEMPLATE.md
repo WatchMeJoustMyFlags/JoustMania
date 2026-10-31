@@ -29,3 +29,13 @@ Spec changes:
 ## Related Issues
 
 Part of #
+
+## Merge notes
+
+<!--
+Read by scripts/ci/merge-sweep.sh after the merge queue merged this PR (#1809). One line each,
+outside this comment; {MERGE} becomes the short merge SHA. Leave empty when nothing applies.
+  close #N: <what was delivered>   closes issue N with this comment (skipped when already closed)
+  note #N: <text>                  comments on issue N once
+Do not also pass --close / --note-issue to safe-merge for the same issue.
+-->

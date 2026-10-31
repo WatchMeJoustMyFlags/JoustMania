@@ -55,7 +55,16 @@ by `gate-run.sh` and the pr-merger agent. Test: `scripts/tests/test-detach.sh`.
 ### `safe-merge.sh`
 
 Gentle CI wait + exact-head squash merge + post-merge issue close/comment, or
-`--wait-ci` to report only. Usage in the script header. Test: `scripts/tests/test-safe-merge.sh`.
+`--wait-ci` to report only; `--arm` / `--revoke` record or withdraw the `Reviewed head` status (#1809).
+Usage in the script header. Test: `scripts/tests/test-safe-merge.sh`.
+
+### `merge-sweep.sh`
+
+One pass over our PRs in the review-gated merge flow (#1809): dequeues UNMERGEABLE merge-queue entries,
+re-arms a dequeued or ejected PR (`safe-merge.sh --arm`) at most once per head and only when the newest
+`Reviewed head` status on its head is success by an approver, and posts the `## Merge notes` close/note lines
+of recently merged PRs. Never touches PRs by other authors; `--dry-run` changes nothing. Run by the pr-merger
+agent's sweep mode. Usage in the script header. Test: `scripts/tests/test-merge-sweep.sh`.
 
 ### `validate-protos.sh`
 
