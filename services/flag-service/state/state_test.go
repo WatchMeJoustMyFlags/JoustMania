@@ -1329,3 +1329,27 @@ func TestHoldShieldKeysPersist(t *testing.T) {
 		})
 	}
 }
+
+// UC: UC-053 A2 UC-043 A17
+func TestHoldShieldKeysPersistRungs(t *testing.T) {
+	const key = "shield.energy_max_seconds"
+	t.Run("UC-053/A2 a persisted stack value outranks a real overlay (#2452)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{stateFile: filepath.Join(t.TempDir(), "admin.json"), epoch: "e1"})
+		f.put(WriteRequest{Set: "game", Flag: key, Value: raw("7"), Persist: true, Writer: "operator"})
+		f.put(WriteRequest{Set: "game", Flag: key, Value: raw("4"), Scope: Scope{GameKind: "real"}, Writer: "agent"})
+		if _, got := f.resolve(key, map[string]any{}); got != float64(7) {
+			t.Fatalf("%s = %v, want the persisted 7 over the real overlay", key, got)
+		}
+	})
+	refused := map[string]WriteRequest{
+		"experiment+arm": {Set: "game", Flag: key, Value: raw("4"), Scope: Scope{ExperimentID: "exp_1", Arm: "experimental"}, Persist: true, Writer: "agent"},
+		"real":           {Set: "game", Flag: key, Value: raw("4"), Scope: Scope{GameKind: "real"}, Persist: true, Writer: "agent"},
+	}
+	for name, req := range refused {
+		t.Run("UC-053/A5 a persisted "+name+" write is refused (#2452)", func(t *testing.T) {
+			f := newFixture(t, fixtureOpts{stateFile: filepath.Join(t.TempDir(), "admin.json"), epoch: "e1"})
+			_, err := f.state.Put(req)
+			wantReason(t, err, http.StatusBadRequest, fserr.Malformed)
+		})
+	}
+}
