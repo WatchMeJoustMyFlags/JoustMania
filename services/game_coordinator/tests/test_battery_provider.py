@@ -26,12 +26,14 @@ from openfeature.flag_evaluation import FlagEvaluationDetails
 
 from lib.controller_constants import battery_to_pct
 from lib.types import GameEvent
+from services.game_coordinator.games.base import Player
 from services.game_coordinator.interventions import (
     BLOCK_LOW_BATTERY,
     INTERVENTION_SPECS,
     InterventionManager,
 )
 from services.game_coordinator.servicer import GameCoordinatorServicer
+from services.game_coordinator.tests.conftest import FakeInterventionGame
 from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
 
 ALL_TYPES = {spec.type_id for spec in INTERVENTION_SPECS}
@@ -63,25 +65,6 @@ class FakeFlagClient:
         return self.values.get(key, default)
 
 
-class RealishPlayer:
-    """Minimal stand-in for games.base.Player carrying the fields the provider
-    and targeting resolution read (serial, alive, battery_pct)."""
-
-    def __init__(self, serial, battery_pct=None, alive=True):
-        self.serial = serial
-        self.battery_pct = battery_pct
-        self.alive = alive
-
-
-class RealishGame:
-    def __init__(self, name, players):
-        self._name = name
-        self.players = players
-
-    def get_game_name(self):
-        return self._name
-
-
 def _make_servicer_with_game(players):
     """Construct a real servicer and attach a live game with the given players.
 
@@ -95,7 +78,7 @@ def _make_servicer_with_game(players):
     """
     servicer = GameCoordinatorServicer()
     game_id = "game_test"
-    session = SimpleNamespace(current_game=RealishGame("FFA", players))
+    session = SimpleNamespace(current_game=FakeInterventionGame("FFA", players=players))
     servicer.sessions[game_id] = session
     servicer._primary_game_id = game_id
     return servicer
@@ -131,12 +114,12 @@ def _wire_manager(provider, *, threshold=20, budget=10, game=None):
 # Provider unit behavior (servicer._battery_pct_for_serial)
 # --------------------------------------------------------------------------- #
 def test_provider_reads_live_player_battery():
-    servicer = _make_servicer_with_game({"ctrl_a": RealishPlayer("ctrl_a", battery_pct=85.0)})
+    servicer = _make_servicer_with_game({"ctrl_a": Player("ctrl_a", battery_pct=85.0)})
     assert servicer._battery_pct_for_serial("ctrl_a") == 85.0
 
 
 def test_provider_unknown_serial_returns_none():
-    servicer = _make_servicer_with_game({"ctrl_a": RealishPlayer("ctrl_a", battery_pct=85.0)})
+    servicer = _make_servicer_with_game({"ctrl_a": Player("ctrl_a", battery_pct=85.0)})
     assert servicer._battery_pct_for_serial("ctrl_missing") is None
 
 
@@ -147,7 +130,7 @@ def test_provider_no_game_returns_none():
 
 def test_provider_no_frame_yet_returns_none():
     # Player exists but no GameplayData frame has set battery_pct yet.
-    servicer = _make_servicer_with_game({"ctrl_a": RealishPlayer("ctrl_a", battery_pct=None)})
+    servicer = _make_servicer_with_game({"ctrl_a": Player("ctrl_a", battery_pct=None)})
     assert servicer._battery_pct_for_serial("ctrl_a") is None
 
 
@@ -170,7 +153,7 @@ def test_battery_to_pct_passthrough_and_clamp():
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_wired_provider_blocks_low_battery():
-    players = {"ctrl_a": RealishPlayer("ctrl_a", battery_pct=10.0)}  # below threshold 20
+    players = {"ctrl_a": Player("ctrl_a", battery_pct=10.0)}  # below threshold 20
     servicer = _make_servicer_with_game(players)
     game = servicer.current_game
     mgr, events = _wire_manager(servicer._battery_pct_for_serial, threshold=20, game=game)
@@ -186,7 +169,7 @@ async def test_wired_provider_blocks_low_battery():
 
 @pytest.mark.asyncio
 async def test_wired_provider_passes_above_threshold():
-    players = {"ctrl_a": RealishPlayer("ctrl_a", battery_pct=90.0)}
+    players = {"ctrl_a": Player("ctrl_a", battery_pct=90.0)}
     servicer = _make_servicer_with_game(players)
     game = servicer.current_game
     mgr, events = _wire_manager(servicer._battery_pct_for_serial, threshold=20, game=game)
@@ -202,7 +185,7 @@ async def test_wired_provider_passes_above_threshold():
 @pytest.mark.asyncio
 async def test_wired_provider_missing_data_does_not_block():
     # Player present but no battery frame yet -> provider returns None -> no block.
-    players = {"ctrl_a": RealishPlayer("ctrl_a", battery_pct=None)}
+    players = {"ctrl_a": Player("ctrl_a", battery_pct=None)}
     servicer = _make_servicer_with_game(players)
     game = servicer.current_game
     mgr, events = _wire_manager(servicer._battery_pct_for_serial, threshold=20, game=game)
@@ -220,9 +203,9 @@ async def test_wired_provider_missing_data_does_not_block():
 # --------------------------------------------------------------------------- #
 def test_resolve_player_targets_drops_low_battery_serial():
     players = {
-        "ctrl_low": RealishPlayer("ctrl_low", battery_pct=5.0),  # below threshold
-        "ctrl_ok": RealishPlayer("ctrl_ok", battery_pct=80.0),  # above threshold
-        "ctrl_unknown": RealishPlayer("ctrl_unknown", battery_pct=None),  # unknown -> kept
+        "ctrl_low": Player("ctrl_low", battery_pct=5.0),  # below threshold
+        "ctrl_ok": Player("ctrl_ok", battery_pct=80.0),  # above threshold
+        "ctrl_unknown": Player("ctrl_unknown", battery_pct=None),  # unknown -> kept
     }
     servicer = _make_servicer_with_game(players)
     game = servicer.current_game
@@ -237,7 +220,7 @@ def test_resolve_player_targets_drops_low_battery_serial():
 
 
 def test_resolve_player_targets_no_gate_keeps_all():
-    players = {"ctrl_low": RealishPlayer("ctrl_low", battery_pct=5.0)}
+    players = {"ctrl_low": Player("ctrl_low", battery_pct=5.0)}
     servicer = _make_servicer_with_game(players)
     game = servicer.current_game
     mgr, _events = _wire_manager(servicer._battery_pct_for_serial, threshold=20, game=game)

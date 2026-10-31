@@ -28,7 +28,7 @@ from services.game_coordinator.game_loop_dispatch import (
     GameLoopDispatcher,
     GameLoopUnavailableError,
 )
-from services.game_coordinator.games.base import GAME_VOLUME
+from services.game_coordinator.games.base import GAME_VOLUME, Player
 from services.game_coordinator.interventions import InterventionManager, SessionView
 from services.game_coordinator.tests.conftest import FakeInterventionGame
 from services.game_coordinator.tests.event_list_helpers import edge_event, object_details
@@ -660,14 +660,6 @@ def test_servicer_session_view_carries_game_loop():
 # --------------------------------------------------------------------------- #
 # Per-player level reverts (#1418's _run_revert) hop loops and keep their order
 # --------------------------------------------------------------------------- #
-class FactorPlayer:
-    def __init__(self, serial):
-        self.serial = serial
-        self.alive = True
-        self.sensitivity_factor = 1.0
-        self.handicap_factor = 1.0
-
-
 @UC040_A26
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("metrics_patched")
@@ -682,7 +674,7 @@ async def test_factor_revert_runs_on_game_loop_after_queued_apply(game_loop, fla
     from services.game_coordinator.difficulty_handlers import register_difficulty_handlers
 
     game = _loop_bound_game(game_loop)
-    game.players = {"S1": FactorPlayer("S1")}
+    game.players = {"S1": Player(serial="S1")}
     events = []
     view = _session("g1", game, game_loop.loop, events, is_real=True)
     mgr, _ = make_manager(lambda: [view], interventions={flag_key: 1.0})
