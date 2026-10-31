@@ -203,6 +203,13 @@ type Request struct {
 	// redacted from fmt, so a Request must never be logged with %v/%+v (that
 	// would dump the whole GameContext); log State.Digest and the Questions.
 	Context *gamecontext.GameContext `json:"-"`
+	// PredictionAsk is the optional ffa.prediction question (#2479, UC-040 A45,
+	// BR-034; PredictionQuestion): what the model expects to happen if its answer
+	// is applied. It is OUTSIDE Questions, so Validate, the questions span
+	// attribute, the digest and jev never see it. The decision loop sets it only
+	// when decision.predictions.ask_model is on and the backend is claude or
+	// openai; nil (the default) leaves the rendered prompt byte-identical to v1.
+	PredictionAsk *Question `json:",omitempty"`
 }
 
 // Response is a backend's answers to a Request.
@@ -218,6 +225,11 @@ type Response struct {
 	// Validate never reads it and a missing or bad prediction never blocks a
 	// decision. nil when the backend stated none (and for every noop).
 	Prediction *Prediction `json:"prediction,omitempty"`
+	// PredictionDropped is the reason a model-stated prediction was dropped
+	// (PredictionDrop* constants; UC-040 A45): the ask was sent and the answer to
+	// it failed ValidatePrediction. The decision is unaffected and no lever
+	// default is substituted. "" when nothing was dropped.
+	PredictionDropped string `json:"prediction_dropped,omitempty"`
 }
 
 // Backend is a decision backend. Decide must honor ctx cancellation; callers

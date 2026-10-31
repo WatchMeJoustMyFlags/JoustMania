@@ -1,7 +1,10 @@
 package decision
 
 import (
+	"context"
+
 	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joustmania/agent/decide"
@@ -32,12 +35,53 @@ func (l *Loop) observePredictions(snapshot flags.Snapshot, c gamecontext.GameCon
 }
 
 // remotePrediction is a remote answer's prediction: the backend's own when it
-// stated one, else the lever default of the mapped decision.
-func remotePrediction(resp decide.Response, d Decision, current gamecontext.GameContext) *decide.Prediction {
-	if resp.Prediction != nil {
+// stated one (it overrides the lever default). When the model was asked
+// (req.PredictionAsk set) and stated none (it answered "none" or the prediction
+// was dropped, UC-040 A45) there is none: no lever default is substituted.
+// Otherwise it is the lever default of the mapped decision.
+func remotePrediction(req decide.Request, resp decide.Response, d Decision, current gamecontext.GameContext) *decide.Prediction {
+	if resp.Prediction != nil || req.PredictionAsk != nil {
 		return resp.Prediction
 	}
 	return decide.LeverPrediction(d.Intervention, d.Value, d.TargetSerial, current.Session.MusicTempo)
+}
+
+// askModelPrediction reports whether a remote request to backend carries the
+// prediction ask: decision.predictions.ask_model is on and the backend is claude
+// or openai (never jev, whose typed wire format has no free choice for it).
+func askModelPrediction(snapshot flags.Snapshot, backend string) bool {
+	return snapshot.Decision.PredictionsAskModel &&
+		(backend == flags.DecisionBackendClaude || backend == flags.DecisionBackendOpenAI)
+}
+
+// droppedPrediction is the reason the model's prediction of rec's accepted
+// answer was dropped, "" when none was (or the answer was not kept: a rules
+// fallback replaces it).
+func droppedPrediction(rec *decideRecord) string {
+	if !rec.hasResp || rec.resp.PredictionDropped == "" {
+		return ""
+	}
+	return rec.resp.PredictionDropped
+}
+
+// droppedPredictionAttributes is decide.prediction.dropped_reason when the
+// model's prediction was dropped (UC-040 A45), none otherwise.
+func droppedPredictionAttributes(rec *decideRecord) []attribute.KeyValue {
+	if reason := droppedPrediction(rec); reason != "" {
+		return []attribute.KeyValue{attribute.String(keys.AttrDecidePredictionDroppedReason, reason)}
+	}
+	return nil
+}
+
+// countPredictionDropped counts a dropped model prediction
+// (agent_prediction_dropped_total{backend,reason}).
+func (l *Loop) countPredictionDropped(ctx context.Context, rec *decideRecord) {
+	reason := droppedPrediction(rec)
+	if reason == "" {
+		return
+	}
+	l.predictionDropped.Add(ctx, 1, otelmetric.WithAttributes(
+		attribute.String("backend", rec.used), attribute.String("reason", reason)))
 }
 
 // predictionOutcomes are the decide outcomes whose prediction is registered: an
