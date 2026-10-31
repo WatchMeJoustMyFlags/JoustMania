@@ -39,6 +39,7 @@ from lib.feature_flags import (
     read_float_flag,
     read_int_flag,  # noqa: F401  games/shields.py reads it as base.read_int_flag (tests patch it here)
     read_object_flag,
+    read_string_flag,  # noqa: F401  games/shields.py reads it as base.read_string_flag (tests patch it here)
     set_game_transaction_context,
 )
 from lib.telemetry import inject_trace_context
