@@ -55,3 +55,6 @@ class MockFeatureHooks:
 
     def force_led_resend(self, serial: str) -> None:  # noqa: ARG002, B027
         """Send the serial's LED output on the next LED tick even if unchanged (UC-002 BR-008). Default: no dedupe."""
+
+    def clear_led_output(self, serial: str) -> None:  # noqa: ARG002, B027
+        """Forget the serial's desired LED colour and rumble (a silent drop, UC-002 BR-007). Default: none kept."""

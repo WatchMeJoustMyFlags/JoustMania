@@ -261,6 +261,8 @@ class DiscoveryLoop:
         # with the last sample they served: they register again once a poll returns another one.
         self._silent_serials: dict[str, object] = {}
         self._led_resend_delay = LED_RESEND_DELAY_S
+        # Pending delayed LED resends (UC-002 BR-008), cancelled on disconnect and stop.
+        self._led_resend_handles: dict[str, asyncio.TimerHandle] = {}
 
     def start(self) -> None:
         """Start the discovery task.
@@ -292,6 +294,9 @@ class DiscoveryLoop:
     def stop(self) -> None:
         """Stop the discovery loop."""
         self.running = False
+        for handle in self._led_resend_handles.values():
+            handle.cancel()
+        self._led_resend_handles.clear()
         if self._task and not self._task.done():
             self._task.cancel()
 
@@ -500,6 +505,8 @@ class DiscoveryLoop:
                     state = self.controller_states.get(serial)
                     self._silent_serials[serial] = getattr(state, "sample", state)
                     logger.warning(f"Controller {serial} sent no report for its silent-link limit - disconnecting")
+                    # Its route stays (the backend still lists it): drop the stale output (BR-008).
+                    self.backend.clear_led_output(serial)
                 else:
                     logger.info(f"Controller {serial} disconnected - cleaning up server tracking")
                 self._drop_controller(serial)
@@ -529,6 +536,9 @@ class DiscoveryLoop:
         if serial in self.controller_states:
             del self.controller_states[serial]
         self.button_detector.clear_controller(serial)
+        resend = self._led_resend_handles.pop(serial, None)
+        if resend is not None:
+            resend.cancel()
         # base_colors[serial] is kept; the owner decides the colour on reconnect (UC-002 BR-008).
         # Activity, poll counters, health window and connection quality
         # all live in the record.
@@ -632,10 +642,16 @@ class DiscoveryLoop:
         if color is not None:
             logger.info(f"Restoring LED colour for (re)registered controller {serial}: {color}")
             await self.feedback_manager.set_controller_color(serial, color)
-        asyncio.get_running_loop().call_later(self._led_resend_delay, self._resend_led_if_tracked, serial)
+        previous = self._led_resend_handles.pop(serial, None)
+        if previous is not None:
+            previous.cancel()
+        self._led_resend_handles[serial] = asyncio.get_running_loop().call_later(
+            self._led_resend_delay, self._resend_led_if_tracked, serial
+        )
 
     def _resend_led_if_tracked(self, serial: str) -> None:
         """The delayed second LED send of ``_restore_led`` (UC-002 BR-008)."""
+        self._led_resend_handles.pop(serial, None)
         if serial not in self.tracked_controllers:
             return
         try:

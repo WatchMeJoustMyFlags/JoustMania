@@ -15,6 +15,7 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 
+from proto import controller_manager_pb2
 from services.controller_manager import discovery_loop as discovery_module
 from services.controller_manager.button_detector import ButtonDetector
 from services.controller_manager.discovery import PeriodicRescanTimer
@@ -25,7 +26,7 @@ from services.controller_manager.discovery_loop import (
 from services.controller_manager.event_publisher import EventPublisher
 from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.monitoring import ControllerMonitoring
-from services.controller_manager.tests.backend_doubles import autospec_backend
+from services.controller_manager.tests.backend_doubles import autospec_backend, autospec_span
 
 SERIAL = "00:07:04:A3:67:E8"
 POLL = 0.01
@@ -252,6 +253,72 @@ async def test_the_restored_colour_comes_from_the_owner(silent_limit):  # noqa: 
     rig.feedback.set_controller_color.assert_awaited_once_with(SERIAL, (0, 0, 0))
 
 
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-002", br=["BR-007"])
+async def test_a_stall_followed_by_one_late_poll_batch_does_not_make_a_link_silent(rig):
+    """Event loop blocked 5 s, then one stale batch runs before discovery: the stall is not the link's."""
+    await _registered(rig)
+
+    rig.clock.now += 5.0
+    await rig.loop._update_controller_states()  # late batch: same sample, the 5 s is a loop stall
+    await rig.discover()
+
+    assert SERIAL in rig.loop.tracked_controllers
+    assert rig.loop.drain_disconnects() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-002", br=["BR-007", "BR-008"])
+async def test_a_silent_drop_forgets_the_stale_backend_output(rig):
+    """The route stays, so the stored game or death colour must not be replayed on re-registration."""
+    await _registered(rig)
+    await rig.poll_for(3.1)
+    await rig.discover()
+
+    rig.backend.clear_led_output.assert_called_once_with(SERIAL)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+async def test_a_disconnect_cancels_the_delayed_resend(rig):
+    rig.loop._led_resend_delay = 0.05
+    await rig.discover()
+    assert rig.backend.force_led_resend.call_count == 1
+    handle = rig.loop._led_resend_handles[SERIAL]
+
+    rig.backend.get_connected_controllers.return_value = []
+    await rig.discover()
+    assert handle.cancelled()
+    await asyncio.sleep(0.1)
+
+    assert rig.backend.force_led_resend.call_count == 1
+    assert rig.loop._led_resend_handles == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+async def test_the_delayed_resend_skips_a_controller_no_longer_tracked(rig):
+    await rig.discover()
+    rig.backend.force_led_resend.reset_mock()
+    rig.loop.tracked_controllers.pop(SERIAL)
+
+    rig.loop._resend_led_if_tracked(SERIAL)
+
+    rig.backend.force_led_resend.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+async def test_stop_cancels_pending_delayed_resends(rig):
+    rig.loop._led_resend_delay = 0.05
+    await rig.discover()
+
+    rig.loop.stop()
+    await asyncio.sleep(0.1)
+
+    assert rig.backend.force_led_resend.call_count == 1
+
+
 # --- servicer: the owner's answer (UC-002 BR-008) ---------------------------------------
 
 
@@ -274,14 +341,72 @@ def test_the_servicer_hands_its_owner_lookup_to_the_discovery_loop(servicer):
     assert servicer.loop_kwargs["reconnect_color"] == servicer._reconnect_color
 
 
+GAME_COLOR = (0, 51, 255)
+
+
+def _open_game(servicer, roster: set[str]) -> None:
+    for serial in roster:
+        servicer.feedback_manager.base_colors[serial] = GAME_COLOR
+    servicer._open_game_stream("game", roster)
+
+
+def _hand_disconnect(servicer, serial: str) -> None:
+    """The discovery loop queues the drop and the game stream's next frame takes it (BR-004)."""
+    servicer.discovery_loop.drain_disconnects.return_value = [serial]
+    assert servicer._take_disconnects("game") == [serial]
+    servicer.discovery_loop.drain_disconnects.return_value = []
+
+
+def _game_filter(servicer, alive: list[str]) -> None:
+    """The game's alive filter after a death (base.py ``_send_alive_filter_update``)."""
+    servicer._process_filter_update(controller_manager_pb2.FilterUpdate(serials=alive), "game", autospec_span(), None)
+
+
 @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
-def test_a_player_reconnecting_into_its_running_game_gets_the_out_state(servicer):
-    """The game eliminated it on the disconnect: never its cached game colour back."""
-    servicer.feedback_manager.base_colors[SERIAL] = (0, 51, 255)
-    servicer._open_game_stream("game", {SERIAL, "other"})
+def test_a_player_eliminated_by_its_drop_reconnects_into_the_out_state(servicer):
+    """Handed the disconnect and no longer alive: off once, never its game colour; off is not stored."""
+    _open_game(servicer, {SERIAL, "other"})
+    _hand_disconnect(servicer, SERIAL)
+    _game_filter(servicer, ["other"])
 
     assert servicer._reconnect_color(SERIAL) == (0, 0, 0)
-    assert servicer.feedback_manager.base_colors[SERIAL] == (0, 0, 0)  # effects restore to off
+    assert servicer.feedback_manager.base_colors[SERIAL] == GAME_COLOR  # the game's effects may repaint
+
+
+@pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+def test_the_last_player_eliminated_by_its_drop_is_out_too(servicer):
+    """An empty alive filter arrives as None (#1595): nobody is alive."""
+    _open_game(servicer, {SERIAL})
+    _hand_disconnect(servicer, SERIAL)
+    _game_filter(servicer, [])
+
+    assert servicer._reconnect_color(SERIAL) == (0, 0, 0)
+
+
+@pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+def test_a_first_registration_after_the_stream_opened_keeps_its_game_colour(servicer):
+    """TC-017: mocks discovered after the headless start opened the stream must not play dark."""
+    _open_game(servicer, {SERIAL, "other"})
+
+    assert servicer._reconnect_color(SERIAL) == GAME_COLOR
+
+
+@pytest.mark.uc("UC-002", flow="A4", br=["BR-004", "BR-008"])
+def test_a_drop_the_game_dropped_during_the_intro_keeps_its_game_colour(servicer):
+    """The early drain drops a disconnect whose frames came back (BR-004): alive, so not dark."""
+    _open_game(servicer, {SERIAL, "other"})
+    _hand_disconnect(servicer, SERIAL)  # handed, but the game never sends a filter without it
+
+    assert servicer._reconnect_color(SERIAL) == GAME_COLOR
+
+
+@pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+def test_a_dead_player_that_never_dropped_in_this_game_is_not_made_dark(servicer):
+    """Out of the alive filter but no disconnect handed (killed by motion): the game owns its LED."""
+    _open_game(servicer, {SERIAL, "other"})
+    _game_filter(servicer, ["other"])
+
+    assert servicer._reconnect_color(SERIAL) == GAME_COLOR
 
 
 @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])

@@ -641,6 +641,19 @@ class MultiplexerBackend(ControllerBackend):
         """Send the serial's output on the next LED batch even if unchanged (UC-002 BR-008, #2466)."""
         self._force_led_resend.add(serial)
 
+    def clear_led_output(self, serial: str) -> None:
+        """Forget a silently dropped controller's desired colour and rumble (UC-002 BR-007, #2466).
+
+        The backend still lists it, so discovery's stale-state cleanup never runs for it; without
+        this the forced resend of its next registration would replay a stale game or death colour.
+        Single dict operations from the event loop, as in ``set_led_color``: no lock needed.
+        """
+        self._led_colors.pop(serial, None)
+        self._rumble.pop(serial, None)
+        self._last_sent_color.pop(serial, None)
+        self._last_sent_rumble.pop(serial, None)
+        self._last_led_update.pop(serial, None)
+
     # -- Per-controller methods -----------------------------------------------
 
     async def get_controller_state(self, serial: str) -> dict | None:

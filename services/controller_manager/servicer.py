@@ -94,6 +94,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         # Players of each open game gameplay stream (a stream configured with
         # player colours), by subscriber id: Identify is lobby-only (UC-004 BR-003).
         self._game_stream_serials: dict[str, set[str]] = {}
+        # Per open game stream: the players its game still lists alive (its last filter update,
+        # the whole roster until the first one) and the serials whose disconnect it was handed.
+        # A re-registering player is out only when both say so (UC-002 BR-008, #2466).
+        self._game_stream_alive: dict[str, set[str]] = {}
+        self._handed_disconnects: dict[str, set[str]] = {}
         # Disconnects not yet delivered, per open game stream. A stream only gets
         # disconnects that happen while it is open (UC-002 BR-004, #1607).
         self._pending_disconnects: dict[str, list[str]] = {}
@@ -385,6 +390,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             The new filter (None for all controllers, or set of serials).
         """
         new_filter = set(filter_update.serials) if filter_update.serials else None
+        if subscriber_id in self._game_stream_serials:
+            # A game stream's filter is its alive set; an empty one arrives as None (#1595).
+            self._game_stream_alive[subscriber_id] = new_filter or set()
 
         if new_filter != current_filter:
             old_count = len(current_filter) if current_filter else 0
@@ -765,6 +773,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         self._collect_disconnects()
         self._dropped_serials -= self.tracked_controllers.keys()
         self._game_stream_serials[subscriber_id] = set(serials)
+        self._game_stream_alive.setdefault(subscriber_id, set(serials))
+        self._handed_disconnects.setdefault(subscriber_id, set())
         gone = sorted(s for s in serials if s in self._dropped_serials)
         self._pending_disconnects.setdefault(subscriber_id, gone)
 
@@ -784,6 +794,9 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         if not pending:
             return []
         self._pending_disconnects[subscriber_id] = []
+        handed = self._handed_disconnects.get(subscriber_id)
+        if handed is not None:
+            handed.update(pending)
         return pending
 
     def _release_game_stream(self, subscriber_id: str) -> None:
@@ -794,6 +807,8 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         """
         roster = self._game_stream_serials.pop(subscriber_id, None) or set()
         self._pending_disconnects.pop(subscriber_id, None)
+        self._game_stream_alive.pop(subscriber_id, None)
+        self._handed_disconnects.pop(subscriber_id, None)
         for serial in roster:
             if serial not in self.tracked_controllers and not self._in_game(serial):
                 self.feedback_manager.base_colors.pop(serial, None)
@@ -801,13 +816,19 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
     def _reconnect_color(self, serial: str) -> tuple[int, int, int] | None:
         """The LED colour of a controller that (re)registers, from its current owner (UC-002 BR-008, #2466).
 
-        A player of an open game was eliminated by its disconnect (UC-020 A2, UC-002 BR-004),
-        so it gets the out state (off), never its cached game colour; effects restore to off
-        too. Any other controller belongs to the lobby: its last lobby colour, if one was set
-        (the menu repaints it on the connect event, UC-002 step 6).
+        A player whose disconnect an open game stream was handed and that the game no longer
+        lists alive was eliminated by it (UC-020 A2): it gets the out state (off) once, never
+        its cached game colour. The off is not stored in ``base_colors``, so the game's own
+        effects stay free to repaint it. A roster player first seen after the stream opened,
+        or one whose disconnect the game dropped because it came back during the intro
+        (BR-004), is alive and gets its game colour. Any other controller belongs to the
+        lobby: its last lobby colour, if one was set (the menu repaints it on the connect
+        event, UC-002 step 6).
         """
-        if self._in_game(serial):
-            self.feedback_manager.base_colors[serial] = OUT_OF_GAME_COLOR
+        if any(
+            serial in self._handed_disconnects.get(sid, ()) and serial not in self._game_stream_alive.get(sid, roster)
+            for sid, roster in self._game_stream_serials.items()
+        ):
             return OUT_OF_GAME_COLOR
         return self.feedback_manager.base_colors.get(serial)
 

@@ -1378,6 +1378,18 @@ class TestReRegisteredLedIsSentAgain:
 
         adapter.set_output.assert_called_once_with(self.SERIAL, 0, 51, 255, 0)
 
+    @pytest.mark.uc("UC-002", br=["BR-007", "BR-008"])
+    @patch("services.controller_manager.multiplexer.multiplexer_backend.metrics")
+    def test_a_cleared_output_is_not_replayed_by_a_forced_resend(self, _metrics):
+        """A silent drop keeps the route; the next registration must not resend the stale colour."""
+        mux, adapter = self._mux_with_colour_sent()
+
+        mux.clear_led_output(self.SERIAL)
+        mux.force_led_resend(self.SERIAL)
+        mux.update_all_leds()
+
+        adapter.set_output.assert_not_called()
+
 
 class TestRumbleWithoutAColour:
     """#2365: rumble is a desired output of its own; direct-write failures are counted."""
