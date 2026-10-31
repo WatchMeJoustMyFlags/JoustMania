@@ -856,7 +856,8 @@ class FightClubGame(StreamedIntroGameMode):
     async def _pause_between_rounds(self) -> None:
         """Brief pause between a round's kill and the next round.
 
-        A seam: tests replace it on the instance instead of patching ``game_clock.sleep``.
+        A seam: tests replace it on the instance to skip or hold the pause.
+        test_game_clock_waits.py pins the duration.
         """
         await game_clock.sleep(ROUND_PAUSE_SECONDS)
 

@@ -393,7 +393,8 @@ class SwapperGame(TeamsGameBase):
     async def _swap_pause(self) -> None:
         """Let the swap flash play before the new team colour is written.
 
-        A seam: tests replace it on the instance instead of patching ``game_clock.sleep``.
+        A seam: tests replace it on the instance to skip or hold the pause.
+        test_game_clock_waits.py pins the duration.
         """
         await game_clock.sleep(self.SWAP_FLASH_SECONDS)
 
