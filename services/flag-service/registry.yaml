@@ -154,14 +154,15 @@ flags:
   - {set: game, key: shield.ending_rumble_seconds, kind: overlay, scope: [stack], bounds: {range: [0, 3]}}
   # Hold-mode shield energy (#2096, UC-040 BR-024, BR-027): latched per hold game.
   # Agent-tunable since FR-162 (UC-043 A17); the ranges are the ceilings (C-034).
-  - {set: game, key: shield.energy_max_seconds, kind: overlay, scope: [stack, experiment+arm, real], bounds: {range: [1, 10]}, real_write: no_live_real_game, description: "hold mode: most shield energy in seconds a player can store"}
-  - {set: game, key: shield.energy_budget_seconds, kind: overlay, scope: [stack, experiment+arm, real], bounds: {range: [3, 30]}, real_write: no_live_real_game, description: "hold mode: total seconds of active shield a player may use in one game"}
-  - {set: game, key: shield.energy_initial_seconds, kind: overlay, scope: [stack, experiment+arm, real], bounds: {range: [0, 5]}, real_write: no_live_real_game, description: "hold mode: shield energy in seconds each player starts the game with"}
-  - {set: game, key: shield.recharge_per_second, kind: overlay, scope: [stack, experiment+arm, real], bounds: {range: [0, 0.5]}, real_write: no_live_real_game, description: "hold mode: shield energy regained per second while the shield is not held"}
-  - {set: game, key: shield.min_burst_seconds, kind: overlay, scope: [stack, experiment+arm, real], bounds: {range: [0.1, 1]}, real_write: no_live_real_game, description: "hold mode: least shield energy in seconds one activation costs"}
+  # persist: an operator/admin value may be persisted (#2452); the agent writes in memory only.
+  - {set: game, key: shield.energy_max_seconds, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [1, 10]}, real_write: no_live_real_game, description: "hold mode: most shield energy in seconds a player can store"}
+  - {set: game, key: shield.energy_budget_seconds, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [3, 30]}, real_write: no_live_real_game, description: "hold mode: total seconds of active shield a player may use in one game"}
+  - {set: game, key: shield.energy_initial_seconds, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [0, 5]}, real_write: no_live_real_game, description: "hold mode: shield energy in seconds each player starts the game with"}
+  - {set: game, key: shield.recharge_per_second, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [0, 0.5]}, real_write: no_live_real_game, description: "hold mode: shield energy regained per second while the shield is not held"}
+  - {set: game, key: shield.min_burst_seconds, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [0.1, 1]}, real_write: no_live_real_game, description: "hold mode: least shield energy in seconds one activation costs"}
   # Hold feedback (#2096, UC-040 BR-026): latched per hold game and shipped to the controller.
-  - {set: game, key: shield.hold_rumble_intensity, kind: overlay, scope: [stack, experiment+arm, real], bounds: {range: [0, 150]}, real_write: no_live_real_game, description: "hold mode: rumble strength while a player holds the shield, 0 = none"}
-  - {set: game, key: shield.empty_pulse_ms, kind: overlay, scope: [stack, experiment+arm, real], bounds: {range: [100, 800]}, real_write: no_live_real_game, description: "hold mode: length in ms of the pulse when a held shield runs out"}
+  - {set: game, key: shield.hold_rumble_intensity, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [0, 150]}, real_write: no_live_real_game, description: "hold mode: rumble strength while a player holds the shield, 0 = none"}
+  - {set: game, key: shield.empty_pulse_ms, kind: overlay, scope: [stack, experiment+arm, real], persist: true, bounds: {range: [100, 800]}, real_write: no_live_real_game, description: "hold mode: length in ms of the pulse when a held shield runs out"}
 
   # --- user, controller, rollout (flags.md §13.4) ------------------------------
   - {set: user, key: current_game, kind: overlay, scope: [stack], persist: true}
