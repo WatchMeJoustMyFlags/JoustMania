@@ -557,7 +557,25 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             return None
         return self.backend.pattern_stream_rate(current_filter)
 
-    async def StreamGameplayData(self, request_iterator, context):  # noqa: C901
+    async def _process_gameplay_control(
+        self, control_msg, subscriber_id: str, span, current_filter: set | None
+    ) -> tuple[int | None, set | None]:
+        """Apply one GameplayStreamControl message.
+
+        Returns (the config's rate or None when the message is not a config, the stream's filter
+        afterwards). Only a config or a filter update changes the filter.
+        """
+        if control_msg.HasField("config"):
+            return await self._process_gameplay_config(control_msg.config, subscriber_id, span)
+        if control_msg.HasField("filter_update"):
+            return None, self._process_filter_update(control_msg.filter_update, subscriber_id, span, current_filter)
+        if control_msg.HasField("base_color"):
+            await self._process_base_color_command(control_msg.base_color, subscriber_id, "GameplayStream")
+        elif control_msg.HasField("game_effect"):
+            await self._process_game_effect_command(control_msg.game_effect, subscriber_id)
+        return None, current_filter
+
+    async def StreamGameplayData(self, request_iterator, context):
         """
         Stream gameplay data with dynamic filtering via bidirectional communication (Phase 45).
 
@@ -596,19 +614,11 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             try:
                 async for control_msg in request_iterator:
-                    if control_msg.HasField("config"):
-                        requested_hz, current_filter = await self._process_gameplay_config(
-                            control_msg.config, subscriber_id, span
-                        )
-                        current_hz = requested_hz
-                    elif control_msg.HasField("filter_update"):
-                        current_filter = self._process_filter_update(
-                            control_msg.filter_update, subscriber_id, span, current_filter
-                        )
-                    elif control_msg.HasField("base_color"):
-                        await self._process_base_color_command(control_msg.base_color, subscriber_id, "GameplayStream")
-                    elif control_msg.HasField("game_effect"):
-                        await self._process_game_effect_command(control_msg.game_effect, subscriber_id)
+                    config_hz, current_filter = await self._process_gameplay_control(
+                        control_msg, subscriber_id, span, current_filter
+                    )
+                    if config_hz is not None:
+                        requested_hz = current_hz = config_hz
             except Exception as e:
                 logger.error(f"[{subscriber_id}] Error reading client updates: {e}", exc_info=True)
 

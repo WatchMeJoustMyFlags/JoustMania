@@ -239,22 +239,9 @@ def validate_trigger_policy(raw: object) -> tuple[TriggerPolicy | None, list[str
     return TriggerPolicy(POLICY_THRESHOLD, float(level), reaction, hold), []
 
 
-def validate_archetype(name: str, params: object) -> tuple[Archetype | None, list[str]]:  # noqa: C901
-    """Validate an archetype (UC-046 BR-003). Returns (archetype or None, failed rules).
-
-    ``params`` is the parameter object or its JSON text.
-    """
+def _field_errors(params: dict) -> list[str]:
+    """BR-003 per-field rules: unknown fields, then each field present, finite and in bounds."""
     errors: list[str] = []
-    if not isinstance(name, str) or not _NAME_RE.match(name):
-        errors.append(f"name {name!r} does not match [a-z][a-z0-9_]*")
-    if isinstance(params, str):
-        try:
-            params = json.loads(params)
-        except ValueError as e:
-            return None, [*errors, f"parameters are not valid JSON: {e}"]
-    if not isinstance(params, dict):
-        return None, [*errors, "parameters are not a JSON object"]
-
     unknown = sorted(set(params) - set(_FIELDS) - {TRIGGER_POLICY_KEY})
     if unknown:
         errors.append(f"unknown fields {unknown}")
@@ -270,13 +257,12 @@ def validate_archetype(name: str, params: object) -> tuple[Archetype | None, lis
         if v < low or too_high:
             bound = f"< {high}" if high_exclusive else f"<= {high}"
             errors.append(f"{key}={v} outside {low} <= {key} {bound}")
-    policy = None
-    if TRIGGER_POLICY_KEY in params:
-        policy, policy_errors = validate_trigger_policy(params[TRIGGER_POLICY_KEY])
-        errors.extend(policy_errors)
-    if errors:
-        return None, errors
+    return errors
 
+
+def _cross_field_errors(params: dict, policy: TriggerPolicy | None) -> list[str]:
+    """BR-003 / BR-018 rules across fields, for parameters whose fields each passed."""
+    errors: list[str] = []
     if params["players"] != int(params["players"]):
         errors.append(f"players={params['players']} is not an integer")
     if params["stream_rate_hz"] not in STREAM_RATES_HZ:
@@ -287,16 +273,51 @@ def validate_archetype(name: str, params: object) -> tuple[Archetype | None, lis
         errors.append("burst_period_s must be > 0 when burst_h > 0")
     if policy is not None and policy.kind == POLICY_BURST and params["burst_h"] <= 0:
         errors.append("trigger_policy burst needs burst_h > 0 (it would never press)")
-    if errors:
-        return None, errors
+    return errors
 
-    players = int(params["players"])
-    slots = tuple(slot_function(params, i) for i in range(players))
+
+def _slot_errors(slots: tuple[SlotFunction, ...]) -> list[str]:
+    """BR-003: every slot's base and amplitude stay inside MIN_G..MAX_G."""
+    errors: list[str] = []
     for i, s in enumerate(slots):
         if not (MIN_G <= s.base <= MAX_G):
             errors.append(f"slot {i} base {s.base:.4f} g outside {MIN_G}..{MAX_G}")
         if not (MIN_G <= s.amp <= MAX_G):
             errors.append(f"slot {i} amp {s.amp:.4f} g outside {MIN_G}..{MAX_G}")
+    return errors
+
+
+def validate_archetype(name: str, params: object) -> tuple[Archetype | None, list[str]]:
+    """Validate an archetype (UC-046 BR-003). Returns (archetype or None, failed rules).
+
+    ``params`` is the parameter object or its JSON text.
+    """
+    errors: list[str] = []
+    if not isinstance(name, str) or not _NAME_RE.match(name):
+        errors.append(f"name {name!r} does not match [a-z][a-z0-9_]*")
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except ValueError as e:
+            return None, [*errors, f"parameters are not valid JSON: {e}"]
+    if not isinstance(params, dict):
+        return None, [*errors, "parameters are not a JSON object"]
+
+    errors.extend(_field_errors(params))
+    policy = None
+    if TRIGGER_POLICY_KEY in params:
+        policy, policy_errors = validate_trigger_policy(params[TRIGGER_POLICY_KEY])
+        errors.extend(policy_errors)
+    if errors:
+        return None, errors
+
+    errors = _cross_field_errors(params, policy)
+    if errors:
+        return None, errors
+
+    players = int(params["players"])
+    slots = tuple(slot_function(params, i) for i in range(players))
+    errors = _slot_errors(slots)
     if errors:
         return None, errors
     return Archetype(name=name, params=dict(params), slots=slots, trigger_policy=policy), []
