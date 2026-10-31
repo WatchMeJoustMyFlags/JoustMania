@@ -51,6 +51,20 @@ type Intervention struct {
 	// JevDescription is the lever's effect as the jev backend describes it to
 	// the model (from the retired FFA impact model of llm/prompt.go, #1102).
 	JevDescription string
+	// JevDescriptionNeutral is the lever's effect under the neutral prompt profile
+	// (decision.prompt_profile = neutral, #2467, UC-040 BR-036): what the lever does,
+	// never what it is for or when it is right. claude / openai list it in the
+	// neutral system prompt's Levers block, jev in its criteria. JevDescription (v1)
+	// is left untouched so the v1 prompt stays byte-identical.
+	JevDescriptionNeutral string
+}
+
+// Description returns the lever text of iv under profile (NormalizePromptProfile).
+func (iv Intervention) Description(profile string) string {
+	if NormalizePromptProfile(profile) == PromptProfileNeutral {
+		return iv.JevDescriptionNeutral
+	}
+	return iv.JevDescription
 }
 
 // Catalog is the single table of interventions; every per-intervention set in
@@ -62,6 +76,7 @@ var Catalog = []Intervention{
 		Weight: 0.5,
 		JevDescription: "Play an audio cue or announcement to build tension or excitement. No effect on who " +
 			"gets eliminated.",
+		JevDescriptionNeutral: "Play an audio cue or announcement. No effect on who gets eliminated.",
 	},
 	{
 		Name:           IntvSendControllerEffect,
@@ -69,12 +84,14 @@ var Catalog = []Intervention{
 		Weight:         0.5,
 		JevDescription: "Flash or rumble one player's controller as feedback. No effect on who gets " +
 			"eliminated.",
+		JevDescriptionNeutral: "Flash or rumble one player's controller. No effect on who gets eliminated.",
 	},
 	{
-		Name:           IntvAdjustVolume,
-		Weight:         0.5,
-		Idempotent:     true,
-		JevDescription: "Change the music volume. Atmosphere only: no effect on who gets eliminated.",
+		Name:                  IntvAdjustVolume,
+		Weight:                0.5,
+		Idempotent:            true,
+		JevDescription:        "Change the music volume. Atmosphere only: no effect on who gets eliminated.",
+		JevDescriptionNeutral: "Change the music volume. No effect on who gets eliminated.",
 	},
 	{
 		Name:       IntvAdjustMusicTempo,
@@ -83,6 +100,8 @@ var Catalog = []Intervention{
 		Difficulty: true,
 		JevDescription: "Change the music tempo for everyone. Faster music raises everyone's death " +
 			"threshold (more movement tolerated, fewer eliminations); slower music lowers it (eliminations come faster).",
+		JevDescriptionNeutral: "Change the music tempo for everyone. Faster music raises everyone's death threshold (more " +
+			"movement tolerated, fewer eliminations); slower music lowers it (eliminations come faster).",
 	},
 	{
 		Name:           IntvAdjustPlayerSensitivity,
@@ -93,6 +112,7 @@ var Catalog = []Intervention{
 		Difficulty:     true,
 		JevDescription: "Change one player's sensitivity, protecting them (harder to eliminate) " +
 			"or handicapping them (easier to eliminate).",
+		JevDescriptionNeutral: "Change one player's sensitivity, making them harder or easier to eliminate.",
 	},
 	{
 		Name:           IntvSetPlayerHandicap,
@@ -103,6 +123,7 @@ var Catalog = []Intervention{
 		Difficulty:     true,
 		JevDescription: "Help one player (harder to eliminate) or rein in one player (easier to " +
 			"eliminate), to balance a lopsided game.",
+		JevDescriptionNeutral: "Make one player harder or easier to eliminate.",
 	},
 	{
 		Name:           IntvGrantShield,
@@ -111,6 +132,7 @@ var Catalog = []Intervention{
 		Protective:     true,
 		JevDescription: "Make one player immune to elimination for a few seconds. Saves a player who is about " +
 			"to be eliminated unfairly.",
+		JevDescriptionNeutral: "Make one player immune to elimination for a few seconds.",
 	},
 	{
 		Name:           IntvToughnessBoost,
@@ -119,6 +141,8 @@ var Catalog = []Intervention{
 		Protective:     true,
 		JevDescription: "Make one player much harder, but not impossible, to eliminate for a few seconds; " +
 			"weaker than grant_shield.",
+		JevDescriptionNeutral: "Make one player much harder, but not impossible, to eliminate for a few seconds; weaker than " +
+			"grant_shield.",
 	},
 	{
 		Name:           IntvSoftPenalty,
@@ -126,6 +150,8 @@ var Catalog = []Intervention{
 		Weight:         1,
 		JevDescription: "Put pressure on one player: a warning cue, or briefly making them easier to " +
 			"eliminate. Recoverable, never an instant elimination.",
+		JevDescriptionNeutral: "Play a warning cue to one player, or briefly make them easier to eliminate. Recoverable, never " +
+			"an instant elimination.",
 	},
 	{
 		Name:       IntvAdjustGlobalSensitivity,
@@ -134,6 +160,8 @@ var Catalog = []Intervention{
 		Difficulty: true,
 		JevDescription: "Change the sensitivity level for all players at once. A higher level makes " +
 			"everyone much harder to eliminate, a lower level much easier; one step is a sizable jump.",
+		JevDescriptionNeutral: "Change the sensitivity level for all players at once. A higher level makes everyone much harder " +
+			"to eliminate, a lower level much easier; one step is a sizable jump.",
 	},
 	{
 		Name:       IntvAdjustGlobalDifficulty,
@@ -142,6 +170,8 @@ var Catalog = []Intervention{
 		Difficulty: true,
 		JevDescription: "Scale the difficulty for all players at once, making eliminations come " +
 			"faster (harder) or slower (easier) for everyone.",
+		JevDescriptionNeutral: "Scale the difficulty for all players at once, making eliminations come faster (harder) or " +
+			"slower (easier) for everyone.",
 	},
 	{
 		Name:       IntvSetPacingProfile,
@@ -150,6 +180,8 @@ var Catalog = []Intervention{
 		Difficulty: true,
 		JevDescription: "Switch the session's pacing profile (how the music tempo evolves over the round), " +
 			"speeding up or slowing down eliminations for everyone.",
+		JevDescriptionNeutral: "Switch the session's pacing profile (how the music tempo evolves over the round), speeding up " +
+			"or slowing down eliminations for everyone.",
 	},
 	{
 		Name:       IntvRampTempo,
@@ -158,6 +190,8 @@ var Catalog = []Intervention{
 		Difficulty: true,
 		JevDescription: "Ramp the music tempo smoothly over several seconds instead of one step, gradually " +
 			"making the game more forgiving or more dangerous for everyone.",
+		JevDescriptionNeutral: "Ramp the music tempo smoothly over several seconds instead of one step, gradually making " +
+			"eliminations slower or faster for everyone.",
 	},
 	{
 		Name:       IntvAutoRubberband,
@@ -165,23 +199,28 @@ var Catalog = []Intervention{
 		Idempotent: true,
 		JevDescription: "Automatically help the trailing players (harder to eliminate) to keep a lopsided " +
 			"game close, without ever inverting the standings.",
+		JevDescriptionNeutral: "Automatically make the trailing players harder to eliminate, without ever inverting the " +
+			"standings.",
 	},
 	{
-		Name:           IntvEliminatePlayer,
-		PlayerTargeted: true,
-		Weight:         2,
-		JevDescription: "Immediately and permanently eliminate one player. Maximal and irreversible.",
+		Name:                  IntvEliminatePlayer,
+		PlayerTargeted:        true,
+		Weight:                2,
+		JevDescription:        "Immediately and permanently eliminate one player. Maximal and irreversible.",
+		JevDescriptionNeutral: "Immediately and permanently eliminate one player. Irreversible.",
 	},
 	{
-		Name:           IntvRevivePlayer,
-		PlayerTargeted: true,
-		Weight:         2,
-		JevDescription: "Bring an eliminated player back into the game.",
+		Name:                  IntvRevivePlayer,
+		PlayerTargeted:        true,
+		Weight:                2,
+		JevDescription:        "Bring an eliminated player back into the game.",
+		JevDescriptionNeutral: "Bring an eliminated player back into the game.",
 	},
 	{
-		Name:           IntvEndGame,
-		Weight:         2,
-		JevDescription: "End the round now. Maximal and irreversible; the last player alive wins.",
+		Name:                  IntvEndGame,
+		Weight:                2,
+		JevDescription:        "End the round now. Maximal and irreversible; the last player alive wins.",
+		JevDescriptionNeutral: "End the round now. Irreversible; the last player alive wins.",
 	},
 }
 

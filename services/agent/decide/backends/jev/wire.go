@@ -211,7 +211,7 @@ func encodeQuestion(q decide.Question, req decide.Request, chosen string) (jevQu
 		if len(q.Options) == 0 || len(q.Options) > maxChoiceOptions {
 			return jevQuestion{}, fmt.Errorf("%d options, want 1..%d", len(q.Options), maxChoiceOptions)
 		}
-		return jevQuestion{Type: typeChoice, Instructions: q.Text, Criteria: choiceCriteria(q, req.State, chosen)}, nil
+		return jevQuestion{Type: typeChoice, Instructions: q.Text, Criteria: choiceCriteria(q, req.State, chosen, req.PromptProfile)}, nil
 	case decide.KindScore:
 		instructions, ladder := scoreLadder(q, req, chosen)
 		return jevQuestion{Type: typeScore, Instructions: instructions, Criteria: ladder}, nil

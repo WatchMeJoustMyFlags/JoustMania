@@ -196,6 +196,10 @@ func (s State) Elapsed() time.Duration {
 type Request struct {
 	State     State      `json:"state"`
 	Questions []Question `json:"questions"`
+	// PromptProfile is the decision.prompt_profile the agent read for this game
+	// (profile.go; "" and unknown values render as v1). Set on the remote path only.
+	// It is outside State, so the Digest does not cover it.
+	PromptProfile string `json:"prompt_profile,omitempty"`
 	// Context is the raw snapshot State was built from. Only in-process backends
 	// (the rules adapter, which reasons over the full GameContext) may read it.
 	// Remote backends MUST NOT read it: State is the entire contract they get, and

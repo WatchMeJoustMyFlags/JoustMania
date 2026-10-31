@@ -33,7 +33,7 @@ Defined in `decide/decide.go`.
 | `Answer` | `QuestionID`, `Choice`, `Probabilities map[string]float64`, `Score`, `Noul *float64`, `Confidence` | `services/agent/decide/decide.go:Answer` |
 | `PlayerState` | `Serial`, `Alive`, `Intensity*`, `Variance*`, `Skill*`, `BatteryPct*`, `EliminationOrder` | pointer = never observed (`services/agent/decide/decide.go:PlayerState`) |
 | `State` | `GameID`, `GameKind`, `Digest`, `Narrative`, `Players` (sorted by serial), `ElapsedSeconds` | `services/agent/decide/decide.go:State` |
-| `Request` | `State`, `Questions`, `Context` (`json:"-"`) | Only in-process backends (rules) may read `Context`; remote backends must not; never logged with `%v` (`services/agent/decide/decide.go:Request`). |
+| `Request` | `State`, `Questions`, `Context` (`json:"-"`), `PromptProfile` (`json:"prompt_profile,omitempty"`, #2467) | Only in-process backends (rules) may read `Context`; remote backends must not; never logged with `%v` (`services/agent/decide/decide.go:Request`). `PromptProfile` is set by the agent from `decision.prompt_profile` on the remote path only (§3); it is outside `State`, so it is not part of the State digest. |
 | `Response` | `Answers`, `Backend`, `Rationale` | Rationale is untrusted text, truncated (`services/agent/decide/decide.go:Response`). |
 | `Backend` | `Name() string`, `Decide(ctx, Request) (Response, error)` | Must honour `ctx` cancellation; the caller validates (`services/agent/decide/decide.go:Backend`). Optional `Available() bool`; false means `backend_unavailable` (`services/agent/decision/decide_registry.go:availability`, `DecideRegistry.Resolve`). |
 
@@ -143,6 +143,24 @@ tooling only) still answers the Default.
   the ask. **Under v1 (the shipped in-game prompt: the system prompt, user message and answer schema as built by `Render` and `AnswerSchema()` on `main` before #2479, which the talk runs on) the flag is off and the system prompt, the user message and the schema are
   byte-identical to today's**; a golden test pins that (UC-040 BR-034).
 
+- **Prompt profiles (#2467 PR 5, `decision.prompt_profile`, default `v1`).** The agent reads the flag per game on the remote
+  path, in the game's flag context (`services/agent/flags/game.go:GameContext`, `PromptProfile`), and puts it on
+  `Request.PromptProfile`; an unreadable, empty or unknown value is `v1` (`services/agent/decide/profile.go:NormalizePromptProfile`).
+  The rules path never sets it.
+  - `v1`: the system prompt, the user message and the answer schema are byte-identical to the shipped in-game prompt, and so
+    are jev's criteria (golden tests: `services/agent/decide/llmio/profile_golden_test.go`, jev `contract_test.go`).
+  - `neutral`: the system prompt is v1's with two changes: the noop sentence reads `"noop" (do nothing) is always a valid
+    answer.` (no "often the right answer", no "only intervene when the game state clearly calls for it"), and a static
+    `Levers:` block follows the FFA rules, one line `- <name>: <effect>` per catalog lever (all of them, so the prompt stays
+    static per profile and every offered lever has its line) plus `- noop: <effect>`. The lever lines describe what a lever does,
+    never what it is for or when it is right (UC-040 BR-036; `services/agent/decide/catalog.go:Intervention.JevDescriptionNeutral`).
+    The user message and the answer schema are the same as under v1. jev uses the same neutral lever lines for
+    `ffa.intervention` and in the details-stage instructions, a neutral noop line, and target suitability sentences that state the
+    player's situation (danger, refusals) without a verdict (`services/agent/decide/backends/jev/criteria.go`). The goal
+    sentence of the system prompt and jev's game description and gate criteria are unchanged in both profiles (goal lines
+    come with #2479, §14.4).
+  - The system prompt's fingerprint (`llm.prompt.system_sha256` on claude's chat span) is therefore one value per profile: v1's
+    is unchanged, neutral's differs. `agent.decide` carries `decide.prompt_profile` on the remote path (§12).
 - `AnswerSchema()` is static (cacheable), `additionalProperties:false` everywhere,
   all properties required: `{answers:[{id, choice, score, probabilities:[{option,p}], confidence}], rationale}` (`services/agent/decide/llmio/llmio.go:AnswerSchema`).
 
@@ -753,6 +771,8 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   score value, label `pass`/`fail`, explanation `confidence 0.720 >= threshold 0.600
   (decision.jev.act_confidence_threshold)` naming the flag the threshold came from) when routed
   (`services/agent/decision/decide_hook.go:emitDecideSpan`, `setDecideAttributes`).
+- **`decide.prompt_profile`** (#2467 PR 5): on a remote-path `agent.decide` span, the normalized profile the request was
+  rendered with (`v1` or `neutral`, §3); absent on the rules path.
 - **Prediction attributes (planned, #2479).** On `agent.decide`, when the record carries a prediction:
   `decide.prediction.id` (uuid), `decide.prediction.template`, `decide.prediction.characteristic`,
   `decide.prediction.scope`, `decide.prediction.horizon_s`, `decide.prediction.p`, `decide.prediction.source`
@@ -946,7 +966,7 @@ The decisive-end idea ("the game ends soon after two players remain") is not a c
 weighted mean is the game's goal attainment, recorded in the game summary and its span (UC-042 A12, BR-009).
 
 **Goals reach the model as structured targets, never as prose.** Only when `decision.goal_in_prompt` is on or
-`decision.prompt_profile` (planned, #2467 PR 5) is `neutral`, `Render` adds two lines to the user message, for example
+`decision.prompt_profile` (implemented in #2467 PR 5 with the neutral lever lines only, no goal lines yet) is `neutral`, `Render` adds two lines to the user message, for example
 `goal: long_running_game duration>=180s activity=0.30..0.60 elimination_pace<=1/min` and
 `now: duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21`, and the neutral system prompt drops the
 "closer, more dramatic" sentence in favour of "pursue the goal targets in the state". Under v1 both flags are off: no line,

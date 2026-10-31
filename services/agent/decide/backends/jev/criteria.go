@@ -72,19 +72,42 @@ var interventionDescriptions = func() map[string]string {
 	return out
 }()
 
+// interventionDescriptionsNeutral are the ffa.intervention descriptions under the
+// neutral prompt profile (decision.prompt_profile, #2467, UC-040 BR-036): each
+// lever's effect only (decide.Intervention.JevDescriptionNeutral) and a noop line
+// with no verdict on when doing nothing is right.
+var interventionDescriptionsNeutral = func() map[string]string {
+	out := map[string]string{decide.OptionNoop: decide.NoopDescriptionNeutral}
+	for _, iv := range decide.Catalog {
+		out[iv.Name] = iv.JevDescriptionNeutral
+	}
+	return out
+}()
+
+// descriptionsFor returns the ffa.intervention descriptions of profile
+// (decide.NormalizePromptProfile: anything but neutral is v1).
+func descriptionsFor(profile string) map[string]string {
+	if decide.NormalizePromptProfile(profile) == decide.PromptProfileNeutral {
+		return interventionDescriptionsNeutral
+	}
+	return interventionDescriptions
+}
+
 // targetNoneDescription describes the ffa.target "none" option.
 const targetNoneDescription = "No specific player: the intervention is session-wide (music tempo, volume, " +
 	"global sensitivity or difficulty, pacing, ending the game) or the agent does nothing."
 
 // choiceCriteria builds q's ordered {option: description} criteria. chosen is
-// the intervention a details-stage ffa.target is conditioned on ("" otherwise).
-func choiceCriteria(q decide.Question, st decide.State, chosen string) orderedCriteria {
+// the intervention a details-stage ffa.target is conditioned on ("" otherwise);
+// profile is the request's prompt profile (#2467).
+func choiceCriteria(q decide.Question, st decide.State, chosen, profile string) orderedCriteria {
 	var describe func(string) string
 	switch {
 	case q.ID == decide.QuestionFFAIntervention:
-		describe = func(o string) string { return interventionDescriptions[o] }
+		descriptions := descriptionsFor(profile)
+		describe = func(o string) string { return descriptions[o] }
 	case q.ID == decide.QuestionFFATarget && chosen != "":
-		players := describeCandidates(st, chosen)
+		players := describeCandidatesFor(st, chosen, profile)
 		describe = func(o string) string { return players[o] }
 	case q.ID == decide.QuestionFFATarget:
 		players := describePlayers(st)
@@ -253,7 +276,7 @@ const magnitudeInstructions = "If the agent intervenes now, which setting should
 // its own text.
 func scoreLadder(q decide.Question, req decide.Request, chosen string) (string, []string) {
 	if levels := conditionedLevels(q, chosen); levels != nil {
-		return conditionedMagnitude(q, chosen, levels)
+		return conditionedMagnitude(q, chosen, req.PromptProfile, levels)
 	}
 	ladder := make([]string, scoreLevels)
 	var interventions []string
@@ -326,9 +349,10 @@ func dangerPhrase(p decide.PlayerState) string {
 }
 
 // targetInstructions is the details-stage ffa.target instruction: it names
-// the intervention that WILL be applied, directly (TypeSafe: no indirection).
-func targetInstructions(iv string) string {
-	return interventionPhrase(iv) + ". Which player should receive it?"
+// the intervention that WILL be applied, directly (TypeSafe: no indirection),
+// described in profile's wording.
+func targetInstructions(iv, profile string) string {
+	return interventionPhrase(iv, profile) + ". Which player should receive it?"
 }
 
 // Suitability families of the player-targeted interventions.
@@ -401,9 +425,64 @@ func suitability(iv string, p decide.PlayerState, st decide.State) string {
 	return ""
 }
 
-// describeCandidates describes each alive player of st as a candidate for iv:
-// danger, intensity rank, skill, then the suitability sentence.
+// suitabilityNeutral is suitability under the neutral prompt profile (#2467,
+// UC-040 BR-036): the player's situation for iv (danger, headroom, a refusal the
+// agent would meet), never a verdict such as "would be wasted" or "matters most".
+// The refusal sentences are facts (the coordinator refuses the grant), so they
+// match v1.
+func suitabilityNeutral(iv string, p decide.PlayerState, st decide.State) string {
+	calmest, struggling := p.Serial == st.MostHeadroom, p.Serial == st.Struggling
+	switch {
+	case protectInterventions[iv]:
+		if iv == "grant_shield" && p.ShieldCharged {
+			return "Already holds an agent shield charge, or has just used it: another shield is refused."
+		}
+		if iv == "grant_shield" && st.ShieldActivation != "" {
+			switch st.HoldRefusal(p) {
+			case decide.HoldRefusalBudgetExhausted:
+				return "Shield budget for this game used up: another shield is refused."
+			case decide.HoldRefusalPoolFull:
+				return "Shield energy already full: another shield is refused."
+			}
+		}
+		if iv == "grant_shield" && p.ShieldLimited {
+			return "No more agent shields for this player right now (per-game cap or cooldown): another shield is refused."
+		}
+		switch p.Danger {
+		case decide.DangerNearThreshold:
+			return "Near the death threshold right now."
+		case decide.DangerElevated:
+			return "Under some pressure, some headroom left."
+		case decide.DangerSafe:
+			return "In no danger right now."
+		}
+	case balanceInterventions[iv], pressureInterventions[iv]:
+		switch {
+		case struggling || p.Danger == decide.DangerNearThreshold:
+			return "Struggling: near the death threshold right now."
+		case calmest:
+			return "Most headroom below the death threshold right now."
+		default:
+			return "Neither the calmest nor struggling right now."
+		}
+	}
+	return ""
+}
+
+// describeCandidates describes each alive player of st as a candidate for iv
+// under the v1 profile.
 func describeCandidates(st decide.State, iv string) map[string]string {
+	return describeCandidatesFor(st, iv, decide.PromptProfileV1)
+}
+
+// describeCandidatesFor describes each alive player of st as a candidate for iv:
+// danger, intensity rank, skill, then the suitability sentence in profile's
+// wording.
+func describeCandidatesFor(st decide.State, iv, profile string) map[string]string {
+	suits := suitability
+	if decide.NormalizePromptProfile(profile) == decide.PromptProfileNeutral {
+		suits = suitabilityNeutral
+	}
 	ranked := st.RankedCount()
 	out := map[string]string{}
 	for _, p := range st.Players {
@@ -435,7 +514,7 @@ func describeCandidates(st decide.State, iv string) map[string]string {
 		if v := finiteOrNil(p.Skill); v != nil {
 			b.WriteString(" Skill " + strconv.FormatFloat(*v, 'f', 2, 64) + ".")
 		}
-		if s := suitability(iv, p, st); s != "" {
+		if s := suits(iv, p, st); s != "" {
 			b.WriteString(" " + s)
 		}
 		out[p.Serial] = b.String()
@@ -597,10 +676,11 @@ func conditionedLevels(q decide.Question, chosen string) []float64 {
 	return magnitudeLevels(chosen)
 }
 
-// interventionPhrase is "The agent will apply <iv> (<description>)".
-func interventionPhrase(iv string) string {
+// interventionPhrase is "The agent will apply <iv> (<description>)", with the
+// description in profile's wording.
+func interventionPhrase(iv, profile string) string {
 	s := "The agent will apply " + iv
-	if d := interventionDescriptions[iv]; d != "" {
+	if d := descriptionsFor(profile)[iv]; d != "" {
 		s += " (" + strings.TrimSuffix(d, ".") + ")"
 	}
 	return s
@@ -609,7 +689,7 @@ func interventionPhrase(iv string) string {
 // conditionedMagnitude is the details-stage magnitude question for q: the
 // chosen intervention's own levels, each saying what it does, or for a
 // two-way lever's strength question the levels of one side, weakest first.
-func conditionedMagnitude(q decide.Question, iv string, levels []float64) (string, []string) {
+func conditionedMagnitude(q decide.Question, iv, profile string, levels []float64) (string, []string) {
 	b, _ := decide.MagnitudeBounds(iv)
 	if dir := strengthDirection(q.ID); dir != "" {
 		effect := "help a struggling player (make them harder to eliminate)"
@@ -622,7 +702,7 @@ func conditionedMagnitude(q decide.Question, iv string, levels []float64) (strin
 			ladder[i] = names[min(i, halfLevels-1)] + ": " + strconv.FormatFloat(v, 'g', 3, 64) + " " + b.Unit +
 				" (neutral is " + strconv.FormatFloat(b.Neutral, 'g', 3, 64) + ")."
 		}
-		return interventionPhrase(iv) + " to " + effect + ". How strong should the change be?", ladder
+		return interventionPhrase(iv, profile) + " to " + effect + ". How strong should the change be?", ladder
 	}
 	ends := magnitudeEnds[iv]
 	n := len(levels)
@@ -652,7 +732,7 @@ func conditionedMagnitude(q decide.Question, iv string, levels []float64) (strin
 		}
 		ladder[i] = text + "."
 	}
-	return interventionPhrase(iv) + ". Which setting should it use?", ladder
+	return interventionPhrase(iv, profile) + ". Which setting should it use?", ladder
 }
 
 // holdPhrase describes a hold-mode player's shield pool (#2096), e.g. " Shield energy

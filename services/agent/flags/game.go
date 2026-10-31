@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/open-feature/go-sdk/openfeature"
+
+	"github.com/joustmania/agent/decide"
 )
 
 // GameDomain is the domain / flagSetId of the game set (services/flagd/game.json).
@@ -62,12 +64,40 @@ func (f *Flags) SetGameAttrs(lookup func(gameID string) GameAttrs) {
 	}
 }
 
-func (f *Flags) shieldContext(gameID string) openfeature.EvaluationContext {
+// GameContext is the agent's per-game evaluation context (#2467 PR 5, generalised
+// from the shield reads): gameId, the game's game_kind (real when unknown) and, for
+// a game of an experiment, experiment_id and arm, from the lookup SetGameAttrs wired.
+// The shield flags (ShieldCharge, LatchShieldMode) and decision.prompt_profile
+// (PromptProfile) are read with it; see shieldChargeContext for why the
+// coordinator's richer context resolves the same shield values.
+func (f *Flags) GameContext(gameID string) openfeature.EvaluationContext {
 	var attrs GameAttrs
-	if f.gameAttrs != nil {
+	if f != nil && f.gameAttrs != nil {
 		attrs = f.gameAttrs(gameID)
 	}
 	return shieldChargeContext(gameID, attrs)
+}
+
+// keyDecisionPromptProfile is decision.prompt_profile (agent set, flags.md §3).
+const keyDecisionPromptProfile = "decision.prompt_profile"
+
+// PromptProfile reads decision.prompt_profile for one game from the agent set, in
+// the game's context (GameContext), and normalizes it (decide-contract.md §3,
+// UC-040 BR-036): "neutral" is neutral, anything else is v1. A nil wrapper, a nil
+// client or any evaluation error gives v1, the shipped prompt (debug log only: the
+// remote path reads it per request). The coordinator never reads this flag, and
+// flags.md allows its targeting only game_kind, experiment_id and arm
+// (tests/contract/test_flagd_resolution.py).
+func (f *Flags) PromptProfile(ctx context.Context, gameID string) string {
+	if f == nil || f.client == nil {
+		return decide.PromptProfileV1
+	}
+	v, err := f.client.StringValue(ctx, keyDecisionPromptProfile, decide.PromptProfileV1, f.GameContext(gameID))
+	if err != nil {
+		f.log.Debug("flags decision.prompt_profile unreadable, using v1", "game_id", gameID, "error", err)
+		return decide.PromptProfileV1
+	}
+	return decide.NormalizePromptProfile(v)
 }
 
 // shieldChargeContext is the agent's evaluation context for the two shield flags: gameId
@@ -193,7 +223,7 @@ func (f *Flags) LatchShieldMode(ctx context.Context, gameID string) {
 	if f == nil || f.game == nil || gameID == "" {
 		return
 	}
-	mode, err := f.game.StringValue(ctx, "shield.activation", "instant", f.shieldContext(gameID))
+	mode, err := f.game.StringValue(ctx, "shield.activation", "instant", f.GameContext(gameID))
 	if err != nil {
 		f.log.Debug("flags shield.activation unreadable at the game's first signal", "game_id", gameID, "error", err)
 		return
@@ -222,7 +252,7 @@ func (f *Flags) ShieldCharge(ctx context.Context, gameID string) (trigger bool, 
 	if f == nil || f.game == nil {
 		return false, DefaultShieldChargeExpiry
 	}
-	evalCtx := f.shieldContext(gameID)
+	evalCtx := f.GameContext(gameID)
 	mode, err := f.game.StringValue(ctx, "shield.activation", "instant", evalCtx)
 	if err != nil {
 		if f.gameWarn.allow(time.Now()) {

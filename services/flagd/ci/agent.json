@@ -885,6 +885,14 @@
       },
       "defaultVariant": "default"
     },
+    "decision.prompt_profile": {
+      "state": "ENABLED",
+      "variants": {
+        "v1": "v1",
+        "neutral": "neutral"
+      },
+      "defaultVariant": "v1"
+    },
     "decision.predictions_enabled": {
       "state": "ENABLED",
       "variants": {

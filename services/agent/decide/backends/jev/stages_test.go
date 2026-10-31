@@ -101,7 +101,7 @@ func TestMagnitudeLevels(t *testing.T) {
 		t.Errorf("handicap = %v (neutral 1.0 must be excluded)", got)
 	}
 	mag := decide.Question{ID: decide.QuestionFFAMagnitude, Kind: decide.KindScore, Range: [2]float64{0, 1}}
-	instr, ladder := conditionedMagnitude(mag, "adjust_global_difficulty", magnitudeLevels("adjust_global_difficulty"))
+	instr, ladder := conditionedMagnitude(mag, "adjust_global_difficulty", "", magnitudeLevels("adjust_global_difficulty"))
 	if !strings.HasPrefix(instr, "The agent will apply adjust_global_difficulty (") || len(ladder) != 5 {
 		t.Fatalf("%q %v", instr, ladder)
 	}
