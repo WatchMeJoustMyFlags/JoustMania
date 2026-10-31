@@ -434,6 +434,135 @@ class TestUC040HoldRenderer:
         await _finish(manager, clock)
 
 
+def _short_death(monkeypatch):
+    monkeypatch.setattr(fm_module, "DEATH_RUMBLE_MS", 50)
+    monkeypatch.setattr(fm_module, "DEATH_RED_HOLD_MS", 10)
+    monkeypatch.setattr(fm_module, "DEATH_FADE_MS", 20)
+
+
+async def _run_clock(clock, seconds, step=0.01):
+    """Let the renderer and the cue tasks run while the fake time moves ``seconds`` on."""
+    end = clock.time() + seconds
+    while clock.time() < end - 1e-9:
+        await asyncio.sleep(0)
+        clock.advance(step)
+
+
+async def _settle(clock, n=80):
+    """The death effect's red hold, fade and rumble stop run on real time: let them end."""
+    for _ in range(n):
+        await asyncio.sleep(0.005)
+        clock.advance(0.05)
+
+
+class TestUC040HoldEmptyThenDeath:
+    """#2462: the trigger held past empty, then a death; nothing of the hold survives the death."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    @pytest.mark.parametrize("death_after_s", [0.0, 0.1, 0.5])
+    async def test_held_past_empty_then_death_ends_rumble_and_white(
+        self, manager, backend, clock, monkeypatch, death_after_s
+    ):
+        """UC-040 A39 step 4: HOLD 0 and the empty pulse, then the death: the motor ends at 0, the LED off."""
+        _short_death(monkeypatch)
+        await _effect(manager, ENERGY, 5000, _state(energy=2000))
+        await _effect(manager, HOLD, 2000, _state(energy=2000))
+        await _run_clock(clock, 2.0)  # held until the energy runs out
+        before_end = len(backend.rumble)  # the "ending soon" double pulse is before this
+        await _effect(manager, HOLD, 0)
+        await _effect(manager, ENERGY, 5000, _state(energy=0, cue=pb.SHIELD_HOLD_CUE_EMPTY))
+        await _run_clock(clock, death_after_s)
+        await _effect(manager, pb.GAME_EFFECT_PLAYER_DEATH, 0)
+        await _settle(clock)
+
+        assert backend.rumble[-1][1] == 0
+        assert backend.colors[SERIAL] == (0, 0, 0)
+        assert backend.colors[SERIAL] != WHITE
+        assert not manager.shield_active(SERIAL)
+        assert SERIAL not in manager._background_rumble
+        assert SERIAL not in manager._hold_cue_tasks and SERIAL not in manager._hold_ending_tasks
+        assert backend.effect_active[SERIAL] is False  # the backend refreshes the LED again
+        # One empty pulse at most (cut short when the death comes first); the death rumble once.
+        assert [i for _, i in backend.rumble[before_end:]].count(255) <= 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    async def test_the_empty_pulse_is_single_and_ends(self, manager, backend, clock):
+        """UC-040 BR-026: running out while held gives one empty_pulse_ms pulse, then the motor is off."""
+        await _effect(manager, ENERGY, 5000, _state(energy=1000))
+        await _effect(manager, HOLD, 1000, _state(energy=1000, cues=_cues(ending_lead_ms=0)))
+        await _run_clock(clock, 1.0)
+        backend.rumble.clear()
+        await _effect(manager, HOLD, 0)
+        await _effect(manager, ENERGY, 5000, _state(energy=0, cue=pb.SHIELD_HOLD_CUE_EMPTY))
+        await _run_clock(clock, 2.0)
+
+        assert [i for _, i in backend.rumble if i > 0] == [255]
+        assert backend.rumble[-1][1] == 0
+        assert SERIAL not in manager._hold_cue_tasks
+        assert SERIAL not in manager._background_rumble
+        await _finish(manager, clock)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    async def test_death_ends_the_hold_state_when_no_layer_is_left(self, cue_manager, backend, clock, monkeypatch):
+        """UC-040 BR-026 (#2462): a death with no shield layer left still ends the background level and the cues.
+
+        A hold background level, or a cue task, that outlives its layer would bring the hold
+        rumble back after the death rumble and keep it on: the death must clear it anyway.
+        """
+        _short_death(monkeypatch)
+        await _effect(cue_manager, HOLD, 5000, _state(energy=5000))
+        assert backend.rumble[-1][1] == 70
+        cue_manager._shield_layers.pop(SERIAL)  # the layer is gone, its hold state is not
+        assert SERIAL in cue_manager._background_rumble and SERIAL in cue_manager._hold_ending_tasks
+
+        await _effect(cue_manager, pb.GAME_EFFECT_PLAYER_DEATH, 0)
+        await asyncio.sleep(0.15)
+
+        assert SERIAL not in cue_manager._background_rumble
+        assert SERIAL not in cue_manager._hold_ending_tasks
+        assert SERIAL not in cue_manager._hold_cues
+        assert [i for _, i in backend.rumble][-2:] == [255, 0]  # the death rumble stops at 0, not at 70
+        await _finish(cue_manager, clock)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    async def test_game_end_shield_zero_ends_the_hold_state_when_no_layer_is_left(self, cue_manager, backend, clock):
+        """UC-040 A39 / BR-026 (#2462): SHIELD 0 at the game end clears a leftover background level too."""
+        await _effect(cue_manager, HOLD, 5000, _state(energy=5000, cues=_cues(ending_lead_ms=0)))
+        cue_manager._shield_layers.pop(SERIAL)
+
+        await _effect(cue_manager, SHIELD, 0)
+
+        assert SERIAL not in cue_manager._background_rumble
+        assert backend.rumble[-1][1] == 0
+        await _finish(cue_manager, clock)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
+    @pytest.mark.parametrize("effect", [pb.GAME_EFFECT_SHIELD_CHARGE, pb.GAME_EFFECT_TOUGHNESS_BOOST])
+    async def test_a_partial_end_with_no_layer_left_keeps_the_hold_state(self, cue_manager, backend, clock, effect):
+        """UC-040 BR-026 (#2462): only a full end (death, game end) stops the hold state when no layer is left.
+
+        A charge or boost end that finds no layer must not stop a living player's hold rumble or idle pool.
+        """
+        await _effect(cue_manager, ENERGY, 5000, _state(energy=2000))
+        await _effect(cue_manager, HOLD, 5000, _state(energy=5000, cues=_cues(ending_lead_ms=0)))
+        cue_manager._shield_layers.pop(SERIAL)  # no layer left; the hold state is still live
+        rumble_writes = len(backend.rumble)
+
+        assert await cue_manager.end_shield_effect(SERIAL, kinds=frozenset({"charge"})) is False
+        await _effect(cue_manager, effect, 0)
+
+        assert cue_manager._background_rumble.get(SERIAL) == 70
+        assert SERIAL in cue_manager._hold_energy
+        assert SERIAL in cue_manager._hold_cues
+        assert len(backend.rumble) == rumble_writes  # no motor write
+        await _finish(cue_manager, clock)
+
+
 @pytest.mark.asyncio
 @pytest.mark.uc("UC-040", br=["BR-026"])
 async def test_the_servicer_forwards_the_hold_state():

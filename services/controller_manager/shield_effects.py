@@ -357,12 +357,18 @@ class ShieldEffectsMixin:
         painting under a charge end). With no layer left the renderer is cancelled and, if
         ``restore`` and no overlay owns the LED, the base colour is shown.
         Returns True if a layer was ended.
+
+        A full end (``kinds`` None: death, game end, stream close) also stops the hold and
+        charge state when no layer is left, so a background level or a cue that outlived
+        its layer never brings a rumble back after the death rumble (#2462, UC-040 BR-026).
         """
-        layers = self._shield_layers.get(serial)
-        if not layers:
-            return False
         if toughness_boost_only:
             kinds = frozenset({"toughness_boost"})
+        layers = self._shield_layers.get(serial)
+        if not layers:
+            if kinds is None:
+                await self._stop_shield_state(serial)
+            return False
         if kinds is not None:
             ended = [layers.pop(kind, None) for kind in kinds]
             if all(layer is None for layer in ended):
@@ -377,12 +383,7 @@ class ShieldEffectsMixin:
             if layers:
                 return True  # another shield layer keeps painting
         self._shield_layers.pop(serial, None)
-        await self._stop_charge_cues(serial)
-        await self._stop_shield_pulses(serial, self._shield_ending_tasks, SHIELD_ENDING_PULSE_TASK_NAME)
-        await self._end_hold_activation(serial)
-        await self._stop_hold_cues(serial)
-        self._hold_energy.pop(serial, None)
-        self._hold_cues.pop(serial, None)
+        await self._stop_shield_state(serial)
         task = self._shield_tasks.pop(serial, None)
         if task is not None and not task.done():
             task.cancel()
@@ -394,6 +395,15 @@ class ShieldEffectsMixin:
             else:
                 self.backend.set_effect_active(serial, False)
         return True
+
+    async def _stop_shield_state(self, serial: str) -> None:
+        """Stop every cue, pulse and background level of the shield layers and drop the hold state."""
+        await self._stop_charge_cues(serial)
+        await self._stop_shield_pulses(serial, self._shield_ending_tasks, SHIELD_ENDING_PULSE_TASK_NAME)
+        await self._end_hold_activation(serial)
+        await self._stop_hold_cues(serial)
+        self._hold_energy.pop(serial, None)
+        self._hold_cues.pop(serial, None)
 
     async def _handle_shield_command(
         self,
