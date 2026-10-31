@@ -7,10 +7,18 @@
 export const UNPAIR_NOTICE_EVENT = "joustmania:unpair-notice";
 
 const BT_ADDRESS = /^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$/;
+// Real controller serials are the address without separators (controller-manager and rust-hid strip the colons).
+const BARE_BT_ADDRESS = /^[0-9A-Fa-f]{12}$/;
 
 /** Only real controllers (serial = Bluetooth address) can be unpaired; mock serials cannot (UC-005 A5). */
 export function canUnpair(serial: string): boolean {
-  return BT_ADDRESS.test(serial);
+  return BT_ADDRESS.test(serial) || BARE_BT_ADDRESS.test(serial);
+}
+
+/** The colon form the connect-proxy and pairing daemon expect (`E0AE5EE112E4` -> `E0:AE:5E:E1:12:E4`). */
+export function toBluetoothAddress(serial: string): string {
+  const hex = serial.replace(/[:-]/g, "").toUpperCase();
+  return hex.match(/.{2}/g)!.join(":");
 }
 
 /** Confirmation text (UC-005 step 2, A2: a player in a running game is eliminated). */
@@ -48,7 +56,7 @@ export async function requestUnpair(serial: string, deps: UnpairDeps): Promise<U
     response = await deps.fetch(`${deps.baseUrl ?? ""}/pairing/unpair`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ address: serial }),
+      body: JSON.stringify({ address: toBluetoothAddress(serial) }),
     });
   } catch (err) {
     return { kind: "failed", status: 0, message: `Unpair failed: ${String(err)}` };
