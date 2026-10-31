@@ -30,7 +30,7 @@ from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.servicer import _stream_rate_hz
-from services.controller_manager.tests.backend_doubles import autospec_backend
+from services.controller_manager.tests.backend_doubles import autospec_backend, autospec_servicer_context
 
 SERIAL = "mock_controller_0"
 
@@ -164,7 +164,7 @@ async def _frame_intervals(servicer, config, frames: int = 6) -> list[float]:
         yield controller_manager_pb2.GameplayStreamControl(config=config)
         await real_sleep(3600)
 
-    context = MagicMock()
+    context = autospec_servicer_context()
     context.cancelled.return_value = False
     with patch("services.controller_manager.servicer.asyncio.sleep", side_effect=fake_sleep):
         stream = servicer.StreamGameplayData(requests(), context)

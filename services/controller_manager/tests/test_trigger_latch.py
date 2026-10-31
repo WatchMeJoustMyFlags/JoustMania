@@ -26,7 +26,7 @@ from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.multiplexer.multiplexer_backend import MultiplexerBackend
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
-from services.controller_manager.tests.backend_doubles import inert_hooks
+from services.controller_manager.tests.backend_doubles import autospec_channel, inert_hooks
 from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 HID_SERIAL = normalize_serial("AA:BB:CC:DD:EE:01")
@@ -150,7 +150,7 @@ class TestUC030MockTriggerLatch:
 def _bare_hid(adapter_cls):
     adapter = adapter_cls.__new__(adapter_cls)
     adapter._init_stream_state()
-    adapter._channel = MagicMock()
+    adapter._channel = autospec_channel()
     adapter._stub = MagicMock()
     adapter._latest_data = {}
     adapter._last_state = {}

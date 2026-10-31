@@ -30,6 +30,7 @@ from services.controller_manager.tests.backend_doubles import (
     autospec_feedback_manager,
     autospec_monitoring,
     autospec_publisher,
+    autospec_rescan_timer,
 )
 
 
@@ -75,7 +76,7 @@ def _make_loop(backend=None):
         button_detector=autospec_button_detector(),
         feedback_manager=autospec_feedback_manager(),
         monitoring=autospec_monitoring(),
-        rescan_timer=MagicMock(),
+        rescan_timer=autospec_rescan_timer(),
         paired_serials=[],
         base_colors={},
         event_publisher=autospec_publisher(),

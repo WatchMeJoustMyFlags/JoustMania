@@ -22,11 +22,14 @@ ALL = ["C", "A", "F", "B", "E", "D"]  # unsorted on purpose
 SORTED = ["A", "B", "C", "D", "E", "F"]
 
 
+from services.controller_manager.tests.backend_doubles import autospec_flag_client
+
+
 def _client(strategy="off", target="unstable", count=0, error_key=None):
     """Fake rollout client. ``error_key`` makes that flag's ``*_details`` read
     resolve to its default with an error code, as the OpenFeature SDK does on a
     flagd error or provider-not-ready."""
-    client = MagicMock()
+    client = autospec_flag_client()
 
     def get_string(key, default, _ctx):
         if key == "strategy":
@@ -131,7 +134,7 @@ class TestDefensive:
 
     def test_string_eval_error_returns_none(self):
         router = RolloutRouter()
-        client = MagicMock()
+        client = autospec_flag_client()
         client.get_string_value = MagicMock(side_effect=ValueError("boom"))
         with patch("lib.feature_flags.get_flag_client", return_value=client):
             assert router.target_for("A", ALL) is None

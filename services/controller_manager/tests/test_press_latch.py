@@ -25,7 +25,7 @@ from proto import controller_manager_pb2, psmove_hid_pb2
 from services.controller_manager.button_detector import ButtonDetector
 from services.controller_manager.multiplexer.python_hid_adapter import PythonHidAdapter
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
-from services.controller_manager.tests.backend_doubles import autospec_publisher
+from services.controller_manager.tests.backend_doubles import autospec_channel, autospec_publisher
 from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 HID_SERIAL = normalize_serial("AA:BB:CC:DD:EE:01")
@@ -39,7 +39,7 @@ MOVE = controller_manager_pb2.BUTTON_MOVE
 def _bare_hid(adapter_cls):
     adapter = adapter_cls.__new__(adapter_cls)
     adapter._init_stream_state()
-    adapter._channel = MagicMock()
+    adapter._channel = autospec_channel()
     adapter._stub = MagicMock()
     adapter._latest_data = {}
     adapter._last_state = {}

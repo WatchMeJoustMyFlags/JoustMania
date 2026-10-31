@@ -31,8 +31,11 @@ from services.controller_manager.tests.backend_doubles import (
     InertBackendHooks,
     autospec_backend,
     autospec_button_detector,
+    autospec_discovery_loop,
     autospec_feedback_manager,
+    autospec_monitoring,
     autospec_publisher,
+    autospec_rescan_timer,
 )
 
 LAG_METRIC = "services.controller_manager.metrics.controller_input_lag_seconds"
@@ -47,8 +50,8 @@ def _make_loop(backend) -> DiscoveryLoop:
         controller_states={},
         button_detector=autospec_button_detector(),
         feedback_manager=autospec_feedback_manager(),
-        monitoring=MagicMock(last_battery_check=0),
-        rescan_timer=MagicMock(),
+        monitoring=autospec_monitoring(),
+        rescan_timer=autospec_rescan_timer(),
         paired_serials=[],
         base_colors={},
         event_publisher=autospec_publisher(),
@@ -158,10 +161,10 @@ class TestGameplayFrameObservesLag:
             patch("services.controller_manager.servicer.DiscoveryLoop") as discovery_cls,
         ):
             create_backend.return_value = autospec_backend()
-            mock_loop = MagicMock()
-            mock_loop.drain_health_counters = MagicMock(return_value=(0, 0, 0))
-            mock_loop.drain_disconnects = MagicMock(return_value=[])
-            mock_loop.connection_quality = MagicMock(return_value=None)
+            mock_loop = autospec_discovery_loop()
+            mock_loop.drain_health_counters.return_value = (0, 0, 0)
+            mock_loop.drain_disconnects.return_value = []
+            mock_loop.connection_quality.return_value = None
             discovery_cls.return_value = mock_loop
 
             from services.controller_manager.servicer import ControllerManagerServicer
@@ -184,7 +187,7 @@ class TestGameplayFrameObservesLag:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_frame_observes_sample_age_per_controller(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
+        mock_loop.sample_age_seconds.return_value = 0.012
 
         with patch(LAG_METRIC) as lag:
             servicer._build_gameplay_update({SERIAL}, "game")
@@ -198,7 +201,7 @@ class TestGameplayFrameObservesLag:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_unfiltered_dashboard_stream_records_nothing(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=0.5)
+        mock_loop.sample_age_seconds.return_value = 0.5
 
         with patch(LAG_METRIC) as lag:
             update = servicer._build_gameplay_update(None, "dashboard")
@@ -210,7 +213,7 @@ class TestGameplayFrameObservesLag:
     def test_pattern_controller_records_nothing(self, servicer):
         """Pattern controllers synthesise accel per delivered frame; the polled sample's age is meaningless."""
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
+        mock_loop.sample_age_seconds.return_value = 0.012
 
         class PatternBackend(InertBackendHooks):
             def pattern_frame(self, _serial, _subscriber_id, _explicit):
@@ -229,7 +232,7 @@ class TestGameplayFrameObservesLag:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_no_sample_yet_records_nothing(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=None)
+        mock_loop.sample_age_seconds.return_value = None
 
         with patch(LAG_METRIC) as lag:
             servicer._build_gameplay_update({SERIAL}, "game")
@@ -239,7 +242,7 @@ class TestGameplayFrameObservesLag:
     @pytest.mark.uc("UC-035", flow="main", steps=[6])
     def test_filtered_out_controller_records_nothing(self, servicer):
         servicer, mock_loop = servicer
-        mock_loop.sample_age_seconds = MagicMock(return_value=0.012)
+        mock_loop.sample_age_seconds.return_value = 0.012
 
         with patch(LAG_METRIC) as lag:
             servicer._build_gameplay_update({"OTHER"})
