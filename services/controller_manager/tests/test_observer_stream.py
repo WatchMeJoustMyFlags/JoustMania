@@ -30,7 +30,7 @@ from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
 from services.controller_manager.servicer import _stream_rate_hz
-from services.controller_manager.tests.backend_doubles import inert_hooks
+from services.controller_manager.tests.backend_doubles import autospec_backend
 
 SERIAL = "mock_controller_0"
 
@@ -60,19 +60,7 @@ def rig():
     ctrl["death_frames_remaining"] = 3
     ctrl["death_hold_until"] = 0.0
 
-    backend = inert_hooks(
-        MagicMock(
-            spec=[
-                "consume_death_frame",
-                "consume_trigger_press",
-                "pattern_serials",
-                "pattern_frame",
-                "pattern_stream_rate",
-                "record_pattern_overrun",
-                "release_pattern_stream",
-            ]
-        )
-    )
+    backend = autospec_backend()
     backend.consume_trigger_press.return_value = False
     backend.pattern_serials.return_value = set()
     backend.pattern_frame.return_value = None
@@ -90,7 +78,7 @@ def rig():
     monitoring = create_autospec(ControllerMonitoring, instance=True)
     monitoring.last_battery_check = 0
     loop = DiscoveryLoop(
-        backend=inert_hooks(MagicMock(spec=[])),
+        backend=autospec_backend(),
         tracked_controllers=servicer.tracked_controllers,
         controller_states={},
         button_detector=create_autospec(ButtonDetector, instance=True),

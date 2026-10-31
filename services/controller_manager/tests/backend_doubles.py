@@ -20,7 +20,11 @@ def autospec_backend():
     backend.pattern_frame.return_value = None
     backend.pattern_stream_rate.return_value = None
     backend.consume_trigger_press.return_value = False
-    inert_hooks(backend)
+    backend.get_adapter_type.return_value = ""
+    backend.get_controller_metadata.return_value = None
+    backend.rollout_summary.return_value = ("", 0)
+    backend.rollout_strategy.return_value = ""
+    backend.take_led_failures.return_value = 0
     return backend
 
 

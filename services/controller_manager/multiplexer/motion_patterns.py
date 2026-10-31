@@ -239,7 +239,7 @@ def validate_trigger_policy(raw: object) -> tuple[TriggerPolicy | None, list[str
     return TriggerPolicy(POLICY_THRESHOLD, float(level), reaction, hold), []
 
 
-def validate_archetype(name: str, params: object) -> tuple[Archetype | None, list[str]]:
+def validate_archetype(name: str, params: object) -> tuple[Archetype | None, list[str]]:  # noqa: C901
     """Validate an archetype (UC-046 BR-003). Returns (archetype or None, failed rules).
 
     ``params`` is the parameter object or its JSON text.
