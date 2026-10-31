@@ -12,7 +12,6 @@ Tests each helper independently to verify the refactoring preserved behavior:
 """
 
 import sys
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,6 +24,7 @@ project_root = service_dir.parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import Player
 from services.game_coordinator.games.teams_base import (
     TEAM_WIN_SOUNDS,
@@ -233,7 +233,7 @@ class TestBuildSurvivedSpanAttrs:
 
     def test_basic_attributes(self, game):
         """Should include game_duration, winner, and team."""
-        game.start_time = time.time() - 10.0
+        game.start_time = game_clock.now() - 10.0
         player = Player(serial="p1", team=0, alive=True)
 
         attrs = game._build_survived_span_attrs(player, is_winner=True)
@@ -245,7 +245,7 @@ class TestBuildSurvivedSpanAttrs:
 
     def test_winner_false(self, game):
         """Should correctly mark non-winner."""
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         player = Player(serial="p1", team=1, alive=True)
 
         attrs = game._build_survived_span_attrs(player, is_winner=False)
@@ -264,7 +264,7 @@ class TestBuildSurvivedSpanAttrs:
 
     def test_includes_analytics_summary(self, game):
         """Should include analytics data when player has analytics."""
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         player = Player(serial="p1", team=0, alive=True)
 
         # Mock analytics
@@ -282,7 +282,7 @@ class TestBuildSurvivedSpanAttrs:
 
     def test_no_analytics(self, game):
         """Should not include analytics keys when analytics is None."""
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         player = Player(serial="p1", team=0, alive=True)
         player.analytics = None
 
@@ -299,7 +299,7 @@ class TestEndSurvivingPlayerSpans:
         """Should end spans for alive players that have open spans."""
         mock_span = MagicMock()
 
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         _add_players(game, [("p1", 0, True)])
         game.players["p1"].span = mock_span
 
@@ -313,7 +313,7 @@ class TestEndSurvivingPlayerSpans:
         """Should not touch spans of dead players."""
         mock_span = MagicMock()
 
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         _add_players(game, [("p1", 0, False)])
         game.players["p1"].span = mock_span
 
@@ -323,7 +323,7 @@ class TestEndSurvivingPlayerSpans:
 
     def test_skips_players_without_spans(self, game):
         """Should not error for alive players with no span."""
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         _add_players(game, [("p1", 0, True)])
         game.players["p1"].span = None
 
@@ -334,7 +334,7 @@ class TestEndSurvivingPlayerSpans:
         """Should pass is_winner=True for players on the winning team."""
         mock_span = MagicMock()
 
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         _add_players(game, [("p1", 0, True)])
         game.players["p1"].span = mock_span
 
@@ -347,7 +347,7 @@ class TestEndSurvivingPlayerSpans:
         """Should pass is_winner=False for players not on winning team."""
         mock_span = MagicMock()
 
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         _add_players(game, [("p1", 1, True)])
         game.players["p1"].span = mock_span
 
@@ -360,7 +360,7 @@ class TestEndSurvivingPlayerSpans:
         """Should pass is_winner=False for all players when no winner."""
         mock_span = MagicMock()
 
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         _add_players(game, [("p1", 0, True)])
         game.players["p1"].span = mock_span
 
@@ -441,7 +441,7 @@ class TestEndSurvivingTeamSpans:
     def test_ends_span_for_winning_team(self, game):
         """Should end span for the winning team with team_victory event."""
         mock_span = MagicMock()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.teams[0].span = mock_span
 
         game._end_surviving_team_spans(alive_teams={0}, winning_team_num=0)
@@ -454,7 +454,7 @@ class TestEndSurvivingTeamSpans:
     def test_ends_span_for_surviving_non_winner(self, game):
         """Should end span with team_survived event for non-winning alive teams."""
         mock_span = MagicMock()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.teams[1].span = mock_span
 
         game._end_surviving_team_spans(alive_teams={0, 1}, winning_team_num=0)
@@ -485,7 +485,7 @@ class TestEndSurvivingTeamSpans:
         """Should mark all teams as survived when no winner (tie/draw)."""
         mock_span_0 = MagicMock()
         mock_span_1 = MagicMock()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.teams[0].span = mock_span_0
         game.teams[1].span = mock_span_1
 
@@ -652,7 +652,7 @@ class TestEndGameImpl:
         """Set up a game with mocked helper methods."""
         from services.game_coordinator.games.base import GameState
 
-        game.start_time = time.time() - 30.0  # Game ran for 30 seconds
+        game.start_time = game_clock.now() - 30.0  # Game ran for 30 seconds
         game.state = GameState.RUNNING
         game._send_winner_rainbow_effects = AsyncMock()
         game._play_team_victory_sound = AsyncMock()

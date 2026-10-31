@@ -24,6 +24,7 @@ from test_tournament_run import _bracket_game, _frame
 
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games import tournament as tournament_mod
 from services.game_coordinator.games.tournament import TournamentState
 from services.game_coordinator.intervention_errors import InterventionNotApplied
@@ -292,14 +293,14 @@ async def test_an_agent_shield_protects_a_fighter_after_the_match_invincibility_
     game, _ = await _bracket_game()  # invincibility 0: only the shield protects
     match = game.current_match
     shielded = match.player1_serial
-    game.players[shielded].grace_until = time.time() + 60.0
+    game.players[shielded].grace_until = game_clock.now() + 60.0
 
     with patch("services.game_coordinator.games.base.metrics"):
         await game._process_gameplay_update(_frame([shielded], spike=[shielded]))
     assert game.current_match is match and not match.is_complete, "a shielded fighter lost the match"
     assert game.players[shielded].alive and game.dead_count == 0
 
-    game.players[shielded].grace_until = time.time() - 1.0  # the shield ends
+    game.players[shielded].grace_until = game_clock.now() - 1.0  # the shield ends
     with patch("services.game_coordinator.games.base.metrics"):
         await game._process_gameplay_update(_frame([shielded], spike=[shielded]))
     assert match.is_complete and match.winner_serial == match.player2_serial

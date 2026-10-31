@@ -19,7 +19,6 @@ repo metric-testing convention (.claude/rules/development.md).
 """
 
 import sys
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,6 +36,7 @@ from conftest import MockControllerManagerService, async_noop
 
 from lib.types import GameEvent
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import BaseGameMode, GameState, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame
@@ -196,7 +196,7 @@ class TestGrantShieldPrimitive:
     @pytest.mark.asyncio
     async def test_sets_grace_and_pulse(self):
         game = make_ffa_game()
-        before = time.time()
+        before = game_clock.now()
         granted = await game.grant_shield("p1", 5.0)
         assert granted is True
         # grace_until pushed roughly 5s into the future.
@@ -242,7 +242,7 @@ class TestShieldSecondsHandler:
         # p1 gets a 5s shield; p2/p3 resolve to the neutral default (0).
         mgr._interventions_client = TargetingFlagClient(default=0, per_serial={"p1": 5})
 
-        before = time.time()
+        before = game_clock.now()
         await handle_shield_seconds(make_ctx("shield_seconds", 5, game), mgr)
 
         assert game.players["p1"].grace_until >= before + 4.5
@@ -306,7 +306,7 @@ class TestToughnessBoostHandler:
 
         await handle_toughness_boost(make_ctx("toughness_boost_seconds", "8:1.8", game), mgr)
 
-        assert game.players["p1"].toughness_boost_until > time.time()
+        assert game.players["p1"].toughness_boost_until > game_clock.now()
         assert game.players["p1"].toughness_boost_factor == pytest.approx(1.8)
         assert game.players["p2"].toughness_boost_until == 0.0
         assert game.players["p3"].toughness_boost_until == 0.0
@@ -400,7 +400,7 @@ class TestSoftPenaltyHandler:
 
         # warn: visible cue only, no tighten armed, thresholds unchanged.
         assert game.players["p1"].soft_penalty_until == 0.0
-        assert game.players["p1"].warning_until > time.time()
+        assert game.players["p1"].warning_until > game_clock.now()
         assert before == pytest.approx(game._compute_effective_thresholds(game.players["p1"]))
         assert game.players["p2"].warning_until == 0.0
 
@@ -412,7 +412,7 @@ class TestSoftPenaltyHandler:
 
         await handle_soft_penalty(make_ctx("soft_penalty_action", "tighten:8:0.6", game), mgr)
 
-        assert game.players["p1"].soft_penalty_until > time.time()
+        assert game.players["p1"].soft_penalty_until > game_clock.now()
         assert game.players["p1"].soft_penalty_factor == pytest.approx(0.6)
         assert game.players["p2"].soft_penalty_until == 0.0
         assert game.players["p3"].soft_penalty_until == 0.0
@@ -426,7 +426,7 @@ class TestSoftPenaltyHandler:
         await handle_soft_penalty(make_ctx("soft_penalty_action", "garbage", game), mgr)
         # Degrades to warn: a cue fires, but NO tighten is armed.
         assert game.players["p1"].soft_penalty_until == 0.0
-        assert game.players["p1"].warning_until > time.time()
+        assert game.players["p1"].warning_until > game_clock.now()
 
     @pytest.mark.asyncio
     async def test_battery_gated_serial_skipped(self):
@@ -546,7 +546,7 @@ class TestRevivePlayer:
         serial = next(iter(game.players))
         game.players[serial].alive = False
 
-        before = time.time()
+        before = game_clock.now()
         await handle_revive_player(make_ctx("revive_player", "", game, payload=serial))
 
         player = game.players[serial]
@@ -561,7 +561,7 @@ class TestRevivePlayer:
         assert not hasattr(game, "_respawn_player")
         game.players["p1"].alive = False
 
-        before = time.time()
+        before = game_clock.now()
         revived = await game.revive_player("p1")
         assert revived is True
         player = game.players["p1"]
@@ -708,7 +708,7 @@ class TestAutoRubberbandHandler:
 
         await handle_auto_rubberband(make_ctx("auto_rubberband", "strong", game))
 
-        assert game.players["p2"].rubberband_until > time.time()
+        assert game.players["p2"].rubberband_until > game_clock.now()
         assert game.players["p2"].rubberband_boost > 1.0
 
     @pytest.mark.asyncio

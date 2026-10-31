@@ -23,7 +23,6 @@ conftest.
 """
 
 import sys
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,6 +38,7 @@ sys.path.insert(0, str(test_dir))
 from conftest import EventCollector, MockControllerManagerService, async_noop
 
 from proto import controller_manager_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import BaseGameMode, Player
 from services.game_coordinator.games.ffa import FFAGame
 from services.game_coordinator.games.fight_club import FightClubGame, FightState
@@ -122,7 +122,7 @@ class TestEffectiveGraceUntil:
 
     def test_is_in_grace_true_when_either_open(self):
         p = TournamentPlayer(serial="A")
-        now = time.time()
+        now = game_clock.now()
         # admin window open, agent closed
         p.invincible_until = now + 10.0
         p.grace_until = 0.0
@@ -136,7 +136,7 @@ class TestEffectiveGraceUntil:
 
     def test_is_in_grace_false_when_both_expired(self):
         p = TournamentPlayer(serial="A")
-        now = time.time()
+        now = game_clock.now()
         p.invincible_until = now - 5.0
         p.grace_until = now - 5.0
         game = _make_ffa_game()
@@ -157,7 +157,7 @@ class TestGrantShieldComposition:
         p.invincible_until = 0.0
         game.players["A"] = p
 
-        before = time.time()
+        before = game_clock.now()
         ok = await game.grant_shield("A", 5.0)
         assert ok is True
         assert p.grace_until >= before + 5.0
@@ -169,7 +169,7 @@ class TestGrantShieldComposition:
         """Admin invincibility longer than the requested shield: shield must not
         shorten the effective grace (returns True, grace_until unchanged-low)."""
         game = _make_ffa_game()
-        now = time.time()
+        now = game_clock.now()
         p = TournamentPlayer(serial="A", alive=True)
         p.invincible_until = now + 100.0  # long admin baseline
         p.grace_until = 0.0
@@ -186,7 +186,7 @@ class TestGrantShieldComposition:
     async def test_longer_shield_extends_beyond_admin_invincibility(self):
         """Shield longer than admin invincibility extends the effective grace."""
         game = _make_ffa_game()
-        now = time.time()
+        now = game_clock.now()
         p = TournamentPlayer(serial="A", alive=True)
         p.invincible_until = now + 3.0
         p.grace_until = 0.0
@@ -233,7 +233,7 @@ class TestBaseGateComposition:
         # TournamentPlayer carries invincible_until but FFA's base gate is mode-agnostic.
         p = TournamentPlayer(serial="A", alive=True)
         p.grace_until = 0.0
-        p.invincible_until = time.time() + 60.0
+        p.invincible_until = game_clock.now() + 60.0
         game.players["A"] = p
 
         kills = []
@@ -282,7 +282,7 @@ class TestFightClubComposition:
         defender = FightClubPlayer(serial="D", alive=True)
         defender.state = FightState.DEFENDER
         defender.invincible_until = 0.0  # admin invincibility expired
-        defender.grace_until = time.time() + 60.0  # agent shield active
+        defender.grace_until = game_clock.now() + 60.0  # agent shield active
         game.players["D"] = defender
         game.current_defender = "D"
 
@@ -300,7 +300,7 @@ class TestFightClubComposition:
         p = FightClubPlayer(serial="D", alive=True)
         p.state = FightState.DEFENDER
         p.invincible_until = 0.0
-        p.grace_until = time.time() + 60.0
+        p.grace_until = game_clock.now() + 60.0
         game.players["D"] = p
 
         await game._kill_player_impl("D", 9.0)
@@ -314,7 +314,7 @@ class TestFightClubComposition:
 
         p = FightClubPlayer(serial="D", alive=True)
         p.state = FightState.DEFENDER
-        p.invincible_until = time.time() + 60.0
+        p.invincible_until = game_clock.now() + 60.0
         p.grace_until = 0.0
         game.players["D"] = p
 
@@ -347,7 +347,7 @@ class TestTournamentComposition:
         game = self._t_game()
         p = TournamentPlayer(serial="A", alive=True)
         p.tournament_state = TournamentState.FIGHTING
-        p.invincible_until = time.time() + 60.0
+        p.invincible_until = game_clock.now() + 60.0
         p.grace_until = 0.0
         game.players["A"] = p
 
@@ -362,7 +362,7 @@ class TestTournamentComposition:
         p = TournamentPlayer(serial="A", alive=True)
         p.tournament_state = TournamentState.FIGHTING
         p.invincible_until = 0.0
-        p.grace_until = time.time() + 60.0
+        p.grace_until = game_clock.now() + 60.0
         game.players["A"] = p
 
         await game._kill_player_impl("A", 9.0)

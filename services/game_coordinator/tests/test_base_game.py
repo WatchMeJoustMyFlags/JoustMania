@@ -13,7 +13,6 @@ Issue #209: Improve test coverage for critical game flow
 """
 
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -198,7 +197,7 @@ class TestWarningBehavior:
         )
         game.gameplay_stream = MockGameplayStream()
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         return game
 
@@ -210,7 +209,7 @@ class TestWarningBehavior:
         player = game.players["test_serial"]
 
         # Set active warning (player is in warning feedback state)
-        player.warning_until = time.time() + 5.0
+        player.warning_until = game_clock.now() + 5.0
         # No grace period
         player.grace_until = 0.0
 
@@ -247,12 +246,12 @@ class TestWarningBehavior:
         player.grace_until = 0.0
         player.warning_until = 0.0
 
-        before_time = time.time()
+        before_time = game_clock.now()
 
         # Trigger warning via _warn_player
         await game._warn_player("test_serial", accel_mag=1.5, threshold=1.4)
 
-        after_time = time.time()
+        after_time = game_clock.now()
 
         # Warning should be set for WARNING_DURATION
         assert player.warning_until >= before_time + WARNING_DURATION
@@ -268,7 +267,7 @@ class TestWarningBehavior:
         # No grace period
         player.grace_until = 0.0
         # Set active warning
-        player.warning_until = time.time() + 5.0
+        player.warning_until = game_clock.now() + 5.0
 
         # Count stream writes (warnings send effects)
         stream = game.gameplay_stream
@@ -318,7 +317,7 @@ class TestGracePeriodSpikeMemory:
         )
         game.gameplay_stream = MockGameplayStream()
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         return game
 
@@ -336,7 +335,7 @@ class TestGracePeriodSpikeMemory:
         the player on the first calm frame after grace expires."""
         game = game_with_player
         player = game.players["test_serial"]
-        player.grace_until = time.time() + 60.0  # In grace
+        player.grace_until = game_clock.now() + 60.0  # In grace
 
         kill_called = []
 
@@ -366,7 +365,7 @@ class TestGracePeriodSpikeMemory:
         acceleration continues past grace expiry, the player dies."""
         game = game_with_player
         player = game.players["test_serial"]
-        player.grace_until = time.time() + 60.0  # In grace
+        player.grace_until = game_clock.now() + 60.0  # In grace
 
         kill_called = []
 
@@ -413,7 +412,7 @@ class TestDeathDetection:
         )
         game.gameplay_stream = MockGameplayStream()
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         return game
 
@@ -533,7 +532,7 @@ class TestSensitivityFactor:
         )
         game.gameplay_stream = MockGameplayStream()
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         return game
 
@@ -598,7 +597,7 @@ class TestEMAFilter:
         )
         game.gameplay_stream = MockGameplayStream()
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         return game
 
@@ -1388,7 +1387,7 @@ class TestStartupGracePeriod:
         )
         game.gameplay_stream = MockGameplayStream()
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         return game
 
@@ -1421,7 +1420,7 @@ class TestStartupGracePeriod:
         player = game.players["test_serial"]
 
         # Set grace period in the past (expired)
-        player.grace_until = time.time() - 1.0
+        player.grace_until = game_clock.now() - 1.0
 
         kill_called = []
 

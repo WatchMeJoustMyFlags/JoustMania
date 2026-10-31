@@ -11,7 +11,6 @@ Tests the core Fight Club mechanics:
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, create_autospec, patch
 
@@ -155,7 +154,7 @@ class TestFightClubGameMode:
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
-        time_before = time.time()
+        time_before = game_clock.now()
         await game._start_round()
 
         defender = game.players[game.current_defender]
@@ -601,7 +600,7 @@ class TestFightClubEndGameImpl:
         game, mock_controller_manager, event_collector = fight_club_game
         game.gameplay_stream = MockGameplayStream()
         game.running = True
-        game.start_time = time.time() - 30.0  # Game ran for 30 seconds
+        game.start_time = game_clock.now() - 30.0  # Game ran for 30 seconds
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
 
@@ -645,7 +644,7 @@ class TestFightClubEndGameImpl:
         stream.write = tracking_write
         game.gameplay_stream = stream
         game.running = True
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
         game.players["mock_controller_0"].score = 3
@@ -669,7 +668,7 @@ class TestFightClubEndGameImpl:
         game, mock_controller_manager, event_collector = fight_club_game
         game.gameplay_stream = None
         game.running = True
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         await game._initialize_players_impl(mock_controller_manager.controllers)
         game.players["mock_controller_0"].score = 1
@@ -1463,7 +1462,7 @@ class TestFightClubForceEndWinner:
             span.get_span_context.return_value = trace.INVALID_SPAN_CONTEXT
             player.span = span
         game.running = True
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         await game._start_round()
         _clear_invincibility(game)
         return game, events

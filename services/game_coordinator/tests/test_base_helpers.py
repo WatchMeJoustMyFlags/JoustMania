@@ -367,7 +367,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=2.0,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -386,7 +386,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() - 1.0,  # already past
+            toughness_boost_until=game_clock.now() - 1.0,  # already past
             toughness_boost_factor=2.0,
         )
         assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
@@ -404,7 +404,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.8,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=1.2,
         )
         ref = Player(serial="t", sensitivity_factor=1.0, handicap_factor=1.8)
@@ -421,7 +421,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=2.0,
         )
         _, death = game._compute_effective_thresholds(p)
@@ -440,7 +440,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.6,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -460,7 +460,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            soft_penalty_until=time.time() - 1.0,  # already past
+            soft_penalty_until=game_clock.now() - 1.0,  # already past
             soft_penalty_factor=0.6,
         )
         assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
@@ -477,7 +477,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.5,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -499,9 +499,9 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=2.0,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.6,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -521,7 +521,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.8,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.6,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -541,7 +541,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            rubberband_until=time.time() + 5.0,
+            rubberband_until=game_clock.now() + 5.0,
             rubberband_boost=1.4,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -560,7 +560,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            rubberband_until=time.time() - 1.0,  # already past
+            rubberband_until=game_clock.now() - 1.0,  # already past
             rubberband_boost=1.4,
         )
         assert game._compute_effective_thresholds(expired) == pytest.approx(game._compute_effective_thresholds(plain))
@@ -577,9 +577,9 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            toughness_boost_until=time.time() + 5.0,
+            toughness_boost_until=game_clock.now() + 5.0,
             toughness_boost_factor=1.2,
-            rubberband_until=time.time() + 5.0,
+            rubberband_until=game_clock.now() + 5.0,
             rubberband_boost=1.4,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -599,9 +599,9 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            rubberband_until=time.time() + 5.0,
+            rubberband_until=game_clock.now() + 5.0,
             rubberband_boost=1.4,
-            soft_penalty_until=time.time() + 5.0,
+            soft_penalty_until=game_clock.now() + 5.0,
             soft_penalty_factor=0.6,
         )
         _, death_n = game._compute_effective_thresholds(neutral)
@@ -618,7 +618,7 @@ class TestComputeEffectiveThresholds:
             serial="t",
             sensitivity_factor=1.0,
             handicap_factor=1.0,
-            rubberband_until=time.time() + 5.0,
+            rubberband_until=game_clock.now() + 5.0,
             rubberband_boost=2.0,
         )
         _, death = game._compute_effective_thresholds(p)
@@ -686,10 +686,10 @@ class TestGrantToughnessBoost:
     @pytest.mark.asyncio
     async def test_uc040_step13_toughness_boost_lasts_at_most_30_s(self, game):
         """UC-040 step 13: a toughness boost lasts at most 30 s, however long the grant asks."""
-        before = time.time()
+        before = game_clock.now()
         await game.grant_toughness_boost("AA", 9999.0, 1.5)
         until = game.players["AA"].toughness_boost_until
-        assert before + 29.0 <= until <= time.time() + 30.0
+        assert before + 29.0 <= until <= game_clock.now() + 30.0
 
     @pytest.mark.asyncio
     async def test_nonpositive_seconds_noop(self, game):
@@ -859,7 +859,7 @@ class TestApplyAutoRubberband:
         assert lag.rubberband_until > game_clock.now()
         assert lag.rubberband_boost > 1.0
         # The leader gets (close to) nothing — never penalized.
-        assert lead.rubberband_boost == pytest.approx(1.0) or lead.rubberband_until <= time.time()
+        assert lead.rubberband_boost == pytest.approx(1.0) or lead.rubberband_until <= game_clock.now()
 
     @pytest.mark.asyncio
     async def test_strong_boosts_more_than_gentle(self, game):
@@ -953,7 +953,7 @@ class TestPlayerNameCapture:
         game.gameplay_stream = MockGameplayStream()
         game.running = True
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.players["p1"] = Player(
             serial="p1",
             alive=True,
@@ -1044,7 +1044,7 @@ class TestProcessGameplayUpdate:
         game.gameplay_stream = MockGameplayStream()
         game.running = True
         game.music_speed = SLOW_MUSIC_SPEED
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
 
         for i in range(3):
             game.players[f"player_{i}"] = Player(
@@ -1201,7 +1201,7 @@ class TestUpdateFrameMetrics:
             recent_frame_times=recent,
             frames_on_target=0,
             loop_iterations=1,
-            loop_start_time=time.time() - 1.0,
+            loop_start_time=game_clock.now() - 1.0,
         )
         assert result == 1
 
@@ -1215,7 +1215,7 @@ class TestUpdateFrameMetrics:
             recent_frame_times=recent,
             frames_on_target=5,
             loop_iterations=1,
-            loop_start_time=time.time() - 1.0,
+            loop_start_time=game_clock.now() - 1.0,
         )
         assert result == 5  # unchanged
 
@@ -1229,7 +1229,7 @@ class TestUpdateFrameMetrics:
             recent_frame_times=recent,
             frames_on_target=0,
             loop_iterations=1,
-            loop_start_time=time.time() - 1.0,
+            loop_start_time=game_clock.now() - 1.0,
         )
         assert len(recent) == 60
         assert recent[-1] == 17.0  # New value at end
@@ -1244,7 +1244,7 @@ class TestUpdateFrameMetrics:
             recent_frame_times=recent,
             frames_on_target=0,
             loop_iterations=1,
-            loop_start_time=time.time() - 1.0,
+            loop_start_time=game_clock.now() - 1.0,
         )
         assert len(recent) == 1
         assert recent[0] == 16.0
@@ -1261,7 +1261,7 @@ class TestUpdateFrameMetrics:
                 recent_frame_times=recent,
                 frames_on_target=count,
                 loop_iterations=1,
-                loop_start_time=time.time() - 1.0,
+                loop_start_time=game_clock.now() - 1.0,
             )
         assert count == 5
 
