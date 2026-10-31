@@ -94,7 +94,7 @@ SHIELD_HELP_CUE_SPEED = 4  # pulses per second: two pulses in 500 ms
 SHIELD_REFUSED_GAME_ENDING = "game_ending"
 
 # player_death carries `shield.since_end_ms` only when the player's last shield ended
-# less than this long ago (telemetry.md §4, UC-040 BR-033): the stage fairness check.
+# less than this long ago (telemetry.md §4, UC-040 BR-034): the stage fairness check.
 SHIELD_SINCE_END_REPORT_SECONDS = 3.0
 
 
@@ -216,7 +216,7 @@ class ShieldMixin:
         # BR-010); an extension restarts the LED fade silently.
         was_protected = self._shield_protected(player, game_clock.now())
         player.grace_until = new_grace
-        self._arm_shield_end_grace(player, new_grace)  # UC-040 BR-033: the end is known now
+        self._arm_shield_end_grace(player, new_grace)  # UC-040 BR-034: the end is known now
         self._record_agent_shield(serial, now, seconds)
         logger.info(f"Shield granted to {serial} for {seconds:.1f}s (grace_until={new_grace:.2f})")
 
@@ -650,7 +650,7 @@ class ShieldMixin:
         delay_ms = int(round((now - player.shield_charge_granted_at) * 1000))
         self._clear_shield_charge(player)
         player.grace_until = max(player.grace_until, now + seconds)
-        self._arm_shield_end_grace(player, player.grace_until)  # UC-040 BR-033
+        self._arm_shield_end_grace(player, player.grace_until)  # UC-040 BR-034
         logger.info(f"Shield charge activated by {player.serial}: {seconds:.1f}s after {delay_ms} ms")
 
         # A6 step 2: SHIELD_CHARGE 0, then SHIELD and SWELL (in _send_shield_feedback).
@@ -751,7 +751,7 @@ class ShieldMixin:
         """
         if self._shield_hold_latched:
             return self._shield_hold
-        # UC-040 BR-033: the end grace is latched here in every mode and branch, because
+        # UC-040 BR-034: the end grace is latched here in every mode and branch, because
         # instant shields exist in every mode.
         self._latch_shield_end_grace()
         if not self._shield_mode_flag_applies():
@@ -817,7 +817,7 @@ class ShieldMixin:
         return params
 
     def _latch_shield_end_grace(self) -> None:
-        """Read ``shield.end_grace_seconds`` once per game, in the game's flag context (UC-040 BR-033)."""
+        """Read ``shield.end_grace_seconds`` once per game, in the game's flag context (UC-040 BR-034)."""
         # A literal key, so the contract scan resolves the read.
         raw = _base.read_float_flag(
             "game", "shield.end_grace_seconds", DEFAULT_SHIELD_END_GRACE_SECONDS, game_id=self.game_id
@@ -825,7 +825,7 @@ class ShieldMixin:
         self._shield_end_grace = resolve_end_grace(raw)
 
     def _arm_shield_end_grace(self, player: "Player", shield_end: float) -> None:
-        """A shield ends at ``shield_end``: open the end grace window after it (UC-040 BR-033).
+        """A shield ends at ``shield_end``: open the end grace window after it (UC-040 BR-034).
 
         Assigned, never added, so windows never stack. With a window the first
         unprotected frame after it primes the EMA as the release tail does (UC-030 BR-009).
@@ -1029,7 +1029,7 @@ class ShieldMixin:
             return
         player.hold_started_at = now
         player.hold_pressed = True
-        # UC-040 BR-033: a re-hold inside the end grace window starts at once and closes it.
+        # UC-040 BR-034: a re-hold inside the end grace window starts at once and closes it.
         player.end_grace_until = 0.0
         player.shield_end_at = 0.0
         player.hold_energy_start = energy
@@ -1081,7 +1081,7 @@ class ShieldMixin:
         end_grace = 0.0
         if ran_out:
             player.hold_empties += 1
-            # UC-040 BR-033: a window only when the energy ran out, never after a release.
+            # UC-040 BR-034: a window only when the energy ran out, never after a release.
             self._arm_shield_end_grace(player, ended_at)
             end_grace = self._shield_end_grace
         elif outcome == HOLD_OUTCOME_RELEASED:

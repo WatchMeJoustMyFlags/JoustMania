@@ -546,7 +546,7 @@ class Player:
     # UC-030 BR-009: the first unprotected frame after an activation primes the EMA
     # with min(raw, warning threshold) instead of the raw sample.
     hold_prime_cap: bool = False
-    # UC-040 BR-033 (#2464): after a shield ends, movement cannot kill until this
+    # UC-040 BR-034 (#2464): after a shield ends, movement cannot kill until this
     # timestamp. Not part of effective_grace_until, so a re-hold or a charge press
     # inside the window starts at once. Cleared by an activation, the kill path, a revive.
     end_grace_until: float = 0.0
@@ -767,7 +767,7 @@ class BaseGameMode(ShieldMixin, ABC):
         # loop or at the first grant, whichever comes first. None = not a hold game.
         self._shield_hold: ShieldHoldParams | None = None
         self._shield_hold_latched = False
-        # Shield end grace (UC-040 BR-033, #2464): latched with the shield mode in every
+        # Shield end grace (UC-040 BR-034, #2464): latched with the shield mode in every
         # mode; 0 until the latch, so nothing arms a window before it.
         self._shield_end_grace = 0.0
         # The mode the latch read, reused by the grant that triggered the latch, so
@@ -2404,7 +2404,7 @@ class BaseGameMode(ShieldMixin, ABC):
         # Matches original JoustMania: if game_clock.now() > no_rumble. Uses the unified
         # effective-grace rule: max(agent shield grace_until, admin
         # invincible_until) so the agent shield and admin baseline compose here too.
-        # UC-040 BR-033: the shield end grace window gates the same way (one extra compare).
+        # UC-040 BR-034: the shield end grace window gates the same way (one extra compare).
         if current_time < self.effective_grace_until(player) or current_time < player.end_grace_until:
             # During grace, reset the EMA so it re-primes from the first
             # post-grace frame. Invincibility must *forget* the death spike:
@@ -2915,7 +2915,7 @@ class BaseGameMode(ShieldMixin, ABC):
             return False
 
         grace = self.REVIVE_SPAWN_GRACE if spawn_grace is None else spawn_grace
-        # UC-040 BR-033: spawn grace is not a shield; no end grace window carries over.
+        # UC-040 BR-034: spawn grace is not a shield; no end grace window carries over.
         player.end_grace_until = 0.0
         player.shield_end_at = 0.0
 
@@ -3101,7 +3101,7 @@ class BaseGameMode(ShieldMixin, ABC):
         # Again after the awaits: energy granted while the kill awaited is dropped too.
         if self._shield_hold is not None:
             self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, game_clock.now())
-        # UC-040 BR-033: the death ends a shield end grace window; a respawn never inherits it.
+        # UC-040 BR-034: the death ends a shield end grace window; a respawn never inherits it.
         since_shield_end = self._shield_since_end_attributes(player, game_clock.now())
         player.end_grace_until = 0.0
         player.shield_end_at = 0.0

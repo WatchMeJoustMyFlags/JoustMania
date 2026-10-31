@@ -115,7 +115,7 @@ SHIELD_HOLD_CUE_FLAGS: dict[str, tuple[float, float, float]] = {
 }
 
 
-# Shield end grace (flags.md §4, UC-040 BR-033, #2464): seconds after a shield ends in
+# Shield end grace (flags.md §4, UC-040 BR-034, #2464): seconds after a shield ends in
 # which movement cannot kill. Latched per game in every mode; 0 = no window.
 DEFAULT_SHIELD_END_GRACE_SECONDS = 0.75
 SHIELD_END_GRACE_MAX_SECONDS = 2.0

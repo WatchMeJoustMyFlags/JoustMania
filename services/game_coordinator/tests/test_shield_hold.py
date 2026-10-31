@@ -82,7 +82,7 @@ class Flags:
             "shield.energy_initial_seconds": 0.0,
             "shield.recharge_per_second": 0.0,
             "shield.min_burst_seconds": 0.3,
-            # No end grace window (UC-040 BR-033): these tests pin the rules before #2464.
+            # No end grace window (UC-040 BR-034): these tests pin the rules before #2464.
             "shield.end_grace_seconds": 0.0,
         }
         self.reads: list[str] = []
