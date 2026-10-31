@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.11.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.10.0...joustmania-v0.11.0) (2026-10-31)
+
+
+### Features
+
+* **ci:** SHA-bound "Reviewed head" gate and safe-merge --arm/--revoke ([#1809](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/1809)) ([#2439](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2439)) ([94ded08](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/94ded080c9fa76e0be8b9ec076b9a0ea1ddd7626))
+
+
+### Refactoring
+
+* **game-coordinator:** remaining mode waits use game_clock.sleep ([#2361](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2361)) ([#2438](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2438)) ([590d771](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/590d771300ccaaa61ad6eddf7c5f95696017e804))
+
+
+### Tests
+
+* **controller-manager:** autospec backend doubles, overlay guard test, C901 limit ([#2354](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2354)) ([#2437](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2437)) ([479a859](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/479a85952a71359477547c0c0d1e675cea16af64))
+
 ## [0.10.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.9.1...joustmania-v0.10.0) (2026-10-30)
 
 
