@@ -44,13 +44,16 @@ Agents in `.claude/agents/` that run these workflows:
 | `implementer` | sonnet (opus for hot path, concurrency, safety) | runs `implement-issue` (and its fixer mode); delegates gates and test runs to `gate-runner`, broad searches to `Explore` |
 | `gate-runner` | haiku | runs only `scripts/ci/gate-run.sh` (allow-list enforced in code) for `make pr-gates` or test commands (repeat counts, mutation checks) in one worktree; every call is a foreground call (the script runs the job detached and the agent reruns it while it reports `PENDING`, #2036), never `run_in_background`; logs to files, relays the script's verdict and at most 20 failing lines; never edits |
 | `pr-reviewer` | sonnet (opus for features, hot path, concurrency, safety, CI) | runs `review-pr` (full, adversarial, delta); mutation checks in a separate worktree, gates via `gate-runner`, never edits the PR; known flakes in `.claude/known-flakes.md` |
-| `pr-merger` | haiku | merge mechanics after a clean review (below) |
+| `pr-merger` | haiku | arm, sweep and merge mechanics after a clean review (below) |
 | `uc-coverage` | inherit | read-only coverage audit behind `coverage-check` |
 
-After a clean review, hand the merge to the Haiku `pr-merger` agent (`.claude/agents/pr-merger.md`) with
-`<PR> <HEAD_PREFIX>` and any `--close` / `--note-issue` options: it runs `scripts/ci/safe-merge.sh
---rerun-failed-once`, cleans up the worktree and branch on MERGED, and escalates everything else with a
-fixed report (it never edits code, rebases, or changes labels).
+After a clean review, hand the PR to the Haiku `pr-merger` agent (`.claude/agents/pr-merger.md`) with
+`arm <PR> <full reviewed sha>` (#1809): it runs `scripts/ci/safe-merge.sh --arm`, reports `ARMED` and stops;
+GitHub queues and merges. Later, `sweep` runs `scripts/ci/merge-sweep.sh` (dequeue UNMERGEABLE entries,
+re-arm an ejected reviewed head once, close the issues in `## Merge notes`) and removes merged worktrees.
+The old brief `<PR> <HEAD_PREFIX>` with `--close` / `--note-issue` still waits and merges through
+`safe-merge.sh --rerun-failed-once` until #1809 PR3. It escalates everything else with a fixed report (it
+never edits code, rebases, or changes labels).
 
 Dashboard (vitest) tests have no writing skill yet, deliberately: write them by hand with the
 `describe('UC-040: ...')` convention; `coverage-check` already reads it.

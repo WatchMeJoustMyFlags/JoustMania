@@ -107,7 +107,7 @@ skill's steps:
 The skill's verdict block, with this content:
 
 ```
-PR #<n> head <sha8>: READY | READY WITH CHANGES | BLOCKED   (depth: short|full|adversarial|delta)
+PR #<n> head <full 40-hex sha>: READY | READY WITH CHANGES | BLOCKED   (depth: short|full|adversarial|delta)
 Findings (ranked, most severe first):
   1. [blocker|major|minor] path/file.py:123: <failure scenario: what breaks, when> -> <fix>
 Mutation check: <what was weakened, in which worktree> -> <test> FAILED as expected | no test failed

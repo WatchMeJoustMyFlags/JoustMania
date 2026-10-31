@@ -25,7 +25,8 @@ The brief gives you the issue, scope and decisions. Everything else is here: do 
 - Scratch files go in the session scratchpad, named with the issue number (`<scratchpad>/1234-body.md`).
 - Always pass the explicit PR number: `gh pr edit <n>`, `gh pr view <n>`; never rely on the current branch.
 - Push, then STOP. Do not watch CI, do not `gh run watch`, do not merge, do not "wait on background work".
-  The orchestrator runs `scripts/ci/safe-merge.sh <PR> <head> --wait-ci`. Hand back ONCE, never re-send.
+  After a READY review the orchestrator has the `pr-merger` agent arm the reviewed head (`arm <PR> <full sha>`,
+  #1809) and GitHub merges from the queue. Hand back ONCE, never re-send.
 
 ## Steps
 
@@ -92,9 +93,21 @@ diff range. Do not resume the original implementer and do not re-read the whole 
 1. Reuse the PR's worktree only if this session owns it; otherwise
    `git worktree add .worktrees/<slug>-fix origin/<branch>` (a branch checkout, not detached).
 2. Confirm `git rev-parse HEAD` matches the given head; if not, stop and report the mismatch.
+   **Reviewed, armed or queued PR (#1809):** an approved head can be armed (by the orchestrator or a merge sweep)
+   and merge without your fix, and GitHub rejects a push to a queued branch (GH006). Before the first push:
+   - when the newest `Reviewed head` status on the head is `success` (`gh api 'repos/{owner}/{repo}/commits/<head>/statuses' --jq '[.[] | select(.context=="Reviewed head")] | max_by(.id) | .state'`),
+     revoke it, whether or not the PR is armed or queued: `scripts/ci/safe-merge.sh <PR> <full head> --revoke`. The newest
+     status wins, so neither the sweep nor the queue gate accepts the old head any more;
+   - then, per `gh pr view <PR> --json autoMergeRequest,isInMergeQueue`: queued -> dequeue
+     (`gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' -f id=$(gh pr view <PR> --json id --jq .id)`);
+     armed only -> `gh pr merge <PR> --disable-auto`.
+   A bare dequeue is not enough: the sweep would re-arm the still-reviewed old head. If the push still fails with
+   GH006 (the PR got queued in between), dequeue as above and push again, once. Say what you did in the report. The pushed
+   head has no status, so it needs a delta review and a new arm.
 3. Fix exactly the listed findings, each with a test where it is a behaviour bug. Nothing else.
 4. `make pr-gates` (via `gate-runner`), commit (`fix: address review on #<PR>` + the session's attribution lines), push. No force-push unless told.
-5. Report: one line per finding: `fixed <sha> | not fixed: <reason>`.
+5. Report: one line per finding: `fixed <sha> | not fixed: <reason>`, plus `head moved to <sha>: needs delta review`
+   (and `revoked + dequeued` / `revoked + disarmed` when step 2 applied).
 
 ## Report (hand back once, 15 lines or fewer)
 

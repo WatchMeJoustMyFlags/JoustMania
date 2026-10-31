@@ -21,7 +21,7 @@ Specs are the source of truth; code and tests follow from them. Start at [docs/R
 ## Agent workflows
 
 - Implementing an issue (agent or human): [.claude/skills/implement-issue](.claude/skills/implement-issue/SKILL.md): worktree, spec first, failing test, `make pr-gates`, push, stop, 15-line report. Agents run it as the [implementer](.claude/agents/implementer.md) agent (sonnet; opus for hot path, concurrency, safety), which hands gate and test runs to the Haiku [gate-runner](.claude/agents/gate-runner.md) and broad searches to `Explore`.
-- Reviewing a PR: the [pr-reviewer](.claude/agents/pr-reviewer.md) agent runs [.claude/skills/review-pr](.claude/skills/review-pr/SKILL.md): depth by PR type, mutation check, delta mode; merge with `scripts/ci/safe-merge.sh`, delegated to the Haiku [pr-merger](.claude/agents/pr-merger.md) agent. Reviewers send `make pr-gates` and mutation-check runs to gate-runner too.
+- Reviewing a PR: the [pr-reviewer](.claude/agents/pr-reviewer.md) agent runs [.claude/skills/review-pr](.claude/skills/review-pr/SKILL.md): depth by PR type, mutation check, delta mode; a READY verdict names the full reviewed head. GitHub owns merging after review (#1809): the Haiku [pr-merger](.claude/agents/pr-merger.md) agent arms that head (`arm <PR> <sha>` = `scripts/ci/safe-merge.sh --arm`, which posts the `Reviewed head` status and enables auto-merge) and stops; GitHub queues and merges. A later `sweep` (`scripts/ci/merge-sweep.sh`) dequeues UNMERGEABLE entries, re-arms an ejected reviewed head at most once, closes the issues in the PR's `## Merge notes` and removes merged worktrees. A fixer pushing to an armed or queued PR revokes and dequeues first (implement-issue fixer mode). The old wait-and-merge path stays until #1809 PR3. Reviewers send `make pr-gates` and mutation-check runs to gate-runner too.
 
 ## Session Management
 
@@ -39,7 +39,7 @@ When work on a GitHub issue starts (implementation begun or a background agent l
 gh issue edit <NUMBER> --add-assignee aepfli
 ```
 
-When the implementing PR merges, close the issue manually with a comment referencing the PR and what was delivered — PR bodies in this repo use "Part of #N" phrasing without `closes` keywords, so issues never auto-close.
+When the implementing PR merges, close the issue with a comment referencing the PR and what was delivered — PR bodies in this repo use "Part of #N" phrasing without `closes` keywords, so issues never auto-close. In the armed flow (#1809) put `close #N: <what was delivered>` / `note #N: <text>` lines in the PR body's `## Merge notes` section; the merge sweep posts them after the merge (`{MERGE}` becomes the short merge SHA).
 
 ## Quick Reference
 
