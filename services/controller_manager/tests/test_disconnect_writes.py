@@ -73,28 +73,43 @@ def _reroute(mux, adapter):
 class TestUC002H1WritesDuringADisconnect:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
-    async def test_a_colour_written_while_unrouted_is_sent_after_the_reroute(self, routed):
-        """The death's black written during the disconnect reaches the controller once it is back."""
+    async def test_a_kept_write_is_never_sent_before_the_registration(self, routed):
+        """Routed again but not registered yet (or the spawn failed): the LED stays unwritten, not stale."""
         mux, adapter = routed
-        assert await mux.set_led_color(SERIAL, 0, 0, 0) is False
+        assert await mux.set_led_color(SERIAL, 0, 255, 0) is False  # e.g. an effect's restore after the drop
         adapter.set_output.assert_not_called()
 
         mux.get_connected_controllers()  # further passes while it is away keep the write
-        mux.get_connected_controllers()
         _reroute(mux, adapter)
+        for _ in range(3):
+            mux.update_all_leds()
+
+        adapter.set_output.assert_not_called()
+        assert mux._led_colors[SERIAL] == (0, 255, 0)  # kept for the registration
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    async def test_the_registration_releases_the_kept_write(self, routed):
+        """With no owner colour, the registration's forced resend sends the kept write."""
+        mux, adapter = routed
+        assert await mux.set_led_color(SERIAL, 0, 0, 0) is False
+        _reroute(mux, adapter)
+
+        mux.force_led_resend(SERIAL)  # _restore_led, first thing on (re)registration
         mux.update_all_leds()
 
         adapter.set_output.assert_called_once_with(SERIAL, 0, 0, 0, 0)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
-    async def test_a_rumble_written_while_unrouted_is_sent_after_the_reroute(self, routed):
+    async def test_a_rumble_written_while_unrouted_is_kept_with_its_colour(self, routed):
         """A rumble write (a stop at 0 included) is kept like a colour, with the colour it goes with."""
         mux, adapter = routed
         assert await mux.set_led_color(SERIAL, 255, 0, 0) is False
         assert await mux.set_rumble(SERIAL, 0) is False
 
         _reroute(mux, adapter)
+        mux.force_led_resend(SERIAL)
         mux.update_all_leds()
 
         adapter.set_output.assert_called_once_with(SERIAL, 255, 0, 0, 0)
@@ -105,6 +120,7 @@ class TestUC002H1WritesDuringADisconnect:
         """Without a write during the disconnect nothing is replayed: the pre-disconnect green is gone."""
         mux, adapter = routed
         _reroute(mux, adapter)
+        mux.force_led_resend(SERIAL)
         mux.update_all_leds()
 
         adapter.set_output.assert_not_called()
@@ -113,13 +129,15 @@ class TestUC002H1WritesDuringADisconnect:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-002", flow="A1")
     async def test_a_kept_write_is_dropped_like_any_output_at_the_next_disconnect(self, routed):
-        """Once routed again the serial is ordinary: its output from before a later disconnect is not replayed."""
+        """Once registered again the serial is ordinary: its output from before a later disconnect is not replayed."""
         mux, adapter = routed
         await mux.set_led_color(SERIAL, 0, 0, 255)  # kept while away
         _reroute(mux, adapter)
+        mux.force_led_resend(SERIAL)
         adapter.discover.return_value = []  # gone again, with nothing written meanwhile
         mux.get_connected_controllers()
         _reroute(mux, adapter)
+        mux.force_led_resend(SERIAL)
         adapter.set_output.reset_mock()
 
         mux.update_all_leds()
@@ -129,18 +147,20 @@ class TestUC002H1WritesDuringADisconnect:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
-    async def test_the_owners_write_after_the_reroute_wins(self, routed):
-        """A write kept from the disconnect never overrides the colour the owner writes on reconnect."""
+    async def test_the_owners_colour_on_registration_wins_over_the_kept_write(self, routed):
+        """Registration order (force_led_resend, then the owner's colour): the stale green never goes out."""
         mux, adapter = routed
-        await mux.set_led_color(SERIAL, 0, 255, 0)  # a stale game colour, written while away
+        await mux.set_led_color(SERIAL, 0, 255, 0)  # a stale game colour, kept while away
         _reroute(mux, adapter)
-        assert await mux.set_led_color(SERIAL, 0, 0, 0) is True  # the owner's colour on (re)registration
-        adapter.set_output.reset_mock()
+        mux.update_all_leds()  # a batch tick during the spawn
 
+        mux.force_led_resend(SERIAL)
+        assert await mux.set_led_color(SERIAL, 0, 0, 0) is True  # the owner's off
         mux.update_all_leds()
 
-        adapter.set_output.assert_not_called()  # already sent; the stale green never goes out
-        assert mux._led_colors[SERIAL] == (0, 0, 0)
+        sent = [c.args[1:4] for c in adapter.set_output.call_args_list]
+        assert (0, 255, 0) not in sent
+        assert sent[0] == (0, 0, 0)
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-002", flow="A1")
@@ -199,6 +219,33 @@ class TestUC002H2DisconnectEndsFeedback:
         assert SERIAL not in feedback._shield_layers
         assert SERIAL not in feedback._background_rumble
         backend.set_effect_active.assert_called_with(SERIAL, False)
+
+
+class TestUC002BR008RegistrationOrder:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    async def test_the_registration_releases_the_output_before_the_owners_colour(self, rig):
+        """``_restore_led`` calls force_led_resend before it writes the owner's colour (#2471)."""
+        order = []
+        rig.backend.force_led_resend.side_effect = lambda s: order.append(("release", s))
+
+        async def owner_write(serial, _color):
+            order.append(("owner", serial))
+
+        rig.feedback.set_controller_color.side_effect = owner_write
+        await rig.discover()
+
+        assert order[:2] == [("release", RIG_SERIAL), ("owner", RIG_SERIAL)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-002", flow="A4", br=["BR-008"])
+    async def test_a_failed_spawn_releases_nothing(self, rig):
+        """No registration, no release: a kept output stays unsent (the next pass retries)."""
+        with patch.object(rig.loop, "_spawn_controller_process"):  # the spawn tracked nothing
+            await rig.discover()
+
+        rig.backend.force_led_resend.assert_not_called()
+        rig.feedback.set_controller_color.assert_not_called()
 
 
 class TestUC002D1SecondRegistration:

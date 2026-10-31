@@ -3,10 +3,11 @@ A (re)opened gameplay stream never lights a dead player and ends its feedback (#
 
 UC-030 BR-006 (stream lifecycle), step 9 (the death effect; the LED stays off):
 - the stream config sends a dead player's colour as off, never its game colour;
-- a death whose ``PLAYER_DEATH`` found no stream gets it on the next stream, once;
+- a death whose ``PLAYER_DEATH`` write failed on a dying call gets it on the next stream, once;
 - every other dead player gets ``GAME_EFFECT_SHIELD`` 0, which ends leftover layers.
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -52,6 +53,13 @@ class RecordingStream:
         ]
 
 
+class DeadCall:
+    """A gameplay call that ended: every write raises, as on a reopen's old call."""
+
+    async def write(self, _message):
+        raise asyncio.InvalidStateError("the call ended")
+
+
 @pytest.fixture
 def game():
     g = FFAGame(
@@ -89,10 +97,11 @@ class TestUC030BR006ReopenDeadPlayers:
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", flow="main", br=["BR-006"])
-    async def test_a_death_without_a_stream_is_sent_on_the_next_stream_once(self, game):
-        """A kill while no stream is open sends PLAYER_DEATH on the next stream, then SHIELD 0 on later ones."""
-        game.gameplay_stream = None
-        assert await game._run_kill("p2", game.players["p2"], 0.0, "test") is True
+    async def test_a_death_whose_write_fails_on_a_dying_call_is_sent_on_the_next_stream_once(self, game):
+        """PLAYER_DEATH failed on a dying call (the loop reopens): the next stream sends it, later ones SHIELD 0."""
+        game.gameplay_stream = DeadCall()
+        with pytest.raises(asyncio.InvalidStateError):
+            await game._run_kill("p2", game.players["p2"], 0.0, "test")
         assert game.players["p2"].alive is False
 
         await game._create_gameplay_stream()
