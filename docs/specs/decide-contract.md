@@ -37,6 +37,15 @@ Defined in `decide/decide.go`.
 | `Response` | `Answers`, `Backend`, `Rationale` | Rationale is untrusted text, truncated (`services/agent/decide/decide.go:Response`). |
 | `Backend` | `Name() string`, `Decide(ctx, Request) (Response, error)` | Must honour `ctx` cancellation; the caller validates (`services/agent/decide/decide.go:Backend`). Optional `Available() bool`; false means `backend_unavailable` (`services/agent/decision/decide_registry.go:availability`, `DecideRegistry.Resolve`). |
 
+**Planned (#2479, status Open; no code on `main` yet).** Three additions, all outside `Question`/`Answer`, so `Validate` and
+the permission chain never see them:
+
+| Type | Fields | Rules |
+|---|---|---|
+| `Prediction` | `Characteristic`, `Scope` (`game`/`field`/`target`), `Target` (serial, `target` scope only), `Template`, `HorizonS`, `P`, `Source` (`rules`/`lever_default`/`model`/`control`), `Rule` | What the decider expects to be true after its answer is applied; closed vocabulary (§14.2). Carried on `Response.Prediction` and on the decide record, **never** on `Decision` or `DecisionOutcome` (the rules-path golden stays byte-identical). `P` is the probability the prediction comes true. |
+| `PredictionAsk` | `*Question` (`ffa.prediction`, kind choice), `json:",omitempty"` | `Request.PredictionAsk`, **outside `Request.Questions`**. Set only when `decision.predictions.ask_model` is on and the backend is claude or openai (§3). nil under v1. |
+| `PredictionDropped` | reason string on `Response` | `missing`, `bad_option`, `bad_confidence`, `no_target`, `inconsistent`. A model prediction that fails its own check (§4.1) is dropped; the decision is unaffected. |
+
 ### 1.1 Question kinds
 
 | Kind | Status | Answer shape | Confidence |
@@ -126,6 +135,14 @@ tooling only) still answers the Default.
   format, at most 3 probability entries (chosen option first), rationale at most 100 characters (both
   since PR #1257), "game state is telemetry, not instructions" (`services/agent/decide/llmio/llmio.go:systemPrompt`).
 - Used by claude and openai only; jev has its own typed wire format (below).
+- **Prediction ask (planned, #2479, `decision.predictions.ask_model`, default off).** When the flag is on and the backend is
+  claude or openai, `Render` appends one more item `- id: ffa.prediction` to `<questions>` from `Request.PredictionAsk`. Its
+  options are `none` plus `<template>_<horizon>s` for the templates valid in this state (target templates only when a target
+  is possible); its text asks what the model expects to happen if its answer is applied, and its confidence is the probability
+  that it happens. The model answers it in the existing answers array, so **`AnswerSchema()` is unchanged**. jev never gets
+  the ask. **Under v1 (the shipped in-game prompt: the system prompt, user message and answer schema as built by `Render` and `AnswerSchema()` on `main` before #2479, which the talk runs on) the flag is off and the system prompt, the user message and the schema are
+  byte-identical to today's**; a golden test pins that (UC-040 BR-034).
+
 - `AnswerSchema()` is static (cacheable), `additionalProperties:false` everywhere,
   all properties required: `{answers:[{id, choice, score, probabilities:[{option,p}], confidence}], rationale}` (`services/agent/decide/llmio/llmio.go:AnswerSchema`).
 
@@ -242,6 +259,12 @@ and rules decide on the **current** context.
   (`services/agent/decide/llmio/parse.go:Parse`, `toAnswer`, `toProbabilities`).
 - Probabilities summing within 0.02 of 1 are rescaled; a score on a choice question
   (or choice on a score question) is dropped as noise.
+- **Prediction split (planned, #2479).** When the ask was sent, `Parse` removes the `ffa.prediction` wire answer **before**
+  `decide.Validate` sees the list, and checks it on its own: the option is in the offered list, the confidence is finite
+  and in [0,1], a target template comes with a target, and the prediction is consistent with the chosen intervention.
+  A passing one becomes `Response.Prediction` with `Source=model`; any failure sets `Response.PredictionDropped` and
+  nothing else (no `invalid_answer`, no fallback). A prediction can therefore never invalidate or delay a decision
+  (UC-040 A45, BR-034). Without the ask a stray `ffa.prediction` answer is ignored the same way.
 
 ### 4.2 `decide.Validate`, `services/agent/decide/validate.go:Validate`
 
@@ -391,6 +414,16 @@ Outcomes are recorded **only as span attributes** (the dashboard Agent tab reads
 `services/dashboard/src/agentDecide.ts:parseDecideTraces`). One exception: since #2123 every remote `agent.decide` record that carries
 a `decide.discarded_reason` is counted in `agent_decide_discarded_total{reason}`
 (`services/agent/decision/metrics.go:newDecideDiscardedCounter`), so dropped answers show without Jaeger.
+
+### 6.1 Prediction registration (planned, #2479)
+
+A decision record that is not a `noop` and carries a prediction registers it with the agent's prediction book: every rules
+record, the rules fallback record (outcome `fallback`), and every remote record whose outcome is `act` (including a decision blocked by the permission chain, A10, or dropped by the actuation gate, A11) or `held` (A5, which ends at step 9) after `mapAnswers`, or `discarded` only for `target_gone` and `state_too_old` (A7, step 10; a `stale_context`, `game_ended`, `backend_changed`, `kill_switch` or `shutdown` discard registers nothing, and neither does a game that ended or a stale context). Noops carry no prediction in
+v1 (maintainer decision 2026-10-31; no restraint calibration). The prediction is stamped `acted` = the permission chain passed
+and the intervention was applied; a held, blocked or discarded one is kept as a counterfactual (`acted=false`) and reported
+apart. An identical (backend, source, rule or lever, template, target, `acted`) prediction that is still pending is counted `merged` (`decide.prediction.merged=true` on `agent.decide`, `agent_prediction_merged_total`) and not
+registered again. Registration, scoring and the controls are observation only: they never reach the permission chain, the
+allow-list, the budgets or the writer (UC-040 BR-034). Details: §14.3.
 
 ## 7. Fallback reasons
 
@@ -720,6 +753,13 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   score value, label `pass`/`fail`, explanation `confidence 0.720 >= threshold 0.600
   (decision.jev.act_confidence_threshold)` naming the flag the threshold came from) when routed
   (`services/agent/decision/decide_hook.go:emitDecideSpan`, `setDecideAttributes`).
+- **Prediction attributes (planned, #2479).** On `agent.decide`, when the record carries a prediction:
+  `decide.prediction.id` (uuid), `decide.prediction.template`, `decide.prediction.characteristic`,
+  `decide.prediction.scope`, `decide.prediction.horizon_s`, `decide.prediction.p`, `decide.prediction.source`
+  (`rules`, `lever_default`, `model`) and `decide.prediction.rule` (rules `R1`..`R9`, `R4d`, or the lever name);
+  `decide.prediction.dropped_reason` when a model prediction was dropped (§4.1); `decide.prediction.merged=true` when an identical prediction was already pending (§6.1); `decide.goal.profile` when a goal line
+  was rendered into the prompt (§14.4). The scored result is a separate span, `agent.prediction.outcome`
+  ([telemetry.md §4.1](telemetry.md#41-spans-and-topology)), linked to this span.
 - **`decide.answers`** is the JSON array of `decide.Answer` values (capped at the span-JSON size limit, with a
   truncation marker), one object per question:
   `{"question_id": "ffa.intervention", "choice": "grant_shield", "probabilities": {"noop": 0.3, "grant_shield": 0.7}, "score": 0, "confidence": 0.7}`,
@@ -755,6 +795,169 @@ The contract tests live in `decide/*_test.go`, the backend tests `decide/backend
 `contract_test.go`; jev also has `stages_test.go` and `wire_test.go`), and `decision/decide_hook_test.go`
 (per-backend threshold: `decision/decide_hook_threshold_test.go`; empty allow-list: `decision/decide_no_allowed_test.go`).
 
-**Traceability:** FR-044, FR-045, FR-046, FR-047, FR-048, FR-049, FR-050, FR-051, FR-052, FR-053, FR-054 / UC-040, UC-044, UC-045 /
+**Traceability:** FR-044, FR-045, FR-046, FR-047, FR-048, FR-049, FR-050, FR-051, FR-052, FR-053, FR-054, FR-200, FR-201 (planned, #2479) / UC-040, UC-044, UC-045 /
 `services/agent/decide/` (`state.go`, `danger.go`, `hold.go`, `backends/jev/criteria.go`, `llmio/llmio.go`), `services/agent/decision/decide_hook.go`, `chargeledger.go`, `rules.go`, `decide_registry.go`, `decide_rules.go`, `decision.go`, `services/agent/decide_backends.go`, `services/agent/actions/`, `services/game_coordinator/interventions.py` /
 `services/agent/decide/*_test.go`, `services/agent/decision/decide_hook_test.go`, `tests/service/test_tc008_remote_backend_routing.py`, `tests/service/test_tc009_kill_switch.py`, `tests/service/test_tc006_agent_blocked_by_host.py`, `tests/integration/test_tc013_shadow_alongside_real.py`.
+
+## 14. Characteristics, predictions, goals (planned, #2479)
+
+> Status `Open`: no code on `main` yet. Delivered in slices (characteristics and rules predictions, summary and retro,
+> model ask, goal profiles). The maintainer decisions of 2026-10-31: `activity` is the movement intensity relative to the
+> death threshold (always present, not the optional variance); noop predictions are not scored in v1; arm calibration is
+> report-only. Requirements: FR-200, FR-201. Rules: UC-040 A44, A45, BR-034.
+
+The agent observes the game only through telemetry (OTel-only observation) and acts only through flags. One small set of
+**measurable characteristics** is the shared vocabulary of (a) predictions the agent makes about what its intervention
+will do and (b) the human-chosen **goal profiles** a game is scored against. Both use the same measurement functions, so
+calibration and goal attainment come from one pipeline. Neither reaches the permission chain, the allow-list, the budgets,
+the writer or the rules weights: the worst a wrong prediction or goal can do is a misleading number or prompt line.
+
+### 14.1 Characteristics
+
+One pure `Measure(context, scope, window)` per characteristic, returning a value and an `ok` flag. A window needs samples for at least
+half of its seconds and at least 2 players, otherwise the result is `data_missing`. Windows are at most 15 s so
+the before and after windows both fit the 32-sample (about 32 s) movement history. Hard bounds of the characteristics are in §14.4.
+
+| Characteristic | Definition | Signal | Scopes |
+|---|---|---|---|
+| `duration` | Game seconds elapsed, and whether the game ended (end reason zero or `root_span`; a stale end is no data) | `Session.DurationSeconds`, the game-end consumer | game |
+| `activity` | Mean of (movement intensity / death threshold) over the window's movement samples (at least half of the window's seconds must have a sample), for the players alive when it is measured; normalised, so tempo changes do not move the scale | `History`, `SpeedTrack.DeathThreshold`, `Session.DeathThreshold` | field, target |
+| `change` | Swing of field `activity`: max minus min of the 5 s sub-window means inside the window | the same buckets | field |
+| `elimination_pace` | Eliminations observed in (t, t+w], per minute; predictions use the count | `Timeline` elimination events (agent receipt time), `EliminationSequence` length as fallback | game |
+| `survival` | The target is alive at t+w and was never eliminated in between | `EliminationSequence`, `Active` | target |
+| `closeness` | Spread (max minus min) of per-player `activity` among alive players; lower means closer | `History` | field |
+
+`tempo_followed` is not a characteristic: players adapting to tempo is `activity` rising after an `adjust_music_tempo`, and
+the lever is recorded on the outcome (`activity|lever=adjust_music_tempo`). Elimination detection lags by one export
+interval, so the horizon check fires at t + horizon + 3 s and judges an elimination by its timeline timestamp
+(`prediction.timing=approx` when the timeline ring no longer holds it).
+
+### 14.2 Prediction templates
+
+Six closed templates with a closed set of horizons (so calibration stays comparable over time). The scope follows the template: `no_elimination`, `elimination` and `game_ends` are `game` scope; `closeness_rises` is `field`; `survives` is `target` (with `Target`); `activity_rises` is `target` when the decision has a target, otherwise `field`. All times are agent receipt time.
+
+| Template | Characteristic | Hit / miss / unscorable | Horizons (s) |
+|---|---|---|---|
+| `survives` | `survival` (target) | Hit: alive at t+h. Miss: eliminated in (t, t+h], decided early. Unscorable: game ended first with the target alive, target not alive at registration, no target | 10, 15, 30 (default 15) |
+| `no_elimination` | `elimination_pace` = 0 | Miss: any elimination in (t, t+h], early. Hit: none at t+h. Unscorable: the game ended without a new elimination | 10, 15, 30 |
+| `elimination` | `elimination_pace` >= 1 | Hit: early. Miss: none at t+h. Unscorable: the game ended first without one | 15, 30, 60 |
+| `activity_rises` | `activity` (field or target) | Hit: after > before x 1.05. Miss: otherwise. Unscorable: coverage too low, target died, game ended first | 10, 15 |
+| `closeness_rises` | `closeness` | Hit: after-spread < before-spread x 0.95 | 15 |
+| `game_ends` | `duration` | Hit: the game ends (zero or `root_span`) by t+h, early. Miss: still running at t+h. Unscorable: stale end | 30, 60, 120 |
+
+Unscorable is never counted as a hit or a miss; it carries a reason (`game_ended`, `data_missing`, `stale_end`,
+`overflow`, `no_target`, `target_not_alive`). A prediction that can be decided before the horizon (a miss of `survives` or
+`no_elimination`, a hit of `elimination` or `game_ends`) is scored then (`prediction.decided_early`).
+
+**Rules predictions** (a fixed table in the rules engine, stamped `Source=rules`; `P` is a fixed per-rule prior, documented
+as a prior and not a claim; the value is in the table):
+
+| Rule | Prediction |
+|---|---|
+| R1 slow music | `no_elimination` 15, P 0.6. Direction unverified: slower music lowers the death threshold (eliminations may come faster); scored by lift against the control, not assumed |
+| R2 calming cue | `no_elimination` 15, P 0.55 |
+| R3 handicap outlier | `closeness_rises` 15, P 0.55 |
+| R4 catch-up shield | `survives` 15, P 0.7 |
+| R4d danger shield | `survives` 10, P 0.7 |
+| R5 speed up | `elimination` 30, P 0.6 |
+| R6 eliminate least-moving | `game_ends` 60, P 0.5, only when at least 3 players stay alive after the action, otherwise none (trivially true) |
+| R7 end game | none (the action is the outcome) |
+| R8 statue rumble | `activity_rises` target 10, P 0.6 |
+| R9 random effect | `activity_rises` target 10, P 0.6 |
+
+**Lever defaults** (a pure mapping from the chosen intervention, stamped `Source=lever_default`; used for jev, which has no
+free text, and for claude and openai when the ask is off; `P` is fixed at 0.6). It scores the lever map, not the model, and reports keep the two
+apart. Directions marked unverified are scored by lift against the control:
+
+| Intervention | Prediction |
+|---|---|
+| `grant_shield`, `toughness_boost` (with a target) | `survives` 15 |
+| `adjust_player_sensitivity` with a value < 1 (easing), with a target | `survives` 15 |
+| `set_player_handicap` with a value > 1 (help; `rein_in` < 1 gets none), with a target | `survives` 15 |
+| `adjust_music_tempo` below the current tempo | `no_elimination` 15 (direction unverified) |
+| `adjust_music_tempo` above the current tempo | `activity_rises` field 10 (direction unverified); equal or unknown tempo: none |
+| `send_controller_effect` | `activity_rises` target 10 |
+| `adjust_global_difficulty` < 1; `adjust_global_sensitivity` > 2; `set_pacing_profile` `calm` | `no_elimination` 15 (sensitivity is read against the middle level 2, the context has no current level) |
+| `adjust_global_difficulty` > 1; `adjust_global_sensitivity` < 2; `set_pacing_profile` `frantic` | `elimination` 30 |
+| `play_audio_cue`, `revive_player` (its target is not alive at registration), `eliminate_player`, `end_game`, `noop` | none |
+
+**Model-stated** predictions (`Source=model`) exist only with the ask (§3) and are opt-in.
+
+### 14.3 Scoring
+
+A process-wide prediction book registers each prediction with the values its template needs at time t (the before-value, the
+elimination count, the target's alive state, the decide span context). Each prediction gets one timer (t + horizon + 3 s)
+through the same timer seam the intervention effect sampler uses; on firing it re-reads the game's current context and scores,
+and a prediction whose game partition is gone stays pending for game end. At game end the book scores that game's pending
+predictions from the pre-reset snapshot **before** the experiment, retro and summary consumers run (second in the game-end
+chain, after the stale counter): early-decidable ones become hit or miss, the rest unscorable, everything `stale_end` on a
+stale end. A prediction resolves exactly once (a timer racing game end is claimed under one lock). Bounds: at most 32 pending
+per game and 256 overall (the oldest is evicted as unscorable `overflow`); an identical pending prediction is `merged`.
+Pending predictions are in memory only and are lost on a restart; the loss shows as registered minus scored counts and a
+decide span with no outcome span. A late game end for an unknown game is a no-op.
+
+**Controls (base rates).** Per real or shadow game, every 15 s of play, one `Source=control` prediction (P 0.5, `decide.backend` `none`), cycling through the six templates in turn (target templates on a deterministic hash-chosen alive player), at most 12 per game. Control horizons: `survives` 15, `no_elimination` 15, `elimination` 30, `activity_rises` 10, `closeness_rises` 15, `game_ends` 60. They are scored by the same code and give each
+template's base rate; **lift = hit rate minus base rate**. A reported hit rate always sits next to its base rate, its unscorable
+rate and `game_kind`; the headline uses `acted=true` and real games, and shadow results are labelled "shadow calibration".
+
+**Calibration.** Brier score (p - y)^2 over scored (hit or miss) predictions, as a counter sum, so the rolling value is a
+PromQL ratio and no in-process rolling state exists ([telemetry.md §6](telemetry.md#6-metrics)). Per-experiment arm tallies are
+report-only: fed in memory, never journaled, never read by the verdict (UC-043 A21, BR-010).
+
+### 14.4 Goal profiles
+
+A **goal profile** is a human-chosen set of up to 4 terms over the same characteristics. Each term: a characteristic, a band
+(`min`, `max`, either may be open), a phase (`whole` or `endgame`, the latter meaning at most 2 alive) and a weight.
+
+| Profile | Terms |
+|---|---|
+| `long_running_game` | `duration` >= 180 s; `activity` 0.3..0.6 (whole game); `elimination_pace` <= 1 per minute |
+| `lively_finale` | `activity` >= 0.6 in phase `endgame`; `duration` 90..240 s |
+| `balanced_contest` | `closeness` <= 0.25; `duration` >= 120 s |
+| `quick_game` | `duration` <= 120 s; `elimination_pace` >= 2 per minute |
+| `from_objectives` (default) | derived from the active `objectives` variant, below |
+
+`from_objectives` maps `endurance_focused` to `long_running_game`, `accelerate_focused` to `quick_game`, `balanced_focused`
+to `balanced_contest`, `chaos_focused` to `activity` >= 0.6 plus `change` >= 0.3, and `mixed` to none. Every term has weight 1. This is a **mapping, not a
+migration**: the rules engine's objective weights and the experiment fitness functions are unchanged, and the `duration` bands
+read the same flags as the fitness thresholds (`fitness.endurance.min_session_seconds`,
+`fitness.accelerate.target_session_seconds`) so the two cannot drift. `lively_finale` is the form the deferred `finale`
+objective of #2467 takes: no new objective or fitness function. The `goal.profile` flag ([flags.md §3](flags.md#3-agent)) parser accepts only the six
+characteristic keys, the two phases, finite bands inside per-characteristic hard bounds and at most 4 terms; anything
+invalid falls back to `from_objectives` (a WARN once and a metric). It is read per game, so a game's targeting context
+(`game_kind`, `experiment_id`, `arm`) can give each arm its own profile.
+
+**Hard bounds.** A band edge must lie inside the characteristic's bound, which is also what makes the schema testable:
+
+| Characteristic | Lower | Upper | Unit |
+|---|---|---|---|
+| `duration` | 0 | 3600 | seconds |
+| `activity` | 0 | 2 | fraction of the death threshold |
+| `change` | 0 | 2 | fraction of the death threshold |
+| `elimination_pace` | 0 | 30 | eliminations per minute |
+| `closeness` | 0 | 2 | fraction of the death threshold |
+| `survival` | 0 | 1 | 0 or 1 (the target survived) |
+
+The decisive-end idea ("the game ends soon after two players remain") is not a characteristic; it stays a prediction template (`game_ends`) and is not a goal term. A new characteristic needs its own row in §14.1 first.
+
+**Attainment.** At game end each term is scored by the same `Measure` (in band is 1, otherwise distance-decayed to 0) and the
+weighted mean is the game's goal attainment, recorded in the game summary and its span (UC-042 A12, BR-009).
+
+**Goals reach the model as structured targets, never as prose.** Only when `decision.goal_in_prompt` is on or
+`decision.prompt_profile` (planned, #2467 PR 5) is `neutral`, `Render` adds two lines to the user message, for example
+`goal: long_running_game duration>=180s activity=0.30..0.60 elimination_pace<=1/min` and
+`now: duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21`, and the neutral system prompt drops the
+"closer, more dramatic" sentence in favour of "pursue the goal targets in the state". Under v1 both flags are off: no line,
+and system and user bytes are unchanged. jev gets a goal criterion only under the neutral profile, in a later slice.
+
+### 14.5 Safety and defaults
+
+| Flag | Default | Unreadable value |
+|---|---|---|
+| `decision.predictions_enabled` | on (rules, lever and control predictions cost no call and no prompt bytes; read per decision cycle; off stops new registrations and controls, predictions already pending still score and emit) | on (it only observes) |
+| `decision.predictions.ask_model` | off (it changes the request bytes) | off |
+| `goal.profile` | `from_objectives` | `from_objectives` |
+| `decision.goal_in_prompt` | off | off |
+
+All four are `agent`-set flags, human-owned, read only by the agent; the agent never writes them (C-034; covered by the no-writes-to-the-`agent`-set invariant of the never-written test, which holds no key list). A test pins that `runDecision` outcomes are identical with predictions on and off, and
+that the rules-path golden is unchanged.
