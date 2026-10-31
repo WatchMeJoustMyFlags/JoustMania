@@ -25,6 +25,7 @@ from opentelemetry import trace
 
 from lib.types import GameEvent, Sound
 from proto import controller_manager_pb2, game_coordinator_pb2
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.random_teams import RandomTeamsGame
 from services.game_coordinator.games.teams import SimpleTeamsGame
@@ -63,7 +64,7 @@ class ScriptedTieStream(RecordingStream):
         if (
             self.fired
             or self.start_time is None
-            or time.time() - self.start_time < 2.0
+            or game_clock.now() - self.start_time < 2.0
             or game.state != GameState.RUNNING
         ):
             return frame
@@ -254,6 +255,9 @@ WIN_CASES = [
 class TestMainSteps3To5:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-021", flow="main", steps=[3, 4, 5], cond=["Post-S-1"])
+    # Deaths are 0.1 game-s apart: dilated 10x that is ~10 ms real, so a loaded runner folds several deaths into one
+    # frame and the scripted order (team-mate first) is lost. Real-time spacing keeps one death per frame (#2443).
+    @pytest.mark.real_game_time
     @pytest.mark.parametrize(
         ("num_teams", "players", "dead", "winner_team", "winners", "team_name", "sound"), WIN_CASES
     )
@@ -475,7 +479,7 @@ class TestBR003ForceEndNoWinner:
         )
         await game._initialize_players_impl(_controllers(*(f"mock_controller_{i}" for i in range(4))))
         game.gameplay_stream = _EndStream()
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.state = GameState.RUNNING
         game.running = True
         game.sounds = []

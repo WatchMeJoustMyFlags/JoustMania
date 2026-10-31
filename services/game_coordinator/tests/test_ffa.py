@@ -8,7 +8,6 @@ Tests the core FFA mechanics:
 """
 
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -23,6 +22,7 @@ sys.path.insert(0, str(test_dir))
 from conftest import EventCollector, MockControllerManagerService, MockGameplayStream
 
 from lib.types import GameEvent
+from services.game_coordinator import game_clock
 from services.game_coordinator.games.base import GameState
 from services.game_coordinator.games.ffa import FFAGame
 
@@ -201,7 +201,7 @@ class TestFFAGameMode:
 
         # Set up game state for _end_game_impl
         game.state = GameState.RUNNING
-        game.start_time = time.time()
+        game.start_time = game_clock.now()
         game.gameplay_stream = MockGameplayStream()
 
         # Trigger win condition check (publishes game_winner event)
