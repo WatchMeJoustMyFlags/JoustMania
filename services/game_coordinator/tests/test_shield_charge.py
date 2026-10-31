@@ -85,9 +85,11 @@ class Flags:
     def __init__(self):
         self.values = {"shield.activation": "trigger", "shield.charge_expiry_seconds": 20.0}
         self.reads = 0
+        self.keys: list[str] = []
 
     def read(self, _set, key, default, **_kw):
         self.reads += 1
+        self.keys.append(key)
         return self.values.get(key, default)
 
 
@@ -716,7 +718,8 @@ class TestUC040BR019ActivationMode:
             await game.grant_shield("p1", 5.0)
         assert game.players["p1"].grace_until == T0 + 5.0
         assert [e[1] for e in game.gameplay_stream.effects()] == [SHIELD]
-        assert flags.reads == 0
+        # Only the shield end grace, latched in every mode (UC-040 BR-035); never shield.activation.
+        assert flags.keys[-flags.reads :] == ["shield.end_grace_seconds"]
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-019"])
@@ -727,7 +730,8 @@ class TestUC040BR019ActivationMode:
         await game.grant_shield("p1", 5.0)
         assert game.players["p1"].grace_until == T0 + 5.0
         assert effects_of(game, CHARGE, SWELL) == []
-        assert flags.reads == 0
+        # Only the shield end grace, latched in every mode (UC-040 BR-035); never shield.activation.
+        assert flags.keys[-flags.reads :] == ["shield.end_grace_seconds"]
 
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-019"])

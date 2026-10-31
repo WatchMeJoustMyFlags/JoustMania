@@ -41,6 +41,7 @@ from services.game_coordinator.games.base import (
     DEFAULT_MAX_SHIELDS_PER_PLAYER_PER_GAME,
     DEFAULT_SHIELD_ACTIVATION,
     DEFAULT_SHIELD_COOLDOWN_SECONDS,
+    DEFAULT_SHIELD_END_GRACE_SECONDS,
     HOLD_CUE_EMPTY,
     HOLD_CUE_FULL,
     HOLD_CUE_NONE,
@@ -67,6 +68,7 @@ from services.game_coordinator.games.base import (
     logger,
     player_identity_attributes,
     resolve_charge_expiry,
+    resolve_end_grace,
     resolve_hold_value,
     resolve_shield_activation,
     resolve_shield_limit,
@@ -90,6 +92,10 @@ SHIELD_HELP_CUE_SPEED = 4  # pulses per second: two pulses in 500 ms
 # appear over the winner rainbow (a PULSE takes over every effect but IDENTIFY and
 # SHOW_BATTERY in the controller manager).
 SHIELD_REFUSED_GAME_ENDING = "game_ending"
+
+# player_death carries `shield.since_end_ms` only when the player's last shield ended
+# less than this long ago (telemetry.md §4, UC-040 BR-035): the stage fairness check.
+SHIELD_SINCE_END_REPORT_SECONDS = 3.0
 
 
 class ShieldMixin:
@@ -210,13 +216,18 @@ class ShieldMixin:
         # BR-010); an extension restarts the LED fade silently.
         was_protected = self._shield_protected(player, game_clock.now())
         player.grace_until = new_grace
+        self._arm_shield_end_grace(player, new_grace)  # UC-040 BR-035: the end is known now
         self._record_agent_shield(serial, now, seconds)
         logger.info(f"Shield granted to {serial} for {seconds:.1f}s (grace_until={new_grace:.2f})")
 
         if player.span:
             player.span.add_event(
                 "shield_granted",
-                attributes={"shield_seconds": seconds, **player_identity_attributes(serial, player.name)},
+                attributes={
+                    "shield_seconds": seconds,
+                    "shield.end_grace_s": self._shield_end_grace,
+                    **player_identity_attributes(serial, player.name),
+                },
             )
 
         # The helped cue (UC-040 BR-031), then the shield's own feedback (UC-040 A16).
@@ -639,6 +650,7 @@ class ShieldMixin:
         delay_ms = int(round((now - player.shield_charge_granted_at) * 1000))
         self._clear_shield_charge(player)
         player.grace_until = max(player.grace_until, now + seconds)
+        self._arm_shield_end_grace(player, player.grace_until)  # UC-040 BR-035
         logger.info(f"Shield charge activated by {player.serial}: {seconds:.1f}s after {delay_ms} ms")
 
         # A6 step 2: SHIELD_CHARGE 0, then SHIELD and SWELL (in _send_shield_feedback).
@@ -650,6 +662,7 @@ class ShieldMixin:
                     attributes={
                         "shield.seconds": seconds,
                         "shield.charge_delay_ms": delay_ms,
+                        "shield.end_grace_s": self._shield_end_grace,
                         **player_identity_attributes(player.serial, player.name),
                     },
                 )
@@ -738,6 +751,9 @@ class ShieldMixin:
         """
         if self._shield_hold_latched:
             return self._shield_hold
+        # UC-040 BR-035: the end grace is latched here in every mode and branch, because
+        # instant shields exist in every mode.
+        self._latch_shield_end_grace()
         if not self._shield_mode_flag_applies():
             self._shield_hold_latched = True
             self._publish_shield_mode_metrics(SHIELD_ACTIVATION_INSTANT)
@@ -800,6 +816,39 @@ class ShieldMixin:
         logger.info(f"Shield hold latched for {self.game_id}: {params}")
         return params
 
+    def _latch_shield_end_grace(self) -> None:
+        """Read ``shield.end_grace_seconds`` once per game, in the game's flag context (UC-040 BR-035)."""
+        # A literal key, so the contract scan resolves the read.
+        raw = _base.read_float_flag(
+            "game", "shield.end_grace_seconds", DEFAULT_SHIELD_END_GRACE_SECONDS, game_id=self.game_id
+        )
+        self._shield_end_grace = resolve_end_grace(raw)
+
+    def _arm_shield_end_grace(self, player: "Player", shield_end: float, cap: float | None = None) -> float:
+        """A shield ends at ``shield_end``: open the end grace window after it (UC-040 BR-035).
+
+        Assigned, never added, so windows never stack. ``cap`` limits the window (a hold
+        run-out: at most the activation's cost). With a window the first unprotected
+        frame after it primes the EMA as the release tail does (UC-030 BR-009).
+        Returns the window's length (0 = none).
+        """
+        player.shield_end_at = shield_end
+        grace = self._shield_end_grace if cap is None else min(self._shield_end_grace, cap)
+        if grace <= 0.0:
+            return 0.0
+        player.end_grace_until = shield_end + grace
+        player.hold_prime_cap = True
+        return grace
+
+    def _shield_since_end_attributes(self, player: "Player", now: float) -> dict[str, int]:
+        """``shield.since_end_ms`` for player_death when a shield ended less than 3 s ago (telemetry.md §4)."""
+        if not player.shield_end_at:
+            return {}
+        since = now - player.shield_end_at
+        if since < 0.0 or since >= SHIELD_SINCE_END_REPORT_SECONDS:
+            return {}
+        return {"shield.since_end_ms": int(round(since * 1000))}
+
     def _shield_metric_labels(self) -> dict[str, str]:
         return {
             "game_kind": self.game_kind,
@@ -829,6 +878,7 @@ class ShieldMixin:
                     "shield.empty_pulse_ms": cues.empty_pulse_ms,
                     "shield.hold_rumble_max_intensity": cues.hold_rumble_max_intensity,
                     "shield.hold_led_floor_percent": cues.hold_led_floor_pct,
+                    "shield.end_grace_seconds": self._shield_end_grace,
                 }
                 for key, value in settings.items():
                     metrics.shield_hold_setting.labels(setting=key, **labels).set(float(value))
@@ -982,6 +1032,9 @@ class ShieldMixin:
             return
         player.hold_started_at = now
         player.hold_pressed = True
+        # UC-040 BR-035: a re-hold inside the end grace window starts at once and closes it.
+        player.end_grace_until = 0.0
+        player.shield_end_at = 0.0
         player.hold_energy_start = energy
         player.hold_budget_start = budget_left
         player.hold_usable_start = usable
@@ -1027,8 +1080,15 @@ class ShieldMixin:
         player.hold_energy_start = 0.0
         player.hold_budget_start = 0.0
         player.hold_usable_start = 0.0
-        if outcome in (HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED):
+        ran_out = outcome in (HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED)
+        end_grace = 0.0
+        if ran_out:
             player.hold_empties += 1
+            # UC-040 BR-035: a window only when the energy ran out, never after a release, and
+            # at most the activation's cost, so run-outs and recharge never chain into immunity.
+            end_grace = self._arm_shield_end_grace(player, ended_at, cap=cost)
+        elif outcome == HOLD_OUTCOME_RELEASED:
+            player.shield_end_at = ended_at
         if outcome in (HOLD_OUTCOME_RELEASED, HOLD_OUTCOME_EMPTY, HOLD_OUTCOME_BUDGET_EXHAUSTED):
             player.hold_prime_cap = True  # UC-030 BR-009
             # UC-040 BR-026: SHIELD_HOLD 0 and the idle energy, with the empty pulse when it ran out.
@@ -1040,6 +1100,7 @@ class ShieldMixin:
                 span.set_attribute("shield.hold_cost_s", round(cost, 3))
                 span.set_attribute("shield.min_burst_applied", player.hold_min_burst_applied)
                 span.set_attribute("shield.energy_end_s", round(energy_end, 3))
+                span.set_attribute("shield.end_grace_s", end_grace)
                 span.end()
         player.hold_min_burst_applied = False
         with contextlib.suppress(Exception):

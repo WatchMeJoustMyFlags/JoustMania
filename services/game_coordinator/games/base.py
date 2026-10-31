@@ -53,6 +53,7 @@ from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-ex
     DEFAULT_RAMP_UP_SECONDS,
     DEFAULT_SHIELD_ACTIVATION,
     DEFAULT_SHIELD_COOLDOWN_SECONDS,
+    DEFAULT_SHIELD_END_GRACE_SECONDS,
     END_MAX_MUSIC_FAST_TIME,
     END_MAX_MUSIC_SLOW_TIME,
     END_MIN_MUSIC_FAST_TIME,
@@ -69,6 +70,7 @@ from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-ex
     SHIELD_ACTIVATION_HOLD,
     SHIELD_ACTIVATION_INSTANT,
     SHIELD_ACTIVATION_TRIGGER,
+    SHIELD_END_GRACE_MAX_SECONDS,
     SHIELD_HOLD_CUE_FLAGS,
     SHIELD_HOLD_FLAGS,
     SLOW_MAX,
@@ -78,6 +80,7 @@ from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-ex
     _read_volume_flag,
     resolve_base_thresholds,
     resolve_charge_expiry,
+    resolve_end_grace,
     resolve_hold_value,
     resolve_mode_thresholds,
     resolve_music_windows,
@@ -546,6 +549,13 @@ class Player:
     # UC-030 BR-009: the first unprotected frame after an activation primes the EMA
     # with min(raw, warning threshold) instead of the raw sample.
     hold_prime_cap: bool = False
+    # UC-040 BR-035 (#2464): after a shield ends, movement cannot kill until this
+    # timestamp. Not part of effective_grace_until, so a re-hold or a charge press
+    # inside the window starts at once. Cleared by an activation, the kill path, a revive.
+    end_grace_until: float = 0.0
+    # When the last shield protection ended (or ends, for a running instant or trigger
+    # shield): feeds `shield.since_end_ms` on player_death (telemetry.md §4). 0 = none.
+    shield_end_at: float = 0.0
     hold_budget_exhausted_noted: bool = False
     # Per-game totals for the agent's view and the retro (UC-042 BR-007): energy the
     # agent's grants added, activations started, activations that ran out.
@@ -762,6 +772,9 @@ class BaseGameMode(ShieldMixin, ABC):
         # loop or at the first grant, whichever comes first. None = not a hold game.
         self._shield_hold: ShieldHoldParams | None = None
         self._shield_hold_latched = False
+        # Shield end grace (UC-040 BR-035, #2464): latched with the shield mode in every
+        # mode; 0 until the latch, so nothing arms a window before it.
+        self._shield_end_grace = 0.0
         # The mode the latch read, reused by the grant that triggered the latch, so
         # that grant reads shield.activation once (flags.md §4: one read per grant).
         self._shield_mode_at_latch: str | None = None
@@ -2437,7 +2450,8 @@ class BaseGameMode(ShieldMixin, ABC):
         # Matches original JoustMania: if game_clock.now() > no_rumble. Uses the unified
         # effective-grace rule: max(agent shield grace_until, admin
         # invincible_until) so the agent shield and admin baseline compose here too.
-        if current_time < self.effective_grace_until(player):
+        # UC-040 BR-035: the shield end grace window gates the same way (one extra compare).
+        if current_time < self.effective_grace_until(player) or current_time < player.end_grace_until:
             # During grace, reset the EMA so it re-primes from the first
             # post-grace frame. Invincibility must *forget* the death spike:
             # otherwise the EMA still holds it when grace expires and the
@@ -2947,6 +2961,9 @@ class BaseGameMode(ShieldMixin, ABC):
             return False
 
         grace = self.REVIVE_SPAWN_GRACE if spawn_grace is None else spawn_grace
+        # UC-040 BR-035: spawn grace is not a shield; no end grace window carries over.
+        player.end_grace_until = 0.0
+        player.shield_end_at = 0.0
 
         # Prefer a mode-native respawn path so mode-specific state stays correct.
         native = getattr(self, "_respawn_player", None)
@@ -3130,6 +3147,11 @@ class BaseGameMode(ShieldMixin, ABC):
         # Again after the awaits: energy granted while the kill awaited is dropped too.
         if self._shield_hold is not None:
             self._drop_shield_hold(player, HOLD_OUTCOME_DEATH, game_clock.now())
+        # UC-040 BR-035: the death ends a shield end grace window; a respawn never inherits it.
+        since_shield_end = self._shield_since_end_attributes(player, game_clock.now())
+        player.end_grace_until = 0.0
+        player.shield_end_at = 0.0
+        player.hold_prime_cap = False
 
         alive_count_before = len([p for p in self.players.values() if p.alive])
         logger.info(f"Player died: {serial}, {alive_count_before - 1} players remaining")
@@ -3158,6 +3180,7 @@ class BaseGameMode(ShieldMixin, ABC):
                     "music_speed": self.music_speed,
                     "alive_remaining": alive_count_before - 1,
                     "death.reason": reason,
+                    **since_shield_end,
                     **self._player_death_event_attributes(serial),
                     **player_identity_attributes(serial, player.name),
                 },

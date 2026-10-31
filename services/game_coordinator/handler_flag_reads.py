@@ -87,6 +87,12 @@ HANDLER_FLAG_READS = {
         "targeting": ["gameId"],
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",
     },
+    # Shield end grace of #2464 (UC-040 BR-035): stack-only and human-only, latched in
+    # every mode (instant shields exist in every mode).
+    ("game", "shield.end_grace_seconds"): {
+        "targeting": ["gameId"],
+        "readers": "games/base.py _latch_shield_end_grace <- _latch_shield_hold <- grant_shield (first grant)",
+    },
     ("game", "shield.charge_rumble_intensity"): {
         "targeting": ["gameId"],
         "readers": "games/base.py _latch_shield_hold <- grant_shield <- handle_shield_seconds (first grant)",

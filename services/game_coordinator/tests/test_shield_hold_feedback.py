@@ -83,6 +83,8 @@ class Flags:
             "shield.empty_pulse_ms": 500,
             "shield.hold_rumble_max_intensity": 180,
             "shield.hold_led_floor_percent": 15,
+            # No shield end grace window (UC-040 BR-035): a death right after empty stays reachable.
+            "shield.end_grace_seconds": 0.0,
         }
         self.reads: list[str] = []
 
