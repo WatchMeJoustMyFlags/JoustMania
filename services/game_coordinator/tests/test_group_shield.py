@@ -214,7 +214,7 @@ async def refused(g, serials=SERIALS, seconds=SECONDS, **kwargs):
 # --------------------------------------------------------------------------- #
 # A47: applied to every chosen player
 # --------------------------------------------------------------------------- #
-class TestUC040A46GroupApplied:
+class TestUC040A47GroupApplied:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A47", br=["BR-033", "BR-031"])
     @pytest.mark.parametrize("mode", [INSTANT, TRIGGER, HOLD_MODE])
@@ -354,7 +354,7 @@ REFUSALS = [
 ]
 
 
-class TestUC040A47GroupRefusedAsAWhole:
+class TestUC040A48GroupRefusedAsAWhole:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     @pytest.mark.parametrize(("mode", "setup", "reason"), REFUSALS)
@@ -552,7 +552,7 @@ def _published(events):
     return [d for et, d in events if et == GameEvent.AGENT_INTERVENTION]
 
 
-class TestUC040A46GroupEvent:
+class TestUC040A47GroupEvent:
     @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     def test_payload_round_trip(self):
         payload = _event_payload_string(GROUP_SPEC, {"serials": "p1,p2,p3", "seconds": "5"})
