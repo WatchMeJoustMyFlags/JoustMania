@@ -19,10 +19,20 @@ func f64(v float64) *float64 { return &v }
 func boolp(v bool) *bool     { return &v }
 func strp(v string) *string  { return &v }
 
+// freshTrack is a movement track whose one reading, v, is live at at (the
+// context's UpdatedAt), so decide.BuildState keeps the player's readings
+// (decide.FreshReadings, UC-040 A50, #2514).
+func freshTrack(at time.Time, v float64) []gamecontext.MovementSample {
+	return []gamecontext.MovementSample{{At: at, Intensity: v}}
+}
+
 // lopsidedContext is a late FFA round: three players left, MOCK0002 dominating
 // (low intensity, high skill), MOCK0003 one twitch from elimination, MOCK0004
 // in between, MOCK0001 already out. It is the state the recorded fixtures in
-// testdata/ were answered against (live_test.go).
+// testdata/ were answered against (live_test.go). #2514 gave every alive player a
+// one-reading track live at UpdatedAt (freshTrack), so the state keeps their
+// readings; the request fixtures' narratives gained the "movement=" token it
+// renders, and the recorded responses are unchanged.
 func lopsidedContext() gamecontext.GameContext {
 	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	return gamecontext.GameContext{
@@ -38,9 +48,9 @@ func lopsidedContext() gamecontext.GameContext {
 		},
 		Players: map[string]*gamecontext.PlayerSignals{
 			"MOCK0001": {Serial: "MOCK0001", Active: boolp(false), SkillLevel: f64(0.2), BatteryPct: f64(80)},
-			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(0.6), MovementVariance: f64(0.05), SkillLevel: f64(0.9), BatteryPct: f64(72)},
-			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(2.2), MovementVariance: f64(0.4), SkillLevel: f64(0.25), BatteryPct: f64(64)},
-			"MOCK0004": {Serial: "MOCK0004", Active: boolp(true), MovementIntensity: f64(1.4), MovementVariance: f64(0.2), SkillLevel: f64(0.5), BatteryPct: f64(12)},
+			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(0.6), MovementVariance: f64(0.05), SkillLevel: f64(0.9), BatteryPct: f64(72), History: freshTrack(at, 0.6)},
+			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(2.2), MovementVariance: f64(0.4), SkillLevel: f64(0.25), BatteryPct: f64(64), History: freshTrack(at, 2.2)},
+			"MOCK0004": {Serial: "MOCK0004", Active: boolp(true), MovementIntensity: f64(1.4), MovementVariance: f64(0.2), SkillLevel: f64(0.5), BatteryPct: f64(12), History: freshTrack(at, 1.4)},
 		},
 		Timeline: []gamecontext.TimelineEvent{
 			{At: at.Add(-50 * time.Second), Kind: gamecontext.EventElimination, Serial: "MOCK0001", Order: 1},
@@ -87,10 +97,10 @@ func calmContext() gamecontext.GameContext {
 			DeathThreshold:  f64(2.3),
 		},
 		Players: map[string]*gamecontext.PlayerSignals{
-			"MOCK0001": {Serial: "MOCK0001", Active: boolp(true), MovementIntensity: f64(0.7), MovementVariance: f64(0.1), SkillLevel: f64(0.55), BatteryPct: f64(80)},
-			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(0.8), MovementVariance: f64(0.12), SkillLevel: f64(0.5), BatteryPct: f64(75)},
-			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(0.9), MovementVariance: f64(0.1), SkillLevel: f64(0.6), BatteryPct: f64(70)},
-			"MOCK0004": {Serial: "MOCK0004", Active: boolp(true), MovementIntensity: f64(0.75), MovementVariance: f64(0.09), SkillLevel: f64(0.5), BatteryPct: f64(90)},
+			"MOCK0001": {Serial: "MOCK0001", Active: boolp(true), MovementIntensity: f64(0.7), MovementVariance: f64(0.1), SkillLevel: f64(0.55), BatteryPct: f64(80), History: freshTrack(at, 0.7)},
+			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(0.8), MovementVariance: f64(0.12), SkillLevel: f64(0.5), BatteryPct: f64(75), History: freshTrack(at, 0.8)},
+			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(0.9), MovementVariance: f64(0.1), SkillLevel: f64(0.6), BatteryPct: f64(70), History: freshTrack(at, 0.9)},
+			"MOCK0004": {Serial: "MOCK0004", Active: boolp(true), MovementIntensity: f64(0.75), MovementVariance: f64(0.09), SkillLevel: f64(0.5), BatteryPct: f64(90), History: freshTrack(at, 0.75)},
 		},
 	}
 }
@@ -119,8 +129,8 @@ func draggingContext() gamecontext.GameContext {
 		},
 		Players: map[string]*gamecontext.PlayerSignals{
 			"MOCK0001": {Serial: "MOCK0001", Active: boolp(false), SkillLevel: f64(0.3)},
-			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(0.35), MovementVariance: f64(0.02), SkillLevel: f64(0.85), BatteryPct: f64(60)},
-			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(0.4), MovementVariance: f64(0.03), SkillLevel: f64(0.8), BatteryPct: f64(55)},
+			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(0.35), MovementVariance: f64(0.02), SkillLevel: f64(0.85), BatteryPct: f64(60), History: freshTrack(at, 0.35)},
+			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(0.4), MovementVariance: f64(0.03), SkillLevel: f64(0.8), BatteryPct: f64(55), History: freshTrack(at, 0.4)},
 			"MOCK0004": {Serial: "MOCK0004", Active: boolp(false), SkillLevel: f64(0.4)},
 		},
 		Timeline: []gamecontext.TimelineEvent{
@@ -162,8 +172,8 @@ func tooFastContext() gamecontext.GameContext {
 		},
 		Players: map[string]*gamecontext.PlayerSignals{
 			"MOCK0001": {Serial: "MOCK0001", Active: boolp(false)},
-			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(1.35), MovementVariance: f64(0.3), SkillLevel: f64(0.5)},
-			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(1.4), MovementVariance: f64(0.35), SkillLevel: f64(0.45)},
+			"MOCK0002": {Serial: "MOCK0002", Active: boolp(true), MovementIntensity: f64(1.35), MovementVariance: f64(0.3), SkillLevel: f64(0.5), History: freshTrack(at, 1.35)},
+			"MOCK0003": {Serial: "MOCK0003", Active: boolp(true), MovementIntensity: f64(1.4), MovementVariance: f64(0.35), SkillLevel: f64(0.45), History: freshTrack(at, 1.4)},
 			"MOCK0004": {Serial: "MOCK0004", Active: boolp(false)},
 			"MOCK0005": {Serial: "MOCK0005", Active: boolp(false)},
 			"MOCK0006": {Serial: "MOCK0006", Active: boolp(false)},

@@ -111,7 +111,7 @@ func TestBuildState_DangerSignals(t *testing.T) {
 	for _, want := range []string{
 		"death_threshold=2.30 most_headroom=A\n",
 		" danger=safe margin=1.90 intensity_rank=2/2\n",
-		"  B alive intensity=1.10 skill=0.30 danger=safe margin=1.20 intensity_rank=1/2\n",
+		"  B alive intensity=1.10 skill=0.30 movement=▄ danger=safe margin=1.20 intensity_rank=1/2\n",
 	} {
 		if !strings.Contains(st.Narrative, want) {
 			t.Errorf("narrative missing %q:\n%s", want, st.Narrative)

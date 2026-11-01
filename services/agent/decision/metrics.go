@@ -42,7 +42,7 @@ func defaultLLMGatedCounter() otelmetric.Int64Counter {
 // newDecideDiscardedCounter builds the agent_decide_discarded_total counter
 // (#2123): one increment per remote agent.decide record that carries a
 // decide.discarded_reason, labeled reason=<that reason> (stale_context,
-// game_ended, target_gone, state_too_old, kill_switch, backend_changed,
+// game_ended, target_gone, target_stale, state_too_old, kill_switch, backend_changed,
 // shutdown: a closed set). A rules fallback whose context was gone or whose game
 // had ended counts too, since its span carries the reason. An
 // instrument-creation error yields a no-op counter, like newLLMGatedCounter.

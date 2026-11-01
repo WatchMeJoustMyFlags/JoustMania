@@ -139,6 +139,7 @@ func buildPlayers(c gamecontext.GameContext, ann Annotations) []PlayerState {
 			ShieldLimited:    alive && ann.NoShield[serial] && !ann.Charged[serial],
 			Waiting:          p.Waiting && !alive,
 		}
+		markStaleReadings(&ps, p, c)
 		if alive {
 			ps.SensitivityFactor = levelFactor(ann.Levels, "adjust_player_sensitivity", serial)
 			ps.HandicapFactor = levelFactor(ann.Levels, "set_player_handicap", serial)
@@ -215,12 +216,15 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 			}
 		}
 		b.WriteString("  " + p.Serial + " " + status)
+		if p.ReadingsStale {
+			b.WriteString(" readings_stale")
+		}
 		writeOpt(&b, "intensity", p.Intensity)
 		writeOpt(&b, "variance", p.Variance)
 		writeOpt(&b, "skill", p.Skill)
 		writeOpt(&b, "battery", p.BatteryPct)
 		b.WriteString(holdNarrative(p, st))
-		if src := c.Players[p.Serial]; src != nil && len(src.History) > 0 {
+		if src := c.Players[p.Serial]; src != nil && len(src.History) > 0 && !p.ReadingsStale {
 			b.WriteString(" movement=" + gamecontext.RenderSparkline(src.History, c.Session.DeathThreshold))
 		}
 		b.WriteString(dangerNarrative(p, ranked))
@@ -262,6 +266,10 @@ func digest(st State) string {
 		// #2513: written only when set, so a state without waiting players keeps its digest.
 		if p.Waiting {
 			b.WriteString(" waiting=true")
+		}
+		// #2514: likewise written only when set.
+		if p.ReadingsStale {
+			b.WriteString(" readings_stale=true")
 		}
 		// Written only when set, so a state without a charge keeps its digest.
 		if p.ShieldCharged {
