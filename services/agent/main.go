@@ -1071,6 +1071,7 @@ func (c *components) buildExperimentStack() {
 		c.summaries.SetExperimentParent(reg.ExperimentSpanContext)
 		c.proposalSink.Set(expLoop.proposalSink())
 		installExperimentFlags(c.experimentFlags, reg)
+		wireArmCalibration(c.predictions, reg)
 	}
 	// #1184: close the game→retro→thesis→experiment loop. Forward each decoded
 	// post-game retro suggestion (#1179) into the experiment loop's retro-seeded

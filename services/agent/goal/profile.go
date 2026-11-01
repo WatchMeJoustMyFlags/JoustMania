@@ -396,6 +396,49 @@ func (p Profile) GoalLine() string {
 	return strings.Join(parts, " ")
 }
 
+// paceJudgeableAfterS is how long a phase must run before an elimination_pace
+// below its minimum counts as off when nobody has been eliminated yet.
+const paceJudgeableAfterS = 60
+
+// OffBand lists, in term order, the labels (Label) of p's terms whose measured
+// value is outside its band now and can already be judged (#2498): an unmeasured
+// term (an endgame term before the endgame included) is left out, and so is a
+// value below its minimum that a running game cannot be judged on yet: a
+// duration (it only grows), and an elimination_pace before the term's phase has
+// run paceJudgeableAfterS seconds or had its first elimination (pace > 0). A
+// value above its maximum is always judged. nil when no term is off. It is
+// computed in code because Jev is weak at numeric comparison.
+func OffBand(p Profile, measure func(char, phase string) (float64, bool)) []string {
+	var out []string
+	for _, t := range p.Terms {
+		v, ok := measure(t.Characteristic, t.Phase)
+		if !ok {
+			continue
+		}
+		above := t.Max != nil && v > *t.Max
+		below := t.Min != nil && v < *t.Min && minJudgeable(t, v, measure)
+		if above || below {
+			out = append(out, Label(t.Characteristic, t.Phase))
+		}
+	}
+	return out
+}
+
+// minJudgeable reports whether t's value v, below t's minimum, can be judged yet.
+func minJudgeable(t Term, v float64, measure func(char, phase string) (float64, bool)) bool {
+	switch t.Characteristic {
+	case decide.CharDuration:
+		return false
+	case decide.CharEliminationPace:
+		if v > 0 {
+			return true // the phase had its first elimination
+		}
+		dur, ok := measure(decide.CharDuration, t.Phase)
+		return ok && dur >= paceJudgeableAfterS
+	}
+	return true
+}
+
 // nowCharacteristics are always on the now line (when measured), in this order.
 var nowCharacteristics = []string{decide.CharDuration, decide.CharActivity, decide.CharEliminationPace, decide.CharCloseness}
 

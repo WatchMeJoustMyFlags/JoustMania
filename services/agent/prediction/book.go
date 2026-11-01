@@ -167,6 +167,11 @@ type Book struct {
 	// with no prediction never changes the prediction bookkeeping.
 	goals     map[string]*gamesummary.Goal
 	goalOrder []string
+
+	// armTally receives each ended game's tally of acted hit-or-miss decision
+	// predictions (UC-043 A21, #2498): main.go wires the experiment registry's
+	// NotePredictions. nil (the default) hands nothing on. Guarded by mu.
+	armTally func(gameID string, scored, hits int, brierSum float64)
 }
 
 // New builds a Book. root bounds every timer goroutine (nil = never cancelled);
@@ -481,6 +486,8 @@ func (b *Book) OnGameEnd(c gamecontext.GameContext) {
 		out = append(out, b.resolveLocked(e, v, now, &end))
 	}
 	delete(b.games, c.SessionID)
+	sink := b.armTally
+	scored, hits, brier := actedTally(gb.results)
 	b.finalized[c.SessionID] = gb.results
 	b.order = append(b.order, c.SessionID)
 	if len(b.order) > finalizedGames {
@@ -489,6 +496,44 @@ func (b *Book) OnGameEnd(c gamecontext.GameContext) {
 	}
 	b.mu.Unlock()
 	b.emit(out)
+	// UC-043 A21: a stale end is released and re-run, never folded, so its tally
+	// is not reported either.
+	if sink != nil && scored > 0 && c.EndReason != gamecontext.EndReasonStale {
+		sink(c.SessionID, scored, hits, brier)
+	}
+}
+
+// SetArmTallySink wires the per-game arm tally (UC-043 A21, BR-010, #2498): at
+// game end the Book hands f the game's acted decision predictions that scored hit
+// or miss (counterfactuals, controls and unscorables never), with their Brier sum.
+// Report-only; f must not block.
+func (b *Book) SetArmTallySink(f func(gameID string, scored, hits int, brierSum float64)) {
+	b.mu.Lock()
+	b.armTally = f
+	b.mu.Unlock()
+}
+
+// actedTally counts the acted, non-control results that scored hit or miss, and
+// their Brier sum (p - y)^2, the same sum agent_prediction_brier_sum adds.
+func actedTally(results []Result) (scored, hits int, brierSum float64) {
+	for _, r := range results {
+		if !r.Acted || r.Prediction.Source == decide.SourceControl {
+			continue
+		}
+		y := 0.0
+		switch r.Outcome {
+		case OutcomeHit:
+			hits++
+			y = 1
+		case OutcomeMiss:
+		default:
+			continue
+		}
+		scored++
+		d := r.Prediction.P - y
+		brierSum += d * d
+	}
+	return scored, hits, brierSum
 }
 
 // Results returns a copy of the scored predictions of an ended game (the last

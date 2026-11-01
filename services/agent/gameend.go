@@ -9,6 +9,7 @@ import (
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/experiment"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamesummary"
@@ -109,6 +110,18 @@ func wirePredictionLookups(book *prediction.Book, summaries *gamesummary.Coordin
 	// at the start of its game-end hook.
 	summaries.SetGoalLookup(book.SummaryGoal)
 	retro.SetGoalLookup(book.SummaryGoal)
+}
+
+// wireArmCalibration hands each ended shadow game's prediction tally from the
+// Book to the experiment registry (UC-043 A21, BR-010, #2498). The Book runs
+// before the experiment hook in the game-end chain, so the game is still bound to
+// its arm. Report-only: the registry never journals the tally and the verdict
+// never reads it. A nil book or registry wires nothing.
+func wireArmCalibration(book *prediction.Book, reg *experiment.Registry) {
+	if book == nil || reg == nil {
+		return
+	}
+	book.SetArmTallySink(reg.NotePredictions)
 }
 
 // goalProfile resolves one game's goal profile from goal.profile in the game's

@@ -45,7 +45,7 @@ the permission chain never see them:
 | `Prediction` | `Characteristic`, `Scope` (`game`/`field`/`target`), `Target` (serial, `target` scope only), `Template`, `HorizonS`, `P`, `Source` (`rules`/`lever_default`/`model`/`control`), `Rule` | What the decider expects to be true after its answer is applied; closed vocabulary (§14.2). Carried on `Response.Prediction` and on the decide record, **never** on `Decision` or `DecisionOutcome` (the rules-path golden stays byte-identical). `P` is the probability the prediction comes true. |
 | `PredictionAsk` | `*Question` (`ffa.prediction`, kind choice), `json:"prediction_ask,omitempty"` | `Request.PredictionAsk`, **outside `Request.Questions`**. Set only when `decision.predictions.ask_model` and `decision.predictions_enabled` are on and the backend is claude or openai (§3). nil under v1. |
 | `PredictionDropped` | reason string on `Response` | `missing`, `bad_option`, `bad_confidence`, `no_target`, `inconsistent`. A model prediction that fails its own check (§4.1) is dropped; the decision is unaffected. |
-| `Goal` (goal profiles) | `*GoalLines{Profile, Source, Goal, Now}`, `json:"goal,omitempty"` | `Request.Goal`, outside `State` (not in the digest) and outside `Questions`. Set only on a claude or openai request under `decision.goal_in_prompt` (never implied by `decision.prompt_profile`), for a goal profile with terms (§14.4; `services/agent/decision/goal_hook.go:goalLines`). nil whenever `decision.goal_in_prompt` is off. |
+| `Goal` (goal profiles) | `*GoalLines{Profile, Source, Goal, Now, OffBand}`, `json:"goal,omitempty"` (`OffBand`, the labels of the terms outside their band now that can be judged, `off_band,omitempty`, is rendered by jev only, #2498) | `Request.Goal`, outside `State` (not in the digest) and outside `Questions`. Set only on a claude, openai or jev (#2498) request under `decision.goal_in_prompt` (never implied by `decision.prompt_profile`), for a goal profile with terms (§14.4; `services/agent/decision/goal_hook.go:goalLines`). nil whenever `decision.goal_in_prompt` is off. |
 
 ### 1.1 Question kinds
 
@@ -165,7 +165,8 @@ tooling only) still answers the Default.
     player's situation (danger, refusals) without a verdict (`services/agent/decide/backends/jev/criteria.go`). The goal
     sentence of the system prompt and jev's game description and gate criteria are unchanged in both profiles, except that a
     neutral request carrying the goal lines (only under `decision.goal_in_prompt`, §14.4; neutral alone never adds them) swaps
-    the prose goal sentence for the goal-targets sentence.
+    the prose goal sentence for the goal-targets sentence, and that a jev request carrying the goal (same flag, either profile)
+    gains `state.goal` and the goal sentence in both gate criteria (§14.4, #2498).
   - The system prompt's fingerprint (`llm.prompt.system_sha256` on claude's chat span) is therefore one value for v1 (with or
     without `decision.goal_in_prompt`: the goal lines never change the v1 system prompt) and two for neutral (without and with
     goal lines). `agent.decide` carries `decide.prompt_profile` on the remote path (§12).
@@ -842,8 +843,8 @@ The contract tests live in `decide/*_test.go`, the backend tests `decide/backend
 ## 14. Characteristics, predictions, goals (planned, #2479)
 
 > Status `Open`. Delivered in slices (characteristics and rules predictions and the Book, #2485; the game summary, the
-> retro block and the dashboard Agent tab, #2479 PR C; model ask; goal profiles, #2479 PR E: §14.4 is implemented except
-> jev's goal criterion and the dashboard goal strip). The maintainer decisions of 2026-10-31: `activity` is the movement intensity relative to the
+> retro block and the dashboard Agent tab, #2479 PR C; model ask; goal profiles, #2479 PR E; jev's goal criterion and the
+> report-only arm calibration, #2498: §14.4 is implemented except the dashboard goal strip, #2499). The maintainer decisions of 2026-10-31: `activity` is the movement intensity relative to the
 > death threshold (always present, not the optional variance); noop predictions are not scored in v1; arm calibration is
 > report-only. Requirements: FR-200, FR-201. Rules: UC-040 A44, A45, BR-034.
 
@@ -945,7 +946,14 @@ rate and `game_kind`; the headline uses `acted=true` and real games, and shadow 
 
 **Calibration.** Brier score (p - y)^2 over scored (hit or miss) predictions, as a counter sum, so the rolling value is a
 PromQL ratio and no in-process rolling state exists ([telemetry.md §6](telemetry.md#6-metrics)). Per-experiment arm tallies are
-report-only: fed in memory, never journaled, never read by the verdict (UC-043 A21, BR-010).
+report-only: fed in memory, never journaled, never read by the verdict (UC-043 A21, BR-010). At game end the Book hands the
+game's ACTED decision predictions that scored hit or miss (counterfactuals, controls and unscorables never; a stale end hands
+nothing on, the game is released and re-run) to the registry, which holds them for the bound game and adds them to its arm
+only at the game's fitness fold (`ConcludeGame`); a game released without a fold (errored, preempted) or torn down adds nothing
+(`services/agent/prediction/book.go:Book.SetArmTallySink`, `services/agent/experiment/calibration.go:Registry.NotePredictions`,
+wired by `services/agent/gameend.go:wireArmCalibration`). The Book runs before the experiment hook in the game-end chain, so
+the game is still bound; a real game, a released or unknown game and an inconsistent tally are ignored. `experiment.progress`
+shows it on each `experiment.arm` event ([telemetry.md](telemetry.md)); a restart or rehydrate starts it empty.
 
 ### 14.4 Goal profiles
 
@@ -1027,8 +1035,20 @@ characteristic or phase a term uses; an unmeasured value is left out (`no data y
 with "to pursue the goal targets in the state" (and a short note on the two lines); under v1 with `decision.goal_in_prompt`
 on the system prompt is v1's and only the user message gains the lines. Under v1 with the flag off: no line, and system and
 user bytes are unchanged (`services/agent/decide/llmio/llmio.go:Render`, goldens `profile_golden_test.go`,
-`prediction_v1_golden_test.go`). jev gets a goal criterion only under the neutral profile, in a later slice; until then a jev
-request carries no goal lines.
+`prediction_v1_golden_test.go`). jev (#2498) gets the same `Request.Goal` under the same switch (either prompt profile;
+neutral alone never adds it): its typed state gains `goal: {profile, targets, now, off_band}` (`targets` is the goal line
+without its leading profile name, `now` the now line), and both gate criteria gain one goal sentence,
+`Goal <profile>: targets <targets>; measured now <now line>.` Jev does not compare numbers: the agent computes in code which
+terms are outside their band now and can already be judged (`services/agent/goal/profile.go:OffBand`, carried as
+`GoalLines.OffBand`): an unmeasured term is left out (an endgame term before the endgame included), and so is a value below
+its minimum that cannot be judged yet: a duration (a running game cannot have reached it yet) and an `elimination_pace`
+before the term's phase has run 60 s or had its first elimination. A value above its maximum is always judged. When a term is off, `off_band` lists its labels and the
+`true` side adds `Outside its target band now: <labels>.`; when none is, the `false` side adds `The goal is on track: no term
+that can be judged yet is outside its target band.` So an early `long_running_game` (duration 95 s against 180 s) gets no push
+toward acting. llmio does not render `OffBand`. The sentence describes the game; it never names a lever, and the lever, target and magnitude questions
+are unchanged. The details stage carries `state.goal` too. With the flag off every jev body is byte-identical to before
+(`services/agent/decide/backends/jev/wire.go:encodeState`, `services/agent/decide/backends/jev/criteria.go:withGoal`; fixtures `testdata/*.json` unchanged,
+goal-on stage 1 pinned by `testdata/goal_request_intervention.json` (on track) and `testdata/goal_offband_request_intervention.json` (activity off its band)).
 
 ### 14.5 Safety and defaults
 

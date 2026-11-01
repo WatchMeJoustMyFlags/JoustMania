@@ -25,7 +25,8 @@ const (
 	// SpanExperimentProgress is the span name.
 	SpanExperimentProgress = "experiment.progress"
 	// EventExperimentArm is the per-arm span event; it carries
-	// keys.AttrExperimentArm plus the three AttrExperimentArm* values.
+	// keys.AttrExperimentArm plus the AttrExperimentArm* values (the three
+	// prediction ones are the report-only arm calibration, calibration.go).
 	EventExperimentArm = "experiment.arm"
 	// AttrExperimentProgressTrigger is one of the ProgressTrigger* values.
 	AttrExperimentProgressTrigger = "experiment.progress.trigger"
@@ -146,12 +147,22 @@ func (r *Registry) emitProgressLocked(e *entry, trigger, endReason string, link 
 		if st := summary.Arms[arm]; st != nil {
 			samples, mean = st.Count, st.Mean
 		}
-		span.AddEvent(EventExperimentArm, trace.WithAttributes(
+		armAttrs := []attribute.KeyValue{
 			attribute.String(keys.AttrExperimentArm, arm),
 			attribute.Int(AttrExperimentArmAssigned, inFlight[arm]),
 			attribute.Int(AttrExperimentArmSamples, samples),
 			attribute.Float64(AttrExperimentArmMeanFitness, mean),
-		))
+		}
+		// UC-043 A21 (#2498): report-only shadow calibration, in memory. The mean
+		// Brier score only once a prediction is scored (0 would read as perfect).
+		cal := e.calibration[arm]
+		armAttrs = append(armAttrs,
+			attribute.Int(AttrExperimentArmPredictionsScored, cal.Scored),
+			attribute.Int(AttrExperimentArmPredictionHits, cal.Hits))
+		if cal.Scored > 0 {
+			armAttrs = append(armAttrs, attribute.Float64(AttrExperimentArmPredictionBrier, cal.Brier()))
+		}
+		span.AddEvent(EventExperimentArm, trace.WithAttributes(armAttrs...))
 	}
 	span.End()
 }
