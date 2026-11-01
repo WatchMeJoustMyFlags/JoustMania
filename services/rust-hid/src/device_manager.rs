@@ -4,9 +4,14 @@
 //! command channel. The polling loop continuously reads input reports from all
 //! open devices and pushes SensorData through a registered stream sender.
 //! Output reports (LED, rumble) never run here: each open device has a writer
-//! thread in `output` (UC-002 BR-005, #2125). The device sits behind a mutex
-//! the writer holds only during one write; the poll uses `try_lock`, so a
-//! blocked write skips that device's reads instead of stalling the loop.
+//! thread in `output` (UC-002 BR-005, #2125). The writer and the input poll
+//! share ONE handle per controller behind a mutex (a separate writer handle,
+//! #2335, was closed unmerged: the Pi measurement of #2313 showed no write
+//! stall, all LED writes under 0.5 ms). The writer holds the mutex for one
+//! write; the poll and the discovery read check only `try_lock` it, so while a
+//! write is in flight (or stuck) they skip that controller for the pass and
+//! never block the loop. A stuck write therefore freezes that controller's
+//! input only, until the write returns (#2142).
 
 use hidapi::HidApi;
 use std::collections::HashMap;
@@ -365,7 +370,8 @@ fn handle_discover<B: HidBackend>(
                 return None;
             }
             let mut buf = [0u8; 64];
-            // Busy = its writer is in a write: the device is there.
+            // Lock busy = its writer is in a write, so the device is still there:
+            // not stale, and the read check is skipped for this pass.
             let Ok(device) = entry.device.try_lock() else {
                 return None;
             };
@@ -493,7 +499,8 @@ fn poll_all_devices<D: HidDeviceIo>(
         let zcm2 = hid::is_zcm2(entry.product_id);
         let device = match entry.device.try_lock() {
             Ok(device) => device,
-            // Its writer is in a write (maybe blocked): read it on the next pass.
+            // Its writer holds the shared handle for a write (maybe a stuck one):
+            // skip this controller for the pass and read it on the next.
             Err(TryLockError::WouldBlock) => continue,
             Err(TryLockError::Poisoned(e)) => e.into_inner(),
         };
