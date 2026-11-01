@@ -17,6 +17,7 @@ from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.mock_hooks import MockFeatureHooks
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.multiplexer.adapter import ControllerIOAdapter
+from services.controller_manager.state_builder import FrameInputs
 
 
 class InertBackendHooks(MockFeatureHooks):
@@ -155,3 +156,31 @@ def stop_stubs():
 def autospec_queue():
     """A subscriber queue placeholder: the publisher is a double, so nothing is ever put on it."""
     return create_autospec(asyncio.Queue, instance=True)
+
+
+def stub_frame_inputs(
+    serial: str = "",
+    *,
+    move_num: int = 0,
+    battery: int = 0,
+    team: int = 0,
+    color: tuple[int, int, int] = (0, 0, 0),
+    accel: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    gyro: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    rssi: int = 0,
+    name: str = "",
+    trigger_pressed: bool = False,
+) -> FrameInputs:
+    """Frame inputs for a ``StateBuilder.frame_inputs`` stub, with fresh dicts like the real one (#2353)."""
+    return FrameInputs(
+        serial=serial,
+        move_num=move_num,
+        battery=battery,
+        team=team,
+        color=dict(zip("rgb", color, strict=True)),
+        accel=dict(zip("xyz", accel, strict=True)),
+        gyro=dict(zip("xyz", gyro, strict=True)),
+        rssi=rssi,
+        name=name,
+        trigger_pressed=trigger_pressed,
+    )

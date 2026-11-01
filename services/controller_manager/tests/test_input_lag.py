@@ -24,7 +24,6 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(test_dir))
 
 from lib.controller_constants import ButtonKey
-from proto import controller_manager_pb2
 from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.multiplexer.press_latch import latch_presses, merge_latched_presses
 from services.controller_manager.tests.backend_doubles import (
@@ -36,6 +35,7 @@ from services.controller_manager.tests.backend_doubles import (
     autospec_monitoring,
     autospec_publisher,
     autospec_rescan_timer,
+    stub_frame_inputs,
     stub_method,
 )
 
@@ -171,18 +171,18 @@ class TestGameplayFrameObservesLag:
             from services.controller_manager.servicer import ControllerManagerServicer
 
             servicer = ControllerManagerServicer()
-            state = controller_manager_pb2.ControllerState(
+            state = stub_frame_inputs(
                 serial=SERIAL,
                 move_num=0,
                 battery=80,
                 team=0,
-                color=controller_manager_pb2.RGB(r=255, g=0, b=0),
-                accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
-                gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+                color=(255, 0, 0),
+                accel=(0.0, 0.0, 1.0),
+                gyro=(0.0, 0.0, 0.0),
                 rssi=0,
                 name="P1",
             )
-            stub_method(servicer.state_builder, "build_state", return_value=state)
+            stub_method(servicer.state_builder, "frame_inputs", return_value=state)
             servicer.tracked_controllers[SERIAL] = {}
             yield servicer, mock_loop
 

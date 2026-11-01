@@ -5,7 +5,9 @@ Tests button state transition detection and event publishing.
 """
 
 import asyncio
-from unittest.mock import patch
+from unittest.mock import call, patch
+
+import pytest
 
 from lib.controller_constants import ButtonKey, ButtonTrackingKey, ControllerInfoKey
 from proto import controller_manager_pb2
@@ -229,6 +231,51 @@ class TestButtonTransitionDetection:
             call_args = publisher.publish_to_subscribers.call_args
             event = call_args[0][1]
             assert event.button == expected_type, f"Button {button_key} should map to {expected_type}"
+
+    @pytest.mark.uc("UC-002", flow="main")
+    @patch("services.controller_manager.button_detector.metrics")
+    def test_all_buttons_one_poll_event_order_and_metric_labels(self, mock_metrics):
+        """Nine simultaneous presses/releases keep the event order and the metric label values (#2353)."""
+        publisher = autospec_publisher()
+        detector = ButtonDetector(publisher)
+        detector._subscribers = {"sub1": autospec_queue()}
+        names = ["trigger", "move", "cross", "circle", "square", "triangle", "ps", "select", "start"]
+        types = [
+            controller_manager_pb2.BUTTON_TRIGGER,
+            controller_manager_pb2.BUTTON_MOVE,
+            controller_manager_pb2.BUTTON_CROSS,
+            controller_manager_pb2.BUTTON_CIRCLE,
+            controller_manager_pb2.BUTTON_SQUARE,
+            controller_manager_pb2.BUTTON_TRIANGLE,
+            controller_manager_pb2.BUTTON_PS,
+            controller_manager_pb2.BUTTON_SELECT,
+            controller_manager_pb2.BUTTON_START,
+        ]
+        all_keys = [
+            ButtonKey.TRIGGER,
+            ButtonKey.MOVE,
+            ButtonKey.CROSS,
+            ButtonKey.CIRCLE,
+            ButtonKey.SQUARE,
+            ButtonKey.TRIANGLE,
+            ButtonKey.PS,
+            ButtonKey.SELECT,
+            ButtonKey.START,
+        ]
+        detector.detect_transitions_from_state("SERIAL1", {ButtonKey.MOVE: False}, {})
+        publisher.reset_mock()
+        mock_metrics.reset_mock()
+
+        for pressed, action in ((True, "press"), (False, "release")):
+            detector.detect_transitions_from_state("SERIAL1", dict.fromkeys(all_keys, pressed), {})
+
+            events = [c.args[1] for c in publisher.publish_to_subscribers.call_args_list]
+            assert [e.button for e in events] == types
+            assert all(e.timestamp > 0 for e in events)
+            labels_calls = mock_metrics.button_events_total.labels.call_args_list
+            assert labels_calls == [call(serial="SERIAL1", button=n, action=action) for n in names]
+            publisher.reset_mock()
+            mock_metrics.reset_mock()
 
     @patch("services.controller_manager.button_detector.metrics")
     def test_battery_included_in_event(self, _mock_metrics):

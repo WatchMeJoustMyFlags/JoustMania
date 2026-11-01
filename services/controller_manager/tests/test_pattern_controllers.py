@@ -6,12 +6,12 @@ from unittest.mock import create_autospec, patch
 import grpc
 import pytest
 
-from proto import controller_manager_mock_pb2, controller_manager_pb2
+from proto import controller_manager_mock_pb2
 from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.mock_control_service import MockControllerService
 from services.controller_manager.multiplexer import motion_patterns as mp
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-from services.controller_manager.tests.backend_doubles import AdapterAsBackend, stub_method
+from services.controller_manager.tests.backend_doubles import AdapterAsBackend, stub_frame_inputs, stub_method
 
 ARCHETYPE = "unit_cascade"
 PARAMS = {
@@ -167,16 +167,14 @@ class TestUC046GameplayStream:
 
     @staticmethod
     def _state(serial, _info):
-        state = controller_manager_pb2.ControllerState(serial=serial)
-        state.accel.CopyFrom(controller_manager_pb2.Vector3(x=0.1, y=0.1, z=1.0))
-        return state
+        return stub_frame_inputs(serial=serial, accel=(0.1, 0.1, 1.0))
 
     @pytest.mark.uc("UC-046", flow="main", steps=[5], br=["BR-001"])
     def test_delivered_frames_carry_the_pattern(self, servicer, adapter, archetype):
         """UC-046 step 5: each delivered frame of a pattern controller carries (0, 0, intensity(k / r))."""
         serials = [adapter.add_controller(reserved=True) for _ in range(4)]
         adapter.install_pattern(serials, archetype)
-        stub_method(servicer.state_builder, "build_state", side_effect=self._state)
+        stub_method(servicer.state_builder, "frame_inputs", side_effect=self._state)
         for s in serials:
             servicer.tracked_controllers[s] = {}
         servicer.tracked_controllers["REAL01"] = {}

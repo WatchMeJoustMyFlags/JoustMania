@@ -29,7 +29,7 @@ from services.controller_manager.feedback_manager import (
     FeedbackManager,
     clamp_identify_duration,
 )
-from services.controller_manager.tests.backend_doubles import InertBackendHooks, stub_method
+from services.controller_manager.tests.backend_doubles import InertBackendHooks, stub_frame_inputs, stub_method
 
 WHITE = (255, 255, 255)
 OFF = (0, 0, 0)
@@ -568,8 +568,8 @@ class TestUC004IdentifyControllerRpc:
         """UC-004 BR-003: StreamGameplayData's close path forgets the game's players."""
         stub_method(
             servicer.state_builder,
-            "build_state",
-            side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial),
+            "frame_inputs",
+            side_effect=lambda serial, _info: stub_frame_inputs(serial=serial),
         )
         servicer.discovery_loop.drain_health_counters.return_value = (0, 0, 0)
         config = controller_manager_pb2.GameplayStreamControl(config=_game_config(SERIAL))

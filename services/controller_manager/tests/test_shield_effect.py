@@ -439,19 +439,19 @@ class TestUC040LiveLedColourInStream:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-040", flow="A16", br=["BR-008"])
     async def test_stream_state_follows_the_shield_frames(self, manager, clock):
-        """UC-040 A16: ControllerState.color is the colour the LED shows right now."""
+        """UC-040 A16: the frame colour is the colour the LED shows right now."""
         cache = StateBuilder(_Monitoring())
         cache.set_led_colors(manager.current_colors)
         info = {"battery": 5, "team": 1}
 
         clock.enable_blocking()
         await _shield(manager, duration_ms=5000)
-        first = cache.build_state(SERIAL, info)
-        assert (first.color.r, first.color.g, first.color.b) == WHITE
+        first = cache.frame_inputs(SERIAL, info).color
+        assert (first["r"], first["g"], first["b"]) == WHITE
 
         await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_SHIELD, duration_ms=0)
-        restored = cache.build_state(SERIAL, info)
-        assert (restored.color.r, restored.color.g, restored.color.b) == PLAYER
+        restored = cache.frame_inputs(SERIAL, info).color
+        assert (restored["r"], restored["g"], restored["b"]) == PLAYER
 
 
 class TestUC040HelpCueBeforeTheShield:

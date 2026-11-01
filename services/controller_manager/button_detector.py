@@ -18,6 +18,23 @@ from services.controller_manager.event_publisher import EventPublisher
 
 logger = logging.getLogger(__name__)
 
+# Built once at import, not per 100 Hz call (#2353). Order is the event order within one poll:
+# (tracking key, state-dict key, proto ButtonType).
+_BUTTONS: tuple[tuple[ButtonTrackingKey, ButtonKey, int], ...] = (
+    (ButtonTrackingKey.TRIGGER, ButtonKey.TRIGGER, controller_manager_pb2.BUTTON_TRIGGER),
+    (ButtonTrackingKey.MOVE, ButtonKey.MOVE, controller_manager_pb2.BUTTON_MOVE),
+    (ButtonTrackingKey.CROSS, ButtonKey.CROSS, controller_manager_pb2.BUTTON_CROSS),
+    (ButtonTrackingKey.CIRCLE, ButtonKey.CIRCLE, controller_manager_pb2.BUTTON_CIRCLE),
+    (ButtonTrackingKey.SQUARE, ButtonKey.SQUARE, controller_manager_pb2.BUTTON_SQUARE),
+    (ButtonTrackingKey.TRIANGLE, ButtonKey.TRIANGLE, controller_manager_pb2.BUTTON_TRIANGLE),
+    (ButtonTrackingKey.PS, ButtonKey.PS, controller_manager_pb2.BUTTON_PS),
+    (ButtonTrackingKey.SELECT, ButtonKey.SELECT, controller_manager_pb2.BUTTON_SELECT),
+    (ButtonTrackingKey.START, ButtonKey.START, controller_manager_pb2.BUTTON_START),
+)
+
+# Template for a newly tracked controller: every button released. Copied, never shared.
+_ALL_RELEASED: dict[str, bool] = dict.fromkeys((tracking_key for tracking_key, _, _ in _BUTTONS), False)
+
 
 class ButtonDetector:
     """
@@ -66,100 +83,43 @@ class ButtonDetector:
 
         Args:
             serial: Controller serial number
-            state: State dict from backend polling
+            state: State dict from backend polling (read only, never mutated)
             tracked_controllers: Dict of tracked controller info
         """
         if not state:
             return
 
-        trigger = state.get(ButtonKey.TRIGGER, False)
-        move = state.get(ButtonKey.MOVE, False)
-        cross = state.get(ButtonKey.CROSS, False)
-        circle = state.get(ButtonKey.CIRCLE, False)
-        square = state.get(ButtonKey.SQUARE, False)
-        triangle = state.get(ButtonKey.TRIANGLE, False)
-        ps = state.get(ButtonKey.PS, False)
-        select = state.get(ButtonKey.SELECT, False)
-        start = state.get(ButtonKey.START, False)
-
         info = tracked_controllers.get(serial, {})
-        self._detect_button_transitions(serial, info, trigger, move, cross, circle, square, triangle, ps, select, start)
+        self._detect_button_transitions(serial, info, state)
 
-    def _detect_button_transitions(
-        self,
-        serial: str,
-        info: dict,
-        trigger: bool,
-        move: bool,
-        cross: bool,
-        circle: bool,
-        square: bool,
-        triangle: bool,
-        ps: bool,
-        select: bool = False,
-        start: bool = False,
-    ) -> None:
+    def _detect_button_transitions(self, serial: str, info: dict, state: dict) -> None:
         """
         Detect button press/release transitions and publish button events (Phase 41).
 
         Args:
             serial: Controller serial number
-            info: Controller info dict (for battery, color)
-            trigger, move, cross, circle, square, triangle, ps, select, start: Current button states
+            info: Controller info dict (for battery, name, reserved)
+            state: Polled state dict; a missing button key reads as released
         """
-        # Initialize button state tracking for this controller if needed
-        if serial not in self._button_states:
-            self._button_states[serial] = {
-                ButtonTrackingKey.TRIGGER: False,
-                ButtonTrackingKey.MOVE: False,
-                ButtonTrackingKey.CROSS: False,
-                ButtonTrackingKey.CIRCLE: False,
-                ButtonTrackingKey.SQUARE: False,
-                ButtonTrackingKey.TRIANGLE: False,
-                ButtonTrackingKey.PS: False,
-                ButtonTrackingKey.SELECT: False,
-                ButtonTrackingKey.START: False,
-            }
-            logger.info(f"Initialized button tracking for {serial} (current: move={move}, trigger={trigger})")
-
-        prev_states = self._button_states[serial]
-
-        current_states = {
-            ButtonTrackingKey.TRIGGER: trigger,
-            ButtonTrackingKey.MOVE: move,
-            ButtonTrackingKey.CROSS: cross,
-            ButtonTrackingKey.CIRCLE: circle,
-            ButtonTrackingKey.SQUARE: square,
-            ButtonTrackingKey.TRIANGLE: triangle,
-            ButtonTrackingKey.PS: ps,
-            ButtonTrackingKey.SELECT: select,
-            ButtonTrackingKey.START: start,
-        }
-
-        # Map button names to ButtonType enum
-        button_type_map = {
-            ButtonTrackingKey.TRIGGER: controller_manager_pb2.BUTTON_TRIGGER,
-            ButtonTrackingKey.MOVE: controller_manager_pb2.BUTTON_MOVE,
-            ButtonTrackingKey.CROSS: controller_manager_pb2.BUTTON_CROSS,
-            ButtonTrackingKey.CIRCLE: controller_manager_pb2.BUTTON_CIRCLE,
-            ButtonTrackingKey.SQUARE: controller_manager_pb2.BUTTON_SQUARE,
-            ButtonTrackingKey.TRIANGLE: controller_manager_pb2.BUTTON_TRIANGLE,
-            ButtonTrackingKey.PS: controller_manager_pb2.BUTTON_PS,
-            ButtonTrackingKey.SELECT: controller_manager_pb2.BUTTON_SELECT,
-            ButtonTrackingKey.START: controller_manager_pb2.BUTTON_START,
-        }
+        prev_states = self._button_states.get(serial)
+        if prev_states is None:
+            # Initialize button state tracking for this controller
+            prev_states = self._button_states[serial] = dict(_ALL_RELEASED)
+            logger.info(
+                f"Initialized button tracking for {serial} "
+                f"(current: move={state.get(ButtonKey.MOVE, False)}, trigger={state.get(ButtonKey.TRIGGER, False)})"
+            )
 
         # Detect transitions and create events
         events = []
-        for button_name, current_pressed in current_states.items():
-            prev_pressed = prev_states[button_name]
+        for button_name, state_key, button_type in _BUTTONS:
+            current_pressed = state.get(state_key, False)
 
-            if current_pressed != prev_pressed:
+            if current_pressed != prev_states[button_name]:
                 # State changed - create event
                 action = (
                     controller_manager_pb2.ACTION_PRESS if current_pressed else controller_manager_pb2.ACTION_RELEASE
                 )
-                button_type = button_type_map[button_name]
 
                 event = controller_manager_pb2.ButtonEvent(
                     serial=serial,
@@ -181,8 +141,11 @@ class ButtonDetector:
 
         # Log all button states when any transition occurred
         if events:
+            get = state.get
             logger.info(
-                f"Button event {serial}: T={trigger} M={move} X={cross} O={circle} []={square} /\\={triangle} PS={ps}"
+                f"Button event {serial}: T={get(ButtonKey.TRIGGER, False)} M={get(ButtonKey.MOVE, False)} "
+                f"X={get(ButtonKey.CROSS, False)} O={get(ButtonKey.CIRCLE, False)} []={get(ButtonKey.SQUARE, False)} "
+                f"/\\={get(ButtonKey.TRIANGLE, False)} PS={get(ButtonKey.PS, False)}"
             )
 
         # UC-002 BR-002: a reserved mock controller's buttons never reach the menu.

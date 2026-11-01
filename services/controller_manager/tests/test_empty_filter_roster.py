@@ -16,22 +16,27 @@ test_dir = Path(__file__).parent
 project_root = test_dir.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from proto import controller_manager_pb2
-from services.controller_manager.tests.backend_doubles import autospec_backend, autospec_discovery_loop, stub_method
+from services.controller_manager.state_builder import FrameInputs
+from services.controller_manager.tests.backend_doubles import (
+    autospec_backend,
+    autospec_discovery_loop,
+    stub_frame_inputs,
+    stub_method,
+)
 
 MINE = "mock_controller_0"
 THEIRS = "mock_controller_1"
 
 
-def _state(serial: str) -> controller_manager_pb2.ControllerState:
-    return controller_manager_pb2.ControllerState(
+def _state(serial: str) -> FrameInputs:
+    return stub_frame_inputs(
         serial=serial,
         move_num=0,
         battery=80,
         team=0,
-        color=controller_manager_pb2.RGB(r=255, g=0, b=0),
-        accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
-        gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+        color=(255, 0, 0),
+        accel=(0.0, 0.0, 1.0),
+        gyro=(0.0, 0.0, 0.0),
         rssi=0,
         name=serial,
         trigger_pressed=False,
@@ -70,7 +75,7 @@ def rig():
     servicer.discovery_loop = autospec_discovery_loop()
     servicer.discovery_loop.drain_disconnects.return_value = []
     servicer.discovery_loop.drain_health_counters.side_effect = drain_health
-    stub_method(servicer.state_builder, "build_state", side_effect=lambda serial, _info: _state(serial))
+    stub_method(servicer.state_builder, "frame_inputs", side_effect=lambda serial, _info: _state(serial))
     stub_method(servicer, "_connection_quality_msg", return_value=None)
     servicer.tracked_controllers[MINE] = {}
     servicer.tracked_controllers[THEIRS] = {}

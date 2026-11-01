@@ -16,7 +16,7 @@ sys.path.insert(0, str(test_dir))
 from test_identify_controller import SERIAL, _game_config, servicer  # noqa: F401  (pytest fixture)
 
 from proto import controller_manager_pb2
-from services.controller_manager.tests.backend_doubles import stub_method
+from services.controller_manager.tests.backend_doubles import stub_frame_inputs, stub_method
 
 
 class _AbortedError(Exception):
@@ -45,8 +45,8 @@ async def _requests():
 def stream_servicer(servicer):  # noqa: F811
     stub_method(
         servicer.state_builder,
-        "build_state",
-        side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial),
+        "frame_inputs",
+        side_effect=lambda serial, _info: stub_frame_inputs(serial=serial),
     )
     servicer.discovery_loop.drain_health_counters.return_value = (0, 0, 0)
     return servicer
