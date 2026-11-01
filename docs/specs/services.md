@@ -342,15 +342,15 @@ DISCONNECTED controllers show nothing. There is no dedicated "connection flash":
 | `PLAYER_WARNING` | White flash, 200 ms (`WARNING_FLASH_MS`) | 100 intensity, 200 ms (`WARNING_VIBRATION_MS`) | base colour |
 | `PLAYER_DEATH` | Red held 300 ms (`DEATH_RED_HOLD_MS`), then fade to black over 700 ms (`DEATH_FADE_MS`); also ends the agent shield | 255 intensity, 1000 ms (`DEATH_RUMBLE_MS`; the warning rumbles 100 for 200 ms) | base colour becomes Black |
 | `PLAYER_RESPAWN` | White (spawn protection) | none | base colour becomes White |
-| `WINNER_RAINBOW` | Rainbow for the `game` flag winner duration (default 3000 ms); ends the agent shield | none | base colour |
+| `WINNER_RAINBOW` | Rainbow for the `game` flag winner duration (default 3000 ms); ends the agent shield; a `PULSE` or `FLASH` for the controller while it runs is skipped (UC-020 BR-004, #2533) | none | base colour |
 | `ADMIN_ENTER` | White flash 600 ms, then solid White | none | base colour White |
 | `ADMIN_EXIT` | none (instant) | none | base colour |
 | `LOW_BATTERY` | Red / Red20 twice, 150 ms each | none | base colour |
 | `FORCE_START_CHARGE` | White fading out over 2 s | none | none |
 | `SHOW_BATTERY` | Battery tier colour for 1 s | none | base colour |
 | `IDENTIFY` | White 2 Hz flash, 3 s default (500 ms to 10 s) | 150 intensity, 500 ms | base colour (UC-004) |
-| `PULSE` | Caller colour (default White), default 600 ms at speed 3. The agent shield's helped cue (UC-040 A42, BR-031, #2395) is a Magenta (255,0,192) pulse, 500 ms at speed 4, sent just before the shield layer; as an overlay it draws over every shield layer | none | base colour, or the shield layer when one is active |
-| `FLASH` | Caller colour (default White), default 400 ms at speed 5 | none | base colour |
+| `PULSE` | Caller colour (default White), default 600 ms at speed 3. The agent shield's helped cue (UC-040 A42, BR-031, #2395) is a Magenta (255,0,192) pulse, 500 ms at speed 4, sent just before the shield layer; as an overlay it draws over every shield layer; skipped while an identify, a battery display or a `WINNER_RAINBOW` runs on the controller (UC-004 BR-005, UC-020 BR-004) | none | base colour, or the shield layer when one is active |
+| `FLASH` | Caller colour (default White), default 400 ms at speed 5; skipped while a `WINNER_RAINBOW` runs on the controller (UC-020 BR-004) | none | base colour |
 | `RUMBLE` | none | intensity `min(255, speed * 50)` (speed default 5), default 2000 ms (secret signalling) | none |
 | `SHIELD_CHARGE` (agent, #1837) | The player's current base colour breathing 60% to 100% at 0.5 Hz, rendered at 5 to 10 Hz or on visible change only; the lowest shield layer (the full shield and the toughness boost draw over it); `duration_ms` capped at 120 s, re-sent by the coordinator while the charge is held; a closed game stream ends the charge and `SHIELD` layers of its controllers (serials snapshotted before release; delayed about 7 s, longer than the coordinator reconnect backoff, and cancelled when a new game stream claims the serial); after a mid-game coordinator reconnect the coordinator re-sends `SHIELD_CHARGE` and `SHIELD` with the time left (UC-040 BR-021) | one tick, 100 ms at 120, when the layer starts | base colour |
 | `SHIELD_SWELL` (agent, #1837) | none (neither ends nor hides a layer) | ramp 0 to 180 to 0 over 600 ms; replaced by any later rumble, the death rumble is never shortened | none |

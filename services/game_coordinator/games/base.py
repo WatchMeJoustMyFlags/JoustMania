@@ -3361,6 +3361,16 @@ class BaseGameMode(ShieldMixin, ABC):
         """
         return {"game.outcome": "completed"}
 
+    def game_ending(self) -> bool:
+        """True once the game is ending: outcome latched, force-ended, or ENDING / ENDED.
+
+        From then on the winner rainbow owns the winner's LED: no agent cue is sent
+        (UC-040 step 13, UC-020 BR-004, #2533) and no ``grant_shield`` applies (A42 step 3).
+        """
+        return (
+            self._latched_outcome is not None or self.force_ended or self.state in (GameState.ENDING, GameState.ENDED)
+        )
+
     def _latch_game_outcome(self) -> None:
         """Freeze the outcome when the game loop ends (first call wins, #1328).
 
