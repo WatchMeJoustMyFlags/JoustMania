@@ -922,7 +922,7 @@ as a prior and not a claim; the value is in the table):
 
 | Rule | Prediction |
 |---|---|
-| R1 slow music | none: the tempo effect on eliminations is confounded with the threshold change (the death threshold slides from SLOW_MAX to FAST_MAX with the tempo, so slowing makes the same motion more deadly); see #2487 |
+| R1 speed up the music (value 1.3, the fast end; #2487, UC-040 A51, BR-040) | none: the tempo effect on eliminations is confounded with the threshold change (the death threshold slides from SLOW_MAX to FAST_MAX with the tempo, so the faster tempo tolerates more movement, but faster music also changes how players move), the same reason the `adjust_music_tempo` lever default has none in either direction |
 | R2 calming cue | `no_elimination` 15, P 0.55 |
 | R3 handicap outlier | `closeness_rises` 15, P 0.55 |
 | R4 catch-up shield | `survives` 15, P 0.7 |

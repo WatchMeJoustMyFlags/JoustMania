@@ -124,9 +124,21 @@ func elimFraction(c gamecontext.GameContext, active int) float64 {
 	return float64(elims) / float64(inGame)
 }
 
-// enduranceCandidates implements R1 (slow the music while the session is young
-// and players are dying fast) and R2 (a calming audio cue, same window, lower
-// urgency).
+// enduranceTempo is R1's adjust_music_tempo value: the fast end of the lever's
+// bounds (1.3, the `fast` variant of music_tempo_override). The coordinator's
+// death threshold slides from SLOW_MAX to FAST_MAX with the tempo, so the fast
+// end tolerates the most movement and slows the eliminations, which is what
+// endurance wants (#2487, UC-040 A51, BR-040). It mirrors the `slow` variant
+// (1.0) that R1 was documented to write: the same 0.15 step from the 1.15
+// default, in the other direction.
+var enduranceTempo = func() string {
+	b, _ := decide.MagnitudeBounds(InterventionAdjustMusicTempo)
+	return strconv.FormatFloat(b.Max, 'g', -1, 64)
+}()
+
+// enduranceCandidates implements R1 (speed the music up, raising the death
+// threshold, while the session is young and players are dying fast) and R2 (a
+// calming audio cue, same window, lower urgency).
 func enduranceCandidates(c gamecontext.GameContext, fit FitnessThresholds) []candidate {
 	dur := sessionDuration(c)
 	if dur < 0 || dur >= fit.EnduranceMinSessionSeconds {
@@ -151,7 +163,8 @@ func enduranceCandidates(c gamecontext.GameContext, fit FitnessThresholds) []can
 		{
 			decision: Decision{
 				Intervention:    InterventionAdjustMusicTempo,
-				Reason:          fmt.Sprintf("session at %.0fs of %.0fs endurance target with %d eliminations: slow the tempo", dur, fit.EnduranceMinSessionSeconds, len(c.Session.EliminationSequence)),
+				Value:           enduranceTempo,
+				Reason:          fmt.Sprintf("session at %.0fs of %.0fs endurance target with %d eliminations: speed up the tempo to raise the death threshold", dur, fit.EnduranceMinSessionSeconds, len(c.Session.EliminationSequence)),
 				ObjectiveServed: ObjectiveEndurance,
 				Fitness:         fitness,
 			},
