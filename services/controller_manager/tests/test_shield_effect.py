@@ -296,6 +296,7 @@ class TestUC040ShieldEffect:
         await _spin(5)
 
         await manager.handle_game_effect(serial=SERIAL, effect=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)
+        await _spin(2)  # the red hold runs as the death effect task (#2540)
         death_start = backend.history.index((255, 0, 0))
         fade = manager.active_effects.get(SERIAL)
         if fade is not None:
