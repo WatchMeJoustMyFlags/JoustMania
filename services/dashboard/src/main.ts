@@ -25,6 +25,7 @@ import {
   fetchRollouts,
   needsFlagStateFallback,
   createDecideRun,
+  fetchGoals,
   DECIDE_SEARCH_TIMEOUT_MS,
   FlagFallbackPacer,
   flagFallbackKey,
@@ -181,6 +182,7 @@ async function init() {
 
   // Start polling the agent.decide spans (Jaeger)
   startDecidePolling();
+  startGoalPolling();
 
   // Start following the live game (real, else the newest live shadow game)
   startFollowPolling();
@@ -189,6 +191,7 @@ async function init() {
 }
 
 let decidePoller: Poller | null = null;
+let goalPoller: Poller | null = null;
 let agentPoller: Poller | null = null;
 let experimentsPoller: Poller | null = null;
 let adapterPoller: Poller | null = null;
@@ -200,7 +203,7 @@ const pageGate = new PageGate(
   document,
   globalThis,
   (document.querySelector(".tab-btn.active") as HTMLElement | null)?.dataset.tab ?? "",
-  () => [decidePoller, agentPoller, experimentsPoller, adapterPoller, stagePoller, followPoller],
+  () => [decidePoller, goalPoller, agentPoller, experimentsPoller, adapterPoller, stagePoller, followPoller],
 );
 
 // Background load (UC-035 BR-012, #2290): the gameplay stream pauses on a hidden
@@ -460,6 +463,26 @@ function startDecidePolling() {
 
   setInterval(() => agentView.updateDecideFreshness(), 1000);
   decidePoller.poke();
+}
+
+// The goal strip (#2498): the followed game's goal profile and attainment come from the
+// agent.game.summary span, which is not in the decide traces; a slow poller of its own.
+const GOAL_POLL_MS = 10_000;
+
+function startGoalPolling() {
+  goalPoller = createPoller({
+    baseMs: GOAL_POLL_MS,
+    maxMs: 60_000,
+    timeoutMs: DECIDE_TIMEOUT_MS,
+    isActive: () => tabActive("agent"),
+    run: async (signal) => {
+      decideStore.mergeGoals(await fetchGoals(signal));
+      agentView.renderDecide(decideStore.feed());
+      return GOAL_POLL_MS;
+    },
+    onError: (error) => console.warn("Goal summary poll failed (strip kept):", error),
+  });
+  goalPoller.poke();
 }
 
 // The controller tiles: everything but the players of live shadow games, plus
