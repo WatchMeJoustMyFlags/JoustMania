@@ -336,7 +336,8 @@ class TestUC002D3DeadPlayerStaysOff:
         feedback = FeedbackManager(backend=backend, tracked_controllers={SERIAL: {}})
         feedback.base_colors[SERIAL] = (0, 255, 0)
 
-        task = asyncio.create_task(feedback._effect_player_death(SERIAL))
+        await feedback._effect_player_death(SERIAL)
+        task = feedback.active_effects[SERIAL].task  # the red hold runs as the effect task (#2540)
         for _ in range(5):
             await asyncio.sleep(0)
         try:
