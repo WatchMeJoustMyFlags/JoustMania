@@ -28,6 +28,7 @@ import (
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamesummary"
+	"github.com/joustmania/agent/goal"
 )
 
 // HorizonGrace is added to the horizon before the horizon check: one export
@@ -139,6 +140,8 @@ type gameBook struct {
 	// game id), so a template's base rate is not always sampled at the same
 	// game times.
 	controlOffset int
+	// goal is the game's running goal measurements (decide-contract.md §14.4).
+	goal goal.Accumulator
 }
 
 // Book is the process-wide prediction book. The zero value is not usable; use New.
@@ -155,6 +158,15 @@ type Book struct {
 	root      context.Context
 	wg        sync.WaitGroup
 	tel       telemetry
+
+	// goalResolver resolves a game's goal profile at game end (goal.profile in the
+	// game's flag context); nil = no goal attainment.
+	goalResolver func(ctx context.Context, c gamecontext.GameContext) goal.Profile
+	// goals holds the goal attainment of the last finalizedGames ended games
+	// (goalOrder oldest first), kept apart from finalized so a game end of a game
+	// with no prediction never changes the prediction bookkeeping.
+	goals     map[string]*gamesummary.Goal
+	goalOrder []string
 }
 
 // New builds a Book. root bounds every timer goroutine (nil = never cancelled);
@@ -168,6 +180,7 @@ func New(root context.Context, current func(gameID string) (gamecontext.GameCont
 	return &Book{
 		games:     map[string]*gameBook{},
 		finalized: map[string][]Result{},
+		goals:     map[string]*gamesummary.Goal{},
 		now:       time.Now,
 		afterFunc: realAfterFunc,
 		current:   current,
@@ -448,6 +461,7 @@ func (b *Book) dueControlLocked(c gamecontext.GameContext) (decide.Prediction, b
 // stale_end) and moves the game's results to the finalized lookup. A game the
 // Book never saw is a no-op; a second end of the same game too.
 func (b *Book) OnGameEnd(c gamecontext.GameContext) {
+	b.finishGoal(c)
 	now := b.now()
 	b.mu.Lock()
 	gb, known := b.games[c.SessionID]
@@ -519,4 +533,93 @@ func (b *Book) SummaryOutcomes(gameID string) []gamesummary.PredictionOutcome {
 		})
 	}
 	return out
+}
+
+// SetGoalResolver wires the goal-profile resolver (#2479, decide-contract.md
+// §14.4): main.go reads goal.profile in the game's flag context. nil (the default)
+// scores no goal. Set before use.
+func (b *Book) SetGoalResolver(f func(ctx context.Context, c gamecontext.GameContext) goal.Profile) {
+	b.goalResolver = f
+}
+
+// SampleGoal takes the game's due goal sample (goal.Accumulator.Sample). The
+// decision loop calls it every cycle of a running game, whatever
+// decision.predictions_enabled says: goal attainment is reported for every game.
+func (b *Book) SampleGoal(c gamecontext.GameContext) {
+	if c.SessionID == "" || c.Session.GameActive == nil || !*c.Session.GameActive {
+		return
+	}
+	now := b.now()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ended := b.finalized[c.SessionID]; ended {
+		return
+	}
+	if _, ended := b.goals[c.SessionID]; ended {
+		return
+	}
+	b.gameLocked(c.SessionID).goal.Sample(c, now)
+}
+
+// GoalAccumulator returns a copy of the game's running goal measurements (the
+// prompt's now line); the zero Accumulator for a game the Book has not sampled.
+func (b *Book) GoalAccumulator(gameID string) goal.Accumulator {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if gb := b.games[gameID]; gb != nil {
+		return gb.goal.Clone()
+	}
+	return goal.Accumulator{}
+}
+
+// finishGoal scores the ended game against its goal profile once (UC-042 A12): a
+// stale end, a profile without terms (the mixed objectives), no resolver or a
+// game already scored records nothing. Otherwise the result is kept for
+// SummaryGoal and agent_goal_attainment records the attainment.
+func (b *Book) finishGoal(c gamecontext.GameContext) {
+	if b.goalResolver == nil || c.SessionID == "" || c.EndReason == gamecontext.EndReasonStale {
+		return
+	}
+	b.mu.Lock()
+	_, done := b.goals[c.SessionID]
+	b.mu.Unlock()
+	if done {
+		return
+	}
+	profile := b.goalResolver(b.root, c) // a flag read: outside the lock
+	if profile.Empty() {
+		return
+	}
+	b.mu.Lock()
+	if _, done := b.goals[c.SessionID]; done {
+		b.mu.Unlock()
+		return
+	}
+	var acc goal.Accumulator
+	if gb := b.games[c.SessionID]; gb != nil {
+		acc = gb.goal.Clone()
+	}
+	res := goal.Score(profile, func(char, phase string) (float64, bool) { return acc.Measure(c, char, phase) })
+	b.goals[c.SessionID] = res.Summary()
+	b.goalOrder = append(b.goalOrder, c.SessionID)
+	if len(b.goalOrder) > finalizedGames {
+		delete(b.goals, b.goalOrder[0])
+		b.goalOrder = b.goalOrder[1:]
+	}
+	b.mu.Unlock()
+	b.tel.goalAttainment(res, c.GameKind)
+}
+
+// SummaryGoal is the goal attainment of an ended game (the last finalizedGames
+// games) in the game summary's shape, nil when it had none.
+func (b *Book) SummaryGoal(gameID string) *gamesummary.Goal {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	g := b.goals[gameID]
+	if g == nil {
+		return nil
+	}
+	cp := *g
+	cp.Terms = append([]gamesummary.GoalTerm(nil), g.Terms...)
+	return &cp
 }

@@ -37,7 +37,7 @@ Defined in `decide/decide.go`.
 | `Response` | `Answers`, `Backend`, `Rationale` | Rationale is untrusted text, truncated (`services/agent/decide/decide.go:Response`). |
 | `Backend` | `Name() string`, `Decide(ctx, Request) (Response, error)` | Must honour `ctx` cancellation; the caller validates (`services/agent/decide/decide.go:Backend`). Optional `Available() bool`; false means `backend_unavailable` (`services/agent/decision/decide_registry.go:availability`, `DecideRegistry.Resolve`). |
 
-**#2479 (implemented: `Prediction` in PR #2485, `PredictionAsk` and `PredictionDropped` with the model ask).** Three additions, all outside `Question`/`Answer`, so `Validate` and
+**#2479 (implemented: `Prediction` in PR #2485, `PredictionAsk` and `PredictionDropped` with the model ask, `Goal` with the goal profiles).** Four additions, all outside `Question`/`Answer`, so `Validate` and
 the permission chain never see them:
 
 | Type | Fields | Rules |
@@ -45,6 +45,7 @@ the permission chain never see them:
 | `Prediction` | `Characteristic`, `Scope` (`game`/`field`/`target`), `Target` (serial, `target` scope only), `Template`, `HorizonS`, `P`, `Source` (`rules`/`lever_default`/`model`/`control`), `Rule` | What the decider expects to be true after its answer is applied; closed vocabulary (§14.2). Carried on `Response.Prediction` and on the decide record, **never** on `Decision` or `DecisionOutcome` (the rules-path golden stays byte-identical). `P` is the probability the prediction comes true. |
 | `PredictionAsk` | `*Question` (`ffa.prediction`, kind choice), `json:"prediction_ask,omitempty"` | `Request.PredictionAsk`, **outside `Request.Questions`**. Set only when `decision.predictions.ask_model` and `decision.predictions_enabled` are on and the backend is claude or openai (§3). nil under v1. |
 | `PredictionDropped` | reason string on `Response` | `missing`, `bad_option`, `bad_confidence`, `no_target`, `inconsistent`. A model prediction that fails its own check (§4.1) is dropped; the decision is unaffected. |
+| `Goal` (goal profiles) | `*GoalLines{Profile, Goal, Now}`, `json:"goal,omitempty"` | `Request.Goal`, outside `State` (not in the digest) and outside `Questions`. Set only on a claude or openai request under `decision.goal_in_prompt` or `decision.prompt_profile=neutral`, for a goal profile with terms (§14.4; `services/agent/decision/goal_hook.go:goalLines`). nil under v1 with `decision.goal_in_prompt` off. |
 
 ### 1.1 Question kinds
 
@@ -162,10 +163,11 @@ tooling only) still answers the Default.
     `ffa.intervention` and in the details-stage instructions (a two-way lever's strength question says "make the target harder /
     easier to eliminate" instead of "help a struggling player" / "rein in the player with the most headroom"), a neutral noop line, and target suitability sentences that state the
     player's situation (danger, refusals) without a verdict (`services/agent/decide/backends/jev/criteria.go`). The goal
-    sentence of the system prompt and jev's game description and gate criteria are unchanged in both profiles (goal lines
-    come with #2479, §14.4).
-  - The system prompt's fingerprint (`llm.prompt.system_sha256` on claude's chat span) is therefore one value per profile: v1's
-    is unchanged, neutral's differs. `agent.decide` carries `decide.prompt_profile` on the remote path (§12).
+    sentence of the system prompt and jev's game description and gate criteria are unchanged in both profiles, except that a
+    neutral request carrying the goal lines (§14.4) swaps the prose goal sentence for the goal-targets sentence.
+  - The system prompt's fingerprint (`llm.prompt.system_sha256` on claude's chat span) is therefore one value for v1 (with or
+    without `decision.goal_in_prompt`: the goal lines never change the v1 system prompt) and two for neutral (without and with
+    goal lines). `agent.decide` carries `decide.prompt_profile` on the remote path (§12).
 - `AnswerSchema()` is static (cacheable), `additionalProperties:false` everywhere,
   all properties required: `{answers:[{id, choice, score, probabilities:[{option,p}], confidence}], rationale}` (`services/agent/decide/llmio/llmio.go:AnswerSchema`).
 
@@ -793,8 +795,8 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   (`rules`, `lever_default`, `model`) and `decide.prediction.rule` (rules `R1`..`R9`, `R4d`, or the lever name);
   `decide.prediction.dropped_reason` when the accepted claude or openai answer's model prediction was dropped (§4.1; set
   even when the answer is then held or discarded, counted by `agent_prediction_dropped_total{backend,reason}`;
-  `services/agent/decision/prediction_hook.go:droppedPredictionAttributes`); `decide.prediction.merged=true` when an identical prediction was already pending (§6.1); `decide.goal.profile` when a goal line
-  was rendered into the prompt (§14.4). The scored result is a separate span, `agent.prediction.outcome`
+  `services/agent/decision/prediction_hook.go:droppedPredictionAttributes`); `decide.prediction.merged=true` when an identical prediction was already pending (§6.1); `decide.goal.profile` (implemented)
+  when the goal lines were rendered into the request: the profile name (§14.4; `services/agent/decision/decide_hook.go:setDecideAttributes`). The scored result is a separate span, `agent.prediction.outcome`
   ([telemetry.md §4.1](telemetry.md#41-spans-and-topology)), linked to this span.
 - **`decide.answers`** is the JSON array of `decide.Answer` values (capped at the span-JSON size limit, with a
   truncation marker), one object per question:
@@ -831,14 +833,15 @@ The contract tests live in `decide/*_test.go`, the backend tests `decide/backend
 `contract_test.go`; jev also has `stages_test.go` and `wire_test.go`), and `decision/decide_hook_test.go`
 (per-backend threshold: `decision/decide_hook_threshold_test.go`; empty allow-list: `decision/decide_no_allowed_test.go`).
 
-**Traceability:** FR-044, FR-045, FR-046, FR-047, FR-048, FR-049, FR-050, FR-051, FR-052, FR-053, FR-054, FR-200, FR-201 (planned, #2479) / UC-040, UC-044, UC-045 /
+**Traceability:** FR-044, FR-045, FR-046, FR-047, FR-048, FR-049, FR-050, FR-051, FR-052, FR-053, FR-054, FR-200, FR-201 (in progress, #2479) / UC-040, UC-044, UC-045 /
 `services/agent/decide/` (`state.go`, `danger.go`, `hold.go`, `backends/jev/criteria.go`, `llmio/llmio.go`), `services/agent/decision/decide_hook.go`, `chargeledger.go`, `rules.go`, `decide_registry.go`, `decide_rules.go`, `decision.go`, `services/agent/decide_backends.go`, `services/agent/actions/`, `services/game_coordinator/interventions.py` /
 `services/agent/decide/*_test.go`, `services/agent/decision/decide_hook_test.go`, `tests/service/test_tc008_remote_backend_routing.py`, `tests/service/test_tc009_kill_switch.py`, `tests/service/test_tc006_agent_blocked_by_host.py`, `tests/integration/test_tc013_shadow_alongside_real.py`.
 
 ## 14. Characteristics, predictions, goals (planned, #2479)
 
 > Status `Open`. Delivered in slices (characteristics and rules predictions and the Book, #2485; the game summary, the
-> retro block and the dashboard Agent tab, #2479 PR C; model ask; goal profiles). The maintainer decisions of 2026-10-31: `activity` is the movement intensity relative to the
+> retro block and the dashboard Agent tab, #2479 PR C; model ask; goal profiles, #2479 PR E: §14.4 is implemented except
+> jev's goal criterion and the dashboard goal strip). The maintainer decisions of 2026-10-31: `activity` is the movement intensity relative to the
 > death threshold (always present, not the optional variance); noop predictions are not scored in v1; arm calibration is
 > report-only. Requirements: FR-200, FR-201. Rules: UC-040 A44, A45, BR-034.
 
@@ -978,15 +981,50 @@ invalid falls back to `from_objectives` (a WARN once and a metric). It is read p
 
 The decisive-end idea ("the game ends soon after two players remain") is not a characteristic; it stays a prediction template (`game_ends`) and is not a goal term. A new characteristic needs its own row in §14.1 first.
 
-**Attainment.** At game end each term is scored by the same `Measure` (in band is 1, otherwise distance-decayed to 0) and the
-weighted mean is the game's goal attainment, recorded in the game summary and its span (UC-042 A12, BR-009).
+**Profile names and the `from_objectives` forms** (`services/agent/goal/profile.go:FromObjectives`). A terms variant is
+named by its `goal.profile` variant (the metric label and the summary's `profile`). The `from_objectives` profile is derived
+from the objectives *weights* (the same read and fallback as the rules engine; the code fallback is `endurance` only): the
+objective with the strictly largest weight picks it, so the shipped `*_focused` variants map as above and `mixed` (a tie)
+is no goal. Its forms carry the named profile's name but read the fitness flags for the duration edge: `long_running_game`
+is `duration` >= `fitness.endurance.min_session_seconds` (default 120, not the variant's 180), `quick_game` is `duration` <=
+`fitness.accelerate.target_session_seconds` (default 60, not 120); `balanced_contest` keeps `duration` >= 120 (no fitness flag
+backs it); `chaos_focused` is named after its objectives variant. A profile without terms is no goal: no summary goal, no
+metric, no prompt line. A value outside the hard bound is clamped into it. The named variants carry their bands as data in
+`agent.json`. An invalid value, an unreadable flag or the sentinel give the `from_objectives` profile; an invalid value also
+logs one WARN per process and counts `agent_goal_profile_invalid_total{reason}` (`shape`, `unknown_key`,
+`unknown_characteristic`, `bad_band`, `bad_phase`, `bad_weight`, `term_count`; `services/agent/flags/goal.go:GoalProfile`).
 
-**Goals reach the model as structured targets, never as prose.** Only when `decision.goal_in_prompt` is on or
-`decision.prompt_profile` (implemented in #2467 PR 5 with the neutral lever lines only, no goal lines yet) is `neutral`, `Render` adds two lines to the user message, for example
+**Measurement** (`services/agent/goal/measure.go:Accumulator`). The movement history holds only about 32 s, so whole-game
+values are sampled during the game: the decision loop hands every cycle's context to the prediction book (after the
+`enabled` gate, whatever `decision.predictions_enabled` says), which takes one sample per 5 s of game time: field `activity`
+and `closeness` over the last 10 s, `change` over the last 15 s, each with the §14.1 functions; a measure without enough data
+is skipped. A term's value is then: `activity`, `closeness`, `change` the mean of the samples (phase `endgame`: of the
+samples taken with 1 or 2 players alive); `duration` the final game seconds (`endgame`: seconds since the endgame was first
+sampled); `elimination_pace` the eliminations per minute over the whole game (`endgame`: since the endgame began);
+`survival` has no game-level value. A term without a value is not measured.
+
+**Attainment.** At game end (the start of the book's game-end hook, before the experiment, retro and summary consumers) the
+game's profile is read in the game's flag context (from the end snapshot's `game_kind`, `experiment_id`, `arm`) and each
+measured term is scored: inside the band (edges included) is 1, otherwise `max(0, 1 - d / max(|edge|, floor))` with `d` the
+distance to the violated edge and the floor `duration` 30 s, `elimination_pace` 1 per minute, `survival` 1, the rest 0.1. The
+weighted mean over the measured terms is the game's goal attainment (none when no term was measured), recorded in the game
+summary (`goal`) and its span (`summary.goal.profile`, `summary.goal.attainment`), and as `agent_goal_attainment{profile,game_kind}`
+(UC-042 A12, BR-009). A game is scored once; a stale end is not scored (`services/agent/prediction/book.go:finishGoal`).
+
+**Goals reach the model as structured targets, never as prose.** Only for a claude or openai request, only when
+`decision.goal_in_prompt` (read at fire time) is on or `decision.prompt_profile` is `neutral`, and only for a profile with
+terms, `Render` adds two lines at the end of the `<game_state>` block, for example
 `goal: long_running_game duration>=180s activity=0.30..0.60 elimination_pace<=1/min` and
-`now: duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21`, and the neutral system prompt drops the
-"closer, more dramatic" sentence in favour of "pursue the goal targets in the state". Under v1 both flags are off: no line,
-and system and user bytes are unchanged. jev gets a goal criterion only under the neutral profile, in a later slice.
+`now: duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21`. The goal line lists each term's band (`=a..b`,
+`>=a`, `<=b`; an endgame term reads `activity@endgame>=0.60`). The now line lists the game's running values (the ones the
+attainment would score if the game ended now): `duration`, `activity`, `elimination_pace`, `closeness`, then any other
+characteristic or phase a term uses; an unmeasured value is left out (`no data yet` when none is measured). Under
+`neutral` the system prompt then replaces "to keep the game fun: closer, more dramatic, not too short and not dragging on"
+with "to pursue the goal targets in the state" (and a short note on the two lines); under v1 with `decision.goal_in_prompt`
+on the system prompt is v1's and only the user message gains the lines. Under v1 with the flag off: no line, and system and
+user bytes are unchanged (`services/agent/decide/llmio/llmio.go:Render`, goldens `profile_golden_test.go`,
+`prediction_v1_golden_test.go`). jev gets a goal criterion only under the neutral profile, in a later slice; until then a jev
+request carries no goal lines.
 
 ### 14.5 Safety and defaults
 

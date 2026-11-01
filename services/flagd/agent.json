@@ -889,6 +889,38 @@
       },
       "defaultVariant": "v1"
     },
+    "decision.goal_in_prompt": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
+    "goal.profile": {
+      "state": "ENABLED",
+      "variants": {
+        "from_objectives": {"from_objectives": true},
+        "long_running_game": {"terms": [
+          {"characteristic": "duration", "min": 180, "phase": "whole", "weight": 1},
+          {"characteristic": "activity", "min": 0.3, "max": 0.6, "phase": "whole", "weight": 1},
+          {"characteristic": "elimination_pace", "max": 1, "phase": "whole", "weight": 1}
+        ]},
+        "lively_finale": {"terms": [
+          {"characteristic": "activity", "min": 0.6, "phase": "endgame", "weight": 1},
+          {"characteristic": "duration", "min": 90, "max": 240, "phase": "whole", "weight": 1}
+        ]},
+        "balanced_contest": {"terms": [
+          {"characteristic": "closeness", "max": 0.25, "phase": "whole", "weight": 1},
+          {"characteristic": "duration", "min": 120, "phase": "whole", "weight": 1}
+        ]},
+        "quick_game": {"terms": [
+          {"characteristic": "duration", "max": 120, "phase": "whole", "weight": 1},
+          {"characteristic": "elimination_pace", "min": 2, "phase": "whole", "weight": 1}
+        ]}
+      },
+      "defaultVariant": "from_objectives"
+    },
     "decision.predictions_enabled": {
       "state": "ENABLED",
       "variants": {

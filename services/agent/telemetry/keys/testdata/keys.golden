@@ -108,3 +108,4 @@ AttrDecidePredictionSource=decide.prediction.source
 AttrDecidePredictionRule=decide.prediction.rule
 AttrDecidePredictionMerged=decide.prediction.merged
 AttrDecidePredictionDroppedReason=decide.prediction.dropped_reason
+AttrDecideGoalProfile=decide.goal.profile

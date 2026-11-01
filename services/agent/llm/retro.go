@@ -33,6 +33,7 @@ import (
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 	"github.com/joustmania/agent/gamesummary"
+	"github.com/joustmania/agent/goal"
 )
 
 // RetroPrompt is the System/User prompt pair the agent would send to the offline
@@ -318,6 +319,7 @@ func buildRetroUser(ctx gamecontext.GameContext, summary gamesummary.Summary, no
 		writePlayerArc(&b, arc, ctx.Session.EliminationSequence)
 	}
 	writePredictions(&b, summary)
+	writeGoal(&b, summary.Goal)
 	return b.String()
 }
 
@@ -364,6 +366,37 @@ func writePredictions(b *strings.Builder, summary gamesummary.Summary) {
 			b.WriteString("\n")
 		}
 		fmt.Fprintf(b, "  %s: %.2f (%d scored, %d unscorable)", r.template, float64(r.hits)/float64(r.hits+r.misses), r.hits+r.misses, r.unscorable)
+	}
+}
+
+// writeGoal renders the "Goal" block (UC-042 A12, #2479, decide-contract.md
+// §14.4): the profile, each term's band, measured value and score, and the
+// attainment. Nothing for a game without a goal, so every other retro prompt is
+// unchanged.
+func writeGoal(b *strings.Builder, g *gamesummary.Goal) {
+	if g == nil {
+		return
+	}
+	source := "goal.profile"
+	if g.FromObjectives {
+		source = "derived from the objectives"
+	}
+	attainment := "not measured"
+	if g.Attainment != nil {
+		attainment = strconv.FormatFloat(*g.Attainment, 'f', 2, 64)
+	}
+	fmt.Fprintf(b, "\n\nGoal (profile %s, %s; a term scores 1 inside its band and decays to 0 away from it; attainment = weighted mean of the measured terms): attainment %s\n",
+		g.Profile, source, attainment)
+	for i, t := range g.Terms {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(b, "  %s: ", goal.FormatBand(t.Characteristic, t.Phase, t.Min, t.Max))
+		if t.Value == nil || t.Score == nil {
+			b.WriteString("not measured")
+			continue
+		}
+		fmt.Fprintf(b, "%s -> %.2f", goal.FormatValue(t.Characteristic, *t.Value), *t.Score)
 	}
 }
 

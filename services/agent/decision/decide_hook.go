@@ -19,6 +19,8 @@ import (
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/goal"
+	"github.com/joustmania/agent/telemetry/keys"
 )
 
 // decide_hook.go wires the decide contract (epic #1225) into the decision loop
@@ -170,6 +172,15 @@ type PromptProfileSource func(ctx context.Context, gameID string) string
 // leaves Request.PromptProfile empty, which every backend renders as v1. Set at
 // construction, before the loop serves.
 func (l *Loop) SetPromptProfileSource(src PromptProfileSource) { l.promptProfile = src }
+
+// GoalSource resolves one game's goal profile (#2479, decide-contract.md §14.4).
+// main.go wires flags.Flags.GoalProfile in the game's flag context.
+type GoalSource func(ctx context.Context, c gamecontext.GameContext) goal.Profile
+
+// SetGoalSource injects the goal-profile source of the prompt's goal lines. nil
+// (the default and every older test) renders no goal line. Set at construction,
+// before the loop serves.
+func (l *Loop) SetGoalSource(src GoalSource) { l.goalSource = src }
 
 // SetDecideRegistry injects the SHARED decision-backend registry (#1226). main.go
 // builds one and calls this on every per-game loop. A nil registry (the default)
@@ -643,6 +654,11 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 	if askModelPrediction(fired, rec.used) {
 		rec.req.PredictionAsk = decide.PredictionQuestion(rec.req.State)
 	}
+	// The goal lines (#2479, decide-contract.md §14.4): only under
+	// decision.goal_in_prompt or the neutral profile, and only for claude or openai
+	// (jev's typed wire format has no goal criterion yet); otherwise the request
+	// stays byte-identical.
+	rec.req.Goal = l.goalLines(root, fired, rec.used, rec.req, c)
 	// Fire-time threshold: only a placeholder for spans that end before landing
 	// (none are routed then); the landing re-read below overwrites it with the
 	// LIVE effective threshold, which is what routing uses.
@@ -984,6 +1000,9 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 	}
 	if rec.req.PromptProfile != "" {
 		attrs = append(attrs, attribute.String(AttrDecidePromptProfile, rec.req.PromptProfile))
+	}
+	if rec.req.Goal != nil {
+		attrs = append(attrs, attribute.String(keys.AttrDecideGoalProfile, rec.req.Goal.Profile))
 	}
 	attrs = append(attrs, predictionAttributes(rec)...)
 	attrs = append(attrs, droppedPredictionAttributes(rec)...)
