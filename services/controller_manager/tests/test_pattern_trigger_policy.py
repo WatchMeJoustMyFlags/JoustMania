@@ -11,11 +11,10 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 
-from proto import controller_manager_pb2
 from services.controller_manager.discovery_loop import DiscoveryLoop
 from services.controller_manager.multiplexer import motion_patterns as mp
 from services.controller_manager.multiplexer.mock_adapter import MockAdapter
-from services.controller_manager.tests.backend_doubles import AdapterAsBackend, stub_method
+from services.controller_manager.tests.backend_doubles import AdapterAsBackend, stub_frame_inputs, stub_method
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CASES = REPO_ROOT / "services/agent/patterngame/testdata/trigger_policy_cases.json"
@@ -232,9 +231,7 @@ class TestUC046TriggerOnTheGameplayStream:
 
     @staticmethod
     def _state(serial, _info):
-        state = controller_manager_pb2.ControllerState(serial=serial)
-        state.accel.CopyFrom(controller_manager_pb2.Vector3(x=0.1, y=0.1, z=1.0))
-        return state
+        return stub_frame_inputs(serial=serial, accel=(0.1, 0.1, 1.0))
 
     @pytest.mark.uc("UC-046", flow="main", steps=[5], br=["BR-018", "BR-001"])
     def test_game_stream_frames_carry_the_policy_press(self, servicer):
@@ -243,7 +240,7 @@ class TestUC046TriggerOnTheGameplayStream:
         serials = [adapter.add_controller(reserved=True) for _ in range(2)]
         arch = _archetype(BURST)
         adapter.install_pattern(serials, arch)
-        stub_method(servicer.state_builder, "build_state", side_effect=self._state)
+        stub_method(servicer.state_builder, "frame_inputs", side_effect=self._state)
         for s in serials:
             servicer.tracked_controllers[s] = {}
         game, dashboard = [], []

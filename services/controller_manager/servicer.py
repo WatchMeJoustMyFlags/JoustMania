@@ -457,8 +457,10 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             if current_filter is not None and serial not in current_filter:
                 continue
 
-            full_state = self.state_builder.build_state(serial, info)
-            accel = full_state.accel
+            # Plain values straight from the state dict (#2353): one GameplayData per
+            # controller, no ControllerState or Vector3 copies in between.
+            inputs = self.state_builder.frame_inputs(serial, info)
+            accel = inputs.accel
             pattern_trigger = False
             if serial in pattern_serials:
                 # Evaluated BEFORE consume_death so an active latch is delivered first (BR-012).
@@ -466,9 +468,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 pattern_out = pattern_frame(serial, subscriber_id, explicit)
                 if pattern_out is not None:
                     pattern_accel, pattern_trigger = pattern_out
-                    accel = controller_manager_pb2.Vector3(
-                        x=pattern_accel["x"], y=pattern_accel["y"], z=pattern_accel["z"]
-                    )
+                    accel = {"x": pattern_accel["x"], "y": pattern_accel["y"], "z": pattern_accel["z"]}
 
             # Account this delivered frame against any pending mock death latch:
             # mock deaths are held until they have been STREAMED to the game
@@ -479,7 +479,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
 
             # The trigger is the level OR a press latched since the last game frame.
             # A pattern controller presses by its trigger policy (UC-046 BR-018), owner stream only.
-            trigger_pressed = full_state.trigger_pressed or pattern_trigger
+            trigger_pressed = inputs.trigger_pressed or pattern_trigger
             if game_stream and serial in roster and consume_trigger(serial) is True:
                 trigger_pressed = True
 
@@ -496,15 +496,15 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 )
 
             gd = controller_manager_pb2.GameplayData(
-                serial=full_state.serial,
-                move_num=full_state.move_num,
-                battery=full_state.battery,
-                team=full_state.team,
-                color=full_state.color,
+                serial=inputs.serial,
+                move_num=inputs.move_num,
+                battery=inputs.battery,
+                team=inputs.team,
+                color=inputs.color,
                 accel=accel,
-                gyro=full_state.gyro,
-                rssi=full_state.rssi,
-                name=full_state.name,
+                gyro=inputs.gyro,
+                rssi=inputs.rssi,
+                name=inputs.name,
                 health=health,
                 connection_quality=self._connection_quality_msg(serial) if current_filter is None else None,
                 trigger_pressed=trigger_pressed,
@@ -721,7 +721,7 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
             logger.info(f"Gameplay subscriber disconnected: {subscriber_id}")
 
     # NOTE: Internal feedback methods moved to feedback_manager.py
-    # NOTE: State message building lives in state_builder.py
+    # NOTE: Per-controller frame inputs are read in state_builder.py
     # NOTE: Button detection methods moved to button_detector.py
     # NOTE: Event publishing methods moved to event_publisher.py
 
