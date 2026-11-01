@@ -79,6 +79,23 @@ func readingsFresh(c gamecontext.GameContext, p *gamecontext.PlayerSignals) bool
 	return decide.FreshReadings(p.History, c.UpdatedAt)
 }
 
+// freshPlayers returns the alive players (activePlayers order) whose readings are
+// fresh: the target pool of R6, and the check R9 applies to its pick (UC-040 A46
+// step 5, BR-037, #2517). A Fight
+// Club or Tournament player who just went back to waiting keeps its last alive
+// state until it is evicted, but its readings stop with its gauges, so it drops
+// out of this pool within 3 s.
+func freshPlayers(c gamecontext.GameContext) []*gamecontext.PlayerSignals {
+	active := activePlayers(c)
+	out := active[:0]
+	for _, p := range active {
+		if readingsFresh(c, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // sessionDuration returns the session duration or -1 when unknown.
 func sessionDuration(c gamecontext.GameContext) float64 {
 	if c.Session.DurationSeconds == nil {
@@ -413,7 +430,7 @@ func accelerateCandidates(c gamecontext.GameContext, fit FitnessThresholds, weig
 	if dur < 0 || target <= 0 || dur <= target {
 		return nil
 	}
-	active := activePlayers(c)
+	fresh := freshPlayers(c)
 	durFit := map[string]float64{
 		"session_duration":       dur,
 		"target_session_seconds": target,
@@ -432,10 +449,10 @@ func accelerateCandidates(c gamecontext.GameContext, fit FitnessThresholds, weig
 		rule:       "R5",
 	}}
 
-	// R6: eliminate the least-moving player.
-	if dur > 1.5*target && len(active) > 2 {
+	// R6: eliminate the least-moving player, among the players with fresh readings.
+	if dur > 1.5*target && len(fresh) > 2 {
 		var lowest *gamecontext.PlayerSignals
-		for _, p := range active {
+		for _, p := range fresh {
 			if p.MovementIntensity == nil {
 				continue
 			}

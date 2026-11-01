@@ -153,6 +153,8 @@ class FightClubGame(StreamedIntroGameMode):
         self._latched_winner: str | None = None
         # Serials whose controller disconnected: out of the rotation for good (A4).
         self._disconnected: set[str] = set()
+        # Players out of the rotation for good, each with its elimination order (UC-041 BR-008).
+        self._eliminated: set[str] = set()
         # Round losers whose loss the kill handler applied and is still finishing
         # (the pause, the next round's seating; A4 step 5).
         self._finishing_round_loss: set[str] = set()
@@ -731,6 +733,10 @@ class FightClubGame(StreamedIntroGameMode):
             self.current_fighter = None
         if self.running and not self._win_latched:
             metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(0)
+            # Leaving the rotation is the elimination, not the round loss (UC-041 BR-008, #2517).
+            if serial not in self._eliminated:
+                self._eliminated.add(serial)
+                self._record_elimination_order(serial)
         logger.info(f"Player {serial} left Fight Club with score {player.score}")
         if self._face_off_pair is not None and serial in self._face_off_pair:
             self._face_off_pair = None
@@ -871,6 +877,23 @@ class FightClubGame(StreamedIntroGameMode):
         test_game_clock_waits.py pins the duration.
         """
         await game_clock.sleep(ROUND_PAUSE_SECONDS)
+
+    def _kill_records_elimination_order(self, serial: str) -> bool:  # noqa: ARG002
+        """No elimination order on the kill path: a round loser stays in the game (UC-041 BR-008, #2517).
+
+        A player is eliminated only when it leaves the rotation for good
+        (``_leave_rotation``, A4), which records its order once.
+        """
+        return False
+
+    def _player_death_event_attributes(self, serial: str) -> dict:
+        """``death.eliminated`` on the ``player_death`` span event (UC-041 BR-008, #2517).
+
+        False for a round loss (the loser stays in the game); true when the death
+        takes a disconnected player out of the rotation, the same check
+        ``_kill_player_impl`` makes right after this event.
+        """
+        return {"death.eliminated": serial in self._disconnected}
 
     def _sends_death_effect(self, serial: str) -> bool:  # noqa: ARG002
         """No base death effect: a Fight Club loser stays in the game (D-G32, #1342 class).
