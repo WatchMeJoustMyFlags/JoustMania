@@ -68,6 +68,7 @@ class Fake:
         self.overlays = {}  # (set, flag) -> stack overlay {"variant", "value", "writer"}
         self.admin = {}  # (set, flag) -> persisted admin value {"variant", "value", "writer"}
         self.games = games
+        self.games_file = ""
         self.scope_values = scope_values
         self.fail_put = fail_put  # 1-based index of the PUT answered with 503
         self.puts = 0
@@ -147,6 +148,12 @@ def make_handler(fake):
                             "overlays": len(fake.overlays),
                         },
                     )
+                if parts == ["games"]:
+                    games = []
+                    if fake.games_file:
+                        with open(fake.games_file) as fh:
+                            games = json.load(fh)
+                    return self._send(200, {"games": games})
                 if len(parts) == 1 and parts[0] in fake.sets:
                     flags = [
                         fake.view(parts[0], k) for k in sorted(fake.sets[parts[0]])
@@ -277,6 +284,11 @@ def main():
     )
     ap.add_argument("--scope-values", type=int, default=0)
     ap.add_argument(
+        "--games-file",
+        default="",
+        help="JSON list served by GET /games, read per request",
+    )
+    ap.add_argument(
         "--fail-put", type=int, default=0, help="answer the Nth PUT with 503"
     )
     ap.add_argument(
@@ -297,6 +309,7 @@ def main():
         args.fail_put,
         args.fail_delete,
     )
+    fake.games_file = args.games_file
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(fake))
     with open(args.port_file + ".tmp", "w") as fh:
         fh.write(str(server.server_address[1]))

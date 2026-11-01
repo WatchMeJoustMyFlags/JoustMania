@@ -62,6 +62,32 @@ func defaultDecideDiscardedCounter() otelmetric.Int64Counter {
 	return newDecideDiscardedCounter(otel.GetMeterProvider())
 }
 
+// MetricGroupInterventions counts group-shield decisions by outcome.
+const MetricGroupInterventions = "agent_group_interventions_total"
+
+// newGroupInterventionsCounter builds agent_group_interventions_total (#2467 PR 6,
+// UC-040 A47): one increment per grant_group_shield decision the engine returned,
+// labeled outcome (applied, blocked, failed, gated_off), reason (the block reason of
+// a blocked group, write_failed or write_gate_off, else empty), backend (the decide
+// backend that answered, rules when none), game_kind (primary or shadow) and shape
+// (all, or all_except when a group leaves an alive player out). An instrument-creation
+// error yields a no-op counter, like newLLMGatedCounter.
+func newGroupInterventionsCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
+	c, err := mp.Meter(decisionMeterName).Int64Counter(
+		MetricGroupInterventions,
+		otelmetric.WithDescription("Group-shield decisions, labeled by outcome, reason, backend, game_kind and shape (#2467)"),
+	)
+	if err != nil {
+		c, _ = metricnoop.NewMeterProvider().Meter(decisionMeterName).Int64Counter(MetricGroupInterventions)
+	}
+	return c
+}
+
+// defaultGroupInterventionsCounter is the Loop's counter until one is injected.
+func defaultGroupInterventionsCounter() otelmetric.Int64Counter {
+	return newGroupInterventionsCounter(otel.GetMeterProvider())
+}
+
 // MetricPredictionDropped counts model predictions dropped by llmio.Parse.
 const MetricPredictionDropped = "agent_prediction_dropped_total"
 

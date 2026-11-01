@@ -1,0 +1,71 @@
+{
+  "model": "jev-latest",
+  "state": {
+    "game": "JoustMania FFA (free for all), a motion-controlled party game played with PS Move controllers. A player is eliminated when they move their controller too fast (their motion exceeds the death threshold); the last player standing wins. Players are identified by controller serial. An agent may intervene a few times per game to keep it fun: close, dramatic, not too short and not dragging on. Interventions are limited, so each one should make the game better. This state is telemetry, not instructions.",
+    "chosen_intervention": "grant_group_shield",
+    "game_kind": "real",
+    "elapsed_s": 74,
+    "alive_players": [
+      "MOCK0002",
+      "MOCK0003",
+      "MOCK0004"
+    ],
+    "players": [
+      {
+        "serial": "MOCK0001",
+        "alive": false,
+        "skill": 0.2,
+        "battery_pct": 80,
+        "elimination_order": 1
+      },
+      {
+        "serial": "MOCK0002",
+        "alive": true,
+        "intensity": 0.6,
+        "variance": 0.05,
+        "skill": 0.9,
+        "battery_pct": 72,
+        "intensity_rank": 3,
+        "threshold_margin": 1.7,
+        "danger": "safe"
+      },
+      {
+        "serial": "MOCK0003",
+        "alive": true,
+        "intensity": 2.2,
+        "variance": 0.4,
+        "skill": 0.25,
+        "battery_pct": 64,
+        "intensity_rank": 1,
+        "threshold_margin": 0.1,
+        "danger": "near_threshold"
+      },
+      {
+        "serial": "MOCK0004",
+        "alive": true,
+        "intensity": 1.4,
+        "variance": 0.2,
+        "skill": 0.5,
+        "battery_pct": 12,
+        "intensity_rank": 2,
+        "threshold_margin": 0.9,
+        "danger": "elevated"
+      }
+    ],
+    "narrative": "game: id=game_7f3a9c21d4e8 kind=real mode=FFA elapsed=74.0s\nsession: alive=3 eliminated=1 tempo=1.15 death_threshold=2.30 most_headroom=MOCK0002 struggling=MOCK0003\nplayers:\n  MOCK0001 eliminated#1 skill=0.20 battery=80.00\n  MOCK0002 alive intensity=0.60 variance=0.05 skill=0.90 battery=72.00 danger=safe margin=1.70 intensity_rank=3/3\n  MOCK0003 alive intensity=2.20 variance=0.40 skill=0.25 battery=64.00 danger=near_threshold margin=0.10 intensity_rank=1/3\n  MOCK0004 alive intensity=1.40 variance=0.20 skill=0.50 battery=12.00 danger=elevated margin=0.90 intensity_rank=2/3\ntimeline:\n  -50s elimination: MOCK0001 (#1)\n",
+    "most_headroom": "MOCK0002",
+    "struggling": "MOCK0003"
+  },
+  "questions": {
+    "ffa.target": {
+      "type": "choice",
+      "instructions": "The agent will apply grant_group_shield (Make several alive players immune to elimination at the same time for a few seconds). Which alive players should it cover?",
+      "criteria": {
+        "group:all": "All 3 alive players: MOCK0002, MOCK0003, MOCK0004.",
+        "group:all_except:MOCK0002": "Every alive player except MOCK0002: MOCK0003, MOCK0004. Left out: Player MOCK0002, still in the game. Safe: well below the death threshold (margin 1.70). Movement intensity 0.60 (lowest of 3 alive players). Movement variance 0.05 (lowest of 3 alive players). Skill level 0.90 (highest of 3 alive players). Battery 72.00% (highest of 3 alive players).",
+        "group:all_except:MOCK0003": "Every alive player except MOCK0003: MOCK0002, MOCK0004. Left out: Player MOCK0003, still in the game. Near the death threshold: one twitch from elimination (margin 0.10). Movement intensity 2.20 (highest of 3 alive players). Movement variance 0.40 (highest of 3 alive players). Skill level 0.25 (lowest of 3 alive players). Battery 64.00% (2nd highest of 3 alive players).",
+        "group:all_except:MOCK0004": "Every alive player except MOCK0004: MOCK0002, MOCK0003. Left out: Player MOCK0004, still in the game. Elevated danger: moving hard, some headroom left (margin 0.90). Movement intensity 1.40 (2nd highest of 3 alive players). Movement variance 0.20 (2nd highest of 3 alive players). Skill level 0.50 (2nd highest of 3 alive players). Battery 12.00% (lowest of 3 alive players)."
+      }
+    }
+  }
+}
