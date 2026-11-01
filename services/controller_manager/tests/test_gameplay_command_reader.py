@@ -286,6 +286,46 @@ class TestUC020EffectTakeOverHasNoGap:
         assert manager.backend.frames(WINNER, 0.0)[-1] in (MAGENTA, (0, 0, 0))  # the newer flash paints
 
 
+class TestStreamCloseCleanupAlwaysRuns:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-040", flow="A32", br=["BR-021"])
+    async def test_a_cancel_during_the_drain_grace_still_releases_the_roster(self, game, monkeypatch):
+        """#2540 review: a second cancel while the close waits out the cancel grace still releases the
+        roster and schedules the shield cleanup (#1837), then the cancel goes on."""
+        monkeypatch.setattr(servicer_module, "STREAM_CLOSE_DRAIN_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(servicer_module, "STREAM_CLOSE_CANCEL_GRACE_S", 5.0)
+        stubborn_tasks = []
+
+        async def stubborn_apply(*_args, **_kwargs):
+            stubborn_tasks.append(asyncio.current_task())
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(10)  # ignores the drain's cancel: the close waits in its grace
+
+        game.svc.feedback_manager.apply_base_color = stubborn_apply
+        scheduled = []
+        schedule = game.svc._schedule_shield_cleanup
+        monkeypatch.setattr(
+            game.svc, "_schedule_shield_cleanup", lambda serials: (scheduled.append(set(serials)), schedule(serials))
+        )
+        await game.open()
+        game.send(_base_color(LOSER, (0, 0, 0)))
+        await asyncio.sleep(0.05)
+        game.context.cancelled_flag = True
+        await asyncio.sleep(0.3)  # the drain timed out; the close now waits in the cancel grace
+        assert not game.task.done()
+        game.task.cancel()
+        results = await asyncio.gather(game.task, return_exceptions=True)
+
+        assert isinstance(results[0], asyncio.CancelledError)  # the cancel is passed on
+        assert game.svc._game_stream_serials == {}
+        assert scheduled == [{LOSER, WINNER}]
+        for task in stubborn_tasks:
+            task.cancel()
+        await asyncio.gather(*stubborn_tasks, return_exceptions=True)
+
+
 class TestUC030DeathIsShownInFull:
     @pytest.fixture
     def dying(self, manager, monkeypatch):

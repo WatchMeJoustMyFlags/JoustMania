@@ -716,23 +716,29 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         finally:
             # Cleanup: stop reading, then apply the commands already received (an end-of-game
             # WINNER_RAINBOW or SHIELD 0 included) before the roster is released (#2540).
-            read_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await read_task
-            await self._drain_gameplay_controls(apply_task, pending_controls, subscriber_id)
+            try:
+                read_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await read_task
+                await self._drain_gameplay_controls(apply_task, pending_controls, subscriber_id)
+            finally:
+                # Runs even when a second cancel interrupts the drain; that cancel goes on afterwards.
+                self._release_closed_gameplay_stream(subscriber_id)
 
-            # Snapshot BEFORE the release: it forgets the roster (#1837).
-            closed_roster = set(self._game_stream_serials.get(subscriber_id, ()))
-            self._release_game_stream(subscriber_id)
-            self._schedule_shield_cleanup(closed_roster)
+    def _release_closed_gameplay_stream(self, subscriber_id: str) -> None:
+        """Release a closed gameplay stream's roster, shield layers, pattern controllers and stream gauge."""
+        # Snapshot BEFORE the release: it forgets the roster (#1837).
+        closed_roster = set(self._game_stream_serials.get(subscriber_id, ()))
+        self._release_game_stream(subscriber_id)
+        self._schedule_shield_cleanup(closed_roster)
 
-            # A reconnecting game stream may claim this stream's pattern controllers.
-            self.backend.release_pattern_stream(subscriber_id)
+        # A reconnecting game stream may claim this stream's pattern controllers.
+        self.backend.release_pattern_stream(subscriber_id)
 
-            # Update stream metrics
-            metrics.active_streams.dec()
+        # Update stream metrics
+        metrics.active_streams.dec()
 
-            logger.info(f"Gameplay subscriber disconnected: {subscriber_id}")
+        logger.info(f"Gameplay subscriber disconnected: {subscriber_id}")
 
     @staticmethod
     async def _read_gameplay_controls(request_iterator, pending: asyncio.Queue, subscriber_id: str) -> None:
