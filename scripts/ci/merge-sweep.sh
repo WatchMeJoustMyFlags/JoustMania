@@ -34,8 +34,14 @@
 #      `MERGED` line with the branch (the caller removes its worktree), then the
 #      PR body's `## Merge notes` lines (HTML comments ignored):
 #        close #N: <text>   close issue N with <text>, once (marker on the issue;
-#                           skipped when closed or already closed by this sweep,
-#                           so a reopened issue stays open)
+#                           skipped when already closed by this sweep, so a
+#                           reopened issue stays open). `close #N` is also a GitHub
+#                           closing keyword: when the issue is already closed and
+#                           its last ClosedEvent's closer is this PR or its merge
+#                           commit, post <text> as a comment only (same marker,
+#                           once, #2508), unless a trusted comment created at or
+#                           after mergedAt already names #<PR> (a hand delivery
+#                           comment, #2509); closed by anything else: skipped
 #        note #N: <text>    comment <text> on issue N, once per PR (marker)
 #      Only issues in the body's `Part of #A[, #B]` list(s) are targets, and
 #      never a pull request. `{MERGE}` in <text> becomes the short merge SHA.
@@ -211,6 +217,22 @@ has_marker() {
   return 1
 }
 
+# names_pr <comments> <pr> <since>: a comment by a TRUSTED login, created at or
+# after <since> (ISO-8601 UTC), names #<pr> as a whole token (#250 != #2504).
+# A delivery comment written by hand after the merge has no sweep marker (#2509).
+names_pr() {
+  local c u at
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    jq -e --arg n "$2" '.b | test("(^|[^0-9A-Za-z_])#" + $n + "([^0-9]|$)")' >/dev/null 2>&1 <<<"$c" || continue
+    u="$(jq -r .u <<<"$c")"; at="$(jq -r .at <<<"$c")"
+    in_list "$u" "$TRUSTED" || continue
+    [[ "$at" < "$3" ]] && continue
+    return 0
+  done <<<"$1"
+  return 1
+}
+
 dequeue() {  # PR node id
   gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' \
     -f id="$1" >/dev/null 2>&1
@@ -360,6 +382,18 @@ part_of() {
     | grep -oE '^[[:space:]]*Part of #[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*' | grep -oE '#[0-9]+' | tr -d '#'
 }
 
+# Who closed an issue last: "PullRequest <n>", "Commit <oid>", another
+# "<type> ..." or "" (no ClosedEvent); exit 1 on API error.
+GQL_CLOSER='query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){issue(number:$num){
+  timelineItems(itemTypes:[CLOSED_EVENT], last:1){nodes{... on ClosedEvent{closer{__typename ... on PullRequest{number} ... on Commit{oid}}}}}}}}'
+closed_by() {
+  local res
+  res="$(gh api graphql -F owner='{owner}' -F repo='{repo}' -F num="$1" -f query="$GQL_CLOSER" 2>/dev/null)" \
+    && jq -e '.data.repository.issue.timelineItems.nodes' >/dev/null 2>&1 <<<"$res" || return 1
+  jq -r '.data.repository.issue.timelineItems.nodes[-1].closer // empty
+    | "\(.__typename) \(.number // .oid // "")"' <<<"$res"
+}
+
 sweep_merged() {  # one merged-PR JSON object
   local pr="$1" n author merged_at branch merge msha
   n="$(jq -r .number <<<"$pr")"
@@ -402,7 +436,24 @@ $marker"
         fi
         continue
       fi
-      if [[ "$state" != open ]]; then done_notes+=("#$issue already closed"); continue; fi
+      if [[ "$state" != open ]]; then
+        # `close #N` is also a GitHub closing keyword, so the merge itself often
+        # closed the issue (#2508): then post the delivery comment, once.
+        local closer
+        if ! closer="$(closed_by "$issue")"; then
+          failures=$((failures + 1)); done_notes+=("close #$issue: read failed"); continue
+        fi
+        if [[ "$closer" != "PullRequest $n" && ( -z "$merge" || "$closer" != "Commit $merge" ) ]]; then
+          done_notes+=("#$issue already closed"); continue
+        fi
+        if names_pr "$bodies" "$n" "$merged_at"; then
+          done_notes+=("#$issue already has a delivery comment"); continue
+        fi
+        if $DRY; then done_notes+=("would comment #$issue (closed by this merge)"); continue; fi
+        if gh issue comment "$issue" --body "$body" >/dev/null 2>&1; then done_notes+=("commented #$issue (closed by this merge)")
+        else failures=$((failures + 1)); done_notes+=("comment #$issue FAILED"); fi
+        continue
+      fi
       if $DRY; then done_notes+=("would close #$issue"); continue; fi
       if gh issue close "$issue" --comment "$body" >/dev/null 2>&1; then done_notes+=("closed #$issue")
       else failures=$((failures + 1)); done_notes+=("close #$issue FAILED"); fi

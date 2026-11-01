@@ -32,18 +32,20 @@ H3=3333333333333333333333333333333333333333
 #                              is served from the 2nd read on (a status flip)
 #   comments-<n>.json          issue/PR comments (missing: [])
 #   issue-<n>.json             issue object (missing: open issue)
+#   closer-<n>.json            last ClosedEvent of issue n (GraphQL; missing: none)
 #   rules.json, view.json, queue.json   for the real safe-merge (--rearm)
 #   fail-<key>                 make that call fail: prs, merged, dequeue, statuses-<sha>,
-#                              comments-<n>, comment, issue-<n>
+#                              comments-<n>, comment, issue-<n>, closer-<n>
 cat >"${WORK}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "gh $*" >>"$STUB_DIR/calls"
-jqexpr=""; prev=""; query=""; after=""; prarg=""
+jqexpr=""; prev=""; query=""; after=""; prarg=""; numarg=""
 for a in "$@"; do
   [[ "$prev" == "--jq" ]] && jqexpr="$a"
   [[ "$prev" == "-f" && "$a" == query=* ]] && query="$a"
   [[ "$prev" == "-f" && "$a" == after=* ]] && after="${a#after=}"
   [[ "$prev" == "-F" && "$a" == pr=* ]] && prarg="${a#pr=}"
+  [[ "$prev" == "-F" && "$a" == num=* ]] && numarg="${a#num=}"
   prev="$a"
 done
 out() { if [[ -n "$jqexpr" ]]; then jq -r "$jqexpr" "$1"; else cat "$1"; fi; }
@@ -57,6 +59,9 @@ case "$1 $2" in
       [[ -f "$STUB_DIR/fail-merged" ]] && exit 1
       if [[ -n "$after" ]]; then json_or "$STUB_DIR/merged-2.json" '{"data":{"search":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}'
       else json_or "$STUB_DIR/merged.json" '{"data":{"search":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}'; fi
+    elif [[ "$query" == *ClosedEvent* ]]; then   # who closed issue $numarg last
+      [[ -f "$STUB_DIR/fail-closer-$numarg" ]] && exit 1
+      json_or "$STUB_DIR/closer-$numarg.json" '{"data":{"repository":{"issue":{"timelineItems":{"nodes":[]}}}}}'
     elif [[ -n "$prarg" ]]; then
       out "$STUB_DIR/queue.json"   # safe-merge queue read
     else
@@ -96,7 +101,11 @@ case "$1 $2" in
   "pr comment") [[ -f "$STUB_DIR/fail-comment" ]] && exit 1; exit 0 ;;
   "pr view") cat "$STUB_DIR/view.json" ;;
   "pr merge") exit 0 ;;
-  "issue close"|"issue comment") exit 0 ;;
+  "issue close") exit 0 ;;
+  "issue comment")   # posted as the sweep: later reads of comments-<n>.json see it
+    f="$STUB_DIR/comments-$3.json"; [[ -f "$f" ]] || echo '[]' >"$f"
+    jq --arg b "$5" '. + [{"user":{"login":"sweeper"},"created_at":"2026-11-01T00:00:00Z","body":$b}]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+    exit 0 ;;
   *) echo "unexpected gh call: $*" >&2; exit 9 ;;
 esac
 STUB
@@ -408,6 +417,76 @@ echo '{"number":7,"state":"open","pull_request":{"url":"x"}}' >"${STUB_DIR}/issu
 run
 [[ "$OUT" == *"#9 refused (not on the Part of line)"* && "$OUT" == *"#7 refused (a pull request)"*"next: check the merge notes"* ]] || fail "target refusal lines"
 calls | grep -qE 'issue close|issue comment' && fail "closed a refused target"
+ok
+
+# 11d. `close #N` is a GitHub closing keyword: the merge itself closed the issue
+#      (#2508). Closer = this PR or its merge commit -> delivery comment once
+#      (no close call); a second pass posts nothing; closed by anything else or
+#      no ClosedEvent -> "already closed", no comment; unreadable closer -> fail closed.
+closer_fx() {  # issue typename value | issue null (a hand close: closer null)
+  local c='{"__typename":"'"$2"'","number":'"${3:-}"'}'
+  [[ "$2" == Commit ]] && c='{"__typename":"Commit","oid":"'"$3"'"}'
+  [[ "$2" == ProjectV2 ]] && c='{"__typename":"ProjectV2"}'
+  [[ "$2" == null ]] && c=null
+  printf '{"data":{"repository":{"issue":{"timelineItems":{"nodes":[{"closer":%s}]}}}}}' "$c" >"${STUB_DIR}/closer-$1.json"
+}
+reset; prs ""
+merged "$(mpr 130 aepfli '"Part of #7\n## Merge notes\nclose #7: Delivered the fix ({MERGE})"')"
+echo '{"number":7,"state":"closed"}' >"${STUB_DIR}/issue-7.json"
+closer_fx 7 PullRequest 130
+run
+[[ $RC -eq 0 && "$OUT" == *"#130 MERGED: merge abcdef01, branch feat/x-130; merge notes: commented #7 (closed by this merge); next: none"* ]] || fail "auto-closed line: rc=$RC"
+[[ "$(calls | grep -c '^gh issue comment 7 --body Delivered the fix (abcdef01)')" -eq 1 ]] || fail "auto-closed: not exactly one delivery comment"
+calls | grep -qF '<!-- merge-sweep close PR#130 -->' || fail "auto-closed: no marker"
+calls | grep -q 'issue close' && fail "auto-closed: closed an already closed issue"
+# Run twice: the marker from the first pass -> nothing more.
+rm -f "${STUB_DIR}/calls"; run
+[[ $RC -eq 0 && "$OUT" == *"#7 already closed by the sweep"* ]] || fail "second pass line: rc=$RC"
+calls | grep -qE 'issue (close|comment)' && fail "second pass commented again"
+[[ "$(jq length "${STUB_DIR}/comments-7.json")" -eq 1 ]] || fail "more than one delivery comment after two passes"
+# Closed by the merge commit: same.
+rm -f "${STUB_DIR}/calls" "${STUB_DIR}/comments-7.json"; closer_fx 7 Commit abcdef0123456789abcdef0123456789abcdef01
+run
+[[ "$(calls | grep -c '^gh issue comment 7 ')" -eq 1 ]] || fail "merge-commit closer: no delivery comment"
+# Closed by someone else (another PR, another commit, a project, a person = closer
+# null, or no event): skipped.
+for c in "PullRequest 999" "Commit 9999999999999999999999999999999999999999" ProjectV2 null none; do
+  rm -f "${STUB_DIR}/calls" "${STUB_DIR}/comments-7.json" "${STUB_DIR}/closer-7.json"
+  [[ "$c" == none ]] || closer_fx 7 $c
+  run
+  [[ $RC -eq 0 && "$OUT" == *"merge notes: #7 already closed; next: none"* ]] || fail "closed by $c: line rc=$RC"
+  calls | grep -qE 'issue (close|comment)' && fail "closed by $c: commented"
+done
+# A forged close marker (untrusted login) does not count on this path either: one comment.
+closer_fx 7 PullRequest 130; rm -f "${STUB_DIR}/calls"
+comments_fx 7 "$(cm mallory 2026-10-31T12:00:00Z "<!-- merge-sweep close PR#130 -->")"
+run
+[[ $RC -eq 0 && "$OUT" == *"commented #7 (closed by this merge)"* ]] || fail "forged marker, auto-closed: line rc=$RC"
+[[ "$(calls | grep -c '^gh issue comment 7 ')" -eq 1 ]] || fail "forged marker, auto-closed: not exactly one comment"
+# A delivery comment written by hand after the merge (no marker, #2509): a trusted
+# comment at or after mergedAt naming #130 as a whole token -> no sweep comment.
+merged_at="$(date -u -d '-1 hour' +%FT%TZ)" after="$(date -u -d '-10 minutes' +%FT%TZ)"
+before="$(date -u -d '-2 hours' +%FT%TZ)"
+merged "$(mpr 130 aepfli '"Part of #7\n## Merge notes\nclose #7: Delivered the fix ({MERGE})"' "$merged_at")"
+hand_case() {  # login at body expected-comments label
+  rm -f "${STUB_DIR}/calls"; comments_fx 7 "$(cm "$1" "$2" "$3")"; run
+  [[ $RC -eq 0 ]] || fail "$5: rc=$RC"
+  [[ "$(calls | grep -c '^gh issue comment 7 ')" -eq "$4" ]] || fail "$5: expected $4 sweep comment(s)"
+}
+hand_case aepfli "$after" "Delivered by #130 (merge abcdef01)" 0 "trusted hand comment after the merge"
+[[ "$OUT" == *"#7 already has a delivery comment; next: none"* ]] || fail "hand comment line"
+hand_case aepfli "$merged_at" "Delivered by #130" 0 "trusted hand comment at mergedAt"
+hand_case mallory "$after" "Delivered by #130 (merge abcdef01)" 1 "untrusted hand comment"
+hand_case aepfli "$after" "Delivered by #1304 and #13" 1 "trusted comment naming another PR"
+hand_case aepfli "$before" "Delivered by #130" 1 "trusted comment before the merge"
+# Dry run: would comment; unreadable closer: fail closed, no comment.
+rm -f "${STUB_DIR}/comments-7.json"
+closer_fx 7 PullRequest 130; rm -f "${STUB_DIR}/calls"; run --dry-run
+[[ "$OUT" == *"would comment #7 (closed by this merge)"* ]] || fail "dry-run auto-closed line"
+calls | grep -qE 'issue (close|comment)' && fail "dry run commented"
+touch "${STUB_DIR}/fail-closer-7"; rm -f "${STUB_DIR}/calls"; run
+[[ $RC -eq 1 && "$OUT" == *"close #7: read failed"*"next: re-check later"* ]] || fail "unreadable closer: rc=$RC"
+calls | grep -qE 'issue (close|comment)' && fail "commented without reading the closer"
 ok
 
 # 12. Merged search: all pages read; a result that may be truncated is a failure.

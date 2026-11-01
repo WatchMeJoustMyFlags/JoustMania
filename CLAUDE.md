@@ -39,7 +39,12 @@ When work on a GitHub issue starts (implementation begun or a background agent l
 gh issue edit <NUMBER> --add-assignee aepfli
 ```
 
-When the implementing PR merges, close the issue with a comment referencing the PR and what was delivered — PR bodies in this repo use "Part of #N" phrasing without `closes` keywords, so issues never auto-close. In the armed flow (#1809) put `close #N: <what was delivered>` / `note #N: <text>` lines in the PR body's `## Merge notes` section; the merge sweep posts them after the merge (`{MERGE}` becomes the short merge SHA).
+Closing an issue after its PR merges:
+
+- **Armed flow (#1809):** nobody closes or comments by hand. Put `close #N: <what was delivered>` / `note #N: <text>` lines in the PR body's `## Merge notes` section (`{MERGE}` becomes the short merge SHA). `close #N` is a GitHub closing keyword, so GitHub closes the issue at merge; the merge sweep then posts the delivery comment once, only when the issue's last close came from this PR or its merge commit (#2508) and no trusted comment after the merge already names the PR (#2509). An issue closed by anything else is left alone. `note #N` lines become comments.
+- **Old wait-and-merge path, or a PR without merge notes:** close the issue by hand with a comment that names the PR and what was delivered (`gh issue close <N> --comment "..."`).
+
+Keep the `Part of #N` line in the PR body: the sweep acts only on the issues listed there.
 
 ## Quick Reference
 
