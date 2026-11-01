@@ -21,6 +21,7 @@ sys.path.insert(0, str(test_dir))
 
 from conftest import EventCollector, MockControllerManagerService, async_noop  # noqa: E402
 
+from lib.types import Sound  # noqa: E402
 from services.game_coordinator import game_clock  # noqa: E402
 from services.game_coordinator.games.base import GameState  # noqa: E402
 from services.game_coordinator.games.nonstop_joust import NonstopJoustGame  # noqa: E402
@@ -41,6 +42,10 @@ class RecordingStream:
 def _with_spans(game) -> None:
     for player in game.players.values():
         player.span = MagicMock()
+
+
+def _death_events(span) -> list[dict]:
+    return [c.kwargs["attributes"] for c in span.add_event.call_args_list if c.args and c.args[0] == "player_death"]
 
 
 def _death_flags(span) -> list:
@@ -246,11 +251,11 @@ class TestZombiesDeathIsNoElimination:
 # ---------------------------------------------------------------------------
 
 
-async def _swapper(num_players: int = 4) -> SwapperGame:
+async def _swapper(num_players: int = 4, publisher=None) -> SwapperGame:
     client = MockControllerManagerService(num_controllers=num_players, death_schedule={}, max_duration=10.0)
     game = SwapperGame(
         controller_manager_client=client,
-        event_publisher=EventCollector().publish,
+        event_publisher=publisher or EventCollector().publish,
         audio_client=None,
         game_id="test_swapper_no_elim",
     )
@@ -293,12 +298,17 @@ class TestSwapperSwapIsNoElimination:
         assert game._elimination_count == 0
         assert _swap_flags(first, spans) == [False, False]
         assert _swap_flags(second, spans) == [False]
+        # The team attributes of TeamsGameBase stay on Swapper's player_death (#1327).
+        for span in spans[first] + spans[second]:
+            for attrs in _death_events(span):
+                assert "team" in attrs and "team_eliminated" in attrs
         await game.cleanup()
 
     @pytest.mark.uc("UC-024", flow="A1", br=["BR-005"])
     @pytest.mark.uc("UC-041", br=["BR-008"])
     @pytest.mark.asyncio
     async def test_a_disconnected_player_is_the_elimination(self):
+        """Order 1, once: the kill-path hook and ``_eliminate`` both record, the dedupe keeps one."""
         game = await _swapper(4)
         swapped, gone = "mock_controller_0", "mock_controller_2"
         gone_span = game.players[gone].span
@@ -310,6 +320,53 @@ class TestSwapperSwapIsNoElimination:
             assert _orders(base_metrics) == [(gone, 1)]
 
         assert _death_flags(gone_span) == [True]
+        (attrs,) = _death_events(gone_span)
+        assert "team" in attrs and "team_eliminated" in attrs
+        await game.cleanup()
+
+    @pytest.mark.uc("UC-024", flow="A1", steps=[3], br=["BR-005"])
+    @pytest.mark.uc("UC-041", br=["BR-008"])
+    @pytest.mark.parametrize("gate_on", ["player_swapped", "beep"])
+    @pytest.mark.asyncio
+    async def test_a_disconnect_after_the_repaint_still_takes_the_player_out_once(self, gate_on):
+        """The disconnect lands while the swap publishes ``player_swapped`` or plays the beep.
+
+        The player is alive again (repainted), so the base drops the disconnect's kill
+        (this kill is in progress); the swap must take the player out when it resumes:
+        not alive, order 1 once, span closed with ``player_eliminated``.
+        """
+        reached, release = asyncio.Event(), asyncio.Event()
+
+        async def gated_publish(event_type, _data=None, *_args, **_kwargs):
+            if gate_on == "player_swapped" and event_type == "player_swapped":
+                reached.set()
+                await release.wait()
+
+        game = await _swapper(4, publisher=gated_publish)
+        target = "mock_controller_0"
+
+        async def gated_sound(sound, *_args, **_kwargs):
+            if gate_on == "beep" and sound == Sound.SFX_BEEP:
+                reached.set()
+                await release.wait()
+
+        game._play_sound = gated_sound
+
+        with patch(BASE_METRICS) as base_metrics:
+            kill = asyncio.create_task(game._kill_player(target, 3.0))
+            await asyncio.wait_for(reached.wait(), 2.0)
+            assert game.players[target].alive is True  # repainted
+            new_span = game.players[target].span = MagicMock()  # the span the swap opened
+            await game._handle_disconnect(target)
+            release.set()
+            assert await asyncio.wait_for(kill, 2.0) is True
+
+            assert _orders(base_metrics) == [(target, 1)]
+
+        assert game.players[target].alive is False
+        assert game.players[target].span is None
+        new_span.add_event.assert_any_call("player_eliminated", attributes={"reason": "controller_disconnect"})
+        new_span.end.assert_called_once()
         await game.cleanup()
 
     @pytest.mark.uc("UC-024", flow="A1", steps=[3], br=["BR-005"])
