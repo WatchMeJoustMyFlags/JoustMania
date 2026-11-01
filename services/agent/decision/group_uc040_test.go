@@ -391,4 +391,3 @@ func TestGroupLever_UnwrittenGroupIsReleased(t *testing.T) {
 		assertReleased(t, l)
 	})
 }
-
