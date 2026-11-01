@@ -927,7 +927,7 @@ as a prior and not a claim; the value is in the table):
 | R3 handicap outlier | `closeness_rises` 15, P 0.55 |
 | R4 catch-up shield | `survives` 15, P 0.7 |
 | R4d danger shield | `survives` 10, P 0.7 |
-| R5 speed up | `elimination` 30, P 0.6 (kept as a prior, but the tempo-threshold confound applies here too: a faster tempo raises the death threshold, so eliminations can get rarer; scored by lift against the control, see #2487) |
+| R5 slow the music (value 1.0, the slow end; #2487, UC-040 A52, BR-041) | `elimination` 30, P 0.6 (a slower tempo lowers the death threshold, so eliminations get likelier, the direction of the prediction; the tempo effect itself is still scored by lift against the control) |
 | R6 eliminate least-moving | `game_ends` 60, P 0.5, only when at least 3 players stay alive after the action, otherwise none (trivially true) |
 | R7 end game | none (the action is the outcome) |
 | R8 statue rumble | `activity_rises` target 10, P 0.6 |
