@@ -223,13 +223,15 @@ func planDetails(req decide.Request, iv decide.Answer, details []decide.Question
 	p := detailsPlan{intervention: iv.Choice, ask: decide.Request{State: st, PromptProfile: profile, Goal: req.Goal}}
 	acting := iv.Choice != decide.OptionNoop
 	playerScoped := acting && decide.PlayerTargeted(iv.Choice)
-	var alive []string
+	groupScoped := acting && decide.GroupTargeted(iv.Choice)
+	var alive, group []string
 	for _, q := range details {
 		if q.ID == decide.QuestionFFATarget {
 			alive = aliveOptions(q, st)
 			if decide.NeedsFreshReadings(iv.Choice) {
 				alive = freshOptions(alive, st)
 			}
+			group = groupOptions(q)
 		}
 	}
 	// A player intervention without a candidate cannot be applied: answer
@@ -239,6 +241,20 @@ func planDetails(req decide.Request, iv decide.Answer, details []decide.Question
 	for _, q := range details {
 		switch q.ID {
 		case decide.QuestionFFATarget:
+			// A group lever (#2467, UC-040 A47): the target options are the group
+			// options, each described by the players it covers. One option is
+			// answered locally; none answers "none" at confidence 0, which the
+			// decision hook rejects (group_intervention_without_group).
+			if groupScoped {
+				if len(group) > 1 {
+					p.ask.Questions = append(p.ask.Questions, decide.Question{
+						ID: q.ID, Kind: decide.KindChoice, Text: groupTargetInstructions(iv.Choice, profile), Options: group,
+					})
+					continue
+				}
+				p.local = append(p.local, localGroupTarget(q, group))
+				continue
+			}
 			if playerScoped && len(alive) > 1 {
 				p.ask.Questions = append(p.ask.Questions, decide.Question{
 					ID: q.ID, Kind: decide.KindChoice, Text: targetInstructions(iv.Choice, profile), Options: alive,
@@ -320,6 +336,37 @@ func aliveOptions(q decide.Question, st decide.State) []string {
 		}
 	}
 	return out
+}
+
+// groupOptions are q's group options (decide.IsGroupTarget), in option order.
+func groupOptions(q decide.Question) []string {
+	var out []string
+	for _, o := range q.Options {
+		if decide.IsGroupTarget(o) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// localGroupTarget answers ffa.target of a group lever without Jev: its only group
+// option at confidence 1, or none at confidence 0 when there is none.
+func localGroupTarget(q decide.Question, group []string) decide.Answer {
+	choice, confidence := decide.TargetNone, 0.0
+	if len(group) == 1 {
+		choice, confidence = group[0], 1.0
+	}
+	if !contains(q.Options, choice) {
+		choice = ""
+	}
+	probs := make(map[string]float64, len(q.Options))
+	for _, o := range q.Options {
+		probs[o] = 0
+	}
+	if choice != "" {
+		probs[choice] = 1
+	}
+	return decide.Answer{QuestionID: q.ID, Choice: choice, Probabilities: probs, Confidence: confidence}
 }
 
 // localTarget answers ffa.target without Jev: none for noop and session

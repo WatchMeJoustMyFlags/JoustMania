@@ -99,7 +99,7 @@ func TestNeedsFreshReadings(t *testing.T) {
 		if got := FreshReadingsLevers(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("FreshReadingsLevers = %v, want %v", got, want)
 		}
-		for _, iv := range []string{IntvSetPlayerHandicap, IntvEliminatePlayer, IntvToughnessBoost, IntvAdjustMusicTempo} {
+		for _, iv := range []string{IntvSetPlayerHandicap, IntvEliminatePlayer, IntvToughnessBoost, IntvAdjustMusicTempo, IntvGrantGroupShield} {
 			if NeedsFreshReadings(iv) {
 				t.Errorf("NeedsFreshReadings(%s) = true", iv)
 			}

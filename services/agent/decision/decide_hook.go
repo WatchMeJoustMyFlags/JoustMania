@@ -308,7 +308,7 @@ func (l *Loop) rulesDecide(ctx context.Context, snapshot flags.Snapshot, rules R
 	}
 	now := l.nowOrDefault()
 	start := now()
-	out, req, resp, ranked := eng.EvaluateDecide(ctx, c, l.rulesRequestBuilder(c, snapshot.InterventionsAllowed))
+	out, req, resp, ranked := eng.EvaluateDecide(ctx, c, l.rulesRequestBuilder(c, l.withoutClosedGroupLever(snapshot.Policy, c, snapshot.InterventionsAllowed)))
 	if !ranked {
 		return out, nil
 	}
@@ -529,7 +529,7 @@ func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c 
 	// (UC-040 BR-005: no paid call without a possible action).
 	// UC-040 A40 step 5: in an experiment game the levers of the flag under test
 	// are not offered, so they do not count either.
-	if !hasAllowedInterventions(l.offeredInterventions(c, snapshot.InterventionsAllowed)) {
+	if !hasAllowedInterventions(l.offeredInterventions(c, snapshot)) {
 		l.noteNoInterventions(c, true, hasAllowedInterventions(snapshot.InterventionsAllowed))
 		l.recordGated(ctx, DecideGateNoInterventions)
 		return DecideGateNoInterventions
@@ -639,7 +639,7 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		requested: requested,
 		used:      backend.Name(),
 		model:     cfg.Model,
-		req:       l.buildDecideRequest(c, l.offeredInterventions(c, fired.InterventionsAllowed), false),
+		req:       l.buildDecideRequest(c, l.offeredInterventions(c, fired), false),
 		start:     start,
 		stateAt:   c.UpdatedAt,
 	}
@@ -775,7 +775,7 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 	}
 	var decisions []Decision
 	if eng, isDecide := rules.(decideEngine); isDecide {
-		out, req, resp, ranked := eng.EvaluateDecide(ctx, current, l.rulesRequestBuilder(current, snapshot.InterventionsAllowed))
+		out, req, resp, ranked := eng.EvaluateDecide(ctx, current, l.rulesRequestBuilder(current, l.withoutClosedGroupLever(snapshot.Policy, current, snapshot.InterventionsAllowed)))
 		decisions = out
 		if ranked {
 			rec.req, rec.resp, rec.hasResp = req, resp, true
@@ -804,7 +804,7 @@ func (l *Loop) decideRemoteFallback(ctx context.Context, snapshot flags.Snapshot
 // action sink; below it is held.
 func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, current gamecontext.GameContext, ok bool, rec *decideRecord, state *LayerState) {
 	state.DecideBackend = rec.used
-	d, outcome, invalidReason := mapAnswers(rec.resp)
+	d, outcome, invalidReason := mapAnswers(rec.req, rec.resp)
 	if iv, found := rec.resp.Find(decide.QuestionFFAIntervention); found {
 		rec.confidence = iv.Confidence
 	}
@@ -836,6 +836,10 @@ func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, c
 		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DiscardGameEnded
 		return
 	case d.TargetSerial != "" && !targetPresent(current, d.TargetSerial):
+		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DiscardTargetGone
+		return
+	case len(d.TargetSerials) > 0 && !groupPresent(current, d.TargetSerials):
+		// A group shield is all or nothing (#2467, A48): one target gone drops it.
 		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DiscardTargetGone
 		return
 	case decide.NeedsFreshReadings(d.Intervention) && !decide.TargetReadingsFresh(current, d.TargetSerial):
@@ -879,6 +883,10 @@ const (
 	invalidPlayerTargetMissing     = "player_intervention_without_target"
 	invalidSessionTargetedAtPlayer = "session_intervention_with_target"
 	invalidMissingIntervention     = "missing_intervention_answer"
+	// #2467 (UC-040 A47): a group lever without a group option of the request's
+	// alive players, and a group option on any other intervention.
+	invalidGroupWithoutGroup    = "group_intervention_without_group"
+	invalidGroupTargetForSingle = "group_target_for_single_intervention"
 )
 
 // mapAnswers turns a VALIDATED FFA response into a Decision: ffa.intervention is
@@ -888,7 +896,11 @@ const (
 // Reason is the truncated rationale. It returns outcome noop for a consistent noop,
 // invalid (with the reason) for cross-question inconsistencies, and act otherwise —
 // confidence routing is the caller's job.
-func mapAnswers(resp decide.Response) (Decision, string, string) {
+//
+// A group lever (decide.GroupTargeted) takes a group option, resolved against the
+// request's alive players into Decision.TargetSerials (#2467, UC-040 A47); req is
+// the request the answers belong to.
+func mapAnswers(req decide.Request, resp decide.Response) (Decision, string, string) {
 	iv, ok := resp.Find(decide.QuestionFFAIntervention)
 	if !ok {
 		return Decision{}, DecideOutcomeInvalid, invalidMissingIntervention
@@ -903,14 +915,26 @@ func mapAnswers(resp decide.Response) (Decision, string, string) {
 		}
 		return Decision{}, DecideOutcomeNoop, ""
 	}
+	groupScoped := decide.GroupTargeted(iv.Choice)
+	var group []string
+	switch {
+	case groupScoped:
+		serials, ok := decide.ResolveGroupTarget(target, req.State.AliveSerials())
+		if !ok {
+			return Decision{}, DecideOutcomeInvalid, invalidGroupWithoutGroup
+		}
+		group = serials
+	case decide.IsGroupTarget(target):
+		return Decision{}, DecideOutcomeInvalid, invalidGroupTargetForSingle
+	}
 	playerScoped := playerTargetedInterventions[iv.Choice]
 	switch {
 	case playerScoped && target == decide.TargetNone:
 		return Decision{}, DecideOutcomeInvalid, invalidPlayerTargetMissing
-	case !playerScoped && target != decide.TargetNone:
+	case !playerScoped && !groupScoped && target != decide.TargetNone:
 		return Decision{}, DecideOutcomeInvalid, invalidSessionTargetedAtPlayer
 	}
-	d := Decision{Intervention: iv.Choice, Reason: truncateRationale(resp.Rationale)}
+	d := Decision{Intervention: iv.Choice, Reason: truncateRationale(resp.Rationale), TargetSerials: group}
 	if playerScoped {
 		d.TargetSerial = target
 	}

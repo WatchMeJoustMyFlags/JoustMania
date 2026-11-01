@@ -838,7 +838,12 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// when the write is applied; every other way out of this function, a later
 	// refusal in the chain included, releases it.
 	applied := false
-	defer perm.shield.finish(&applied)
+	defer func() {
+		// A nil interface (no ledger step ran) holds nothing to finish.
+		if perm.shield != nil {
+			perm.shield.finish(&applied)
+		}
+	}()
 	if blocked {
 		if repeatReason, repeat := l.repeatRefusalReason(perm, d, now); repeat {
 			// A repeated refusal is counted, but emits no span, warning or timeline entry.
@@ -852,6 +857,9 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	defer dSpan.End()
 	// UC-046 step 7 / NFR-042: record the decision in the pattern game's sequence.
 	l.recordPatternDecision(dSpan, snapshot, d)
+	if len(d.TargetSerials) > 0 {
+		dSpan.SetAttributes(groupAttributes(d, perm.refusedSerial)...)
+	}
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
 	// (semconv) — same shape the openfeature OTel hooks emit in the Python
@@ -1086,10 +1094,13 @@ func (l *Loop) emitDisabledSpan(ctx context.Context, snapshot flags.Snapshot, c 
 type permission struct {
 	reason  BlockReason
 	blocked bool
-	// shield is the shield-ledger reservation this decision holds (UC-040 A31, A33),
-	// nil when the ledger does not apply or refused. It is returned on a later
-	// refusal too: the caller's deferred finish releases it.
-	shield *chargeReservation
+	// shield is the shield-ledger reservation this decision holds (UC-040 A31, A33;
+	// a group shield's targets, A47), nil when the ledger does not apply or refused.
+	// It is returned on a later refusal too: the caller's deferred finish releases it.
+	shield shieldHold
+	// refusedSerial is the group target the shield ledger refused (#2467, A48), ""
+	// otherwise.
+	refusedSerial string
 	// repeatShield marks a shield-ledger refusal (already_charged,
 	// shield_cap_reached, shield_cooldown) that repeats an earlier one with the same
 	// reason against the same entry (quiet, as A21).
@@ -1122,6 +1133,13 @@ func (l *Loop) evaluatePermission(ctx context.Context, snapshot flags.Snapshot, 
 	// battery is below the threshold. Session-scoped decisions (empty
 	// TargetSerial) are unaffected; missing battery is treated as unknown (does
 	// not block, but is noted).
+	// 1a. Group gate and set (#2467, UC-040 A47, A48, BR-033): a grant_group_shield
+	// needs the open gate and 2..max_targets distinct alive players. Check-only.
+	if d.Intervention == InterventionGrantGroupShield {
+		if r := groupSetRefusal(snapshot.Policy, c, d); r != "" {
+			return permission{reason: r, blocked: true}
+		}
+	}
 	if l.batteryBlocks(snapshot, c, d) {
 		return permission{reason: ReasonBatteryThreshold, blocked: true}
 	}
@@ -1146,9 +1164,20 @@ func (l *Loop) evaluatePermission(ctx context.Context, snapshot flags.Snapshot, 
 	// grant_shield is refused already_charged (trigger mode), shield_cap_reached or
 	// shield_cooldown, else reserved. Before the rate limit, so a refusal charges no
 	// budget and does not end rank-order admission.
-	shield, refused, firstRefusal := l.reserveShield(ctx, snapshot, c, d, now)
-	if refused != "" {
-		return permission{reason: refused, blocked: true, repeatShield: !firstRefusal}
+	var shield shieldHold
+	if d.Intervention == InterventionGrantGroupShield {
+		// A group reserves every target and a group slot, all or nothing (A47, A48).
+		res, refused, serial, firstRefusal := l.reserveGroupShield(ctx, snapshot, c, d, now)
+		if refused != "" {
+			return permission{reason: refused, blocked: true, repeatShield: !firstRefusal, refusedSerial: serial}
+		}
+		shield = res
+	} else {
+		res, refused, firstRefusal := l.reserveShield(ctx, snapshot, c, d, now)
+		if refused != "" {
+			return permission{reason: refused, blocked: true, repeatShield: !firstRefusal}
+		}
+		shield = res
 	}
 	// 5. Weighted rate limit: block when the per-minute budget is exhausted. The
 	// limiter charges the cost only when it admits, so blocked decisions above do
@@ -1167,7 +1196,16 @@ func (l *Loop) evaluatePermission(ctx context.Context, snapshot flags.Snapshot, 
 // 0 disables the check. Session-scoped decisions and unknown battery never block;
 // unknown battery is logged so the gap is visible (and recorded for #729).
 func (l *Loop) batteryBlocks(snapshot flags.Snapshot, c gamecontext.GameContext, d Decision) bool {
-	if d.TargetSerial == "" || snapshot.Policy.BatteryThreshold <= 0 {
+	if snapshot.Policy.BatteryThreshold <= 0 {
+		return false
+	}
+	// A group shield is blocked when any of its targets is low (#2467, A48).
+	for _, serial := range d.TargetSerials {
+		if p := c.Players[serial]; p != nil && p.BatteryPct != nil && *p.BatteryPct < float64(snapshot.Policy.BatteryThreshold) {
+			return true
+		}
+	}
+	if d.TargetSerial == "" {
 		return false
 	}
 	player := c.Players[d.TargetSerial]

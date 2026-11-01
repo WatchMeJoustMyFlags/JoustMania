@@ -3,6 +3,7 @@ package decision
 import (
 	"sync"
 
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
 )
 
@@ -72,7 +73,11 @@ func (l *Loop) experimentFlagBlocks(c gamecontext.GameContext, d Decision) strin
 // game (A40 step 5, decide-contract §3.1): allowed without the levers of the flag
 // under test. Outside an experiment it returns allowed unchanged. The call gate
 // (§7.1) uses the same list, so a request left with only noop is never made.
-func (l *Loop) offeredInterventions(c gamecontext.GameContext, allowed []string) []string {
+//
+// The group lever is offered only while the group gate is open for c (#2467,
+// UC-040 A47, group.go): snapshot carries the live policy.
+func (l *Loop) offeredInterventions(c gamecontext.GameContext, snapshot flags.Snapshot) []string {
+	allowed := l.withoutClosedGroupLever(snapshot.Policy, c, snapshot.InterventionsAllowed)
 	flag := l.experimentFlagOf(c)
 	if flag == "" {
 		return allowed

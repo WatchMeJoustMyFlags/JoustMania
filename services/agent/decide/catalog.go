@@ -23,6 +23,9 @@ const (
 	IntvEliminatePlayer         = "eliminate_player"
 	IntvRevivePlayer            = "revive_player"
 	IntvEndGame                 = "end_game"
+	// IntvGrantGroupShield shields 2 to policy.group_grant.max_targets alive
+	// players with one decision, all or nothing (#2467, UC-040 A47, BR-033).
+	IntvGrantGroupShield = "grant_group_shield"
 	// IntvNoop is the synthetic do-nothing intervention; it is not in the catalog.
 	IntvNoop = "noop"
 )
@@ -35,6 +38,11 @@ type Intervention struct {
 	// every other intervention is session-scoped and takes TargetNone. These are
 	// the action sink's TargetSerial users (services/agent/actions/writer.go).
 	PlayerTargeted bool
+	// GroupTargeted: applied to a SET of alive players chosen with one group
+	// option of ffa.target (TargetGroupAll, TargetGroupAllExceptPrefix; #2467,
+	// UC-040 A47). Never also PlayerTargeted. The decision carries the set in
+	// Decision.TargetSerials.
+	GroupTargeted bool
 	// Weight is the cost against the per-minute budget (docs/research/722-intervention-surface.md
 	// section 5): soft 0.5, medium 1, hard 2.
 	Weight float64
@@ -221,6 +229,16 @@ var Catalog = []Intervention{
 		Weight:                2,
 		JevDescription:        "End the round now. Maximal and irreversible; the last player alive wins.",
 		JevDescriptionNeutral: "End the round now. Irreversible; the last player alive wins.",
+	},
+	{
+		// #2467 (UC-040 A47, BR-033): effect only, in both profiles, so the lever
+		// prescribes no purpose. Offered only while the group gate is open
+		// (decision/group.go), so no existing request or prompt changes.
+		Name:                  IntvGrantGroupShield,
+		GroupTargeted:         true,
+		Weight:                1,
+		JevDescription:        "Make several alive players immune to elimination at the same time for a few seconds.",
+		JevDescriptionNeutral: "Make several alive players immune to elimination at the same time for a few seconds.",
 	},
 }
 

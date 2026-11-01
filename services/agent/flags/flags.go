@@ -46,6 +46,13 @@ const (
 	// keyShieldDangerEnabled switches the danger path off on its own (on by default;
 	// an unreadable value reads on, like the other two).
 	keyShieldDangerEnabled = "policy.shield_danger_enabled"
+	// The group-shield gate (#2467, UC-040 A47, BR-033): human-only agent flags with
+	// no targeting, read by the agent here (empty context) and by the coordinator in
+	// the game's flag context; both must resolve one value (flags.md §3).
+	keyGroupGrantEnabled    = "policy.group_grant.enabled"
+	keyGroupGrantRealGames  = "policy.group_grant.real_games"
+	keyGroupGrantMaxPerGame = "policy.group_grant.max_per_game"
+	keyGroupGrantMaxTargets = "policy.group_grant.max_targets"
 
 	// LLM call gate (#847): the flag-controlled gate in FRONT of every remote
 	// decide call (#1226) and post-game retro. Both are read EVERY cycle (never
@@ -352,6 +359,15 @@ type Policy struct {
 	// proposes nothing (UC-040 A43, BR-032). Inverted so the zero value (a
 	// hand-built Snapshot) keeps the path on, like the flag's default.
 	ShieldDangerOff bool
+	// The group-shield gate (#2467, UC-040 A47, BR-033), read like the coordinator's
+	// _group_grant_policy and failing closed: a missing or unreadable flag reads
+	// false / 0. GroupGrantMaxPerGame is clamped to 0..GroupGrantMaxPerGameCeiling,
+	// GroupGrantMaxTargets to 2..GroupGrantMaxTargetsCeiling (0 or less = off). The
+	// zero value (a hand-built Snapshot, the rules golden) keeps the gate closed.
+	GroupGrantEnabled    bool
+	GroupGrantRealGames  bool
+	GroupGrantMaxPerGame int
+	GroupGrantMaxTargets int
 }
 
 // LLMGate is the call gate in FRONT of every remote decide call and retro (#847,
@@ -825,6 +841,10 @@ func (f *Flags) Evaluate(ctx context.Context) Snapshot {
 			ShieldDangerRatio:     f.floatFlag(ctx, keyShieldDangerRatio, DefaultShieldDangerRatio),
 			ShieldDangerSamples:   f.intFlag(ctx, keyShieldDangerSamples, DefaultShieldDangerSamples),
 			ShieldDangerOff:       !f.boolFlag(ctx, keyShieldDangerEnabled, true),
+			GroupGrantEnabled:     f.boolFlag(ctx, keyGroupGrantEnabled, false),
+			GroupGrantRealGames:   f.boolFlag(ctx, keyGroupGrantRealGames, false),
+			GroupGrantMaxPerGame:  clampGroupMaxPerGame(f.intFlag(ctx, keyGroupGrantMaxPerGame, 0)),
+			GroupGrantMaxTargets:  clampGroupMaxTargets(f.intFlag(ctx, keyGroupGrantMaxTargets, 0)),
 		},
 		LLMGate: f.llmGate(ctx),
 		Fitness: Fitness{
@@ -947,6 +967,28 @@ func (f *Flags) nonNegativeIntFlag(ctx context.Context, key string, def int) int
 		return def
 	}
 	return v
+}
+
+// The registry ceilings of the group-shield flags (services/flag-service/registry.yaml),
+// the same as the coordinator's GROUP_MAX_PER_GAME / GROUP_MAX_TARGETS (games/shields.py).
+const (
+	GroupGrantMaxPerGameCeiling = 3
+	GroupGrantMinTargets        = 2
+	GroupGrantMaxTargetsCeiling = 6
+)
+
+// clampGroupMaxPerGame is policy.group_grant.max_per_game clamped to 0..3.
+func clampGroupMaxPerGame(v int) int {
+	return max(0, min(GroupGrantMaxPerGameCeiling, v))
+}
+
+// clampGroupMaxTargets is policy.group_grant.max_targets clamped to 2..6; 0 or less
+// (a read error reads 0) means off, as the coordinator's resolve_group_max_targets.
+func clampGroupMaxTargets(v int) int {
+	if v <= 0 {
+		return 0
+	}
+	return max(GroupGrantMinTargets, min(GroupGrantMaxTargetsCeiling, v))
 }
 
 // floatFlag resolves a float fitness flag, falling back to def on any error.
