@@ -52,31 +52,41 @@ Jaeger cross-check.
 | Metric | Level | Definition |
 |---|---|---|
 | `duration` | game | final `game_duration_seconds`. The game starts at the gauge's first sample minus its first value, because the series can be exported for hours after the game ends |
-| `death_rate` | kind | deaths from `game_player_deaths_total{game_kind}` (each container's series: its maximum in the window minus its last value before the window) divided by the kind's game minutes in the window |
+| `death_rate` | kind | the kind's eliminations divided by its game minutes. In FFA every death is an elimination; respawn modes die more often than they eliminate, so compare those with `--mode`. The `game_player_deaths_total` counter is not used: on the stage Pi it resets inside a series (two writers on one series identity, restarts that keep the container id), so `increase()` read 7322 deaths for about 90 games and max-minus-before undercounts (see the coordinator counter-reset issue). Do not trust coordinator counters until that issue is fixed |
 | `elimination_pace` | game | eliminated players (`game_player_elimination_order` series) per minute |
-| `near_death_rate` | game | `game_near_death_events_total` increase for the game's serials around game end (the coordinator adds each player's count once, at game end) per player-minute |
+| `near_death_rate` | game | `game_near_death_events_total` increase for the game's serials from 5 s before to 5 s after game end (the coordinator adds each player's count once, at game end) per player-minute. No value for a game that shares a serial with another game ending from 7 s before to 5 s after it (counted under `skipped`). On the Pi it matched the Jaeger count on all 55 games that had both |
 | `near_death_rate_jaeger` | game | the same from the `player_analytics` span events (`near_death_count`, one per player). It cross-checks the counter, which has no `game_id` label |
 | `activity` | game | mean over the game's seconds of the field mean of `game_player_accel_magnitude / game_effective_death_threshold` over the alive players (at least 2) ([decide-contract §14.1](specs/decide-contract.md#141-characteristics)) |
 | `change` | game | mean over 15 s windows (every 5 s) of the swing (max minus min) of the three 5 s sub-window means of field activity |
 | `closeness` | game | mean over 5 s samples of the spread (max minus min) of per-player activity over the last 10 s, among the alive players |
 | `survival` | game | mean over players of the fraction of the game they stayed alive (1 for a survivor). This is a game-level form that §14.1 does not define |
 | `skill_gap` | game | max minus min of the final `game_player_skill_level`: the input of the balanced fitness |
-| `intensity` | player | mean `game_player_accel_magnitude` over the game (g) |
-| `movement_variance` | player | final `game_player_movement_variance` |
+| `intensity` | player, compared per game | mean `game_player_accel_magnitude` over the game (g); a game's value is the mean over its players |
+| `movement_variance` | player, compared per game | final `game_player_movement_variance`; a game's value is the mean over its players |
 
-**Verdict per metric:** `insufficient` when either kind has fewer than `--min-n` samples (default 8,
-the cohort's `verdict_min_n`). Otherwise `similar` when the two-sample KS statistic is at most
-`--ks-max` (0.3) **and** the shadow / real ratio of medians lies within [1/`--ratio-max`,
-`--ratio-max`] ([0.67, 1.5]). Otherwise `divergent`. `insufficient` never counts as similar.
+**Verdict per metric** (every count is games; players of one game are not independent samples):
+`insufficient` when either kind has fewer than `--min-n` games (default 8, the cohort's
+`verdict_min_n`), or when there are too few games for the KS test to resolve a gap of `--ks-max`.
+The test's critical value at alpha 0.05, 1.358 x sqrt((n+m)/(n x m)), must be at most `--ks-max`
+(0.3). That takes about 27 shadow games against 89 real ones, or 41 per kind when the counts are
+equal. With fewer games, "divergent" would mostly be noise: with 8 games per kind and identical
+distributions it came out divergent two times in three. Otherwise `similar` when the two-sample KS
+statistic is at most `--ks-max` **and** the shadow / real ratio of medians lies within
+[1/`--ratio-max`, `--ratio-max`] ([0.67, 1.5]). Otherwise `divergent`. `insufficient` never counts
+as similar.
 **Objective roll-up:** endurance and accelerate read `duration`, balanced reads `skill_gap`
-(`services/agent/decision/fitness.go`). An objective is `similar` only when all of its inputs are.
+(`services/agent/decision/fitness.go`). An objective is `divergent` when any input is, `similar`
+only when all are, `insufficient` otherwise.
 
 ### Caveats
 
 - Real sessions mix test games (one or two players, a few seconds) with real play. Pick the window
   with `--start/--end` around a real session, or read the quartiles, not just the median.
-- The near-death counter is keyed by serial. Two games that share serials and end within 30 s of
-  each other would share counts. Shadow cohorts reuse mock serials but run one game at a time.
+- The near-death counter is keyed by serial. A game that shares a serial with another game ending
+  at about the same time gets no value, rather than a mixed one.
+- A naturally ended game keeps exporting its per-game series until the next game starts
+  (telemetry.md). The tool places games by their first sample, so this does not matter here, but it
+  does for any query that uses the last sample.
 - The per-player gauges are exported about once a second, so `activity`, `change` and `closeness`
   approximate the agent's own values. Compare them between kinds only, never with the agent's numbers.
 - `similar` realism is necessary but not sufficient: shadow can look like real and still respond
@@ -85,19 +95,19 @@ the cohort's `verdict_min_n`). Otherwise `similar` when the two-sample KS statis
 ### First result (stage Pi, 2026-11-01, window 30 days)
 
 89 real games (FFA 88, Fight Club 1; mostly the 2- and 4-player FFA games of 2026-11-01) and
-5 shadow games (one experiment, `exp_3bd084a608f1`, 2026-10-28). Shadow verdicts are
-`insufficient` (5 < 8) apart from the per-player rows. Still, the medians point the same way:
+5 shadow games (one experiment, `exp_3bd084a608f1`, 2026-10-28). **Every verdict is
+`insufficient`**: 5 shadow games are below the floor of 8 and far below the about 27 the KS test
+needs here. That includes the per-player rows, which now count games. Nothing can be called
+similar or divergent yet. The medians only hint at where to look:
 
 - `duration`: real median 16 s vs shadow 40 s, and two shadow games ran into the 300 s limit.
-- `elimination_pace`: 5.6/min vs 1.6/min. `near_death_rate`: 17.7 vs 1.5 per player-minute.
-- `movement_variance`: real 0.12 g² vs shadow 0.006 g², `divergent` (n = 275 / 20). The mock
-  drivers move far more smoothly than people.
-- `intensity` (mean acceleration) is `similar` (1.26 g vs 1.21 g, KS 0.26). So is `activity`
-  by its median (0.57 vs 0.50), but with only 5 shadow games.
+- `elimination_pace`: 5.6/min vs 1.6/min. `near_death_rate`: 13.9 vs 1.5 per player-minute.
+- `movement_variance`: real 0.12 g² vs shadow 0.007 g². The mock drivers may move much more
+  smoothly than people.
+- `intensity` (1.34 g vs 1.26 g) and `activity` (0.57 vs 0.50) are close by their medians.
 
-Reading: shadow games match real games on average movement level but not on how jerky it is. They
-die far less often and last longer. No objective is near the bar today. More shadow games
-(an experiment of at least 8 per arm) are the next data point.
+The next data point is more shadow games: at least 27 FFA shadow games in the window (for example
+an experiment of 14 or more per arm). No objective can be judged against the bar today.
 
 ## 2. Correlation study (#1017 ask 1, needs live play)
 

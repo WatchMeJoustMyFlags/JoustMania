@@ -14,7 +14,9 @@ Stdlib only. Subcommands:
                     per metric and kind: n, median, quartiles; the distance between the kinds
                     (two-sample KS statistic, ratio of medians shadow / real) and a verdict
 
-Verdict per metric: ``insufficient`` when either kind has fewer than --min-n samples, otherwise
+Verdict per metric (counts are games; a player metric is one value per game, the mean over its
+players): ``insufficient`` when either kind has fewer than --min-n games or the KS critical value
+at alpha 0.05 for the two game counts is above --ks-max (the sample cannot resolve that gap), otherwise
 ``similar`` when KS <= --ks-max AND the ratio of medians is inside [1/--ratio-max, --ratio-max],
 otherwise ``divergent``. ``insufficient`` is never ``similar`` (fail closed for the validity bar,
 UC-043 A23). The per-game definitions approximate decide-contract §14.1 from 1 Hz gauges; they are
@@ -35,8 +37,11 @@ from collections import Counter, defaultdict
 
 STEP_S = 1  # the coordinator exports the per-player gauges about once a second
 END_MARGIN_S = 120  # final exports of a game that ends near the window's end
-NEAR_DEATH_AFTER_S = 20  # the near-death counter is incremented once, at game end
-NEAR_DEATH_WINDOW_S = 30
+# The near-death counter is incremented once, at game end, and exported within about a second:
+# a game's count is the increase over (end + AFTER - WINDOW, end + AFTER].
+NEAR_DEATH_AFTER_S = 5
+NEAR_DEATH_WINDOW_S = 10
+NEAR_DEATH_LAG_S = 2  # export lag of another game's increment
 
 # Metric name, unit, sample unit (game or player), source of the samples.
 METRICS = [
@@ -49,7 +54,7 @@ METRICS = [
     ("closeness", "x threshold", "game"),
     ("survival", "fraction", "game"),
     ("skill_gap", "skill", "game"),
-    ("intensity", "g", "player"),
+    ("intensity", "g", "player"),  # per game: mean over its players
     ("movement_variance", "g^2", "player"),
 ]
 # The metrics each objective's fitness reads (services/agent/decision/fitness.go).
@@ -258,6 +263,44 @@ def _by_game(result: list[dict]) -> dict[str, list[dict]]:
     return out
 
 
+def _near_deaths(
+    vm: VM, games: list[dict], game_serials: dict, skipped: Counter, now: float
+) -> None:
+    """Per-game near-death count from game_near_death_events_total (labels serial, game_mode).
+
+    The counter has no game_id: the coordinator adds each player's count once, at game end. So the
+    count of a game is the increase over its serials in a short window around its end. A game that
+    shares a serial with another game whose increment falls in that window (concurrent shadow games reuse the
+    mock serials) cannot be told apart: it gets no value and is counted as skipped.
+    """
+    lo = NEAR_DEATH_AFTER_S - NEAR_DEATH_WINDOW_S - NEAR_DEATH_LAG_S
+    hi = NEAR_DEATH_AFTER_S
+    for g in games:
+        serials = game_serials.get(g["game_id"], [])
+        if not serials or g["duration"] <= 0:
+            continue
+        mine = set(serials)
+        clash = any(
+            o is not g
+            and lo <= o["end"] - g["end"] <= hi
+            and mine & set(game_serials.get(o["game_id"], []))
+            for o in games
+        )
+        if clash:
+            skipped["near_death_shared_serials"] += 1
+            continue
+        sel = "|".join(serials)
+        res = vm.instant(
+            f'sum(increase(game_near_death_events_total{{serial=~"{sel}"}}[{NEAR_DEATH_WINDOW_S}s]))',
+            min(now, g["end"] + NEAR_DEATH_AFTER_S),
+        )
+        if res:
+            g["near_deaths"] = round(float(res[0]["value"][1]), 3)
+            g["near_death_rate"] = g["near_deaths"] / (
+                len(serials) * g["duration"] / 60
+            )
+
+
 def collect(
     vm: VM,
     start: float,
@@ -301,6 +344,7 @@ def collect(
     )
 
     games, players, skipped = [], [], Counter()
+    game_serials: dict[str, list[str]] = {}
     for r in durations:
         gid = r["metric"].get("game_id", "")
         kind = _kind(r["metric"].get("game_kind", ""))
@@ -344,16 +388,7 @@ def collect(
         levels = [float(s["value"][1]) for s in skills.get(gid, [])]
         rec["skill_gap"] = max(levels) - min(levels) if len(levels) >= 2 else None
         rec["near_deaths"] = rec["near_death_rate"] = None
-        if serials and dur > 0:
-            sel = "|".join(serials)
-            q_at = min(now, g_end + NEAR_DEATH_AFTER_S)
-            res = vm.instant(
-                f'sum(increase(game_near_death_events_total{{serial=~"{sel}"}}[{NEAR_DEATH_WINDOW_S}s]))',
-                q_at,
-            )
-            if res:
-                rec["near_deaths"] = round(float(res[0]["value"][1]), 3)
-                rec["near_death_rate"] = rec["near_deaths"] / (len(serials) * dur / 60)
+        game_serials[gid] = serials
         rec["near_death_rate_jaeger"] = None
         if jaeger:
             nd = jaeger_near_deaths(jaeger, gid, g_start, g_end)
@@ -376,35 +411,20 @@ def collect(
                 }
             )
 
-    # Deaths per kind from the counter. Each coordinator container is its own series (monotonic for
-    # its lifetime), so the increase is the series' maximum in the window minus its last value
-    # before the window (0 for a series born in it). increase() over a long window was off by 50x.
+    _near_deaths(vm, games, game_serials, skipped, now)
+
+    # Deaths per kind from the games' eliminations, not from game_player_deaths_total: that counter
+    # has in-series resets on the stage Pi (two writers on one series identity, and restarts that
+    # keep the container id), so neither increase() nor max-minus-before is trustworthy (see the
+    # coordinator counter-reset issue). In FFA every death is an elimination; respawn modes
+    # (NonStop, Zombies) die more often than they eliminate, so compare them with --mode only.
     aggregate: dict[str, dict] = {}
-    window = f"{max(1, int(end - start))}s"
-    sel = (
-        f'game_player_deaths_total{{mode="{mode}"}}'
-        if mode
-        else "game_player_deaths_total"
-    )
-
-    def key(metric: dict) -> tuple:
-        return tuple(sorted((k, v) for k, v in metric.items() if k != "__name__"))
-
-    before = {
-        key(r["metric"]): float(r["value"][1])
-        for r in vm.instant(f"last_over_time({sel}[30d] offset {window})", end)
-    }
-    for r in vm.instant(f"max_over_time({sel}[{window}])", end):
-        kind = _kind(r["metric"].get("game_kind", ""))
-        if kind:
-            inc = max(0.0, float(r["value"][1]) - before.get(key(r["metric"]), 0.0))
-            agg = aggregate.setdefault(kind, {"deaths_total": 0.0})
-            agg["deaths_total"] += inc
     for kind in ("real", "shadow"):
-        minutes = sum(g["duration"] for g in games if g["kind"] == kind) / 60
-        agg = aggregate.setdefault(kind, {})
-        agg["game_minutes"] = round(minutes, 3)
-        agg.setdefault("deaths_total", 0.0)
+        mine = [g for g in games if g["kind"] == kind]
+        aggregate[kind] = {
+            "deaths_total": float(sum(g["eliminations"] for g in mine)),
+            "game_minutes": round(sum(g["duration"] for g in mine) / 60, 3),
+        }
     return {
         "window": {"start": start, "end": end},
         "mode": mode or "",
@@ -452,14 +472,35 @@ def median_ratio(real_med: float, shadow_med: float) -> float:
     return shadow_med / real_med
 
 
+KS_C_ALPHA = 1.358  # two-sample KS critical coefficient at alpha 0.05
+
+
+def ks_critical(n: int, m: int) -> float:
+    """The KS statistic two samples of n and m games need to differ at alpha 0.05."""
+    return KS_C_ALPHA * math.sqrt((n + m) / (n * m)) if n and m else math.inf
+
+
 def verdict(n_real, n_shadow, ks, ratio, min_n, ks_max, ratio_max) -> str:
-    if n_real < min_n or n_shadow < min_n:
+    """Counts are GAMES. Insufficient below min_n games of a kind, and while the sample cannot
+    resolve a gap of ks_max (its KS critical value at alpha 0.05 is above ks_max: about 27 shadow
+    games against 89 real, 41 per kind when equal), so neither similar nor divergent is noise."""
+    if n_real < min_n or n_shadow < min_n or ks_critical(n_real, n_shadow) > ks_max:
         return "insufficient"
     if ks is not None and ks > ks_max:
         return "divergent"
     if not (1 / ratio_max <= ratio <= ratio_max):
         return "divergent"
     return "similar"
+
+
+def _per_game(players: list[dict], name: str) -> list[dict]:
+    """A player-level metric as one value per game (the mean over its players): the players of
+    one game are not independent samples, so every verdict counts games."""
+    by: dict[tuple, list[float]] = defaultdict(list)
+    for p in players:
+        if p.get(name) is not None:
+            by[(p["game_id"], p["kind"])].append(p[name])
+    return [{"kind": k, name: sum(v) / len(v)} for (_, k), v in by.items()]
 
 
 def compare(
@@ -469,7 +510,9 @@ def compare(
     for name, unit, level in METRICS:
         if name == "near_death_rate_jaeger" and not dataset.get("jaeger"):
             continue
-        src = dataset["games"] if level == "game" else dataset["players"]
+        src = (
+            dataset["games"] if level == "game" else _per_game(dataset["players"], name)
+        )
         samples = {
             k: [r[name] for r in src if r["kind"] == k and r.get(name) is not None]
             for k in ("real", "shadow")
@@ -548,9 +591,10 @@ def compare(
         vs = [by.get(m, "insufficient") for m in inputs]
         objectives[obj] = {
             "inputs": inputs,
-            "realism": "similar"
-            if all(v == "similar" for v in vs)
-            else ("insufficient" if "insufficient" in vs else "divergent"),
+            # divergent is a result and wins over insufficient
+            "realism": "divergent"
+            if "divergent" in vs
+            else ("similar" if all(v == "similar" for v in vs) else "insufficient"),
         }
     counts = {
         k: Counter(g["mode"] or "?" for g in dataset["games"] if g["kind"] == k)
@@ -595,8 +639,10 @@ def render(rep: dict) -> str:
         )
     t = rep["thresholds"]
     lines.append(
-        f"  verdict: similar = n >= {t['min_n']} per kind, KS <= {t['ks_max']}, "
-        f"shadow/real median ratio in [{1 / t['ratio_max']:.2f}, {t['ratio_max']}]"
+        f"  verdict (n = games): similar = n >= {t['min_n']} per kind and enough games that the KS "
+        f"critical value (alpha 0.05) is <= {t['ks_max']}, KS <= {t['ks_max']}, "
+        f"shadow/real median ratio in [{1 / t['ratio_max']:.2f}, {t['ratio_max']}]; otherwise "
+        "insufficient (too few games) or divergent"
     )
     lines.append("")
     lines.append(

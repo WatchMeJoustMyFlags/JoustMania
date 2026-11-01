@@ -103,7 +103,7 @@ The totals (the number of names, of names without a consumer and of names never 
 | `game_near_death_events_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana, scripts |  |
 | `game_player_accel_magnitude` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, scripts |  |
 | `game_player_alive` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, scripts, tools |  |
-| `game_player_deaths_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana, scripts | #1376 |
+| `game_player_deaths_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana | #1376 |
 | `game_player_elimination_order` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, scripts |  |
 | `game_player_movement_variance` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, scripts, tools |  |
 | `game_player_movement_variance_aggregate` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |

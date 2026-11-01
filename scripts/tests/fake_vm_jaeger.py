@@ -34,7 +34,8 @@ def vec(metric: dict, value) -> dict:
 
 
 def accel_at(g, s, t):
-    return g["accel"][s] + 0.05 * math.sin(t - g["start"])
+    # A 5 s wave: every whole game (durations are multiples of 5 s) has the same mean.
+    return g["accel"][s] + 0.05 * math.sin(2 * math.pi * (t - g["start"]) / 5)
 
 
 def instant(q: str) -> list:

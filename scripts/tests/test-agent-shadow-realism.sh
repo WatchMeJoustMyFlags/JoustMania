@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Self-contained tests for scripts/agent-shadow-realism.sh (#1017): the per-metric verdicts
 # (similar, divergent, insufficient; insufficient never counts as similar), the objective roll-up,
-# game placement from the duration gauge's first sample (a stale series outlives its game), the
-# death counter increase per container, the Jaeger near-death cross-check (one summary per player),
+# verdicts count games and need KS power, divergent wins the roll-up, game placement from the
+# duration gauge's first sample (a stale series outlives its game), deaths from eliminations (the
+# counter resets), near-deaths only for games with their own serials, the Jaeger cross-check (one
+# summary per player),
 # the mode filter, and that the tool only sends GET requests to the two query APIs. A fake
 # VictoriaMetrics + Jaeger (scripts/tests/fake_vm_jaeger.py), no stack.
 #
@@ -57,9 +59,14 @@ for i in range(n_shadow):
     games.append(game("shadow", i, "s", factor, jaeger=False))
 if "fightclub" in extra:
     games += [game("primary", 900 + i, "fc", 1.0, mode="Fight Club") for i in range(2)]
+if "clash" in extra:  # two concurrent shadow games on the same mock serials, ending 5 s apart
+    a = game("shadow", 800, "c", 1.0, jaeger=False)
+    b = dict(a, id="game_c0801", dur=a["dur"] + 5)
+    games += [a, b]
 if "linger" in extra:
     games[0]["linger"] = 10 ** 6  # the stale series is still exported long after the window
-deaths = [{"game_kind": "primary", "mode": "FFA", "instance": "a", "before": 100, "max": 130},
+# The counter with an in-window reset (two writers on one series): increase() would read 7227.
+deaths = [{"game_kind": "primary", "mode": "FFA", "instance": "a", "before": 100, "max": 7227},
           {"game_kind": "primary", "mode": "FFA", "instance": "b", "before": None, "max": 20},
           {"game_kind": "primary", "mode": "Fight Club", "instance": "b", "before": None, "max": 7},
           {"game_kind": "shadow", "mode": "FFA", "instance": "c", "before": None, "max": 10}]
@@ -70,7 +77,7 @@ PY
 SCEN="${WORK}/scenario.json"
 LOG="${WORK}/requests.log"
 : >"${LOG}"
-scenario "${SCEN}" 10 10
+scenario "${SCEN}" 45 45
 python3 "${SCRIPT_DIR}/fake_vm_jaeger.py" --scenario "${SCEN}" --log "${LOG}" --port-file "${WORK}/port" &
 FAKE_PID=$!
 for _ in $(seq 1 100); do [[ -s "${WORK}/port" ]] && break; sleep 0.05; done
@@ -85,7 +92,6 @@ run_sr --json --save "${WORK}/ds1.json" >"${WORK}/r1.json"
 all_similar=0
 for m in duration death_rate elimination_pace near_death_rate activity change closeness survival skill_gap intensity movement_variance; do
   v="$(verdict "${WORK}/r1.json" "${m}")"
-  [[ "${m}" == death_rate ]] && continue # the counter fixture is not proportional to the games
   [[ "${v}" == similar ]] || { echo "  ${m}: ${v}"; all_similar=1; }
 done
 ok "identical real and shadow games: every metric similar" "${all_similar}"
@@ -106,8 +112,8 @@ ds, rep = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
 real = [g for g in ds["games"] if g["kind"] == "real"]
 minutes = sum(g["duration"] for g in real) / 60
 dr = next(r for r in rep["metrics"] if r["metric"] == "death_rate")
-# instance a: 130 - 100; instance b (FFA 20 + Fight Club 7, both born in the window)
-print("deaths", abs(dr["real"]["rate"] - 57 / minutes) < 1e-9)
+# deaths are the games' eliminations (3 per 4-player FFA game), whatever the counter says
+print("deaths", abs(dr["real"]["rate"] - 3 * len(real) / minutes) < 1e-9)
 g = real[0]
 print("jaeger", abs(g["near_death_rate_jaeger"] - 4 / (4 * g["duration"] / 60)) < 1e-9)
 print("vm_near", abs(g["near_death_rate"] - g["near_deaths"] / (4 * g["duration"] / 60)) < 1e-9)
@@ -119,27 +125,57 @@ PY
 for c in deaths jaeger vm_near window survival pace activity; do
   ok "dataset: ${c}" "$(cond grep -qx "${c} True" "${WORK}/checks")"
 done
+ok "the reset-prone deaths counter is not read" "$(cond [ "$(grep -c 'game_player_deaths_total' "${LOG}")" == 0 ])"
 
 # 4. a stale duration series that outlives the window: the game is placed by its first sample.
-scenario "${SCEN}" 10 10 1 linger
+scenario "${SCEN}" 45 45 1 linger
 run_sr --no-jaeger --save "${WORK}/ds4.json" >/dev/null
 n4="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["games"]))' "${WORK}/ds4.json")"
-ok "a lingering duration gauge does not move its game out of the window" "$(cond [ "${n4}" == 20 ])"
+ok "a lingering duration gauge does not move its game out of the window" "$(cond [ "${n4}" == 90 ])"
 
 # 5. shadow games three times as long: duration divergent, endurance and accelerate divergent.
-scenario "${SCEN}" 10 10 3
-run_sr --no-jaeger --json >"${WORK}/r5.json"
+scenario "${SCEN}" 45 45 3
+run_sr --no-jaeger --json --save "${WORK}/ds5.json" >"${WORK}/r5.json"
 ok "longer shadow games: duration divergent" "$(cond [ "$(verdict "${WORK}/r5.json" duration)" == divergent ])"
 ok "longer shadow games: endurance divergent" "$(cond [ "$(objective "${WORK}/r5.json" endurance)" == divergent ])"
 ok "longer shadow games: intensity still similar" "$(cond [ "$(verdict "${WORK}/r5.json" intensity)" == similar ])"
+mix="$(python3 -c "
+import json, sys; sys.path.insert(0, '${SCRIPT_DIR}/..')
+import agent_shadow_realism as t
+ds = json.load(open('${WORK}/ds5.json'))
+for g in ds['games']:
+    if g['kind'] == 'shadow':
+        g['skill_gap'] = None
+t.OBJECTIVE_INPUTS['mix'] = ['duration', 'skill_gap']
+print(t.compare(ds)['objectives']['mix']['realism'])")"
+ok "roll-up: a divergent input wins over an insufficient one" "$(cond [ "${mix}" == divergent ])"
 
 # 6. too few shadow games: insufficient everywhere, never similar.
-scenario "${SCEN}" 10 3
+scenario "${SCEN}" 45 3
 run_sr --no-jaeger --json >"${WORK}/r6.json"
 ok "3 shadow games (min 8): duration insufficient" "$(cond [ "$(verdict "${WORK}/r6.json" duration)" == insufficient ])"
 ok "3 shadow games: no objective similar" "$(cond [ "$(objective "${WORK}/r6.json" endurance)" == insufficient -a "$(objective "${WORK}/r6.json" balanced)" == insufficient ])"
-run_sr --no-jaeger --json --min-n 3 >"${WORK}/r6b.json"
-ok "--min-n 3 lets 3 games count" "$(cond [ "$(verdict "${WORK}/r6b.json" duration)" != insufficient ])"
+run_sr --no-jaeger --json --min-n 3 --ks-max 0.9 >"${WORK}/r6b.json"
+ok "--min-n 3 --ks-max 0.9 lets 3 games count" "$(cond [ "$(verdict "${WORK}/r6b.json" duration)" != insufficient ])"
+
+# 6b. enough games for min-n but not for the KS test: still insufficient (10 shadow vs 45 real).
+scenario "${SCEN}" 45 10
+run_sr --no-jaeger --json >"${WORK}/r6c.json"
+ok "10 shadow games: KS cannot resolve 0.3, insufficient" "$(cond [ "$(verdict "${WORK}/r6c.json" duration)" == insufficient ])"
+# player metrics count games, not players (10 games x 4 players is n = 10)
+pn="$(python3 -c 'import json,sys; print({r["metric"]: r["shadow"]["n"] for r in json.load(open(sys.argv[1]))["metrics"]}["intensity"])' "${WORK}/r6c.json")"
+ok "player metrics: n counts games" "$(cond [ "${pn}" == 10 ])"
+
+# 6c. concurrent shadow games on the same mock serials: no near-death value for either.
+scenario "${SCEN}" 10 10 1 clash
+run_sr --no-jaeger --save "${WORK}/ds6d.json" >/dev/null
+clash="$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+c = [g["near_deaths"] for g in d["games"] if g["game_id"].startswith("game_c0")]
+o = [g["near_deaths"] for g in d["games"] if not g["game_id"].startswith("game_c0")]
+print(c == [None, None] and None not in o and d["skipped"].get("near_death_shared_serials") == 2)' "${WORK}/ds6d.json")"
+ok "shared serials ending together: near-deaths not attributed" "$(cond [ "${clash}" == True ])"
 
 # 7. the mode filter.
 scenario "${SCEN}" 10 10 1 fightclub
@@ -165,9 +201,9 @@ ks="$(python3 -c "
 import sys; sys.path.insert(0, '${SCRIPT_DIR}/..')
 import agent_shadow_realism as t
 print(t.ks_statistic([1,2,3],[4,5,6]), t.ks_statistic([1,2,3],[1,2,3]), t.ks_statistic([1,2,3,4],[3,4,5,6]),
-      t.median_ratio(0,0), t.verdict(8, 8, 0.31, 1.0, 8, 0.3, 1.5), t.verdict(8, 8, 0.1, 1.6, 8, 0.3, 1.5),
-      t.verdict(8, 7, 0.0, 1.0, 8, 0.3, 1.5))")"
-ok "KS statistic, median ratio and verdict thresholds" "$(cond [ "${ks}" == "1.0 0.0 0.5 1.0 divergent divergent insufficient" ])"
+      t.median_ratio(0,0), t.verdict(45, 45, 0.31, 1.0, 8, 0.3, 1.5), t.verdict(45, 45, 0.1, 1.6, 8, 0.3, 1.5),
+      t.verdict(45, 7, 0.0, 1.0, 8, 0.3, 1.5), t.verdict(8, 8, 0.9, 3.0, 8, 0.3, 1.5), t.verdict(89, 30, 0.0, 1.0, 8, 0.3, 1.5))")"
+ok "KS statistic, median ratio and verdict thresholds (power)" "$(cond [ "${ks}" == "1.0 0.0 0.5 1.0 divergent divergent insufficient insufficient similar" ])"
 
 if ((fails)); then
   echo "${fails} test(s) failed"
