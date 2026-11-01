@@ -29,6 +29,7 @@ from services.game_coordinator.games.swapper import SwapperGame  # noqa: E402
 from services.game_coordinator.games.zombie import ZombieGame  # noqa: E402
 
 BASE_METRICS = "services.game_coordinator.games.base.metrics"
+SWAPPER_METRICS = "services.game_coordinator.games.swapper.metrics"
 
 
 class RecordingStream:
@@ -326,47 +327,71 @@ class TestSwapperSwapIsNoElimination:
 
     @pytest.mark.uc("UC-024", flow="A1", steps=[3], br=["BR-005"])
     @pytest.mark.uc("UC-041", br=["BR-008"])
-    @pytest.mark.parametrize("gate_on", ["player_swapped", "beep"])
+    @pytest.mark.parametrize("gate_on", ["colour", "player_swapped", "beep"])
     @pytest.mark.asyncio
-    async def test_a_disconnect_after_the_repaint_still_takes_the_player_out_once(self, gate_on):
-        """The disconnect lands while the swap publishes ``player_swapped`` or plays the beep.
+    async def test_a_disconnect_late_in_the_swap_still_takes_the_player_out_once(self, gate_on):
+        """The disconnect lands while the swap writes the new colour, publishes ``player_swapped`` or beeps.
 
-        The player is alive again (repainted), so the base drops the disconnect's kill
-        (this kill is in progress); the swap must take the player out when it resumes:
-        not alive, order 1 once, span closed with ``player_eliminated``.
+        During the colour write the player is not repainted yet; during the publish
+        and the beep it is alive again, so the base drops the disconnect's kill (this
+        kill is in progress). Either way the swap takes the player out when it
+        resumes: not alive, ``player_alive`` 0, order 1 once, span closed with
+        ``player_eliminated``, and nothing after the gate (no ``player_swapped``
+        after the colour, no beep after the publish).
         """
         reached, release = asyncio.Event(), asyncio.Event()
+        published: list[str] = []
+        sounds: list = []
+
+        async def gate():
+            reached.set()
+            await release.wait()
 
         async def gated_publish(event_type, _data=None, *_args, **_kwargs):
+            published.append(event_type)
             if gate_on == "player_swapped" and event_type == "player_swapped":
-                reached.set()
-                await release.wait()
+                await gate()
 
         game = await _swapper(4, publisher=gated_publish)
         target = "mock_controller_0"
 
         async def gated_sound(sound, *_args, **_kwargs):
+            sounds.append(sound)
             if gate_on == "beep" and sound == Sound.SFX_BEEP:
-                reached.set()
-                await release.wait()
+                await gate()
 
         game._play_sound = gated_sound
+        real_colour = game._set_player_color
 
-        with patch(BASE_METRICS) as base_metrics:
+        async def gated_colour(serial, color):
+            await real_colour(serial, color)
+            if gate_on == "colour" and serial == target:
+                await gate()
+
+        game._set_player_color = gated_colour
+
+        with patch(BASE_METRICS) as base_metrics, patch(SWAPPER_METRICS) as swapper_metrics:
             kill = asyncio.create_task(game._kill_player(target, 3.0))
             await asyncio.wait_for(reached.wait(), 2.0)
-            assert game.players[target].alive is True  # repainted
+            assert game.players[target].alive is (gate_on != "colour")  # repainted after the colour
             new_span = game.players[target].span = MagicMock()  # the span the swap opened
             await game._handle_disconnect(target)
             release.set()
             assert await asyncio.wait_for(kill, 2.0) is True
 
             assert _orders(base_metrics) == [(target, 1)]
+            alive_gauge = swapper_metrics.player_alive
+            alive_gauge.labels.assert_called_with(serial=target, game_id=game.game_id)
+            assert alive_gauge.labels.return_value.set.call_args.args == (0,)
 
         assert game.players[target].alive is False
         assert game.players[target].span is None
         new_span.add_event.assert_any_call("player_eliminated", attributes={"reason": "controller_disconnect"})
         new_span.end.assert_called_once()
+        if gate_on == "colour":
+            assert "player_swapped" not in published
+        if gate_on in ("colour", "player_swapped"):
+            assert Sound.SFX_BEEP not in sounds
         await game.cleanup()
 
     @pytest.mark.uc("UC-024", flow="A1", steps=[3], br=["BR-005"])
