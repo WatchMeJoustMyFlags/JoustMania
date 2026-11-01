@@ -114,10 +114,13 @@ def _trace_spans(trace_id: str) -> list:
 def _spans_since(service: str, start_s: float) -> list:
     """``service`` spans Jaeger holds that started at or after ``start_s`` (query API v3).
 
+    The query window starts at ``start_s`` (#2501), so older traces cannot push new
+    spans out of the 100-trace search depth; the startTime filter below stays as a check.
+
     ``jaeger_v3`` answers ``[]`` only for v3's "No traces found"; any other error
     status raises, so an unreachable or failing store never reads as "no spans".
     """
-    traces = jaeger_v3.find_traces(JAEGER_API, service, limit=100)
+    traces = jaeger_v3.find_traces(JAEGER_API, service, limit=100, start_time_s=start_s)
     return [
         span
         for trace in traces

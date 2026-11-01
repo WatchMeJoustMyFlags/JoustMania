@@ -62,6 +62,14 @@ def test_search_url_is_v3_with_fixed_window():
     }
 
 
+@pytest.mark.uc("UC-035", flow="A3")
+def test_search_url_start_time_narrows_the_window():
+    url = jaeger_v3.search_url("http://h/api", "agent", start_time_s=1_700_000_000.9)
+    query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+    assert query["query.startTimeMin"] == "2023-11-14T22:13:20Z"
+    assert query["query.startTimeMax"] == "2100-01-01T00:00:00Z"
+
+
 @pytest.mark.uc("UC-035", flow="main")
 def test_recorded_answer_reads_like_the_legacy_shape():
     with _answer(200, _fixture("jaeger-v3-decide-trace.json")):
