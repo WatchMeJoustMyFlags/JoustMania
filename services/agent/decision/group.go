@@ -131,7 +131,7 @@ func groupSetRefusal(p flags.Policy, c gamecontext.GameContext, d Decision) Bloc
 	return ""
 }
 
-// groupTargetsPresent reports whether every target of a group decision is still
+// groupPresent reports whether every target of a group decision is still
 // in c (targetPresent, the landing check of a single target).
 func groupPresent(c gamecontext.GameContext, serials []string) bool {
 	for _, s := range serials {

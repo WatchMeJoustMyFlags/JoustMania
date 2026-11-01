@@ -351,3 +351,44 @@ func TestGroupLever_RemoteLanding(t *testing.T) {
 		}
 	})
 }
+
+// UC: UC-040 A48 BR-033 BR-022
+// A group reserved by the ledger is released, every target and the group slot, on
+// every way out that does not write it (groupReservation.finish).
+func TestGroupLever_UnwrittenGroupIsReleased(t *testing.T) {
+	ctx := context.Background()
+	assertReleased := func(t *testing.T, l *Loop) {
+		t.Helper()
+		if g := l.ShieldGrants(); len(g) != 0 {
+			t.Fatalf("shield grants = %v, want none: no target received a shield", g)
+		}
+		if n := l.charges.groupCount(); n != 0 {
+			t.Fatalf("group count = %d, want 0", n)
+		}
+	}
+	t.Run("UC-040/A48 BR-033 a rate_limit refusal after the ledger releases the group", func(t *testing.T) {
+		l, sink, clock, _ := budgetLoop(t, 100)
+		p := groupPolicy()
+		p.MaxInterventionsPerMinute = 0 // the group (cost 1) never fits
+		var st LayerState
+		l.runDecision(ctx, groupSnapshot(p), groupCtx("shadow", "A", "B", "C"), groupDecision("A", "B", "C"), *clock, &st)
+		if got := outcomeSummary(st); !equalStrings(got, []string{"grant_group_shield/:rate_limit"}) {
+			t.Fatalf("outcomes = %v, want rate_limit", got)
+		}
+		if len(sink.decisions()) != 0 {
+			t.Fatal("a rate-limited group must not be written")
+		}
+		assertReleased(t, l)
+	})
+	t.Run("UC-040/A48 A27 BR-033 a failed write releases the group", func(t *testing.T) {
+		l, _, clock, _ := budgetLoop(t, 100)
+		l.Actions = errSink{}
+		var st LayerState
+		l.runDecision(ctx, groupSnapshot(groupPolicy()), groupCtx("shadow", "A", "B", "C"), groupDecision("A", "B", "C"), *clock, &st)
+		if got := outcomeSummary(st); !equalStrings(got, []string{"grant_group_shield/:dispatched"}) {
+			t.Fatalf("outcomes = %v, want dispatched (the write then failed)", got)
+		}
+		assertReleased(t, l)
+	})
+}
+
