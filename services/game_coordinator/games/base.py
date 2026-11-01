@@ -3190,8 +3190,23 @@ class BaseGameMode(ShieldMixin, ABC):
         # Metric removal happens at game end via clear_session_player_analytics().
         metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(0)
 
-        # Record elimination order (1 = first out) for #730 / #722 §7.
-        # Makes session.elimination_sequence queryable per game.
+        if self._kill_records_elimination_order(serial):
+            self._record_elimination_order(serial)
+
+    def _kill_records_elimination_order(self, serial: str) -> bool:  # noqa: ARG002
+        """Whether ``_count_elimination`` records the player's elimination order.
+
+        Default: always, every death takes the player out (respawn modes count each
+        death). Fight Club overrides it: a round loss keeps the player in the game,
+        so it records the order when a player leaves the rotation (UC-041 BR-008).
+        """
+        return True
+
+    def _record_elimination_order(self, serial: str) -> None:
+        """Record the player's elimination order (1 = first out) for #730 / #722 §7.
+
+        Makes session.elimination_sequence queryable per game.
+        """
         self._elimination_count += 1
         metrics.player_elimination_order.labels(serial=serial, game_id=self.game_id).set(self._elimination_count)
 
