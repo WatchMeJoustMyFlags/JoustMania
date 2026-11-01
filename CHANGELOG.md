@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.14.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.13.0...joustmania-v0.14.0) (2026-11-01)
+
+
+### Features
+
+* **agent:** group shield lever for the decision backends ([#2467](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2467)) ([#2521](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2521)) ([fa088e0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/fa088e00d22a7335ea27c13ccf0ae686f22ff840))
+* **agent:** operator A/B script for group shields, group metric, jev group contract ([#2467](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2467)) ([#2526](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2526)) ([172f7c4](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/172f7c4a308e33c7a19ccaba30c6245b17f1816e))
+* **agent:** shadow realism characterization and the substrate validity bar ([#1017](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/1017)) ([#2542](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2542)) ([42b7def](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/42b7defe856bc5f5ab4170773a1b1739ee34e8a5))
+
+
+### Bug Fixes
+
+* **agent,game-coordinator:** a Fight Club round loss is no elimination; R6/R9 skip stale players ([#2517](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2517)) ([#2523](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2523)) ([3049e23](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3049e2345485a3dcd04105cfd65d8df18f59b121))
+* **agent:** mark stale players in the decide state, keep fresh-readings levers off them ([#2514](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2514)) ([#2522](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2522)) ([b5789f6](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/b5789f6d79626f7126b0c5de5e36d71d6cff8bf8))
+* **agent:** R1 speeds the music up to raise the death threshold ([#2487](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2487)) ([#2534](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2534)) ([7ea9e81](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/7ea9e817607e413756b7b4a2d2a80add8d77fae7))
+* **agent:** R5 slows the music to 1.0 past the accelerate target ([#2487](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2487)) ([#2539](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2539)) ([f7f2928](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/f7f2928d900be82dfaf05a4c1a4f6f036c866e16))
+* **controller-manager,game-coordinator:** the winner rainbow plays in full; no agent cue once the game is ending ([#2533](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2533)) ([#2538](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2538)) ([243dec6](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/243dec6f1e5377bc172a040ebe6bddf42868fdde))
+* **game-coordinator,agent:** respawn, conversion and swap deaths are no eliminations; eliminate_player needs fresh readings ([#2524](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2524)) ([#2531](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2531)) ([d799ad0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d799ad0e1bac242350a561ce2ce4c336881f76b6))
+* **lib:** unique service.instance.id per process, one writer per metric series ([#2543](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2543)) ([#2545](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2545)) ([a3df3db](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/a3df3db6c6ce05046c3a616b77da85a79acaa884))
+
 ## [0.13.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.12.0...joustmania-v0.13.0) (2026-11-01)
 
 
