@@ -39,7 +39,9 @@
 #                           closing keyword: when the issue is already closed and
 #                           its last ClosedEvent's closer is this PR or its merge
 #                           commit, post <text> as a comment only (same marker,
-#                           once, #2508); closed by anything else: skipped
+#                           once, #2508), unless a trusted comment created at or
+#                           after mergedAt already names #<PR> (a hand delivery
+#                           comment, #2509); closed by anything else: skipped
 #        note #N: <text>    comment <text> on issue N, once per PR (marker)
 #      Only issues in the body's `Part of #A[, #B]` list(s) are targets, and
 #      never a pull request. `{MERGE}` in <text> becomes the short merge SHA.
@@ -210,6 +212,22 @@ has_marker() {
     in_list "$u" "$TRUSTED" || continue
     [[ -n "${3:-}" && ! "$at" > "$3" ]] && continue
     [[ -n "${4:-}" && "$at" > "$4" ]] && continue
+    return 0
+  done <<<"$1"
+  return 1
+}
+
+# names_pr <comments> <pr> <since>: a comment by a TRUSTED login, created at or
+# after <since> (ISO-8601 UTC), names #<pr> as a whole token (#250 != #2504).
+# A delivery comment written by hand after the merge has no sweep marker (#2509).
+names_pr() {
+  local c u at
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    jq -e --arg n "$2" '.b | test("(^|[^0-9A-Za-z_])#" + $n + "([^0-9]|$)")' >/dev/null 2>&1 <<<"$c" || continue
+    u="$(jq -r .u <<<"$c")"; at="$(jq -r .at <<<"$c")"
+    in_list "$u" "$TRUSTED" || continue
+    [[ "$at" < "$3" ]] && continue
     return 0
   done <<<"$1"
   return 1
@@ -427,6 +445,9 @@ $marker"
         fi
         if [[ "$closer" != "PullRequest $n" && ( -z "$merge" || "$closer" != "Commit $merge" ) ]]; then
           done_notes+=("#$issue already closed"); continue
+        fi
+        if names_pr "$bodies" "$n" "$merged_at"; then
+          done_notes+=("#$issue already has a delivery comment"); continue
         fi
         if $DRY; then done_notes+=("would comment #$issue (closed by this merge)"); continue; fi
         if gh issue comment "$issue" --body "$body" >/dev/null 2>&1; then done_notes+=("commented #$issue (closed by this merge)")
