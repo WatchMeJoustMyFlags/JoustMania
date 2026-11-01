@@ -263,7 +263,7 @@ func TestAllowListVariantsOnlyNameKnownInterventions(t *testing.T) {
 		InterventionGrantShield, InterventionToughnessBoost, InterventionSoftPenalty,
 		InterventionAdjustGlobalSensitivity, InterventionAdjustGlobalDifficulty, InterventionSetPacingProfile,
 		InterventionRampTempo, InterventionAutoRubberband, InterventionEliminatePlayer,
-		InterventionRevivePlayer, InterventionEndGame, InterventionNoop,
+		InterventionRevivePlayer, InterventionEndGame, InterventionGrantGroupShield, InterventionNoop,
 	} {
 		known[id] = true
 	}

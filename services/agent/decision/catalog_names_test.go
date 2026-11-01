@@ -18,7 +18,7 @@ func TestInterventionConstantsMatchCatalog(t *testing.T) {
 		InterventionGrantShield, InterventionToughnessBoost, InterventionSoftPenalty,
 		InterventionAdjustGlobalSensitivity, InterventionAdjustGlobalDifficulty, InterventionSetPacingProfile,
 		InterventionRampTempo, InterventionAutoRubberband, InterventionEliminatePlayer,
-		InterventionRevivePlayer, InterventionEndGame,
+		InterventionRevivePlayer, InterventionEndGame, InterventionGrantGroupShield,
 	}
 	sort.Strings(want)
 	if got := decide.Names(nil); !reflect.DeepEqual(got, want) {

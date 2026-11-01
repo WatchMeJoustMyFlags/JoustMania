@@ -128,6 +128,8 @@ func choiceCriteria(q decide.Question, st decide.State, chosen, profile string) 
 	case q.ID == decide.QuestionFFAIntervention:
 		descriptions := descriptionsFor(profile)
 		describe = func(o string) string { return descriptions[o] }
+	case q.ID == decide.QuestionFFATarget && decide.GroupTargeted(chosen):
+		describe = func(o string) string { return describeGroupOption(st, o) }
 	case q.ID == decide.QuestionFFATarget && chosen != "":
 		players := describeCandidatesFor(st, chosen, profile)
 		describe = func(o string) string { return players[o] }
@@ -371,6 +373,32 @@ func dangerPhrase(p decide.PlayerState) string {
 		s += " (margin " + strconv.FormatFloat(*p.ThresholdMargin, 'f', 2, 64) + ")"
 	}
 	return s + "."
+}
+
+// groupTargetInstructions is the details-stage ffa.target instruction of a group
+// lever (#2467): it names the lever and asks which players it covers.
+func groupTargetInstructions(iv, profile string) string {
+	return interventionPhrase(iv, profile) + ". Which alive players should it cover?"
+}
+
+// describeGroupOption describes a group option by the players it covers, from the
+// state only (no verdict, #2467): "All 3 alive players: A, B, C." or "Every alive
+// player except B (<B's sentence>): A, C."
+func describeGroupOption(st decide.State, option string) string {
+	alive := st.AliveSerials()
+	serials, ok := decide.ResolveGroupTarget(option, alive)
+	if !ok {
+		return ""
+	}
+	if option == decide.TargetGroupAll {
+		return "All " + strconv.Itoa(len(serials)) + " alive players: " + strings.Join(serials, ", ") + "."
+	}
+	excluded := strings.TrimPrefix(option, decide.TargetGroupAllExceptPrefix)
+	who := describePlayers(st)[excluded]
+	if who == "" {
+		who = "Player " + excluded + "."
+	}
+	return "Every alive player except " + excluded + ": " + strings.Join(serials, ", ") + ". Left out: " + who
 }
 
 // targetInstructions is the details-stage ffa.target instruction: it names
