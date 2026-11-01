@@ -682,7 +682,7 @@
         "Intervention": "adjust_music_tempo",
         "TargetSerial": "",
         "Value": "",
-        "Reason": "session at 100s past the 60s accelerate target: speed up",
+        "Reason": "session at 100s past the 60s accelerate target: set the tempo to the 1.15 default",
         "ObjectiveServed": "accelerate",
         "Fitness": {
           "session_duration": 100,
@@ -711,7 +711,7 @@
         "Intervention": "adjust_music_tempo",
         "TargetSerial": "",
         "Value": "",
-        "Reason": "session at 100s past the 60s accelerate target: speed up",
+        "Reason": "session at 100s past the 60s accelerate target: set the tempo to the 1.15 default",
         "ObjectiveServed": "accelerate",
         "Fitness": {
           "session_duration": 100,

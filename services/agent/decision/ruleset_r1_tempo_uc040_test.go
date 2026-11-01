@@ -37,6 +37,12 @@ func TestEnduranceTempoSpeedsUp(t *testing.T) {
 		if v != bounds.Max {
 			t.Errorf("R1 tempo = %v, want the fast end %v (above the default %v)", v, bounds.Max, bounds.Default)
 		}
+		// The literal too: the `fast` variant of music_tempo_override and the
+		// coordinator clamp FAST_MUSIC_SPEED, so a wider bounds table cannot drag R1
+		// past what the game applies.
+		if v != 1.3 {
+			t.Errorf("R1 tempo = %v, want 1.3 (the fast variant, FAST_MUSIC_SPEED)", v)
+		}
 		if !strings.Contains(r1.decision.Reason, "speed up") || strings.Contains(r1.decision.Reason, "slow") {
 			t.Errorf("R1 reason = %q, want it to say speed up", r1.decision.Reason)
 		}

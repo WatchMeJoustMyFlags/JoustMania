@@ -23,7 +23,9 @@ import (
 // field's mean skill). Review of #2419 renamed the fitness key weakest_skill to
 // target_skill (the target is not always the weakest).
 // #2487 changed it on purpose: R1 writes the fast tempo (Value 1.3) and its reason
-// says speed up; the four applied endurance decisions change, no outcome does.
+// says speed up, and R5's reason says what it writes (the 1.15 default); the four
+// applied endurance decisions and the two applied accelerate decisions change, no
+// outcome does.
 //
 // Regenerate (only for an intended behavior change): go test ./decision -run
 // TestRulesPathGolden -update-rules-golden

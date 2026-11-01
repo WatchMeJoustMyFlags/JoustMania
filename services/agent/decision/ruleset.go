@@ -434,7 +434,8 @@ func fewerShields(a, b scoredCandidate, grants map[string]int, skill func(scored
 	return a.decision.TargetSerial < b.decision.TargetSerial
 }
 
-// accelerateCandidates implements R5 (speed up past the target duration),
+// accelerateCandidates implements R5 (set the tempo to the 1.15 writer default
+// past the target duration; its direction is open in #2487),
 // R6 (eliminate the least-moving player when far past target), and R7
 // (end the game when way past target — only when accelerate strictly
 // dominates the weights; ties never end a game).
@@ -452,7 +453,7 @@ func accelerateCandidates(c gamecontext.GameContext, fit FitnessThresholds, weig
 	out := []candidate{{
 		decision: Decision{
 			Intervention:    InterventionAdjustMusicTempo,
-			Reason:          fmt.Sprintf("session at %.0fs past the %.0fs accelerate target: speed up", dur, target),
+			Reason:          fmt.Sprintf("session at %.0fs past the %.0fs accelerate target: set the tempo to the 1.15 default", dur, target),
 			ObjectiveServed: ObjectiveAccelerate,
 			Fitness:         durFit,
 		},

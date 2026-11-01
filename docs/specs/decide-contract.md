@@ -927,7 +927,7 @@ as a prior and not a claim; the value is in the table):
 | R3 handicap outlier | `closeness_rises` 15, P 0.55 |
 | R4 catch-up shield | `survives` 15, P 0.7 |
 | R4d danger shield | `survives` 10, P 0.7 |
-| R5 speed up | `elimination` 30, P 0.6 (kept as a prior, but the tempo-threshold confound applies here too: a faster tempo raises the death threshold, so eliminations can get rarer; scored by lift against the control, see #2487) |
+| R5 tempo to the 1.15 writer default (documented as "speed up" before #2487; direction open there) | `elimination` 30, P 0.6 (kept as a prior, but the tempo-threshold confound applies here too: a faster tempo raises the death threshold, so eliminations can get rarer; scored by lift against the control, see #2487) |
 | R6 eliminate least-moving | `game_ends` 60, P 0.5, only when at least 3 players stay alive after the action, otherwise none (trivially true) |
 | R7 end game | none (the action is the outcome) |
 | R8 statue rumble | `activity_rises` target 10, P 0.6 |
