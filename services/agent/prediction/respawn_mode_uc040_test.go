@@ -28,7 +28,7 @@ func respawnGame(mode string) gamecontext.GameContext {
 
 // UC: UC-040 A44 BR-043
 func TestBook_RespawnModeEliminationTemplatesAreUnscorable(t *testing.T) {
-	for _, mode := range []string{"Nonstop Joust", "Zombie", "Swapper"} {
+	for _, mode := range []string{"Nonstop Joust", "Zombie", "Swapper", "Fight Club"} {
 		t.Run("UC-040/BR-043 "+mode+": elimination at the horizon with 0 eliminations is unscorable, not a miss", func(t *testing.T) {
 			h := newHarness(t)
 			c := respawnGame(mode)

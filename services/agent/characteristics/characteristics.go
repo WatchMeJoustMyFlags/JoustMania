@@ -70,18 +70,21 @@ func eliminated(c gamecontext.GameContext, serial string) bool {
 }
 
 // RespawnMode reports whether c's game mode keeps a dying player in the game:
-// NonStop (a respawn), Zombies (a human turns zombie, a zombie respawns) and
-// Swapper (a swap). There the elimination sequence holds only disconnects
-// (#2524), so the elimination-based measures (survival, elimination_pace) say
-// nothing about play and are not scored (UC-040 BR-043, #2532). The mode is the
-// coordinator's get_game_name() ("Nonstop Joust", "Zombie", "Swapper") or a menu
-// alias; an unobserved mode is not a respawn mode.
+// NonStop (a respawn), Zombies (a human turns zombie, a zombie respawns), Swapper
+// (a swap) and Fight Club (a round loser goes back to the queue). There the
+// elimination sequence holds only the players who left for good (#2517, #2524),
+// so the elimination-based measures (survival, elimination_pace) say nothing about
+// play and are not scored (UC-040 BR-043, #2532). The mode is the coordinator's
+// get_game_name() ("Nonstop Joust", "Zombie", "Swapper", "Fight Club"; pinned by
+// tests/contract/test_respawn_mode_names.py) or a menu alias; an unobserved mode
+// is not a respawn mode.
 func RespawnMode(c gamecontext.GameContext) bool {
 	if c.Session.GameMode == nil {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(*c.Session.GameMode)) {
-	case "nonstop joust", "nonstop", "non stop joust", "zombie", "zombies", "swapper":
+	case "nonstop joust", "nonstop", "non stop joust", "zombie", "zombies", "swapper",
+		"fight club", "fightclub", "fight_club":
 		return true
 	}
 	return false
@@ -121,12 +124,8 @@ func Eliminations(c gamecontext.GameContext, w Window) (n int, complete bool) {
 // evicted older entries.
 const TimelineCap = 64
 
-// EliminationPace is the eliminations per minute inside w; no value in a respawn
-// mode (RespawnMode).
+// EliminationPace is the eliminations per minute inside w.
 func EliminationPace(c gamecontext.GameContext, w Window) (float64, bool) {
-	if RespawnMode(c) {
-		return 0, false
-	}
 	n, complete := Eliminations(c, w)
 	if !complete || w.Seconds() <= 0 {
 		return 0, false

@@ -891,7 +891,7 @@ left is never a hit. Hard bounds of the characteristics are in §14.4.
 | `duration` | Game seconds elapsed, and whether the game ended (end reason zero or `root_span`; a stale end is no data) | `Session.DurationSeconds`, the game-end consumer | game |
 | `activity` | Mean of (movement intensity / death threshold) over the window's movement samples (at least half of the window's distinct seconds must have a sample), for the players alive when it is measured; normalised, so tempo changes do not move the scale | `History`, `SpeedTrack.DeathThreshold`, `Session.DeathThreshold` | field, target |
 | `change` | Swing of field `activity`: max minus min of the 5 s sub-window means inside the window | the same buckets | field |
-| `elimination_pace` | Eliminations observed in (t, t+w], per minute; predictions use the count. No value in a respawn mode (NonStop, Zombies, Swapper: a death keeps the player in the game; UC-040 BR-043) | `Timeline` elimination events (agent receipt time), `EliminationSequence` length as fallback; `Session.GameMode` | game |
+| `elimination_pace` | Eliminations observed in (t, t+w], per minute; predictions use the count. Not scored in a respawn mode (NonStop, Zombies, Swapper, Fight Club: a death keeps the player in the game; UC-040 BR-043) | `Timeline` elimination events (agent receipt time), `EliminationSequence` length as fallback; `Session.GameMode` | game |
 | `survival` | The target is alive at t+w and was never eliminated in between. Not scored in a respawn mode (UC-040 BR-043) | `EliminationSequence`, `Active` | target |
 | `closeness` | Spread (max minus min) of per-player `activity` among alive players; lower means closer | `History` | field |
 
@@ -916,8 +916,9 @@ Six closed templates with a closed set of horizons (so calibration stays compara
 | `game_ends` | `duration` | Hit: the game ends (zero or `root_span`) by t+h, early. Miss: still running at t+h. Unscorable: stale end | 30, 60, 120 |
 
 Unscorable is never counted as a hit or a miss; it carries a reason (`game_ended`, `data_missing`, `stale_end`,
-`overflow`, `no_target`, `target_not_alive`, `respawn_mode`). In a respawn mode (`Session.GameMode` is NonStop, Zombies or
-Swapper: `Nonstop Joust`, `Zombie`, `Swapper` or a menu alias) the elimination sequence holds only disconnects (#2524), so
+`overflow`, `no_target`, `target_not_alive`, `respawn_mode`). In a respawn mode (`Session.GameMode` is NonStop, Zombies,
+Swapper or Fight Club: `Nonstop Joust`, `Zombie`, `Swapper`, `Fight Club` or a menu alias; pinned by
+`tests/contract/test_respawn_mode_names.py`) the elimination sequence holds only the players who left for good (#2517, #2524), so
 `survives`, `no_elimination` and `elimination` of every source, controls included, are `unscorable` `respawn_mode` at the first
 check that sees the mode (the next decision cycle, the horizon check or the game end; UC-040 BR-043, #2532,
 `services/agent/prediction/score.go:earlyVerdict`). A prediction that can be decided before the horizon (a miss of `survives` or
