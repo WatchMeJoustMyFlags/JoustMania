@@ -10,13 +10,15 @@ Only the latest release receives security fixes. Please check that the problem s
 
 ## Reporting a vulnerability
 
-Please do not open a public issue for a security problem.
+Please do not put details of a security problem in a public issue.
 
-Report it privately through GitHub Security Advisories:
-<https://github.com/WatchMeJoustMyFlags/JoustMania/security/advisories/new>
+- If GitHub private vulnerability reporting is enabled for this repo, use Security > Report a vulnerability
+  (<https://github.com/WatchMeJoustMyFlags/JoustMania/security/advisories/new>).
+- Otherwise open a public issue titled "security contact request" with no details, and a maintainer will arrange a
+  private channel.
 
-Include what you found, the version or commit, and steps to reproduce it. This is a volunteer project: we aim to
-acknowledge a report within about a week, but we give no fixed fix timeline.
+When you report, include what you found, the version or commit, and steps to reproduce it. This is a volunteer
+project: we respond on a best-effort basis, with no fixed timeline.
 
 ## Scope
 
@@ -27,7 +29,7 @@ not treated as an undisclosed vulnerability. The services are not meant to be ex
 
 In scope:
 - code execution, privilege escalation or file access beyond what a service is meant to do (including the
-  Pi helpers that run as root)
+  host setup scripts in `scripts/setup`, which run with `sudo`)
 - leaking secrets such as API keys, through the code, the images or the CI workflows
 - supply-chain problems in our images, dependencies or CI / release pipeline
 - bugs that let a player or a network peer outside the intended trust model take over a service
