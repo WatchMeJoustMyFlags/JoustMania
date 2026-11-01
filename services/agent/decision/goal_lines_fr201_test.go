@@ -41,6 +41,11 @@ func (r goalRun) attr(key string) (string, bool) {
 
 func runGoal(t *testing.T, goalInPrompt bool, profile string, backend string) goalRun {
 	t.Helper()
+	return runGoalWith(t, testGoalProfile(), goalInPrompt, profile, backend)
+}
+
+func runGoalWith(t *testing.T, gp goal.Profile, goalInPrompt bool, profile string, backend string) goalRun {
+	t.Helper()
 	snap := remoteSnapshot(time.Second)
 	snap.Decision.GoalInPrompt = goalInPrompt
 	be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.9, "A", 0.5, "shield"))
@@ -56,7 +61,7 @@ func runGoal(t *testing.T, goalInPrompt bool, profile string, backend string) go
 		if c.SessionID != remoteGameID {
 			t.Errorf("goal read for %q", c.SessionID)
 		}
-		return testGoalProfile()
+		return gp
 	})
 	span := h.run(t)
 	return goalRun{req: be.reqs[0], span: span, dispatched: h.sink.decisions()}
@@ -115,6 +120,19 @@ func TestRemote_GoalLines(t *testing.T) {
 			if _, ok := r.attr(keys.AttrDecideGoalProfile); r.req.Goal != nil || ok {
 				t.Fatalf("%s: jev goal lines %+v, span attribute %v", profile, r.req.Goal, ok)
 			}
+		}
+	})
+	t.Run("UC-042/A12 the off-band terms are computed in code (#2498)", func(t *testing.T) {
+		// quick_game with a 1 s duration maximum: the measured duration is above it.
+		quick := goal.FromObjectives(map[string]float64{"accelerate": 1}, 180, 1)
+		r := runGoalWith(t, quick, true, "v1", flags.DecisionBackendJev)
+		if r.req.Goal == nil || !reflect.DeepEqual(r.req.Goal.OffBand, []string{"duration"}) {
+			t.Fatalf("off band = %+v (now %q), want [duration]", r.req.Goal, r.req.Goal.Now)
+		}
+		// long_running_game at 20 s: the 180 s duration minimum cannot be judged yet,
+		// only the pace (3/min against <=1/min) is off.
+		if long := runGoal(t, true, "v1", flags.DecisionBackendJev); !reflect.DeepEqual(long.req.Goal.OffBand, []string{"elimination_pace"}) {
+			t.Fatalf("off band %v (now %q), want [elimination_pace] and no duration", long.req.Goal.OffBand, long.req.Goal.Now)
 		}
 	})
 	t.Run("UC-042/BR-009 the goal lines change neither the request's state and questions nor what lands", func(t *testing.T) {

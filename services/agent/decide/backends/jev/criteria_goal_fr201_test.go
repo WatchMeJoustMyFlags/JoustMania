@@ -16,14 +16,20 @@ import (
 // criteria_goal_fr201_test.go: jev's goal criterion (#2498, FR-201,
 // decide-contract.md §14.4). A request with Request.Goal (set only under
 // decision.goal_in_prompt) carries the goal as structured state (state.goal) and
-// one goal sentence in both gate criteria; without it every body is the one
-// pinned by the existing fixtures. Goal-on stage 1 is pinned by
-// testdata/goal_request_intervention.json.
+// one goal sentence in both gate criteria, with the out-of-band comparison done
+// in code (GoalLines.OffBand); without it every body is the one pinned by the
+// existing fixtures. Goal-on stage 1 is pinned by
+// testdata/goal_request_intervention.json (early game: duration 95 s against a
+// 180 s minimum cannot be judged yet, nothing is off, no push to act) and
+// testdata/goal_offband_request_intervention.json (activity 0.85 against
+// 0.30..0.60 is named).
 //
 //	go test ./decide/backends/jev -run TestGoalCriterion_Fixture -update-goal-fixtures
 
 var updateGoalFixtures = flag.Bool("update-goal-fixtures", false, "rewrite testdata/goal_*.json")
 
+// testGoalLines is an early game on track: duration 95 s is below the 180 s
+// minimum, which cannot be judged before the end, so nothing is off.
 func testGoalLines() *decide.GoalLines {
 	return &decide.GoalLines{
 		Profile: "long_running_game",
@@ -32,6 +38,19 @@ func testGoalLines() *decide.GoalLines {
 		Now:     "duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21",
 	}
 }
+
+// offBandGoalLines is the same game with activity clearly above its band.
+func offBandGoalLines() *decide.GoalLines {
+	g := testGoalLines()
+	g.Now = "duration=95s activity=0.85 elimination_pace=0.6/min closeness=0.21"
+	g.OffBand = []string{"activity"}
+	return g
+}
+
+const (
+	testTargets = "duration>=180s activity=0.30..0.60 elimination_pace<=1/min"
+	onTrack     = "The goal is on track: no term that can be judged yet is outside its target band."
+)
 
 func goalRequest(profile string) decide.Request {
 	req := testRequest()
@@ -50,20 +69,60 @@ func decodeWire(t *testing.T, body []byte) map[string]any {
 }
 
 func TestGoalCriterion_Fixture(t *testing.T) {
-	t.Run("UC-042/A12 goal-on stage 1 request is pinned", func(t *testing.T) {
-		out, err := encodeRequest(fixtureModel, splitStages(goalRequest("")).first, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		const fixture = "goal_request_intervention.json"
-		if *updateGoalFixtures {
-			pretty, _ := json.MarshalIndent(decodeWire(t, out.Body), "", "  ")
-			if err := os.WriteFile(filepath.Join("testdata", fixture), append(pretty, '\n'), 0o644); err != nil {
+	for _, tc := range []struct {
+		name, fixture string
+		goal          *decide.GoalLines
+	}{
+		{"early game on track", "goal_request_intervention.json", testGoalLines()},
+		{"activity off its band", "goal_offband_request_intervention.json", offBandGoalLines()},
+	} {
+		t.Run("UC-042/A12 goal-on stage 1 request is pinned: "+tc.name, func(t *testing.T) {
+			req := goalRequest("")
+			req.Goal = tc.goal
+			out, err := encodeRequest(fixtureModel, splitStages(req).first, "")
+			if err != nil {
 				t.Fatal(err)
 			}
-			return
+			if *updateGoalFixtures {
+				pretty, _ := json.MarshalIndent(decodeWire(t, out.Body), "", "  ")
+				if err := os.WriteFile(filepath.Join("testdata", tc.fixture), append(pretty, '\n'), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			jsonEqual(t, out.Body, tc.fixture)
+		})
+	}
+}
+
+// UC: UC-042 A12
+// TestGoalCriterion_NoActPushOnTrack: an early game whose only gap is a duration
+// minimum it cannot have reached yet gets no push toward acting; an out-of-band
+// term is named on the yes side only (#2498 review).
+func TestGoalCriterion_NoActPushOnTrack(t *testing.T) {
+	base := noulCriteria[GateQuestionID]
+	line := func(g *decide.GoalLines) string {
+		return "Goal long_running_game: targets " + testTargets + "; measured now " + g.Now + "."
+	}
+	t.Run("UC-042/A12 on track: the yes side gains only the state sentence", func(t *testing.T) {
+		g := testGoalLines()
+		got := withGoal(GateQuestionID, base, g)
+		if got.True != base.True+" "+line(g) {
+			t.Errorf("yes side = %q", got.True)
 		}
-		jsonEqual(t, out.Body, fixture)
+		if got.False != base.False+" "+line(g)+" "+onTrack {
+			t.Errorf("no side = %q", got.False)
+		}
+	})
+	t.Run("UC-042/A12 an out-of-band term is named on the yes side", func(t *testing.T) {
+		g := offBandGoalLines()
+		got := withGoal(GateQuestionID, base, g)
+		if got.True != base.True+" "+line(g)+" Outside its target band now: activity." {
+			t.Errorf("yes side = %q", got.True)
+		}
+		if got.False != base.False+" "+line(g) {
+			t.Errorf("no side = %q", got.False)
+		}
 	})
 }
 
@@ -92,8 +151,8 @@ func TestGoalCriterion(t *testing.T) {
 			if err := json.Unmarshal(on.Body, &wire); err != nil {
 				t.Fatal(err)
 			}
-			want := jevGoal{Profile: goalLine.Profile, Targets: goalLine.Goal, Now: goalLine.Now}
-			if wire.State.Goal == nil || *wire.State.Goal != want {
+			want := jevGoal{Profile: goalLine.Profile, Targets: testTargets, Now: goalLine.Now}
+			if wire.State.Goal == nil || !reflect.DeepEqual(*wire.State.Goal, want) {
 				t.Fatalf("state.goal = %+v, want %+v", wire.State.Goal, want)
 			}
 			gate, _ := wire.Questions[GateQuestionID].Criteria.(map[string]any)
@@ -103,7 +162,7 @@ func TestGoalCriterion(t *testing.T) {
 				if !strings.HasPrefix(got, orig+" ") {
 					t.Errorf("gate %s must keep its criterion and append the goal: %q", side, got)
 				}
-				if !strings.Contains(got, goalLine.Goal) || !strings.Contains(got, goalLine.Now) {
+				if !strings.Contains(got, testTargets) || !strings.Contains(got, goalLine.Now) || strings.Contains(got, "targets long_running_game") {
 					t.Errorf("gate %s must name the targets and the measured values: %q", side, got)
 				}
 				// The goal sentence describes state; it never names a lever.
@@ -138,7 +197,7 @@ func TestGoalCriterion(t *testing.T) {
 		if err := json.Unmarshal(out.Body, &wire); err != nil {
 			t.Fatal(err)
 		}
-		if wire.State.Goal == nil || wire.State.Goal.Targets != goalLine.Goal {
+		if wire.State.Goal == nil || wire.State.Goal.Targets != testTargets {
 			t.Fatalf("details state.goal = %+v", wire.State.Goal)
 		}
 		offAsk := detailsRequest(testRequest(), "grant_shield").ask

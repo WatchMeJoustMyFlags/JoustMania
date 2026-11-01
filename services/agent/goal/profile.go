@@ -396,6 +396,28 @@ func (p Profile) GoalLine() string {
 	return strings.Join(parts, " ")
 }
 
+// OffBand lists, in term order, the labels (Label) of p's terms whose measured
+// value is outside its band now and can already be judged (#2498): an unmeasured
+// term (an endgame term before the endgame included) is left out, and so is a
+// duration below its minimum, because a running game's duration only grows and
+// cannot be judged against a minimum before the end. nil when no term is off.
+// It is computed in code because Jev is weak at numeric comparison.
+func OffBand(p Profile, measure func(char, phase string) (float64, bool)) []string {
+	var out []string
+	for _, t := range p.Terms {
+		v, ok := measure(t.Characteristic, t.Phase)
+		if !ok {
+			continue
+		}
+		above := t.Max != nil && v > *t.Max
+		below := t.Min != nil && v < *t.Min && t.Characteristic != decide.CharDuration
+		if above || below {
+			out = append(out, Label(t.Characteristic, t.Phase))
+		}
+	}
+	return out
+}
+
 // nowCharacteristics are always on the now line (when measured), in this order.
 var nowCharacteristics = []string{decide.CharDuration, decide.CharActivity, decide.CharEliminationPace, decide.CharCloseness}
 

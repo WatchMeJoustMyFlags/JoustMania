@@ -22,47 +22,61 @@ func TestArmCalibration_TalliedPerArmOnProgress(t *testing.T) {
 	spawner := &fakeSpawner{}
 	r, sr := rootSpanRegistry(t, RegistryConfig{
 		Spawner: spawner, Verdict: fakeVerdict{concludeAtN: 1000}, Targeting: &fakeTargeting{},
-		MaxShadowGames: 2,
+		MaxShadowGames: 4,
 	})
 	id := startedExperiment(t, r)
-	r.AllocateAndSpawn(context.Background()) // one game per arm
-	if len(spawner.calls) != 2 {
-		t.Fatalf("spawned = %d, want 2", len(spawner.calls))
+	r.AllocateAndSpawn(context.Background()) // two games per arm
+	if len(spawner.calls) != 4 {
+		t.Fatalf("spawned = %d, want 4", len(spawner.calls))
 	}
-	g0, g1 := spawner.calls[0], spawner.calls[1]
-	if g0.arm == g1.arm {
-		t.Fatalf("both games on arm %q", g0.arm)
+	byArm := map[string][]spawnCall{}
+	for _, c := range spawner.calls {
+		byArm[c.arm] = append(byArm[c.arm], c)
+	}
+	exp, ctl := byArm["experimental"], byArm["control"]
+	if len(exp) != 2 || len(ctl) != 2 {
+		t.Fatalf("games per arm = %d/%d, want 2/2", len(exp), len(ctl))
+	}
+	conclude := func(g spawnCall) {
+		t.Helper()
+		if _, err := r.ConcludeGame(context.Background(), g.gameID, 0.4, 60); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	t.Run("UC-043/A21 a game's tally lands on its own arm and adds up", func(t *testing.T) {
-		r.NotePredictions(g0.gameID, 2, 1, 0.5)
-		r.NotePredictions(g0.gameID, 1, 1, 0.04)
-		r.NotePredictions(g1.gameID, 3, 0, 1.2)
-		got := r.ArmCalibration(id)
-		want0 := PredictionTally{Scored: 3, Hits: 2, BrierSum: 0.54}
-		if c := got[g0.arm]; c.Scored != want0.Scored || c.Hits != want0.Hits || math.Abs(c.BrierSum-want0.BrierSum) > 1e-9 {
-			t.Errorf("arm %s = %+v, want %+v", g0.arm, c, want0)
-		}
-		if c := got[g1.arm]; c != (PredictionTally{Scored: 3, Hits: 0, BrierSum: 1.2}) {
-			t.Errorf("arm %s = %+v", g1.arm, c)
+	t.Run("UC-043/A21 a tally waits for the fitness fold", func(t *testing.T) {
+		r.NotePredictions(exp[0].gameID, 2, 1, 0.5)
+		r.NotePredictions(exp[0].gameID, 1, 1, 0.04)
+		r.NotePredictions(ctl[0].gameID, 3, 0, 1.2)
+		if got := r.ArmCalibration(id); got != nil {
+			t.Fatalf("tally before any fold = %+v, want none", got)
 		}
 	})
-	t.Run("UC-043/A21 a game that is not ours and an inconsistent tally are ignored", func(t *testing.T) {
-		before := r.ArmCalibration(id)
+	t.Run("UC-043/A21 an inconsistent tally or a game that is not ours is ignored", func(t *testing.T) {
 		r.NotePredictions("real_game", 5, 5, 0)
-		r.NotePredictions(g0.gameID, 0, 0, 0)          // empty
-		r.NotePredictions(g0.gameID, 1, 2, 0)          // hits > scored
-		r.NotePredictions(g0.gameID, 1, 1, 2)          // Brier sum > scored
-		r.NotePredictions(g0.gameID, 1, 1, math.NaN()) // not a number
-		r.NotePredictions(g0.gameID, 1, 1, -0.1)       // negative
-		if got := r.ArmCalibration(id); !reflect.DeepEqual(got, before) {
-			t.Errorf("tally changed: %+v -> %+v", before, got)
+		r.NotePredictions(exp[0].gameID, 0, 0, 0)          // empty
+		r.NotePredictions(exp[0].gameID, 1, 2, 0)          // hits > scored
+		r.NotePredictions(exp[0].gameID, 1, 1, 2)          // Brier sum > scored
+		r.NotePredictions(exp[0].gameID, 1, 1, math.NaN()) // not a number
+		r.NotePredictions(exp[0].gameID, 1, 1, -0.1)       // negative
+	})
+	t.Run("UC-043/A21 a released game (no fold) adds nothing", func(t *testing.T) {
+		r.NotePredictions(exp[1].gameID, 4, 4, 0)
+		r.ReleaseGame(exp[1].gameID, "game_error")
+	})
+	t.Run("UC-043/A21 at the fold a game's tally lands on its own arm and adds up", func(t *testing.T) {
+		conclude(exp[0])
+		conclude(ctl[0])
+		got := r.ArmCalibration(id)
+		want0 := PredictionTally{Scored: 3, Hits: 2, BrierSum: 0.54}
+		if c := got["experimental"]; c.Scored != want0.Scored || c.Hits != want0.Hits || math.Abs(c.BrierSum-want0.BrierSum) > 1e-9 {
+			t.Errorf("experimental = %+v, want %+v (the released game must not count)", c, want0)
+		}
+		if c := got["control"]; c != (PredictionTally{Scored: 3, Hits: 0, BrierSum: 1.2}) {
+			t.Errorf("control = %+v", c)
 		}
 	})
 	t.Run("UC-043/A21 experiment.progress carries predictions_scored, prediction_hits and the mean Brier", func(t *testing.T) {
-		if _, err := r.ConcludeGame(context.Background(), g0.gameID, 0.4, 60); err != nil {
-			t.Fatal(err)
-		}
 		spans := progressSpans(sr)
 		last := spans[len(spans)-1]
 		if v, _ := rootSpanAttr(last, AttrExperimentProgressTrigger); v != ProgressTriggerGameConcluded {
@@ -79,22 +93,23 @@ func TestArmCalibration_TalliedPerArmOnProgress(t *testing.T) {
 			}
 			events[m[keys.AttrExperimentArm].(string)] = m
 		}
-		e0, e1 := events[g0.arm], events[g1.arm]
+		e0, e1 := events["experimental"], events["control"]
 		if e0[AttrExperimentArmPredictionsScored] != int64(3) || e0[AttrExperimentArmPredictionHits] != int64(2) {
-			t.Errorf("arm %s event = %v", g0.arm, e0)
+			t.Errorf("experimental event = %v", e0)
 		}
 		if b, _ := e0[AttrExperimentArmPredictionBrier].(float64); math.Abs(b-0.18) > 1e-9 {
-			t.Errorf("arm %s mean Brier = %v, want 0.18", g0.arm, e0[AttrExperimentArmPredictionBrier])
+			t.Errorf("experimental mean Brier = %v, want 0.18", e0[AttrExperimentArmPredictionBrier])
 		}
 		if e1[AttrExperimentArmPredictionsScored] != int64(3) || e1[AttrExperimentArmPredictionHits] != int64(0) {
-			t.Errorf("arm %s event = %v", g1.arm, e1)
+			t.Errorf("control event = %v", e1)
 		}
 	})
 	t.Run("UC-043/A21 a concluded game is no longer bound: a late tally is ignored", func(t *testing.T) {
 		before := r.ArmCalibration(id)
-		r.NotePredictions(g0.gameID, 4, 4, 0)
+		r.NotePredictions(exp[0].gameID, 4, 4, 0)
+		conclude(ctl[1])
 		if got := r.ArmCalibration(id); !reflect.DeepEqual(got, before) {
-			t.Errorf("tally changed after conclusion: %+v -> %+v", before, got)
+			t.Errorf("tally changed: %+v -> %+v", before, got)
 		}
 	})
 }

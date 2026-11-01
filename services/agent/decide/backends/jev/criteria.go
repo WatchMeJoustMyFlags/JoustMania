@@ -55,19 +55,25 @@ var noulCriteria = map[string]noulCriterion{
 }
 
 // withGoal is noul id's criteria c with the goal criterion (#2498,
-// decide-contract.md §14.4) appended to both descriptions when goal is set and id
-// is the gate; otherwise c unchanged, so a goal-off request is byte-identical.
-// The sentence states the goal targets and the measured values (the same lines
-// as state.goal) and what in- or out-of-band means; it never names a lever.
+// decide-contract.md §14.4) appended when goal is set and id is the gate;
+// otherwise c unchanged, so a goal-off request is byte-identical. Both sides get
+// the goal sentence (targets and measured values, as in state.goal). The in- or
+// out-of-band comparison is done in code (goal.OffBand, which leaves out what
+// cannot be judged yet, e.g. a duration minimum mid-game): when a term is off,
+// the yes side names it; when none is, the no side says the goal is on track.
+// It never names a lever.
 func withGoal(id string, c noulCriterion, goal *decide.GoalLines) noulCriterion {
 	if goal == nil || id != GateQuestionID {
 		return c
 	}
-	line := "Goal " + oneLine(goal.Profile) + ": targets " + oneLine(goal.Goal) + "; measured now " + oneLine(goal.Now) + "."
-	return noulCriterion{
-		True:  c.True + " " + line + " Yes also when a measured value lies outside its target band.",
-		False: c.False + " " + line + " The measured values lie inside their target bands.",
+	line := "Goal " + oneLine(goal.Profile) + ": targets " + goalTargets(goal) + "; measured now " + oneLine(goal.Now) + "."
+	out := noulCriterion{True: c.True + " " + line, False: c.False + " " + line}
+	if len(goal.OffBand) > 0 {
+		out.True += " Outside its target band now: " + strings.Join(goal.OffBand, ", ") + "."
+	} else {
+		out.False += " The goal is on track: no term that can be judged yet is outside its target band."
 	}
+	return out
 }
 
 // gatedInterventionInstructions replaces ffa.intervention's text in a gated

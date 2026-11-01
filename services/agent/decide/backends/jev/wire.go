@@ -145,12 +145,14 @@ type jevState struct {
 }
 
 // jevGoal is Request.Goal as structured state: the profile name, its target
-// bands and the game's running values (the same lines llmio renders as "goal:"
-// and "now:"). It describes the game; it never names a lever.
+// bands (the goal line without the leading profile name), the game's running
+// values (the now line) and the terms outside their band now, computed in code
+// (goal.OffBand). It describes the game; it never names a lever.
 type jevGoal struct {
-	Profile string `json:"profile"`
-	Targets string `json:"targets"`
-	Now     string `json:"now"`
+	Profile string   `json:"profile"`
+	Targets string   `json:"targets"`
+	Now     string   `json:"now"`
+	OffBand []string `json:"off_band,omitempty"`
 }
 
 type jevQuestion struct {
@@ -287,7 +289,17 @@ func wireGoal(g *decide.GoalLines) *jevGoal {
 	if g == nil {
 		return nil
 	}
-	return &jevGoal{Profile: oneLine(g.Profile), Targets: oneLine(g.Goal), Now: oneLine(g.Now)}
+	return &jevGoal{Profile: oneLine(g.Profile), Targets: goalTargets(g), Now: oneLine(g.Now), OffBand: g.OffBand}
+}
+
+// goalTargets is g's goal line without its leading profile name (goal.GoalLine
+// starts with it, and jev gets the name on its own).
+func goalTargets(g *decide.GoalLines) string {
+	line, name := oneLine(g.Goal), oneLine(g.Profile)
+	if name != "" {
+		line = strings.TrimPrefix(strings.TrimPrefix(line, name), " ")
+	}
+	return line
 }
 
 // oneLine collapses whitespace, as llmio does for the goal lines.

@@ -45,7 +45,7 @@ the permission chain never see them:
 | `Prediction` | `Characteristic`, `Scope` (`game`/`field`/`target`), `Target` (serial, `target` scope only), `Template`, `HorizonS`, `P`, `Source` (`rules`/`lever_default`/`model`/`control`), `Rule` | What the decider expects to be true after its answer is applied; closed vocabulary (§14.2). Carried on `Response.Prediction` and on the decide record, **never** on `Decision` or `DecisionOutcome` (the rules-path golden stays byte-identical). `P` is the probability the prediction comes true. |
 | `PredictionAsk` | `*Question` (`ffa.prediction`, kind choice), `json:"prediction_ask,omitempty"` | `Request.PredictionAsk`, **outside `Request.Questions`**. Set only when `decision.predictions.ask_model` and `decision.predictions_enabled` are on and the backend is claude or openai (§3). nil under v1. |
 | `PredictionDropped` | reason string on `Response` | `missing`, `bad_option`, `bad_confidence`, `no_target`, `inconsistent`. A model prediction that fails its own check (§4.1) is dropped; the decision is unaffected. |
-| `Goal` (goal profiles) | `*GoalLines{Profile, Source, Goal, Now}`, `json:"goal,omitempty"` | `Request.Goal`, outside `State` (not in the digest) and outside `Questions`. Set only on a claude, openai or jev (#2498) request under `decision.goal_in_prompt` (never implied by `decision.prompt_profile`), for a goal profile with terms (§14.4; `services/agent/decision/goal_hook.go:goalLines`). nil whenever `decision.goal_in_prompt` is off. |
+| `Goal` (goal profiles) | `*GoalLines{Profile, Source, Goal, Now, OffBand}`, `json:"goal,omitempty"` (`OffBand`, the labels of the terms outside their band now that can be judged, `off_band,omitempty`, is rendered by jev only, #2498) | `Request.Goal`, outside `State` (not in the digest) and outside `Questions`. Set only on a claude, openai or jev (#2498) request under `decision.goal_in_prompt` (never implied by `decision.prompt_profile`), for a goal profile with terms (§14.4; `services/agent/decision/goal_hook.go:goalLines`). nil whenever `decision.goal_in_prompt` is off. |
 
 ### 1.1 Question kinds
 
@@ -948,7 +948,8 @@ rate and `game_kind`; the headline uses `acted=true` and real games, and shadow 
 PromQL ratio and no in-process rolling state exists ([telemetry.md §6](telemetry.md#6-metrics)). Per-experiment arm tallies are
 report-only: fed in memory, never journaled, never read by the verdict (UC-043 A21, BR-010). At game end the Book hands the
 game's ACTED decision predictions that scored hit or miss (counterfactuals, controls and unscorables never; a stale end hands
-nothing on, the game is released and re-run) to the registry, which adds them to the arm the game is bound to
+nothing on, the game is released and re-run) to the registry, which holds them for the bound game and adds them to its arm
+only at the game's fitness fold (`ConcludeGame`); a game released without a fold (errored, preempted) or torn down adds nothing
 (`services/agent/prediction/book.go:Book.SetArmTallySink`, `services/agent/experiment/calibration.go:Registry.NotePredictions`,
 wired by `services/agent/gameend.go:wireArmCalibration`). The Book runs before the experiment hook in the game-end chain, so
 the game is still bound; a real game, a released or unknown game and an inconsistent tally are ignored. `experiment.progress`
@@ -1035,13 +1036,18 @@ with "to pursue the goal targets in the state" (and a short note on the two line
 on the system prompt is v1's and only the user message gains the lines. Under v1 with the flag off: no line, and system and
 user bytes are unchanged (`services/agent/decide/llmio/llmio.go:Render`, goldens `profile_golden_test.go`,
 `prediction_v1_golden_test.go`). jev (#2498) gets the same `Request.Goal` under the same switch (either prompt profile;
-neutral alone never adds it): its typed state gains `goal: {profile, targets, now}` (the goal and now lines), and both gate
-criteria gain one goal sentence, `Goal <profile>: targets <goal line>; measured now <now line>.`, followed on the `true` side
-by `Yes also when a measured value lies outside its target band.` and on the `false` side by `The measured values lie inside
-their target bands.` The sentence describes the game; it never names a lever, and the lever, target and magnitude questions
+neutral alone never adds it): its typed state gains `goal: {profile, targets, now, off_band}` (`targets` is the goal line
+without its leading profile name, `now` the now line), and both gate criteria gain one goal sentence,
+`Goal <profile>: targets <targets>; measured now <now line>.` Jev does not compare numbers: the agent computes in code which
+terms are outside their band now and can already be judged (`services/agent/goal/profile.go:OffBand`, carried as
+`GoalLines.OffBand`): an unmeasured term is left out (an endgame term before the endgame included), and so is a duration
+below its minimum, which a running game cannot have reached yet. When a term is off, `off_band` lists its labels and the
+`true` side adds `Outside its target band now: <labels>.`; when none is, the `false` side adds `The goal is on track: no term
+that can be judged yet is outside its target band.` So an early `long_running_game` (duration 95 s against 180 s) gets no push
+toward acting. llmio does not render `OffBand`. The sentence describes the game; it never names a lever, and the lever, target and magnitude questions
 are unchanged. The details stage carries `state.goal` too. With the flag off every jev body is byte-identical to before
-(`services/agent/decide/backends/jev/wire.go:encodeState`, `criteria.go:withGoal`; fixtures `testdata/*.json` unchanged,
-goal-on stage 1 pinned by `testdata/goal_request_intervention.json`).
+(`services/agent/decide/backends/jev/wire.go:encodeState`, `services/agent/decide/backends/jev/criteria.go:withGoal`; fixtures `testdata/*.json` unchanged,
+goal-on stage 1 pinned by `testdata/goal_request_intervention.json` (on track) and `testdata/goal_offband_request_intervention.json` (activity off its band)).
 
 ### 14.5 Safety and defaults
 

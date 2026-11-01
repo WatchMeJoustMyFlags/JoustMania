@@ -39,12 +39,14 @@ func (t PredictionTally) valid() bool {
 		!math.IsNaN(t.BrierSum) && t.BrierSum >= 0 && t.BrierSum <= float64(t.Scored)
 }
 
-// NotePredictions adds one game's prediction tally to the arm the game is bound
-// to. The Book calls it from the game-end chain before the experiment hook
-// concludes the game, so the game is still in flight; a game that is not one of
-// ours (a real game, a released or unknown one) and an empty or inconsistent
-// tally are ignored. It emits nothing itself: the game's game_concluded snapshot
-// carries the new tally.
+// NotePredictions records one game's prediction tally for the game while it is
+// bound. The Book calls it from the game-end chain before the experiment hook,
+// so the game is still in flight. The tally joins the game's arm only when
+// ConcludeGame folds the game's fitness (foldCalibrationLocked); a game released
+// without a fold (errored, preempted, a stale end) or torn down adds nothing. A
+// game that is not one of ours (a real game, a released or unknown one) and an
+// empty or inconsistent tally are ignored. It emits nothing itself: the game's
+// game_concluded snapshot carries the new tally.
 func (r *Registry) NotePredictions(gameID string, scored, hits int, brierSum float64) {
 	t := PredictionTally{Scored: scored, Hits: hits, BrierSum: brierSum}
 	if r == nil || !t.valid() {
@@ -52,18 +54,32 @@ func (r *Registry) NotePredictions(gameID string, scored, hits int, brierSum flo
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, arm, e := r.findGameLocked(gameID)
+	_, _, e := r.findGameLocked(gameID)
 	if e == nil {
 		return
 	}
+	if e.pendingCalibration == nil {
+		e.pendingCalibration = map[string]PredictionTally{}
+	}
+	e.pendingCalibration[gameID] = e.pendingCalibration[gameID].add(t)
+}
+
+// foldCalibrationLocked moves the pending tally of gameID into arm. ConcludeGame
+// calls it at the fitness fold. Assumes r.mu is held.
+func (e *entry) foldCalibrationLocked(gameID, arm string) {
+	t, ok := e.pendingCalibration[gameID]
+	if !ok {
+		return
+	}
+	delete(e.pendingCalibration, gameID)
 	if e.calibration == nil {
 		e.calibration = map[string]PredictionTally{}
 	}
-	cur := e.calibration[arm]
-	cur.Scored += t.Scored
-	cur.Hits += t.Hits
-	cur.BrierSum += t.BrierSum
-	e.calibration[arm] = cur
+	e.calibration[arm] = e.calibration[arm].add(t)
+}
+
+func (t PredictionTally) add(o PredictionTally) PredictionTally {
+	return PredictionTally{Scored: t.Scored + o.Scored, Hits: t.Hits + o.Hits, BrierSum: t.BrierSum + o.BrierSum}
 }
 
 // ArmCalibration returns a copy of the arm tally of experiment id (tests,

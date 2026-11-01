@@ -282,8 +282,11 @@ type entry struct {
 	patternAgentEnded map[string]int
 	// calibration is the per-arm prediction tally (UC-043 A21, BR-010, #2498):
 	// in memory only, never journaled, never read by the verdict; a restart or a
-	// rehydrate starts it empty.
-	calibration map[string]PredictionTally
+	// rehydrate starts it empty. pendingCalibration holds a bound game's tally
+	// (keyed by game id) until ConcludeGame folds the game's fitness; a released
+	// or torn-down game drops it, so only folded games count.
+	calibration        map[string]PredictionTally
+	pendingCalibration map[string]PredictionTally
 }
 
 // inFlight returns the experiment's current count of live (unconcluded) shadow
@@ -1445,6 +1448,9 @@ func (r *Registry) ConcludeGame(ctx context.Context, gameID string, fitness floa
 		return "", nil // not one of ours; ignore.
 	}
 	delete(e.games, gameID)
+	// UC-043 A21: the game's fitness is folded now, so its prediction tally joins
+	// the arm (report-only; the journal and the verdict never see it).
+	e.foldCalibrationLocked(gameID, arm)
 	// Recover the game's Common-Random-Numbers pair index (#1003) recorded at bind so
 	// the game_concluded event carries it — the journal's paired-difference fold
 	// (#1004) matches the two games of a pair by it. A bound game always has an entry;
@@ -1574,6 +1580,7 @@ func (r *Registry) ReleaseGame(gameID, reason string) bool {
 		return false // no bound slot freed (the bind, if any, frees it).
 	}
 	delete(e.games, gameID)
+	delete(e.pendingCalibration, gameID) // UC-043 A21: a released game is never folded
 	// Recover the pair index so the journal can drop a parked pending half whose
 	// partner is now gone (#1004 carried-over item 1): a released game that was the
 	// first-concluded half of an open pair must NEVER fold a fabricated difference.
@@ -2120,6 +2127,7 @@ func (r *Registry) teardown(ctx context.Context, id, flagKey string, terminal St
 	// (game_id → pair index) map; clear it too so no stale binding survives teardown.
 	e.games = make(map[string]string)
 	e.gamePairs = make(map[string]int)
+	e.pendingCalibration = nil
 	r.appendEvent(e.journal, journal.Event{
 		Kind:   journal.KindOutcome,
 		Status: string(terminal),

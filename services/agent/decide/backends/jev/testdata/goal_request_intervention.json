@@ -21,8 +21,8 @@
     },
     "jev.gate": {
       "criteria": {
-        "false": "No: the round is going well on its own. Eliminations come at a steady pace, no player is clearly dominating, and an intervention now would only interrupt a good game. Goal long_running_game: targets long_running_game duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min; measured now duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21. The measured values lie inside their target bands.",
-        "true": "Yes: the round is going wrong without help. It is collapsing (several players eliminated within seconds, the survivors near the death threshold), dragging (nobody eliminated for a long time, everyone far below the threshold), or lopsided (one player about to be eliminated while another has far more headroom). Goal long_running_game: targets long_running_game duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min; measured now duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21. Yes also when a measured value lies outside its target band."
+        "false": "No: the round is going well on its own. Eliminations come at a steady pace, no player is clearly dominating, and an intervention now would only interrupt a good game. Goal long_running_game: targets duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min; measured now duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21. The goal is on track: no term that can be judged yet is outside its target band.",
+        "true": "Yes: the round is going wrong without help. It is collapsing (several players eliminated within seconds, the survivors near the death threshold), dragging (nobody eliminated for a long time, everyone far below the threshold), or lopsided (one player about to be eliminated while another has far more headroom). Goal long_running_game: targets duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min; measured now duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21."
       },
       "instructions": "Does the game need an intervention right now?",
       "type": "noul"
@@ -40,7 +40,7 @@
     "goal": {
       "now": "duration=95s activity=0.42 elimination_pace=0.6/min closeness=0.21",
       "profile": "long_running_game",
-      "targets": "long_running_game duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min"
+      "targets": "duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min"
     },
     "most_headroom": "MOCK0002",
     "narrative": "game: id=game_7f3a9c21d4e8 kind=real mode=FFA elapsed=74.0s\nsession: alive=3 eliminated=1 tempo=1.15 death_threshold=2.30 most_headroom=MOCK0002 struggling=MOCK0003\nplayers:\n  MOCK0001 eliminated#1 skill=0.20 battery=80.00\n  MOCK0002 alive intensity=0.60 variance=0.05 skill=0.90 battery=72.00 danger=safe margin=1.70 intensity_rank=3/3\n  MOCK0003 alive intensity=2.20 variance=0.40 skill=0.25 battery=64.00 danger=near_threshold margin=0.10 intensity_rank=1/3\n  MOCK0004 alive intensity=1.40 variance=0.20 skill=0.50 battery=12.00 danger=elevated margin=0.90 intensity_rank=2/3\ntimeline:\n  -50s elimination: MOCK0001 (#1)\n",

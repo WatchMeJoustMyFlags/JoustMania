@@ -233,6 +233,9 @@ type GoalLines struct {
 	Source  string `json:"source"`
 	Goal    string `json:"goal"`
 	Now     string `json:"now"`
+	// OffBand are the labels of the terms outside their band now that can already
+	// be judged (goal.OffBand, #2498); only jev renders them, llmio does not.
+	OffBand []string `json:"off_band,omitempty"`
 }
 
 // Response is a backend's answers to a Request.

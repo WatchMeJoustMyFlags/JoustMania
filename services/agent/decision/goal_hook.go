@@ -43,10 +43,12 @@ func (l *Loop) goalLines(ctx context.Context, fired flags.Snapshot, backend stri
 	} else {
 		acc.Sample(c, l.nowOrDefault()())
 	}
+	measure := func(char, phase string) (float64, bool) { return acc.Measure(c, char, phase) }
 	return &decide.GoalLines{
 		Profile: profile.Name,
 		Source:  goal.SourceOf(profile),
 		Goal:    profile.GoalLine(),
-		Now:     goal.NowLine(profile, func(char, phase string) (float64, bool) { return acc.Measure(c, char, phase) }),
+		Now:     goal.NowLine(profile, measure),
+		OffBand: goal.OffBand(profile, measure),
 	}
 }
