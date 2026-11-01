@@ -434,8 +434,18 @@ func fewerShields(a, b scoredCandidate, grants map[string]int, skill func(scored
 	return a.decision.TargetSerial < b.decision.TargetSerial
 }
 
-// accelerateCandidates implements R5 (set the tempo to the 1.15 writer default
-// past the target duration; its direction is open in #2487),
+// accelerateTempo is R5's adjust_music_tempo value: the slow end of the lever's
+// bounds (1.0, the `slow` variant of music_tempo_override). The coordinator's
+// death threshold slides from SLOW_MAX to FAST_MAX with the tempo, so the slow
+// end tolerates the least movement and makes eliminations come sooner, which is
+// what accelerate wants past the target (#2487, UC-040 A52, BR-041).
+var accelerateTempo = func() string {
+	b, _ := decide.MagnitudeBounds(InterventionAdjustMusicTempo)
+	return strconv.FormatFloat(b.Min, 'g', -1, 64)
+}()
+
+// accelerateCandidates implements R5 (slow the music past the target duration,
+// lowering the death threshold),
 // R6 (eliminate the least-moving player when far past target), and R7
 // (end the game when way past target — only when accelerate strictly
 // dominates the weights; ties never end a game).
@@ -453,7 +463,8 @@ func accelerateCandidates(c gamecontext.GameContext, fit FitnessThresholds, weig
 	out := []candidate{{
 		decision: Decision{
 			Intervention:    InterventionAdjustMusicTempo,
-			Reason:          fmt.Sprintf("session at %.0fs past the %.0fs accelerate target: set the tempo to the 1.15 default", dur, target),
+			Value:           accelerateTempo,
+			Reason:          fmt.Sprintf("session at %.0fs past the %.0fs accelerate target: slow the tempo to lower the death threshold", dur, target),
 			ObjectiveServed: ObjectiveAccelerate,
 			Fitness:         durFit,
 		},

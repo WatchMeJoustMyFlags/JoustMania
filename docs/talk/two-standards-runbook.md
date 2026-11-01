@@ -328,7 +328,7 @@ variance window 10 s):
 |---|---|---|---|
 | under 120 s, with eliminations | R1 / R2 endurance | speed up the tempo (1.3, raises the death threshold; #2487) / calming audio cue | `standard` (tempo), `ambient` (cue) |
 | from 10 s | R8 statue | controller effect on a player with near-zero movement variance (held mock controllers) | `ambient` |
-| after 60 s | R5 accelerate | set the tempo to the 1.15 default (from 1.3 after R1 this lowers it; direction open in #2487) | `standard` |
+| after 60 s | R5 accelerate | slow the tempo (1.0, lowers the death threshold so eliminations come sooner; #2487; with mixed objectives it can lower R1's 1.3 between 60 s and 120 s) | `standard` |
 | after 90 s (3+ players) | R6 accelerate | eliminate the least-moving player | `full` |
 | after 120 s, accelerate dominant | R7 accelerate | end the game | `full` |
 

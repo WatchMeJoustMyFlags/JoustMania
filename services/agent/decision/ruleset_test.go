@@ -355,7 +355,7 @@ func contains(list []string, v string) bool {
 // rules: before #1305 the in-game snapshot had no game_duration_seconds
 // (DurationSeconds nil -> sessionDuration -1), so the duration-gated rules were
 // dead in real games. A live Store snapshot past the accelerate target now
-// carries a real elapsed time and R5 (speed up) produces a candidate.
+// carries a real elapsed time and R5 (slow down) produces a candidate.
 // UC-040 A1 step 1: the rules backend ranks R5 among its candidates.
 //
 // UC: UC-040 A1
