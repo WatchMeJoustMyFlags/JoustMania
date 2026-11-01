@@ -395,8 +395,8 @@ func TestAlreadyApplied_DisabledInertAndNewGame(t *testing.T) {
 func TestAlreadyApplied_RulesPreFilter(t *testing.T) {
 	t.Run("UC-040/A35 applyAppliedPolicy drops only an already-applied state or level candidate", func(t *testing.T) {
 		c := budgetCtx()
-		cand := func(d Decision) candidate { return candidate{decision: d} }
-		cands := []candidate{
+		cand := func(d Decision) scoredCandidate { return scoredCandidate{candidate: candidate{decision: d}} }
+		cands := []scoredCandidate{
 			cand(sens("WEAK", "")),
 			cand(sens("S", "")),
 			cand(budgetShield("WEAK")),
