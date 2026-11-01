@@ -490,7 +490,8 @@ model**, applied in order:
      battery is below the threshold — a low-battery controller signals unreliable
      input. Session-scoped decisions are unaffected; missing battery data is
      treated as unknown (does not block, but is noted).
-   - `policy.max_interventions_per_minute` (int, default 2): a **weighted
+   - `policy.max_interventions_per_minute` (int, default 2; variants
+     `conservative` 1, `aggressive` 4, operator-only `lively` 8, #2518): a **weighted
      sliding-window** rate limiter across all dispatched interventions. Weights:
      soft (`play_audio_cue`, `send_controller_effect`, `adjust_volume`) = 0.5;
      medium (`adjust_music_tempo`, `adjust_player_sensitivity`, `grant_shield`) =

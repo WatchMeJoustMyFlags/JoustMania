@@ -198,6 +198,26 @@ func TestStackOverlay_SubstitutesDefaultVariant(t *testing.T) {
 			t.Fatalf("variant %q, want the declared aggressive (= 4)", res.Variant)
 		}
 	})
+	// #2518: the operator-only higher budgets for a cheap backend are within the
+	// bounds (declared variants / int 1 to 100), so the stage Pi sets them through
+	// the flag service, by variant name or by value.
+	t.Run("UC-053/A1 operator budget variants interactive and lively (#2518)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.put(WriteRequest{Set: "agent", Flag: "llm.max_requests_per_minute", Variant: "interactive", Writer: "operator"})
+		if v, val := f.resolve("llm.max_requests_per_minute", nil); v != "interactive" || val != float64(120) {
+			t.Fatalf("llm.max_requests_per_minute resolved %s=%v, want interactive=120", v, val)
+		}
+		f.put(WriteRequest{Set: "agent", Flag: "policy.max_interventions_per_minute", Variant: "lively", Writer: "operator"})
+		if v, val := f.resolve("policy.max_interventions_per_minute", nil); v != "lively" || val != float64(8) {
+			t.Fatalf("policy.max_interventions_per_minute resolved %s=%v, want lively=8", v, val)
+		}
+		if res := f.put(WriteRequest{Set: "agent", Flag: "llm.max_requests_per_minute", Value: raw("120")}); res.Variant != "interactive" {
+			t.Fatalf("value 120 selected %q, want the declared interactive", res.Variant)
+		}
+		if res := f.put(WriteRequest{Set: "agent", Flag: "policy.max_interventions_per_minute", Value: raw("8")}); res.Variant != "lively" {
+			t.Fatalf("value 8 selected %q, want the declared lively", res.Variant)
+		}
+	})
 }
 
 // UC: UC-053 A5 BR-001 BR-002

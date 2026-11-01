@@ -135,7 +135,8 @@ T-1h `talk-stage.sh reset` (the reset clears a persisted model) and re-check the
 window): every remote decision (one slot per decision; a Jev act round's two
 HTTP calls count once) and every post-game Claude summary (retro). The cap is
 the `llm.max_requests_per_minute` flag (`conservative` 3, `default` 6,
-`aggressive` 12, `stage` 30), capped by `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`
+`aggressive` 12, `stage` 30, and the operator-only `interactive` 120 for a
+cheap backend such as Jev, #2518), capped by `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`
 when that is set: the cap is `min(env, flag)`, so the env can only lower the
 flag, never raise it (#1788, `ceilBudget`, `services/agent/decision/llmbudget.go`). One game on a remote
 backend at `decision.min_interval_ms=3000` (plus `decision.min_gap_after_answer_ms`,
@@ -145,7 +146,13 @@ warm Claude and 6 to 7 when Claude runs into the 8 s `patient` timeout, so the
 with `decide.fallback_reason=llm_budget_exhausted`, and the summary at game end
 finds the budget full. For the talk use the **`stage` variant** (30/min, a live
 flag flip, part of the baseline in section 6); leave the env unset or at 30 or
-more, since a lower env value caps `stage`.
+more, since a lower env value caps `stage`. On Jev, which is cheap, the operator
+may run hotter (#2518): `./scripts/flags.sh set agent llm.max_requests_per_minute interactive`
+(120/min: at the shipped cadence the per-game cadence, not the budget, then limits
+the decisions) and `./scripts/flags.sh set agent policy.max_interventions_per_minute lively`
+(8 per game per minute, more acts reach the players; the shield caps and cooldown
+still bound shields). Both are operator choices the agent never writes (C-034); the
+pre-flight accepts them, and `talk-stage.sh reset` returns to `stage` and `aggressive`.
 
 ### The second vendor (optional beat 6b: fill in before T-24h or cut it)
 

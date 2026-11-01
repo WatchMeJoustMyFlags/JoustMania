@@ -143,9 +143,9 @@ flags = {
     "experiment.mock_archetypes": f({"all": "calm_long,slow_cascade,quick_cascade", "quick_cascade": "quick_cascade"}, "all"),
     "decision.openai.model": f({"unset": "", "vendor": "m"}, "unset"),
     "decision.openai.base_url": f({"default": "https://api.openai.com/v1"}, "default"),
-    "llm.max_requests_per_minute": f({"default": 6, "stage": 30}, "stage"),
+    "llm.max_requests_per_minute": f({"default": 6, "stage": 30, "interactive": 120}, "stage"),
     "inference.backend": f({"stub": "stub", "claude": "claude"}, "claude"),
-    "policy.max_interventions_per_minute": f({"conservative": 1, "default": 2, "aggressive": 4}, "aggressive"),
+    "policy.max_interventions_per_minute": f({"conservative": 1, "default": 2, "aggressive": 4, "lively": 8}, "aggressive"),
 }
 for key, variant in overrides.items():
     flags[key]["defaultVariant"] = variant
@@ -219,6 +219,19 @@ check "jev threshold inherit fails" "FAIL  decision.jev.act_confidence_threshold
 check "shipped intervention budget fails (#1326)" "FAIL  policy.max_interventions_per_minute = default (2), stage baseline is aggressive"
 check "unset env falls back to the stage flag" "PASS  LLM budget: llm.max_requests_per_minute = stage (30/min"
 if grep -qE '^(PUT|POST|DELETE) ' "${FAKE_FLAG_LOG}"; then not_ok "the pre-flight writes nothing"; else ok "the pre-flight writes nothing"; fi
+
+# --- operator-only higher budgets for a cheap backend (#2518, UC-070 BR-003) ---
+# UC: UC-070 BR-003
+fixture policy.max_interventions_per_minute=lively llm.max_requests_per_minute=interactive
+run_preflight
+check "higher intervention budget passes (#2518)" "PASS  policy.max_interventions_per_minute = lively (8), at or above the stage baseline aggressive"
+check "interactive budget without env ceiling passes (#2518)" "PASS  LLM budget: llm.max_requests_per_minute = interactive (120/min; no env ceiling)"
+if has "FAIL  policy.max_interventions_per_minute"; then not_ok "lively is not drift"; else ok "lively is not drift"; fi
+STUB_BUDGET=30 run_preflight
+check "env ceiling caps interactive and says so (#2518)" "PASS  LLM budget: llm.max_requests_per_minute = interactive (120/min) capped to 30/min by AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30"
+fixture policy.max_interventions_per_minute=conservative
+run_preflight
+check "lower intervention budget still fails" "FAIL  policy.max_interventions_per_minute = conservative (1), stage baseline is aggressive"
 
 # --- budget, timeout, keys and summary backend ----------------------------
 fixture llm.max_requests_per_minute=default decision.claude.timeout_ms=default decision.jev.base_url=blackhole
