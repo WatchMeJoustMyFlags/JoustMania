@@ -445,7 +445,7 @@ const (
 	// AttrPredictionOutcome is hit, miss or unscorable.
 	AttrPredictionOutcome = "prediction.outcome"
 	// AttrPredictionUnscorableReason: game_ended, data_missing, stale_end, overflow,
-	// no_target or target_not_alive.
+	// no_target, target_not_alive or respawn_mode.
 	AttrPredictionUnscorableReason = "prediction.unscorable_reason"
 	// AttrPredictionDecidedEarly is true when the prediction was scored before its
 	// horizon (a survives / no_elimination miss, an elimination / game_ends hit).

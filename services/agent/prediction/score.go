@@ -28,6 +28,10 @@ const (
 	ReasonOverflow       = "overflow"
 	ReasonNoTarget       = "no_target"
 	ReasonTargetNotAlive = "target_not_alive"
+	// ReasonRespawnMode: an elimination-based template (survives, no_elimination,
+	// elimination) in a respawn mode, where a death keeps the player in the game
+	// (UC-040 BR-043, #2532).
+	ReasonRespawnMode = "respawn_mode"
 )
 
 // riseFactor / closerFactor are the activity_rises and closeness_rises margins.
@@ -134,9 +138,25 @@ func targetEliminatedBy(p decide.Prediction, c gamecontext.GameContext, until ti
 	return false, false
 }
 
+// eliminationBased reports whether template is scored from eliminations, which
+// a respawn mode does not record (UC-040 BR-043).
+func eliminationBased(template string) bool {
+	switch template {
+	case decide.TemplateSurvives, decide.TemplateNoElimination, decide.TemplateElimination:
+		return true
+	}
+	return false
+}
+
 // earlyVerdict decides what can be decided before the horizon from c: a survives
-// or no_elimination miss, an elimination hit.
+// or no_elimination miss, an elimination hit. In a respawn mode an
+// elimination-based template is unscorable respawn_mode at the first check that
+// sees the mode; every scoring path (Observe, the horizon check, the game end)
+// passes through here first.
 func earlyVerdict(p decide.Prediction, b baseline, c gamecontext.GameContext, now time.Time) verdict {
+	if eliminationBased(p.Template) && characteristics.RespawnMode(c) {
+		return unscorable(ReasonRespawnMode)
+	}
 	switch p.Template {
 	case decide.TemplateSurvives:
 		if gone, approx := targetEliminatedBy(p, c, b.horizonEnd()); gone {

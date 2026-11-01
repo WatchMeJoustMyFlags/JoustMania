@@ -12,6 +12,7 @@ package characteristics
 import (
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/joustmania/agent/gamecontext"
@@ -64,6 +65,27 @@ func eliminated(c gamecontext.GameContext, serial string) bool {
 		if s == serial {
 			return true
 		}
+	}
+	return false
+}
+
+// RespawnMode reports whether c's game mode keeps a dying player in the game:
+// NonStop (a respawn), Zombies (a human turns zombie, a zombie respawns), Swapper
+// (a swap) and Fight Club (a round loser goes back to the queue). There the
+// elimination sequence holds only the players who left for good (#2517, #2524),
+// so the elimination-based measures (survival, elimination_pace) say nothing about
+// play and are not scored (UC-040 BR-043, #2532). The mode is the coordinator's
+// get_game_name() ("Nonstop Joust", "Zombie", "Swapper", "Fight Club"; pinned by
+// tests/contract/test_respawn_mode_names.py) or a menu alias; an unobserved mode
+// is not a respawn mode.
+func RespawnMode(c gamecontext.GameContext) bool {
+	if c.Session.GameMode == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(*c.Session.GameMode)) {
+	case "nonstop joust", "nonstop", "non stop joust", "zombie", "zombies", "swapper",
+		"fight club", "fightclub", "fight_club":
+		return true
 	}
 	return false
 }

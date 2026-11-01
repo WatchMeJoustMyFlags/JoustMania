@@ -891,8 +891,8 @@ left is never a hit. Hard bounds of the characteristics are in §14.4.
 | `duration` | Game seconds elapsed, and whether the game ended (end reason zero or `root_span`; a stale end is no data) | `Session.DurationSeconds`, the game-end consumer | game |
 | `activity` | Mean of (movement intensity / death threshold) over the window's movement samples (at least half of the window's distinct seconds must have a sample), for the players alive when it is measured; normalised, so tempo changes do not move the scale | `History`, `SpeedTrack.DeathThreshold`, `Session.DeathThreshold` | field, target |
 | `change` | Swing of field `activity`: max minus min of the 5 s sub-window means inside the window | the same buckets | field |
-| `elimination_pace` | Eliminations observed in (t, t+w], per minute; predictions use the count | `Timeline` elimination events (agent receipt time), `EliminationSequence` length as fallback | game |
-| `survival` | The target is alive at t+w and was never eliminated in between | `EliminationSequence`, `Active` | target |
+| `elimination_pace` | Eliminations observed in (t, t+w], per minute; predictions use the count. Not scored in a respawn mode (NonStop, Zombies, Swapper, Fight Club: a death keeps the player in the game; UC-040 BR-043) | `Timeline` elimination events (agent receipt time), `EliminationSequence` length as fallback; `Session.GameMode` | game |
+| `survival` | The target is alive at t+w and was never eliminated in between. Not scored in a respawn mode (UC-040 BR-043) | `EliminationSequence`, `Active` | target |
 | `closeness` | Spread (max minus min) of per-player `activity` among alive players; lower means closer | `History` | field |
 
 The read-only realism characterization (`scripts/agent-shadow-realism.sh`, UC-043 A22, #1017) computes `activity`, `change` and `closeness` offline per game from the 1 Hz per-player gauges in VictoriaMetrics with the same windows (whole-game means of 5 s samples, as §14.4 does), and a game-level `survival` (mean fraction of the game each player stays alive) that §14.4 does not define; its values approximate the agent's and are compared only between real and shadow games, never with the agent's own measurements.
@@ -916,7 +916,12 @@ Six closed templates with a closed set of horizons (so calibration stays compara
 | `game_ends` | `duration` | Hit: the game ends (zero or `root_span`) by t+h, early. Miss: still running at t+h. Unscorable: stale end | 30, 60, 120 |
 
 Unscorable is never counted as a hit or a miss; it carries a reason (`game_ended`, `data_missing`, `stale_end`,
-`overflow`, `no_target`, `target_not_alive`). A prediction that can be decided before the horizon (a miss of `survives` or
+`overflow`, `no_target`, `target_not_alive`, `respawn_mode`). In a respawn mode (`Session.GameMode` is NonStop, Zombies,
+Swapper or Fight Club: `Nonstop Joust`, `Zombie`, `Swapper`, `Fight Club` or a menu alias; pinned by
+`tests/contract/test_respawn_mode_names.py`) the elimination sequence holds only the players who left for good (#2517, #2524), so
+`survives`, `no_elimination` and `elimination` of every source, controls included, are `unscorable` `respawn_mode` at the first
+check that sees the mode (the next decision cycle, the horizon check or the game end; UC-040 BR-043, #2532,
+`services/agent/prediction/score.go:earlyVerdict`). A prediction that can be decided before the horizon (a miss of `survives` or
 `no_elimination`, a hit of `elimination` or `game_ends`) is scored then (`prediction.decided_early`).
 
 **Rules predictions** (a fixed table in the rules engine, stamped `Source=rules`; `P` is a fixed per-rule prior, documented
@@ -1037,8 +1042,9 @@ values are sampled during the game: the decision loop hands every cycle's contex
 and `closeness` over the last 10 s, `change` over the last 15 s, each with the §14.1 functions; a measure without enough data
 is skipped. A term's value is then: `activity`, `closeness`, `change` the mean of the samples (phase `endgame`: of the
 samples taken with 1 or 2 players alive); `duration` the final game seconds (`endgame`: seconds since the endgame was first
-sampled); `elimination_pace` the eliminations per minute over the whole game (`endgame`: since the endgame began);
-`survival` has no game-level value. A term without a value is not measured.
+sampled); `elimination_pace` the eliminations per minute over the whole game (`endgame`: since the endgame began), and no value in a
+respawn mode (UC-040 BR-043: the term is left out of the attainment, the now line and `off_band`); `survival` has no
+game-level value. A term without a value is not measured.
 
 **Attainment.** At game end (the start of the book's game-end hook, before the experiment, retro and summary consumers) the
 game's profile is read in the game's flag context (from the end snapshot's `game_kind`, `experiment_id`, `arm`) and each
