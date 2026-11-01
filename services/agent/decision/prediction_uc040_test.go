@@ -296,15 +296,15 @@ func TestRegisterPrediction_ActedAndCounterfactual(t *testing.T) {
 // the lever default of its mapped decision; one with a prediction keeps it.
 func TestRemotePrediction_LeverDefault(t *testing.T) {
 	c := gameCtx(20, nil, map[string]testPlayer{"A": {active: true}})
-	got := remotePrediction(decide.Response{}, Decision{Intervention: InterventionGrantShield, TargetSerial: "A"}, c)
+	got := remotePrediction(decide.Request{}, decide.Response{}, Decision{Intervention: InterventionGrantShield, TargetSerial: "A"}, c)
 	if got == nil || got.Source != decide.SourceLeverDefault || got.Template != decide.TemplateSurvives || got.Target != "A" {
 		t.Fatalf("lever default = %+v", got)
 	}
 	own := decide.NewPrediction(decide.TemplateElimination, 30, 0.4, decide.SourceModel, "", "")
-	if got := remotePrediction(decide.Response{Prediction: &own}, Decision{Intervention: InterventionGrantShield, TargetSerial: "A"}, c); got != &own {
+	if got := remotePrediction(decide.Request{}, decide.Response{Prediction: &own}, Decision{Intervention: InterventionGrantShield, TargetSerial: "A"}, c); got != &own {
 		t.Fatalf("the backend's own prediction must win, got %+v", got)
 	}
-	if got := remotePrediction(decide.Response{}, Decision{Intervention: InterventionEndGame}, c); got != nil {
+	if got := remotePrediction(decide.Request{}, decide.Response{}, Decision{Intervention: InterventionEndGame}, c); got != nil {
 		t.Fatalf("end_game has no lever default, got %+v", *got)
 	}
 }

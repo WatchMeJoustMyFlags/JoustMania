@@ -264,6 +264,9 @@ type Loop struct {
 	// decide.discarded_reason (agent_decide_discarded_total{reason}, #2123).
 	// Defaults to the global meter provider's counter.
 	decideDiscarded otelmetric.Int64Counter
+	// predictionDropped counts model predictions dropped by llmio.Parse
+	// (agent_prediction_dropped_total{backend,reason}, #2479, UC-040 A45).
+	predictionDropped otelmetric.Int64Counter
 
 	// evaluations counts EVERY eval cycle (agent_evaluations_total{signal,outcome},
 	// #1053), so signal arrival is observable even on idle cycles where no rule fires
@@ -343,6 +346,12 @@ type Loop struct {
 	// the ledger inert.
 	charges          chargeLedger
 	shieldChargeMode ShieldChargeMode
+	// promptProfile is the decision.prompt_profile source of remote decide requests
+	// (#2467 PR 5, UC-040 BR-036); nil leaves Request.PromptProfile empty (v1).
+	promptProfile PromptProfileSource
+	// goalSource is the goal-profile source of the prompt's goal lines (#2479);
+	// nil renders none.
+	goalSource GoalSource
 	// shieldSeconds is the grant_shield length source (UC-040 BR-029, #2395): the
 	// interventions/shield_seconds "default" variant, read per grant. nil (the golden
 	// harness, every older test) leaves the decision's value empty, so the writer and
@@ -388,6 +397,7 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 		throttle:             DefaultThrottleInterval,
 		llmGated:             defaultLLMGatedCounter(),
 		decideDiscarded:      defaultDecideDiscardedCounter(),
+		predictionDropped:    defaultPredictionDroppedCounter(),
 		evaluations:          defaultEvaluationsCounter(),
 		decisions:            defaultDecisionsCounter(),
 		interventionsApplied: defaultInterventionsAppliedCounter(),
@@ -642,8 +652,10 @@ func (l *Loop) OnEvaluate(ctx context.Context, c gamecontext.GameContext, trig E
 		)
 	}
 
-	// #2479: early-decided predictions and the due base-rate control of this game.
+	// #2479: early-decided predictions and the due base-rate control of this game,
+	// and the game's goal sample (every game, whatever predictions_enabled says).
 	l.observePredictions(snapshot, c)
+	l.sampleGoal(c)
 
 	decisions, decideRec := l.decide(ctx, snapshot, rules, c, trig)
 

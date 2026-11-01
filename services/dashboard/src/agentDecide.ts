@@ -2,6 +2,8 @@
 
 import { incrementalStartMs, searchTracesSized, spanStartMs, spanTags, tagBool, tagBoolOrNull, tagNumber, tagString, parentSpanId } from "./jaeger.js";
 import type { JaegerSpan, JaegerTracesResponse, SearchSpec } from "./jaeger.js";
+import { GoalStore } from "./agentGoal.js";
+import type { GameGoal } from "./agentGoal.js";
 import { pickAnchor } from "./agentAnchor.js";
 import type { DecideFollow } from "./agentAnchor.js";
 import { parseFlagStates } from "./agentFlags.js";
@@ -74,6 +76,9 @@ const DECIDE_TRACE_LIMIT = 5;
 
 /** Max decide rows kept (newest first). */
 const MAX_DECIDE_ROWS = 30;
+
+/** Max prediction outcome spans kept for the per-game strip (a game scores a few dozen). */
+const MAX_OUTCOMES = 400;
 
 /*
  * PAYLOAD BUDGET (#2287): Jaeger's search returns WHOLE traces, so a live real
@@ -211,6 +216,58 @@ export interface DecideRow {
   gameKind: string;
   /** agent.decision spans this decide produced (remote) or ran beside (rules). */
   decisions: LinkedDecision[];
+  /** The prediction this decision carried (#2479, UC-040 A44); null when it had none. */
+  prediction: DecidePrediction | null;
+}
+
+/** Jaeger operation of a scored prediction (decide-contract §14, UC-040 A44). */
+export const PREDICTION_OUTCOME_OPERATION = "agent.prediction.outcome";
+
+/**
+ * hit / miss / unscorable come from the outcome span; pending = no outcome span yet;
+ * unknown = still no outcome span although the decide query window has moved
+ * DECIDE_OVERLAP_MS past the row, so it will not be fetched again (a long-horizon or
+ * game-end outcome exported after the window settled).
+ */
+export type PredictionState = "hit" | "miss" | "unscorable" | "pending" | "unknown";
+
+/** The prediction a decision carried (decide.prediction.* tags) and its scored state. */
+export interface DecidePrediction {
+  id: string;
+  template: string;
+  characteristic: string;
+  scope: string;
+  horizonS: number | null;
+  /** The stated probability that it comes true. */
+  p: number | null;
+  /** rules | lever_default | model. */
+  source: string;
+  /** The rules-table row ("R4") or "". */
+  rule: string;
+  /** True when an identical prediction was already pending (decide.prediction.merged). */
+  merged: boolean;
+  /** Joined from the agent.prediction.outcome span of the same trace by id. */
+  outcome: PredictionState;
+  /** prediction.unscorable_reason of the joined span ("" otherwise). */
+  unscorableReason: string;
+}
+
+/** One agent.prediction.outcome span: a scored decision prediction or a control. */
+export interface PredictionOutcomeSpan {
+  id: string;
+  traceId: string;
+  tsMs: number;
+  gameId: string;
+  gameKind: string;
+  backend: string;
+  /** rules | lever_default | model | control. */
+  source: string;
+  template: string;
+  p: number | null;
+  /** The decision was applied (false = counterfactual, never in the headline). */
+  acted: boolean;
+  outcome: "hit" | "miss" | "unscorable";
+  unscorableReason: string;
 }
 
 /** The "current backend" strip: derived from the newest agent.decide span. */
@@ -233,6 +290,36 @@ export interface DecideFeed {
   current: DecideCurrent | null;
   /** agent.flag_state spans found in the same game traces (#2059); parse results only. */
   flagStates?: FlagPanel[];
+  /** Every agent.prediction.outcome span found (decisions and controls); parse results only. */
+  outcomes?: PredictionOutcomeSpan[];
+  /** The followed game's hit rate vs control base rate per source (#2479); null without outcomes. */
+  predictionStrip?: PredictionStrip | null;
+  /** The followed game's goal profile and attainment (#2498); null until its summary exists. */
+  goal?: GameGoal | null;
+}
+
+/** One source's acted predictions of a game against the controls' base rate. */
+export interface PredictionStripSource {
+  source: string;
+  hits: number;
+  misses: number;
+  unscorable: number;
+  /** hits / (hits + misses); null when nothing was scored. */
+  hitRate: number | null;
+  /**
+   * Hit rate the controls reach on the same templates, weighted by this source's
+   * template mix; null while no control of those templates was scored.
+   */
+  baseRate: number | null;
+}
+
+/** The per-game prediction strip: acted predictions only (counterfactuals never count). */
+export interface PredictionStrip {
+  gameId: string;
+  gameKind: string;
+  sources: PredictionStripSource[];
+  /** Counterfactual (held, blocked, discarded) predictions left out of the rates. */
+  counterfactual: number;
 }
 
 /**
@@ -264,11 +351,129 @@ function isChatSpan(span: JaegerSpan, tags: Map<string, unknown>): boolean {
   return span.operationName.startsWith("chat ") || tags.get("gen_ai.operation.name") === "chat";
 }
 
+/**
+ * The decide.prediction.* tags of an agent.decide span, with the outcome joined from
+ * the agent.prediction.outcome span of the same trace by prediction id. No outcome
+ * span (yet) reads as pending. null when the decision carried no prediction.
+ */
+function predictionFrom(
+  tags: Map<string, unknown>,
+  outcomes: Map<string, PredictionOutcomeSpan>,
+): DecidePrediction | null {
+  const id = tagString(tags, "decide.prediction.id");
+  if (!id) return null;
+  const scored = outcomes.get(id);
+  return {
+    id,
+    template: tagString(tags, "decide.prediction.template"),
+    characteristic: tagString(tags, "decide.prediction.characteristic"),
+    scope: tagString(tags, "decide.prediction.scope"),
+    horizonS: tagNumber(tags, "decide.prediction.horizon_s"),
+    p: tagNumber(tags, "decide.prediction.p"),
+    source: tagString(tags, "decide.prediction.source"),
+    rule: tagString(tags, "decide.prediction.rule"),
+    merged: tagBool(tags, "decide.prediction.merged"),
+    outcome: scored ? scored.outcome : "pending",
+    unscorableReason: scored ? scored.unscorableReason : "",
+  };
+}
+
+const KNOWN_PREDICTION_OUTCOMES: ReadonlySet<string> = new Set(["hit", "miss", "unscorable"]);
+
+/** Fold one agent.prediction.outcome span; null for an unknown outcome or a missing id. */
+function outcomeSpanFrom(span: JaegerSpan): PredictionOutcomeSpan | null {
+  const tags = spanTags(span);
+  const id = tagString(tags, "prediction.id");
+  const outcome = tagString(tags, "prediction.outcome");
+  if (!id || !KNOWN_PREDICTION_OUTCOMES.has(outcome)) return null;
+  return {
+    id,
+    traceId: span.traceID,
+    tsMs: spanStartMs(span),
+    gameId: tagString(tags, "game.id"),
+    gameKind: tagString(tags, "game.kind"),
+    backend: tagString(tags, "prediction.backend"),
+    source: tagString(tags, "prediction.source"),
+    template: tagString(tags, "prediction.template"),
+    p: tagNumber(tags, "prediction.p"),
+    acted: tagBool(tags, "prediction.acted"),
+    outcome: outcome as PredictionOutcomeSpan["outcome"],
+    unscorableReason: tagString(tags, "prediction.unscorable_reason"),
+  };
+}
+
+/**
+ * Hit rate per source against the controls' base rate (#2479). Only the game's acted
+ * predictions count (UC-040 BR-034: a counterfactual is never mixed in); unscorable
+ * is neither a hit nor a miss. The base rate of a source is the controls' hit rate on
+ * the templates that source predicted, weighted by its own template mix, so a source
+ * that only picks easy templates is compared with how easy they are.
+ */
+export function predictionStripFrom(
+  outcomes: Iterable<PredictionOutcomeSpan>,
+  gameId: string,
+): PredictionStrip | null {
+  const game = [...outcomes].filter((o) => o.gameId === gameId);
+  if (game.length === 0) return null;
+  const control = new Map<string, { hits: number; scored: number }>();
+  for (const o of game) {
+    if (o.source !== "control" || o.outcome === "unscorable") continue;
+    const c = control.get(o.template) ?? { hits: 0, scored: 0 };
+    c.scored++;
+    if (o.outcome === "hit") c.hits++;
+    control.set(o.template, c);
+  }
+  const bySource = new Map<string, PredictionStripSource & { mix: Map<string, number> }>();
+  let counterfactual = 0;
+  for (const o of game) {
+    if (o.source === "control") continue;
+    if (!o.acted) {
+      counterfactual++;
+      continue;
+    }
+    let src = bySource.get(o.source);
+    if (!src) {
+      src = { source: o.source, hits: 0, misses: 0, unscorable: 0, hitRate: null, baseRate: null, mix: new Map() };
+      bySource.set(o.source, src);
+    }
+    if (o.outcome === "unscorable") {
+      src.unscorable++;
+      continue;
+    }
+    if (o.outcome === "hit") src.hits++;
+    else src.misses++;
+    src.mix.set(o.template, (src.mix.get(o.template) ?? 0) + 1);
+  }
+  const sources: PredictionStripSource[] = [];
+  for (const src of [...bySource.values()].sort((a, b) => a.source.localeCompare(b.source))) {
+    const scored = src.hits + src.misses;
+    let weight = 0;
+    let expected = 0;
+    for (const [template, n] of src.mix) {
+      const c = control.get(template);
+      if (!c || c.scored === 0) continue;
+      weight += n;
+      expected += n * (c.hits / c.scored);
+    }
+    sources.push({
+      source: src.source,
+      hits: src.hits,
+      misses: src.misses,
+      unscorable: src.unscorable,
+      hitRate: scored > 0 ? src.hits / scored : null,
+      baseRate: weight > 0 ? expected / weight : null,
+    });
+  }
+  const gameKind = game[0].gameKind;
+  return { gameId, gameKind, sources, counterfactual };
+}
+
 /** Fold one agent.decide span (with its trace neighbours) into a feed row. */
 function decideRowFrom(
   span: JaegerSpan,
   byParent: Map<string, JaegerSpan[]>,
   byId: Map<string, JaegerSpan>,
+  outcomes: Map<string, PredictionOutcomeSpan>,
 ): DecideRow {
   const tags = spanTags(span);
   const parent = parentSpanId(span);
@@ -323,6 +528,7 @@ function decideRowFrom(
     errorType: tagString(tags, "error.type"),
     gameId: tagString(tags, "game.id"),
     gameKind: tagString(tags, "game.kind"),
+    prediction: predictionFrom(tags, outcomes),
     decisions: decisionSpans
       .slice()
       .sort((a, b) => a.startTime - b.startTime)
@@ -354,9 +560,19 @@ function decideRowFrom(
 export function parseDecideTraces(body: JaegerTracesResponse): DecideFeed {
   const rows: DecideRow[] = [];
   const seen = new Set<string>();
+  const allOutcomes: PredictionOutcomeSpan[] = [];
 
   for (const trace of body.data ?? []) {
     const spans = trace.spans ?? [];
+    // The outcome span sits in the game trace beside the decide span: join by id.
+    const traceOutcomes = new Map<string, PredictionOutcomeSpan>();
+    for (const s of spans) {
+      if (s.operationName !== PREDICTION_OUTCOME_OPERATION) continue;
+      const o = outcomeSpanFrom(s);
+      if (!o) continue;
+      traceOutcomes.set(o.id, o);
+      allOutcomes.push(o);
+    }
     const byParent = new Map<string, JaegerSpan[]>();
     const byId = new Map<string, JaegerSpan>();
     for (const s of spans) {
@@ -372,13 +588,22 @@ export function parseDecideTraces(body: JaegerTracesResponse): DecideFeed {
       const key = `${s.traceID}/${s.spanID}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      rows.push(decideRowFrom(s, byParent, byId));
+      rows.push(decideRowFrom(s, byParent, byId, traceOutcomes));
     }
   }
 
   rows.sort(newestFirst);
   const capped = rows.slice(0, MAX_DECIDE_ROWS);
-  return { rows: capped, current: currentFrom(rows), flagStates: parseFlagStates(body) };
+  const current = currentFrom(rows);
+  // The outcome fields are only present when the traces carried outcome spans.
+  const strip = current ? predictionStripFrom(allOutcomes, current.gameId) : null;
+  return {
+    rows: capped,
+    current,
+    flagStates: parseFlagStates(body),
+    ...(allOutcomes.length > 0 ? { outcomes: allOutcomes } : {}),
+    ...(strip ? { predictionStrip: strip } : {}),
+  };
 }
 
 /**
@@ -479,6 +704,8 @@ export class DecideStore {
   private newestMs: number | null = null;
   private follow: DecideFollow = { realGameLive: null, followGameId: "" };
   private readonly windows = new Map<string, QueryWindow>();
+  private readonly outcomes = new Map<string, PredictionOutcomeSpan>();
+  private readonly goals = new GoalStore();
 
   constructor(
     private readonly max = MAX_DECIDE_ROWS,
@@ -497,6 +724,26 @@ export class DecideStore {
       this.rows.clear();
       for (const r of keep) this.rows.set(rowKey(r), r);
     }
+  }
+
+  /** Merge the outcome spans a search returned (keyed by prediction id, newest kept, bounded). */
+  mergeOutcomes(outcomes: PredictionOutcomeSpan[]): void {
+    for (const o of outcomes) this.outcomes.set(o.id, o);
+    if (this.outcomes.size > MAX_OUTCOMES) {
+      const keep = [...this.outcomes.values()].sort((a, b) => b.tsMs - a.tsMs).slice(0, MAX_OUTCOMES);
+      this.outcomes.clear();
+      for (const o of keep) this.outcomes.set(o.id, o);
+    }
+  }
+
+  /** Merge the goals of the game summaries a search returned (#2498). */
+  mergeGoals(goals: GameGoal[]): void {
+    this.goals.merge(goals);
+  }
+
+  /** True when the summary goal of `gameId` is already held (#2498). */
+  hasGoal(gameId: string): boolean {
+    return this.goals.has(gameId);
   }
 
   /** Next query start of `lane` (agent clock), null before its first decide. */
@@ -524,8 +771,21 @@ export class DecideStore {
   }
 
   feed(): DecideFeed {
-    const rows = this.sorted();
-    return { rows, current: currentFrom(rows, this.follow) };
+    const rows = this.sorted().map((r) => this.settlePrediction(r));
+    const current = currentFrom(rows, this.follow);
+    return {
+      rows,
+      current,
+      predictionStrip: current ? predictionStripFrom(this.outcomes.values(), current.gameId) : null,
+      goal: current ? this.goals.forGame(current.gameId) : null,
+    };
+  }
+
+  /** A pending prediction the query window has left behind reads unknown, never pending forever. */
+  private settlePrediction(row: DecideRow): DecideRow {
+    if (row.prediction?.outcome !== "pending" || this.newestMs === null) return row;
+    if (row.tsMs >= this.newestMs - DECIDE_OVERLAP_MS) return row;
+    return { ...row, prediction: { ...row.prediction, outcome: "unknown" } };
   }
 
   private window(lane: string): QueryWindow {
@@ -633,6 +893,7 @@ export async function pollDecides(
       bytes += answer.bytes;
       const feed = parseDecideTraces(answer.body);
       store.merge(feed.rows, lane);
+      store.mergeOutcomes(feed.outcomes ?? []);
       flagStates.push(...(feed.flagStates ?? []));
     } catch (error) {
       // Only the shadow lane is optional: it must not block the primary feed (#2386).

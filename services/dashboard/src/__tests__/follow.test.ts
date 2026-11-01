@@ -64,6 +64,7 @@ function row(spanId: string, tsMs: number, gameId: string, gameKind: string, bac
     gameId,
     gameKind,
     decisions: [],
+    prediction: null,
   };
 }
 

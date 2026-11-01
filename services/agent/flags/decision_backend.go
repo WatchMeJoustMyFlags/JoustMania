@@ -29,6 +29,8 @@ const (
 	keyDecisionMinGapAfterAnswerMs       = "decision.min_gap_after_answer_ms"
 	keyDecisionMaxStateAgeMs             = "decision.max_state_age_ms"
 	keyDecisionPredictionsEnabled        = "decision.predictions_enabled"
+	keyDecisionPredictionsAskModel       = "decision.predictions.ask_model"
+	keyDecisionGoalInPrompt              = "decision.goal_in_prompt"
 	keyDecisionClaudeModel               = "decision.claude.model"
 	keyDecisionClaudeTimeoutMs           = "decision.claude.timeout_ms"
 	keyDecisionClaudeBaseURL             = "decision.claude.base_url"
@@ -195,9 +197,17 @@ type DecisionBackend struct {
 	// only observes and cannot widen anything). Inverted so the zero value of a
 	// hand-built snapshot matches the default.
 	PredictionsOff bool
-	Claude         RemoteBackendConfig
-	OpenAI         RemoteBackendConfig
-	Jev            RemoteBackendConfig
+	// GoalInPrompt is decision.goal_in_prompt (#2479, decide-contract.md §14.4): a
+	// claude or openai request carries the "goal:" / "now:" lines. The only switch:
+	// decision.prompt_profile never implies them. Default off; unreadable reads off.
+	GoalInPrompt bool
+	// PredictionsAskModel is decision.predictions.ask_model (#2479, UC-040 A45,
+	// BR-034): a claude or openai request carries the ffa.prediction ask. Default
+	// off; a missing or unreadable value reads off, so the request bytes stay v1.
+	PredictionsAskModel bool
+	Claude              RemoteBackendConfig
+	OpenAI              RemoteBackendConfig
+	Jev                 RemoteBackendConfig
 }
 
 // IsRules reports whether the rules engine is the selected backend. A zero-value
@@ -251,6 +261,8 @@ func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
 		MinGapAfterAnswer:      f.nonNegativeMsFlag(ctx, keyDecisionMinGapAfterAnswerMs, DefaultDecisionMinGapAfterAnswerMs),
 		MaxStateAge:            f.nonNegativeMsFlag(ctx, keyDecisionMaxStateAgeMs, DefaultDecisionMaxStateAgeMs),
 		PredictionsOff:         !f.boolFlag(ctx, keyDecisionPredictionsEnabled, true),
+		PredictionsAskModel:    f.boolFlag(ctx, keyDecisionPredictionsAskModel, false),
+		GoalInPrompt:           f.boolFlag(ctx, keyDecisionGoalInPrompt, false),
 		Claude: RemoteBackendConfig{
 			BaseURL: f.stringFlag(ctx, keyDecisionClaudeBaseURL, DefaultDecisionClaudeBaseURL),
 			Model:   f.stringFlag(ctx, keyDecisionClaudeModel, DefaultDecisionClaudeModel),

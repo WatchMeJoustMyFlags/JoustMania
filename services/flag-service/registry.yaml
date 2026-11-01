@@ -84,6 +84,8 @@ flags:
   - {set: agent, key: policy.group_grant.real_games, kind: overlay, scope: [stack], bounds: {variants: ["on", "off"]}}
   - {set: agent, key: policy.group_grant.max_per_game, kind: overlay, scope: [stack], bounds: {range: [0, 3], integer: true}}
   - {set: agent, key: policy.group_grant.max_targets, kind: overlay, scope: [stack], bounds: {range: [2, 6], integer: true}}
+  # decision.prompt_profile (#2467 PR 5, UC-040 BR-036): operator-written, never by the agent (C-034).
+  - {set: agent, key: decision.prompt_profile, kind: overlay, scope: [stack], bounds: {variants: ["v1", "neutral"]}}
   - {set: agent, key: fitness.accelerate.target_session_seconds, kind: overlay, scope: [stack]}
   - {set: agent, key: verdict_min_n, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
   - {set: agent, key: verdict_min_pairs, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}

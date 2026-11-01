@@ -19,6 +19,8 @@ import (
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/goal"
+	"github.com/joustmania/agent/telemetry/keys"
 )
 
 // decide_hook.go wires the decide contract (epic #1225) into the decision loop
@@ -107,6 +109,10 @@ const (
 	// outcome.
 	AttrDecideBlocked     = "decide.blocked"
 	AttrDecideBlockReason = "decide.block_reason"
+	// AttrDecidePromptProfile is the normalized decision.prompt_profile a remote
+	// request was rendered with (v1 or neutral; #2467 PR 5, decide-contract.md §12).
+	// Absent on the rules path.
+	AttrDecidePromptProfile = "decide.prompt_profile"
 )
 
 // decide.outcome values.
@@ -155,6 +161,26 @@ type decideEngine interface {
 type actedRecorder interface {
 	RecordActed(Decision)
 }
+
+// PromptProfileSource returns the decision.prompt_profile of one game, normalized
+// (decide.NormalizePromptProfile). main.go wires flags.Flags.PromptProfile, which
+// reads it in the game's flag context and gives v1 on any error.
+type PromptProfileSource func(ctx context.Context, gameID string) string
+
+// SetPromptProfileSource injects the prompt-profile source of remote decide
+// requests (#2467 PR 5, UC-040 BR-036). nil (the default and every older test)
+// leaves Request.PromptProfile empty, which every backend renders as v1. Set at
+// construction, before the loop serves.
+func (l *Loop) SetPromptProfileSource(src PromptProfileSource) { l.promptProfile = src }
+
+// GoalSource resolves one game's goal profile (#2479, decide-contract.md §14.4).
+// main.go wires flags.Flags.GoalProfile in the game's flag context.
+type GoalSource func(ctx context.Context, c gamecontext.GameContext) goal.Profile
+
+// SetGoalSource injects the goal-profile source of the prompt's goal lines. nil
+// (the default and every older test) renders no goal line. Set at construction,
+// before the loop serves.
+func (l *Loop) SetGoalSource(src GoalSource) { l.goalSource = src }
 
 // SetDecideRegistry injects the SHARED decision-backend registry (#1226). main.go
 // builds one and calls this on every per-game loop. A nil registry (the default)
@@ -617,6 +643,21 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		start:     start,
 		stateAt:   c.UpdatedAt,
 	}
+	// The prompt profile is read per request in the game's flag context (#2467 PR 5);
+	// it changes only the wording a backend renders, never the questions or the state.
+	if l.promptProfile != nil {
+		rec.req.PromptProfile = decide.NormalizePromptProfile(l.promptProfile(root, c.SessionID))
+	}
+	// The prediction ask (#2479, UC-040 A45): only with decision.predictions.ask_model
+	// and decision.predictions_enabled on (fire-time flags) and a claude or openai
+	// backend; otherwise the request stays v1.
+	if askModelPrediction(fired, rec.used) {
+		rec.req.PredictionAsk = decide.PredictionQuestion(rec.req.State)
+	}
+	// The goal lines (#2479, decide-contract.md §14.4): only under
+	// decision.goal_in_prompt, and only for claude, openai or jev (jev's goal state
+	// and gate criterion, #2498); otherwise the request stays byte-identical.
+	rec.req.Goal = l.goalLines(root, fired, rec.used, c)
 	// Fire-time threshold: only a placeholder for spans that end before landing
 	// (none are routed then); the landing re-read below overwrites it with the
 	// LIVE effective threshold, which is what routing uses.
@@ -626,6 +667,7 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		if rec.discardedReason != "" {
 			l.decideDiscarded.Add(root, 1, otelmetric.WithAttributes(attribute.String("reason", rec.discardedReason)))
 		}
+		l.countPredictionDropped(root, rec)
 	}()
 
 	callCtx, cancel := context.WithTimeout(spanCtx, timeout)
@@ -779,7 +821,7 @@ func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, c
 	// one), registered when the record ends: acted, or a counterfactual when held,
 	// blocked or discarded. Not when the game is gone: nothing could be scored.
 	if ok && gameActive(current) {
-		rec.prediction, rec.predictionCtx = remotePrediction(rec.resp, d, current), &current
+		rec.prediction, rec.predictionCtx = remotePrediction(rec.req, rec.resp, d, current), &current
 	}
 	if rec.confidence < rec.threshold {
 		rec.outcome = DecideOutcomeHeld
@@ -955,7 +997,15 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 			attrs = append(attrs, attribute.String(AttrDecideBlockReason, string(rec.blockReason)))
 		}
 	}
+	if rec.req.PromptProfile != "" {
+		attrs = append(attrs, attribute.String(AttrDecidePromptProfile, rec.req.PromptProfile))
+	}
+	if rec.req.Goal != nil {
+		attrs = append(attrs, attribute.String(keys.AttrDecideGoalProfile, rec.req.Goal.Profile),
+			attribute.String(keys.AttrDecideGoalSource, rec.req.Goal.Source))
+	}
 	attrs = append(attrs, predictionAttributes(rec)...)
+	attrs = append(attrs, droppedPredictionAttributes(rec)...)
 	if rec.err != nil {
 		attrs = append(attrs, semconv.ErrorTypeKey.String(decideErrorType(rec)))
 		span.SetStatus(codes.Error, rec.fallbackReason)

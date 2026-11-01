@@ -120,6 +120,40 @@ type Summary struct {
 	// ShieldHold is a hold game's latched shield values (UC-042 BR-007, #2096), from
 	// the game_shield_* gauges; nil in every other game.
 	ShieldHold *ShieldHoldSummary `json:"shield_hold,omitempty"`
+	// Predictions are the game's scored predictions, decisions and controls, oldest
+	// first (UC-042 A12, #2479); PredictionTally groups them per backend, source,
+	// template and acted. Both are omitted when the game had none, and the schema
+	// version does not change.
+	Predictions     []PredictionOutcome `json:"predictions,omitempty"`
+	PredictionTally []PredictionTally   `json:"prediction_tally,omitempty"`
+	// Goal is the game scored against its goal profile (UC-042 A12, #2479,
+	// decide-contract.md §14.4); nil when the profile had no terms (the mixed
+	// objectives) or no goal lookup is wired. Additive, schema version unchanged.
+	Goal *Goal `json:"goal,omitempty"`
+}
+
+// Goal is a game's goal attainment: the profile, each term's band, measured value
+// and score, and the weighted mean of the measured terms.
+type Goal struct {
+	// Profile is the goal.profile variant, or the derived profile's name when
+	// FromObjectives is set.
+	Profile        string `json:"profile"`
+	FromObjectives bool   `json:"from_objectives,omitempty"`
+	// Attainment is 0..1; nil when no term could be measured.
+	Attainment *float64   `json:"attainment,omitempty"`
+	Terms      []GoalTerm `json:"terms"`
+}
+
+// GoalTerm is one term: its band (nil = open edge), phase and weight, and the
+// measured value and score (both nil when the term had no data).
+type GoalTerm struct {
+	Characteristic string   `json:"characteristic"`
+	Phase          string   `json:"phase"`
+	Min            *float64 `json:"min,omitempty"`
+	Max            *float64 `json:"max,omitempty"`
+	Weight         float64  `json:"weight"`
+	Value          *float64 `json:"value,omitempty"`
+	Score          *float64 `json:"score,omitempty"`
 }
 
 // ShieldHoldSummary is the latched hold-mode configuration of a hold game: the
@@ -270,6 +304,11 @@ type BuildOptions struct {
 	// Now is the build timestamp stamped on the Summary (GeneratedAt). Injected so
 	// the build is deterministic; the aggregation logic itself never reads it.
 	Now time.Time
+	// Predictions are the game's finalized scored predictions (the Book's lookup,
+	// #2479); nil when none or no lookup is wired.
+	Predictions []PredictionOutcome
+	// Goal is the game's goal attainment (the Book's lookup, #2479); nil when none.
+	Goal *Goal
 }
 
 // BuildSummary aggregates a game-end GameContext snapshot into a Summary (#928).
@@ -295,6 +334,7 @@ func BuildSummary(c gamecontext.GameContext, opts BuildOptions) Summary {
 	}
 	byType := interventionsByType(c.Session.InterventionCounts)
 	applied, blocked := appliedBlocked(byType, interventions)
+	predictions := predictionOutcomes(opts.Predictions, anchor)
 
 	return Summary{
 		SchemaVersion:        SchemaVersion,
@@ -318,6 +358,9 @@ func BuildSummary(c gamecontext.GameContext, opts BuildOptions) Summary {
 		Dominance:            dom,
 		Interventions:        interventions,
 		ShieldHold:           shieldHoldSummary(c),
+		Predictions:          predictions,
+		PredictionTally:      TallyPredictions(predictions),
+		Goal:                 opts.Goal,
 	}
 }
 

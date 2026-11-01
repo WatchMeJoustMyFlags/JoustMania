@@ -160,7 +160,7 @@ ghcr.io/watchmejoustmyflags/joustmania/<image>:${IMAGE_TAG:-latest}
 Images in `docker-compose.yml`: `agent`, `audio-service`, `connect-proxy`, `controller-manager-service`,
 `dashboard`, `flag-service`, `game-coordinator-service`, `menu-service`, `otel-collector`,
 `operator-pad`, `pairing-daemon-service`, `python-hid`, `rust-hid`. Third-party images (envoy, flagd, jaeger, victoria-metrics,
-grafana, loki) are pinned to exact versions in the compose file.
+grafana) are pinned to exact versions in the compose file.
 
 `IMAGE_TAG` defaults to `latest` in the compose file, but a plain `docker compose` also reads `.env`, which
 pins the **release** tag (`IMAGE_TAG=0.7.0`). For current builds override it, and never commit that change:
@@ -304,7 +304,7 @@ lib/            shared Python: types.py (enums), colors.py, telemetry.py, otel_m
 proto/          .proto files; generated *_pb2*.py are committed
 services/       controller_manager, game_coordinator, menu, audio, python_hid, pairing_daemon, operator_pad (Python);
                 agent, flag-service, connect-proxy (Go); rust-hid (Rust); dashboard (TypeScript);
-                flagd, envoy, otel-collector, jaeger, loki, grafana (config)
+                flagd, envoy, otel-collector, jaeger, grafana (config)
 tests/          integration/ (docker), service/ (T2), contract/
 scripts/        ci/, setup/ (Pi install and start), hardware/, aiup/, flags.sh, ...
 tools/          live_dashboard.py, ci-proto/, ...

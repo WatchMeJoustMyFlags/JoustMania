@@ -479,4 +479,15 @@ const (
 	// AttrDecidePredictionMerged is true when an identical prediction was already
 	// pending: decide.prediction.id is that pending prediction's id.
 	AttrDecidePredictionMerged = "decide.prediction.merged"
+	// AttrDecidePredictionDroppedReason is why a model-stated prediction was
+	// dropped (missing, bad_option, bad_confidence, no_target, inconsistent; UC-040
+	// A45). Set on the accepted remote answer's agent.decide span only.
+	AttrDecidePredictionDroppedReason = "decide.prediction.dropped_reason"
+	// AttrDecideGoalProfile is the goal profile whose "goal:" / "now:" lines were
+	// rendered into the request (#2479, decide-contract.md §14.4); absent when none
+	// was.
+	AttrDecideGoalProfile = "decide.goal.profile"
+	// AttrDecideGoalSource is that profile's source: named (a goal.profile
+	// variant) or from_objectives (derived from the objectives weights).
+	AttrDecideGoalSource = "decide.goal.source"
 )

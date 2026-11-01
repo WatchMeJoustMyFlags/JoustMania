@@ -37,7 +37,7 @@ joustmania_env_local_sets() {
 # can fail the unit (a missing image or a failed start is `degraded`, BR-002).
 # Every other active service (the game services above plus connect-proxy,
 # dashboard, envoy and the opt-in operator-pad) starts in the first phase.
-JOUSTMANIA_OBS_SERVICES=(jaeger loki victoria-metrics otel-collector grafana agent)
+JOUSTMANIA_OBS_SERVICES=(jaeger victoria-metrics otel-collector grafana agent)
 
 # joustmania_in_list <word> <list...>: true when <word> is one of <list>
 joustmania_in_list() {

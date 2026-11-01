@@ -511,7 +511,7 @@ The infra loop is not gated by the `enabled` kill switch, only by
       move the Pi to the hotspot (NTP over the phone), or set it by hand
       (`sudo date -s "<time from phone>"`). A wrong clock breaks Jaeger UI
       lookback searches (the pre-filled `lookback=15m` tabs), Grafana panels
-      and the dashboard's Loki activity feed. The Decisions panel itself does
+      and the dashboard's Jaeger-backed Agent and Experiments tabs. The Decisions panel itself does
       not depend on the clock.
 - [ ] Stack up (section 1). `docker compose ps`: all healthy.
 - [ ] Apply the stage baseline (section 6).

@@ -8,7 +8,13 @@ import (
 	otelmetric "go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 
+	"github.com/joustmania/agent/decision"
+	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamesummary"
+	"github.com/joustmania/agent/goal"
+	"github.com/joustmania/agent/prediction"
 )
 
 // gameend.go holds the game-end chain's handling of a stale end (UC-041 A4, #1494):
@@ -92,3 +98,38 @@ func buildGameEndChain(
 
 // globalMeterProvider is the process meter provider (otel.go installs it at startup).
 func globalMeterProvider() otelmetric.MeterProvider { return otel.GetMeterProvider() }
+
+// wirePredictionLookups hands the prediction Book's finalized results and goal
+// attainment to the game
+// summary and the retro (#2479, UC-042 A12). The Book finalizes second in the
+// game-end chain, before either of them runs.
+func wirePredictionLookups(book *prediction.Book, summaries *gamesummary.Coordinator, retro *decision.RetroCoordinator) {
+	summaries.SetPredictionLookup(book.SummaryOutcomes)
+	retro.SetPredictionLookup(book.SummaryOutcomes)
+	// The goal attainment too (#2479, decide-contract.md §14.4): the Book scores it
+	// at the start of its game-end hook.
+	summaries.SetGoalLookup(book.SummaryGoal)
+	retro.SetGoalLookup(book.SummaryGoal)
+}
+
+// wireArmCalibration hands each ended shadow game's prediction tally from the
+// Book to the experiment registry (UC-043 A21, BR-010, #2498). The Book runs
+// before the experiment hook in the game-end chain, so the game is still bound to
+// its arm. Report-only: the registry never journals the tally and the verdict
+// never reads it. A nil book or registry wires nothing.
+func wireArmCalibration(book *prediction.Book, reg *experiment.Registry) {
+	if book == nil || reg == nil {
+		return
+	}
+	book.SetArmTallySink(reg.NotePredictions)
+}
+
+// goalProfile resolves one game's goal profile from goal.profile in the game's
+// flag context, with the game's kind and experiment attribution taken from the
+// context itself, so it resolves the same profile at game end, after the
+// multiplexer has dropped the partition (#2479, decide-contract.md §14.4).
+func (c *components) goalProfile(ctx context.Context, gc gamecontext.GameContext) goal.Profile {
+	return c.agentFlags.GoalProfile(ctx, gc.SessionID, flags.GameAttrs{
+		GameKind: gc.GameKind, ExperimentID: gc.ExperimentID, Arm: gc.Arm,
+	})
+}

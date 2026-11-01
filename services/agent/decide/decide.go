@@ -196,6 +196,10 @@ func (s State) Elapsed() time.Duration {
 type Request struct {
 	State     State      `json:"state"`
 	Questions []Question `json:"questions"`
+	// PromptProfile is the decision.prompt_profile the agent read for this game
+	// (profile.go; "" and unknown values render as v1). Set on the remote path only.
+	// It is outside State, so the Digest does not cover it.
+	PromptProfile string `json:"prompt_profile,omitempty"`
 	// Context is the raw snapshot State was built from. Only in-process backends
 	// (the rules adapter, which reasons over the full GameContext) may read it.
 	// Remote backends MUST NOT read it: State is the entire contract they get, and
@@ -203,6 +207,35 @@ type Request struct {
 	// redacted from fmt, so a Request must never be logged with %v/%+v (that
 	// would dump the whole GameContext); log State.Digest and the Questions.
 	Context *gamecontext.GameContext `json:"-"`
+	// PredictionAsk is the optional ffa.prediction question (#2479, UC-040 A45,
+	// BR-034; PredictionQuestion): what the model expects to happen if its answer
+	// is applied. It is OUTSIDE Questions, so Validate, the questions span
+	// attribute, the digest and jev never see it. The decision loop sets it only
+	// when decision.predictions.ask_model is on and the backend is claude or
+	// openai; nil (the default) leaves the rendered prompt byte-identical to v1.
+	PredictionAsk *Question `json:"prediction_ask,omitempty"`
+	// Goal is the optional pair of goal lines (#2479, decide-contract.md §14.4),
+	// set on a claude, openai or jev (#2498) request only under
+	// decision.goal_in_prompt, and
+	// only for a goal with terms. It is outside State,
+	// so the Digest does not cover it; with it nil the user message is
+	// byte-identical to v1.
+	Goal *GoalLines `json:"goal,omitempty"`
+}
+
+// GoalLines are the rendered goal lines of a request: Goal is the profile's
+// target bands ("long_running_game duration>=180s ..."), Now the measured values
+// ("duration=95s activity=0.42 ..."), both without their "goal: " / "now: "
+// prefix. Profile is the profile name (decide.goal.profile on agent.decide),
+// Source named or from_objectives (decide.goal.source).
+type GoalLines struct {
+	Profile string `json:"profile"`
+	Source  string `json:"source"`
+	Goal    string `json:"goal"`
+	Now     string `json:"now"`
+	// OffBand are the labels of the terms outside their band now that can already
+	// be judged (goal.OffBand, #2498); only jev renders them, llmio does not.
+	OffBand []string `json:"off_band,omitempty"`
 }
 
 // Response is a backend's answers to a Request.
@@ -218,6 +251,11 @@ type Response struct {
 	// Validate never reads it and a missing or bad prediction never blocks a
 	// decision. nil when the backend stated none (and for every noop).
 	Prediction *Prediction `json:"prediction,omitempty"`
+	// PredictionDropped is the reason a model-stated prediction was dropped
+	// (PredictionDrop* constants; UC-040 A45): the ask was sent and the answer to
+	// it failed ValidatePrediction. The decision is unaffected and no lever
+	// default is substituted. "" when nothing was dropped.
+	PredictionDropped string `json:"prediction_dropped,omitempty"`
 }
 
 // Backend is a decision backend. Decide must honor ctx cancellation; callers

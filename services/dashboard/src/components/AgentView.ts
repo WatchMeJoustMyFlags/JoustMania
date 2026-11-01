@@ -25,14 +25,17 @@ import { html, setHtml, type SafeHtml } from "../html.js";
 import type {
   AgentView as AgentViewData,
   DecideCurrent,
+  DecidePrediction,
   DecideFeed,
   DecideRow,
   DecisionFeedRow,
   FlagPanel,
   InterventionOverlay,
   LinkedDecision,
+  PredictionStrip,
 } from "../agent.js";
 import { confidenceBar, decisionTargetLabel, jaegerTraceUrl } from "../agent.js";
+import type { GameGoal } from "../agent.js";
 import { FLAG_STATE_NO_DATA } from "../degrade.js";
 
 /**
@@ -108,10 +111,11 @@ export class AgentView {
 
     // Leave the DOM alone when nothing changed: rebuilding it would restart the
     // highlight animations and drop an open hover tooltip on every poll.
-    const stripKey = feed.current ? decideStripKey(feed.current) : "";
+    const stripKey =
+      (feed.current ? decideStripKey(feed.current) : "") + predictionStripKey(feed.predictionStrip ?? null) + goalStripKey(feed.goal ?? null);
     if (stripKey !== this.lastStripKey) {
       const switched = !!this.lastStripKey && !!stripKey;
-      setHtml(this.decideStripEl, decideStripHtml(feed.current, switched));
+      setHtml(this.decideStripEl, html`${decideStripHtml(feed.current, switched)}${predictionStripHtml(feed.predictionStrip ?? null)}${goalStripHtml(feed.goal ?? null)}`);
       this.lastStripKey = stripKey;
     }
 
@@ -441,7 +445,9 @@ export function decideStripKey(c: DecideCurrent): string {
  * span is re-fetched (linked decisions arrive after their decide).
  */
 export function decideRowsKey(rows: DecideRow[]): string {
-  return rows.map((r) => `${r.traceId}/${r.spanId}:${r.decisions.length}:${r.outcome}`).join(",");
+  return rows
+    .map((r) => `${r.traceId}/${r.spanId}:${r.decisions.length}:${r.outcome}:${r.prediction?.outcome ?? ""}`)
+    .join(",");
 }
 
 /** Short game id for a row: game_<12 hex> -> its last 6 chars. */
@@ -466,6 +472,107 @@ export function truncateText(text: string, max: number): string {
   const chars = Array.from(text);
   if (chars.length <= max) return text;
   return chars.slice(0, max - 1).join("") + "…";
+}
+
+const PREDICTION_TEMPLATE_LABEL: Record<string, string> = {
+  survives: "survives",
+  no_elimination: "no elimination for",
+  elimination: "an elimination within",
+  activity_rises: "activity rises within",
+  closeness_rises: "closeness rises within",
+  game_ends: "game ends within",
+};
+
+const PREDICTION_SOURCE_LABEL: Record<string, string> = {
+  rules: "rules",
+  lever_default: "lever default",
+  model: "model",
+};
+
+function fmtRate(rate: number | null): string {
+  return rate === null ? "n/a" : `${Math.round(rate * 100)}%`;
+}
+
+/** What a decision expected, e.g. "survives 15 s (p 0.70, rules R4)". */
+export function predictionText(p: DecidePrediction): string {
+  const template = PREDICTION_TEMPLATE_LABEL[p.template] ?? p.template;
+  const horizon = p.horizonS === null ? "" : ` ${p.horizonS} s`;
+  const source = PREDICTION_SOURCE_LABEL[p.source] ?? p.source;
+  const who = p.rule ? `${source} ${p.rule}` : source;
+  const prob = p.p === null ? "" : `p ${p.p.toFixed(2)}, `;
+  return `${template}${horizon} (${prob}${who})`;
+}
+
+/** The per-game prediction strip: hit rate vs control base rate per source. */
+export function renderPredictionStrip(strip: PredictionStrip | null): string {
+  return predictionStripHtml(strip).toString();
+}
+
+export function predictionStripKey(strip: PredictionStrip | null): string {
+  if (!strip) return "";
+  return (
+    `|${strip.gameId}|${strip.counterfactual}|` +
+    strip.sources.map((s) => `${s.source}:${s.hits}:${s.misses}:${s.unscorable}:${s.baseRate ?? ""}`).join(",")
+  );
+}
+
+function predictionStripHtml(strip: PredictionStrip | null): SafeHtml {
+  if (!strip || strip.sources.length === 0) return html``;
+  const parts = strip.sources.map((s) => {
+    const scored = s.hits + s.misses;
+    const lift =
+      s.hitRate !== null && s.baseRate !== null
+        ? html` <span class="decide-prediction-lift">(${s.hitRate >= s.baseRate ? "+" : ""}${Math.round((s.hitRate - s.baseRate) * 100)} pts)</span>`
+        : "";
+    return html`<span class="decide-prediction-source" title="${scored} scored, ${s.unscorable} unscorable (never a hit or a miss)">${
+      PREDICTION_SOURCE_LABEL[s.source] ?? s.source
+    } <b>${s.hits}/${scored}</b> hit ${fmtRate(s.hitRate)} vs controls ${fmtRate(s.baseRate)}${lift}</span>`;
+  });
+  const counterfactual =
+    strip.counterfactual > 0
+      ? html`<span class="decide-prediction-source decide-strip-dim" title="held, blocked or discarded decisions: never in the rates">${strip.counterfactual} counterfactual</span>`
+      : "";
+  return html`
+    <div class="decide-strip decide-prediction-strip">
+      <div class="decide-strip-item">
+        <span class="decide-strip-key">predictions</span>
+        ${parts}
+        ${counterfactual}
+      </div>
+      <div class="decide-strip-item decide-strip-time">${renderGameBadge(strip.gameId, strip.gameKind)}</div>
+    </div>`;
+}
+
+const GOAL_SOURCE_LABEL: Record<string, string> = {
+  named: "named profile",
+  from_objectives: "from the objectives",
+};
+
+/** The per-game goal strip: profile, where it came from and the attainment (#2498). */
+export function renderGoalStrip(goal: GameGoal | null): string {
+  return goalStripHtml(goal).toString();
+}
+
+export function goalStripKey(goal: GameGoal | null): string {
+  return goal ? `|goal|${goal.gameId}|${goal.profile}|${goal.source}|${goal.attainment ?? ""}` : "";
+}
+
+function goalStripHtml(goal: GameGoal | null): SafeHtml {
+  if (!goal) return html``;
+  const attainment =
+    goal.attainment === null
+      ? html`<span class="decide-strip-dim" title="no goal term could be measured in this game">attainment n/a</span>`
+      : html`attainment <b>${Math.round(goal.attainment * 100)}%</b>`;
+  return html`
+    <div class="decide-strip decide-goal-strip">
+      <div class="decide-strip-item">
+        <span class="decide-strip-key">goal</span>
+        <span class="decide-goal-profile">${goal.profile}</span>
+        <span class="decide-strip-dim">(${GOAL_SOURCE_LABEL[goal.source] ?? goal.source})</span>
+        ${attainment}
+      </div>
+      <div class="decide-strip-item decide-strip-time">${renderGameBadge(goal.gameId, goal.gameKind)}</div>
+    </div>`;
 }
 
 /** The "current backend" header strip. */
@@ -547,6 +654,19 @@ export function renderDecideRow(row: DecideRow, isNew = false): string {
   return decideRowHtml(row, isNew).toString();
 }
 
+function predictionHtml(p: DecidePrediction | null): SafeHtml {
+  if (!p) return html``;
+  const reason =
+    p.outcome === "unscorable" && p.unscorableReason
+      ? html` title="${p.unscorableReason}"`
+      : p.outcome === "unknown"
+        ? html` title="no outcome span was fetched before the query window moved on"`
+        : "";
+  return html`<div class="decide-prediction decide-prediction-${p.outcome}"><span class="decide-prediction-label">expects:</span> ${predictionText(p)} <span class="decide-arrow">→</span> <span class="decide-prediction-outcome"${reason}>${p.outcome}</span>${
+    p.merged ? html` <span class="decide-strip-dim" title="an identical prediction was already pending">(same as pending)</span>` : ""
+  }</div>`;
+}
+
 function decideRowHtml(row: DecideRow, isNew: boolean): SafeHtml {
   const outcome = row.outcome;
   const backendDiffers = row.requested && row.requested !== row.backend;
@@ -607,6 +727,7 @@ function decideRowHtml(row: DecideRow, isNew: boolean): SafeHtml {
         <a class="decide-trace" href="${jaegerTraceUrl(row.traceId, row.spanId)}" target="_blank" rel="noreferrer" title="open this decision in Jaeger">trace ↗</a>
       </div>
       ${confidenceBarHtml(row.confidence, row.threshold)}
+      ${predictionHtml(row.prediction)}
       ${rationale}
       ${decisions}
     </div>`;

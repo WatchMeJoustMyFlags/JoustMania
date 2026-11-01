@@ -7,9 +7,11 @@ The `hid` module requires native hardware access, so we mock it entirely.
 import itertools
 import queue
 import statistics
+import struct
 import sys
 import threading
 import time
+from collections import Counter, deque
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -34,6 +36,7 @@ from services.python_hid.device_manager import (  # noqa: E402
     Command,
     CommandType,
     DeviceManager,
+    InputSlot,
     SensorData,
 )
 
@@ -237,10 +240,10 @@ class TestStreamRegistration:
         dm = DeviceManager()
         q = dm.register_stream("test-stream")
         assert q is not None
-        assert "test-stream" in dm._stream_queues
+        assert "test-stream" in dm._stream_slots
 
         dm.unregister_stream("test-stream")
-        assert "test-stream" not in dm._stream_queues
+        assert "test-stream" not in dm._stream_slots
 
     def test_unregister_nonexistent_is_safe(self):
         """Unregistering a non-existent stream does not raise."""
@@ -413,7 +416,7 @@ class TestPollIntervalMeasured:
         device = _TimedDevice(self.POLLS)
         dm._devices[FAKE_SERIAL_NORMALIZED] = device
         dm._product_ids[FAKE_SERIAL_NORMALIZED] = PRODUCT_ID_ZCM1
-        dm._stream_queues["nfr-001"] = queue.Queue(maxsize=1)
+        dm._stream_slots["nfr-001"] = InputSlot()
 
         dm.start()
         try:
@@ -430,3 +433,213 @@ class TestPollIntervalMeasured:
         )
         assert intervals[0] >= 0.001, "the loop must sleep 1 ms between polls"
         assert median <= self.MEDIAN_BUDGET_S
+
+
+# ---------------------------------------------------------------------------
+# Tests: latest-sample slots (#2503, rust-hid input_slot parity #2372)
+# ---------------------------------------------------------------------------
+
+
+def _zcm2_report(buttons: int = 0, counter: int = 0) -> bytes:
+    """A ZCM2 input report with these face buttons; gyro x (frame 2) carries `counter`."""
+    data = bytearray(49)
+    data[0] = 0x01
+    data[2] = buttons & 0xFF
+    struct.pack_into("<h", data, 31, counter)
+    return bytes(data)
+
+
+class _StampedDevice:
+    """One report per poll; gyro x numbers it and `read_at` keeps when each was read."""
+
+    def __init__(self):
+        self.read_at: dict[int, float] = {}
+        self._count = 0
+        self._pending = False
+
+    def read(self, _size):
+        if self._pending:
+            self._pending = False
+            return b""
+        self._pending = True
+        self._count += 1
+        self.read_at[self._count] = time.perf_counter()
+        return _zcm2_report(counter=self._count)
+
+    def close(self):
+        pass
+
+
+class _ScriptedDevice:
+    """Returns the pushed reports in order, then b"" (nothing pending)."""
+
+    def __init__(self):
+        self._reports: deque[bytes] = deque()
+
+    def push(self, *reports: bytes) -> None:
+        self._reports.extend(reports)
+
+    def read(self, _size):
+        return self._reports.popleft() if self._reports else b""
+
+    def close(self):
+        pass
+
+
+PRESS = _zcm2_report(buttons=int(Button.CROSS))
+RELEASE = _zcm2_report()
+
+
+def _scripted_manager() -> tuple[DeviceManager, _ScriptedDevice]:
+    dm = DeviceManager()
+    device = _ScriptedDevice()
+    dm._devices[FAKE_SERIAL_NORMALIZED] = device
+    dm._product_ids[FAKE_SERIAL_NORMALIZED] = PRODUCT_ID_ZCM2
+    return dm, device
+
+
+def _drain(slot) -> list[SensorData]:
+    samples = []
+    while True:
+        try:
+            samples.append(slot.get_nowait())
+        except queue.Empty:
+            return samples
+
+
+class TestLatestSampleSlots:
+    """UC-002 step 2 / NFR-056: python-hid keeps one waiting sample per controller (#2503)."""
+
+    LAG_S = 0.002
+    RUN_S = 1.5
+    WARMUP_S = 0.5
+
+    @pytest.mark.uc("UC-002", flow="main", steps=[2])
+    @pytest.mark.nfr("NFR-056")
+    def test_a_lagging_reader_gets_fresh_samples_from_every_controller(self):
+        """4 controllers polled at ~1 kHz each, a reader taking 2 ms per sample: the age stays bounded."""
+        dm = DeviceManager()
+        devices = {f"SERIAL{i}": _StampedDevice() for i in range(4)}
+        for serial, device in devices.items():
+            dm._devices[serial] = device
+            dm._product_ids[serial] = PRODUCT_ID_ZCM2
+        slot = dm.register_stream("lagging-reader")
+        ages: list[float] = []
+        served: Counter[str] = Counter()
+
+        dm.start()
+        try:
+            start = time.perf_counter()
+            while time.perf_counter() - start < self.RUN_S:
+                sample = slot.get(timeout=1.0)
+                taken = time.perf_counter()
+                if taken - start >= self.WARMUP_S:
+                    ages.append(taken - devices[sample.serial].read_at[int(sample.gyro_x)])
+                    served[sample.serial] += 1
+                time.sleep(self.LAG_S)
+        finally:
+            dm.stop()
+
+        median = statistics.median(ages)
+        print(
+            f"NFR-056 python-hid sample age over {len(ages)} samples: "
+            f"median {median * 1e3:.1f} ms, max {max(ages) * 1e3:.1f} ms, served {dict(served)}"
+        )
+        assert median < 0.1, f"median sample age {median * 1e3:.0f} ms: the reader gets a backlog"
+        # Round robin: no controller starves behind the others.
+        assert set(served) == set(devices)
+        assert min(served.values()) >= max(served.values()) // 2
+
+    @pytest.mark.uc("UC-010", br=["BR-012"])
+    def test_a_press_released_while_the_reader_lags_is_still_delivered(self):
+        """A press, then 1100 release samples before the reader takes any: the press is OR'ed in."""
+        dm, device = _scripted_manager()
+        slot = dm.register_stream("slow")
+        dm._poll_all_devices()  # the registration's flush poll
+
+        device.push(PRESS)
+        dm._poll_all_devices()
+        for _ in range(1100):
+            device.push(RELEASE)
+            dm._poll_all_devices()
+
+        samples = _drain(slot)
+        assert any(s.button_cross for s in samples), "the press was lost"
+        assert len(samples) == 1, "only the newest sample per controller waits"
+
+        # Once the reader catches up, the release is observed too.
+        device.push(RELEASE)
+        dm._poll_all_devices()
+        assert [s.button_cross for s in _drain(slot)] == [False]
+
+    @pytest.mark.uc("UC-010", br=["BR-012"])
+    def test_a_press_released_within_one_drain_is_kept(self):
+        dm, device = _scripted_manager()
+        slot = dm.register_stream("drain")
+        dm._poll_all_devices()
+
+        device.push(PRESS, RELEASE)
+        dm._poll_all_devices()
+
+        assert [s.button_cross for s in _drain(slot)] == [True]
+
+    @pytest.mark.uc("UC-002", flow="main", steps=[2])
+    def test_a_new_stream_starts_after_a_flush_of_queued_reports(self):
+        """A press queued before the stream registered is stale: not delivered (rust-hid #2372)."""
+        dm, device = _scripted_manager()
+        device.push(PRESS)
+        slot = dm.register_stream("new")
+
+        dm._poll_all_devices()
+        assert _drain(slot) == []
+
+        device.push(RELEASE)
+        dm._poll_all_devices()
+        assert [s.button_cross for s in _drain(slot)] == [False]
+
+    @pytest.mark.uc("UC-002", flow="main", steps=[2])
+    def test_a_new_stream_flush_does_not_starve_a_running_stream(self):
+        """Stream A is running; B registers: B flushes, A keeps receiving (flush is per slot)."""
+        dm, device = _scripted_manager()
+        slot_a = dm.register_stream("a")
+        dm._poll_all_devices()  # A's flush poll
+        slot_b = dm.register_stream("b")
+
+        device.push(PRESS)
+        dm._poll_all_devices()
+        assert [s.button_cross for s in _drain(slot_a)] == [True]
+        assert _drain(slot_b) == []
+
+        device.push(RELEASE)
+        dm._poll_all_devices()
+        assert [s.button_cross for s in _drain(slot_a)] == [False]
+        assert [s.button_cross for s in _drain(slot_b)] == [False]
+
+    @pytest.mark.uc("UC-010", br=["BR-012"])
+    def test_a_malformed_last_report_keeps_the_earlier_valid_one_and_its_buttons(self):
+        """rust-hid `read_latest_input`: a bad tail report is skipped, the press is not lost."""
+        dm, device = _scripted_manager()
+        slot = dm.register_stream("tail")
+        dm._poll_all_devices()
+
+        device.push(PRESS, RELEASE, b"\x01\x02")
+        dm._poll_all_devices()
+
+        assert [s.button_cross for s in _drain(slot)] == [True]
+
+    def test_a_replaced_sample_keeps_its_queue_position(self):
+        slot = InputSlot()
+        slot.offer(SensorData(**{**_sample_fields("A"), "button_cross": True}))
+        slot.offer(SensorData(**_sample_fields("B")))
+        slot.offer(SensorData(**{**_sample_fields("A"), "trigger": 9}))
+
+        first, second = _drain(slot)
+        assert (first.serial, first.trigger, first.button_cross) == ("A", 9, True)
+        assert second.serial == "B"
+
+
+def _sample_fields(serial: str) -> dict:
+    fields = dict.fromkeys(SensorData.__dataclass_fields__, 0)
+    fields.update({name: False for name in fields if name.startswith("button_")})
+    fields["serial"] = serial
+    return fields

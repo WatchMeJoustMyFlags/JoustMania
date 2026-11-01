@@ -31,6 +31,20 @@ from services.controller_manager.multiplexer.press_latch import merge_latched_pr
 # controllers"); a failed Open returns False.
 RPC_TIMEOUT_S = 5.0
 
+# HTTP/2 receive window of the StreamIO channel (#2372, NFR-056). Everything the
+# HID service sends inside the window waits for the reader thread, so a reader
+# slower than the samples arrive gets samples as old as the window is deep.
+# grpc-core's BDP probe grows the window without limit (measured: 1.8 s old at a
+# 1 ms/sample reader, 6.7 s at 2 ms); a fixed 512-byte window holds about seven
+# SensorData messages (35 to 45 ms at a 2 ms/sample reader). The HID service
+# keeps only the newest sample per controller behind the window (#2391), so a
+# small window does not drop input, and the reader still gets 1 kHz when it keeps up.
+STREAM_WINDOW_BYTES = 512
+STREAM_WINDOW_OPTIONS = [
+    ("grpc.http2.bdp_probe", 0),
+    ("grpc.http2.lookahead_bytes", STREAM_WINDOW_BYTES),
+]
+
 
 class HidServiceAdapter(HidStreamMixin, ControllerIOAdapter):
     """I/O adapter delegating to a HID gRPC service via bidir stream.
@@ -64,6 +78,7 @@ class HidServiceAdapter(HidStreamMixin, ControllerIOAdapter):
                 ("grpc.keepalive_timeout_ms", 5000),
                 ("grpc.keepalive_permit_without_calls", True),
                 ("grpc.max_receive_message_length", 10 * 1024 * 1024),
+                *STREAM_WINDOW_OPTIONS,
             ],
         )
         interceptors = [

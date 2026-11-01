@@ -76,6 +76,25 @@ type GameAggregate struct {
 	// observed.
 	NearDeathRate *float64
 	Interventions []InterventionAggregate
+	// PredictionTally is the game's prediction tally per backend, source and
+	// template (UC-042 A12 step 3). The scored predictions themselves are not kept:
+	// a target-scope one names a serial (BR-004).
+	PredictionTally []PredictionAggregate
+}
+
+// PredictionAggregate is one (backend, source, template, acted) group of a game's
+// scored predictions: counts only. Backend, source and template are closed
+// vocabularies (decide backends, prediction sources and templates), never a serial
+// or a name.
+type PredictionAggregate struct {
+	Backend    string
+	Source     string
+	Template   string
+	Acted      bool
+	Hits       int
+	Misses     int
+	Unscorable int
+	BrierSum   float64
 }
 
 // InterventionAggregate is one intervention type within a game: how often it was
@@ -300,6 +319,14 @@ func FromSummary(s gamesummary.Summary) GameAggregate {
 		agg.DeathRate = &rate
 	}
 	agg.NearDeathRate = nearDeathRate(s.PlayerArcs)
+	if len(s.PredictionTally) > 0 {
+		for _, t := range s.PredictionTally {
+			agg.PredictionTally = append(agg.PredictionTally, PredictionAggregate{
+				Backend: t.Backend, Source: t.Source, Template: t.Template, Acted: t.Acted,
+				Hits: t.Hits, Misses: t.Misses, Unscorable: t.Unscorable, BrierSum: t.BrierSum,
+			})
+		}
+	}
 	return agg
 }
 

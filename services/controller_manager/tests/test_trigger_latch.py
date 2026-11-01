@@ -57,8 +57,8 @@ def _wire(servicer, latched: list[bool], level: bool = False):
     backend.pattern_stream_rate.return_value = None
     backend.consume_trigger_press.side_effect = lambda _serial: latched.pop(0) if latched else False
     servicer.backend = backend
-    state = servicer.state_builder.build_state.return_value
-    state.trigger_pressed = level
+    stub = servicer.state_builder.frame_inputs
+    stub.return_value = stub.return_value._replace(trigger_pressed=level)
     return backend
 
 
@@ -80,7 +80,8 @@ class TestUC030TriggerLatchInGameplayData:
         servicer._open_game_stream("game", {SERIAL})
         held = [_frames(servicer)[0] for _ in range(3)]
 
-        servicer.state_builder.build_state.return_value.trigger_pressed = False
+        stub = servicer.state_builder.frame_inputs
+        stub.return_value = stub.return_value._replace(trigger_pressed=False)
         released = _frames(servicer)[0]
 
         assert held == [True, True, True]

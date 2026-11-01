@@ -41,14 +41,14 @@ import (
 // c034FlagServiceWrites are the agent's flag-service write call sites
 // (relpath:Recv.Func). Each must be driven by a c034WriterRows row.
 var c034FlagServiceWrites = map[string]bool{
-	"actions/writer.go:Writer.put":                                      true,
-	"actions/writer.go:Writer.post":                                     true,
-	"actions/rollout_writer.go:RolloutWriter.SetControllerCount":        true,
-	"experiment/writer.go:Writer.Apply":                                 true,
-	"experiment/writer.go:Writer.DryRun":                                true,
-	"experiment/writer.go:Writer.Strip":                                 true,
-	"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault":    true,
-	"promote/realdefault.go:serviceRealDefaultWriter.revert": true,
+	"actions/writer.go:Writer.put":                                   true,
+	"actions/writer.go:Writer.post":                                  true,
+	"actions/rollout_writer.go:RolloutWriter.SetControllerCount":     true,
+	"experiment/writer.go:Writer.Apply":                              true,
+	"experiment/writer.go:Writer.DryRun":                             true,
+	"experiment/writer.go:Writer.Strip":                              true,
+	"promote/realdefault.go:serviceRealDefaultWriter.SetRealDefault": true,
+	"promote/realdefault.go:serviceRealDefaultWriter.revert":         true,
 }
 
 // c034OtherPostSites are Put/Post/Delete selectors that are not flag-service writes.
@@ -62,7 +62,7 @@ var c034ClientSites = map[string]bool{
 	"actions/rollout_writer.go:NewRolloutWriterFromEnv":  true,
 	"experiment/writer.go:NewWriterFromEnv":              true,
 	"promote/realdefault.go:NewRealDefaultWriterFromEnv": true,
-	"main.go:run":  true,
+	"main.go:run": true,
 }
 
 // c034RawWriteSites send a raw HTTP write that is not to the flag service.

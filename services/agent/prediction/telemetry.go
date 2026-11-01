@@ -12,6 +12,7 @@ import (
 
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/goal"
 	"github.com/joustmania/agent/telemetry/keys"
 )
 
@@ -28,6 +29,8 @@ const (
 	MetricOutcomes   = "agent_prediction_outcomes_total"
 	MetricBrierSum   = "agent_prediction_brier_sum"
 	MetricMerged     = "agent_prediction_merged_total"
+	// MetricGoalAttainment is the per-game goal attainment 0..1 (#2479, §14.4).
+	MetricGoalAttainment = "agent_goal_attainment"
 )
 
 type telemetry struct {
@@ -36,6 +39,7 @@ type telemetry struct {
 	outcomes    otelmetric.Int64Counter
 	brier       otelmetric.Float64Counter
 	mergedC     otelmetric.Int64Counter
+	goalH       otelmetric.Float64Histogram
 }
 
 func defaultTelemetry() telemetry {
@@ -63,6 +67,11 @@ func newTelemetry(tp trace.TracerProvider, mp otelmetric.MeterProvider) telemetr
 		otelmetric.WithDescription("Predictions not registered because an identical one was pending (#2479)")); err != nil {
 		t.mergedC, _ = noop.Int64Counter(MetricMerged)
 	}
+	if t.goalH, err = m.Float64Histogram(MetricGoalAttainment,
+		otelmetric.WithDescription("Goal attainment 0..1 per ended game: the weighted mean of the goal profile's term scores (#2479)"),
+		otelmetric.WithExplicitBucketBoundaries(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1)); err != nil {
+		t.goalH, _ = noop.Float64Histogram(MetricGoalAttainment)
+	}
 	return t
 }
 
@@ -79,6 +88,18 @@ func baseAttrs(backend string, p decide.Prediction, gameKind string) []attribute
 		attribute.String("template", p.Template),
 		attribute.String("game_kind", gamecontext.TelemetryGameKind(gameKind)),
 	}
+}
+
+// goalAttainment records agent_goal_attainment{profile,source,game_kind} for a game whose
+// goal had at least one measured term.
+func (t telemetry) goalAttainment(r goal.Result, gameKind string) {
+	if !r.HasAttainment {
+		return
+	}
+	t.goalH.Record(context.Background(), r.Attainment, otelmetric.WithAttributes(
+		attribute.String("profile", r.Profile.Name),
+		attribute.String("source", goal.SourceOf(r.Profile)),
+		attribute.String("game_kind", gamecontext.TelemetryGameKind(gameKind))))
 }
 
 func (t telemetry) registered(backend string, p decide.Prediction, gameKind string) {

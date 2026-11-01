@@ -3,7 +3,7 @@ gRPC servicer for the Python HID service.
 
 Implements ControllerIOServiceServicer from psmove_hid.proto.
 Unary RPCs delegate to DeviceManager via asyncio.to_thread().
-Bidirectional StreamIO registers a stream queue and forwards data.
+Bidirectional StreamIO registers latest-sample slots (InputSlot, #2503) and forwards data.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ class ControllerIOServicer(psmove_hid_pb2_grpc.ControllerIOServiceServicer):
     async def StreamIO(self, request_iterator, context):
         """Bidirectional stream: receive IOCommands, yield SensorData."""
         stream_id = str(uuid.uuid4())
-        stream_queue = self._dm.register_stream(stream_id)
+        stream_slot = self._dm.register_stream(stream_id)
         logger.info(f"StreamIO started: {stream_id}")
 
         # Background task to process incoming IOCommands
@@ -105,7 +105,7 @@ class ControllerIOServicer(psmove_hid_pb2_grpc.ControllerIOServiceServicer):
         try:
             while not context.cancelled():
                 try:
-                    sensor_data = await asyncio.to_thread(stream_queue.get, timeout=0.1)
+                    sensor_data = await asyncio.to_thread(stream_slot.get, timeout=0.1)
                     yield psmove_hid_pb2.SensorData(
                         serial=sensor_data.serial,
                         battery=sensor_data.battery,

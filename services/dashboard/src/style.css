@@ -1433,6 +1433,20 @@ body {
 .decide-decision-allowed { color: #7ee2b8; }
 .decide-decision-blocked { color: var(--accent-primary); }
 
+/* Prediction a decision carried and how it was scored (#2479). */
+.decide-prediction {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+.decide-prediction-label { margin-right: 4px; }
+.decide-prediction-hit .decide-prediction-outcome { color: #7ee2b8; }
+.decide-prediction-miss .decide-prediction-outcome { color: var(--accent-primary); }
+.decide-prediction-pending .decide-prediction-outcome,
+.decide-prediction-unknown .decide-prediction-outcome,
+.decide-prediction-unscorable .decide-prediction-outcome { color: var(--text-secondary); font-style: italic; }
+.decide-prediction-source { margin-right: 12px; }
+.decide-prediction-lift { color: var(--text-secondary); }
+
 /* Game badge on decide rows and the strip: short id + kind. */
 .decide-game {
   font-family: monospace;
@@ -1541,3 +1555,4 @@ body {
 .experiment-trace {
   font-size: 0.78rem;
 }
+.decide-goal-profile { font-weight: 600; margin-right: 4px; }

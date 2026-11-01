@@ -43,6 +43,7 @@ from services.controller_manager.tests.backend_doubles import (
     InertBackendHooks,
     autospec_discovery_loop,
     autospec_span,
+    stub_frame_inputs,
     stub_method,
 )
 
@@ -566,15 +567,15 @@ class TestExtractedHelpers:
         )
 
     def _make_mock_state(self, serial="AA:BB", name="P1"):
-        """Create a mock controller state with real protobuf sub-messages."""
-        return controller_manager_pb2.ControllerState(
+        """Frame inputs for a stubbed state builder (#2353)."""
+        return stub_frame_inputs(
             serial=serial,
             move_num=0,
             battery=80,
             team=0,
-            color=controller_manager_pb2.RGB(r=255, g=0, b=0),
-            accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
-            gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+            color=(255, 0, 0),
+            accel=(0.0, 0.0, 1.0),
+            gyro=(0.0, 0.0, 0.0),
             rssi=0,
             name=name,
         )
@@ -583,7 +584,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should include all controllers when filter is None."""
         servicer, _ = servicer_components
 
-        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "frame_inputs", return_value=self._make_mock_state())
 
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
@@ -596,7 +597,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should only include filtered controllers."""
         servicer, _ = servicer_components
 
-        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "frame_inputs", return_value=self._make_mock_state())
 
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
@@ -666,7 +667,7 @@ class TestExtractedHelpers:
         """_build_gameplay_update should return empty when filter matches nothing."""
         servicer, _ = servicer_components
 
-        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "frame_inputs", return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
 
         update = servicer._build_gameplay_update({"XX:YY"})
@@ -677,7 +678,7 @@ class TestExtractedHelpers:
         """Each streamed controller drains its mock death latch once (#926)."""
         servicer, _ = servicer_components
 
-        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "frame_inputs", return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
         # Backend exposes the duck-typed hook (only MockAdapter does in prod).
@@ -696,7 +697,7 @@ class TestExtractedHelpers:
         """Filtered-out controllers don't get a death-frame tick (#926)."""
         servicer, _ = servicer_components
 
-        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "frame_inputs", return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         servicer.tracked_controllers["CC:DD"] = {}
         stub_method(servicer.backend, "consume_death_frame")
@@ -710,7 +711,7 @@ class TestExtractedHelpers:
         """Backends without the hook (hardware) stream normally (#926)."""
         servicer, _ = servicer_components
 
-        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state())
+        stub_method(servicer.state_builder, "frame_inputs", return_value=self._make_mock_state())
         servicer.tracked_controllers["AA:BB"] = {}
         # MockBackend inherits the inert death hook — must not raise.
 
@@ -1034,15 +1035,15 @@ class TestStreamGameplayData:
         yield servicer
 
     def _make_mock_state(self, serial="AA:BB", name="P1"):
-        """Create a mock controller state."""
-        return controller_manager_pb2.ControllerState(
+        """Frame inputs for a stubbed state builder (#2353)."""
+        return stub_frame_inputs(
             serial=serial,
             move_num=0,
             battery=80,
             team=0,
-            color=controller_manager_pb2.RGB(r=255, g=0, b=0),
-            accel=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=1.0),
-            gyro=controller_manager_pb2.Vector3(x=0.0, y=0.0, z=0.0),
+            color=(255, 0, 0),
+            accel=(0.0, 0.0, 1.0),
+            gyro=(0.0, 0.0, 0.0),
             rssi=0,
             name=name,
         )
@@ -1051,7 +1052,7 @@ class TestStreamGameplayData:
     async def test_yields_gameplay_updates(self, servicer):
         """Stream should yield GameplayDataUpdate messages with controller data."""
         servicer.tracked_controllers["AA:BB"] = {}
-        stub_method(servicer.state_builder, "build_state", return_value=self._make_mock_state("AA:BB", "P1"))
+        stub_method(servicer.state_builder, "frame_inputs", return_value=self._make_mock_state("AA:BB", "P1"))
 
         context = MockGrpcContext()
         updates = []
@@ -1087,7 +1088,7 @@ class TestStreamGameplayData:
         servicer.feedback_manager.set_controller_color = AsyncMock(return_value=True)
 
         stub_method(
-            servicer.state_builder, "build_state", side_effect=lambda serial, _info: self._make_mock_state(serial)
+            servicer.state_builder, "frame_inputs", side_effect=lambda serial, _info: self._make_mock_state(serial)
         )
 
         # Build config that sets 60Hz and filters to AA:BB only
@@ -1146,7 +1147,7 @@ class TestStreamGameplayData:
         servicer.tracked_controllers["CC:DD"] = {}
 
         stub_method(
-            servicer.state_builder, "build_state", side_effect=lambda serial, _info: self._make_mock_state(serial)
+            servicer.state_builder, "frame_inputs", side_effect=lambda serial, _info: self._make_mock_state(serial)
         )
 
         # Send a filter_update to restrict to AA:BB only

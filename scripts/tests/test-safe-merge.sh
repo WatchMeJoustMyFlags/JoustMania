@@ -58,6 +58,17 @@ case "$1 $2" in
     for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
     [[ -f "$STUB_DIR/rules.json" ]] || exit 1
     jq -r "$jqexpr" "$STUB_DIR/rules.json" ;;
+  "api repos/{owner}/{repo}/commits/"*)
+    # #1809 --rearm: statuses.json for the head (missing = API error).
+    jqexpr=""; prev=""
+    for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
+    [[ -f "$STUB_DIR/statuses.json" ]] || exit 1
+    jq -r "$jqexpr" "$STUB_DIR/statuses.json" ;;
+  "variable get")
+    if [[ -f "$STUB_DIR/approvers-var" ]]; then cat "$STUB_DIR/approvers-var"; exit 0; fi
+    if [[ -f "$STUB_DIR/var-error" ]]; then echo "HTTP 403: Resource not accessible" >&2
+    else echo "variable REVIEW_APPROVERS was not found" >&2; fi
+    exit 1 ;;
   "pr merge") exit "$(cat "$STUB_DIR/merge-rc" 2>/dev/null || echo 0)" ;;
   "run view") cat "$STUB_DIR/log.txt" 2>/dev/null ;;
   "run rerun") echo x >>"$STUB_DIR/reruns"; [[ -f "$STUB_DIR/view-after-rerun.json" ]] && mv "$STUB_DIR/view-after-rerun.json" "$STUB_DIR/view.json"; exit 0 ;;
@@ -615,6 +626,60 @@ run 42 abcdef1
 reset; view "$GREEN"
 run 42 abcdef1 --wait-ci
 calls | grep -q 'api -X' && fail "--wait-ci must not post a status: $(calls)"
+ok
+
+# 21. #1809 --rearm (merge-sweep): posts NO status; arms only while the newest
+# "Reviewed head" on the SHA is success by an approver, read right before arming.
+rst() { printf '{"id":%s,"state":"%s","context":"Reviewed head","creator":{"login":"%s"}}' "$1" "$2" "$3"; }
+rstatuses() { local IFS=,; printf '[%s]' "$*" >"${STUB_DIR}/statuses.json"; }
+reset; view "$GREEN"; rules "CI Complete" "Reviewed head"; queue_fx 1 OPEN true QUEUED ""
+rstatuses "$(rst 2 success aepfli)" "$(rst 1 failure aepfli)"
+run 42 "$HEAD" --rearm
+[[ $RC -eq 8 && "$OUT" == *"ARMED (head abcdef12, queued: entry QUEUED)"* ]] || fail "rearm: rc=$RC $OUT ($(cat "${WORK}/stderr"))"
+calls | grep -qF "pr merge 42 --auto --squash --match-head-commit $HEAD" || fail "rearm must arm: $(calls)"
+calls | grep -q 'api -X' && fail "rearm must not post a status: $(calls)"
+# Revoked after the caller's read: the newest is failure -> no arm, exit 1.
+for fx in "$(rst 3 failure aepfli),$(rst 2 success aepfli)" "$(rst 2 success aepfli),$(rst 3 failure aepfli)" \
+          "$(rst 2 success mallory)" "$(rst 2 success 'github-actions[bot]')" "$(rst 2 success 'aepfli' | sed 's/Reviewed head/CI Complete/')"; do
+  reset; view "$GREEN"; rules "CI Complete" "Reviewed head"; queue_fx 1 OPEN true QUEUED ""
+  echo "[$fx]" >"${STUB_DIR}/statuses.json"
+  run 42 "$HEAD" --rearm
+  [[ $RC -eq 1 && "$OUT" == *"NOT RE-ARMED (head abcdef12)"* ]] || fail "rearm refused for $fx: rc=$RC $OUT"
+  calls | grep -qE 'pr merge|api -X' && fail "refused rearm must not arm or post ($fx): $(calls)"
+done
+# A glob in REVIEW_APPROVERS matches literally, never as a pattern.
+reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""; rstatuses "$(rst 2 success mallory)"
+OUT="$(REVIEW_APPROVERS='*' timeout 20 "${HELPER}" 42 "$HEAD" --rearm 2>/dev/null)" && RC=0 || RC=$?
+[[ $RC -eq 1 ]] && ! calls | grep -q 'pr merge' || fail "glob approver matched: rc=$RC $OUT"
+# The repo variable REVIEW_APPROVERS is used when the env is unset.
+reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""; rstatuses "$(rst 2 success bob)"
+echo "alice,bob" >"${STUB_DIR}/approvers-var"
+OUT="$(env -u REVIEW_APPROVERS timeout 20 "${HELPER}" 42 "$HEAD" --rearm 2>/dev/null)" && RC=0 || RC=$?
+[[ $RC -eq 8 ]] || fail "repo-variable approver: rc=$RC $OUT"
+# The repo variable is not set: default aepfli, silently (review-gate.yml defaults the same).
+reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""; rstatuses "$(rst 2 success aepfli)"
+OUT="$(env -u REVIEW_APPROVERS timeout 20 "${HELPER}" 42 "$HEAD" --rearm 2>"${WORK}/stderr")" && RC=0 || RC=$?
+[[ $RC -eq 8 ]] && ! grep -q 'WARNING' "${WORK}/stderr" || fail "unset approver variable: rc=$RC $(cat "${WORK}/stderr")"
+# A real read error: default aepfli, with a warning on stderr.
+reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""; rstatuses "$(rst 2 success aepfli)"; touch "${STUB_DIR}/var-error"
+OUT="$(env -u REVIEW_APPROVERS timeout 20 "${HELPER}" 42 "$HEAD" --rearm 2>"${WORK}/stderr")" && RC=0 || RC=$?
+[[ $RC -eq 8 ]] && grep -q 'WARNING: cannot read the repo variable REVIEW_APPROVERS (HTTP 403' "${WORK}/stderr" || fail "approver-variable warning: rc=$RC"
+# Statuses unreadable: fail closed. Unenforced ruleset: refused like --arm.
+reset; view "$GREEN"; rules "Reviewed head"; queue_fx 1 OPEN true QUEUED ""
+run 42 "$HEAD" --rearm
+[[ $RC -eq 1 ]] && ! calls | grep -q 'pr merge' || fail "rearm status API error: rc=$RC $OUT"
+reset; view "$GREEN"; rules "CI Complete"; rstatuses "$(rst 2 success aepfli)"
+run 42 "$HEAD" --rearm
+[[ $RC -eq 2 ]] && ! calls | grep -q 'pr merge' || fail "rearm unenforced: rc=$RC $OUT"
+# Usage: short SHA, with --arm / --revoke / --depth / --review-url / waiting options.
+reset
+for args in "abcdef1 --rearm" "$HEAD --rearm --arm" "$HEAD --rearm --revoke" "$HEAD --rearm --depth full" \
+  "$HEAD --rearm --review-url $REVIEW_URL" "$HEAD --rearm --wait-ci" "$HEAD --rearm --close 7"; do
+  read -r -a argv <<<"$args"
+  run 42 "${argv[@]}"
+  [[ $RC -eq 2 ]] || fail "rearm usage '$args': exit $RC ($OUT)"
+done
+[[ -z "$(calls)" ]] || fail "--rearm usage errors must not call gh: $(calls)"
 ok
 
 echo "test-safe-merge: ${pass} groups passed"

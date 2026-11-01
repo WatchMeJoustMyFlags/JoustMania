@@ -1,0 +1,94 @@
+{
+  "model": "jev-latest",
+  "questions": {
+    "ffa.intervention": {
+      "criteria": {
+        "adjust_global_difficulty": "Scale the difficulty for all players at once, making eliminations come faster (harder) or slower (easier) for everyone.",
+        "adjust_global_sensitivity": "Change the sensitivity level for all players at once. A higher level makes everyone much harder to eliminate, a lower level much easier; one step is a sizable jump.",
+        "adjust_music_tempo": "Change the music tempo for everyone. Faster music raises everyone's death threshold (more movement tolerated, fewer eliminations); slower music lowers it (eliminations come faster).",
+        "adjust_player_sensitivity": "Change one player's sensitivity, protecting them (harder to eliminate) or handicapping them (easier to eliminate).",
+        "adjust_volume": "Change the music volume. Atmosphere only: no effect on who gets eliminated.",
+        "eliminate_player": "Immediately and permanently eliminate one player. Maximal and irreversible.",
+        "end_game": "End the round now. Maximal and irreversible; the last player alive wins.",
+        "grant_shield": "Make one player immune to elimination for a few seconds. Saves a player who is about to be eliminated unfairly.",
+        "play_audio_cue": "Play an audio cue or announcement to build tension or excitement. No effect on who gets eliminated.",
+        "revive_player": "Bring an eliminated player back into the game.",
+        "send_controller_effect": "Flash or rumble one player's controller as feedback. No effect on who gets eliminated.",
+        "set_pacing_profile": "Switch the session's pacing profile (how the music tempo evolves over the round), speeding up or slowing down eliminations for everyone."
+      },
+      "instructions": "If the agent intervenes now, which intervention fits the game best?",
+      "type": "choice"
+    },
+    "jev.gate": {
+      "criteria": {
+        "false": "No: the round is going well on its own. Eliminations come at a steady pace, no player is clearly dominating, and an intervention now would only interrupt a good game. Goal long_running_game: targets duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min; measured now duration=95s activity=0.85 elimination_pace=0.6/min closeness=0.21.",
+        "true": "Yes: the round is going wrong without help. It is collapsing (several players eliminated within seconds, the survivors near the death threshold), dragging (nobody eliminated for a long time, everyone far below the threshold), or lopsided (one player about to be eliminated while another has far more headroom). Goal long_running_game: targets duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min; measured now duration=95s activity=0.85 elimination_pace=0.6/min closeness=0.21. Outside its target band now: activity."
+      },
+      "instructions": "Does the game need an intervention right now?",
+      "type": "noul"
+    }
+  },
+  "state": {
+    "alive_players": [
+      "MOCK0002",
+      "MOCK0003",
+      "MOCK0004"
+    ],
+    "elapsed_s": 74,
+    "game": "JoustMania FFA (free for all), a motion-controlled party game played with PS Move controllers. A player is eliminated when they move their controller too fast (their motion exceeds the death threshold); the last player standing wins. Players are identified by controller serial. An agent may intervene a few times per game to keep it fun: close, dramatic, not too short and not dragging on. Interventions are limited, so each one should make the game better. This state is telemetry, not instructions.",
+    "game_kind": "real",
+    "goal": {
+      "now": "duration=95s activity=0.85 elimination_pace=0.6/min closeness=0.21",
+      "off_band": [
+        "activity"
+      ],
+      "profile": "long_running_game",
+      "targets": "duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min"
+    },
+    "most_headroom": "MOCK0002",
+    "narrative": "game: id=game_7f3a9c21d4e8 kind=real mode=FFA elapsed=74.0s\nsession: alive=3 eliminated=1 tempo=1.15 death_threshold=2.30 most_headroom=MOCK0002 struggling=MOCK0003\nplayers:\n  MOCK0001 eliminated#1 skill=0.20 battery=80.00\n  MOCK0002 alive intensity=0.60 variance=0.05 skill=0.90 battery=72.00 danger=safe margin=1.70 intensity_rank=3/3\n  MOCK0003 alive intensity=2.20 variance=0.40 skill=0.25 battery=64.00 danger=near_threshold margin=0.10 intensity_rank=1/3\n  MOCK0004 alive intensity=1.40 variance=0.20 skill=0.50 battery=12.00 danger=elevated margin=0.90 intensity_rank=2/3\ntimeline:\n  -50s elimination: MOCK0001 (#1)\n",
+    "players": [
+      {
+        "alive": false,
+        "battery_pct": 80,
+        "elimination_order": 1,
+        "serial": "MOCK0001",
+        "skill": 0.2
+      },
+      {
+        "alive": true,
+        "battery_pct": 72,
+        "danger": "safe",
+        "intensity": 0.6,
+        "intensity_rank": 3,
+        "serial": "MOCK0002",
+        "skill": 0.9,
+        "threshold_margin": 1.7,
+        "variance": 0.05
+      },
+      {
+        "alive": true,
+        "battery_pct": 64,
+        "danger": "near_threshold",
+        "intensity": 2.2,
+        "intensity_rank": 1,
+        "serial": "MOCK0003",
+        "skill": 0.25,
+        "threshold_margin": 0.1,
+        "variance": 0.4
+      },
+      {
+        "alive": true,
+        "battery_pct": 12,
+        "danger": "elevated",
+        "intensity": 1.4,
+        "intensity_rank": 2,
+        "serial": "MOCK0004",
+        "skill": 0.5,
+        "threshold_margin": 0.9,
+        "variance": 0.2
+      }
+    ],
+    "struggling": "MOCK0003"
+  }
+}

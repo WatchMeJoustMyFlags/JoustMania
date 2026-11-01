@@ -33,7 +33,12 @@ from services.controller_manager.feedback_manager import FeedbackManager
 from services.controller_manager.monitoring import ControllerMonitoring
 from services.controller_manager.multiplexer import motion_patterns as mp
 from services.controller_manager.multiplexer.rust_adapter import RustServiceAdapter
-from services.controller_manager.tests.backend_doubles import autospec_backend, autospec_button_detector, stub_method
+from services.controller_manager.tests.backend_doubles import (
+    autospec_backend,
+    autospec_button_detector,
+    stub_frame_inputs,
+    stub_method,
+)
 from services.controller_manager.tests.fake_stream_call import FakeStreamCall
 
 DISCOVERY_LOGGER = "services.controller_manager.discovery_loop"
@@ -254,8 +259,8 @@ class _Context:
 def stream_servicer(servicer):  # noqa: F811
     stub_method(
         servicer.state_builder,
-        "build_state",
-        side_effect=lambda serial, _info: controller_manager_pb2.ControllerState(serial=serial),
+        "frame_inputs",
+        side_effect=lambda serial, _info: stub_frame_inputs(serial=serial),
     )
     servicer.discovery_loop.drain_health_counters.return_value = (0, 0, 0)
     return servicer

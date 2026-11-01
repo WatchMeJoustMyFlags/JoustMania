@@ -674,6 +674,8 @@ func (c *components) buildDecisionLoops() {
 	c.predictions = prediction.New(c.ctx, func(gameID string) (gamecontext.GameContext, bool) {
 		return decision.MuxContextProvider{Mux: c.mux}.Current(gameID)
 	})
+	// The Book scores each ended game against its goal profile (#2479, §14.4).
+	c.predictions.SetGoalResolver(c.goalProfile)
 	c.loops = decision.NewLoopSet(c.newDecisionLoop)
 
 	// Infrastructure observe + rollout path (#733/#734, M3): a parallel store fed
@@ -793,6 +795,12 @@ func (c *components) newDecisionLoop(gameID string) *decision.Loop {
 	// UC-040 A31 step 1 (#1837): the per-loop shield-charge ledger reads the game's
 	// shield.activation / shield.charge_expiry_seconds from the read-only game domain.
 	loop.SetShieldChargeMode(c.agentFlags.ShieldCharge)
+	// UC-040 BR-036 (#2467 PR 5): remote decide requests carry the game's
+	// decision.prompt_profile (v1 on any read error).
+	loop.SetPromptProfileSource(c.agentFlags.PromptProfile)
+	// #2479: goal.profile in the game's flag context, for the prompt's goal lines
+	// (only under decision.goal_in_prompt).
+	loop.SetGoalSource(c.goalProfile)
 	// UC-040 BR-029 (#2395): a grant_shield without a value gets the
 	// interventions/shield_seconds "default" variant, read at use time through the
 	// flag service (fail closed: 5 s).
@@ -888,6 +896,9 @@ func (c *components) buildGameEnd() {
 	// (chainGameEnd) on the single store hook. The aggregation is itself an
 	// agent.game.summary span.
 	c.summaries = gamesummary.NewCoordinator(c.logger)
+	// #2479: the prediction Book finalizes a game's results earlier in the game-end
+	// chain, so the summary and the retro read them from its lookup (UC-042 A12).
+	wirePredictionLookups(c.predictions, c.summaries, c.retro)
 	// Advance the M7-2 rolling window on every game end (#929): the coordinator
 	// Records each freshly-built Summary into the shared window, which reduces a game to
 	// its aggregates: a real game goes to the real-game window, a shadow game to its
@@ -1060,6 +1071,7 @@ func (c *components) buildExperimentStack() {
 		c.summaries.SetExperimentParent(reg.ExperimentSpanContext)
 		c.proposalSink.Set(expLoop.proposalSink())
 		installExperimentFlags(c.experimentFlags, reg)
+		wireArmCalibration(c.predictions, reg)
 	}
 	// #1184: close the game→retro→thesis→experiment loop. Forward each decoded
 	// post-game retro suggestion (#1179) into the experiment loop's retro-seeded

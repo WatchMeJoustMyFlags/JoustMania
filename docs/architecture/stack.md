@@ -42,7 +42,7 @@ has a tagged test.
 | System | Contract | Location |
 |--------|----------|----------|
 | flagd (feature flags) | `docs/specs/flags.md` | `services/flagd`, `services/flag-service` |
-| OTEL collector / Jaeger / VictoriaMetrics / Grafana / Loki | `docs/specs/telemetry.md` | `services/otel-collector` and siblings |
+| OTEL collector / Jaeger / VictoriaMetrics / Grafana | `docs/specs/telemetry.md` | `services/otel-collector` and siblings |
 | PS Move controllers (HID, Bluetooth) | `docs/specs/services.md` | `services/rust-hid`, `lib/psmove_hid.py` |
 | LLM decision backends (Jev, Claude, OpenAI) | `docs/specs/decide-contract.md` | `services/agent` |
 

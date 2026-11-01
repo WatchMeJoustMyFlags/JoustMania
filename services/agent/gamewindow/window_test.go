@@ -146,6 +146,10 @@ var allowedStrings = map[string]bool{
 	"PatternGame.Outcome":        true,
 	"PatternGame.Arm":            true,
 	"ShadowGame.Arm":             true,
+	// Closed vocabularies (decide backends, prediction sources and templates), UC-042 A12.
+	"PredictionAggregate.Backend":  true,
+	"PredictionAggregate.Source":   true,
+	"PredictionAggregate.Template": true,
 }
 
 // identityViolations walks typ and returns every field path that could carry a

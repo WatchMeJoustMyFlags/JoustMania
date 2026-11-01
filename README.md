@@ -82,7 +82,7 @@ make up-mock
       │     Audio     │ │   flagd   │ │ OTel Collector│
       │    :50056     │ │  :8015    │ │ -> Jaeger     │
       └───────────────┘ └───────────┘ │ VictoriaMetr. │
-                              ▲       │ Loki, Grafana │
+                              ▲       │ Grafana       │
                               │       └───────┬───────┘
                       ┌───────┴───────┐       │ OTLP
                       │ flag-service  │       ▼
@@ -145,14 +145,14 @@ See [Mock Environment Guide](services/controller_manager/MOCK_ENVIRONMENT.md) fo
 | Connect Proxy | 8080 (container-internal) | gRPC-web bridge |
 | flagd | 8015 | Feature flags (OpenFeature) |
 | Flag Service | 50064 (flagd sync), 8070 (HTTP API) | Runtime flag state; the only writer path for runtime flags |
-| OTel Collector | 4317 / 4318 | Receives OTLP and logs; exports to Jaeger, VictoriaMetrics, Loki and the agent |
+| OTel Collector | 4317 / 4318 | Receives OTLP (logs end in a debug sink); exports to Jaeger, VictoriaMetrics and the agent |
 | VictoriaMetrics | 8428 | Metric store (Prometheus query API) |
 
 ## Technology Stack
 
 - **Languages:** Python 3.14 (game services), Go 1.26 (agent, flag-service, connect-proxy), Rust (rust-hid, edition 2024), TypeScript (dashboard)
 - **Communication:** gRPC with Protocol Buffers
-- **Observability:** OpenTelemetry, Jaeger, VictoriaMetrics, Loki, Grafana
+- **Observability:** OpenTelemetry, Jaeger, VictoriaMetrics, Grafana
 - **Infrastructure:** Docker, Docker Compose
 
 ## Releases

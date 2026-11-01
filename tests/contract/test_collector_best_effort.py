@@ -109,42 +109,40 @@ def test_memory_limiter_backpressures_at_600_mib_under_the_768_mib_container(col
     )
 
 
-@pytest.mark.uc("UC-035", flow="main", steps=[7])
-@pytest.mark.parametrize("pipeline", ["logs", "logs/containers"])
-def test_both_log_pipelines_export_to_loki(collector, pipeline):
-    """UC-035 step 7: OTLP-pushed logs and the Docker container logs both end in Loki."""
-    assert "otlphttp/loki" in collector["service"]["pipelines"][pipeline]["exporters"]
+@pytest.mark.uc("UC-035", flow="A3")
+def test_no_pipeline_exports_to_loki_and_logs_ends_in_a_sink(collector):
+    """UC-035 step 7, A3 (FR-082 Obsolete, #2059): Loki is gone. No exporter or
+    receiver for container logs remains; the OTLP logs pipeline stays (so the
+    Python log exporter is not answered UNIMPLEMENTED) and ends in the debug sink."""
+    pipelines = collector["service"]["pipelines"]
+    assert not [name for name in collector["exporters"] if "loki" in name]
+    assert not [name for name in collector["receivers"] if name.startswith("filelog")]
+    assert "logs/containers" not in pipelines
+    for name, pipeline in pipelines.items():
+        assert not [e for e in pipeline["exporters"] if "loki" in e], name
+        assert not [r for r in pipeline["receivers"] if r.startswith("filelog")], name
+    assert pipelines["logs"]["receivers"] == ["otlp"]
+    assert pipelines["logs"]["exporters"] == ["debug"]
 
 
-@pytest.mark.uc("UC-035", flow="main", steps=[7])
-def test_loki_exporter_targets_the_compose_loki_service_and_its_otlp_path(collector):
-    """UC-035 step 7: the exporter posts to loki:3100/otlp, the port the loki service listens on."""
-    endpoint = collector["exporters"]["otlphttp/loki"]["endpoint"]
-    assert endpoint == "http://loki:3100/otlp"
-    loki = ic.load_yaml(ic.REPO_ROOT / "services" / "loki" / "config.yaml")
-    assert loki["server"]["http_listen_port"] == 3100
-    assert "loki" in ic.compose_services()
-    assert "3100" in [str(p) for p in ic.compose_services()["loki"]["expose"]]
-
-
-@pytest.mark.uc("UC-035", flow="main", steps=[7])
-def test_collector_tails_the_docker_container_logs(collector):
-    """UC-035 step 7: the filelog receiver reads the host's Docker JSON logs, mounted into the collector."""
-    assert collector["receivers"]["filelog/docker"]["include"] == [
-        "/var/lib/docker/containers/*/*-json.log"
-    ]
+@pytest.mark.uc("UC-035", flow="A3")
+def test_no_compose_service_envoy_cluster_or_datasource_named_loki():
+    """UC-035 A3 (FR-082 Obsolete, #2059): nothing in compose, envoy or Grafana names Loki."""
+    compose = ic.load_yaml(ic.COMPOSE_FILE)
+    assert "loki" not in compose["services"]
+    assert "loki-data" not in (compose.get("volumes") or {})
+    assert "loki" not in ic.envoy_clusters()
+    assert not (ic.REPO_ROOT / "services" / "loki").exists()
+    datasources = ic.REPO_ROOT / "services" / "grafana" / "provisioning" / "datasources"
+    assert not list(datasources.glob("*loki*"))
     mounts = ic.compose_services()["otel-collector"]["volumes"]
-    assert "/var/lib/docker/containers:/var/lib/docker/containers:ro" in mounts
-    assert (
-        "filelog/docker"
-        in collector["service"]["pipelines"]["logs/containers"]["receivers"]
-    )
+    assert not [m for m in mounts if m.startswith("/var/lib/docker/containers")]
 
 
 @pytest.mark.uc("UC-035", cond=["Pre-1"])
 def test_full_stack_has_every_observability_service_the_lite_stack_lacks():
     """UC-035 Pre-1: the observability UIs and stores exist in the full stack only, never in the lite stack."""
-    observability = {"jaeger", "loki", "victoria-metrics", "grafana", "otel-collector"}
+    observability = {"jaeger", "victoria-metrics", "grafana", "otel-collector"}
     full = set(ic.compose_services())
     lite = set(ic.load_yaml(ic.REPO_ROOT / "docker-compose.lite.yml")["services"])
     assert observability <= full, sorted(observability - full)
