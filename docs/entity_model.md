@@ -179,6 +179,7 @@ A player as the decision backends see it (`decide.PlayerState`, `services/agent/
 | serial | Player | String | 17 | Primary Key, Foreign Key (PLAYER.serial) |
 | alive | Player is active | Boolean | 1 | Not Null |
 | waiting | Fight Club / Tournament player waiting for its fight: evicted from the context mid-game and remembered (UC-040 A49, BR-038; UC-041 BR-007, #2513); never set together with alive | Boolean | 1 | Not Null |
+| readings_stale | Alive player whose movement readings are not fresh (`decide.FreshReadings`, 3 s; UC-040 A50, BR-039, #2514): intensity, variance and skill are left out; never set for a player not alive | Boolean | 1 | Not Null |
 | intensity | Smoothed movement intensity in g (absent when never observed) | Decimal | 6,3 | Optional, Min: 0 |
 | variance | Movement variance | Decimal | 6,3 | Optional |
 | skill | Skill level (from `game_player_skill_level`, else playstyle / 3) | Decimal | 4,3 | Optional |
@@ -335,7 +336,7 @@ One agent decision cycle for a game: one evaluation, recorded on one `agent.deci
 | backend | Backend that actually decided | String | 10 | Not Null, Values: rules, claude, openai, jev |
 | outcome | Decide outcome | String | 10 | Not Null, Values: act, held, noop, invalid, fallback, discarded |
 | fallback_reason | Why rules decided instead | String | 22 | Optional, Values: unknown_backend, backend_unavailable, async_not_wired, llm_not_eligible, llm_budget_exhausted, timeout, invalid_answer, error |
-| discarded_reason | Why a remote answer (valid, or under the kill switch also a failed or timed-out call) or its rules fallback was dropped | String | 16 | Optional, Values: stale_context, game_ended, target_gone, kill_switch, backend_changed, shutdown |
+| discarded_reason | Why a remote answer (valid, or under the kill switch also a failed or timed-out call) or its rules fallback was dropped | String | 16 | Optional, Values: stale_context, game_ended, target_gone, target_stale, state_too_old, kill_switch, backend_changed, shutdown |
 | confidence | Routing confidence of `ffa.intervention` | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | act_confidence_threshold | Effective threshold read at landing (the answering backend's own, else the global) | Decimal | 4,3 | Optional, Min: 0, Max: 1 |
 | act_confidence_threshold_source | Flag the threshold came from | String | 6 | Optional, Values: jev, global |

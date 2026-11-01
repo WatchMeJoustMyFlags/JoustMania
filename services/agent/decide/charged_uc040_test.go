@@ -95,12 +95,14 @@ func TestBuildState_ChargeSuppressesGrantShieldShielded(t *testing.T) {
 }
 
 // TestDigest_ByteStableWithoutCharge pins the digest of fixed fixtures, computed on
-// main before #1870: a state without a charge keeps a byte-identical digest.
+// main before #1870: a state without a charge keeps a byte-identical digest. Re-pinned
+// by #2514: sampleCtx gained a fresh reading for B (so B's player line carries
+// "movement=▄"); no field or token changed otherwise.
 //
 // UC: UC-040 main step 4
 func TestDigest_ByteStableWithoutCharge(t *testing.T) {
 	t.Run("UC-040/step 4 plain fixture", func(t *testing.T) {
-		const want = "a984cb66b68468b4fef88ebe0a9455d210d3a79d3cdcba8c08a0166d1024eb7c"
+		const want = "f3aba7e7f210facf043b7c70f114c9496dbdee56fb770464617bdd3cbea80019"
 		if got := BuildStateWith(sampleCtx(), Annotations{}).Digest; got != want {
 			t.Errorf("digest = %s, want %s", got, want)
 		}
@@ -110,7 +112,7 @@ func TestDigest_ByteStableWithoutCharge(t *testing.T) {
 		c.Timeline = append(c.Timeline, gamecontext.TimelineEvent{
 			At: c.UpdatedAt.Add(-4 * time.Second), Kind: gamecontext.EventIntervention, Detail: "grant_shield", Serial: "B",
 		})
-		const want = "9f0052a0c439385bb5e53bd871cd55729ff66181893f9fa2f215f766b8043b17"
+		const want = "153257f76b49376cdcab5c2eb942dffbc8f73fa08b17592483d081845712d557"
 		if got := BuildStateWith(c, Annotations{}).Digest; got != want {
 			t.Errorf("digest = %s, want %s", got, want)
 		}

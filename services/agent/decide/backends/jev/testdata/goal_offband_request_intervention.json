@@ -46,7 +46,7 @@
       "targets": "duration\u003e=180s activity=0.30..0.60 elimination_pace\u003c=1/min"
     },
     "most_headroom": "MOCK0002",
-    "narrative": "game: id=game_7f3a9c21d4e8 kind=real mode=FFA elapsed=74.0s\nsession: alive=3 eliminated=1 tempo=1.15 death_threshold=2.30 most_headroom=MOCK0002 struggling=MOCK0003\nplayers:\n  MOCK0001 eliminated#1 skill=0.20 battery=80.00\n  MOCK0002 alive intensity=0.60 variance=0.05 skill=0.90 battery=72.00 danger=safe margin=1.70 intensity_rank=3/3\n  MOCK0003 alive intensity=2.20 variance=0.40 skill=0.25 battery=64.00 danger=near_threshold margin=0.10 intensity_rank=1/3\n  MOCK0004 alive intensity=1.40 variance=0.20 skill=0.50 battery=12.00 danger=elevated margin=0.90 intensity_rank=2/3\ntimeline:\n  -50s elimination: MOCK0001 (#1)\n",
+    "narrative": "game: id=game_7f3a9c21d4e8 kind=real mode=FFA elapsed=74.0s\nsession: alive=3 eliminated=1 tempo=1.15 death_threshold=2.30 most_headroom=MOCK0002 struggling=MOCK0003\nplayers:\n  MOCK0001 eliminated#1 skill=0.20 battery=80.00\n  MOCK0002 alive intensity=0.60 variance=0.05 skill=0.90 battery=72.00 movement=▃ danger=safe margin=1.70 intensity_rank=3/3\n  MOCK0003 alive intensity=2.20 variance=0.40 skill=0.25 battery=64.00 movement=█ danger=near_threshold margin=0.10 intensity_rank=1/3\n  MOCK0004 alive intensity=1.40 variance=0.20 skill=0.50 battery=12.00 movement=▅ danger=elevated margin=0.90 intensity_rank=2/3\ntimeline:\n  -50s elimination: MOCK0001 (#1)\n",
     "players": [
       {
         "alive": false,
