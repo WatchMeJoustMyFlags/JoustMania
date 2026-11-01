@@ -1069,26 +1069,32 @@ def test_allow_list_variants_only_name_coordinator_types(flag_dir):
     assert not failures, "\n".join(failures)
 
 
-@pytest.mark.uc("UC-040", br=["BR-033"])
-@pytest.mark.parametrize("flag_dir", ["ci", "base"])
-def test_no_allow_list_variant_names_grant_group_shield_yet(flag_dir):
-    """Temporary pin (#2467 PR 3): no ``interventions_allowed`` variant names the group lever.
+GROUP_VARIANTS = {"standard_group", "shadow_group"}
 
-    The coordinator handler exists, so the type-id test above accepts the lever; the agent
-    half (offering, deciding, the group variants) is #2467 PR 4, which removes this test.
+
+@pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_only_the_group_variants_name_grant_group_shield(flag_dir):
+    """The group lever is opt-in (#2467 PR 4): only ``standard_group`` and ``shadow_group`` name it.
+
+    ``standard_group`` is ``standard`` plus the lever and ``shadow_group`` is
+    ``shadow_experimental`` plus the lever, so choosing a group variant changes nothing
+    else; every other variant (the talk's ``standard`` included) stays without it.
     """
     root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
     variants = json.loads((root / "agent.json").read_text())["flags"][
         "interventions_allowed"
     ]["variants"]
-    named = sorted(
-        name
-        for name, ids in variants.items()
-        if "grant_group_shield" in (t.strip() for t in ids.split(","))
+
+    def ids(name):
+        return [t.strip() for t in variants[name].split(",") if t.strip()]
+
+    named = {name for name in variants if "grant_group_shield" in ids(name)}
+    assert named == GROUP_VARIANTS, (
+        f"{flag_dir}/agent.json: grant_group_shield is named by {sorted(named)}, want {sorted(GROUP_VARIANTS)}"
     )
-    assert not named, (
-        f"{flag_dir}/agent.json interventions_allowed variants {named} name grant_group_shield before #2467 PR 4"
-    )
+    assert ids("standard_group") == ids("standard") + ["grant_group_shield"]
+    assert ids("shadow_group") == ids("shadow_experimental") + ["grant_group_shield"]
 
 
 # Every flag an intervention handler reads (#1872, flags.md section 1.2). Since #1970 the
