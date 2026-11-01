@@ -1009,6 +1009,28 @@ def test_allow_list_variants_only_name_coordinator_types(flag_dir):
     assert not failures, "\n".join(failures)
 
 
+@pytest.mark.uc("UC-040", br=["BR-033"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_no_allow_list_variant_names_grant_group_shield_yet(flag_dir):
+    """Temporary pin (#2467 PR 3): no ``interventions_allowed`` variant names the group lever.
+
+    The coordinator handler exists, so the type-id test above accepts the lever; the agent
+    half (offering, deciding, the group variants) is #2467 PR 4, which removes this test.
+    """
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    variants = json.loads((root / "agent.json").read_text())["flags"][
+        "interventions_allowed"
+    ]["variants"]
+    named = sorted(
+        name
+        for name, ids in variants.items()
+        if "grant_group_shield" in (t.strip() for t in ids.split(","))
+    )
+    assert not named, (
+        f"{flag_dir}/agent.json interventions_allowed variants {named} name grant_group_shield before #2467 PR 4"
+    )
+
+
 # Every flag an intervention handler reads (#1872, flags.md section 1.2). Since #1970 the
 # handler runs in the game's flag transaction context (targetingKey = game_mode, game_mode,
 # controller_count, sensitivity, game_kind, experiment_id, arm), with the read's own keys

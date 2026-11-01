@@ -704,7 +704,8 @@ target with the single grant's refusal check, phase 2 commits every target and c
 feedback. Phases 0 to 2 have no await. One `agent_intervention` / `game_interventions_total{type=grant_group_shield}`
 per group, with `target` empty. No `interventions_allowed` variant names `grant_group_shield` and nothing decides it
 until #2467 PR 4, so today the coordinator refuses it `not_allowed`; `tests/contract/test_flagd_resolution.py`
-`test_allow_list_variants_only_name_coordinator_types` keeps a type the coordinator cannot apply out of every variant.
+`test_allow_list_variants_only_name_coordinator_types` keeps a type the coordinator cannot apply out of every variant, and
+the temporary pin `test_no_allow_list_variant_names_grant_group_shield_yet` keeps `grant_group_shield` out of every base and CI variant until PR 4.
 
 Per-serial **grant** flags (`shield_seconds`, `toughness_boost_seconds`,
 `soft_penalty_action`) are one-shot per decision: every write gets a fresh variant from the
