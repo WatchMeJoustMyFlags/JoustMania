@@ -90,7 +90,7 @@ func baseAttrs(backend string, p decide.Prediction, gameKind string) []attribute
 	}
 }
 
-// goalAttainment records agent_goal_attainment{profile,game_kind} for a game whose
+// goalAttainment records agent_goal_attainment{profile,source,game_kind} for a game whose
 // goal had at least one measured term.
 func (t telemetry) goalAttainment(r goal.Result, gameKind string) {
 	if !r.HasAttainment {
@@ -98,6 +98,7 @@ func (t telemetry) goalAttainment(r goal.Result, gameKind string) {
 	}
 	t.goalH.Record(context.Background(), r.Attainment, otelmetric.WithAttributes(
 		attribute.String("profile", r.Profile.Name),
+		attribute.String("source", goal.SourceOf(r.Profile)),
 		attribute.String("game_kind", gamecontext.TelemetryGameKind(gameKind))))
 }
 

@@ -61,6 +61,7 @@ const (
 	// summary.goal.* (UC-042 A12, #2479): set only when the game had a goal;
 	// attainment only when a term could be measured.
 	attrGoalProfile    = "summary.goal.profile"
+	attrGoalSource     = "summary.goal.source"
 	attrGoalAttainment = "summary.goal.attainment"
 	// attrGameTraceID / attrGameTraceSpanID are the canonical game-session-trace Link
 	// attribute keys (#1133/#1157), matching decision.AttrGameTraceID /
@@ -262,7 +263,11 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 	goalProfile, goalAttainment := "", -1.0
 	if g := summary.Goal; g != nil {
 		goalProfile = g.Profile
-		span.SetAttributes(attribute.String(attrGoalProfile, g.Profile))
+		source := "named"
+		if g.FromObjectives {
+			source = "from_objectives"
+		}
+		span.SetAttributes(attribute.String(attrGoalProfile, g.Profile), attribute.String(attrGoalSource, source))
 		if g.Attainment != nil {
 			goalAttainment = *g.Attainment
 			span.SetAttributes(attribute.Float64(attrGoalAttainment, *g.Attainment))

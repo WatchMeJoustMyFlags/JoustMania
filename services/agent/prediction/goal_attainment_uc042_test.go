@@ -95,6 +95,9 @@ func TestBook_GoalAttainment(t *testing.T) {
 		if v, _ := points[0].Attributes.Value(attribute.Key("profile")); v.AsString() != "long_running_game" {
 			t.Fatalf("profile label = %q", v.AsString())
 		}
+		if v, _ := points[0].Attributes.Value(attribute.Key("source")); v.AsString() != goal.SourceNamed {
+			t.Fatalf("source label = %q", v.AsString())
+		}
 	})
 	t.Run("UC-042/A12 a game the Book never sampled still gets its duration term", func(t *testing.T) {
 		h := newHarness(t)
@@ -135,6 +138,50 @@ func TestBook_GoalAttainment(t *testing.T) {
 		h.b.OnGameEnd(stale)
 		if h.b.SummaryGoal("g2") != nil || len(goalHistograms(t, h)) != 0 {
 			t.Fatal("a stale end must record no goal")
+		}
+	})
+}
+
+// UC: UC-042 A12
+// TestBook_SampleGoalGates: the sampler takes nothing from a game that is not
+// running, and a cycle that arrives after the game ended re-creates nothing (no
+// leaked game book).
+func TestBook_SampleGoalGates(t *testing.T) {
+	t.Run("UC-042/A12 a running game is sampled (positive control)", func(t *testing.T) {
+		h := newHarness(t)
+		c := withGoalHistory(game("A", "B"), h.clk.now(), 20, 0.8)
+		h.b.SampleGoal(c)
+		if acc := h.b.GoalAccumulator("g1"); !acc.Sampled() {
+			t.Fatal("a running game must be sampled")
+		}
+	})
+	t.Run("UC-042/A12 GameActive false takes no sample", func(t *testing.T) {
+		h := newHarness(t)
+		c := withGoalHistory(game("A", "B"), h.clk.now(), 20, 0.8)
+		c.Session.GameActive = bp(false)
+		h.b.SampleGoal(c)
+		if acc := h.b.GoalAccumulator("g1"); acc.Sampled() {
+			t.Fatal("a game that is not running must not be sampled")
+		}
+	})
+	t.Run("UC-042/A12 a sample after the end re-creates nothing", func(t *testing.T) {
+		for _, withGoal := range []bool{false, true} {
+			h := newHarness(t)
+			if withGoal {
+				h.b.SetGoalResolver(func(context.Context, gamecontext.GameContext) goal.Profile {
+					return goal.Profile{Name: "x", Terms: []goal.Term{durationTerm(1)}}
+				})
+			}
+			c := withGoalHistory(game("A", "B"), h.clk.now(), 20, 0.8)
+			h.b.SampleGoal(c)
+			end := c
+			end.EndReason = gamecontext.EndReasonZero
+			h.b.OnGameEnd(end)
+			h.at(30 * time.Second)
+			h.b.SampleGoal(withGoalHistory(game("A", "B"), h.clk.now(), 30, 0.8))
+			if acc := h.b.GoalAccumulator("g1"); acc.Sampled() {
+				t.Fatalf("goal resolver %v: a late sample re-created the ended game", withGoal)
+			}
 		}
 	})
 }

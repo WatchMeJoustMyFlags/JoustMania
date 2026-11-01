@@ -655,10 +655,9 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		rec.req.PredictionAsk = decide.PredictionQuestion(rec.req.State)
 	}
 	// The goal lines (#2479, decide-contract.md §14.4): only under
-	// decision.goal_in_prompt or the neutral profile, and only for claude or openai
-	// (jev's typed wire format has no goal criterion yet); otherwise the request
-	// stays byte-identical.
-	rec.req.Goal = l.goalLines(root, fired, rec.used, rec.req, c)
+	// decision.goal_in_prompt, and only for claude or openai (jev's typed wire
+	// format has no goal criterion yet); otherwise the request stays byte-identical.
+	rec.req.Goal = l.goalLines(root, fired, rec.used, c)
 	// Fire-time threshold: only a placeholder for spans that end before landing
 	// (none are routed then); the landing re-read below overwrites it with the
 	// LIVE effective threshold, which is what routing uses.
@@ -1002,7 +1001,8 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 		attrs = append(attrs, attribute.String(AttrDecidePromptProfile, rec.req.PromptProfile))
 	}
 	if rec.req.Goal != nil {
-		attrs = append(attrs, attribute.String(keys.AttrDecideGoalProfile, rec.req.Goal.Profile))
+		attrs = append(attrs, attribute.String(keys.AttrDecideGoalProfile, rec.req.Goal.Profile),
+			attribute.String(keys.AttrDecideGoalSource, rec.req.Goal.Source))
 	}
 	attrs = append(attrs, predictionAttributes(rec)...)
 	attrs = append(attrs, droppedPredictionAttributes(rec)...)

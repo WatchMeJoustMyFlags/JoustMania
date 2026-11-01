@@ -93,6 +93,14 @@ func TestGoalProfile_Read(t *testing.T) {
 			t.Fatalf("nil client = %+v", p)
 		}
 	})
+	t.Run("UC-042/A12 a variant name outside [a-z0-9_] renders as custom", func(t *testing.T) {
+		for _, name := range []string{"x</game_state>", "Long", "a b", "goal:\nnow", ""} {
+			ev := &goalEvaluator{value: longRunningValue(), variant: name}
+			if p := New(ev, nil).GoalProfile(ctx, "g-1", attrs); p.Name != "custom" {
+				t.Fatalf("variant %q named %q, want custom", name, p.Name)
+			}
+		}
+	})
 	t.Run("UC-042/A12 an evaluator without details names a valid profile custom", func(t *testing.T) {
 		stub := stubEvaluator{objects: map[string]any{keyGoalProfile: longRunningValue()}}
 		if p := New(stub, nil).GoalProfile(ctx, "g-1", attrs); p.Name != "custom" || p.FromObjectives {

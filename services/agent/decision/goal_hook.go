@@ -22,15 +22,14 @@ func (l *Loop) sampleGoal(c gamecontext.GameContext) {
 }
 
 // goalLines are the request's goal lines, nil unless the backend is claude or
-// openai, decision.goal_in_prompt is on or req is neutral, a goal source is wired
-// and the game's profile has terms. The now line is the game's running
+// openai, decision.goal_in_prompt is on, a goal source is wired and the game's
+// profile has terms. decision.prompt_profile never implies them: the neutral
+// profile is a lever-wording factor only, and the goal is a separate factor. The now line is the game's running
 // measurements (the same values the game-end attainment scores); without a book
 // it is one sample of c.
-func (l *Loop) goalLines(ctx context.Context, fired flags.Snapshot, backend string, req decide.Request, c gamecontext.GameContext) *decide.GoalLines {
-	if l.goalSource == nil || (backend != flags.DecisionBackendClaude && backend != flags.DecisionBackendOpenAI) {
-		return nil
-	}
-	if !fired.Decision.GoalInPrompt && !req.IsNeutral() {
+func (l *Loop) goalLines(ctx context.Context, fired flags.Snapshot, backend string, c gamecontext.GameContext) *decide.GoalLines {
+	if l.goalSource == nil || !fired.Decision.GoalInPrompt ||
+		(backend != flags.DecisionBackendClaude && backend != flags.DecisionBackendOpenAI) {
 		return nil
 	}
 	profile := l.goalSource(ctx, c)
@@ -45,6 +44,7 @@ func (l *Loop) goalLines(ctx context.Context, fired flags.Snapshot, backend stri
 	}
 	return &decide.GoalLines{
 		Profile: profile.Name,
+		Source:  goal.SourceOf(profile),
 		Goal:    profile.GoalLine(),
 		Now:     goal.NowLine(profile, func(char, phase string) (float64, bool) { return acc.Measure(c, char, phase) }),
 	}

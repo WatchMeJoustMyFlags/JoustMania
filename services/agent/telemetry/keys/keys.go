@@ -487,4 +487,7 @@ const (
 	// rendered into the request (#2479, decide-contract.md §14.4); absent when none
 	// was.
 	AttrDecideGoalProfile = "decide.goal.profile"
+	// AttrDecideGoalSource is that profile's source: named (a goal.profile
+	// variant) or from_objectives (derived from the objectives weights).
+	AttrDecideGoalSource = "decide.goal.source"
 )

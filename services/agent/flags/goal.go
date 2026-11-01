@@ -3,6 +3,7 @@ package flags
 import (
 	"context"
 	"errors"
+	"regexp"
 
 	"github.com/open-feature/go-sdk/openfeature"
 	"go.opentelemetry.io/otel"
@@ -35,8 +36,12 @@ type objectDetailer interface {
 }
 
 // customProfileName names a valid terms variant whose variant name is unknown
-// (an evaluator without details).
+// (an evaluator without details) or not of the form profileNameRe.
 const customProfileName = "custom"
+
+// profileNameRe is the variant names that may name a profile: they reach the
+// prompt's goal line and a metric label, so anything else renders as custom.
+var profileNameRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
 // SetGoalMeterProvider overrides the meter provider of
 // agent_goal_profile_invalid_total (tests). Set before use.
@@ -88,7 +93,7 @@ func (f *Flags) GoalProfile(ctx context.Context, gameID string, attrs GameAttrs)
 	if fromObjectives {
 		return f.goalFromObjectives(ctx)
 	}
-	if variant == "" {
+	if !profileNameRe.MatchString(variant) {
 		variant = customProfileName
 	}
 	return goal.Profile{Name: variant, Terms: terms}

@@ -164,6 +164,9 @@ func TestCoordinator_GoalOnSpan(t *testing.T) {
 	if v, ok := spanAttr(span, "summary.goal.profile"); !ok || v.AsString() != "lively_finale" {
 		t.Errorf("UC-042/A12 summary.goal.profile = %v (%t)", v.AsString(), ok)
 	}
+	if v, ok := spanAttr(span, "summary.goal.source"); !ok || v.AsString() != "named" {
+		t.Errorf("UC-042/A12 summary.goal.source = %v (%t)", v.AsString(), ok)
+	}
 	if v, ok := spanAttr(span, "summary.goal.attainment"); !ok || v.AsFloat64() != 0.75 {
 		t.Errorf("UC-042/A12 summary.goal.attainment = %v (%t)", v.AsFloat64(), ok)
 	}

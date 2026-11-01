@@ -198,8 +198,8 @@ type DecisionBackend struct {
 	// hand-built snapshot matches the default.
 	PredictionsOff bool
 	// GoalInPrompt is decision.goal_in_prompt (#2479, decide-contract.md §14.4): a
-	// claude or openai request carries the "goal:" / "now:" lines (also implied by
-	// decision.prompt_profile = neutral). Default off; unreadable reads off.
+	// claude or openai request carries the "goal:" / "now:" lines. The only switch:
+	// decision.prompt_profile never implies them. Default off; unreadable reads off.
 	GoalInPrompt bool
 	// PredictionsAskModel is decision.predictions.ask_model (#2479, UC-040 A45,
 	// BR-034): a claude or openai request carries the ffa.prediction ask. Default

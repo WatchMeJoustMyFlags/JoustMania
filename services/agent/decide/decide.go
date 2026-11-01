@@ -215,8 +215,8 @@ type Request struct {
 	// openai; nil (the default) leaves the rendered prompt byte-identical to v1.
 	PredictionAsk *Question `json:"prediction_ask,omitempty"`
 	// Goal is the optional pair of goal lines (#2479, decide-contract.md §14.4),
-	// set on a claude or openai request only under decision.goal_in_prompt or the
-	// neutral prompt profile, and only for a goal with terms. It is outside State,
+	// set on a claude or openai request only under decision.goal_in_prompt, and
+	// only for a goal with terms. It is outside State,
 	// so the Digest does not cover it; with it nil the user message is
 	// byte-identical to v1.
 	Goal *GoalLines `json:"goal,omitempty"`
@@ -225,9 +225,11 @@ type Request struct {
 // GoalLines are the rendered goal lines of a request: Goal is the profile's
 // target bands ("long_running_game duration>=180s ..."), Now the measured values
 // ("duration=95s activity=0.42 ..."), both without their "goal: " / "now: "
-// prefix. Profile is the profile name (decide.goal.profile on agent.decide).
+// prefix. Profile is the profile name (decide.goal.profile on agent.decide),
+// Source named or from_objectives (decide.goal.source).
 type GoalLines struct {
 	Profile string `json:"profile"`
+	Source  string `json:"source"`
 	Goal    string `json:"goal"`
 	Now     string `json:"now"`
 }

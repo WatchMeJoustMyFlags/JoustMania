@@ -76,6 +76,23 @@ type Profile struct {
 	Terms          []Term
 }
 
+// Goal sources (the decide.goal.source / summary.goal.source attribute and the
+// source label of agent_goal_attainment): a named goal.profile variant, or a
+// from_objectives form. The two keep same-named profiles apart (the
+// from_objectives long_running_game reads the fitness flag, the named one 180 s).
+const (
+	SourceNamed          = "named"
+	SourceFromObjectives = "from_objectives"
+)
+
+// SourceOf is p's source.
+func SourceOf(p Profile) string {
+	if p.FromObjectives {
+		return SourceFromObjectives
+	}
+	return SourceNamed
+}
+
 // Empty reports whether p has no terms.
 func (p Profile) Empty() bool { return len(p.Terms) == 0 }
 

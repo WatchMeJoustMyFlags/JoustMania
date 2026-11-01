@@ -102,6 +102,9 @@ func (a *Accumulator) Sample(c gamecontext.GameContext, now time.Time) {
 	record(decide.CharChange, v, ok)
 }
 
+// Sampled reports whether at least one sample was taken (tests, diagnostics).
+func (a *Accumulator) Sampled() bool { return a.nextSampleS > 0 }
+
 // Measure is the value of char in phase for c (the live context, or the game-end
 // snapshot): duration and elimination_pace from c (whole game, or since the
 // endgame began), activity, closeness and change as the mean of the samples.
