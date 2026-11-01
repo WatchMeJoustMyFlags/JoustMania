@@ -227,6 +227,9 @@ func planDetails(req decide.Request, iv decide.Answer, details []decide.Question
 	for _, q := range details {
 		if q.ID == decide.QuestionFFATarget {
 			alive = aliveOptions(q, st)
+			if decide.NeedsFreshReadings(iv.Choice) {
+				alive = freshOptions(alive, st)
+			}
 		}
 	}
 	// A player intervention without a candidate cannot be applied: answer

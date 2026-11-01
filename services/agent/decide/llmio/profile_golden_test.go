@@ -26,8 +26,9 @@ var updateProfileGolden = flag.Bool("update-profile-golden", false, "rewrite dec
 
 // v1SystemSHA is the fingerprint (llm.prompt.system_sha256) of the v1 system prompt:
 // main before #2467 PR 5 (5946fe381206612c) plus the sentence on waiting players
-// (#2513, UC-040 A49), the only deliberate change since.
-const v1SystemSHA = "67933e383c260b5f"
+// (#2513, UC-040 A49; 67933e383c260b5f) and the sentence on readings_stale (#2514,
+// UC-040 A50), the only deliberate changes since.
+const v1SystemSHA = "988828bfff9a598a"
 
 // bannedNeutralPhrases are purpose and verdict phrases the neutral lever text must
 // not carry (UC-040 BR-036).

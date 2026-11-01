@@ -18,6 +18,11 @@ const (
 	// alive/connected at apply time (eliminated or disconnected during inference).
 	// A session-scoped decision (empty target) never hits this.
 	DiscardTargetGone = "target_gone"
+	// DiscardTargetStale: the decision applies a lever that needs fresh readings
+	// (decide.NeedsFreshReadings: adjust_player_sensitivity, grant_shield,
+	// send_controller_effect) to a player whose movement readings are not fresh
+	// at apply time (decide.FreshReadings; UC-040 A50, BR-039, #2514).
+	DiscardTargetStale = "target_stale"
 	// DiscardStateTooOld: the game state the remote request was built on (the
 	// fire-time GameContext.UpdatedAt) was older than decision.max_state_age_ms
 	// when the answer landed (#2123): the answer describes a game that has moved on.

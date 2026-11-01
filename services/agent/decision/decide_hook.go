@@ -96,7 +96,7 @@ const (
 	// outcome=invalid.
 	AttrDecideInvalidReason = "decide.invalid_reason"
 	// AttrDecideDiscardedReason names why nothing acted although an answer exists:
-	// stale_context / game_ended / target_gone (re-validation against the current
+	// stale_context / game_ended / target_gone / target_stale (re-validation against the current
 	// context), kill_switch / backend_changed (live flags at landing) or shutdown.
 	// It accompanies outcome=discarded, and can also appear with outcome=fallback
 	// when the rules fallback itself found the game gone or ended.
@@ -837,6 +837,11 @@ func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, c
 		return
 	case d.TargetSerial != "" && !targetPresent(current, d.TargetSerial):
 		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DiscardTargetGone
+		return
+	case decide.NeedsFreshReadings(d.Intervention) && !decide.TargetReadingsFresh(current, d.TargetSerial):
+		// #2514: a lever whose rule needs fresh readings (R3, R4, R8) is not
+		// applied to a player whose readings are stale now (UC-040 BR-039).
+		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DiscardTargetStale
 		return
 	case stateTooOld(rec.stateAt, rec.end, snapshot.Decision.MaxStateAge):
 		rec.outcome, rec.discardedReason = DecideOutcomeDiscarded, DiscardStateTooOld

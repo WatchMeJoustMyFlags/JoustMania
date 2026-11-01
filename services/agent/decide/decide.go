@@ -104,11 +104,16 @@ type PlayerState struct {
 	// Waiting marks a Fight Club or Tournament player waiting for its fight: evicted
 	// from the game's context mid-game and remembered (gamecontext.GameContext.Waiting,
 	// UC-040 A49, BR-038, #2513). Never Alive, no readings, no danger or shield fields.
-	Waiting    bool     `json:"waiting,omitempty"`
-	Intensity  *float64 `json:"intensity,omitempty"`
-	Variance   *float64 `json:"variance,omitempty"`
-	Skill      *float64 `json:"skill,omitempty"`
-	BatteryPct *float64 `json:"battery_pct,omitempty"`
+	Waiting bool `json:"waiting,omitempty"`
+	// ReadingsStale marks an alive player whose movement readings are not fresh at
+	// the context's UpdatedAt (FreshReadings, UC-040 A50, BR-039, #2514): Intensity,
+	// Variance and Skill are left out (so no danger signals either) and the levers
+	// of NeedsFreshReadings are not applied to it. Never set for a player not alive.
+	ReadingsStale bool     `json:"readings_stale,omitempty"`
+	Intensity     *float64 `json:"intensity,omitempty"`
+	Variance      *float64 `json:"variance,omitempty"`
+	Skill         *float64 `json:"skill,omitempty"`
+	BatteryPct    *float64 `json:"battery_pct,omitempty"`
 	// EliminationOrder is the 1-based position in the session's elimination
 	// sequence, 0 when the player has not been eliminated.
 	EliminationOrder int `json:"elimination_order,omitempty"`

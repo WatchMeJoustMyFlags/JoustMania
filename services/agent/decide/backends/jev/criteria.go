@@ -178,6 +178,7 @@ func describePlayers(st decide.State) map[string]string {
 		switch {
 		case p.Alive:
 			b.WriteString(", still in the game.")
+			b.WriteString(stalePhrase(p))
 			if d := dangerPhrase(p); d != "" {
 				b.WriteString(" " + d)
 			}
@@ -516,6 +517,7 @@ func describeCandidatesFor(st decide.State, iv, profile string) map[string]strin
 		}
 		var b strings.Builder
 		b.WriteString("Player " + p.Serial + ".")
+		b.WriteString(stalePhrase(p))
 		if d := dangerPhrase(p); d != "" {
 			b.WriteString(" " + d)
 		}
