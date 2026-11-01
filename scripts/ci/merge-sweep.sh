@@ -34,8 +34,12 @@
 #      `MERGED` line with the branch (the caller removes its worktree), then the
 #      PR body's `## Merge notes` lines (HTML comments ignored):
 #        close #N: <text>   close issue N with <text>, once (marker on the issue;
-#                           skipped when closed or already closed by this sweep,
-#                           so a reopened issue stays open)
+#                           skipped when already closed by this sweep, so a
+#                           reopened issue stays open). `close #N` is also a GitHub
+#                           closing keyword: when the issue is already closed and
+#                           its last ClosedEvent's closer is this PR or its merge
+#                           commit, post <text> as a comment only (same marker,
+#                           once, #2508); closed by anything else: skipped
 #        note #N: <text>    comment <text> on issue N, once per PR (marker)
 #      Only issues in the body's `Part of #A[, #B]` list(s) are targets, and
 #      never a pull request. `{MERGE}` in <text> becomes the short merge SHA.
@@ -360,6 +364,18 @@ part_of() {
     | grep -oE '^[[:space:]]*Part of #[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*' | grep -oE '#[0-9]+' | tr -d '#'
 }
 
+# Who closed an issue last: "PullRequest <n>", "Commit <oid>", another
+# "<type> ..." or "" (no ClosedEvent); exit 1 on API error.
+GQL_CLOSER='query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){issue(number:$num){
+  timelineItems(itemTypes:[CLOSED_EVENT], last:1){nodes{... on ClosedEvent{closer{__typename ... on PullRequest{number} ... on Commit{oid}}}}}}}}'
+closed_by() {
+  local res
+  res="$(gh api graphql -F owner='{owner}' -F repo='{repo}' -F num="$1" -f query="$GQL_CLOSER" 2>/dev/null)" \
+    && jq -e '.data.repository.issue.timelineItems.nodes' >/dev/null 2>&1 <<<"$res" || return 1
+  jq -r '.data.repository.issue.timelineItems.nodes[-1].closer // empty
+    | "\(.__typename) \(.number // .oid // "")"' <<<"$res"
+}
+
 sweep_merged() {  # one merged-PR JSON object
   local pr="$1" n author merged_at branch merge msha
   n="$(jq -r .number <<<"$pr")"
@@ -402,7 +418,21 @@ $marker"
         fi
         continue
       fi
-      if [[ "$state" != open ]]; then done_notes+=("#$issue already closed"); continue; fi
+      if [[ "$state" != open ]]; then
+        # `close #N` is also a GitHub closing keyword, so the merge itself often
+        # closed the issue (#2508): then post the delivery comment, once.
+        local closer
+        if ! closer="$(closed_by "$issue")"; then
+          failures=$((failures + 1)); done_notes+=("close #$issue: read failed"); continue
+        fi
+        if [[ "$closer" != "PullRequest $n" && ( -z "$merge" || "$closer" != "Commit $merge" ) ]]; then
+          done_notes+=("#$issue already closed"); continue
+        fi
+        if $DRY; then done_notes+=("would comment #$issue (closed by this merge)"); continue; fi
+        if gh issue comment "$issue" --body "$body" >/dev/null 2>&1; then done_notes+=("commented #$issue (closed by this merge)")
+        else failures=$((failures + 1)); done_notes+=("comment #$issue FAILED"); fi
+        continue
+      fi
       if $DRY; then done_notes+=("would close #$issue"); continue; fi
       if gh issue close "$issue" --comment "$body" >/dev/null 2>&1; then done_notes+=("closed #$issue")
       else failures=$((failures + 1)); done_notes+=("close #$issue FAILED"); fi

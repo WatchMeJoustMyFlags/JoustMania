@@ -65,7 +65,9 @@ It only touches PRs authored by `SWEEP_AUTHORS` (default aepfli) and prints one 
   was not dequeued by hand (a sweep marks its own dequeues). GitHub clears auto-merge when it queues a PR, so after any ejection nothing is armed:
   re-arming is the normal path, the once-per-head marker stops a loop on a real failure;
 - `MERGED` lines name the branch of each recently merged PR and the `## Merge notes` issues it closed or noted (only
-  issues on the PR's `Part of #N` line, never a PR; a reopened issue is not closed again);
+  issues on the PR's `Part of #N` line, never a PR; a reopened issue is not closed again). GitHub itself often closes a
+  `close #N` issue at merge (a closing keyword): when its last close came from this PR or its merge commit the sweep
+  posts the delivery comment once (`commented #N (closed by this merge)`, #2508); closed by anything else: `already closed`;
 - `SWEEP BUSY` means another sweep holds the lock: report it, do not retry;
 Then, for every `MERGED` line, run the step-3 cleanup for that branch (worktree only; main fast-forwarded once at
 the end). Exit 1 means an action or read failed: relay the lines, never rerun the sweep in the same brief.
