@@ -61,6 +61,7 @@ func TestFreshTargets_R6(t *testing.T) {
 }
 
 // UC: UC-040 A46 A49 BR-037
+// UC: UC-046 BR-007
 func TestFreshTargets_R9(t *testing.T) {
 	t.Run("UC-040/A46 R9 never draws a waiting player with stopped readings", func(t *testing.T) {
 		c := waitingCtx(5, map[string]testPlayer{"A": {active: true}, "B": {active: true}})
@@ -76,6 +77,40 @@ func TestFreshTargets_R9(t *testing.T) {
 		}
 		if seen["A"] == 0 || seen["B"] == 0 {
 			t.Fatalf("R9 draws = %v, want both fighters drawn", seen)
+		}
+	})
+	t.Run("UC-046/BR-007 a stale player leaves a seeded engine's draw sequence unchanged", func(t *testing.T) {
+		players := map[string]testPlayer{"A": {active: true}, "B": {active: true}, "C": {active: true}, "D": {active: true}}
+		allFresh := freshCtx(5, nil, players)
+		mixed := freshCtx(5, nil, players)
+		setTrack(&mixed, "C", trackOld)
+		seed := func() (uint64, bool) { return 4242, true }
+		twin, r := NewObjectiveRulesLive(nil), NewObjectiveRulesLive(nil)
+		twin.SetChaosSeedSource(seed)
+		r.SetChaosSeedSource(seed)
+		staleDraws := 0
+		for i := 0; i < 40; i++ {
+			wantRoll, wantTarget := twin.chaosRoll(allFresh)
+			roll, target := r.chaosRoll(mixed)
+			if roll != wantRoll {
+				t.Fatalf("draw %d: roll %v, want %v (the all-fresh twin's)", i, roll, wantRoll)
+			}
+			if wantTarget == "C" {
+				staleDraws++
+				if target != "" {
+					t.Fatalf("draw %d: target %q, want none (stale C drawn)", i, target)
+				}
+				continue
+			}
+			if target != wantTarget {
+				t.Fatalf("draw %d: target %q, want %q (the all-fresh twin's)", i, target, wantTarget)
+			}
+		}
+		if staleDraws == 0 {
+			t.Fatal("the seed never drew C: pick another seed")
+		}
+		if r.ChaosDraws() != twin.ChaosDraws() {
+			t.Fatalf("ChaosDraws = %d, want %d", r.ChaosDraws(), twin.ChaosDraws())
 		}
 	})
 	t.Run("UC-040/BR-037 R9 proposes nothing when no player has fresh readings", func(t *testing.T) {

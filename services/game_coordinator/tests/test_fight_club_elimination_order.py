@@ -6,6 +6,7 @@ leaves the rotation for good (a disconnect, A4) is eliminated: it gets its order
 once, when it leaves, and its ``player_death`` carries ``death.eliminated`` true.
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -125,4 +126,37 @@ class TestFightClubRoundLossIsNoElimination:
 
         assert game.players[defender].score == 1
         assert [e["death.eliminated"] for e in _death_events(game, fighter)] == [True]
+        _end_round_timer(game)
+
+    @pytest.mark.uc("UC-041", br=["BR-008"])
+    @pytest.mark.uc("UC-025", flow="A4", steps=[5], br=["BR-006"])
+    @pytest.mark.asyncio
+    async def test_a_round_loser_leaving_during_the_round_change_is_eliminated_once(self):
+        """The loser disconnects in the pause, its loss still finishing: order 1 once, no second death."""
+        game = await _seated_game(3, "test_fc_leave_in_pause")
+        loser = game.current_fighter
+        paused, release = asyncio.Event(), asyncio.Event()
+
+        async def held_pause():
+            paused.set()
+            await release.wait()
+
+        game._pause_between_rounds = held_pause
+
+        with patch(FC_METRICS), patch(BASE_METRICS) as base_metrics:
+            kill = asyncio.create_task(game._kill_player(loser, 5.0))
+            await asyncio.wait_for(paused.wait(), 1.0)
+            assert loser in game._finishing_round_loss
+            await game._handle_disconnect(loser)
+            assert _orders(base_metrics) == [(loser, 1)]
+            release.set()
+            assert await kill is True
+
+            assert _orders(base_metrics) == [(loser, 1)]
+
+        assert game.dead_count == 1
+        assert game._elimination_count == 1
+        assert loser not in game.queue
+        # The round loss is the only death: no player_death says eliminated on this path.
+        assert [e["death.eliminated"] for e in _death_events(game, loser)] == [False]
         _end_round_timer(game)
