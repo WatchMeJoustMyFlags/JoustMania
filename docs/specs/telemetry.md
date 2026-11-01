@@ -438,6 +438,8 @@ The experiment's conclusion (`outcome` event) reports the timeout count and rate
 clearly more often (UC-046 BR-013), followed by the `agent_ended` count and rate per arm when any game ended that way;
 both rates are over the arm's pattern games that ended with a sample (`winner`, `tie`, `timeout`, `agent_ended`).
 
+**Planned (#1055, UC-047, Open):** a calibrated archetype adds `pattern.calibration_id` (the evidence record id; empty for flag-file parameters) to `experiment.pattern_pinned` (one value per pinned name, same order as `pattern.archetypes`), `experiment.pattern_game` and `experiment.pattern_game_ended`, and to the same journal events; `pattern.params_digest` stays the digest of the parameters the game ran. A calibration validation game is a one-shot `agent.shadow_game.run` with `pattern.calibration_id`; its group is in the evidence record. No new metric or span; the calibration outcome is the evidence record (services.md, agent).
+
 **Liveness check (BR-008):** the runner asks the agent's telemetry multiplexer at the game's start, once per
 second while it runs and at its end whether another partition reports `game_active` with an update in the last
 10 s; stale partitions are ignored.
