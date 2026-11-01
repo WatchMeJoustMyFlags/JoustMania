@@ -734,10 +734,14 @@ class ZombieGame(StreamedIntroGameMode):
                         "winner": is_winner,
                         "is_zombie": zombie_player.is_zombie,
                         "winning_team": winner,
+                        **self._analytics_span_attributes(player),
                     },
                 )
                 player.span.set_status(Status(StatusCode.OK))
                 player.span.end()
+
+        # Per-player analytics summaries for the agent (UC-041 step 4, #2358)
+        await self._publish_analytics_summaries(set(winner_serials))
 
         self.state = self.state.__class__.ENDED
         ended_payload = {

@@ -544,6 +544,7 @@ class TraitorGame(TeamsGameBase):
                         "visible_team": player.team,
                         "secret_team": traitor_player.secret_team,
                         "is_traitor": traitor_player.is_traitor,
+                        **self._analytics_span_attributes(player),
                     },
                 )
                 player.span.set_status(Status(StatusCode.OK))
@@ -554,6 +555,15 @@ class TraitorGame(TeamsGameBase):
             if team.span:
                 team.span.set_status(Status(StatusCode.OK))
                 team.span.end()
+
+        # Per-player analytics summaries for the agent (UC-041 step 4, #2358)
+        await self._publish_analytics_summaries(
+            {
+                serial
+                for serial, player in self.players.items()
+                if winning_team is not None and player.secret_team == winning_team
+            }
+        )
 
         self.state = self.state.__class__.ENDED
         ended_payload = {

@@ -10,11 +10,8 @@ Phase 36b: Refactored to extend TeamsGameBase, eliminating ~500 lines of duplica
 import logging
 
 from lib.types import Sound
-from services.game_coordinator import game_clock
-from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import Phase, Player
 from services.game_coordinator.games.teams_base import TeamsGameBase
-from services.game_coordinator.runtime_config import get_config_manager
 
 logger = logging.getLogger()
 
@@ -57,8 +54,6 @@ class SimpleTeamsGame(TeamsGameBase):
         Args:
             controllers: List of controller protobuf messages from GetReadyControllers
         """
-        config = get_config_manager().get_config()
-        game_start_time = game_clock.now()
 
         # Create a list for assignment (optionally randomized). Sort by serial
         # first so the optional shuffle below consumes a deterministic ordering
@@ -76,21 +71,11 @@ class SimpleTeamsGame(TeamsGameBase):
         for idx, controller in enumerate(controller_list):
             team_num = idx % self.num_teams
 
-            # Initialize analytics if enabled
-            analytics = None
-            if config.analytics.enabled:
-                analytics = PlayerAnalytics.from_config(
-                    serial=controller.serial,
-                    game_start_time=game_start_time,
-                    config=config.analytics,
-                )
-
             player = Player(
                 serial=controller.serial,
                 team=team_num,
                 alive=True,
                 color=(255, 255, 255),  # Default white, assigned in color_assignment phase
-                analytics=analytics,
             )
             self.players[controller.serial] = player
             logger.debug(f"Added player: {controller.serial} to team {team_num}")

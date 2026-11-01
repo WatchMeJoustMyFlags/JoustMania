@@ -1361,11 +1361,15 @@ class TestFightClubLoserLed:
 
     @pytest.mark.uc("UC-025", flow="A2", steps=[2])
     @pytest.mark.asyncio
-    async def test_queued_loser_ends_on_waiting_colour_with_gauge_back_to_one(self):
+    async def test_queued_loser_ends_on_waiting_colour_with_its_gauges_removed(self):
+        """The re-queued loser waits: its game_player_* gauges are removed (UC-041 BR-006)."""
         game = await self._play_round(4, "test_fc_loser_led_four")
         loser = game.current_fighter
 
-        with patch("services.game_coordinator.games.fight_club.metrics") as fc_metrics:
+        with (
+            patch("services.game_coordinator.games.fight_club.metrics") as fc_metrics,
+            patch("services.game_coordinator.metrics.clear_player_analytics") as clear_gauges,
+        ):
             game.gameplay_stream.messages.clear()
             await game._kill_player(loser, 5.0)
 
@@ -1373,8 +1377,8 @@ class TestFightClubLoserLed:
         assert writes.count(("effect", controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH)) == 1
         assert writes[-1] == ("base", WAITING_COLOR)
         assert game.players[loser].alive is True
-        fc_metrics.player_alive.labels.assert_called_with(serial=loser, game_id=game.game_id)
-        fc_metrics.player_alive.labels.return_value.set.assert_called_with(1)
+        clear_gauges.assert_called_with(loser, game.game_id)
+        fc_metrics.player_alive.labels.return_value.set.assert_not_called()
         _end_round_timer(game)
 
     @pytest.mark.uc("UC-025", flow="A2", steps=[2])

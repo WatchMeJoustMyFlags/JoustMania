@@ -518,11 +518,7 @@ class TeamsGameBase(BaseGameMode):
             "team": player.team,
         }
 
-        if player.analytics is not None:
-            analytics_summary = player.analytics.get_summary()
-            for key, value in analytics_summary.items():
-                survived_attrs[f"analytics.{key}"] = value
-
+        survived_attrs.update(self._analytics_span_attributes(player))
         return survived_attrs
 
     def _end_surviving_player_spans(self, winning_team_num: int | None):
@@ -546,6 +542,10 @@ class TeamsGameBase(BaseGameMode):
             player.span.end()
             logger.debug(f"Ended lifecycle span for surviving player {serial}")
 
+    def _player_analytics_extras(self, player) -> dict:
+        """Team summaries add the (visible) team to the survival time."""
+        return {"team": player.team, "survival_time_ms": player.analytics.total_time_ms}
+
     async def _publish_player_analytics(self, winning_team_num: int | None):
         """
         Publish analytics summaries and update metrics for all players.
@@ -553,32 +553,12 @@ class TeamsGameBase(BaseGameMode):
         Args:
             winning_team_num: Winning team number, or None if no winner
         """
-        from services.game_coordinator import metrics
-
-        for serial, player in self.players.items():
-            if player.analytics is None:
-                continue
-
-            is_winner = winning_team_num is not None and player.team == winning_team_num
-            summary = player.analytics.get_summary()
-            summary["game_id"] = self.game_id
-            summary["winner"] = is_winner
-            summary["team"] = player.team
-            summary["survival_time_ms"] = player.analytics.total_time_ms
-
-            await self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
-
-            metrics.game_analytics_samples_total.labels(game_mode=self.get_game_name()).inc(
-                player.analytics.sample_count
-            )
-            metrics.near_death_events_total.labels(serial=serial, game_mode=self.get_game_name()).inc(
-                player.analytics.near_death_count
-            )
-
-            logger.info(
-                f"Player {serial} analytics: peak={summary['peak_accel']:.2f}g, "
-                f"playstyle={summary['playstyle']}, near_deaths={summary['near_death_count']}"
-            )
+        winners = (
+            set()
+            if winning_team_num is None
+            else {serial for serial, player in self.players.items() if player.team == winning_team_num}
+        )
+        await self._publish_analytics_summaries(winners)
 
     def _end_surviving_team_spans(self, alive_teams: set[int], winning_team_num: int | None):
         """
