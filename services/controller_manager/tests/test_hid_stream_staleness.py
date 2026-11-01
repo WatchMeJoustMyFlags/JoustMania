@@ -101,8 +101,8 @@ def test_a_lagging_reader_gets_samples_at_most_100ms_old(adapter, hid_server, ep
     """NFR-056: reader at half the arrival rate, the median sample age stays under the bound.
 
     The ``python_hid`` case runs the same fake latest-sample server, so it only shows that the
-    python-hid adapter's channel carries the window options; python-hid's own 1024-sample queue
-    is not covered (#2503).
+    python-hid adapter's channel carries the window options; python-hid's own input slots are
+    covered in ``services/python_hid/tests/test_device_manager.py`` (#2503).
     """
     service, _ = hid_server
     ages_ms: list[int] = []

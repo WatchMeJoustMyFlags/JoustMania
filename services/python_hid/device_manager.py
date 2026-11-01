@@ -17,7 +17,7 @@ import pathlib
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from typing import Any
 
 import hidraw as hid
@@ -85,6 +85,57 @@ class SensorData:
     gyro_z: float
 
 
+_BUTTON_FIELDS = tuple(f.name for f in fields(SensorData) if f.name.startswith("button_"))
+
+
+def _with_buttons_of(sample: SensorData, older: SensorData) -> SensorData:
+    """`sample` with the pressed buttons of `older` OR'ed in (a new object; samples are shared)."""
+    held = {name: True for name in _BUTTON_FIELDS if getattr(older, name) and not getattr(sample, name)}
+    return replace(sample, **held) if held else sample
+
+
+class InputSlot:
+    """Latest-sample slots for one stream (#2503, rust-hid `input_slot` parity, #2372).
+
+    At most one sample per serial waits. A newer sample replaces the waiting one in
+    place, keeps its queue position and ORs in its button bits, so a press is never
+    lost (UC-010 BR-012). The reader takes the serials in the order they first waited
+    (round robin), so a lagging reader gets the newest input instead of a backlog.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._pending: dict[str, SensorData] = {}
+        # Device-thread state: the first poll after the registration only flushes
+        # reports queued while no stream read them (rust-hid `flush_input`).
+        self.flushing = True
+
+    def offer(self, sample: SensorData) -> None:
+        """Called on the device thread: store `sample`, never blocks."""
+        with self._cond:
+            waiting = self._pending.get(sample.serial)
+            if waiting is not None:
+                sample = _with_buttons_of(sample, waiting)
+            # Assigning an existing key keeps its position in the dict.
+            self._pending[sample.serial] = sample
+            self._cond.notify()
+
+    def get(self, block: bool = True, timeout: float | None = None) -> SensorData:
+        """Take the oldest-waiting serial's sample; raises `queue.Empty` like `queue.Queue.get`."""
+        with self._cond:
+            if not self._pending and (not block or not self._cond.wait_for(lambda: self._pending, timeout)):
+                raise queue.Empty
+            serial = next(iter(self._pending))
+            return self._pending.pop(serial)
+
+    def get_nowait(self) -> SensorData:
+        return self.get(block=False)
+
+    def qsize(self) -> int:
+        with self._cond:
+            return len(self._pending)
+
+
 class DeviceManager:
     """Manages HID devices on a dedicated thread with command-based interface."""
 
@@ -99,8 +150,8 @@ class DeviceManager:
         self._product_ids: dict[str, int] = {}
         self._adapter_names: dict[str, str] = {}
 
-        # Stream subscribers (stream_id -> queue)
-        self._stream_queues: dict[str, queue.Queue[SensorData]] = {}
+        # Stream subscribers (stream_id -> latest-sample slots)
+        self._stream_slots: dict[str, InputSlot] = {}
         self._stream_lock = threading.Lock()
 
     def start(self) -> None:
@@ -137,17 +188,21 @@ class DeviceManager:
             logger.warning(f"Command {cmd.type} timed out after {timeout}s")
             return None
 
-    def register_stream(self, stream_id: str) -> queue.Queue[SensorData]:
-        """Register a stream subscriber. Returns the queue to read from."""
-        q: queue.Queue[SensorData] = queue.Queue(maxsize=1024)
+    def register_stream(self, stream_id: str) -> InputSlot:
+        """Register a stream subscriber. Returns its latest-sample slots to read from.
+
+        The device thread's next poll only flushes the reports queued so far for it,
+        so the stream starts with fresh input (#2503, as rust-hid #2372).
+        """
+        slot = InputSlot()
         with self._stream_lock:
-            self._stream_queues[stream_id] = q
-        return q
+            self._stream_slots[stream_id] = slot
+        return slot
 
     def unregister_stream(self, stream_id: str) -> None:
         """Unregister a stream subscriber."""
         with self._stream_lock:
-            self._stream_queues.pop(stream_id, None)
+            self._stream_slots.pop(stream_id, None)
 
     def _run(self) -> None:
         """Main device thread loop: process commands and poll devices."""
@@ -394,34 +449,38 @@ class DeviceManager:
         logger.info(f"Cleaned up controller {serial}")
 
     def _poll_all_devices(self) -> None:
-        """Read all open devices and push SensorData to registered streams."""
+        """Read all open devices and offer SensorData to every registered stream's slots."""
         if not self._devices:
             return
 
         with self._stream_lock:
-            if not self._stream_queues:
+            if not self._stream_slots:
                 return
-            active_queues = list(self._stream_queues.values())
+            slots = list(self._stream_slots.values())
+        # A slot registered since the last poll skips this drain: it holds the reports
+        # (and presses) queued while no stream read them.
+        receiving = [slot for slot in slots if not slot.flushing]
 
         for serial, device in list(self._devices.items()):
             sensor_data = self._read_device(serial, device)
             if sensor_data is None:
                 continue
-            for q in active_queues:
-                try:
-                    q.put_nowait(sensor_data)
-                except queue.Full:
-                    # Drop oldest and add new
-                    try:
-                        q.get_nowait()
-                        q.put_nowait(sensor_data)
-                    except queue.Empty:
-                        pass
+            for slot in receiving:
+                slot.offer(sensor_data)
+
+        for slot in slots:
+            slot.flushing = False
 
     def _read_device(self, serial: str, device: hid.device) -> SensorData | None:
         """Read latest HID report from a single device."""
         try:
-            data = None
+            parsed = None
+            last_raw = None
+            valid_raw = b""
+            zcm2 = is_zcm2(self._product_ids.get(serial, 0))
+            # Button bits of every report in this drain: a press released within it is kept
+            # (UC-010 BR-012, rust-hid `read_latest_input`).
+            buttons_seen = 0
             while True:
                 try:
                     report = device.read(INPUT_REPORT_SIZE)
@@ -431,21 +490,32 @@ class DeviceManager:
                     break
                 if isinstance(report, list):
                     report = bytes(report)
-                data = report
+                last_raw = report
+                try:
+                    candidate = parse_input_report(report, zcm2=zcm2)
+                except ValueError:
+                    # A short or malformed report is skipped: the last valid one and the
+                    # buttons seen so far survive (rust-hid `read_latest_input`).
+                    continue
+                parsed = candidate
+                buttons_seen |= candidate["buttons"]
+                valid_raw = report
 
-            if data is None:
+            if last_raw is None:
+                return None
+            if parsed is None:
+                # Nothing in the drain parsed: raise the parse error for the log below.
+                parse_input_report(last_raw, zcm2=zcm2)
                 return None
 
             # Diagnostic hex dump: log raw bytes when any button is pressed
-            if any(b != 0 for b in data[1:5]):
-                logger.debug(f"HID raw [{len(data)}B]: {data[:8].hex(' ')}")
-
-            parsed = parse_input_report(data, zcm2=is_zcm2(self._product_ids.get(serial, 0)))
+            if any(b != 0 for b in valid_raw[1:5]):
+                logger.debug(f"HID raw [{len(valid_raw)}B]: {valid_raw[:8].hex(' ')}")
 
             ax_raw, ay_raw, az_raw = parsed["accel"][1]
             gx_raw, gy_raw, gz_raw = parsed["gyro"][1]
 
-            buttons = parsed["buttons"]
+            buttons = buttons_seen
 
             return SensorData(
                 serial=serial,
