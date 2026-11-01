@@ -235,6 +235,14 @@ func TestStackOverlay_SubstitutesDefaultVariant(t *testing.T) {
 			}
 		}
 	})
+	// #2518: in the ci baseline both frenzy and the service-test journey variant
+	// are 600; frenzy is declared first, so a value write of 600 selects it.
+	t.Run("UC-053/A1 value 600 selects frenzy before journey (#2518)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		if res := f.put(WriteRequest{Set: "agent", Flag: "llm.max_requests_per_minute", Value: raw("600")}); res.Variant != "frenzy" {
+			t.Fatalf("value 600 selected %q, want frenzy (declared before journey)", res.Variant)
+		}
+	})
 	// #2518: R4's danger-shield tuning is an operator overlay within its declared
 	// variants (it was read-only, 422 flag_read_only, before).
 	t.Run("UC-053/A1 shield danger ratio and samples are operator overlays (#2518)", func(t *testing.T) {
