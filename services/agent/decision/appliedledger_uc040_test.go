@@ -175,10 +175,15 @@ func TestAlreadyApplied_GrantsAndEventsNeverSuppressed(t *testing.T) {
 		}
 	}
 	sort.Strings(others)
-	if len(others) != 8 {
-		t.Fatalf("grants and events = %v, want the 8 of registry kinds grant and event", others)
+	if len(others) != 9 {
+		t.Fatalf("grants and events = %v, want the 9 of registry kinds grant and event", others)
 	}
 	for _, intervention := range others {
+		if intervention == InterventionGrantGroupShield {
+			// Needs the group gate and a set (#2467); never suppressed either:
+			// group_uc040_test.go writes two group shields in one game.
+			continue
+		}
 		t.Run("UC-040/BR-023 "+intervention+" is written every time", func(t *testing.T) {
 			d := Decision{Intervention: intervention, TargetSerial: "WEAK", Value: "5", Objectives: balancedFocused()}
 			l, sink, clock, _ := appliedLoop(t, d)

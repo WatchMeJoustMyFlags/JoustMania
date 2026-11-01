@@ -122,7 +122,9 @@ func ValidatePrediction(ask Question, a Answer, intervention, target string) (*P
 	if predictionInconsistent[intervention] {
 		return nil, PredictionDropInconsistent
 	}
-	if target == TargetNone {
+	if target == TargetNone || IsGroupTarget(target) {
+		// A group option names no single player (#2467): a target-scoped
+		// template has nothing to score.
 		target = ""
 	}
 	if template == TemplateSurvives && target == "" {

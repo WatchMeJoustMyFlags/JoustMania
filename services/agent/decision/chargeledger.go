@@ -97,7 +97,7 @@ func (l *Loop) SetShieldSecondsSource(src ShieldSecondsSource) { l.shieldSeconds
 // BR-029). The source is read only for a grant the allow-list permits; a value the
 // decision already carries (a remote magnitude) is kept.
 func (l *Loop) withShieldSeconds(ctx context.Context, snapshot flags.Snapshot, d Decision) Decision {
-	if l.shieldSeconds == nil || d.Intervention != InterventionGrantShield || d.TargetSerial == "" || d.Value != "" {
+	if l.shieldSeconds == nil || d.Value != "" || !grantsShieldLength(d) {
 		return d
 	}
 	if !snapshot.Permits(d.Intervention) {
@@ -109,6 +109,19 @@ func (l *Loop) withShieldSeconds(ctx context.Context, snapshot flags.Snapshot, d
 	}
 	d.Value = strconv.FormatFloat(v, 'g', -1, 64)
 	return d
+}
+
+// grantsShieldLength reports whether d grants shields whose length the loop stamps:
+// a targeted grant_shield, or a grant_group_shield with its set (#2467: the group's
+// targets share one length, which the ledger and the writer's seconds both use).
+func grantsShieldLength(d Decision) bool {
+	switch d.Intervention {
+	case InterventionGrantShield:
+		return d.TargetSerial != ""
+	case InterventionGrantGroupShield:
+		return len(d.TargetSerials) >= 2
+	}
+	return false
 }
 
 // stampShieldSeconds stamps the grant_shield length on the rules decisions of one
@@ -232,6 +245,12 @@ type chargeLedger struct {
 	gen     uint64
 	// limits are the limits of the latest cycle or check: the views use them.
 	limits shieldLimits
+	// The game's group shields (#2467, UC-040 A47, BR-033): written, in flight
+	// (by reservation generation), and whether the last group_cap_reached refusal
+	// was already reported (a repeat stays quiet, as A21).
+	groupCommitted   int
+	groupPending     map[uint64]bool
+	groupCapReported bool
 }
 
 // shieldRequest is what one targeted grant_shield asks the ledger for: a charge
@@ -545,7 +564,17 @@ func chargeLedgerWindow(expiry time.Duration) time.Duration {
 // game latched to hold (game_shield_activation_mode, #2096) has no charges, whatever
 // the flag reads now.
 func (l *Loop) chargeLedgerApplies(ctx context.Context, c gamecontext.GameContext, d Decision) (time.Duration, bool) {
-	if l.shieldChargeMode == nil || d.Intervention != InterventionGrantShield || d.TargetSerial == "" {
+	if d.Intervention != InterventionGrantShield || d.TargetSerial == "" {
+		return 0, false
+	}
+	return l.chargeWindow(ctx, c)
+}
+
+// chargeWindow reports whether a shield granted in c's game is a trigger-mode charge
+// and the window to use: a real Free-for-All game whose shield.activation resolves to
+// trigger, not latched to hold. A group shield's targets use it too (#2467).
+func (l *Loop) chargeWindow(ctx context.Context, c gamecontext.GameContext) (time.Duration, bool) {
+	if l.shieldChargeMode == nil {
 		return 0, false
 	}
 	if c.Session.IsShieldHold() {

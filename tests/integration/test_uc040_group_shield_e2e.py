@@ -1,23 +1,22 @@
 """
-UC-040 A47 / A48: a group shield event against a shadow game, end to end (#2467 PR 3).
+UC-040 A47 / A48: a group shield event against a shadow game, end to end (#2467 PR 3, PR 4).
 
 The real stack on reserved mock controllers: a headless (shadow) FFA game with three
 players, the group-grant gate open through flag-service overlays (``enabled`` on,
-``max_per_game`` 1), and one ``group_shield`` event written through the flag service's
+``max_per_game`` 1), and ``group_shield`` events written through the flag service's
 HTTP API exactly like the agent's writer (services/agent/actions/writer.go).
 
-What this proves today:
+What this proves:
 
 - the flag service accepts the event row (``serial_set``, ``float 1 10``) and refuses a
   one-serial set;
-- the coordinator reads the new event list, dispatches the event exactly once as
-  ``grant_group_shield``, and keeps the global allow-list as the outer gate: no
-  ``interventions_allowed`` variant names ``grant_group_shield`` yet (it arrives with
-  the agent half, #2467 PR 4), so the group is blocked ``not_allowed`` and nobody is
-  shielded (UC-040 A48 step 4, A22).
+- the global allow-list stays the outer gate: under ``full`` (no group lever) the event
+  is dispatched once as ``grant_group_shield`` and blocked ``not_allowed``, nobody is
+  shielded and the per-game group count does not move (UC-040 A48 step 4, A22);
+- under the opt-in ``shadow_group`` variant (#2467 PR 4) the next event applies: one
+  unblocked ``agent_intervention`` and one ``player_shielded`` per player of the set
+  (UC-040 A47). The CI game set resolves ``shield.activation`` to ``instant``.
 
-When PR 4 adds the ``standard_group`` / ``shadow_group`` variants, this test switches to
-that variant and asserts the three ``player_shielded`` events of A47.
 ``interventions_allowed`` and the rate limiter are global, so this test runs alone.
 """
 
@@ -80,14 +79,14 @@ def _serve_group_gate(docker_compose, flag_service) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
-async def test_uc040_group_shield_event_reaches_the_coordinator_once(
+@pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+async def test_uc040_group_shield_event_blocked_then_applied(
     intervention_env,
     flag_service,
     docker_compose,
     headless_cleanup,
 ):
-    """One group_shield event for three shadow players: dispatched once, blocked by the allow-list."""
+    """Three shadow players: blocked by the allow-list under ``full``, all shielded under ``shadow_group``."""
     _serve_group_gate(docker_compose, flag_service)
     headless_cleanup.add_tag(TAG)
     game_client, game_channel = await get_game_client(docker_compose)
@@ -136,6 +135,41 @@ async def test_uc040_group_shield_event_reaches_the_coordinator_once(
         ]
         assert not shielded, (
             f"a blocked group shielded players: {[dict(e.data) for e in shielded]}"
+        )
+
+        # A47 (#2467 PR 4): the opt-in group variant lets the next event apply.
+        set_interventions_allowed("shadow_group")
+        with flagd_probe_client(docker_compose, "agent") as client:
+            assert poll_until(
+                lambda: (
+                    "grant_group_shield"
+                    in client.get_string_value(
+                        "interventions_allowed", "", EvaluationContext()
+                    )
+                )
+            ), "flagd did not serve interventions_allowed=shadow_group"
+        append_event(
+            "group_shield", game_id, {"serials": ",".join(serials), "seconds": "5"}
+        )
+        assert await async_poll_until(
+            lambda: len(_group_interventions(shadow, game_id)) >= 2,
+            timeout=APPLY_TIMEOUT_SECONDS,
+        ), "the second group_shield event never reached the coordinator"
+        applied = _group_interventions(shadow, game_id)[1]
+        assert applied.data.get("blocked") == "false", dict(applied.data)
+        assert await async_poll_until(
+            lambda: (
+                {
+                    e.data.get("serial")
+                    for e in shadow.get_events("player_shielded")
+                    if e.game_id == game_id
+                }
+                == set(serials)
+            ),
+            timeout=APPLY_TIMEOUT_SECONDS,
+        ), (
+            "not every player of the group was shielded: "
+            f"{[dict(e.data) for e in shadow.get_events('player_shielded') if e.game_id == game_id]}"
         )
     finally:
         if shadow is not None:

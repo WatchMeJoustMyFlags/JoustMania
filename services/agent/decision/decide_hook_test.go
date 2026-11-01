@@ -737,7 +737,7 @@ func TestRemote_DiscardedWhenGameEnded(t *testing.T) {
 // UC: UC-040 main
 func TestMapAnswers_MagnitudeAndRationale(t *testing.T) {
 	resp, _ := ffaAnswer("adjust_global_sensitivity", 0.9, "none", 0.6, strings.Repeat("x", 400))(decide.Request{})
-	d, outcome, _ := mapAnswers(resp)
+	d, outcome, _ := mapAnswers(decide.Request{}, resp)
 	if outcome != DecideOutcomeAct || d.Value != "2" || d.TargetSerial != "" {
 		t.Fatalf("got %+v %s, want adjust_global_sensitivity value 2 (rounded), session-scoped", d, outcome)
 	}
@@ -745,7 +745,7 @@ func TestMapAnswers_MagnitudeAndRationale(t *testing.T) {
 		t.Fatalf("reason runes = %d, want truncated to %d+...", n, maxRationaleRunes)
 	}
 	resp, _ = ffaAnswer("play_audio_cue", 0.9, "none", 0.6, "")(decide.Request{})
-	d, _, _ = mapAnswers(resp)
+	d, _, _ = mapAnswers(decide.Request{}, resp)
 	if d.Value != "" || d.Reason != "decided by claude" {
 		t.Fatalf("bounds-less intervention: %+v, want empty Value and a default reason", d)
 	}
@@ -1313,7 +1313,7 @@ func TestMapAnswers_MissingInterventionIsInvalid(t *testing.T) {
 			{QuestionID: decide.QuestionFFATarget, Choice: decide.TargetNone,
 				Probabilities: map[string]float64{decide.TargetNone: 1}, Confidence: 1},
 		}}
-		d, outcome, reason := mapAnswers(resp)
+		d, outcome, reason := mapAnswers(decide.Request{}, resp)
 		if outcome != DecideOutcomeInvalid || reason != invalidMissingIntervention {
 			t.Fatalf("mapAnswers = (%q, %q), want (invalid, %s)", outcome, reason, invalidMissingIntervention)
 		}
