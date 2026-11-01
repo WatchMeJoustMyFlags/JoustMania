@@ -22,6 +22,9 @@ const (
 	spanAttrExperimentID = "experiment.id"
 	spanAttrArm          = "experiment.arm"
 	spanEventDeath       = "player_death"
+	// spanAttrDeathEliminated is false on a player_death that keeps the player in
+	// the game (a Fight Club round loss); absent means eliminated (UC-041 BR-008, #2517).
+	spanAttrDeathEliminated = "death.eliminated"
 	// spanNameShieldCharge is the coordinator's per-charge span (UC-040 A30 to A32,
 	// #1837). It ends live at activation, expiry, death or game end, often AFTER the
 	// player died; the agent takes nothing from it (A8 of the #1837 PR-4 plan): its
@@ -155,7 +158,9 @@ func (s *Store) applySpan(span ptrace.Span) bool {
 	for e := 0; e < events.Len(); e++ {
 		ev := events.At(e)
 		if ev.Name() == spanEventDeath && serial != "" {
-			s.RecordElimination(serial)
+			if deathEliminates(ev.Attributes()) {
+				s.RecordElimination(serial)
+			}
 			updated = true
 		}
 	}
@@ -195,4 +200,15 @@ func (s *Store) ensurePlayer(serial string) {
 	defer s.mu.Unlock()
 	p := s.player(serial)
 	s.touch(p)
+}
+
+// deathEliminates reports whether a player_death span event takes the player out
+// of the game: every death does, except one whose death.eliminated attribute is
+// false (a Fight Club round loss, UC-041 BR-008, #2517).
+func deathEliminates(attrs pcommon.Map) bool {
+	v, ok := attrs.Get(spanAttrDeathEliminated)
+	if !ok || v.Type() != pcommon.ValueTypeBool {
+		return true
+	}
+	return v.Bool()
 }
