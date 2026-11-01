@@ -80,6 +80,8 @@ class SwapperGame(TeamsGameBase):
         # revive_player is denied for Swapper (interventions.py capability matrix); if
         # that ever changes, a revive must refuse these serials.
         self._eliminated: set[str] = set()
+        # Eliminated players whose elimination order is recorded, once each (BR-005, #2524).
+        self._elimination_recorded: set[str] = set()
 
         # The win, latched once when ``swapper_winner`` is published (UC-024 BR-004,
         # #1343): the end-of-game step uses only this snapshot, never the live teams.
@@ -366,11 +368,35 @@ class SwapperGame(TeamsGameBase):
         if self._win_latched:
             return
         if serial in self.players and serial not in self._eliminated:
+            mid_swap = self._is_mid_swap(serial)
             converged_before = len(self._get_alive_teams()) <= 1
             self._eliminated.add(serial)
             if not converged_before and len(self._get_alive_teams()) <= 1:
                 self.last_death_serial = None
+            if mid_swap and self.running:
+                # The swap's kill bookkeeping already ran (no order) and the base takes
+                # no second death: the disconnect is the elimination (BR-005, #2524).
+                self._record_elimination_order(serial)
         await super()._handle_disconnect(serial)
+
+    def _kill_records_elimination_order(self, serial: str) -> bool:
+        """Only a disconnected player's death is an elimination; a swap is not (UC-024 BR-005, #2524)."""
+        return serial in self._eliminated
+
+    def _record_elimination_order(self, serial: str) -> None:
+        """Record an eliminated player's order once, whichever path takes it out first (BR-005)."""
+        if serial in self._elimination_recorded:
+            return
+        self._elimination_recorded.add(serial)
+        super()._record_elimination_order(serial)
+
+    def _player_death_event_attributes(self, serial: str) -> dict:
+        """``death.eliminated`` on the ``player_death`` span event (UC-024 BR-005, #2524).
+
+        False for a swap (the player stays in the game), true when the death takes a
+        disconnected player out (A1), the same check ``_kill_player_impl`` makes.
+        """
+        return {"death.eliminated": serial in self._eliminated}
 
     def _excluded_serial(self) -> str | None:
         """The last swapped player, excluded from the winners (BR-001).

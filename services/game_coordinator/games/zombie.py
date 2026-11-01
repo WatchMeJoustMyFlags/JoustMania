@@ -598,6 +598,18 @@ class ZombieGame(StreamedIntroGameMode):
         """
         return not self.players[serial].alive
 
+    def _kill_records_elimination_order(self, serial: str) -> bool:  # noqa: ARG002
+        """No Zombies death is an elimination (UC-023 BR-007, UC-041 BR-008, #2524).
+
+        A converted human keeps playing as a zombie, a killed zombie respawns, and a
+        disconnect goes through the same kill path (UC-023 step 3).
+        """
+        return False
+
+    def _player_death_event_attributes(self, serial: str) -> dict:  # noqa: ARG002
+        """``death.eliminated`` false on every Zombies ``player_death`` (UC-023 BR-007, #2524)."""
+        return {"death.eliminated": False}
+
     def _mark_alive_in_metrics(self, serial: str) -> None:
         metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
         self._set_players_alive_aggregate(len([p for p in self.players.values() if p.alive]))
