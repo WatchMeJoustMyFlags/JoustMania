@@ -145,7 +145,7 @@ func buildPlayers(c gamecontext.GameContext, ann Annotations) []PlayerState {
 		}
 		out = append(out, ps)
 	}
-	// Players waiting for their fight, evicted from the context mid-game (UC-040 A47,
+	// Players waiting for their fight, evicted from the context mid-game (UC-040 A49,
 	// BR-038, #2513): listed, not alive, with no readings.
 	for _, serial := range c.Waiting {
 		if c.Players[serial] != nil {
@@ -157,7 +157,7 @@ func buildPlayers(c gamecontext.GameContext, ann Annotations) []PlayerState {
 	return out
 }
 
-// waitingCount is the number of players listed as waiting (UC-040 A47).
+// waitingCount is the number of players listed as waiting (UC-040 A49).
 func (s State) waitingCount() int {
 	n := 0
 	for _, p := range s.Players {

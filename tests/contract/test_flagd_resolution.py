@@ -115,6 +115,7 @@ _READ_HELPER_SHAPE = re.compile(r"^read_\w+_flag\w*$")
 # read_int_flag reads with the FLOAT getter on purpose (whole-number floats
 # still resolve) and coerces afterwards. Every helper takes (domain, flag_key, ...).
 _READ_HELPERS = {
+    "read_bool_flag": "boolean",
     "read_float_flag": "float",
     "read_int_flag": "float",
     "read_string_flag": "string",
@@ -554,7 +555,7 @@ _SCAN_FIXTURES = {
         'read_string_flag("game", flag_key="k", default="x")\n',
         ("game", "k", "string"),
     ),
-    "unknown_helper": ('read_bool_flag("game", "k", False)\n', None),
+    "unknown_helper": ('read_secret_flag("game", "k", False)\n', None),
     "wrapper_non_literal": ("_read_volume_flag(name, 0.5)\n", None),
     "wrapper_keyword": (
         '_read_volume_flag(flag_name="audio_volume.x", default=0.5)\n',
@@ -1066,6 +1067,28 @@ def test_allow_list_variants_only_name_coordinator_types(flag_dir):
         if type_id and type_id not in known
     ]
     assert not failures, "\n".join(failures)
+
+
+@pytest.mark.uc("UC-040", br=["BR-033"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_no_allow_list_variant_names_grant_group_shield_yet(flag_dir):
+    """Temporary pin (#2467 PR 3): no ``interventions_allowed`` variant names the group lever.
+
+    The coordinator handler exists, so the type-id test above accepts the lever; the agent
+    half (offering, deciding, the group variants) is #2467 PR 4, which removes this test.
+    """
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    variants = json.loads((root / "agent.json").read_text())["flags"][
+        "interventions_allowed"
+    ]["variants"]
+    named = sorted(
+        name
+        for name, ids in variants.items()
+        if "grant_group_shield" in (t.strip() for t in ids.split(","))
+    )
+    assert not named, (
+        f"{flag_dir}/agent.json interventions_allowed variants {named} name grant_group_shield before #2467 PR 4"
+    )
 
 
 # Every flag an intervention handler reads (#1872, flags.md section 1.2). Since #1970 the

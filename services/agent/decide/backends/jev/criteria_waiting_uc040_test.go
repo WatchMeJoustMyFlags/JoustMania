@@ -7,9 +7,9 @@ import (
 	"github.com/joustmania/agent/decide"
 )
 
-// UC: UC-040 A47 BR-038
+// UC: UC-040 A49 BR-038
 func TestDescribePlayers_Waiting(t *testing.T) {
-	t.Run("UC-040/A47 a waiting player is described as still in the game, not out", func(t *testing.T) {
+	t.Run("UC-040/A49 a waiting player is described as still in the game, not out", func(t *testing.T) {
 		// A Fight Club round loser waiting for its next fight: waiting, not alive,
 		// with an elimination order and no readings (#2513).
 		st := withPlayer(t, func(p *decide.PlayerState) {

@@ -444,6 +444,17 @@ INTERVENTION_SPECS: tuple[InterventionSpec, ...] = (
         # the event alone ends the game whose list carries it
         payload_required=False,
     ),
+    # #2467 PR 3 (UC-040 A47, A48, BR-033): one event shields 2 to 6 players, all or
+    # nothing. Payload {"serials": "A,B,C", "seconds": "5"}. Not player_targeted: the
+    # handler checks the battery of every serial itself (lifecycle_handlers.py).
+    # Allowed in every mode, like grant_shield (no MODE_CAPABILITY_DENY row).
+    InterventionSpec(
+        flag_key="group_shield",
+        type_id="grant_group_shield",
+        weight=WEIGHT_MEDIUM,
+        edge_triggered=True,
+        player_targeted=False,
+    ),
 )
 
 # Map game mode name (BaseGameMode.get_game_name()) -> set of type_ids that are
@@ -2158,7 +2169,36 @@ def _event_payload_string(spec: InterventionSpec, payload: dict) -> str:
         return f"{serial}:{payload.get('effect') or ''}"
     if spec.flag_key == "end_game":
         return ""
+    if spec.flag_key == "group_shield":
+        # "<serial,serial,...>|<seconds>" (UC-040 A47): _event_target_serials and
+        # _event_group_seconds read it back.
+        return f"{payload.get('serials') or ''}|{payload.get('seconds') or ''}"
     return serial
+
+
+def _event_target_serials(spec: InterventionSpec, payload: str) -> list[str]:
+    """The target serials of a group event's payload string, in payload order (UC-040 A47).
+
+    Empty for every other flag. Entries are stripped; empty entries are kept, so
+    the handler refuses a malformed set instead of shrinking it.
+    """
+    if spec.flag_key != "group_shield":
+        return []
+    serials = payload.split("|", 1)[0]
+    if not serials.strip():
+        return []
+    return [serial.strip() for serial in serials.split(",")]
+
+
+def _event_group_seconds(payload: str) -> float | None:
+    """The seconds of a group event's payload string, or None when missing or not a number."""
+    if "|" not in payload:
+        return None
+    raw = payload.split("|", 1)[1].strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return None
 
 
 def _edge_target_serial(spec: InterventionSpec, payload: str) -> str | None:

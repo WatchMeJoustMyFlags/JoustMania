@@ -90,6 +90,7 @@ The totals (the number of names, of names without a consumer and of names never 
 | `game_flag_configuration_changes_total` | counter | (none) | game-coordinator | yes | grafana |  |
 | `game_flag_service_calls_total` | counter | `call` (register\|end\|reconcile), `result` (ok\|error\|timeout) | game-coordinator | yes | (none) | `call` = `register`, `end`, `reconcile`; `result` = `ok`, `error`, `timeout`. Recorded when `FLAG_SERVICE_URL` is set; FR-135, #1410 |
 | `game_gameplay_stream_reconnects_total` | counter | `game_mode` | game-coordinator | yes | (none) |  |
+| `game_group_shield_refused_total` | counter | `mode`, `game_kind`, `reason` | game-coordinator | yes | (none) |  |
 | `game_intervention_deferral_age_seconds` | gauge | (none) | game-coordinator | yes | (none) |  |
 | `game_intervention_deferrals_total` | counter | (none) | game-coordinator | yes | (none) |  |
 | `game_intervention_dispatch_failures_total` | counter | `type`, `reason` | game-coordinator | yes | grafana |  |

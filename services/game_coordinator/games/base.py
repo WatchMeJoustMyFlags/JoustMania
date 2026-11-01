@@ -36,6 +36,7 @@ from lib.controller_constants import battery_to_pct
 from lib.feature_flags import (
     GAME_KIND_SHADOW,
     build_session_kind_context,
+    read_bool_flag,  # noqa: F401  games/shields.py reads it as base.read_bool_flag (tests patch it here)
     read_float_flag,
     read_int_flag,  # noqa: F401  games/shields.py reads it as base.read_int_flag (tests patch it here)
     read_object_flag,
@@ -766,6 +767,10 @@ class BaseGameMode(ShieldMixin, ABC):
         # game starts fresh; keyed by serial, so a revive does not reset them.
         self._agent_shield_grants: dict[str, int] = {}
         self._agent_shield_last_end: dict[str, float] = {}
+        # Group shields applied in this game (UC-040 A47, BR-033): the coordinator's
+        # per-game backstop against policy.group_grant.max_per_game, so an agent
+        # restart (which resets the agent's own count) cannot exceed it.
+        self._agent_group_grants = 0
         # Shield hold (UC-040 BR-027): latched once, at the start of the game
         # loop or at the first grant, whichever comes first. None = not a hold game.
         self._shield_hold: ShieldHoldParams | None = None

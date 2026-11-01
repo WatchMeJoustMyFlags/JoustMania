@@ -103,7 +103,7 @@ type PlayerState struct {
 	Alive bool `json:"alive"`
 	// Waiting marks a Fight Club or Tournament player waiting for its fight: evicted
 	// from the game's context mid-game and remembered (gamecontext.GameContext.Waiting,
-	// UC-040 A47, BR-038, #2513). Never Alive, no readings, no danger or shield fields.
+	// UC-040 A49, BR-038, #2513). Never Alive, no readings, no danger or shield fields.
 	Waiting    bool     `json:"waiting,omitempty"`
 	Intensity  *float64 `json:"intensity,omitempty"`
 	Variance   *float64 `json:"variance,omitempty"`

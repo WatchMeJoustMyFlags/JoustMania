@@ -11,7 +11,7 @@ import (
 // waiting_players_uc040_test.go covers #2513: in Fight Club and Tournament a player
 // waiting for its fight is evicted from the context but still in the game, so the
 // elimination fraction of R1, R2 and R4's elimination path divides by the
-// game_active_players roster (UC-040 A47, BR-038).
+// game_active_players roster (UC-040 A49, BR-038).
 
 func intp(v int) *int { return &v }
 
@@ -29,9 +29,9 @@ func tournamentAfterMatch1(roster *int) gamecontext.GameContext {
 
 func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
-// UC: UC-040 A47 BR-038
+// UC: UC-040 A49 BR-038
 func TestWaitingPlayers_ElimFraction(t *testing.T) {
-	t.Run("UC-040/A47 8-player Tournament after match 1 is 0.125", func(t *testing.T) {
+	t.Run("UC-040/A49 8-player Tournament after match 1 is 0.125", func(t *testing.T) {
 		c := tournamentAfterMatch1(intp(8))
 		if got := elimFraction(c, len(activePlayers(c))); !near(got, 0.125) {
 			t.Fatalf("elimFraction = %v, want 0.125 (1 of 8), not 1/3", got)
@@ -58,10 +58,10 @@ func TestWaitingPlayers_ElimFraction(t *testing.T) {
 	})
 }
 
-// UC: UC-040 A47 BR-038
+// UC: UC-040 A49 BR-038
 func TestWaitingPlayers_RuleUrgency(t *testing.T) {
 	fit := defaultFit()
-	t.Run("UC-040/A47 R1 urgency uses the roster", func(t *testing.T) {
+	t.Run("UC-040/A49 R1 urgency uses the roster", func(t *testing.T) {
 		cands := enduranceCandidates(tournamentAfterMatch1(intp(8)), fit)
 		if len(cands) == 0 || cands[0].rule != "R1" {
 			t.Fatalf("candidates = %v, want R1 first", interventionsOf(cands))
@@ -71,7 +71,7 @@ func TestWaitingPlayers_RuleUrgency(t *testing.T) {
 			t.Fatalf("R1 urgency = %v, want %v (elimFraction 0.125)", cands[0].urgency, want)
 		}
 	})
-	t.Run("UC-040/A47 R4 urgency uses the roster", func(t *testing.T) {
+	t.Run("UC-040/A49 R4 urgency uses the roster", func(t *testing.T) {
 		c := tournamentAfterMatch1(intp(8))
 		for _, cd := range balancedCandidates(c, fit) {
 			if cd.rule != "R4" {
@@ -86,9 +86,9 @@ func TestWaitingPlayers_RuleUrgency(t *testing.T) {
 	})
 }
 
-// UC: UC-040 A47 BR-038
+// UC: UC-040 A49 BR-038
 func TestWaitingPlayers_FromStore(t *testing.T) {
-	t.Run("UC-040/A47 the live store keeps the roster after waiting players are evicted", func(t *testing.T) {
+	t.Run("UC-040/A49 the live store keeps the roster after waiting players are evicted", func(t *testing.T) {
 		clock := time.Unix(70_000, 0)
 		s := gamecontext.NewStore(5*time.Second, 15*time.Second, func() time.Time { return clock })
 		s.SetGameActive(true)

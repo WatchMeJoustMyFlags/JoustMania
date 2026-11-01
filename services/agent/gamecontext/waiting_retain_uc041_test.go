@@ -10,7 +10,7 @@ import (
 // waiting_retain_uc041_test.go covers #2513: a Fight Club or Tournament player
 // waiting for its fight exports no gauges (UC-041 BR-006), so the TTL evicts it
 // mid-game; the Store remembers its whole-game aggregates, lists it as waiting and
-// restores it into the game-end snapshot (UC-041 A2, BR-007; UC-040 A47).
+// restores it into the game-end snapshot (UC-041 A2, BR-007; UC-040 A49).
 
 const retainTTL = 5 * time.Second
 

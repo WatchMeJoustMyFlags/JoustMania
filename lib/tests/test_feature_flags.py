@@ -9,6 +9,7 @@ import lib.feature_flags as ff_module
 from lib.feature_flags import (
     get_flag_client,
     init_flag_domain,
+    read_bool_flag,
     read_float_flag,
     read_int_flag,
     read_string_flag,
@@ -109,6 +110,34 @@ def test_read_string_flag_rejects_nonstring():
 def test_read_string_flag_fails_safe_on_exception():
     with patch("lib.feature_flags.init_flag_domain", side_effect=RuntimeError("boom")):
         assert read_string_flag("game", "shadow_policy", "block") == "block"
+
+
+def _mock_bool_flag_value(value):
+    client = MagicMock()
+    client.get_boolean_details.return_value = _ok_details(value)
+    return (
+        patch("lib.feature_flags.init_flag_domain"),
+        patch("lib.feature_flags.get_flag_client", return_value=client),
+    )
+
+
+def test_read_bool_flag_returns_bool():
+    for value in (True, False):
+        init_p, get_p = _mock_bool_flag_value(value)
+        with init_p, get_p:
+            assert read_bool_flag("agent", "policy.group_grant.enabled", not value) is value
+
+
+def test_read_bool_flag_rejects_nonbool():
+    for bad in (1, "on", None, 0.0):
+        init_p, get_p = _mock_bool_flag_value(bad)
+        with init_p, get_p:
+            assert read_bool_flag("agent", "policy.group_grant.enabled", False) is False
+
+
+def test_read_bool_flag_fails_safe_on_exception():
+    with patch("lib.feature_flags.init_flag_domain", side_effect=RuntimeError("boom")):
+        assert read_bool_flag("agent", "policy.group_grant.enabled", False) is False
 
 
 @patch("lib.feature_flags.FlagdProvider")

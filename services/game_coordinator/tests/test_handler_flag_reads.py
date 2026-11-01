@@ -62,7 +62,14 @@ GAME_ID = "g-census-1872"
 # default provider, is recorded as "<default>" and so fails the census.
 DOMAINS = ("game", "user", "interventions", "agent", "system", "controller", "observability", "rollout")
 # Values that make the read path under test reachable (shield trigger mode).
-FLAG_VALUES = {"shield.activation": "trigger"}
+FLAG_VALUES = {
+    "shield.activation": "trigger",
+    # The group shield's gate open, so its whole path runs (UC-040 A47, #2467).
+    "policy.group_grant.enabled": True,
+    "policy.group_grant.real_games": True,
+    "policy.group_grant.max_per_game": 1.0,
+    "policy.group_grant.max_targets": 4.0,
+}
 
 
 class _RecordingProvider(AbstractProvider):
@@ -176,6 +183,7 @@ CASES = {
     ("revive_player", "apply"): ("p2", "p2", None),
     ("audio_cue", "apply"): ("ding", "ding", None),
     ("controller_effect", "apply"): ("p1:pulse", "p1:pulse", None),
+    ("group_shield", "apply"): ("p1,p2|5", "p1,p2|5", None),
 }
 # end_game runs on the main loop (it joins the game thread), so it is not dispatched.
 MAIN_LOOP_CASES = {("end_game", "apply"): ("", "", None)}

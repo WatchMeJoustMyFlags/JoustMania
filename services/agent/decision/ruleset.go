@@ -92,7 +92,7 @@ func sessionDuration(c gamecontext.GameContext) float64 {
 // when nothing is known. The players in the game are the game_active_players
 // roster (set at the start, waiting players included) when it is larger than
 // eliminations + alive players: in Fight Club and Tournament a player waiting for
-// its fight is evicted from the context but still in the game (UC-040 A47, BR-038,
+// its fight is evicted from the context but still in the game (UC-040 A49, BR-038,
 // #2513). Without a roster value it is eliminations + alive players, as before.
 func elimFraction(c gamecontext.GameContext, active int) float64 {
 	elims := len(c.Session.EliminationSequence)

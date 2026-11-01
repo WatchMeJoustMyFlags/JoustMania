@@ -9,7 +9,7 @@ import (
 
 // waiting_uc040_test.go covers #2513: the decide state lists a Fight Club or
 // Tournament player waiting for its fight as waiting, not alive, with no readings
-// (UC-040 A47, BR-038; decide-contract.md §1.2).
+// (UC-040 A49, BR-038; decide-contract.md §1.2).
 
 func waitingCtx(waiting []string) gamecontext.GameContext {
 	tru, fls := true, false
@@ -27,11 +27,11 @@ func waitingCtx(waiting []string) gamecontext.GameContext {
 	return c
 }
 
-// UC: UC-040 A47 BR-038
+// UC: UC-040 A49 BR-038
 func TestBuildState_WaitingPlayers(t *testing.T) {
 	st := BuildState(waitingCtx([]string{"W1", "W2"}))
 
-	t.Run("UC-040/A47 waiting players are listed, not alive, without readings", func(t *testing.T) {
+	t.Run("UC-040/A49 waiting players are listed, not alive, without readings", func(t *testing.T) {
 		got := map[string]PlayerState{}
 		for _, p := range st.Players {
 			got[p.Serial] = p
@@ -70,7 +70,7 @@ func TestBuildState_WaitingPlayers(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-040/A47 narrative and digest name them", func(t *testing.T) {
+	t.Run("UC-040/A49 narrative and digest name them", func(t *testing.T) {
 		if !strings.Contains(st.Narrative, "session: alive=2 eliminated=2 waiting=2") {
 			t.Errorf("session line lacks waiting=2:\n%s", st.Narrative)
 		}
@@ -94,7 +94,7 @@ func TestBuildState_WaitingPlayers(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-040/A47 the game-end snapshot's restored players read waiting", func(t *testing.T) {
+	t.Run("UC-040/A49 the game-end snapshot's restored players read waiting", func(t *testing.T) {
 		c := waitingCtx(nil)
 		c.Players["W1"] = &gamecontext.PlayerSignals{Serial: "W1", Waiting: true}
 		end := BuildState(c)
