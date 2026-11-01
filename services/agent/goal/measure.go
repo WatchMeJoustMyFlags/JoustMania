@@ -108,10 +108,14 @@ func (a *Accumulator) Sampled() bool { return a.nextSampleS > 0 }
 // Measure is the value of char in phase for c (the live context, or the game-end
 // snapshot): duration and elimination_pace from c (whole game, or since the
 // endgame began), activity, closeness and change as the mean of the samples.
-// survival has no game-level value. ok is false without data.
+// survival has no game-level value, and elimination_pace none in a respawn mode
+// (characteristics.RespawnMode). ok is false without data.
 func (a *Accumulator) Measure(c gamecontext.GameContext, char, phase string) (float64, bool) {
 	switch char {
 	case decide.CharDuration, decide.CharEliminationPace:
+		if char == decide.CharEliminationPace && characteristics.RespawnMode(c) {
+			return 0, false // no eliminations to pace (UC-040 BR-043)
+		}
 		dur, ok := characteristics.Duration(c)
 		if !ok {
 			return 0, false
