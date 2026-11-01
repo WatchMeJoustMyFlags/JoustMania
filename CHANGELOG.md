@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.13.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.12.0...joustmania-v0.13.0) (2026-11-01)
+
+
+### Features
+
+* **agent:** operator-only higher LLM budget and intervention-rate tiers for a cheap backend ([#2518](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2518)) ([#2520](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2520)) ([e870a31](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/e870a315bb57b2371492bbc6bf59d0ca8abb7d12))
+* **game-coordinator:** group_shield handler with a per-game backstop, all or nothing ([#2467](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2467)) ([#2495](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2495)) ([e9dc2be](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/e9dc2befa6a0dc5a694c8a5c38f7864486d79c47))
+* **game-coordinator:** player analytics in every game mode ([#2358](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2358)) ([#2510](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2510)) ([bc9f4e5](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/bc9f4e5bdcd6374532b5236f3eec052d4da3f246))
+
+
+### Bug Fixes
+
+* **agent:** R3, R4 and R8 act only on players with fresh readings ([#2511](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2511)) ([#2512](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2512)) ([27fc621](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/27fc6212f81219822e5a9122efc906f114143f0e))
+
 ## [0.12.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.11.0...joustmania-v0.12.0) (2026-11-01)
 
 
