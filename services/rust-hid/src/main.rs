@@ -238,6 +238,28 @@ fn resolve_host_name() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
+/// Format a service.instance.id: `<prefix>-<8 hex>` (#2546, as lib/otel_resource.py, #2543).
+fn format_instance_id(prefix: &str, suffix: u32) -> String {
+    format!("{prefix}-{suffix:08x}")
+}
+
+/// service.instance.id, unique per process and drawn once so traces, metrics and
+/// logs share it. The container id alone is not unique (two hosts booted from the
+/// same Docker state share it), which interleaved their counters into one series.
+fn process_instance_id(fallback_host: &str) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        let prefix = std::env::var("HOSTNAME").unwrap_or_else(|_| fallback_host.to_string());
+        // RandomState is seeded from the OS per process: no extra dependency.
+        let suffix = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish() as u32;
+        format_instance_id(&prefix, suffix)
+    })
+    .clone()
+}
+
 /// Build a shared OTEL resource with standard OTEL semantic-convention attributes.
 fn build_otel_resource() -> opentelemetry_sdk::Resource {
     use opentelemetry::KeyValue;
@@ -247,7 +269,7 @@ fn build_otel_resource() -> opentelemetry_sdk::Resource {
         std::env::var("OTEL_SERVICE_NAMESPACE").unwrap_or_else(|_| "infrastructure".into());
     let version = std::env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.0.0-dev".into());
     let hostname = resolve_host_name();
-    let instance_id = std::env::var("HOSTNAME").unwrap_or_else(|_| hostname.clone());
+    let instance_id = process_instance_id(&hostname);
     let environment =
         std::env::var("DEPLOYMENT_ENVIRONMENT").unwrap_or_else(|_| "development".into());
 
@@ -492,6 +514,22 @@ fn init_metrics(
 
 #[cfg(test)]
 mod tests {
+    // Issue #2546
+    #[test]
+    fn instance_id_is_prefix_dash_8_hex() {
+        assert_eq!(format_instance_id("abc123", 0xdeadbeef), "abc123-deadbeef");
+        assert_eq!(format_instance_id("abc123", 0xab), "abc123-000000ab");
+    }
+
+    #[test]
+    fn instance_id_is_stable_within_a_process() {
+        let a = process_instance_id("host");
+        assert_eq!(a, process_instance_id("other"));
+        let (_, suffix) = a.rsplit_once('-').unwrap();
+        assert_eq!(suffix.len(), 8);
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
     use super::*;
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
 

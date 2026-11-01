@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/joustmania/agent/flags"
@@ -39,6 +43,33 @@ func resolveHostName() string {
 	return h
 }
 
+var (
+	instanceIDOnce sync.Once
+	instanceID     string
+)
+
+// serviceInstanceID is service.instance.id, unique per process:
+// "<HOSTNAME>-<8 hex>" (#2546, same rule as lib/otel_resource.py, #2543).
+// Drawn once so traces, metrics and logs share it. The container id alone is
+// not unique (two hosts booted from the same Docker state share it), which
+// interleaved their counters into one series.
+func serviceInstanceID(fallbackHost string) string {
+	instanceIDOnce.Do(func() {
+		instanceID = newInstanceID(getEnv("HOSTNAME", fallbackHost))
+	})
+	return instanceID
+}
+
+// newInstanceID appends a fresh random suffix to prefix.
+func newInstanceID(prefix string) string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failing is vanishingly rare; the pid still separates processes on a host.
+		binary.BigEndian.PutUint32(b[:], uint32(os.Getpid())^uint32(time.Now().UnixNano()))
+	}
+	return prefix + "-" + hex.EncodeToString(b[:])
+}
+
 // newOTELResource builds a shared resource with standard OTEL semantic-convention attributes.
 func newOTELResource(ctx context.Context, serviceName, namespace string) (*resource.Resource, error) {
 	hostname := resolveHostName()
@@ -47,7 +78,7 @@ func newOTELResource(ctx context.Context, serviceName, namespace string) (*resou
 			semconv.ServiceName(serviceName),
 			semconv.ServiceNamespace(namespace),
 			semconv.ServiceVersion(getEnv("SERVICE_VERSION", "0.0.0-dev")),
-			semconv.ServiceInstanceID(getEnv("HOSTNAME", hostname)),
+			semconv.ServiceInstanceID(serviceInstanceID(hostname)),
 			attribute.String("deployment.environment", getEnv("DEPLOYMENT_ENVIRONMENT", "development")),
 			semconv.HostName(hostname),
 			semconv.ContainerName(serviceName),
