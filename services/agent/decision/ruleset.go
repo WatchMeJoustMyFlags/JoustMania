@@ -87,14 +87,23 @@ func sessionDuration(c gamecontext.GameContext) float64 {
 	return *c.Session.DurationSeconds
 }
 
-// elimFraction is the fraction of known players already eliminated, used to
-// gate "players are dying fast" rules. Returns 0 when nothing is known.
+// elimFraction is the fraction of the game's players already eliminated, used to
+// gate "players are dying fast" rules (R1, R2, R4's elimination path). Returns 0
+// when nothing is known. The players in the game are the game_active_players
+// roster (set at the start, waiting players included) when it is larger than
+// eliminations + alive players: in Fight Club and Tournament a player waiting for
+// its fight is evicted from the context but still in the game (UC-040 A47, BR-038,
+// #2513). Without a roster value it is eliminations + alive players, as before.
 func elimFraction(c gamecontext.GameContext, active int) float64 {
 	elims := len(c.Session.EliminationSequence)
 	if elims == 0 {
 		return 0
 	}
-	return float64(elims) / float64(elims+active)
+	inGame := elims + active
+	if roster := c.Session.ActivePlayerCount; roster != nil && *roster > inGame {
+		inGame = *roster
+	}
+	return float64(elims) / float64(inGame)
 }
 
 // enduranceCandidates implements R1 (slow the music while the session is young

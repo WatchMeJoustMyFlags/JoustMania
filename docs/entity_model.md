@@ -178,6 +178,7 @@ A player as the decision backends see it (`decide.PlayerState`, `services/agent/
 |---|---|---|---|---|
 | serial | Player | String | 17 | Primary Key, Foreign Key (PLAYER.serial) |
 | alive | Player is active | Boolean | 1 | Not Null |
+| waiting | Fight Club / Tournament player waiting for its fight: evicted from the context mid-game and remembered (UC-040 A47, BR-038; UC-041 BR-007, #2513); never set together with alive | Boolean | 1 | Not Null |
 | intensity | Smoothed movement intensity in g (absent when never observed) | Decimal | 6,3 | Optional, Min: 0 |
 | variance | Movement variance | Decimal | 6,3 | Optional |
 | skill | Skill level (from `game_player_skill_level`, else playstyle / 3) | Decimal | 4,3 | Optional |
@@ -581,6 +582,7 @@ The agent's view of one game, built from the OTLP metrics and spans the collecto
 | game_cycle_span_id | Span id of `game_cycle`, preferred remote parent of the in-game agent spans | String | 16 | Optional, Format: 16 hex |
 | session | Per-game signals: duration, start time, active player count, elimination sequence, per-type intervention tally (dispatched / blocked / applied / gated off, unbounded per game; see GAME_SUMMARY), game active flag, mode, music tempo, effective death and warning thresholds | String | 4000 | Not Null, structure `SessionSignals` |
 | players | Per-controller signals by serial: movement intensity, variance, peak and aggregate variance, battery, skill, alive, a bounded movement history | String | 4000 | Not Null, map serial to `PlayerSignals` |
+| waiting | Serials of players evicted for silence while the game is active (a Fight Club / Tournament player waiting for its fight), sorted; each remembered with its skill, peak accel and aggregate variance and restored into `players` (as waiting, no alive state) in the game-end snapshot (UC-041 BR-007, UC-040 A47, #2513) | String | 4000 | Optional, Max entries: 64 |
 | timeline | Rolling narrative of the last 64 state deltas, eliminations and phase transitions | String | 4000 | Optional, Max entries: 64 |
 | speed_track | Bounded series of (time, tempo, death threshold) samples | String | 4000 | Optional |
 | updated_at | Last signal time | DateTime | - | Not Null |
