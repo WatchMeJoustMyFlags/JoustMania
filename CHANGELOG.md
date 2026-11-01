@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.15.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.14.0...joustmania-v0.15.0) (2026-11-01)
+
+
+### Features
+
+* **agent:** enforce the substrate validity bar on autonomous promotion ([#2541](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2541)) ([#2555](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2555)) ([22a7402](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/22a7402ba135d1a5c9e7889367617d5dc605d615))
+
+
+### Bug Fixes
+
+* **agent:** no elimination measure is scored in a respawn mode ([#2532](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2532)) ([#2552](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2552)) ([e3bb8b3](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/e3bb8b3339a6a56694d5e6c81101b5724fa1ba07))
+* **controller-manager:** gameplay command reader does not block on effect holds ([#2540](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2540)) ([#2553](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2553)) ([6144d79](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6144d79dd1e6ea07d90e64c877a6de43d58668fb))
+* **observability:** unique service.instance.id for Go services and rust-hid ([#2546](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2546)) ([#2550](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2550)) ([25298ff](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/25298ff0a78e4b605b2c6a0fb51efb9850c83099))
+
+
+### Documentation
+
+* add SECURITY.md for responsible disclosure ([#488](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/488)) ([#2549](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2549)) ([6671ac8](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6671ac8b400909db252d5543e8da5dff36e3f376))
+* **spec:** UC-047 recalibrate the shadow players from real games ([#1055](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/1055)) ([#2544](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2544)) ([1c39ef1](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1c39ef1b67465eb2a41e6b93ec4d2bb3c36fba3e))
+
 ## [0.14.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.13.0...joustmania-v0.14.0) (2026-11-01)
 
 
