@@ -2332,6 +2332,20 @@ class BaseGameMode(ShieldMixin, ABC):
         # Record to histogram for distribution analysis
         self._accel_distribution().observe(accel_mag)
 
+    def _stop_player_gauges(self, serial: str) -> None:
+        """Remove a player's ``game_player_*`` gauges while it waits for its next fight (UC-041 BR-006).
+
+        Fight Club and Tournament check only the two fighters, so a waiting player
+        gets no sampled frame and its gauges would re-export the last fight's values
+        (``game_player_alive`` 1 included) to the agent. The tracker keeps its samples
+        for the end-of-game summary; ``_start_player_gauges`` brings the series back.
+        """
+        metrics.clear_player_analytics(serial, self.game_id)
+
+    def _start_player_gauges(self, serial: str) -> None:
+        """Re-export ``game_player_alive`` 1 for a player seated to fight; its frames set the rest."""
+        metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
+
     def _process_health(self, player: Player, serial: str, controller_state) -> None:
         """Process controller health counters and manage degradation child spans.
 

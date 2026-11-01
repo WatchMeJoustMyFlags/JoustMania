@@ -200,3 +200,161 @@ async def test_legacy_modes_publish_unchanged_summaries(mode, fixed_clock):  # n
 
     summaries = sorted(events.get_events_of_type(GameEvent.PLAYER_ANALYTICS), key=lambda s: s["serial"])
     assert summaries == [_golden_summary(game, mode, serial) for serial in sorted(game.players)]
+
+
+@pytest.mark.uc("UC-041", flow="main", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_traitor_winner_flag_follows_the_secret_team():
+    """A traitor wins with its secret team: ``winner`` is by secret team, not the visible team."""
+    events = EventCollector()
+    game = await _started_game(Games.Traitor, events)
+    traitor_serial, loyal_serial, *_ = sorted(game.players)
+    traitor, loyal = game.players[traitor_serial], game.players[loyal_serial]
+    # The traitor wears the loyal player's colour but wins with the other team.
+    traitor.team = loyal.team = 0
+    loyal.secret_team = 0
+    traitor.secret_team = 1
+    traitor.is_traitor = True
+    game.traitor_serials = {traitor_serial}
+    for serial, player in game.players.items():
+        if serial not in (traitor_serial, loyal_serial):
+            player.team = player.secret_team = 1
+    await _feed_motion(game, Games.Traitor)
+    for player in game.players.values():
+        player.alive = player.secret_team == 1
+    assert await game._check_win_condition()
+    game._latch_game_outcome()
+    game.running = False
+    await game._end_game_impl()
+
+    by_serial = {s["serial"]: s for s in events.get_events_of_type(GameEvent.PLAYER_ANALYTICS)}
+    assert by_serial[traitor_serial]["winner"] is True
+    assert by_serial[traitor_serial]["team"] == 0  # the visible team, never the secret one
+    assert by_serial[loyal_serial]["winner"] is False
+
+
+def _live_gauge_serials(gauge_mocks: dict, game) -> dict[str, set[str]]:
+    """Per gauge name, the serials whose series were last set (labels) minus those removed after."""
+    live: dict[str, set[str]] = {}
+    for name, gauge in gauge_mocks.items():
+        serials: set[str] = set()
+        for call in gauge.mock_calls:
+            method, args, kwargs = call
+            if method == "labels" and kwargs.get("game_id") == game.game_id:
+                serials.add(kwargs["serial"])
+            elif method == "remove" and args[1:] == (game.game_id,):
+                serials.discard(args[0])
+        live[name] = serials
+    return live
+
+
+_PLAYER_GAUGES = [
+    "player_alive",
+    "player_accel_magnitude",
+    "player_movement_zone",
+    "player_peak_accel",
+    "player_playstyle",
+    "player_movement_variance",
+    "player_skill_level",
+    "player_movement_variance_aggregate",
+]
+
+
+async def _fight_frames(game, serials) -> None:
+    for frame_index in range(len(MOTION)):
+        for serial in serials:
+            await game._process_controller_state(_frame(serial, MOTION[frame_index]))
+
+
+@pytest.mark.uc("UC-041", flow="main", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_fight_club_waiting_player_exports_no_gauges_until_it_fights_again():
+    """A Fight Club combatant back in the queue has no game_player_* series; they return with its next round."""
+    game = await _started_game(Games.FightClub, EventCollector())
+    game._update_player_colors = AsyncMock()
+    game._decide_game_end = lambda: False
+    game._round_duration = 1000.0
+    gauges = {name: patch(f"services.game_coordinator.metrics.{name}") for name in _PLAYER_GAUGES}
+    mocks = {name: p.start() for name, p in gauges.items()}
+    try:
+        await game._start_round()
+        first_pair = (game.current_defender, game.current_fighter)
+        for serial in first_pair:
+            game.players[serial].invincible_until = 0.0
+        await _fight_frames(game, first_pair)
+        live = _live_gauge_serials(mocks, game)
+        assert all(set(first_pair) <= serials for serials in live.values()), live
+
+        # Time-out: both go back to waiting, and a new pair is seated.
+        if game.round_task:
+            game.round_task.cancel()
+        await game._handle_timeout()
+        if game.round_task:
+            game.round_task.cancel()
+        live = _live_gauge_serials(mocks, game)
+        waiting = set(game.queue)
+        assert set(first_pair) <= waiting
+        assert all(not (serials & waiting) for serials in live.values()), live
+
+        # Those two fight again: their series come back.
+        game.queue.remove(first_pair[0])
+        game.queue.remove(first_pair[1])
+        game.queue[:0] = list(first_pair)
+        game.current_defender = game.current_fighter = None
+        await game._start_round()
+        if game.round_task:
+            game.round_task.cancel()
+        assert {game.current_defender, game.current_fighter} == set(first_pair)
+        for serial in first_pair:
+            game.players[serial].invincible_until = 0.0
+        await _fight_frames(game, first_pair)
+        live = _live_gauge_serials(mocks, game)
+        assert all(set(first_pair) <= serials for serials in live.values()), live
+    finally:
+        for p in gauges.values():
+            p.stop()
+
+
+@pytest.mark.uc("UC-041", flow="main", br=["BR-006"])
+@pytest.mark.asyncio
+async def test_tournament_match_winner_exports_no_gauges_while_waiting():
+    """A Tournament match winner has no game_player_* series while it waits; they return with its next match."""
+    game = await _started_game(Games.Tournament, EventCollector())
+    game._set_base_color = AsyncMock()
+    game._write_effect_guarded = AsyncMock()
+    gauges = {name: patch(f"services.game_coordinator.metrics.{name}") for name in _PLAYER_GAUGES}
+    mocks = {name: p.start() for name, p in gauges.items()}
+    try:
+        match = game._get_next_match()
+        await game._start_match(match)
+        pair = (match.player1_serial, match.player2_serial)
+        others = set(game.players) - set(pair)
+        live = _live_gauge_serials(mocks, game)
+        assert not (live["player_alive"] & others), live  # never-fought players wait too
+        for serial in pair:
+            game.players[serial].invincible_until = 0.0
+        await _fight_frames(game, pair)
+        assert all(set(pair) <= serials for serials in _live_gauge_serials(mocks, game).values())
+
+        match.winner_serial = pair[0]
+        await game._finalize_match(match)
+        live = _live_gauge_serials(mocks, game)
+        assert all(pair[0] not in serials for serials in live.values()), live
+        assert pair[1] in live["player_alive"]  # the eliminated loser keeps its 0
+
+        # The winner's next match brings its series back.
+        next_match = game._get_next_match()
+        while next_match is not None and pair[0] not in (next_match.player1_serial, next_match.player2_serial):
+            await game._start_match(next_match)
+            assert pair[0] not in _live_gauge_serials(mocks, game)["player_alive"]  # still waiting
+            next_match.winner_serial = next_match.player1_serial
+            await game._finalize_match(next_match)
+            next_match = game._get_next_match()
+        assert next_match is not None
+        await game._start_match(next_match)
+        game.players[pair[0]].invincible_until = 0.0
+        await _fight_frames(game, (pair[0],))
+        assert all(pair[0] in serials for serials in _live_gauge_serials(mocks, game).values())
+    finally:
+        for p in gauges.values():
+            p.stop()

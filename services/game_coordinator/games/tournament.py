@@ -478,6 +478,13 @@ class TournamentGame(StreamedIntroGameMode):
         p1.invincible_until = invincible_until
         p2.invincible_until = invincible_until
 
+        # Only the two fighters export game_player_* gauges (UC-041 BR-006)
+        for serial, player in self.players.items():
+            if player.alive and player.tournament_state == TournamentState.WAITING:
+                self._stop_player_gauges(serial)
+        self._start_player_gauges(match.player1_serial)
+        self._start_player_gauges(match.player2_serial)
+
         # Create match span (inherits current active context: gameplay_phase)
         self.match_span = tracer.start_span(
             "tournament_match",
@@ -531,6 +538,8 @@ class TournamentGame(StreamedIntroGameMode):
         winner.wins += 1
         if winner.tournament_state == TournamentState.FIGHTING:
             winner.tournament_state = TournamentState.WAITING
+            # The winner waits for its next match: no live gauges until then (UC-041 BR-006)
+            self._stop_player_gauges(match.winner_serial)
         loser.tournament_state = TournamentState.ELIMINATED
         loser.alive = False
 
