@@ -61,6 +61,7 @@ to 4 are the source of truth, and code and tests follow from them. Change the sp
 | [architecture/flag-service.md](architecture/flag-service.md) | Flag service: one gRPC sync source for flagd partitioned by flagSetId, `PUT /{flagSetId}/{flagName}` writes, mutable-flag registry, persisted admin settings, migration plan (epic #1407) |
 | [architecture/stack.md](architecture/stack.md) | AIUP stack file: layers mapped to our repo skills (`/implement`, `/pytest-test`, `/go-test`, `/integration-test`, `/coverage-check`), markers, commands, mapping of the aiup-core 3.x commands (#2079) |
 | [agent-act-runbook.md](agent-act-runbook.md) | Take the agent from inert to acting |
+| [agent-group-ab-runbook.md](agent-group-ab-runbook.md) | Measure whether the LLM invents group shields: A/B script, pre-registration, jev re-calibration |
 | [agent-dry-run-runbook.md](agent-dry-run-runbook.md) | Run the experiment loop as a dry run |
 | [agent-trace-viz.md](agent-trace-viz.md) | Show agent traces on stage |
 | [talk/two-standards-runbook.md](talk/two-standards-runbook.md) | Run the "Two Standards Walk Into an Agent" talk (with `scripts/talk-preflight.sh`) |

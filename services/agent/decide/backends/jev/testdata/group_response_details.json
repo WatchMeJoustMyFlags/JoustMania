@@ -1,0 +1,20 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "ffa.target": {
+      "type": "choice",
+      "choice": "group:all_except:MOCK0002",
+      "confidence": 0.55,
+      "probabilities": {
+        "group:all": 0.3,
+        "group:all_except:MOCK0002": 0.55,
+        "group:all_except:MOCK0003": 0.1,
+        "group:all_except:MOCK0004": 0.05
+      }
+    }
+  },
+  "usage": {
+    "input_tokens": 1210,
+    "output_tokens": 38
+  }
+}
