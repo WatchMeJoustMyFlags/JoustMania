@@ -52,9 +52,9 @@ Jaeger cross-check.
 | Metric | Level | Definition |
 |---|---|---|
 | `duration` | game | final `game_duration_seconds`. The game starts at the gauge's first sample minus its first value, because the series can be exported for hours after the game ends |
-| `death_rate` | kind | the kind's eliminations divided by its game minutes. In FFA every death is an elimination; respawn modes die more often than they eliminate, so compare those with `--mode`. The `game_player_deaths_total` counter is not used: on the stage Pi it resets inside a series (two writers on one series identity, restarts that keep the container id), so `increase()` read 7322 deaths for about 90 games and max-minus-before undercounts (see the coordinator counter-reset issue). Do not trust coordinator counters until that issue is fixed |
+| `death_rate` | kind | the kind's eliminations divided by its game minutes. In FFA every death is an elimination; respawn modes die more often than they eliminate, so compare those with `--mode`. The `game_player_deaths_total` counter is not used: on the stage Pi it resets inside a series (two writers on one series identity, restarts that keep the container id), so `increase()` read 7322 deaths for about 90 games and max-minus-before undercounts (#2543). Do not trust coordinator counters until #2543 is fixed |
 | `elimination_pace` | game | eliminated players (`game_player_elimination_order` series) per minute |
-| `near_death_rate` | game | `game_near_death_events_total` increase for the game's serials from 5 s before to 5 s after game end (the coordinator adds each player's count once, at game end) per player-minute. No value for a game that shares a serial with another game ending from 7 s before to 5 s after it (counted under `skipped`). On the Pi it matched the Jaeger count on all 55 games that had both |
+| `near_death_rate` | game | `game_near_death_events_total` increase for the game's serials from 5 s before to 5 s after game end (the coordinator adds each player's count once, at game end) per player-minute. No value (counted under `skipped`) for a game that shares a serial with another game ending from 7 s before to 5 s after it (any game, also one that the kind, mode or window filter drops), and none when the counter reset inside the window (`resets()` > 0, #2543: `increase()` across such a reset read up to 1640 near-deaths for one game on the Pi). On the Pi it matched the Jaeger count on all 55 games that had both |
 | `near_death_rate_jaeger` | game | the same from the `player_analytics` span events (`near_death_count`, one per player). It cross-checks the counter, which has no `game_id` label |
 | `activity` | game | mean over the game's seconds of the field mean of `game_player_accel_magnitude / game_effective_death_threshold` over the alive players (at least 2) ([decide-contract §14.1](specs/decide-contract.md#141-characteristics)) |
 | `change` | game | mean over 15 s windows (every 5 s) of the swing (max minus min) of the three 5 s sub-window means of field activity |
@@ -66,11 +66,15 @@ Jaeger cross-check.
 
 **Verdict per metric** (every count is games; players of one game are not independent samples):
 `insufficient` when either kind has fewer than `--min-n` games (default 8, the cohort's
-`verdict_min_n`), or when there are too few games for the KS test to resolve a gap of `--ks-max`.
-The test's critical value at alpha 0.05, 1.358 x sqrt((n+m)/(n x m)), must be at most `--ks-max`
-(0.3). That takes about 27 shadow games against 89 real ones, or 41 per kind when the counts are
-equal. With fewer games, "divergent" would mostly be noise: with 8 games per kind and identical
-distributions it came out divergent two times in three. Otherwise `similar` when the two-sample KS
+`verdict_min_n`), or while a KS above `--ks-max` would not yet be significant at alpha 0.05: the
+critical value 1.358 x sqrt((n+m)/(n x m)) must be at most `--ks-max` (0.3). That takes about 27
+shadow games against 89 real ones, or 41 per kind when the counts are equal. With fewer games,
+"divergent" would mostly be noise: with 8 games per kind and identical distributions it came out
+divergent two times in three. The gate holds the false "divergent" from the KS branch at about
+5 %. The ratio-of-medians branch has no such control: for wide distributions (lognormal sigma 1),
+identical kinds still come out divergent about 15 % of the time at those counts (4-5 % at
+sigma 0.6 or less). That errs on the safe side for the validity bar, but read a ratio-only
+"divergent" (KS within `--ks-max`) as a hint. Otherwise `similar` when the two-sample KS
 statistic is at most `--ks-max` **and** the shadow / real ratio of medians lies within
 [1/`--ratio-max`, `--ratio-max`] ([0.67, 1.5]). Otherwise `divergent`. `insufficient` never counts
 as similar.
@@ -101,7 +105,7 @@ needs here. That includes the per-player rows, which now count games. Nothing ca
 similar or divergent yet. The medians only hint at where to look:
 
 - `duration`: real median 16 s vs shadow 40 s, and two shadow games ran into the 300 s limit.
-- `elimination_pace`: 5.6/min vs 1.6/min. `near_death_rate`: 13.9 vs 1.5 per player-minute.
+- `elimination_pace`: 5.6/min vs 1.6/min. `near_death_rate`: 12.5 vs 1.5 per player-minute.
 - `movement_variance`: real 0.12 g² vs shadow 0.007 g². The mock drivers may move much more
   smoothly than people.
 - `intensity` (1.34 g vs 1.26 g) and `activity` (0.57 vs 0.50) are close by their medians.

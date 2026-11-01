@@ -16,7 +16,8 @@ Stdlib only. Subcommands:
 
 Verdict per metric (counts are games; a player metric is one value per game, the mean over its
 players): ``insufficient`` when either kind has fewer than --min-n games or the KS critical value
-at alpha 0.05 for the two game counts is above --ks-max (the sample cannot resolve that gap), otherwise
+at alpha 0.05 for the two game counts is above --ks-max (a KS above --ks-max would not yet be
+significant), otherwise
 ``similar`` when KS <= --ks-max AND the ratio of medians is inside [1/--ratio-max, --ratio-max],
 otherwise ``divergent``. ``insufficient`` is never ``similar`` (fail closed for the validity bar,
 UC-043 A23). The per-game definitions approximate decide-contract §14.1 from 1 Hz gauges; they are
@@ -264,14 +265,22 @@ def _by_game(result: list[dict]) -> dict[str, list[dict]]:
 
 
 def _near_deaths(
-    vm: VM, games: list[dict], game_serials: dict, skipped: Counter, now: float
+    vm: VM,
+    games: list[dict],
+    game_serials: dict,
+    placed: dict[str, tuple[float, set]],
+    skipped: Counter,
+    now: float,
 ) -> None:
     """Per-game near-death count from game_near_death_events_total (labels serial, game_mode).
 
-    The counter has no game_id: the coordinator adds each player's count once, at game end. So the
-    count of a game is the increase over its serials in a short window around its end. A game that
-    shares a serial with another game whose increment falls in that window (concurrent shadow games reuse the
-    mock serials) cannot be told apart: it gets no value and is counted as skipped.
+    The counter has no game_id: the coordinator adds each player's count once, just before the
+    game's final duration is set. So a game's count is the increase over its serials in a short
+    window around its end. No value (counted under skipped) when it cannot be told apart:
+    - another placed game (any kind, mode or window: ``placed``) shares a serial and its increment
+      falls in the window (concurrent shadow games reuse the mock serials);
+    - the counter reset inside the window: the coordinator counters have in-series resets (#2543),
+      and increase() over a reset reads the other writer's total.
     """
     lo = NEAR_DEATH_AFTER_S - NEAR_DEATH_WINDOW_S - NEAR_DEATH_LAG_S
     hi = NEAR_DEATH_AFTER_S
@@ -281,19 +290,19 @@ def _near_deaths(
             continue
         mine = set(serials)
         clash = any(
-            o is not g
-            and lo <= o["end"] - g["end"] <= hi
-            and mine & set(game_serials.get(o["game_id"], []))
-            for o in games
+            gid != g["game_id"] and lo <= o_end - g["end"] <= hi and mine & o_serials
+            for gid, (o_end, o_serials) in placed.items()
         )
         if clash:
             skipped["near_death_shared_serials"] += 1
             continue
-        sel = "|".join(serials)
-        res = vm.instant(
-            f'sum(increase(game_near_death_events_total{{serial=~"{sel}"}}[{NEAR_DEATH_WINDOW_S}s]))',
-            min(now, g["end"] + NEAR_DEATH_AFTER_S),
-        )
+        sel = f'game_near_death_events_total{{serial=~"{"|".join(serials)}"}}'
+        at = min(now, g["end"] + NEAR_DEATH_AFTER_S)
+        resets = vm.instant(f"sum(resets({sel}[{NEAR_DEATH_WINDOW_S}s]))", at)
+        if resets and float(resets[0]["value"][1]) > 0:
+            skipped["near_death_counter_reset"] += 1
+            continue
+        res = vm.instant(f"sum(increase({sel}[{NEAR_DEATH_WINDOW_S}s]))", at)
         if res:
             g["near_deaths"] = round(float(res[0]["value"][1]), 3)
             g["near_death_rate"] = g["near_deaths"] / (
@@ -342,6 +351,20 @@ def collect(
     skills = _by_game(
         vm.instant(f"last_over_time(game_player_skill_level[{look}])", at)
     )
+
+    # Every placed game (before the kind, mode and window filters), for the near-death clash check.
+    alive_serials = _by_game(
+        vm.instant(f"last_over_time(game_player_alive[{look}])", at)
+    )
+    placed: dict[str, tuple[float, set]] = {}
+    for r in durations:
+        gid = r["metric"].get("game_id", "")
+        if gid in firsts:
+            placed[gid] = (
+                firsts[gid] - first_vals.get(gid, 0.0) + float(r["value"][1]),
+                {a["metric"].get("serial", "?") for a in alive_serials.get(gid, [])}
+                | {e["metric"].get("serial", "?") for e in elims.get(gid, [])},
+            )
 
     games, players, skipped = [], [], Counter()
     game_serials: dict[str, list[str]] = {}
@@ -411,12 +434,12 @@ def collect(
                 }
             )
 
-    _near_deaths(vm, games, game_serials, skipped, now)
+    _near_deaths(vm, games, game_serials, placed, skipped, now)
 
     # Deaths per kind from the games' eliminations, not from game_player_deaths_total: that counter
     # has in-series resets on the stage Pi (two writers on one series identity, and restarts that
     # keep the container id), so neither increase() nor max-minus-before is trustworthy (see the
-    # coordinator counter-reset issue). In FFA every death is an elimination; respawn modes
+    # #2543). In FFA every death is an elimination; respawn modes
     # (NonStop, Zombies) die more often than they eliminate, so compare them with --mode only.
     aggregate: dict[str, dict] = {}
     for kind in ("real", "shadow"):
@@ -481,9 +504,12 @@ def ks_critical(n: int, m: int) -> float:
 
 
 def verdict(n_real, n_shadow, ks, ratio, min_n, ks_max, ratio_max) -> str:
-    """Counts are GAMES. Insufficient below min_n games of a kind, and while the sample cannot
-    resolve a gap of ks_max (its KS critical value at alpha 0.05 is above ks_max: about 27 shadow
-    games against 89 real, 41 per kind when equal), so neither similar nor divergent is noise."""
+    """Counts are GAMES. Insufficient below min_n games of a kind, and while a KS above ks_max
+    would not yet be significant at alpha 0.05 (the critical value is above ks_max: about 27
+    shadow games against 89 real, 41 per kind when equal); this bounds the false "divergent" from
+    KS at about 5 %. The ratio-of-medians branch has no such control: for wide distributions
+    (lognormal sigma 1) identical kinds still come out divergent about 15 % of the time at those
+    counts (4-5 % at sigma <= 0.6). That fails closed for the validity bar (UC-043 A23)."""
     if n_real < min_n or n_shadow < min_n or ks_critical(n_real, n_shadow) > ks_max:
         return "insufficient"
     if ks is not None and ks > ks_max:

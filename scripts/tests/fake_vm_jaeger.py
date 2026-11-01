@@ -38,7 +38,7 @@ def accel_at(g, s, t):
     return g["accel"][s] + 0.05 * math.sin(2 * math.pi * (t - g["start"]) / 5)
 
 
-def instant(q: str) -> list:
+def instant(q: str, at: float) -> list:
     sc = scenario()
     games = sc["games"]
     out = []
@@ -87,13 +87,29 @@ def instant(q: str) -> list:
                     vec({"game_id": g["id"], "serial": s}, v) for s, v in g[key].items()
                 ]
             return out
-    m = re.match(r'sum\(increase\(game_near_death_events_total\{serial=~"([^"]*)"\}', q)
-    if m:
-        serials = set(m.group(1).split("|"))
+    if q.startswith("last_over_time(game_player_alive"):
         for g in games:
-            if serials == set(g["serials"]):
-                return [vec({}, g["near_deaths"])]
-        return []
+            out += [vec({"game_id": g["id"], "serial": s}, 1) for s in g["serials"]]
+        return out
+    m = re.match(
+        r'sum\((increase|resets)\(game_near_death_events_total\{serial=~"([^"]*)"\}\[(\d+)s\]\)\)',
+        q,
+    )
+    if m:
+        # The counter moves once per game, at its end: only a window (at - w, at] that holds the
+        # end sees it.
+        fn, serials, window = m.group(1), set(m.group(2).split("|")), int(m.group(3))
+        total, seen = 0, False
+        for g in games:
+            end = g["start"] + g["dur"]
+            if serials & set(g["serials"]) and at - window < end <= at:
+                seen = True
+                total += (
+                    g["near_deaths"]
+                    if fn == "increase"
+                    else g.get("near_death_resets", 0)
+                )
+        return [vec({}, total)] if seen else []
     if "game_player_deaths_total" in q:
         mode = re.search(r'mode="([^"]*)"', q)
         field = "before" if " offset " in q else "max"
@@ -188,7 +204,9 @@ class Handler(BaseHTTPRequestHandler):
                         "status": "success",
                         "data": {
                             "resultType": "vector",
-                            "result": instant(params["query"][0]),
+                            "result": instant(
+                                params["query"][0], float(params["time"][0])
+                            ),
                         },
                     },
                 )

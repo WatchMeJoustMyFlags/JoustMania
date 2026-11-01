@@ -63,6 +63,12 @@ if "clash" in extra:  # two concurrent shadow games on the same mock serials, en
     a = game("shadow", 800, "c", 1.0, jaeger=False)
     b = dict(a, id="game_c0801", dur=a["dur"] + 5)
     games += [a, b]
+if "clashmode" in extra:  # a Fight Club game (filtered out by --mode FFA) on the serials of a FFA game
+    a = game("shadow", 700, "m", 1.0, jaeger=False)
+    b = dict(a, id="game_m0701", kind="primary", mode="Fight Club", dur=a["dur"] + 3)
+    games += [a, b]
+if "reset" in extra:  # the counter reset inside the first game's window (#2543)
+    games[0]["near_death_resets"] = 3
 if "linger" in extra:
     games[0]["linger"] = 10 ** 6  # the stale series is still exported long after the window
 # The counter with an in-window reset (two writers on one series): increase() would read 7227.
@@ -176,6 +182,19 @@ c = [g["near_deaths"] for g in d["games"] if g["game_id"].startswith("game_c0")]
 o = [g["near_deaths"] for g in d["games"] if not g["game_id"].startswith("game_c0")]
 print(c == [None, None] and None not in o and d["skipped"].get("near_death_shared_serials") == 2)' "${WORK}/ds6d.json")"
 ok "shared serials ending together: near-deaths not attributed" "$(cond [ "${clash}" == True ])"
+
+# 6d. near-death edge cases: a counter reset in the window, and a clash with a game --mode drops.
+scenario "${SCEN}" 10 10 1 reset clashmode
+run_sr --no-jaeger --mode FFA --save "${WORK}/ds6e.json" >/dev/null
+edge="$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+nd = {g["game_id"]: g["near_deaths"] for g in d["games"]}
+sk = d["skipped"]
+print(nd["game_r0000"] is None, sk.get("near_death_counter_reset"),
+      nd["game_m0700"] is None, sk.get("near_death_shared_serials"), nd["game_r0001"] is not None)' "${WORK}/ds6e.json")"
+ok "near-deaths: a counter reset in the window gives no value" "$(cond [ "${edge% * * *}" == "True 1" ])"
+ok "near-deaths: a clash with a game --mode filtered out still counts" "$(cond [ "${edge#* * }" == "True 1 True" ])"
 
 # 7. the mode filter.
 scenario "${SCEN}" 10 10 1 fightclub
