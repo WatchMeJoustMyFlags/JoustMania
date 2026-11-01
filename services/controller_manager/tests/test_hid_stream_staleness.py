@@ -96,9 +96,14 @@ def adapter(request, hid_server, monkeypatch):
     instance._stop_stream()
 
 
-@pytest.mark.uc("UC-002", flow="main", br=["NFR-056"])
+@pytest.mark.uc("UC-002", flow="main", steps=[2])
 def test_a_lagging_reader_gets_samples_at_most_100ms_old(adapter, hid_server, epoch, monkeypatch):
-    """Reader at half the arrival rate: the median sample age stays under the bound."""
+    """NFR-056: reader at half the arrival rate, the median sample age stays under the bound.
+
+    The ``python_hid`` case runs the same fake latest-sample server, so it only shows that the
+    python-hid adapter's channel carries the window options; python-hid's own 1024-sample queue
+    is not covered (#2503).
+    """
     service, _ = hid_server
     ages_ms: list[int] = []
     lock = threading.Lock()
@@ -128,9 +133,9 @@ def test_a_lagging_reader_gets_samples_at_most_100ms_old(adapter, hid_server, ep
     )
 
 
-@pytest.mark.uc("UC-002", flow="main", br=["NFR-056"])
+@pytest.mark.uc("UC-002", flow="main", steps=[2])
 def test_a_reader_that_keeps_up_still_gets_every_controller_at_100hz(adapter, epoch, monkeypatch):
-    """The small window must not starve the 100 Hz poll loop (NFR-002): each controller arrives at >= 100 Hz."""
+    """NFR-056: the small window must not starve the poll loop (NFR-002): every controller arrives at >= 100 Hz."""
     counts: dict[str, int] = {}
     lock = threading.Lock()
     measure_from = epoch + WARM_UP_S
