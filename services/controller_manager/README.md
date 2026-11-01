@@ -206,7 +206,7 @@ services/controller_manager/
 │   └── validation.py      # Backend combination validation
 ├── discovery_loop.py      # Discovery loop management
 ├── button_detector.py     # Button event detection
-├── state_builder.py         # ControllerState message builder (no cache since #1675, renamed from state_cache.py in #1708)
+├── state_builder.py         # per-controller gameplay frame inputs (FrameInputs, #2353; no cache since #1675, renamed from state_cache.py in #1708)
 ├── effects_base.py        # Visual effect animations
 ├── feedback_manager.py    # LED/rumble feedback
 ├── event_publisher.py     # Event broadcasting

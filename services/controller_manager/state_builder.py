@@ -92,7 +92,7 @@ class StateBuilder:
         """
         state_dict = self._controller_states.get(serial)
         if state_dict:
-            trigger_pressed = bool(state_dict.get(ButtonKey.TRIGGER, False))
+            trigger_pressed = state_dict.get(ButtonKey.TRIGGER, False)
             accel = state_dict.get(StateKey.ACCEL, _ZERO_AXES)
             gyro = state_dict.get(StateKey.GYRO, _ZERO_AXES)
         else:
