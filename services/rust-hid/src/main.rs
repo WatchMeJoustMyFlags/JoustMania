@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             stuck_writers.check(&watched_router);
         },
         {
-            // The trip reason must reach Loki before the exit (B5, #2373).
+            // Traces and metrics must reach the collector before the exit; the trip reason itself is read in `docker logs rust-hid` (B5, #2373).
             let flusher = flusher.clone();
             move || flusher.flush(FLUSH_BUDGET)
         },

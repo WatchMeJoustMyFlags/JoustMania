@@ -19,7 +19,7 @@ OBSERVABILITY_FLAGS = ic.REPO_ROOT / "services" / "flagd" / "observability.json"
 
 @pytest.mark.uc("UC-035", br=["BR-001"])
 @pytest.mark.parametrize(
-    ("service", "port"), [("jaeger", 16686), ("victoria-metrics", 8428), ("loki", 3100)]
+    ("service", "port"), [("jaeger", 16686), ("victoria-metrics", 8428)]
 )
 def test_override_publishes_query_ports_on_loopback_only(service, port):
     """C-015: the dev override binds Jaeger and VictoriaMetrics to 127.0.0.1, never all interfaces."""
@@ -28,7 +28,7 @@ def test_override_publishes_query_ports_on_loopback_only(service, port):
 
 
 @pytest.mark.uc("UC-035", br=["BR-001"])
-@pytest.mark.parametrize("service", ["jaeger", "victoria-metrics", "loki"])
+@pytest.mark.parametrize("service", ["jaeger", "victoria-metrics"])
 def test_base_compose_publishes_no_query_port(service):
     """C-015: the base stack (the Pi path) exposes them to the network only, never to the host."""
     assert "ports" not in ic.compose_services()[service]

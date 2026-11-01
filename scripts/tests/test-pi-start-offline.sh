@@ -43,7 +43,7 @@ trap 'rm -rf "${WORK}"' EXIT
 
 # In `compose config` order: sorted by name, like real compose (bytewise)
 GAME="audio connect-proxy controller-manager dashboard envoy flag-service flagd game-coordinator menu pairing-daemon rust-hid"
-OBS="agent grafana jaeger loki otel-collector victoria-metrics"
+OBS="agent grafana jaeger otel-collector victoria-metrics"
 # depends_on as in docker-compose.yml (service: deps)
 deps_of() {
   case "$1" in
@@ -51,7 +51,7 @@ deps_of() {
     controller-manager) echo flagd rust-hid ;;
     pairing-daemon) echo rust-hid ;;
     game-coordinator | menu | audio | agent) echo flagd ;;
-    grafana) echo jaeger loki victoria-metrics ;;
+    grafana) echo jaeger victoria-metrics ;;
   esac
 }
 
@@ -190,7 +190,7 @@ make_case obs-missing
 echo "ghcr.io/o/joustmania/jaeger:0.0.0-test" >"${CASE}/missing"
 run_start || fail "obs-missing: start failed: $(tail -3 "${CASE}/out.log")"
 no_network obs-missing
-grep -qxF "${OBS_UP} agent loki otel-collector victoria-metrics" "${CASE}/docker.log" \
+grep -qxF "${OBS_UP} agent otel-collector victoria-metrics" "${CASE}/docker.log" \
   || fail "obs-missing: the other observability services (not grafana, which needs jaeger) did not start: $(grep ' up ' "${CASE}/docker.log")"
 grep -q 'jaeger(ghcr.io/o/joustmania/jaeger:0.0.0-test)' "${CASE}/out.log" || fail "obs-missing: the missing image is not named"
 grep -q 'joustmania-upgrade.sh' "${CASE}/out.log" || fail "obs-missing: no recovery command"
@@ -223,10 +223,10 @@ grep -q -- '--wait' "${CASE}/docker.log" && fail "game-down: observability was s
 
 # --- 6. a dependency's image is missing: its dependents are left out ---------
 make_case dep-obs
-echo "ghcr.io/o/joustmania/loki:0.0.0-test" >"${CASE}/missing"
+echo "ghcr.io/o/joustmania/victoria-metrics:0.0.0-test" >"${CASE}/missing"
 run_start || fail "dep-obs: start failed: $(tail -3 "${CASE}/out.log")"
-grep -qxF "${OBS_UP} agent jaeger otel-collector victoria-metrics" "${CASE}/docker.log" \
-  || fail "dep-obs: observability phase does not leave out loki and grafana (which needs it): $(grep ' up ' "${CASE}/docker.log")"
+grep -qxF "${OBS_UP} agent jaeger otel-collector" "${CASE}/docker.log" \
+  || fail "dep-obs: observability phase does not leave out victoria-metrics and grafana (which needs it): $(grep ' up ' "${CASE}/docker.log")"
 grep -q 'need a service whose image is missing: grafana' "${CASE}/out.log" || fail "dep-obs: grafana not named as not started"
 [[ "$(state result)" == degraded ]] || fail "dep-obs: state is not degraded: $(state result)"
 make_case dep-game

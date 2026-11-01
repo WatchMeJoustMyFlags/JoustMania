@@ -1,9 +1,11 @@
 apiVersion: 1
 
-# Drop the datasource that pointed at the removed Prometheus container (#1449)
+# Drop the datasources of removed containers (Prometheus #1449, Loki #2059)
 # from Grafana databases persisted in the grafana-data volume.
 deleteDatasources:
   - name: "Prometheus (Direct)"
+    orgId: 1
+  - name: Loki
     orgId: 1
 
 datasources:

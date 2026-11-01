@@ -143,7 +143,7 @@ def test_inventory_parsers_find_the_known_surface(python_metrics, consumer_queri
     mismatch = {name: (walked[name], n) for name, n in raw.items() if walked[name] != n}
     assert not mismatch, (
         "dashboard query walk found a different number of 'expr' fields than the raw "
-        f"text scan (walked, raw): {mismatch}; a Loki/Jaeger expr is skipped by the walk"
+        f"text scan (walked, raw): {mismatch}; a Jaeger expr is skipped by the walk"
     )
 
 

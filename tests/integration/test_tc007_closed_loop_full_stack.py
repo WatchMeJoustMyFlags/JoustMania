@@ -64,7 +64,7 @@ ENVOY_CONTAINER = "joustmania-envoy"  # container_name in docker-compose.yml
 COMPOSE_NETWORK = "joustmania-network"
 ENVOY_PORT = 80
 # The dashboard reaches Jaeger through envoy on port 80 (UC-035 BR-001). The test
-# uses envoy's PUBLISHED port, like the other modules (Jaeger 16686, Loki 3100).
+# uses envoy's PUBLISHED port, like the other modules (Jaeger 16686).
 # Fallback: when something that is not envoy answers there with a 404 (another
 # listener owns host port 80, seen under WSL), or when TC007_ENVOY_VIA_CONTAINER_IP=1
 # opts in, it dials envoy's address on the compose network instead (Linux docker

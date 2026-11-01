@@ -647,7 +647,6 @@ def _walk_json(node, out: list[tuple[str, str, str]], where: str) -> None:
         ds = node.get("datasource")
         ds_type = ds.get("type") if isinstance(ds, dict) else ds
         if isinstance(ds_type, str) and ds_type.lower() in {
-            "loki",
             "jaeger",
             "tempo",
             "-- grafana --",
@@ -704,7 +703,7 @@ def raw_dashboard_expr_counts() -> dict[str, int]:
 
     Independent of the JSON walk in ``dashboard_queries``, so the contract test can
     check the walk against it: the walk's ``expr`` hits must equal this count per
-    file (variable ``query`` / ``definition`` strings are extra). A Loki or Jaeger
+    file (variable ``query`` / ``definition`` strings are extra). A Jaeger
     panel's ``expr`` is counted here but skipped by the walk.
     """
     return {p.name: len(_RAW_EXPR_RE.findall(p.read_text())) for p in dashboard_files()}
@@ -732,7 +731,7 @@ def spa_queries() -> list[tuple[str, str, str]]:
     """(file, const name, PromQL) for the dashboard SPA's VictoriaMetrics queries.
 
     Every ``const *_QUERY = '...'`` in ``services/dashboard/src/*.ts`` except the
-    Loki ones (``*LOG*``, LogQL). Template ``${...}`` parts are Grafana-style
+    log ones (``*LOG*``). Template ``${...}`` parts are Grafana-style
     variables to the PromQL scan.
     """
     out = []
