@@ -70,6 +70,15 @@ func activePlayers(c gamecontext.GameContext) []*gamecontext.PlayerSignals {
 	return out
 }
 
+// readingsFresh reports whether the player's movement readings are live at the
+// context's UpdatedAt: R4d's signal (decide.FreshReadings), shared by R3, R4 and R8
+// before they read a per-player skill level or movement variance (UC-040 A48,
+// BR-037, #2511). No readings, a frozen value or an unknown context time is not
+// fresh (fail closed).
+func readingsFresh(c gamecontext.GameContext, p *gamecontext.PlayerSignals) bool {
+	return decide.FreshReadings(p.History, c.UpdatedAt)
+}
+
 // sessionDuration returns the session duration or -1 when unknown.
 func sessionDuration(c gamecontext.GameContext) float64 {
 	if c.Session.DurationSeconds == nil {
@@ -151,10 +160,13 @@ func balancedCandidates(c gamecontext.GameContext, fit FitnessThresholds) []cand
 	active := activePlayers(c)
 	var out []candidate
 
-	// R3: skill gap.
+	// R3: skill gap. R3 and R4's elimination path read only the players whose
+	// movement readings are fresh (UC-040 A48, BR-037, #2511): a stalled or frozen
+	// player's skill gauge is re-exported with its last value, so it is neither a
+	// target nor part of the spread, the mean or the strongest player.
 	skilled := make([]*gamecontext.PlayerSignals, 0, len(active))
 	for _, p := range active {
-		if p.SkillLevel != nil {
+		if p.SkillLevel != nil && readingsFresh(c, p) {
 			skilled = append(skilled, p)
 		}
 	}
@@ -479,7 +491,7 @@ func chaosCandidates(c gamecontext.GameContext, pol Policy, roll float64, rollTa
 	// R8: statue detection — requires the variance window to be filled.
 	if dur >= pol.MovementVarianceWindow.Seconds() {
 		for _, p := range activePlayers(c) {
-			if p.MovementVariance == nil || *p.MovementVariance >= statueVarianceEpsilon {
+			if p.MovementVariance == nil || *p.MovementVariance >= statueVarianceEpsilon || !readingsFresh(c, p) {
 				continue
 			}
 			out = append(out, candidate{

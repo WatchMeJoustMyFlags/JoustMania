@@ -34,9 +34,22 @@ func gameCtx(duration float64, elims []string, players map[string]testPlayer) ga
 			BatteryPct:        tp.battery,
 			MovementVariance:  tp.variance,
 			Active:            bptr(tp.active),
+			// One reading at the context's time, so R3, R4 and R8 see a fresh
+			// player (UC-040 A48, BR-037, #2511). A test that moves UpdatedAt
+			// gives the players it needs fresh a track of its own.
+			History: []gamecontext.MovementSample{{At: c.UpdatedAt, Intensity: freshReading(tp.intensity)}},
 		}
 	}
 	return c
+}
+
+// freshReading is the intensity of gameCtx's single fresh reading: the player's
+// intensity when set, else 1 g (a still controller).
+func freshReading(intensity *float64) float64 {
+	if intensity != nil {
+		return *intensity
+	}
+	return 1
 }
 
 func defaultFit() FitnessThresholds { return DefaultStaticConfig().FitnessThresholds }

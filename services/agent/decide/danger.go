@@ -205,6 +205,31 @@ const (
 	DangerMaxSampleGap = 2500 * time.Millisecond
 )
 
+// FreshReadings reports whether a player's movement track is live at now (the
+// context's UpdatedAt): the newest reading is finite, not after now, and its value
+// was last new at most DangerSampleStaleAfter ago. The coordinator's gauge is
+// re-exported with its last value, so a frozen reading keeps arriving with a fresh
+// time: the reading is as old as the first sample of the newest run of identical
+// values (when the value was last new). R4d (SustainedDanger) and the rules that
+// read a player's skill level or movement variance (R3, R4, R8; UC-040 A48,
+// BR-037, #2511) share this signal. Fail closed (false): no readings, a newest
+// reading after now (so a zero now against real readings), a frozen or old value,
+// a non-finite value.
+func FreshReadings(samples []gamecontext.MovementSample, now time.Time) bool {
+	if len(samples) == 0 {
+		return false
+	}
+	newest := samples[len(samples)-1]
+	if !finite(newest.Intensity) {
+		return false
+	}
+	lastNew := newest.At
+	for i := len(samples) - 2; i >= 0 && samples[i].Intensity == newest.Intensity; i-- {
+		lastNew = samples[i].At
+	}
+	return now.Sub(newest.At) >= 0 && now.Sub(lastNew) <= DangerSampleStaleAfter
+}
+
 // SustainedDanger reports whether a player's newest n movement readings are each
 // at or above level x the death threshold in force at that reading (UC-040 A43,
 // BR-032): a sustained near-threshold signal, never a single spike. samples is the
@@ -224,17 +249,10 @@ func SustainedDanger(samples []gamecontext.MovementSample, track []gamecontext.S
 	if n < 1 || !finite(level) || level <= 0 || len(samples) == 0 {
 		return 0, false
 	}
-	newest := samples[len(samples)-1]
-	// The gauge is re-exported with its last value, so a frozen reading keeps
-	// arriving with a fresh time: the reading is as old as the first sample of
-	// the newest run of identical values (when the value was last new).
-	lastNew := newest.At
-	for i := len(samples) - 2; i >= 0 && samples[i].Intensity == newest.Intensity; i-- {
-		lastNew = samples[i].At
-	}
-	if age := now.Sub(newest.At); age < 0 || now.Sub(lastNew) > DangerSampleStaleAfter {
+	if !FreshReadings(samples, now) {
 		return 0, false
 	}
+	newest := samples[len(samples)-1]
 	maxSpan := time.Duration(n) * DangerMaxSampleGap
 	count := 0
 	var prev *gamecontext.MovementSample
