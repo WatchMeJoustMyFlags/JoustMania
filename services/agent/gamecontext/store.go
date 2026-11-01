@@ -446,7 +446,15 @@ func (s *Store) SetPlayerAlive(serial string, alive bool) {
 	if !alive {
 		p := s.ctx.Players[serial]
 		if p == nil {
-			return
+			// A remembered waiting player counted out mid-game (Fight Club takes a
+			// disconnected player out of the rotation, Tournament eliminates it) is
+			// recreated as a player that is not alive, so it leaves retained and is
+			// no longer waiting (UC-041 BR-007, #2513). Any other unknown serial
+			// stays ignored.
+			if _, ok := s.retained[serial]; !ok || !s.gameActiveLocked() {
+				return
+			}
+			p = s.player(serial)
 		}
 		p.activePreferred = true
 		p.Active = ptr(false)
@@ -1128,7 +1136,12 @@ func (s *Store) snapshotLocked() GameContext {
 	out := s.ctx
 	// Live elapsed time with the StartedAt fallback while the game is active (#1305).
 	out.Session.DurationSeconds = s.effectiveDurationLocked()
-	out.Waiting = s.waitingLocked()
+	// Waiting players belong to the active game only: after the end (the grace
+	// window) a live snapshot lists none; the game-end snapshot carries them in
+	// Players instead (UC-041 BR-007, #2513).
+	if s.gameActiveLocked() {
+		out.Waiting = s.waitingLocked()
+	}
 	out.Players = make(map[string]*PlayerSignals, len(s.ctx.Players))
 	for serial, p := range s.ctx.Players {
 		cp := *p
@@ -1214,7 +1227,11 @@ func (s *Store) EvictStale() {
 	sessionGrace := s.effectiveSessionGrace()
 
 	// A player evicted for silence while its game is active keeps its whole-game
-	// aggregates (UC-041 BR-007, #2513); a disconnect or a post-game eviction does not.
+	// aggregates (UC-041 BR-007, #2513); a post-game eviction does not. The disconnect
+	// check only guards the fallback partition: controller_connected carries no
+	// game_id, so a game partition never sees it. There a waiting player who
+	// disconnects leaves retained through its game_player_alive 0, which recreates it
+	// (SetPlayerAlive) as a live player that is not alive.
 	retain := s.gameActiveLocked()
 	for serial, p := range s.ctx.Players {
 		if s.disconnected[serial] || now.Sub(p.LastUpdate) > playerTTL {

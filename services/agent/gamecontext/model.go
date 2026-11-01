@@ -268,7 +268,7 @@ type GameContext struct {
 	// Fight Club and Tournament a player waiting for its fight exports no gauges
 	// (UC-041 BR-006, BR-007; UC-040 A47, BR-038; #2513). They are not in Players of
 	// an in-game snapshot, so no rule acts on them; the game-end snapshot adds them
-	// to Players with Waiting set. nil when there are none.
+	// to Players with Waiting set. nil when there are none or the game is not active.
 	Waiting []string
 
 	// Timeline is a bounded, oldest-first slice of the partition's recent rolling

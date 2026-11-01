@@ -110,7 +110,37 @@ func TestWaitingRetain_FightClub(t *testing.T) {
 		}
 	})
 
-	t.Run("UC-041/BR-007 a disconnected player is not remembered", func(t *testing.T) {
+	t.Run("UC-041/BR-007 a waiting player who disconnects leaves the memory through its alive 0", func(t *testing.T) {
+		// In the game's partition the disconnect arrives as game_player_alive 0
+		// (Fight Club _leave_rotation, Tournament's elimination), not as
+		// controller_connected, which carries no game id.
+		s, _, ends := fightClubStore(t)
+		s.SetPlayerAlive("C", false)
+		snap := s.Snapshot()
+		if !reflect.DeepEqual(snap.Waiting, []string{"D"}) {
+			t.Fatalf("Waiting = %v, want [D]", snap.Waiting)
+		}
+		if c := snap.Players["C"]; c == nil || c.Waiting || c.Active == nil || *c.Active {
+			t.Fatalf("C = %+v, want a live player that is not alive", c)
+		}
+		s.SetGameActive(false)
+		c := (*ends)[0].Players["C"]
+		if c == nil || c.Waiting || c.Active == nil || *c.Active {
+			t.Fatalf("end snapshot C = %+v, want out, not waiting", c)
+		}
+	})
+
+	t.Run("UC-041/BR-007 a live snapshot after the game ended lists no waiting players", func(t *testing.T) {
+		s, _, _ := fightClubStore(t)
+		s.SetGameActive(false) // inside the 15 s grace: retained is not reset yet
+		if w := s.Snapshot().Waiting; w != nil {
+			t.Fatalf("Waiting after the end = %v, want none", w)
+		}
+	})
+
+	// Not a production path: controller_connected carries no game_id, so only the
+	// fallback partition sees a disconnect. This pins the Store's guard there.
+	t.Run("store guard: a disconnect seen by the fallback partition is not remembered", func(t *testing.T) {
 		clk := &retainClock{t: time.Unix(50_000, 0)}
 		s := NewStore(retainTTL, 15*time.Second, clk.now)
 		s.SetGameActive(true)
