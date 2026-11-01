@@ -760,6 +760,9 @@ jobs:
           go test -v -race ./...
           go vet ./...
 
+      - name: gofmt (#2527)
+        run: scripts/ci/check-gofmt.sh
+
   # Go flag service tests (epic #1407, UC-053)
   flag-service-tests:
     name: Flag Service Tests
@@ -783,6 +786,9 @@ jobs:
           git diff --exit-code go.mod go.sum
           go test -v -race ./...
           go vet ./...
+
+      - name: gofmt (#2527)
+        run: scripts/ci/check-gofmt.sh
 
   # #2403: compose mounts the checkout's registry.yaml into the flag-service
   # image pinned by .env, and the released parser is strict. PR CI builds the
