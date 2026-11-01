@@ -11,16 +11,18 @@ import (
 // a newest value older than DangerSampleStaleAfter against the context's
 // UpdatedAt) is marked ReadingsStale and its movement readings and skill are left
 // out, so no backend reads an old value as current. The player stays listed and
-// alive. The levers in freshReadingsLevers read those values in the rules (R3, R4,
-// R8, which skip such a player, UC-040 A46, BR-037) and are never applied to a
-// stale player from a backend answer either.
+// alive. The levers in freshReadingsLevers are those of the rules that skip such a
+// player (R3, R4, R6, R8, R9; UC-040 A46, BR-037) and are never applied to a stale
+// player from a backend answer either.
 
-// freshReadingsLevers are the player-targeted levers whose rule reads the target's
-// skill level or movement readings: adjust_player_sensitivity (R3, skill gap),
-// grant_shield (R4, the weakest by skill, and R4d, sustained danger) and
-// send_controller_effect (R8, statue by movement variance).
+// freshReadingsLevers are the player-targeted levers whose rule targets only a
+// player with fresh readings: adjust_player_sensitivity (R3, skill gap),
+// grant_shield (R4, the weakest by skill, and R4d, sustained danger),
+// eliminate_player (R6, the least-moving player, #2517, #2524) and
+// send_controller_effect (R8, statue by movement variance; R9, random effect).
 var freshReadingsLevers = map[string]bool{
 	IntvAdjustPlayerSensitivity: true,
+	IntvEliminatePlayer:         true,
 	IntvGrantShield:             true,
 	IntvSendControllerEffect:    true,
 }

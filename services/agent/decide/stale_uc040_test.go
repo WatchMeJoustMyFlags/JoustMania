@@ -94,12 +94,12 @@ func TestBuildState_ReadingsStale(t *testing.T) {
 
 // UC: UC-040 BR-039
 func TestNeedsFreshReadings(t *testing.T) {
-	t.Run("UC-040/BR-039 exactly the levers of R3, R4 and R8", func(t *testing.T) {
-		want := []string{IntvAdjustPlayerSensitivity, IntvGrantShield, IntvSendControllerEffect}
+	t.Run("UC-040/BR-039 exactly the levers of R3, R4, R6, R8 and R9", func(t *testing.T) {
+		want := []string{IntvAdjustPlayerSensitivity, IntvEliminatePlayer, IntvGrantShield, IntvSendControllerEffect}
 		if got := FreshReadingsLevers(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("FreshReadingsLevers = %v, want %v", got, want)
 		}
-		for _, iv := range []string{IntvSetPlayerHandicap, IntvEliminatePlayer, IntvToughnessBoost, IntvAdjustMusicTempo, IntvGrantGroupShield} {
+		for _, iv := range []string{IntvSetPlayerHandicap, IntvToughnessBoost, IntvAdjustMusicTempo, IntvGrantGroupShield} {
 			if NeedsFreshReadings(iv) {
 				t.Errorf("NeedsFreshReadings(%s) = true", iv)
 			}

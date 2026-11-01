@@ -273,7 +273,17 @@ class NonstopJoustGame(BaseGameMode):
         includes this one (the same value the event-bus ``player_death`` carries).
         """
         player = self.players[serial]
-        return {"kills": player.kills, "deaths": player.deaths + 1, "score": player.score}
+        return {
+            "kills": player.kills,
+            "deaths": player.deaths + 1,
+            "score": player.score,
+            # A respawn death keeps the player in the game; a disconnect takes it out (BR-004).
+            "death.eliminated": player.disconnected,
+        }
+
+    def _kill_records_elimination_order(self, serial: str) -> bool:
+        """Only a disconnect death is an elimination; a respawn death is not (UC-026 BR-004, #2524)."""
+        return self.players[serial].disconnected
 
     async def _kill_player_impl(self, serial: str, accel_mag: float):
         """
@@ -336,6 +346,10 @@ class NonstopJoustGame(BaseGameMode):
         logger.info(f"Player disconnected while waiting to respawn: {serial} (respawn cancelled)")
         player.respawn_deadline = None
         player.respawn_timer = 0.0
+        # Out for good without a second death: the disconnect is the elimination (BR-004).
+        # Not once the outcome is latched or the game was force-ended, as for a kill.
+        if self._kill_gate_open(serial):
+            self._record_elimination_order(serial)
         if player.span:
             player.span.add_event("player_disconnected", attributes={"reason": "controller_disconnect"})
 

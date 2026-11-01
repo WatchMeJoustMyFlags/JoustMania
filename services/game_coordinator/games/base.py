@@ -3196,9 +3196,10 @@ class BaseGameMode(ShieldMixin, ABC):
     def _kill_records_elimination_order(self, serial: str) -> bool:  # noqa: ARG002
         """Whether ``_count_elimination`` records the player's elimination order.
 
-        Default: always, every death takes the player out (respawn modes count each
-        death). Fight Club overrides it: a round loss keeps the player in the game,
-        so it records the order when a player leaves the rotation (UC-041 BR-008).
+        Default: always, every death takes the player out. Modes where a death can
+        keep the player in the game override it (UC-041 BR-008): Fight Club (a round
+        loss, #2517), NonStop (a respawn death), Swapper (a swap) and Zombies (every
+        death, #2524); they record the order when a player leaves the game for good.
         """
         return True
 
