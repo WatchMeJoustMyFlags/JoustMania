@@ -80,10 +80,10 @@ The totals (the number of names, of names without a consumer and of names never 
 | `game_actual_update_frequency_hz` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |  |
 | `game_analytics_samples_total` | counter | `game_mode` | game-coordinator | yes | grafana |  |
 | `game_config_changes_total` | counter | `parameter` | game-coordinator | yes | (none) |  |
-| `game_current_mode` | gauge | `mode`, `game_kind`, `game_id` | game-coordinator | yes | agent, grafana | #1379; 1 while the game is live, removed at retire |
+| `game_current_mode` | gauge | `mode`, `game_kind`, `game_id` | game-coordinator | yes | agent, grafana, scripts | #1379; 1 while the game is live, removed at retire |
 | `game_current_update_frequency_hz` | gauge | (none) | game-coordinator | yes | grafana | process-wide: the configured `game_loop.update_frequency_hz`, the same for every game; the per-game measured rate is `game_actual_update_frequency_hz` |
-| `game_duration_seconds` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana, tools |  |
-| `game_effective_death_threshold` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |  |
+| `game_duration_seconds` | gauge | `game_kind`, `game_id`, `experiment_id`, `arm` | game-coordinator | yes | agent, grafana, scripts, tools |  |
+| `game_effective_death_threshold` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana, scripts |  |
 | `game_effective_warning_threshold` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |  |
 | `game_filter_updates_total` | counter | `game_mode` | game-coordinator | yes | (none) |  |
 | `game_filtered_controllers` | gauge | (none) | game-coordinator | yes | (none) |  |
@@ -100,12 +100,12 @@ The totals (the number of names, of names without a consumer and of names never 
 | `game_loop_frames_dropped_total` | counter | `mode` | game-coordinator | yes | grafana |  |
 | `game_loop_jitter_ms` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana | #1471; one series per live game, removed when it ends and at retire |
 | `game_music_tempo` | gauge | `game_kind`, `game_id` | game-coordinator | yes | agent, grafana |  |
-| `game_near_death_events_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |  |
+| `game_near_death_events_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana, scripts |  |
 | `game_player_accel_magnitude` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, scripts |  |
-| `game_player_alive` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, tools |  |
-| `game_player_deaths_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana | #1376 |
+| `game_player_alive` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana, scripts, tools |  |
+| `game_player_deaths_total` | counter | `mode`, `game_kind` | game-coordinator | yes | grafana, scripts | #1376 |
 | `game_player_elimination_order` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, scripts |  |
-| `game_player_movement_variance` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |  |
+| `game_player_movement_variance` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, scripts, tools |  |
 | `game_player_movement_variance_aggregate` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
 | `game_player_movement_zone` | gauge | `serial`, `game_id` | game-coordinator | yes | grafana |  |
 | `game_player_peak_accel` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, grafana |  |
@@ -114,7 +114,7 @@ The totals (the number of names, of names without a consumer and of names never 
 | `game_player_shield_budget_remaining_seconds` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
 | `game_player_shield_energy_seconds` | gauge | `serial`, `game_id` | game-coordinator | yes | agent |  |
 | `game_player_shield_stats` | gauge | `serial`, `game_id`, `stat` | game-coordinator | yes | agent |  |
-| `game_player_skill_level` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, tools |  |
+| `game_player_skill_level` | gauge | `serial`, `game_id` | game-coordinator | yes | agent, scripts, tools |  |
 | `game_player_warnings_total` | counter | `serial`, `game_mode` | game-coordinator | yes | grafana |  |
 | `game_players_alive` | gauge | (none) | game-coordinator | yes | grafana |  |
 | `game_sensitivity` | gauge | `game_kind`, `game_id` | game-coordinator | yes | grafana |  |

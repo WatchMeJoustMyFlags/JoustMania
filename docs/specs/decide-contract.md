@@ -895,6 +895,8 @@ left is never a hit. Hard bounds of the characteristics are in §14.4.
 | `survival` | The target is alive at t+w and was never eliminated in between | `EliminationSequence`, `Active` | target |
 | `closeness` | Spread (max minus min) of per-player `activity` among alive players; lower means closer | `History` | field |
 
+The read-only realism characterization (`scripts/agent-shadow-realism.sh`, UC-043 A22, #1017) computes `activity`, `change` and `closeness` offline per game from the 1 Hz per-player gauges in VictoriaMetrics with the same windows (whole-game means of 5 s samples, as §14.4 does), and a game-level `survival` (mean fraction of the game each player stays alive) that §14.4 does not define; its values approximate the agent's and are compared only between real and shadow games, never with the agent's own measurements.
+
 `tempo_followed` is not a characteristic: players adapting to tempo is `activity` rising after an `adjust_music_tempo`, and
 the lever is recorded on the outcome (`activity|lever=adjust_music_tempo`). Elimination detection lags by one export
 interval, so the horizon check fires at t + horizon + 3 s and judges an elimination by its timeline timestamp
