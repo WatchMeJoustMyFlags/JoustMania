@@ -16,6 +16,8 @@ package jev
 //	    noop (#1281); Jev answered p_yes 0.70 and adjust_player_sensitivity
 //	gate_request_details.json / gate_response_details.json
 //	    the stage 2 that followed (target + both strength half-ladders)
+//	group_request_details.json / group_response_details.json
+//	    the details stage after grant_group_shield (#2467 PR 6; derived, see contract_group_uc040_test.go)
 //	shield_request_details.json / shield_response_details.json
 //	    stage 2 of testRequest() conditioned on grant_shield
 //	balance_request_details.json / balance_response_details.json

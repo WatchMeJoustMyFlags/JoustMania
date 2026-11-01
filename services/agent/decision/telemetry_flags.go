@@ -20,7 +20,10 @@ const (
 	// The group shield's set on agent.decision (#2467, UC-040 A47, A48; telemetry.md
 	// §4.3): the number of targets, the targets (sorted, comma-separated) and, on a
 	// shield-ledger refusal, the target refused.
-	AttrDecisionGroupSize          = "decision.group.size"
-	AttrDecisionGroupTargets       = "decision.group.targets"
+	AttrDecisionGroupSize    = "decision.group.size"
+	AttrDecisionGroupTargets = "decision.group.targets"
+	// AttrDecisionGroupAlive is the number of alive players when the group was decided
+	// (#2467 PR 6): the endgame position the experiment script reads.
+	AttrDecisionGroupAlive         = "decision.group.alive"
 	AttrDecisionGroupRefusedSerial = "decision.group.refused_serial"
 )

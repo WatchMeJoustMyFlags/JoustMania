@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/flags"
@@ -270,13 +271,47 @@ func (l *Loop) reserveGroupShield(ctx context.Context, snapshot flags.Snapshot, 
 }
 
 // groupAttributes are the agent.decision attributes of a group decision.
-func groupAttributes(d Decision, refused string) []attribute.KeyValue {
+func groupAttributes(d Decision, refused string, alive int) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.Int(AttrDecisionGroupSize, len(d.TargetSerials)),
+		attribute.Int(AttrDecisionGroupAlive, alive),
 		attribute.String(AttrDecisionGroupTargets, strings.Join(d.TargetSerials, ",")),
 	}
 	if refused != "" {
 		attrs = append(attrs, attribute.String(AttrDecisionGroupRefusedSerial, refused))
 	}
 	return attrs
+}
+
+// Outcomes of agent_group_interventions_total (#2467 PR 6).
+const (
+	GroupOutcomeApplied  = "applied"
+	GroupOutcomeBlocked  = "blocked"
+	GroupOutcomeFailed   = "failed"
+	GroupOutcomeGatedOff = "gated_off"
+)
+
+// recordGroupIntervention bumps agent_group_interventions_total for a group-shield
+// decision; any other decision adds nothing. shape is "all" when the set is every
+// alive player in c, "all_except" when it leaves at least one out. The backend is the
+// one that answered ("rules" when none did). The counter is never nil.
+func (l *Loop) recordGroupIntervention(ctx context.Context, c gamecontext.GameContext, state *LayerState, d Decision, outcome, reason string) {
+	if d.Intervention != InterventionGrantGroupShield {
+		return
+	}
+	backend := "rules"
+	if state != nil && state.DecideBackend != "" {
+		backend = state.DecideBackend
+	}
+	shape := "all_except"
+	if len(d.TargetSerials) >= len(aliveSerials(c)) {
+		shape = "all"
+	}
+	l.groupInterventions.Add(ctx, 1, otelmetric.WithAttributes(
+		attribute.String("outcome", outcome),
+		attribute.String("reason", reason),
+		attribute.String("backend", backend),
+		attribute.String("game_kind", gamecontext.TelemetryGameKind(c.GameKind)),
+		attribute.String("shape", shape),
+	))
 }

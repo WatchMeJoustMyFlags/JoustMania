@@ -267,6 +267,9 @@ type Loop struct {
 	// predictionDropped counts model predictions dropped by llmio.Parse
 	// (agent_prediction_dropped_total{backend,reason}, #2479, UC-040 A45).
 	predictionDropped otelmetric.Int64Counter
+	// groupInterventions counts group-shield decisions
+	// (agent_group_interventions_total, #2467 PR 6, UC-040 A47).
+	groupInterventions otelmetric.Int64Counter
 
 	// evaluations counts EVERY eval cycle (agent_evaluations_total{signal,outcome},
 	// #1053), so signal arrival is observable even on idle cycles where no rule fires
@@ -398,6 +401,7 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 		llmGated:             defaultLLMGatedCounter(),
 		decideDiscarded:      defaultDecideDiscardedCounter(),
 		predictionDropped:    defaultPredictionDroppedCounter(),
+		groupInterventions:   defaultGroupInterventionsCounter(),
 		evaluations:          defaultEvaluationsCounter(),
 		decisions:            defaultDecisionsCounter(),
 		interventionsApplied: defaultInterventionsAppliedCounter(),
@@ -858,7 +862,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	// UC-046 step 7 / NFR-042: record the decision in the pattern game's sequence.
 	l.recordPatternDecision(dSpan, snapshot, d)
 	if len(d.TargetSerials) > 0 {
-		dSpan.SetAttributes(groupAttributes(d, perm.refusedSerial)...)
+		dSpan.SetAttributes(groupAttributes(d, perm.refusedSerial, len(aliveSerials(c)))...)
 	}
 
 	// The interventions.allowed evaluation as a feature_flag.* span event
@@ -891,6 +895,7 @@ func (l *Loop) runDecision(ctx context.Context, snapshot flags.Snapshot, c gamec
 	l.recordDecision(ctx, c.GameKind, d.Intervention, blocked, reason)
 
 	if blocked {
+		l.recordGroupIntervention(ctx, c, state, d, GroupOutcomeBlocked, string(reason))
 		l.recordBlockedDecision(d, reason, cost, snapshot.InterventionsAllowed, state)
 		return
 	}
@@ -1012,6 +1017,7 @@ func (l *Loop) dispatchDecision(ctx, dCtx context.Context, snapshot flags.Snapsh
 		l.Log.Error("agent.apply_failed",
 			"error", err, "intervention", d.Intervention)
 		l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeWriteFailed)
+		l.recordGroupIntervention(ctx, c, state, d, GroupOutcomeFailed, NotAppliedWriteFailed)
 		return
 	}
 	// Apply succeeded: count the intervention as applied (#790) — the numerator for
@@ -1028,6 +1034,7 @@ func (l *Loop) dispatchDecision(ctx, dCtx context.Context, snapshot flags.Snapsh
 		dSpan.SetAttributes(notApplied...)
 		aSpan.SetAttributes(notApplied...)
 		l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeGatedOff)
+		l.recordGroupIntervention(ctx, c, state, d, GroupOutcomeGatedOff, NotAppliedWriteGateOff)
 		return
 	}
 	dSpan.SetAttributes(attribute.Bool(AttrDecisionApplied, true))
@@ -1035,6 +1042,7 @@ func (l *Loop) dispatchDecision(ctx, dCtx context.Context, snapshot flags.Snapsh
 	*applied = true
 	l.recordApplyOutcome(d.Intervention, gamecontext.ApplyOutcomeApplied)
 	l.recordInterventionApplied(ctx, d.Intervention)
+	l.recordGroupIntervention(ctx, c, state, d, GroupOutcomeApplied, "")
 	// Intervention-effect MEASUREMENT (#918): stamp a baseline of this game's
 	// fitness/objective signals NOW (the same fitness.evaluated quantities the decision
 	// span carries) and schedule a follow-up sample after the window to measure the

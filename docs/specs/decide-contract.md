@@ -806,7 +806,7 @@ Full names in [telemetry.md](telemetry.md#4-agent). Summary:
   `global` = `decision.act_confidence_threshold`; #1287), both only when routed,
   `gen_ai.request.model`, `decide.answers`, `decide.confidence`, `decide.confidence.min`,
   `decide.rationale`, `decide.invalid_reason`, `decide.discarded_reason`, `error.type`, `decide.blocked` and
-  `decide.block_reason` (§6; #1295). A group decision's `agent.decision` carries `decision.group.size`,
+  `decide.block_reason` (§6; #1295). A group decision's `agent.decision` carries `decision.group.size`, `decision.group.alive` (#2467 PR 6),
   `decision.group.targets` and, on a ledger refusal, `decision.group.refused_serial` (#2467 PR 4; telemetry.md §4).
   Event `gen_ai.evaluation.result` (`gen_ai.evaluation.name=act_confidence_threshold`,
   score value, label `pass`/`fail`, explanation `confidence 0.720 >= threshold 0.600
