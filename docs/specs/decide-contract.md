@@ -1040,8 +1040,9 @@ neutral alone never adds it): its typed state gains `goal: {profile, targets, no
 without its leading profile name, `now` the now line), and both gate criteria gain one goal sentence,
 `Goal <profile>: targets <targets>; measured now <now line>.` Jev does not compare numbers: the agent computes in code which
 terms are outside their band now and can already be judged (`services/agent/goal/profile.go:OffBand`, carried as
-`GoalLines.OffBand`): an unmeasured term is left out (an endgame term before the endgame included), and so is a duration
-below its minimum, which a running game cannot have reached yet. When a term is off, `off_band` lists its labels and the
+`GoalLines.OffBand`): an unmeasured term is left out (an endgame term before the endgame included), and so is a value below
+its minimum that cannot be judged yet: a duration (a running game cannot have reached it yet) and an `elimination_pace`
+before the term's phase has run 60 s or had its first elimination. A value above its maximum is always judged. When a term is off, `off_band` lists its labels and the
 `true` side adds `Outside its target band now: <labels>.`; when none is, the `false` side adds `The goal is on track: no term
 that can be judged yet is outside its target band.` So an early `long_running_game` (duration 95 s against 180 s) gets no push
 toward acting. llmio does not render `OffBand`. The sentence describes the game; it never names a lever, and the lever, target and magnitude questions
