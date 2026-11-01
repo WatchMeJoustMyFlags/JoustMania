@@ -143,3 +143,44 @@ func TestCoordinator_PredictionsOnSpan(t *testing.T) {
 		t.Errorf("UC-042/A12: span carries summary.predictions.* without a lookup")
 	}
 }
+
+// UC: UC-042 A12 BR-009
+// The goal lookup reaches the summary body and the summary span (summary.goal.*);
+// without a goal the body has no "goal" key (#2479).
+func TestCoordinator_GoalOnSpan(t *testing.T) {
+	c, sr, _ := recordingCoordinator(t)
+	snap := representativeGame(t)
+	attainment := 0.75
+	var asked string
+	c.SetGoalLookup(func(gameID string) *Goal {
+		asked = gameID
+		return &Goal{Profile: "lively_finale", Attainment: &attainment, Terms: []GoalTerm{{Characteristic: "duration", Phase: "whole", Weight: 1}}}
+	})
+	c.OnGameEnd(snap)
+	if asked != snap.SessionID {
+		t.Fatalf("lookup asked for %q", asked)
+	}
+	span := spansByName(sr.Ended(), SpanGameSummary)[0]
+	if v, ok := spanAttr(span, "summary.goal.profile"); !ok || v.AsString() != "lively_finale" {
+		t.Errorf("UC-042/A12 summary.goal.profile = %v (%t)", v.AsString(), ok)
+	}
+	if v, ok := spanAttr(span, "summary.goal.source"); !ok || v.AsString() != "named" {
+		t.Errorf("UC-042/A12 summary.goal.source = %v (%t)", v.AsString(), ok)
+	}
+	if v, ok := spanAttr(span, "summary.goal.attainment"); !ok || v.AsFloat64() != 0.75 {
+		t.Errorf("UC-042/A12 summary.goal.attainment = %v (%t)", v.AsFloat64(), ok)
+	}
+
+	raw, err := json.Marshal(BuildSummary(representativeGame(t), BuildOptions{Now: at(61)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"goal"`) {
+		t.Error("UC-042/A12 a summary without a goal must omit the goal key")
+	}
+	c2, sr2, _ := recordingCoordinator(t)
+	c2.OnGameEnd(representativeGame(t))
+	if _, ok := spanAttr(spansByName(sr2.Ended(), SpanGameSummary)[0], "summary.goal.profile"); ok {
+		t.Error("UC-042/A12 span carries summary.goal.* without a goal")
+	}
+}

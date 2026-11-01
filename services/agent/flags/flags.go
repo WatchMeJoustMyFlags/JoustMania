@@ -20,9 +20,11 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-feature/go-sdk/openfeature"
+	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
 // Flag keys as defined in services/flagd/agent.json (flagSetId "agent").
@@ -789,6 +791,12 @@ type Flags struct {
 	// now is the clock of gameModes; nil means time.Now (tests inject one).
 	now func() time.Time
 	log *slog.Logger
+	// goalWarn logs the first invalid goal.profile value once; goalInvalid counts
+	// every invalid read (agent_goal_profile_invalid_total), created on first use
+	// unless SetGoalMeterProvider set it (#2479).
+	goalWarn        sync.Once
+	goalInvalidOnce sync.Once
+	goalInvalid     otelmetric.Int64Counter
 }
 
 // New builds a Flags wrapper over the given evaluator. log may be nil, in which

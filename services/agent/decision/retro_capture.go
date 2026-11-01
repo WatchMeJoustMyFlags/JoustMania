@@ -131,6 +131,8 @@ type RetroCoordinator struct {
 	// the prediction Book finalizes them earlier in the game-end chain. Set once at
 	// wiring; nil = the retro has no predictions block.
 	predictions func(gameID string) []gamesummary.PredictionOutcome
+	// goal is the goal-attainment lookup (#2479, UC-042 A12); nil = none.
+	goal func(gameID string) *gamesummary.Goal
 
 	// experimentParent resolves the long-lived agent.experiment ROOT span's SpanContext
 	// by experiment_id (#1188), reading the registry's ExperimentSpanContext accessor.
@@ -295,6 +297,13 @@ func (rc *RetroCoordinator) SetPredictionLookup(f func(gameID string) []gamesumm
 	rc.predictions = f
 }
 
+// SetGoalLookup wires the goal-attainment lookup (#2479, UC-042 A12): the retro
+// prompt then gains a "Goal" block for a game scored against a goal profile. Set
+// during construction, before OnGameEnd runs.
+func (rc *RetroCoordinator) SetGoalLookup(f func(gameID string) *gamesummary.Goal) {
+	rc.goal = f
+}
+
 // SetRootContext injects the agent's root context (#1179). The async retro inference
 // goroutine keeps its latency-budget context derived from the retro SPAN context (to
 // preserve #1112 trace parenting), and separately bridges root.Done() -> cancel() so
@@ -396,6 +405,9 @@ func (rc *RetroCoordinator) OnGameEnd(c gamecontext.GameContext) {
 	summaryOpts := gamesummary.BuildOptions{Now: retroNow}
 	if rc.predictions != nil {
 		summaryOpts.Predictions = rc.predictions(c.SessionID)
+	}
+	if rc.goal != nil {
+		summaryOpts.Goal = rc.goal(c.SessionID)
 	}
 	summary := gamesummary.BuildSummary(c, summaryOpts)
 
