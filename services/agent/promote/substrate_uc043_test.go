@@ -250,13 +250,24 @@ func TestUC043_A23_ParseValidatedObjectives(t *testing.T) {
 }
 
 // TestUC043_A23_SingleRealDefaultWriteSite pins the claim the backstop rests on:
-// every SetRealDefault call in the agent's production code is inside writeTracked,
-// and writeTracked is called only by promoteAutonomous and drainWrites.
+// every reference to SetRealDefault in the agent's production code (a call, or a
+// method value such as `write := pr.realDef.SetRealDefault`) is inside
+// writeTracked, and writeTracked is referenced only by promoteAutonomous and
+// drainWrites. Function bodies and package-level var values are both walked.
 //
 // UC: UC-043 A23
 func TestUC043_A23_SingleRealDefaultWriteSite(t *testing.T) {
-	calls := map[string][]string{} // selector -> enclosing "file:func"
-	root := ".."                   // services/agent
+	refs := map[string][]string{} // selector -> enclosing "file:decl"
+	root := ".."                  // services/agent
+	collect := func(path, owner string, node ast.Node) {
+		ast.Inspect(node, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if ok && (sel.Sel.Name == "SetRealDefault" || sel.Sel.Name == "writeTracked") {
+				refs[sel.Sel.Name] = append(refs[sel.Sel.Name], filepath.Base(path)+":"+owner)
+			}
+			return true
+		})
+	}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -269,21 +280,20 @@ func TestUC043_A23_SingleRealDefaultWriteSite(t *testing.T) {
 			return err
 		}
 		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				if decl.Body != nil {
+					collect(path, decl.Name.Name, decl.Body)
+				}
+			case *ast.GenDecl:
+				for _, spec := range decl.Specs {
+					if vs, ok := spec.(*ast.ValueSpec); ok {
+						for _, v := range vs.Values {
+							collect(path, "var", v)
+						}
+					}
+				}
 			}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if ok && (sel.Sel.Name == "SetRealDefault" || sel.Sel.Name == "writeTracked") {
-					calls[sel.Sel.Name] = append(calls[sel.Sel.Name], filepath.Base(path)+":"+fn.Name.Name)
-				}
-				return true
-			})
 		}
 		return nil
 	})
@@ -291,15 +301,15 @@ func TestUC043_A23_SingleRealDefaultWriteSite(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Run("UC-043/A23 SetRealDefault is called only in writeTracked", func(t *testing.T) {
-		if want := []string{"killswitch.go:writeTracked"}; !reflect.DeepEqual(calls["SetRealDefault"], want) {
-			t.Fatalf("SetRealDefault call sites = %v, want %v", calls["SetRealDefault"], want)
+		if want := []string{"killswitch.go:writeTracked"}; !reflect.DeepEqual(refs["SetRealDefault"], want) {
+			t.Fatalf("SetRealDefault references = %v, want %v", refs["SetRealDefault"], want)
 		}
 	})
 	t.Run("UC-043/A23 writeTracked is called only by promoteAutonomous and drainWrites", func(t *testing.T) {
-		got := append([]string(nil), calls["writeTracked"]...)
+		got := append([]string(nil), refs["writeTracked"]...)
 		want := []string{"actions.go:promoteAutonomous", "deferred.go:drainWrites"}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("writeTracked call sites = %v, want %v", got, want)
+			t.Fatalf("writeTracked references = %v, want %v", got, want)
 		}
 	})
 }

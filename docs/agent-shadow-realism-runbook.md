@@ -175,12 +175,21 @@ mounts source over the release image) or an agent recreated alone under another 
 that proxy: do not attest there. Changing `experiment.mock_archetypes` by a stack overlay (for
 example `talk-stage.sh`) leaves the attestation standing; removing it is then your job.
 
-**Attest.** Add the entry to the agent's environment, the same way `AGENT_AUTONOMOUS_ENABLED` is
-supplied (an overlay, never the stock compose file, D-A6), then recreate the agent:
+**Attest.** Add the entry to the agent's `environment:` in the compose overlay that already
+supplies `AGENT_AUTONOMOUS_ENABLED` (never the stock compose file, D-A6), then recreate the agent
+with that overlay. A bare shell assignment does nothing: compose does not pass the variable through.
+
+```yaml
+# <overlay>.yml
+services:
+  agent:
+    environment:
+      - AGENT_AUTONOMOUS_ENABLED=true
+      - AGENT_AUTONOMOUS_VALIDATED_OBJECTIVES=balanced@0.14.0   # comma list: balanced@0.14.0,endurance@0.14.0
+```
 
 ```bash
-AGENT_AUTONOMOUS_VALIDATED_OBJECTIVES=balanced@0.14.0      # comma list: balanced@0.14.0,endurance@0.14.0
-docker compose up -d agent
+docker compose -f docker-compose.yml -f <overlay>.yml up -d agent
 ```
 
 The release must be the plain release tag `.env` pins (`IMAGE_TAG=0.14.0`): `latest`, `main`,
@@ -195,7 +204,8 @@ upgrade puts every objective below the bar again until you attest it for the new
    (read per promotion and per waiting hold-key write). It does not undo a write already applied.
 2. To undo an applied write: the kill switch (`enabled` off, UC-043 A1), which also aborts every
    experiment and stops interventions, or delete that flag's `real` overlay by hand.
-3. Remove the entry from the environment and `docker compose up -d agent` to make it permanent.
+3. Remove the entry from the overlay and recreate the agent with it
+   (`docker compose -f docker-compose.yml -f <overlay>.yml up -d agent`) to make it permanent.
 
 A blocked promotion is journaled `discarded` with the reason
 `substrate_not_validated objective=<objective>`; the experiment ends `discarded` (UC-043 A4).
