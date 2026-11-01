@@ -251,7 +251,9 @@ clear_all
 touch "${WORK}/hang"
 : >"${WORK}/docker.log"
 seed_operator_overlays
-"${AB_RUN[@]}" --out "${WORK}/o14" >/dev/null 2>&1 &
+# A detached caller (nohup, a CI scope) hands down an ignored SIGHUP, which a shell cannot trap: reset it first.
+python3 -c 'import os, signal, sys; signal.signal(signal.SIGHUP, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])' \
+  "${AB_RUN[@]}" --out "${WORK}/o14" >/dev/null 2>&1 &
 pid=$!
 wait_until 20 profile_is variant:v1 || true
 kill -HUP "${pid}"
