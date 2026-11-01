@@ -24,6 +24,17 @@ Label mapping: `prometheus_remote_write` maps `service.name` to `job` prefixed w
 stripped the prefix (`job="game-coordinator-service"`); a dashboard query that filters on `job` must
 match the prefixed form, e.g. `job=~"(.+/)?agent"`.
 
+Resource attributes (Python services, `lib/otel_resource.py:get_otel_resource`, one Resource shared by traces, metrics and logs):
+
+| Attribute | Value | Why |
+|---|---|---|
+| `service.name` / `service.namespace` | `OTEL_SERVICE_NAME` / `OTEL_SERVICE_NAMESPACE` (default `joustmania`) | become `job` (see label mapping) |
+| `service.instance.id` | `<HOSTNAME>-<8 hex>`: the container id (`platform.node()` without `HOSTNAME`) plus a random suffix drawn once per process (a forked child draws its own) (#2543) | becomes `instance`. With `job` it is the series identity, so it must be unique per writing process: two processes with one identity interleave their cumulative counters into one series and every interleave is a counter reset (`rate()` / `increase()` wrong). The container id alone collided on the stage Pi on 2026-10-29 (two hosts booted from the same Docker state, 199 resets on `game_player_deaths_total` in 4 min). Cost: every process start is a new series (also a `docker restart`, which keeps the container id; a recreate already changed it); at a few restarts a day and 7 d retention this is accepted. Query across restarts with `sum without (instance)` |
+| `host.name` | `host.name` from `OTEL_RESOURCE_ATTRIBUTES` (compose: `JOUSTMANIA_HOST`, default `joustmania`), else `platform.node()` | topology; never part of the series identity |
+| `service.version`, `deployment.environment`, `container.name`, `process.*`, `telemetry.sdk.*` | env / runtime | land on `target_info` only |
+
+The Go services (agent, connect-proxy, flag-service) and rust-hid still use the bare `HOSTNAME` as `service.instance.id` (#2543 scope: Python services).
+
 Service identities (`OTEL_SERVICE_NAME` / namespace): `controller-manager-service`, `pairing-daemon`,
 `rust-hid`, `python-hid`, `connect-proxy`, `agent` (namespace `infrastructure`); `game-coordinator-service`,
 `menu-service`, `audio-service` (namespace `joustmania`) (`docker-compose.yml`).
