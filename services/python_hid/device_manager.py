@@ -474,7 +474,9 @@ class DeviceManager:
     def _read_device(self, serial: str, device: hid.device) -> SensorData | None:
         """Read latest HID report from a single device."""
         try:
-            data = None
+            parsed = None
+            last_raw = None
+            valid_raw = b""
             zcm2 = is_zcm2(self._product_ids.get(serial, 0))
             # Button bits of every report in this drain: a press released within it is kept
             # (UC-010 BR-012, rust-hid `read_latest_input`).
@@ -488,25 +490,32 @@ class DeviceManager:
                     break
                 if isinstance(report, list):
                     report = bytes(report)
-                if data is not None:
-                    # A short or malformed earlier report adds no buttons (rust-hid skips it too).
-                    with contextlib.suppress(ValueError):
-                        buttons_seen |= parse_input_report(data, zcm2=zcm2)["buttons"]
-                data = report
+                last_raw = report
+                try:
+                    candidate = parse_input_report(report, zcm2=zcm2)
+                except ValueError:
+                    # A short or malformed report is skipped: the last valid one and the
+                    # buttons seen so far survive (rust-hid `read_latest_input`).
+                    continue
+                parsed = candidate
+                buttons_seen |= candidate["buttons"]
+                valid_raw = report
 
-            if data is None:
+            if last_raw is None:
+                return None
+            if parsed is None:
+                # Nothing in the drain parsed: raise the parse error for the log below.
+                parse_input_report(last_raw, zcm2=zcm2)
                 return None
 
             # Diagnostic hex dump: log raw bytes when any button is pressed
-            if any(b != 0 for b in data[1:5]):
-                logger.debug(f"HID raw [{len(data)}B]: {data[:8].hex(' ')}")
-
-            parsed = parse_input_report(data, zcm2=zcm2)
+            if any(b != 0 for b in valid_raw[1:5]):
+                logger.debug(f"HID raw [{len(valid_raw)}B]: {valid_raw[:8].hex(' ')}")
 
             ax_raw, ay_raw, az_raw = parsed["accel"][1]
             gx_raw, gy_raw, gz_raw = parsed["gyro"][1]
 
-            buttons = parsed["buttons"] | buttons_seen
+            buttons = buttons_seen
 
             return SensorData(
                 serial=serial,

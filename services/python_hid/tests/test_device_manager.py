@@ -597,6 +597,36 @@ class TestLatestSampleSlots:
         dm._poll_all_devices()
         assert [s.button_cross for s in _drain(slot)] == [False]
 
+    @pytest.mark.uc("UC-002", flow="main", steps=[2])
+    def test_a_new_stream_flush_does_not_starve_a_running_stream(self):
+        """Stream A is running; B registers: B flushes, A keeps receiving (flush is per slot)."""
+        dm, device = _scripted_manager()
+        slot_a = dm.register_stream("a")
+        dm._poll_all_devices()  # A's flush poll
+        slot_b = dm.register_stream("b")
+
+        device.push(PRESS)
+        dm._poll_all_devices()
+        assert [s.button_cross for s in _drain(slot_a)] == [True]
+        assert _drain(slot_b) == []
+
+        device.push(RELEASE)
+        dm._poll_all_devices()
+        assert [s.button_cross for s in _drain(slot_a)] == [False]
+        assert [s.button_cross for s in _drain(slot_b)] == [False]
+
+    @pytest.mark.uc("UC-010", br=["BR-012"])
+    def test_a_malformed_last_report_keeps_the_earlier_valid_one_and_its_buttons(self):
+        """rust-hid `read_latest_input`: a bad tail report is skipped, the press is not lost."""
+        dm, device = _scripted_manager()
+        slot = dm.register_stream("tail")
+        dm._poll_all_devices()
+
+        device.push(PRESS, RELEASE, b"\x01\x02")
+        dm._poll_all_devices()
+
+        assert [s.button_cross for s in _drain(slot)] == [True]
+
     def test_a_replaced_sample_keeps_its_queue_position(self):
         slot = InputSlot()
         slot.offer(SensorData(**{**_sample_fields("A"), "button_cross": True}))
