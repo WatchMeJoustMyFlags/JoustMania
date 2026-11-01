@@ -49,6 +49,7 @@ rectangle "JoustMania" {
         usecase "UC-044\nSwitch the Decision Backend Live" as UC044
         usecase "UC-045\nStop the Agent with Flags" as UC045
         usecase "UC-046\nRun Repeatable Pattern-Driven Shadow Games" as UC046
+        usecase "UC-047\nRecalibrate the Shadow Players from Real Games" as UC047
     }
     package "Infrastructure" {
         usecase "UC-050\nRoll Out a Controller Backend Progressively\n(parked)" as UC050
@@ -99,6 +100,7 @@ operator --> UC035
 operator --> UC044
 operator --> UC045
 operator --> UC046
+operator --> UC047
 operator --> UC050
 operator --> UC052
 operator --> UC053
@@ -110,6 +112,7 @@ agent --> UC041
 agent --> UC042
 agent --> UC043
 agent --> UC046
+agent --> UC047
 agent --> UC051
 agent --> UC053
 
@@ -135,6 +138,7 @@ UC026 ..> UC030 : <<include>>
 UC040 ..> UC041 : <<include>>
 UC043 ..> UC041 : <<include>>
 UC043 ..> UC046 : <<include>>
+UC047 ..> UC046 : <<include>>
 UC051 ..> UC050 : <<extend>>
 UC070 ..> UC044 : <<include>>
 UC070 ..> UC045 : <<include>>
