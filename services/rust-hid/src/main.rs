@@ -522,6 +522,17 @@ mod tests {
     }
 
     #[test]
+    fn resource_carries_process_instance_id() {
+        use opentelemetry::Key;
+        let res = build_otel_resource();
+        let got = res
+            .get(&Key::from_static_str("service.instance.id"))
+            .expect("service.instance.id missing")
+            .to_string();
+        assert_eq!(got, process_instance_id("ignored"));
+    }
+
+    #[test]
     fn instance_id_is_stable_within_a_process() {
         let a = process_instance_id("host");
         assert_eq!(a, process_instance_id("other"));
