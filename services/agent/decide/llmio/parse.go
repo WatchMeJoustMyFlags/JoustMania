@@ -64,9 +64,12 @@ type wireAnswer struct {
 	Confidence    *float64          `json:"confidence"`
 }
 
+// wireOutput keeps each answer raw so the ffa.prediction entry is decoded on its
+// own (#2479): a wrongly typed field in it drops the prediction, never the
+// decision.
 type wireOutput struct {
-	Answers   []wireAnswer `json:"answers"`
-	Rationale string       `json:"rationale"`
+	Answers   []json.RawMessage `json:"answers"`
+	Rationale string            `json:"rationale"`
 }
 
 // Parse decodes raw model output (one JSON object matching AnswerSchema) into a
@@ -84,6 +87,12 @@ type wireOutput struct {
 //     at least 0.5 but less than 1, whose top entry exceeds the missing mass
 //     1-sum) is rescaled to sum to 1: the omitted options keep probability 0
 //     and the listed ones keep their ranking.
+//
+// With req.PredictionAsk set (#2479) the ffa.prediction answer is removed before
+// decide.Validate and checked by decide.ValidatePrediction: a passing one becomes
+// resp.Prediction (Source model), anything else sets resp.PredictionDropped; the
+// decision is valid or invalid exactly as without it. Without the ask Parse is
+// unchanged from v1: an ffa.prediction answer is an unknown question and invalid.
 //
 // Everything else (unknown question ids, duplicate answers, out-of-range
 // numbers, a choice that is not the most probable option) is left for
@@ -124,7 +133,26 @@ func Parse(req decide.Request, raw []byte, backend string) (decide.Response, err
 		Rationale: SanitizeRationale(out.Rationale),
 		Answers:   make([]decide.Answer, 0, len(out.Answers)),
 	}
-	for i, wa := range out.Answers {
+	// With the ask, the prediction answer is split off BEFORE anything else looks
+	// at it (#2479, UC-040 A45, BR-034): it is checked on its own below and can
+	// never make the decision malformed or invalid. Without the ask it stays an
+	// ordinary (unknown, so invalid) answer, exactly as in v1.
+	var predictions []json.RawMessage
+	for i, raw := range out.Answers {
+		var id struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &id); err != nil {
+			return decide.Response{}, fmt.Errorf("%w: answer %d: %v", ErrMalformed, i, clipErr(err))
+		}
+		if req.PredictionAsk != nil && id.ID == decide.QuestionFFAPrediction {
+			predictions = append(predictions, raw)
+			continue
+		}
+		var wa wireAnswer
+		if err := json.Unmarshal(raw, &wa); err != nil {
+			return decide.Response{}, fmt.Errorf("%w: answer %d: %v", ErrMalformed, i, clipErr(err))
+		}
 		a, err := toAnswer(wa, questions[wa.ID])
 		if err != nil {
 			return decide.Response{}, fmt.Errorf("%w: answer %d: %v", ErrMalformed, i, err)
@@ -134,7 +162,39 @@ func Parse(req decide.Request, raw []byte, backend string) (decide.Response, err
 	if err := decide.Validate(req, resp); err != nil {
 		return decide.Response{}, err
 	}
+	if req.PredictionAsk != nil {
+		resp.Prediction, resp.PredictionDropped = splitPrediction(*req.PredictionAsk, predictions, resp)
+	}
 	return resp, nil
+}
+
+// splitPrediction checks the model's answers to the prediction ask against the
+// validated decision in resp: exactly one answer, decodable, with a choice and
+// a numeric confidence, passing decide.ValidatePrediction. Only the choice and the
+// confidence are read. Parse calls it only when the ask was sent.
+func splitPrediction(ask decide.Question, answers []json.RawMessage, resp decide.Response) (*decide.Prediction, string) {
+	switch {
+	case len(answers) == 0:
+		return nil, decide.PredictionDropMissing
+	case len(answers) > 1:
+		return nil, decide.PredictionDropInconsistent
+	}
+	var choice struct {
+		Choice string `json:"choice"`
+	}
+	if err := json.Unmarshal(answers[0], &choice); err != nil {
+		return nil, decide.PredictionDropBadOption
+	}
+	var conf struct {
+		Confidence *float64 `json:"confidence"`
+	}
+	if err := json.Unmarshal(answers[0], &conf); err != nil || conf.Confidence == nil {
+		return nil, decide.PredictionDropBadConfidence
+	}
+	iv, _ := resp.Find(decide.QuestionFFAIntervention)
+	tgt, _ := resp.Find(decide.QuestionFFATarget)
+	a := decide.Answer{QuestionID: decide.QuestionFFAPrediction, Choice: choice.Choice, Confidence: *conf.Confidence}
+	return decide.ValidatePrediction(ask, a, iv.Choice, tgt.Choice)
 }
 
 func toAnswer(wa wireAnswer, q decide.Question) (decide.Answer, error) {

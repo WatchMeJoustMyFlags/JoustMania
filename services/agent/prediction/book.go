@@ -27,6 +27,7 @@ import (
 	"github.com/joustmania/agent/characteristics"
 	"github.com/joustmania/agent/decide"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamesummary"
 )
 
 // HorizonGrace is added to the horizon before the horizon check: one export
@@ -496,4 +497,26 @@ func (b *Book) emit(out []Result) {
 	for _, r := range out {
 		b.tel.outcome(b.root, r)
 	}
+}
+
+// SummaryOutcomes is Results in the shape the game summary and the retro read
+// (UC-042 A12): the finalized results of an ended game, nil when unknown. The
+// result carries the target serial; the cross-game window never keeps it.
+func (b *Book) SummaryOutcomes(gameID string) []gamesummary.PredictionOutcome {
+	results := b.Results(gameID)
+	if len(results) == 0 {
+		return nil
+	}
+	out := make([]gamesummary.PredictionOutcome, 0, len(results))
+	for _, r := range results {
+		p := r.Prediction
+		out = append(out, gamesummary.PredictionOutcome{
+			ID: r.ID, Backend: r.Backend, Source: p.Source, Template: p.Template,
+			Characteristic: p.Characteristic, Scope: p.Scope, Target: p.Target,
+			HorizonS: p.HorizonS, P: p.P, Rule: p.Rule, Acted: r.Acted,
+			Outcome: r.Outcome, UnscorableReason: r.UnscorableReason,
+			DecidedEarly: r.DecidedEarly, RegisteredAt: r.RegisteredAt,
+		})
+	}
+	return out
 }

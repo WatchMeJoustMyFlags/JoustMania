@@ -897,6 +897,14 @@
       },
       "defaultVariant": "on"
     },
+    "decision.predictions.ask_model": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
     "inference.backend": {
       "state": "ENABLED",
       "variants": {

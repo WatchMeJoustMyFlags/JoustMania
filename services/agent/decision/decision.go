@@ -260,6 +260,9 @@ type Loop struct {
 	// decide.discarded_reason (agent_decide_discarded_total{reason}, #2123).
 	// Defaults to the global meter provider's counter.
 	decideDiscarded otelmetric.Int64Counter
+	// predictionDropped counts model predictions dropped by llmio.Parse
+	// (agent_prediction_dropped_total{backend,reason}, #2479, UC-040 A45).
+	predictionDropped otelmetric.Int64Counter
 
 	// evaluations counts EVERY eval cycle (agent_evaluations_total{signal,outcome},
 	// #1053), so signal arrival is observable even on idle cycles where no rule fires
@@ -387,6 +390,7 @@ func NewLoop(flagSource FlagSource, log *slog.Logger) *Loop {
 		throttle:             DefaultThrottleInterval,
 		llmGated:             defaultLLMGatedCounter(),
 		decideDiscarded:      defaultDecideDiscardedCounter(),
+		predictionDropped:    defaultPredictionDroppedCounter(),
 		evaluations:          defaultEvaluationsCounter(),
 		decisions:            defaultDecisionsCounter(),
 		interventionsApplied: defaultInterventionsAppliedCounter(),

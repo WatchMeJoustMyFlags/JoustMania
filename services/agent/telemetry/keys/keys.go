@@ -479,4 +479,8 @@ const (
 	// AttrDecidePredictionMerged is true when an identical prediction was already
 	// pending: decide.prediction.id is that pending prediction's id.
 	AttrDecidePredictionMerged = "decide.prediction.merged"
+	// AttrDecidePredictionDroppedReason is why a model-stated prediction was
+	// dropped (missing, bad_option, bad_confidence, no_target, inconsistent; UC-040
+	// A45). Set on the accepted remote answer's agent.decide span only.
+	AttrDecidePredictionDroppedReason = "decide.prediction.dropped_reason"
 )

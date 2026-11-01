@@ -8,7 +8,10 @@ import (
 	otelmetric "go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 
+	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamesummary"
+	"github.com/joustmania/agent/prediction"
 )
 
 // gameend.go holds the game-end chain's handling of a stale end (UC-041 A4, #1494):
@@ -92,3 +95,11 @@ func buildGameEndChain(
 
 // globalMeterProvider is the process meter provider (otel.go installs it at startup).
 func globalMeterProvider() otelmetric.MeterProvider { return otel.GetMeterProvider() }
+
+// wirePredictionLookups hands the prediction Book's finalized results to the game
+// summary and the retro (#2479, UC-042 A12). The Book finalizes second in the
+// game-end chain, before either of them runs.
+func wirePredictionLookups(book *prediction.Book, summaries *gamesummary.Coordinator, retro *decision.RetroCoordinator) {
+	summaries.SetPredictionLookup(book.SummaryOutcomes)
+	retro.SetPredictionLookup(book.SummaryOutcomes)
+}

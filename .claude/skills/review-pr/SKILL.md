@@ -55,6 +55,10 @@ unexplained deviation as a finding.
    must? Async/await propagated? Flags read at use time?
    **C-035:** a new env-only tunable is a finding; runtime flexibility is a flag (requirements.md C-035 lists the exceptions). Proto RPC has its connect-proxy forwarding method?
    Spec IDs collide with open PRs? `Part of #N`, no closing keywords? Labels (`ci-full`, `no-spec-change`) right?
+   **Merge-gate edits (#1809, accepted risk):** the merge queue runs `.github/workflows/*.yml` from the queue
+   commit, so a PR that edits `.github/workflows/**` or `scripts/ci/review-gate.sh` can make the `Reviewed head`
+   gate pass itself. Review every such hunk adversarially (whatever the PR type): the gate must stay
+   `merge_group`-only, read-only, fail closed and keyed to the PR's current head; name the files in the verdict.
 3. **Mutation check.** In a SEPARATE detached worktree (`review-<PR>-mut`; the `pr-reviewer` agent rules), revert or weaken the core fix (`git show <fix> -- <file> | git apply -R`
    or a one-line edit), run the new tests: at least one must FAIL (hand the run to the Haiku `gate-runner` agent with
    `run x1 expect fail -- <command>`; it reports `MUTATION CAUGHT (assertion)`, `CAUGHT? (non-test error)` (not
@@ -89,8 +93,16 @@ unexplained deviation as a finding.
 Given `<old>..<new>` and the previous findings: review only `git diff <old>..<new>`, then state per previous
 finding `resolved | partly | not resolved` with file:line. New problems introduced by the delta are findings;
 untouched code is out of scope. Run only the gates the delta touches (`make pr-gates SERVICE=...`).
+A READY delta verdict names the NEW full head: the review status of `<old>` never carries over to `<new>`.
 
 ## After the verdict
+
+**Recording the reviewed head (#1809).** A READY verdict names the full 40-hex head you reviewed (re-read
+`gh pr view <PR> --json headRefOid` right before the verdict; a moved head means re-review, not READY). That line is
+the record: the orchestrator hands it to the `pr-merger` agent as `arm <PR> <full sha>`, which posts the
+`Reviewed head` status on exactly that SHA and arms auto-merge; GitHub merges from the queue. You never arm, post
+the status or merge yourself. A later push leaves the new head without a status, so GitHub cannot merge it until a
+delta review is READY and the new head is armed.
 
 Findings are fixed by a FRESH, small fixer agent (`implement-issue` fixer mode) that receives only the
 findings file, the PR number, head SHA and diff range. Do not hand them back to the original implementer.
@@ -99,7 +111,7 @@ Write findings to `<scratchpad>/review-<PR>-findings.md` in that shape.
 ## Verdict (hand back once, 15 lines or fewer; up to 40 only for blocked PRs)
 
 ```
-PR #<n> head <sha8>: READY | READY WITH CHANGES | BLOCKED   (depth: short|full|adversarial|delta)
+PR #<n> head <full 40-hex sha>: READY | READY WITH CHANGES | BLOCKED   (depth: short|full|adversarial|delta)
 Findings (ranked, most severe first):
   1. [blocker|major|minor] path/file.py:123: <problem> -> <fix>
 Mutation check: <what was weakened> -> <test> FAILED as expected | no test failed
