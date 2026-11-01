@@ -163,6 +163,7 @@ APPLY_SAMPLES = {
     "audio_cue": (None, "wolfdown", None),
     "controller_effect": (None, ":pulse", None),
     "end_game": (None, "", None),
+    "group_shield": (None, "p1,p2|5", None),
 }
 # flag_key -> value for the revert-to-neutral path.
 REVERT_SAMPLES = {

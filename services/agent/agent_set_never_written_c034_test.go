@@ -203,6 +203,9 @@ var c034WriterRows = []c034Row{
 			w := actions.NewWriter(svc, testLogger())
 			for _, iv := range c034Interventions(t) {
 				d := decision.Decision{Intervention: iv, GameID: c034GameID, TargetSerial: "00:06:f7:c0:34:01"}
+				if iv == decision.InterventionGrantGroupShield {
+					d.TargetSerials = []string{"00:06:f7:c0:34:01", "00:06:f7:c0:34:02"} // a group needs two (#2467)
+				}
 				err := w.Apply(context.Background(), d)
 				if c034NonWriting[iv] {
 					continue

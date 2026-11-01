@@ -450,6 +450,37 @@ def read_string_flag(domain: str, flag_key: str, default: str, game_id: str | No
         return default
 
 
+def read_bool_flag(domain: str, flag_key: str, default: bool, game_id: str | None = None) -> bool:
+    """
+    Read a boolean flag live, with a hardcoded fallback.
+
+    Per-call sibling of :func:`read_string_flag` for boolean switches read at use
+    time (e.g. the group-grant gate of #2467). On ANY failure (provider not
+    ready, missing flag, evaluation error, non-bool value) the supplied
+    ``default`` is returned, so a fail-closed caller passes ``False``.
+
+    Args:
+        domain: OpenFeature domain / flagSetId (e.g. "agent")
+        flag_key: Boolean flag key (e.g. "policy.group_grant.enabled")
+        default: Fallback value returned on any error or missing flag
+        game_id: Optional owning game id; added as the ``gameId`` context.
+
+    Returns:
+        The flag's bool value, or ``default`` on failure.
+    """
+    try:
+        init_flag_domain(domain)
+        client = get_flag_client(domain)
+        details = client.get_boolean_details(flag_key, default, _calibration_context(game_id))
+        if _report_details_error(flag_key, details):
+            return default
+        value = details.value
+        return value if isinstance(value, bool) else default
+    except Exception as e:
+        _report_exception(flag_key, e)
+        return default
+
+
 def read_int_flag(domain: str, flag_key: str, default: int, game_id: str | None = None) -> int:
     """
     Read an integer-typed flag once at init time, with a hardcoded fallback.

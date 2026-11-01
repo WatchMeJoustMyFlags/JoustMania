@@ -98,6 +98,7 @@ class FakeInterventionGame:
         self.killed: list[str] = []
         self.revived: list[str] = []
         self.shields: list[tuple[str, float]] = []
+        self.group_shields: list[tuple[list[str], float, frozenset[str]]] = []
         self.toughness_boosts: list[tuple[str, float, float | None]] = []
         self.warned: list[str] = []
         self.tightened: list[str] = []
@@ -134,6 +135,10 @@ class FakeInterventionGame:
 
     async def grant_shield(self, serial, seconds):
         self.shields.append((serial, seconds))
+        return True
+
+    async def grant_group_shield(self, serials, seconds, *, low_battery=frozenset()):
+        self.group_shields.append((list(serials), seconds, frozenset(low_battery)))
         return True
 
     async def grant_toughness_boost(self, serial, seconds, boost=None):
