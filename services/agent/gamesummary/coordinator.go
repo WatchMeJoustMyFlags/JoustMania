@@ -263,6 +263,8 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 	goalProfile, goalAttainment := "", -1.0
 	if g := summary.Goal; g != nil {
 		goalProfile = g.Profile
+		// Same values as goal.SourceNamed / goal.SourceFromObjectives; goal imports
+		// gamesummary, so the constants cannot be imported here without a cycle.
 		source := "named"
 		if g.FromObjectives {
 			source = "from_objectives"

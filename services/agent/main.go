@@ -799,7 +799,7 @@ func (c *components) newDecisionLoop(gameID string) *decision.Loop {
 	// decision.prompt_profile (v1 on any read error).
 	loop.SetPromptProfileSource(c.agentFlags.PromptProfile)
 	// #2479: goal.profile in the game's flag context, for the prompt's goal lines
-	// (only under decision.goal_in_prompt or the neutral profile).
+	// (only under decision.goal_in_prompt).
 	loop.SetGoalSource(c.goalProfile)
 	// UC-040 BR-029 (#2395): a grant_shield without a value gets the
 	// interventions/shield_seconds "default" variant, read at use time through the
