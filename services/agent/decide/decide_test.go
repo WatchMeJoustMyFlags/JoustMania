@@ -32,8 +32,11 @@ func sampleCtx() gamecontext.GameContext {
 	c.Session.DeathThreshold = fptr(2.3)
 	c.Session.EliminationSequence = []string{"C"}
 	c.Players["A"] = &gamecontext.PlayerSignals{Serial: "A", Active: bptr(true), MovementIntensity: fptr(0.4), SkillLevel: fptr(0.8), BatteryPct: fptr(60),
-		History: []gamecontext.MovementSample{{At: base, Intensity: 0.2}, {At: base.Add(time.Second), Intensity: 1.9}}}
-	c.Players["B"] = &gamecontext.PlayerSignals{Serial: "B", Active: bptr(true), MovementIntensity: fptr(1.1), SkillLevel: fptr(0.3)}
+		History: []gamecontext.MovementSample{{At: base.Add(28 * time.Second), Intensity: 0.2}, {At: base.Add(29 * time.Second), Intensity: 1.9}}}
+	// #2514: B carries a fresh reading too, so both alive players' readings are live
+	// at UpdatedAt and the state keeps their values (UC-040 A50).
+	c.Players["B"] = &gamecontext.PlayerSignals{Serial: "B", Active: bptr(true), MovementIntensity: fptr(1.1), SkillLevel: fptr(0.3),
+		History: []gamecontext.MovementSample{{At: base.Add(29 * time.Second), Intensity: 1.1}}}
 	c.Players["C"] = &gamecontext.PlayerSignals{Serial: "C", Active: bptr(false)}
 	c.Timeline = []gamecontext.TimelineEvent{
 		{At: base, Kind: gamecontext.EventPhase, Detail: "start"},
