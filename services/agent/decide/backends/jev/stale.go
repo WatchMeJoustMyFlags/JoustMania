@@ -32,3 +32,41 @@ func freshOptions(options []string, st decide.State) []string {
 	}
 	return out
 }
+
+// withoutUntargetable is ffa.intervention q without the levers that need fresh
+// readings while no alive player of st has fresh readings (the first second of a
+// game, an agent restart, a stalled export; UC-040 A50, BR-039, #2514): such a
+// lever has no target candidate, so offering it would only waste the round. q is
+// returned as is when an alive player is fresh or none is alive, when it offers none of those
+// levers, or when nothing but noop would be left (the details stage's
+// no-candidate path covers that).
+func withoutUntargetable(q decide.Question, st decide.State) decide.Question {
+	alive := 0
+	for _, p := range st.Players {
+		if !p.Alive {
+			continue
+		}
+		if !p.ReadingsStale {
+			return q
+		}
+		alive++
+	}
+	if alive == 0 {
+		return q
+	}
+	out := decide.Question{ID: q.ID, Kind: q.Kind, Text: q.Text, Range: q.Range}
+	acting := false
+	for _, o := range q.Options {
+		if decide.NeedsFreshReadings(o) {
+			continue
+		}
+		out.Options = append(out.Options, o)
+		if o != decide.OptionNoop {
+			acting = true
+		}
+	}
+	if !acting || len(out.Options) == len(q.Options) {
+		return q
+	}
+	return out
+}

@@ -112,7 +112,9 @@ func splitStages(req decide.Request) stagePlan {
 		case q.ID == decide.QuestionFFAIntervention && gateable(q):
 			orig := q
 			p.gated = &orig
-			p.first.Questions = append(p.first.Questions, gateQuestion(), withoutNoop(q))
+			p.first.Questions = append(p.first.Questions, gateQuestion(), withoutNoop(withoutUntargetable(q, req.State)))
+		case q.ID == decide.QuestionFFAIntervention:
+			p.first.Questions = append(p.first.Questions, withoutUntargetable(q, req.State))
 		default:
 			p.first.Questions = append(p.first.Questions, q)
 		}

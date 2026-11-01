@@ -22,11 +22,15 @@ func staleA(h remoteHarness) {
 
 // UC: UC-040 A50 BR-039
 func TestRemote_TargetStale(t *testing.T) {
-	t.Run("UC-040/A50 grant_shield to a player with stale readings is discarded", func(t *testing.T) {
-		be := newFakeDecideBackend(ffaAnswer("grant_shield", 0.95, "A", 0.5, "x"))
-		h, span := fireAndMutate(t, be, time.Hour, staleA)
-		assertDiscarded(t, h, span, DiscardTargetStale)
-	})
+	for _, iv := range decide.FreshReadingsLevers() {
+		t.Run("UC-040/A50 "+iv+" to a player with stale readings is discarded", func(t *testing.T) {
+			snap := remoteSnapshot(time.Hour)
+			snap.InterventionsAllowed = append(snap.InterventionsAllowed, iv)
+			be := newFakeDecideBackend(ffaAnswer(iv, 0.95, "A", 0.5, "x"))
+			h, span := fireAndMutateSnapshot(t, be, snap, time.Hour, staleA)
+			assertDiscarded(t, h, span, DiscardTargetStale)
+		})
+	}
 
 	t.Run("UC-040/BR-039 a lever without a fresh-readings rule still acts on that player", func(t *testing.T) {
 		snap := remoteSnapshot(time.Hour)

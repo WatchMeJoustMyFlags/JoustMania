@@ -58,3 +58,52 @@ func TestPlanDetails_ReadingsStale(t *testing.T) {
 		}
 	})
 }
+
+// stage1Options is the options of stage 1's ffa.intervention question of req.
+func stage1Options(t *testing.T, req decide.Request) []string {
+	t.Helper()
+	for _, q := range splitStages(req).first.Questions {
+		if q.ID == decide.QuestionFFAIntervention {
+			return q.Options
+		}
+	}
+	t.Fatal("stage 1 has no ffa.intervention question")
+	return nil
+}
+
+// UC: UC-040 A50 BR-039
+func TestSplitStages_NoFreshPlayer(t *testing.T) {
+	allStale := func() decide.Request {
+		c := lopsidedContext()
+		for _, p := range c.Players {
+			p.History = nil
+		}
+		st := decide.BuildState(c)
+		return decide.Request{State: st, Questions: decide.FFAQuestions(st, fullInterventions)}
+	}
+	t.Run("UC-040/BR-039 with no fresh alive player stage 1 offers no fresh-readings lever", func(t *testing.T) {
+		got := stage1Options(t, allStale())
+		for _, iv := range decide.FreshReadingsLevers() {
+			if contains(got, iv) {
+				t.Errorf("stage 1 offers %s with no fresh player: %v", iv, got)
+			}
+		}
+		if !contains(got, decide.IntvEliminatePlayer) || !contains(got, decide.IntvAdjustMusicTempo) {
+			t.Errorf("stage 1 lost a lever that needs no fresh readings: %v", got)
+		}
+	})
+	t.Run("UC-040/BR-039 the caller's question keeps every option", func(t *testing.T) {
+		req := allStale()
+		if g := splitStages(req).gated; g == nil || !reflect.DeepEqual(g.Options, req.Questions[0].Options) {
+			t.Errorf("gated question = %+v, want the caller's options %v", g, req.Questions[0].Options)
+		}
+	})
+	t.Run("UC-040/BR-039 one fresh alive player keeps the levers", func(t *testing.T) {
+		got := stage1Options(t, staleRequest())
+		for _, iv := range decide.FreshReadingsLevers() {
+			if !contains(got, iv) {
+				t.Errorf("stage 1 lacks %s although players are fresh: %v", iv, got)
+			}
+		}
+	})
+}
