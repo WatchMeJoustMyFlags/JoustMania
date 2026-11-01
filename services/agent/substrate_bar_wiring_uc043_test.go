@@ -13,7 +13,7 @@ import (
 func TestUC043_A23_BuildPromoterSetsTheBarFromEnv(t *testing.T) {
 	for _, tc := range []struct {
 		name, env, version string
-		balanced          bool
+		balanced           bool
 	}{
 		{"unset env validates nothing", "", "0.14.0", false},
 		{"an entry for the running release counts", "balanced@0.14.0", "0.14.0", true},

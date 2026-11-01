@@ -256,7 +256,7 @@ func TestUC043_A23_ParseValidatedObjectives(t *testing.T) {
 // UC: UC-043 A23
 func TestUC043_A23_SingleRealDefaultWriteSite(t *testing.T) {
 	calls := map[string][]string{} // selector -> enclosing "file:func"
-	root := ".."                    // services/agent
+	root := ".."                   // services/agent
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
