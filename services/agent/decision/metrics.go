@@ -62,6 +62,30 @@ func defaultDecideDiscardedCounter() otelmetric.Int64Counter {
 	return newDecideDiscardedCounter(otel.GetMeterProvider())
 }
 
+// MetricPredictionDropped counts model predictions dropped by llmio.Parse.
+const MetricPredictionDropped = "agent_prediction_dropped_total"
+
+// newPredictionDroppedCounter builds agent_prediction_dropped_total (#2479,
+// UC-040 A45): one increment per accepted remote answer whose model prediction
+// was dropped, labeled backend (claude, openai) and reason (missing, bad_option,
+// bad_confidence, no_target, inconsistent: a closed set). An instrument-creation
+// error yields a no-op counter, like newLLMGatedCounter.
+func newPredictionDroppedCounter(mp otelmetric.MeterProvider) otelmetric.Int64Counter {
+	c, err := mp.Meter(decisionMeterName).Int64Counter(
+		MetricPredictionDropped,
+		otelmetric.WithDescription("Model-stated decision predictions dropped as invalid, labeled by backend and reason (#2479)"),
+	)
+	if err != nil {
+		c, _ = metricnoop.NewMeterProvider().Meter(decisionMeterName).Int64Counter(MetricPredictionDropped)
+	}
+	return c
+}
+
+// defaultPredictionDroppedCounter is the Loop's counter until one is injected.
+func defaultPredictionDroppedCounter() otelmetric.Int64Counter {
+	return newPredictionDroppedCounter(otel.GetMeterProvider())
+}
+
 // newEvaluationsCounter builds the agent_evaluations_total counter from the given
 // meter provider (#1053). Unlike the audit trace — which is emitted ONLY when the
 // rules engine returns ≥1 decision — this counter is incremented on EVERY eval

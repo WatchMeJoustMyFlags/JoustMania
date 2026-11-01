@@ -47,7 +47,8 @@ const (
 	// SourceLeverDefault: the per-intervention default for a backend that stated
 	// none (it scores the lever map, not the model).
 	SourceLeverDefault = "lever_default"
-	// SourceModel: stated by a model (not produced yet, #2479 PR D).
+	// SourceModel: stated by a model in answer to Request.PredictionAsk
+	// (claude, openai; opt-in by decision.predictions.ask_model).
 	SourceModel = "model"
 	// SourceControl: a base-rate control the agent registers itself.
 	SourceControl = "control"

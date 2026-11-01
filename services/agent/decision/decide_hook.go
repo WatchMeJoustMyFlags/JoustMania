@@ -617,6 +617,12 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		start:     start,
 		stateAt:   c.UpdatedAt,
 	}
+	// The prediction ask (#2479, UC-040 A45): only with decision.predictions.ask_model
+	// and decision.predictions_enabled on (fire-time flags) and a claude or openai
+	// backend; otherwise the request stays v1.
+	if askModelPrediction(fired, rec.used) {
+		rec.req.PredictionAsk = decide.PredictionQuestion(rec.req.State)
+	}
 	// Fire-time threshold: only a placeholder for spans that end before landing
 	// (none are routed then); the landing re-read below overwrites it with the
 	// LIVE effective threshold, which is what routing uses.
@@ -626,6 +632,7 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		if rec.discardedReason != "" {
 			l.decideDiscarded.Add(root, 1, otelmetric.WithAttributes(attribute.String("reason", rec.discardedReason)))
 		}
+		l.countPredictionDropped(root, rec)
 	}()
 
 	callCtx, cancel := context.WithTimeout(spanCtx, timeout)
@@ -779,7 +786,7 @@ func (l *Loop) decideRemoteApply(ctx context.Context, snapshot flags.Snapshot, c
 	// one), registered when the record ends: acted, or a counterfactual when held,
 	// blocked or discarded. Not when the game is gone: nothing could be scored.
 	if ok && gameActive(current) {
-		rec.prediction, rec.predictionCtx = remotePrediction(rec.resp, d, current), &current
+		rec.prediction, rec.predictionCtx = remotePrediction(rec.req, rec.resp, d, current), &current
 	}
 	if rec.confidence < rec.threshold {
 		rec.outcome = DecideOutcomeHeld
@@ -956,6 +963,7 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 		}
 	}
 	attrs = append(attrs, predictionAttributes(rec)...)
+	attrs = append(attrs, droppedPredictionAttributes(rec)...)
 	if rec.err != nil {
 		attrs = append(attrs, semconv.ErrorTypeKey.String(decideErrorType(rec)))
 		span.SetStatus(codes.Error, rec.fallbackReason)
