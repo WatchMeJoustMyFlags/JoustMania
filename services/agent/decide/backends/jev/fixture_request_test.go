@@ -140,7 +140,7 @@ func draggingRequest() decide.Request {
 // intervention, exactly as Decide builds it after stage 1 (#1262).
 func detailsRequest(req decide.Request, iv string) detailsPlan {
 	details := splitStages(req).details
-	return planDetails(req.State, req.PromptProfile, decide.Answer{QuestionID: decide.QuestionFFAIntervention, Choice: iv, Confidence: 0.5}, details)
+	return planDetails(req, decide.Answer{QuestionID: decide.QuestionFFAIntervention, Choice: iv, Confidence: 0.5}, details)
 }
 
 // tooFastContext is an FFA round that is collapsing: four of six players out

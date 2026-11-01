@@ -17,8 +17,8 @@ import (
 )
 
 // UC: UC-042 A12 BR-009
-// goal_lines_fr201_test.go: a claude or openai request carries the goal lines
-// only under decision.goal_in_prompt or the neutral profile (#2479, FR-201,
+// goal_lines_fr201_test.go: a claude, openai or jev (#2498) request carries the
+// goal lines only under decision.goal_in_prompt, never for neutral alone (#2479, FR-201,
 // decide-contract.md §14.4). Under v1 with goal_in_prompt off the request, and so
 // the prompt bytes, are unchanged.
 
@@ -101,10 +101,20 @@ func TestRemote_GoalLines(t *testing.T) {
 			t.Fatal("neutral with goal lines must carry the goal line and no prose goal")
 		}
 	})
-	t.Run("UC-042/A12 jev gets no goal lines (no goal criterion yet)", func(t *testing.T) {
-		r := runGoal(t, true, "neutral", flags.DecisionBackendJev)
-		if _, ok := r.attr(keys.AttrDecideGoalProfile); r.req.Goal != nil || ok {
-			t.Fatalf("jev goal lines %+v, span attribute %v", r.req.Goal, ok)
+	t.Run("UC-042/A12 jev gets the goal lines under goal_in_prompt (#2498), in both profiles", func(t *testing.T) {
+		for _, profile := range []string{"v1", "neutral"} {
+			r := runGoal(t, true, profile, flags.DecisionBackendJev)
+			if got, ok := r.attr(keys.AttrDecideGoalProfile); r.req.Goal == nil || !ok || got != goal.NameLongRunningGame {
+				t.Fatalf("%s: jev goal lines %+v, span attribute %q (%v)", profile, r.req.Goal, got, ok)
+			}
+		}
+	})
+	t.Run("UC-042/A12 jev with goal_in_prompt off gets no goal lines, neutral included", func(t *testing.T) {
+		for _, profile := range []string{"v1", "neutral"} {
+			r := runGoal(t, false, profile, flags.DecisionBackendJev)
+			if _, ok := r.attr(keys.AttrDecideGoalProfile); r.req.Goal != nil || ok {
+				t.Fatalf("%s: jev goal lines %+v, span attribute %v", profile, r.req.Goal, ok)
+			}
 		}
 	})
 	t.Run("UC-042/BR-009 the goal lines change neither the request's state and questions nor what lands", func(t *testing.T) {

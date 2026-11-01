@@ -280,6 +280,10 @@ type entry struct {
 	patternGames      map[string]int
 	patternTimeouts   map[string]int
 	patternAgentEnded map[string]int
+	// calibration is the per-arm prediction tally (UC-043 A21, BR-010, #2498):
+	// in memory only, never journaled, never read by the verdict; a restart or a
+	// rehydrate starts it empty.
+	calibration map[string]PredictionTally
 }
 
 // inFlight returns the experiment's current count of live (unconcluded) shadow

@@ -655,8 +655,8 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		rec.req.PredictionAsk = decide.PredictionQuestion(rec.req.State)
 	}
 	// The goal lines (#2479, decide-contract.md §14.4): only under
-	// decision.goal_in_prompt, and only for claude or openai (jev's typed wire
-	// format has no goal criterion yet); otherwise the request stays byte-identical.
+	// decision.goal_in_prompt, and only for claude, openai or jev (jev's goal state
+	// and gate criterion, #2498); otherwise the request stays byte-identical.
 	rec.req.Goal = l.goalLines(root, fired, rec.used, c)
 	// Fire-time threshold: only a placeholder for spans that end before landing
 	// (none are routed then); the landing re-read below overwrites it with the

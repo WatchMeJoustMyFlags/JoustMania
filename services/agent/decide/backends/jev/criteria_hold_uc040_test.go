@@ -71,7 +71,7 @@ func TestEncodeState_Hold(t *testing.T) {
 	t.Run("UC-040/A36 the wire carries the hold values in a hold game only", func(t *testing.T) {
 		st := holdState(t, 12)
 		st.Players[0].ShieldEnergyS = f64(math.NaN())
-		raw, err := json.Marshal(encodeState(st, ""))
+		raw, err := json.Marshal(encodeState(st, "", nil))
 		if err != nil {
 			t.Fatalf("marshal: %v (a NaN must be dropped)", err)
 		}
@@ -80,7 +80,7 @@ func TestEncodeState_Hold(t *testing.T) {
 				t.Errorf("wire lacks %s: %s", want, raw)
 			}
 		}
-		plain, _ := json.Marshal(encodeState(testRequest().State, ""))
+		plain, _ := json.Marshal(encodeState(testRequest().State, "", nil))
 		if strings.Contains(string(plain), "shield_") {
 			t.Errorf("non-hold wire carries shield fields: %s", plain)
 		}

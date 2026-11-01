@@ -138,6 +138,19 @@ type jevState struct {
 	ShieldBudgetS      *float64 `json:"shield_budget_s,omitempty"`
 	ShieldRechargePerS *float64 `json:"shield_recharge_per_s,omitempty"`
 	ShieldMinBurstS    *float64 `json:"shield_min_burst_s,omitempty"`
+	// Goal is the request's goal (#2498, decide-contract.md §14.4): set only when
+	// Request.Goal is (decision.goal_in_prompt on, a profile with terms), absent
+	// otherwise, so a goal-off body is byte-identical to the one before.
+	Goal *jevGoal `json:"goal,omitempty"`
+}
+
+// jevGoal is Request.Goal as structured state: the profile name, its target
+// bands and the game's running values (the same lines llmio renders as "goal:"
+// and "now:"). It describes the game; it never names a lever.
+type jevGoal struct {
+	Profile string `json:"profile"`
+	Targets string `json:"targets"`
+	Now     string `json:"now"`
 }
 
 type jevQuestion struct {
@@ -198,7 +211,7 @@ func encodeRequest(model string, req decide.Request, chosen string) (wireRequest
 		}
 		questions[q.ID] = jq
 	}
-	body, err := json.Marshal(jevRequest{Model: model, State: encodeState(req.State, chosen), Questions: questions})
+	body, err := json.Marshal(jevRequest{Model: model, State: encodeState(req.State, chosen, req.Goal), Questions: questions})
 	if err != nil {
 		return wireRequestOut{}, fmt.Errorf("jev: marshal request: %w", err)
 	}
@@ -218,7 +231,7 @@ func encodeQuestion(q decide.Question, req decide.Request, chosen string) (jevQu
 	case decide.KindNoul:
 		jq := jevQuestion{Type: typeNoul, Instructions: q.Text}
 		if c, ok := noulCriteria[q.ID]; ok {
-			jq.Criteria = c
+			jq.Criteria = withGoal(q.ID, c, req.Goal)
 		}
 		return jq, nil
 	default:
@@ -226,9 +239,10 @@ func encodeQuestion(q decide.Question, req decide.Request, chosen string) (jevQu
 	}
 }
 
-// encodeState copies st into the wire state. Jev rejects non-finite numbers
-// (400), so an unobservable NaN/Inf reading is dropped like a missing one.
-func encodeState(st decide.State, chosen string) jevState {
+// encodeState copies st (and goal, when set) into the wire state. Jev rejects
+// non-finite numbers (400), so an unobservable NaN/Inf reading is dropped like a
+// missing one.
+func encodeState(st decide.State, chosen string, goal *decide.GoalLines) jevState {
 	players := make([]decide.PlayerState, len(st.Players))
 	for i, p := range st.Players {
 		p.Intensity = finiteOrNil(p.Intensity)
@@ -264,8 +278,20 @@ func encodeState(st decide.State, chosen string) jevState {
 		ShieldMinBurstS:    finiteOrNil(st.ShieldMinBurstS),
 
 		ChosenIntervention: chosen,
+		Goal:               wireGoal(goal),
 	}
 }
+
+// wireGoal is goal as jevGoal, nil when there is none.
+func wireGoal(g *decide.GoalLines) *jevGoal {
+	if g == nil {
+		return nil
+	}
+	return &jevGoal{Profile: oneLine(g.Profile), Targets: oneLine(g.Goal), Now: oneLine(g.Now)}
+}
+
+// oneLine collapses whitespace, as llmio does for the goal lines.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func finiteOrNil(v *float64) *float64 {
 	if v == nil || !isFinite(*v) {

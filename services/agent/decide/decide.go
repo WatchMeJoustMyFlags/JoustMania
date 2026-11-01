@@ -215,7 +215,8 @@ type Request struct {
 	// openai; nil (the default) leaves the rendered prompt byte-identical to v1.
 	PredictionAsk *Question `json:"prediction_ask,omitempty"`
 	// Goal is the optional pair of goal lines (#2479, decide-contract.md §14.4),
-	// set on a claude or openai request only under decision.goal_in_prompt, and
+	// set on a claude, openai or jev (#2498) request only under
+	// decision.goal_in_prompt, and
 	// only for a goal with terms. It is outside State,
 	// so the Digest does not cover it; with it nil the user message is
 	// byte-identical to v1.

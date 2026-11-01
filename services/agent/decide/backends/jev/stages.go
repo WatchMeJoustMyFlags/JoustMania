@@ -104,7 +104,7 @@ func splitStages(req decide.Request) stagePlan {
 	if !hasIntervention {
 		return stagePlan{first: req, stage: StageSingle}
 	}
-	p := stagePlan{first: decide.Request{State: req.State, PromptProfile: req.PromptProfile}, stage: StageIntervention}
+	p := stagePlan{first: decide.Request{State: req.State, PromptProfile: req.PromptProfile, Goal: req.Goal}, stage: StageIntervention}
 	for _, q := range req.Questions {
 		switch {
 		case isDetail(q):
@@ -215,10 +215,12 @@ type detailsPlan struct {
 }
 
 // planDetails decides which detail questions need Jev for the chosen
-// intervention iv (with acting confidence iv.Confidence); profile is the
-// request's prompt profile, carried into the details request (#2467).
-func planDetails(st decide.State, profile string, iv decide.Answer, details []decide.Question) detailsPlan {
-	p := detailsPlan{intervention: iv.Choice, ask: decide.Request{State: st, PromptProfile: profile}}
+// intervention iv (with acting confidence iv.Confidence). req is the caller's
+// request: its state, its prompt profile (#2467) and its goal lines (#2498) are
+// carried into the details request.
+func planDetails(req decide.Request, iv decide.Answer, details []decide.Question) detailsPlan {
+	st, profile := req.State, req.PromptProfile
+	p := detailsPlan{intervention: iv.Choice, ask: decide.Request{State: st, PromptProfile: profile, Goal: req.Goal}}
 	acting := iv.Choice != decide.OptionNoop
 	playerScoped := acting && decide.PlayerTargeted(iv.Choice)
 	var alive []string
