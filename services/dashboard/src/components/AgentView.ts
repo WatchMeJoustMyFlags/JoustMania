@@ -35,6 +35,7 @@ import type {
   PredictionStrip,
 } from "../agent.js";
 import { confidenceBar, decisionTargetLabel, jaegerTraceUrl } from "../agent.js";
+import type { GameGoal } from "../agent.js";
 import { FLAG_STATE_NO_DATA } from "../degrade.js";
 
 /**
@@ -110,10 +111,11 @@ export class AgentView {
 
     // Leave the DOM alone when nothing changed: rebuilding it would restart the
     // highlight animations and drop an open hover tooltip on every poll.
-    const stripKey = (feed.current ? decideStripKey(feed.current) : "") + predictionStripKey(feed.predictionStrip ?? null);
+    const stripKey =
+      (feed.current ? decideStripKey(feed.current) : "") + predictionStripKey(feed.predictionStrip ?? null) + goalStripKey(feed.goal ?? null);
     if (stripKey !== this.lastStripKey) {
       const switched = !!this.lastStripKey && !!stripKey;
-      setHtml(this.decideStripEl, html`${decideStripHtml(feed.current, switched)}${predictionStripHtml(feed.predictionStrip ?? null)}`);
+      setHtml(this.decideStripEl, html`${decideStripHtml(feed.current, switched)}${predictionStripHtml(feed.predictionStrip ?? null)}${goalStripHtml(feed.goal ?? null)}`);
       this.lastStripKey = stripKey;
     }
 
@@ -538,6 +540,38 @@ function predictionStripHtml(strip: PredictionStrip | null): SafeHtml {
         ${counterfactual}
       </div>
       <div class="decide-strip-item decide-strip-time">${renderGameBadge(strip.gameId, strip.gameKind)}</div>
+    </div>`;
+}
+
+const GOAL_SOURCE_LABEL: Record<string, string> = {
+  named: "named profile",
+  from_objectives: "from the objectives",
+};
+
+/** The per-game goal strip: profile, where it came from and the attainment (#2498). */
+export function renderGoalStrip(goal: GameGoal | null): string {
+  return goalStripHtml(goal).toString();
+}
+
+export function goalStripKey(goal: GameGoal | null): string {
+  return goal ? `|goal|${goal.gameId}|${goal.profile}|${goal.source}|${goal.attainment ?? ""}` : "";
+}
+
+function goalStripHtml(goal: GameGoal | null): SafeHtml {
+  if (!goal) return html``;
+  const attainment =
+    goal.attainment === null
+      ? html`<span class="decide-strip-dim" title="no goal term could be measured in this game">attainment n/a</span>`
+      : html`attainment <b>${Math.round(goal.attainment * 100)}%</b>`;
+  return html`
+    <div class="decide-strip decide-goal-strip">
+      <div class="decide-strip-item">
+        <span class="decide-strip-key">goal</span>
+        <span class="decide-goal-profile">${goal.profile}</span>
+        <span class="decide-strip-dim">(${GOAL_SOURCE_LABEL[goal.source] ?? goal.source})</span>
+        ${attainment}
+      </div>
+      <div class="decide-strip-item decide-strip-time">${renderGameBadge(goal.gameId, goal.gameKind)}</div>
     </div>`;
 }
 

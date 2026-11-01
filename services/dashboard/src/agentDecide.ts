@@ -2,6 +2,8 @@
 
 import { incrementalStartMs, searchTracesSized, spanStartMs, spanTags, tagBool, tagBoolOrNull, tagNumber, tagString, parentSpanId } from "./jaeger.js";
 import type { JaegerSpan, JaegerTracesResponse, SearchSpec } from "./jaeger.js";
+import { GoalStore } from "./agentGoal.js";
+import type { GameGoal } from "./agentGoal.js";
 import { pickAnchor } from "./agentAnchor.js";
 import type { DecideFollow } from "./agentAnchor.js";
 import { parseFlagStates } from "./agentFlags.js";
@@ -292,6 +294,8 @@ export interface DecideFeed {
   outcomes?: PredictionOutcomeSpan[];
   /** The followed game's hit rate vs control base rate per source (#2479); null without outcomes. */
   predictionStrip?: PredictionStrip | null;
+  /** The followed game's goal profile and attainment (#2498); null until its summary exists. */
+  goal?: GameGoal | null;
 }
 
 /** One source's acted predictions of a game against the controls' base rate. */
@@ -701,6 +705,7 @@ export class DecideStore {
   private follow: DecideFollow = { realGameLive: null, followGameId: "" };
   private readonly windows = new Map<string, QueryWindow>();
   private readonly outcomes = new Map<string, PredictionOutcomeSpan>();
+  private readonly goals = new GoalStore();
 
   constructor(
     private readonly max = MAX_DECIDE_ROWS,
@@ -729,6 +734,16 @@ export class DecideStore {
       this.outcomes.clear();
       for (const o of keep) this.outcomes.set(o.id, o);
     }
+  }
+
+  /** Merge the goals of the game summaries a search returned (#2498). */
+  mergeGoals(goals: GameGoal[]): void {
+    this.goals.merge(goals);
+  }
+
+  /** True when the summary goal of `gameId` is already held (#2498). */
+  hasGoal(gameId: string): boolean {
+    return this.goals.has(gameId);
   }
 
   /** Next query start of `lane` (agent clock), null before its first decide. */
@@ -762,6 +777,7 @@ export class DecideStore {
       rows,
       current,
       predictionStrip: current ? predictionStripFrom(this.outcomes.values(), current.gameId) : null,
+      goal: current ? this.goals.forGame(current.gameId) : null,
     };
   }
 

@@ -40,4 +40,3 @@ func TestBuildSummary_InPlaceIsNotAnIntervention(t *testing.T) {
 		}
 	})
 }
-

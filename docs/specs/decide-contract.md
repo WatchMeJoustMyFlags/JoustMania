@@ -920,7 +920,7 @@ apart. Every lever default is scored by lift against the control:
 | `set_player_handicap` with a value > 1 (help; `rein_in` < 1 gets none), with a target | `survives` 15 |
 | `adjust_music_tempo` (either direction) | none: the tempo effect on eliminations is confounded with the threshold change, and `activity` (intensity / threshold) moves with the threshold too; see #2487 |
 | `send_controller_effect` | `activity_rises` target 10 |
-| `adjust_global_difficulty` < 1; `adjust_global_sensitivity` > 2; `set_pacing_profile` `calm` | `no_elimination` 15 (sensitivity is read against the middle level 2, the context has no current level) |
+| `adjust_global_difficulty` < 1; `adjust_global_sensitivity` > 2; `set_pacing_profile` `calm` | `no_elimination` 15 (sensitivity is read against the middle level 2: the game context exposes no current global sensitivity level, only the per-player factors the agent itself wrote, so the comparison stays at the fixed level 2 until the context carries the level, #2498) |
 | `adjust_global_difficulty` > 1; `adjust_global_sensitivity` < 2; `set_pacing_profile` `frantic` | `elimination` 30 |
 | `play_audio_cue`, `revive_player` (its target is not alive at registration), `eliminate_player`, `end_game`, `noop` | none |
 
