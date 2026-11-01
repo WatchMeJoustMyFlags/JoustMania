@@ -159,8 +159,8 @@
       {
         "Intervention": "adjust_music_tempo",
         "TargetSerial": "",
-        "Value": "",
-        "Reason": "session at 20s of 120s endurance target with 1 eliminations: slow the tempo",
+        "Value": "1.3",
+        "Reason": "session at 20s of 120s endurance target with 1 eliminations: speed up the tempo to raise the death threshold",
         "ObjectiveServed": "endurance",
         "Fitness": {
           "eliminations": 1,
@@ -188,8 +188,8 @@
       {
         "Intervention": "adjust_music_tempo",
         "TargetSerial": "",
-        "Value": "",
-        "Reason": "session at 20s of 120s endurance target with 1 eliminations: slow the tempo",
+        "Value": "1.3",
+        "Reason": "session at 20s of 120s endurance target with 1 eliminations: speed up the tempo to raise the death threshold",
         "ObjectiveServed": "endurance",
         "Fitness": {
           "eliminations": 1,
@@ -217,8 +217,8 @@
       {
         "Intervention": "adjust_music_tempo",
         "TargetSerial": "",
-        "Value": "",
-        "Reason": "session at 20s of 120s endurance target with 1 eliminations: slow the tempo",
+        "Value": "1.3",
+        "Reason": "session at 20s of 120s endurance target with 1 eliminations: speed up the tempo to raise the death threshold",
         "ObjectiveServed": "endurance",
         "Fitness": {
           "eliminations": 1,
@@ -246,8 +246,8 @@
       {
         "Intervention": "adjust_music_tempo",
         "TargetSerial": "",
-        "Value": "",
-        "Reason": "session at 20s of 120s endurance target with 1 eliminations: slow the tempo",
+        "Value": "1.3",
+        "Reason": "session at 20s of 120s endurance target with 1 eliminations: speed up the tempo to raise the death threshold",
         "ObjectiveServed": "endurance",
         "Fitness": {
           "eliminations": 1,

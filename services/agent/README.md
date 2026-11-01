@@ -540,10 +540,10 @@ per second. The weighted per-minute budget is enforced downstream by the loop
 
 | Rule | Objective | Trigger | Intervention |
 |------|-----------|---------|--------------|
-| R1/R2 | endurance | session younger than `fitness.endurance.min_session_seconds` while players are eliminated | `adjust_music_tempo` (slow) / `play_audio_cue` |
+| R1/R2 | endurance | session younger than `fitness.endurance.min_session_seconds` while players are eliminated | `adjust_music_tempo` 1.3 (fast: raises the death threshold, #2487) / `play_audio_cue` |
 | R3 | balanced | skill spread > `fitness.balanced.max_skill_gap`, among players with fresh readings (below) | `adjust_player_sensitivity` → highest-skill outlier |
 | R4 | balanced | after the first elimination: a struggling player (below the field mean, never the strongest; fewest shields first) while the field shrinks (needs ≥ 2 players with known skill and fresh readings — "struggling" is only meaningful relative to others). Before it: a player in sustained danger (the last `policy.shield_danger_samples` readings ≥ `policy.shield_danger_ratio` of the death threshold, the newest value at most 3 s old since it was last new, the window at most n × 2.5 s; off with `policy.shield_danger_enabled`; UC-040 A43, #2461), so a duel can get shields | `grant_shield` → struggling / endangered player |
-| R5 | accelerate | duration > `fitness.accelerate.target_session_seconds` | `adjust_music_tempo` (fast) |
+| R5 | accelerate | duration > `fitness.accelerate.target_session_seconds` | `adjust_music_tempo` (no value: the writer default 1.15, `medium`) |
 | R6 | accelerate | duration > 1.5× target, > 2 players | `eliminate_player` → least active |
 | R7 | accelerate | duration > 2× target **and accelerate strictly dominant** (a tie never ends a game) | `end_game` |
 | R8 | chaos | movement variance ≈ 0 ("statue"), player with fresh readings | `send_controller_effect` |
