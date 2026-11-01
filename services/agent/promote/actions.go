@@ -122,6 +122,16 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 		return
 	}
 
+	// SUBSTRATE VALIDITY BAR (UC-043 A23, #2541): only an objective an operator
+	// attested as validated for the running release may change a real default.
+	// Checked before the cooldown and the hold-key deferral, so a below-bar hold
+	// key is never queued; writeTracked checks it again as the backstop.
+	if err := pr.substrateRefusal(ev.Objective); err != nil {
+		res.Outcome = OutcomeDiscarded
+		res.Reason = err.Error()
+		return
+	}
+
 	// COOLDOWN (#1065 item 3): if this flag was reverted recently, refuse to re-apply
 	// until the cooldown elapses. This is checked BEFORE the write so a thrash loop
 	// (err→revert→re-promote→err→revert) cannot run hot — a reverted flag is parked
@@ -144,7 +154,7 @@ func (pr *Promoter) promoteAutonomous(ctx context.Context, p experiment.Proposal
 	// serialised with the kill switch (#1704): a kill-switch tick since this
 	// promotion's config was resolved refuses the write, and a tick that starts
 	// after it finds the written overlay.
-	entry, err := pr.writeTracked(ctx, p, ev.RealDefaultValue, cfg)
+	entry, err := pr.writeTracked(ctx, p, ev, cfg)
 	if flagservice.IsReason(err, flagservice.ReasonRealGameLive) {
 		// The flag service's authoritative guard: a real game registered after the
 		// probe looked (UC-043 A17, opposer m1). The write waits, it is not discarded.

@@ -539,7 +539,7 @@ func (pr *Promoter) drainWrites(ctx context.Context, resolve ConfigResolver) {
 			return
 		}
 		cfg := Config{Mode: ModeAutonomous, Enabled: true, killEpoch: w.killEpoch, epochKnown: true}
-		entry, err := pr.writeTracked(ctx, w.proposal, w.evidence.RealDefaultValue, cfg)
+		entry, err := pr.writeTracked(ctx, w.proposal, w.evidence, cfg)
 		switch {
 		case flagservice.IsReason(err, flagservice.ReasonRealGameLive):
 			pr.requeue(w)

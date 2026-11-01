@@ -163,6 +163,10 @@ type Evidence struct {
 	// defaultVariant for the flag (typically the experiment's experimental value once
 	// validated). Used only by ModeAutonomous; ignored by issue/pr.
 	RealDefaultValue any
+	// Objective is the experiment's objective (journal.Intent.Objective). The
+	// autonomous write is made only when it meets the substrate validity bar
+	// (UC-043 A23, substrate.go); "" never does.
+	Objective string
 }
 
 // IssueReq is the GitHub issue a ModeIssue promotion opens.
@@ -368,6 +372,13 @@ type Promoter struct {
 	// replacedReverts are waiting reverts another one replaced, journaled by
 	// flushReplacedReverts outside killMu. Guarded by mu.
 	replacedReverts []experiment.Proposal
+
+	// --- substrate validity bar (UC-043 A23, substrate.go) ---
+	// substrate is the set of objectives attested as validated for the running
+	// release; set once (substrateSet) by SetSubstrateBar. Unset refuses every
+	// autonomous write. Guarded by mu.
+	substrate    map[string]bool
+	substrateSet bool
 }
 
 // appliedPromotion is one autonomous real default this agent run wrote and has not

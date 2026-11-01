@@ -264,6 +264,9 @@ func buildPromoter(rootCtx context.Context, store *experiment.FitnessStore, objR
 	}
 
 	p := promote.NewPromoter(ghIface, gitIface, realDefIface, watcherIface, reverterIface, repo, nil, logger)
+	// The substrate validity bar (UC-043 A23, FR-152 g): set once, here, before the
+	// experiment loop starts. Unset env = no objective validated (fail closed).
+	p.SetSubstrateBar(substrateBarFromEnv(logger))
 	// The post-revert cooldown resolves at use time, per cooldown check (#1788).
 	p.SetCooldownSource(tuning.RevertCooldown)
 	// Seed the post-revert cooldown from the durable snapshot store (#1076 item 3) so
@@ -276,6 +279,21 @@ func buildPromoter(rootCtx context.Context, store *experiment.FitnessStore, objR
 		p.SetRewatcher(rewatcher)
 	}
 	return p
+}
+
+// substrateBarFromEnv reads the operator's substrate attestation (UC-043 A23,
+// FR-152 g, C-034): AGENT_AUTONOMOUS_VALIDATED_OBJECTIVES, a comma list of
+// objective@release entries, bound to the running SERVICE_VERSION. It logs the
+// effective release and validated set, and one WARN per rejected entry.
+func substrateBarFromEnv(logger *slog.Logger) map[string]bool {
+	serviceVersion := getEnv("SERVICE_VERSION", "0.0.0-dev")
+	validated, warnings := promote.ParseValidatedObjectives(getEnv("AGENT_AUTONOMOUS_VALIDATED_OBJECTIVES", ""), serviceVersion)
+	for _, w := range warnings {
+		logger.Warn("AGENT_AUTONOMOUS_VALIDATED_OBJECTIVES: "+w+" (UC-043 A23)", "service_version", serviceVersion)
+	}
+	logger.Info("code_improvement substrate validity bar (UC-043 A23): autonomous promotion only for these objectives",
+		"validated_objectives", promote.ValidatedObjectiveList(validated), "service_version", serviceVersion)
+	return validated
 }
 
 // firstField splits an "owner/repo" string and returns the owner (i==0) or repo

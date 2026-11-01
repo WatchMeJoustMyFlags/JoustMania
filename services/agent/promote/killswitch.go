@@ -79,14 +79,21 @@ func (pr *Promoter) KillSwitchEpoch() uint64 {
 
 // writeTracked performs the real-default write under killMu, refuses it when a
 // kill-switch tick ran since cfg was resolved, and tracks the applied promotion
-// (marked as still inside its Promote call until endSync).
-func (pr *Promoter) writeTracked(ctx context.Context, p experiment.Proposal, value any, cfg Config) (*appliedPromotion, error) {
+// (marked as still inside its Promote call until endSync). It writes
+// ev.RealDefaultValue, and only for an objective that meets the substrate validity
+// bar (UC-043 A23): this is the one place every real-default write passes, so the
+// bar is checked here again as the backstop, unwrapped so the reason reads
+// "substrate_not_validated objective=<obj>". Reverts never come here.
+func (pr *Promoter) writeTracked(ctx context.Context, p experiment.Proposal, ev Evidence, cfg Config) (*appliedPromotion, error) {
 	pr.killMu.Lock()
 	defer pr.killMu.Unlock()
 	if pr.KillSwitchEpoch() != cfg.killEpoch {
 		return nil, errKillSwitched
 	}
-	if err := pr.realDef.SetRealDefault(ctx, p.FlagKey, value); err != nil {
+	if err := pr.substrateRefusal(ev.Objective); err != nil {
+		return nil, err
+	}
+	if err := pr.realDef.SetRealDefault(ctx, p.FlagKey, ev.RealDefaultValue); err != nil {
 		return nil, fmt.Errorf("set real default: %w", err)
 	}
 	entry := &appliedPromotion{proposal: p, syncPending: true}

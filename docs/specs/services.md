@@ -402,7 +402,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 
 ### agent
 
-- Environment: see `docker-compose.yml:692-783`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214), the text-backend choice `inference.backend` and its tuning, effect window, promotion timers and the probe demo switch `decision.probe_decisions` (#1788, #1810, [flags.md §15](flags.md#15-env-to-flag-migration-1788); their env vars were removed in #1907). Still env: API keys, `AGENT_INFERENCE_BASE_URL` (the key's destination, validated), `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (a ceiling), rollout dwell / cooldown, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
+- Environment: see `docker-compose.yml:692-783`. Gates moved to live flags: `interventions_enabled`, `rollout_enabled` (#1213), experiment and verdict knobs (#1044, #1214), the text-backend choice `inference.backend` and its tuning, effect window, promotion timers and the probe demo switch `decision.probe_decisions` (#1788, #1810, [flags.md §15](flags.md#15-env-to-flag-migration-1788); their env vars were removed in #1907). Still env: API keys, `AGENT_INFERENCE_BASE_URL` (the key's destination, validated), `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (a ceiling), rollout dwell / cooldown, and every promotion gate (`AGENT_CODE_IMPROVEMENT_ENABLED`, `AGENT_AUTONOMOUS_ENABLED`, `AGENT_AUTONOMOUS_VALIDATED_OBJECTIVES`, `GITHUB_*`), which compose does not pass through (D-A6). Env→flag audit: #1194.
 - Writes: `interventions.json` (action sink), `rollout.json` (`current_controller_count`), `game.json` (experiment targeting; autonomous real default when enabled). Never `agent.json` (code guard in `experiment/gate.go`; the mount is read-write).
 - Persistent volume `agent-experiments` for the experiment journal and autonomous-revert snapshots.
 - Planned (#1055, UC-047, Open): per-device calibration of the shadow-player archetypes (C-019 as amended: the calibrated set stays on this device's volume, never in git).
@@ -442,6 +442,7 @@ Battery tier colours (`SHOW_BATTERY`, `_get_battery_color`): >= 100% Green, >= 8
 | `AGENT_LOCAL_REPO_DIR` | unset | no | repo directory for the local target; unset = no-op |
 | `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_BASE_BRANCH`, `GITHUB_API_URL` | unset, unset, `main`, `https://api.github.com` | no | GitHub target (`owner/repo`); misconfiguration, or a `GITHUB_API_URL` that is not key-safe (C-016: https, or http to loopback), falls back to an inert no-op |
 | `AGENT_AUTONOMOUS_ENABLED` | `false` | no | opt-in for the autonomous real-default path (needs `AGENT_CODE_IMPROVEMENT_ENABLED`) |
+| `AGENT_AUTONOMOUS_VALIDATED_OBJECTIVES` | unset | no | operator ceiling (UC-043 A23, FR-152 g, C-034, #2541): comma list of `objective@release` entries (`balanced@0.14.0`) attesting the objectives whose shadow substrate meets the validity bar; an entry counts only when its release equals `SERVICE_VERSION` and that is `X.Y.Z`; an autonomous promotion of any other objective is a recorded no-op `substrate_not_validated`; unset = none (closed) |
 
 ### connect-proxy
 
