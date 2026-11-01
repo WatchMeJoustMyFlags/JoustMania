@@ -198,14 +198,26 @@ func (s *Store) player(serial string) *PlayerSignals {
 
 // touch stamps a player's and the context's update time. Caller holds s.mu.
 func (s *Store) touch(p *PlayerSignals) {
-	t := s.now()
+	s.touchAt(p, s.now())
+}
+
+// touchAt is touch with a caller-supplied time. A setter that also records a
+// timestamped sample takes ONE s.now() and passes it to both, so the sample is
+// never newer than ctx.UpdatedAt (#2511: decide.FreshReadings treats a reading
+// newer than the snapshot as stale). Caller holds s.mu.
+func (s *Store) touchAt(p *PlayerSignals, t time.Time) {
 	p.LastUpdate = t
 	s.ctx.UpdatedAt = t
 }
 
 // touchSession stamps the session's and context's update time. Caller holds s.mu.
 func (s *Store) touchSession() {
-	t := s.now()
+	s.touchSessionAt(s.now())
+}
+
+// touchSessionAt is touchSession with a caller-supplied time (see touchAt).
+// Caller holds s.mu.
+func (s *Store) touchSessionAt(t time.Time) {
 	s.ctx.Session.LastUpdate = t
 	s.ctx.UpdatedAt = t
 }
@@ -219,7 +231,7 @@ func ptr[T any](v T) *T { return &v }
 // signal would churn the 64-entry ring in a second and bury eliminations/phase
 // changes. Recording only on change keeps the narrative a TREND log. Caller holds
 // s.mu.
-func (s *Store) recordStateDelta() {
+func (s *Store) recordStateDelta(t time.Time) {
 	active := s.ctx.Session.ActivePlayerCount
 	mean := s.meanIntensityLocked()
 
@@ -229,7 +241,7 @@ func (s *Store) recordStateDelta() {
 	s.history.lastActivePlayers = active
 	s.history.lastMeanIntensity = mean
 	s.history.append(TimelineEvent{
-		At:            s.now(),
+		At:            t,
 		Kind:          EventStateDelta,
 		ActivePlayers: active,
 		MeanIntensity: mean,
@@ -279,19 +291,22 @@ func (s *Store) SetPlayerIntensity(serial string, v float64) {
 	defer s.mu.Unlock()
 	p := s.player(serial)
 	p.MovementIntensity = ptr(v)
-	s.touch(p)
+	// One clock read for the touch AND the sample: two reads made the sample
+	// newer than ctx.UpdatedAt, so FreshReadings dropped the player (#2511).
+	t := s.now()
+	s.touchAt(p, t)
 	// Append to the per-player movement TIME-SERIES (#1082), bucket-deduped to ~1Hz
 	// so the 60Hz firehose never churns the ring. Carry the player's last-observed
 	// variance alongside so the sample is self-describing.
-	s.recordPlayerSample(serial, v, p.MovementVariance)
+	s.recordPlayerSample(serial, v, p.MovementVariance, t)
 	// A movement-intensity change can move the session mean — record a state delta
 	// (deduped) so the narrative captures the energy trend (#916).
-	s.recordStateDelta()
+	s.recordStateDelta(t)
 }
 
 // recordPlayerSample appends a bucketed (t, intensity, variance) sample to the
 // player's movement ring (#1082), creating the ring on demand. Caller holds s.mu.
-func (s *Store) recordPlayerSample(serial string, intensity float64, variance *float64) {
+func (s *Store) recordPlayerSample(serial string, intensity float64, variance *float64, t time.Time) {
 	h := s.playerHistory[serial]
 	if h == nil {
 		h = &playerHistory{}
@@ -302,7 +317,7 @@ func (s *Store) recordPlayerSample(serial string, intensity float64, variance *f
 		v := *variance
 		vcopy = &v
 	}
-	h.record(MovementSample{At: s.now(), Intensity: intensity, Variance: vcopy})
+	h.record(MovementSample{At: t, Intensity: intensity, Variance: vcopy})
 }
 
 // SetPlayerVariance records movement variance, creating the player on demand.
@@ -440,12 +455,13 @@ const gameActiveStaleAfter = 60 * time.Second
 func (s *Store) SetSessionDuration(v float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	t := s.now()
 	prev := s.ctx.Session.DurationSeconds
 	if prev == nil || *prev != v {
-		s.durationAdvancedAt = s.now()
+		s.durationAdvancedAt = t
 	}
 	s.ctx.Session.DurationSeconds = ptr(v)
-	s.touchSession()
+	s.touchSessionAt(t)
 }
 
 // effectiveDurationLocked returns the elapsed game time a snapshot should carry
@@ -509,8 +525,9 @@ func (s *Store) SetActivePlayerCount(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ctx.Session.ActivePlayerCount = ptr(n)
-	s.touchSession()
-	s.recordStateDelta() // active-count change is a first-class narrative trend (#916)
+	t := s.now()
+	s.touchSessionAt(t)
+	s.recordStateDelta(t) // active-count change is a first-class narrative trend (#916)
 }
 
 // SetGameMode records the current game mode.
@@ -591,8 +608,9 @@ func (s *Store) SetMusicTempo(v float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ctx.Session.MusicTempo = ptr(v)
-	s.touchSession()
-	s.speedTrack.record(SpeedSample{At: s.now(), Tempo: ptr(v)})
+	t := s.now()
+	s.touchSessionAt(t)
+	s.speedTrack.record(SpeedSample{At: t, Tempo: ptr(v)})
 }
 
 // SetDeathThreshold records the current effective (tempo-interpolated) death
@@ -602,8 +620,9 @@ func (s *Store) SetDeathThreshold(v float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ctx.Session.DeathThreshold = ptr(v)
-	s.touchSession()
-	s.speedTrack.record(SpeedSample{At: s.now(), DeathThreshold: ptr(v)})
+	t := s.now()
+	s.touchSessionAt(t)
+	s.speedTrack.record(SpeedSample{At: t, DeathThreshold: ptr(v)})
 }
 
 // SetWarningThreshold records the current effective warning threshold (#1082).
