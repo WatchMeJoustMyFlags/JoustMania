@@ -1699,6 +1699,9 @@ class InterventionManager:
             logger.debug(f"agent cue gate read failed, defaulting to enabled: {e}")
             return True
 
+    # Levers whose change carries nothing a player can act on: no "agent acted" pulse (#2536).
+    _NO_CUE_TYPES = frozenset({"adjust_player_sensitivity"})
+
     async def _emit_agent_cue(
         self, spec: InterventionSpec, target: str | None, game: "InterventionTarget | None"
     ) -> None:
@@ -1711,7 +1714,7 @@ class InterventionManager:
         and is skipped. Best-effort — any failure is swallowed so the cue can
         never break the intervention path.
         """
-        if not self._cue_enabled():
+        if spec.type_id in self._NO_CUE_TYPES or not self._cue_enabled():
             return
         stream = game.gameplay_stream if game is not None else None
         if stream is None:

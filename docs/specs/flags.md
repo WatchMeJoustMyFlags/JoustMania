@@ -788,7 +788,7 @@ Surfaces (#818):
    BR-018) it emits a short magenta `GAME_EFFECT_PULSE` on the affected controller(s), broadcast for non-targeted
    actions (`InterventionManager._emit_agent_cue`). It is gated by the `agent_intervention_cue` toggle in the `user`
    set (§9; default on, off in `ci/`), so it can be muted for demos, and is best-effort: a failure never breaks the
-   intervention path. MEDIUM and SOFT interventions are silent so gameplay is not disrupted.
+   intervention path. `adjust_player_sensitivity` is excluded too (too many visual cues confuse the players, #2536). MEDIUM and SOFT interventions are silent so gameplay is not disrupted.
 
 **Traceability:** C-008 / UC-012, UC-040 / `services/menu/handlers/admin.py`,
 `services/game_coordinator/interventions.py`.

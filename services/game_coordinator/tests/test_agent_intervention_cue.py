@@ -117,6 +117,21 @@ async def test_player_targeted_cue_pulses_only_target():
 
 @pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
+async def test_sensitivity_change_emits_no_cue_but_other_levers_do():
+    """#2536: too many visual cues confuse; a sensitivity change is silent, eliminate_player still pulses."""
+    stream = FakeStream()
+    game = FakeInterventionGame(players={"A": Player("A"), "B": Player("B")}, gameplay_stream=stream)
+    mgr = _manager({"agent_intervention_cue": True})
+
+    await mgr._emit_agent_cue(_spec("adjust_player_sensitivity"), "A", game)
+    assert stream.writes == []
+
+    await mgr._emit_agent_cue(_spec("eliminate_player"), "A", game)
+    assert [c.game_effect.serial for c in stream.writes] == ["A"]
+
+
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
+@pytest.mark.asyncio
 async def test_cue_suppressed_when_muted():
     stream = FakeStream()
     game = FakeInterventionGame(players={"A": Player("A")}, gameplay_stream=stream)
