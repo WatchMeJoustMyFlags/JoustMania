@@ -128,6 +128,38 @@ async def test_cue_suppressed_when_muted():
 
 
 @pytest.mark.uc("UC-040", flow="main", steps=[13])
+@pytest.mark.uc("UC-020", steps=[6], br=["BR-004"])
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec_id, target", [("adjust_global_sensitivity", None), ("eliminate_player", "A")])
+async def test_no_cue_once_the_game_is_ending(spec_id, target):
+    """#2533: after the win the rainbow owns the winner's LED; an intervention applied then pulses nobody."""
+    stream = FakeStream()
+    game = FakeInterventionGame(players={"A": Player("A")}, gameplay_stream=stream)
+    game.ending = True
+    mgr = _manager({"agent_intervention_cue": True})
+
+    await mgr._emit_agent_cue(_spec(spec_id), target, game)
+    assert stream.writes == []
+
+    game.ending = False  # the same cue while the game runs pulses (the case above is not vacuous)
+    await mgr._emit_agent_cue(_spec(spec_id), target, game)
+    assert [c.game_effect.serial for c in stream.writes] == ["A"]
+
+
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
+@pytest.mark.asyncio
+async def test_the_ending_check_stays_best_effort():
+    """#2533 review: a game object without game_ending() skips the cue, it never raises into the apply path."""
+    stream = FakeStream()
+    game = type("Game", (), {"players": {"A": Player("A")}, "gameplay_stream": stream})()
+    mgr = _manager({"agent_intervention_cue": True})
+
+    await mgr._emit_agent_cue(_spec("adjust_global_sensitivity"), None, game)
+
+    assert stream.writes == []
+
+
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.asyncio
 async def test_cue_no_stream_is_safe():
     game = FakeInterventionGame(players={"A": Player("A")}, gameplay_stream=None)
@@ -197,3 +229,27 @@ async def test_intervention_cue_is_an_led_pulse_not_a_sound():
     assert {c.game_effect.serial for c in stream.writes} == {"A", "B"}
     assert all(c.game_effect.effect == controller_manager_pb2.GAME_EFFECT_PULSE for c in stream.writes)
     assert audio.sounds == []
+
+
+@pytest.mark.uc("UC-020", steps=[6], br=["BR-004"])
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
+@pytest.mark.asyncio
+async def test_a_real_game_is_ending_from_the_win_on():
+    """UC-020 BR-004 (#2533): game_ending() turns True with the latched win, before the rainbow is sent."""
+    from services.game_coordinator.games.base import GameState
+    from services.game_coordinator.games.ffa import FFAGame
+    from services.game_coordinator.tests.conftest import EventCollector, MockControllerManagerService
+
+    game = FFAGame(
+        controller_manager_client=MockControllerManagerService(num_controllers=2),
+        event_publisher=EventCollector().publish,
+        audio_client=None,
+        game_id="test_cue_game_ending",
+    )
+    game.players = {"A": Player("A"), "B": Player("B")}
+    game.state = GameState.RUNNING
+    assert game.game_ending() is False
+    game.players["A"].alive = False
+    assert await game._check_win_condition() is True
+
+    assert game.game_ending() is True

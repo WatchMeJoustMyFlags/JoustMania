@@ -1710,6 +1710,9 @@ class InterventionManager:
         player-targeted intervention on a now-dead/unknown serial yields no target
         and is skipped. Best-effort — any failure is swallowed so the cue can
         never break the intervention path.
+
+        Never once the game is ending (UC-040 step 13, UC-020 BR-004, #2533): the
+        winner rainbow owns the winner's LED, and a pulse would cut it short.
         """
         if not self._cue_enabled():
             return
@@ -1717,6 +1720,8 @@ class InterventionManager:
         if stream is None:
             return
         try:
+            if game.game_ending():
+                return
             cue_serial = target if spec.player_targeted and target else ""
             targets = _effect_targets(game, cue_serial)
             if not targets:
