@@ -392,7 +392,7 @@ func TestAlreadyApplied_DisabledInertAndNewGame(t *testing.T) {
 }
 
 // UC: UC-040 A35 BR-023
-func TestAlreadyApplied_RulesPreFilter(t *testing.T) {
+func TestAlreadyApplied_RulesRankedFilter(t *testing.T) {
 	t.Run("UC-040/A35 applyAppliedPolicy drops only an already-applied state or level candidate", func(t *testing.T) {
 		c := budgetCtx()
 		cand := func(d Decision) scoredCandidate { return scoredCandidate{candidate: candidate{decision: d}} }
@@ -434,7 +434,7 @@ func TestAlreadyApplied_RulesPreFilter(t *testing.T) {
 		for elapsed := time.Duration(0); elapsed < appliedLedgerTTL; elapsed += 2 * time.Second {
 			for _, o := range runCycle(l, chargeRulesCtx()).Outcomes {
 				if o.BlockReason == ReasonAlreadyApplied {
-					t.Fatalf("at %v the rules proposed an already-applied %s/%s: the pre-filter must drop it", elapsed, o.Intervention, o.TargetSerial)
+					t.Fatalf("at %v the rules proposed an already-applied %s/%s: the applied filter must drop it", elapsed, o.Intervention, o.TargetSerial)
 				}
 			}
 			clock = clock.Add(2 * time.Second)

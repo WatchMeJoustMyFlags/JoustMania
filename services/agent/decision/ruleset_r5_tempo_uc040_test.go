@@ -151,6 +151,9 @@ func TestR1R5TempoDoesNotFlap(t *testing.T) {
 						written = append(written, d.Value)
 					}
 				}
+				if len(written) == 0 || normalisedValue(written[0]) != "1.3" {
+					t.Fatalf("budget %d: tempo writes = %v, want R1's 1.3 first", budget, written)
+				}
 				if n := tempoChanges(written); n > 1 {
 					t.Fatalf("budget %d: tempo writes = %v: %d changes, want at most 1", budget, written, n)
 				}
