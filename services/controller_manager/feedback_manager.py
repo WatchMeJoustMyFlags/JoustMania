@@ -149,10 +149,14 @@ SHIELD_EFFECTS = frozenset(
 PULSE_PROOF_EFFECTS = frozenset(
     {controller_manager_pb2.GAME_EFFECT_IDENTIFY, controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY}
 )
-# Short overlays (the agent cue and the shield help cue are pulses, an agent effect can be a flash) that never
-# cut a running winner rainbow short: the winner sees the whole rainbow (UC-020 BR-004, #2533).
+# Short overlays that never cut a running winner rainbow short: the agent cue and the shield help cue are
+# pulses, an agent effect can be a flash or a battery display (UC-020 BR-004, #2533).
 RAINBOW_YIELDING_EFFECTS = frozenset(
-    {controller_manager_pb2.GAME_EFFECT_PULSE, controller_manager_pb2.GAME_EFFECT_FLASH}
+    {
+        controller_manager_pb2.GAME_EFFECT_PULSE,
+        controller_manager_pb2.GAME_EFFECT_FLASH,
+        controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY,
+    }
 )
 
 
@@ -639,7 +643,7 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
         """An overlay that must not take over the running effect (caller holds effect_lock).
 
         A PULSE yields to an identify or a battery display (UC-004 BR-005, UC-015 BR-015); a PULSE
-        or a FLASH yields to the winner rainbow (UC-020 BR-004, #2533).
+        a FLASH or a battery display yields to the winner rainbow (UC-020 BR-004, #2533).
         """
         active = self.active_effects.get(serial)
         if active is None or active.task.done():
@@ -817,7 +821,7 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
                     if self._pulse_yields(target_serial, effect):
                         # UC-004 BR-005 / UC-015 BR-015 (#2105): a pulse never cuts short an identify
                         # or a battery display; the base colour still shows when that effect ends.
-                        # UC-020 BR-004 (#2533): nor does a pulse or flash cut short the winner rainbow.
+                        # UC-020 BR-004 (#2533): nor does a pulse, flash or battery display cut the rainbow short.
                         logger.debug(
                             f"Overlay for {target_serial} skipped: identify / battery / winner rainbow running"
                         )

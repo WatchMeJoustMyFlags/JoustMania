@@ -1717,9 +1717,11 @@ class InterventionManager:
         if not self._cue_enabled():
             return
         stream = game.gameplay_stream if game is not None else None
-        if stream is None or game.game_ending():
+        if stream is None:
             return
         try:
+            if game.game_ending():
+                return
             cue_serial = target if spec.player_targeted and target else ""
             targets = _effect_targets(game, cue_serial)
             if not targets:

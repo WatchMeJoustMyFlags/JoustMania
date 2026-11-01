@@ -130,7 +130,7 @@ async def test_cue_suppressed_when_muted():
 @pytest.mark.uc("UC-040", flow="main", steps=[13])
 @pytest.mark.uc("UC-020", steps=[6], br=["BR-004"])
 @pytest.mark.asyncio
-@pytest.mark.parametrize("spec_id, target", [("end_game", None), ("eliminate_player", "A")])
+@pytest.mark.parametrize("spec_id, target", [("adjust_global_sensitivity", None), ("eliminate_player", "A")])
 async def test_no_cue_once_the_game_is_ending(spec_id, target):
     """#2533: after the win the rainbow owns the winner's LED; an intervention applied then pulses nobody."""
     stream = FakeStream()
@@ -139,6 +139,22 @@ async def test_no_cue_once_the_game_is_ending(spec_id, target):
     mgr = _manager({"agent_intervention_cue": True})
 
     await mgr._emit_agent_cue(_spec(spec_id), target, game)
+    assert stream.writes == []
+
+    game.ending = False  # the same cue while the game runs pulses (the case above is not vacuous)
+    await mgr._emit_agent_cue(_spec(spec_id), target, game)
+    assert [c.game_effect.serial for c in stream.writes] == ["A"]
+
+
+@pytest.mark.uc("UC-040", flow="main", steps=[13])
+@pytest.mark.asyncio
+async def test_the_ending_check_stays_best_effort():
+    """#2533 review: a game object without game_ending() skips the cue, it never raises into the apply path."""
+    stream = FakeStream()
+    game = type("Game", (), {"players": {"A": Player("A")}, "gameplay_stream": stream})()
+    mgr = _manager({"agent_intervention_cue": True})
+
+    await mgr._emit_agent_cue(_spec("adjust_global_sensitivity"), None, game)
 
     assert stream.writes == []
 

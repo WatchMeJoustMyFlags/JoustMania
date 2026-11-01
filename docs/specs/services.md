@@ -342,7 +342,7 @@ DISCONNECTED controllers show nothing. There is no dedicated "connection flash":
 | `PLAYER_WARNING` | White flash, 200 ms (`WARNING_FLASH_MS`) | 100 intensity, 200 ms (`WARNING_VIBRATION_MS`) | base colour |
 | `PLAYER_DEATH` | Red held 300 ms (`DEATH_RED_HOLD_MS`), then fade to black over 700 ms (`DEATH_FADE_MS`); also ends the agent shield | 255 intensity, 1000 ms (`DEATH_RUMBLE_MS`; the warning rumbles 100 for 200 ms) | base colour becomes Black |
 | `PLAYER_RESPAWN` | White (spawn protection) | none | base colour becomes White |
-| `WINNER_RAINBOW` | Rainbow for the `game` flag winner duration (default 3000 ms); ends the agent shield; a `PULSE` or `FLASH` for the controller while it runs is skipped (UC-020 BR-004, #2533) | none | base colour |
+| `WINNER_RAINBOW` | Rainbow for the `game` flag winner duration (default 3000 ms); ends the agent shield; a `PULSE`, `FLASH` or `SHOW_BATTERY` for the controller while it runs is skipped (UC-020 BR-004, #2533) | none | base colour |
 | `ADMIN_ENTER` | White flash 600 ms, then solid White | none | base colour White |
 | `ADMIN_EXIT` | none (instant) | none | base colour |
 | `LOW_BATTERY` | Red / Red20 twice, 150 ms each | none | base colour |

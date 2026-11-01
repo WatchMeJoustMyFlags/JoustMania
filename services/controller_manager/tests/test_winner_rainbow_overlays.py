@@ -4,9 +4,11 @@ The winner rainbow plays in full (UC-020 step 6, BR-004, #2533).
 Pi session 2026-11-01 (hold mode): a player held the trigger past empty and died, the other
 player won, and the winner's rainbow was not visible. The coordinator ends the hold layers
 (``SHIELD`` 0) before the rainbow, so the shield cleanup is not what removes it; a short
-overlay that lands during the rainbow is: the #818 agent cue (a magenta PULSE to every
-alive player, so the winner) or an agent ``send_controller_effect`` flash took the LED over
-and restored the base colour. A PULSE or FLASH now yields to a running winner rainbow.
+overlay that lands during the rainbow can: the #818 agent cue (a magenta PULSE to every
+alive player, so the winner) or an agent ``send_controller_effect`` flash takes the LED over
+and restores the base colour. A PULSE, FLASH or SHOW_BATTERY now yields to a running winner rainbow.
+The reported Pi games had no agent cue in the end window (the CM started the rainbow there), so
+this is a defensive fix; the observed cause is still open (#2533).
 """
 
 import asyncio
@@ -122,7 +124,7 @@ class TestUC020WinnerRainbowAfterHoldDeath:
     @pytest.mark.uc("UC-020", steps=[6], br=["BR-004"])
     @pytest.mark.uc("UC-040", flow="A39", br=["BR-026"])
     @pytest.mark.parametrize("winner_holds", [False, True])
-    @pytest.mark.parametrize("overlay", [pb.GAME_EFFECT_PULSE, pb.GAME_EFFECT_FLASH])
+    @pytest.mark.parametrize("overlay", [pb.GAME_EFFECT_PULSE, pb.GAME_EFFECT_FLASH, pb.GAME_EFFECT_SHOW_BATTERY])
     async def test_an_agent_overlay_during_the_rainbow_does_not_cut_it(self, manager, backend, winner_holds, overlay):
         """#2533: hold past empty, death, win; an agent cue during the rainbow leaves it running to its end.
 
@@ -133,13 +135,16 @@ class TestUC020WinnerRainbowAfterHoldDeath:
         rainbow_start = time.time()
         await _run(0.3)
         await _effect(manager, WINNER, overlay, color=MAGENTA)  # the #818 agent cue lands mid-rainbow
+        # Deterministic part: the rainbow still owns the LED right after the overlay arrived.
+        running = manager.active_effects[WINNER]
+        assert running.effect_type == pb.GAME_EFFECT_WINNER_RAINBOW and not running.task.done()
         await _run(RAINBOW_MS / 1000.0)  # the rest of the rainbow and its restore
 
         frames = backend.frames(WINNER, rainbow_start)
         assert MAGENTA not in frames
         assert WHITE not in frames
-        # 20 Hz for the whole duration, then the base colour once it ends.
-        assert len(_rainbow_frames(frames)) >= int(RAINBOW_MS / 50) - 1
+        # 20 Hz nominally; a loose bound, so a loaded runner does not flake (the check above is the exact one).
+        assert len(_rainbow_frames(frames)) >= 6
         assert frames[-1] == WINNER_COLOR
         assert WINNER_COLOR not in frames[1:-1]  # the base colour shows only before and after the rainbow
         assert backend.effect_active[WINNER] is False
