@@ -335,17 +335,24 @@ func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, no
 	return pickShieldCatchUp(scoreAndSort(cands, weights, fitEval), c, grants), weights, fitEval
 }
 
-// chaosRoll draws R9's randomness: a roll in [0,1) and a random alive player with fresh readings.
+// chaosRoll draws R9's randomness: a roll in [0,1) and a random alive player,
+// returned only when that player's readings are fresh.
 // Caller holds r.mu (rand.Rand is not goroutine-safe).
 func (r *ObjectiveRules) chaosRoll(c gamecontext.GameContext) (float64, string) {
-	// R9's target is a player with fresh readings (UC-040 A46 step 5, #2517).
-	pool := freshPlayers(c)
-	if len(pool) == 0 {
+	active := activePlayers(c)
+	if len(active) == 0 {
 		return 0, ""
 	}
 	r.maybeSeedLocked()
 	r.chaosDraws++
-	return r.rng.Float64(), pool[r.rng.IntN(len(pool))].Serial
+	roll, picked := r.rng.Float64(), active[r.rng.IntN(len(active))]
+	// R9 never targets a player without fresh readings, such as one that just went
+	// back to waiting (UC-040 A46 step 5, #2517). The draw itself is unchanged, so a
+	// seeded engine draws the same sequence (UC-046 BR-007); a stale pick proposes nothing.
+	if !readingsFresh(c, picked) {
+		return roll, ""
+	}
+	return roll, picked.Serial
 }
 
 // normalizedWeights returns a COPY of the active objective weights, falling

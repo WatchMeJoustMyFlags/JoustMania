@@ -80,7 +80,8 @@ func readingsFresh(c gamecontext.GameContext, p *gamecontext.PlayerSignals) bool
 }
 
 // freshPlayers returns the alive players (activePlayers order) whose readings are
-// fresh: the target pool of R6 and R9 (UC-040 A46 step 5, BR-037, #2517). A Fight
+// fresh: the target pool of R6, and the check R9 applies to its pick (UC-040 A46
+// step 5, BR-037, #2517). A Fight
 // Club or Tournament player who just went back to waiting keeps its last alive
 // state until it is evicted, but its readings stop with its gauges, so it drops
 // out of this pool within 3 s.

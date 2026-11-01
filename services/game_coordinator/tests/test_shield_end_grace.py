@@ -669,7 +669,8 @@ class TestUC040BR035OtherModes:
         dead, order = _counted(game)
         with patch(FC_METRICS):
             await handle_eliminate_player(fc_eliminate_ctx(game, fighter))
-        assert _counted(game) == (dead + 1, order + 1)
+        # A round loss: one death, no elimination order (UC-041 BR-008, #2517).
+        assert _counted(game) == (dead + 1, order)
         assert game.players[fighter].end_grace_until == 0.0
         _end_round_timer(game)
 
