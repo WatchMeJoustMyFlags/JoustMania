@@ -11,8 +11,8 @@ neutrally? We enable the capability and measure; no rule fires a group shield (U
   them too: the permissive `shadow_group` allow-list, the chosen backend, the neutral wording.
 - **Real games are protected by the guard, not by the scope.** The script refuses to start while the flag service
   lists a game that is not a shadow game (an unknown kind counts as real), while `policy.group_grant.real_games` is
-  not `off`, and when a persisted `interventions_allowed=none` (the admin kill switch) would be lifted. It checks
-  again before every game and every 3 s during a game, and aborts at once (container removed, flags restored, agent
+  not `off`, and when `interventions_allowed` is `none` (persisted, or a stack overlay: the kill switch) or unreadable. It checks
+  again before every game, every 3 s during a game, while waiting for the first-game verification and after the last game, and aborts within one poll (container removed, flags restored, agent
   started). A real game that starts in the seconds before a poll still sees the experiment flags. Run only when no
   real game will start.
 - The LLM budget is global. Cap the cost with `llm.max_requests_per_minute=stage` before the run.
@@ -21,8 +21,8 @@ neutrally? We enable the capability and measure; no rule fires a group shield (U
   arm's `decide.prompt_profile`. If not, it stops: the throwaway agent saw nothing (the collector sends spans to
   the `agent` network alias, which the one-off container does not have). Retry with `--use-aliases`; then the
   throwaway agent observes every game, real ones included, so keep the guard in mind. `--no-verify` skips the check.
-- **Restore.** The snapshot keeps each flag's overlay with its writer and remaining TTL. On exit, error, SIGINT or
-  SIGTERM each flag is restored only while its overlay is still the `group-ab` one: an overlay another writer set
+- **Restore.** The snapshot keeps each flag's overlay with its writer and remaining TTL. On exit, error, SIGINT,
+  SIGTERM or SIGHUP each flag is restored only while its overlay is still the `group-ab` one: an overlay another writer set
   during the run, or one an admin write cleared, is left as it is (and reported). A run refuses to start when
   `snapshot.tsv` exists in its `--out`, or when a touched flag already carries a `group-ab` overlay.
 

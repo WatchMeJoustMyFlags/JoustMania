@@ -78,6 +78,7 @@ case "\$1" in
   compose) [[ "\$2" == ps ]] && echo abc123 ;;
   ps) echo cid1 ;;
   logs) if [[ -e "${WORK}/hang" ]]; then sleep 0.5; exit 0; fi
+        if [[ -e "${WORK}/flip-on-b" && "\$2" == *-B-* ]]; then echo '[{"game_id":"r","game_kind":"real"}]' >"${WORK}/games.json"; fi
         echo 'PATTERN_REPLAY_RECORD {"game_id":"gfix","outcome":"winner","winner_slot":1}' ;;
 esac
 exit 0
@@ -223,6 +224,41 @@ clear_all
 code=0
 AB_VERIFY_TRIES=2 AB_VERIFY_WAIT=0.1 "${AB}" run --archetype slow_cascade --seeds 1 --reps 1 --traces-file "${WORK}/wrong.json" --out "${WORK}/o9" >/dev/null 2>&1 || code=$?
 ok "verification stops the run when no span carries the profile (exit 3), flags restored" "$([[ ${code} == 3 && "$(wc -l <"${WORK}/o9/manifest.jsonl")" == 1 ]] && all_clear && echo 0 || echo 1)"
+clear_all
+
+# 10. kill switch: a stack-scope none, an unreadable kill-switch read, a real game after the last game, SIGHUP.
+"${FLAGS}" set agent interventions_allowed none --writer operator >/dev/null
+code=0
+run_ab --out "${WORK}/o11" 2>/dev/null || code=$?
+ok "refuses over a stack-scope interventions_allowed=none (exit 4)" "$([[ ${code} == 4 ]] && echo 0 || echo 1)"
+clear_all
+cat >"${WORK}/failget.sh" <<SH
+#!/usr/bin/env bash
+[[ "\$*" == "get agent interventions_allowed" ]] && exit 1
+exec "${FLAGS}" "\$@"
+SH
+chmod +x "${WORK}/failget.sh"
+code=0
+FLAGS_SH="${WORK}/failget.sh" run_ab --out "${WORK}/o12" 2>/dev/null || code=$?
+ok "an unreadable kill-switch read refuses (exit 3, fail closed), nothing written" "$([[ ${code} == 3 && ! -e "${WORK}/o12/snapshot.tsv" ]] && all_clear && echo 0 || echo 1)"
+touch "${WORK}/flip-on-b"
+code=0
+run_ab --out "${WORK}/o13" >/dev/null 2>&1 || code=$?
+rm -f "${WORK}/flip-on-b"
+echo '[{"game_id":"s","game_kind":"shadow"}]' >"${WORK}/games.json"
+ok "a real game after the last game ends the run with exit 4, flags restored" "$([[ ${code} == 4 && "$(wc -l <"${WORK}/o13/manifest.jsonl")" == 2 ]] && all_clear && echo 0 || echo 1)"
+clear_all
+touch "${WORK}/hang"
+: >"${WORK}/docker.log"
+seed_operator_overlays
+"${AB_RUN[@]}" --out "${WORK}/o14" >/dev/null 2>&1 &
+pid=$!
+wait_until 20 profile_is variant:v1 || true
+kill -HUP "${pid}"
+code=0
+wait "${pid}" 2>/dev/null || code=$?
+rm -f "${WORK}/hang"
+ok "SIGHUP restores every overlay, starts the agent and exits 129" "$([[ ${code} == 129 ]] && operator_overlays_intact && grep -q 'compose start agent' "${WORK}/docker.log" && echo 0 || echo 1)"
 clear_all
 
 # 9. the report keeps a game only when decide.prompt_profile matches its arm.

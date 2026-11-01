@@ -13,7 +13,7 @@
 # (services/flag-service/registry.yaml), so none can be limited to shadow games. While a run is
 # up, real games see them too. The protection of real games is the guard, not the scope:
 # the script refuses to start, and polls every 3 s during each game, while a real game is live
-# or policy.group_grant.real_games is not off. On a violation it aborts at once and restores.
+# or policy.group_grant.real_games is not off. On a violation it aborts within one poll (3 s) and restores.
 # A game that starts in the seconds before a poll sees the experiment flags.
 #
 # Usage:
@@ -35,6 +35,7 @@
 #      agent.decide spans must carry the arm's profile, or the run stops;
 #   5. on exit, error, SIGINT or SIGTERM: restores each flag (same writer, remaining TTL) only
 #      when its overlay is still the group-ab one, removes group-ab-* containers and starts the agent.
+# SIGHUP (a lost terminal) restores like SIGTERM and exits 129.
 # SIGKILL skips the trap: run `restore --out DIR` (flags, containers, agent).
 # Each finished game appends one line to DIR/manifest.jsonl.
 #
@@ -180,7 +181,7 @@ recover() {
 
 cleanup() {
   local code=$?
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM HUP
   if ((CLEANUP_ARMED)); then
     recover "${OUT}" || { ((code)) || code=3; }
   fi
@@ -209,7 +210,7 @@ run_game() {
   while ((SECONDS < deadline)); do
     line="$("${DOCKER}" logs "${name}" 2>/dev/null | grep -m1 '^PATTERN_REPLAY_RECORD ' || true)"
     [[ -n "${line}" ]] && break
-    # every third second: a real game appearing aborts this game at once
+    # every third second: a real game appearing aborts this game
     if ((++tick % 3 == 0)); then
       real_guard || rc=$?
       if ((rc)); then
@@ -241,6 +242,7 @@ verify_first_game() {
   profile="$(arm_profile "${arm}")"
   gid="$(tail -n 1 "${OUT}/manifest.jsonl" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["game_id"])')" || return 3
   for ((i = 0; i < ${AB_VERIFY_TRIES:-8}; i++)); do
+    real_guard || return $?
     if tool verify-game --game-id "${gid}" --profile "${profile}" "${VERIFY_ARGS[@]}"; then
       echo "verified: ${gid} has remote agent.decide spans with prompt_profile=${profile}"
       return 0
@@ -284,8 +286,13 @@ cmd_run() {
   fi
 
   real_guard || exit $?
-  if [[ "$(flag_view interventions_allowed | tool admin-variant)" == none ]]; then
-    echo "agent-group-ab: interventions_allowed has a persisted 'none' (the admin kill switch); the run would lift it. Refusing." >&2
+  # A kill switch (interventions_allowed=none, persisted or a stack overlay) would be overridden by our
+  # stack overlay: refuse. An unreadable answer refuses too (fail closed).
+  local adm eff
+  adm="$(flag_view interventions_allowed | tool admin-variant)" || exit 3
+  eff="$("${FLAGS_SH}" variant agent interventions_allowed)" || exit 3
+  if [[ "${adm}" == none || "${eff}" == none ]]; then
+    echo "agent-group-ab: interventions_allowed is 'none' (admin value '${adm}', effective '${eff}': the kill switch); the run would lift it. Refusing." >&2
     exit 4
   fi
   snapshot_flags || exit 3
@@ -293,6 +300,7 @@ cmd_run() {
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  trap 'exit 129' HUP # a lost terminal: restore, then exit non-zero
   CLEANUP_ARMED=1
   if [[ -n "$(${COMPOSE} ps --status running -q "${AGENT_SERVICE}" 2>/dev/null || true)" ]]; then
     : >"${OUT}/agent-was-running"
@@ -324,6 +332,7 @@ cmd_run() {
       done
     done
   done
+  real_guard || exit $? # a real game that started during the last game: say so before the report
   echo "run finished: scripts/agent-group-ab.sh report --out ${OUT}"
 }
 
