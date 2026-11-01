@@ -4,7 +4,7 @@
  * summary.goal.* attributes; the strip follows the followed game.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DecideStore, GAME_SUMMARY_OPERATION, fetchGoals, parseDecideTraces, parseGoalSummaries } from "../agent.js";
+import { DecideStore, GOAL_POLL_MS, createGoalRun, GAME_SUMMARY_OPERATION, fetchGoal, parseDecideTraces, parseGoalSummaries } from "../agent.js";
 import type { JaegerTracesResponse } from "../agent.js";
 import { renderGoalStrip } from "../components/AgentView.js";
 import { toOtlp } from "./otlp.js";
@@ -94,7 +94,7 @@ describe("UC-042 A12: the game's goal profile, source and attainment", () => {
     expect(store.feed().goal).toMatchObject({ gameId, profile: "quick_game" });
   });
 
-  it("UC-042/A12 fetchGoals searches the agent.game.summary operation", async () => {
+  it("UC-042/A12 fetchGoal searches agent.game.summary by game.id", async () => {
     const urls: string[] = [];
     vi.stubGlobal(
       "fetch",
@@ -103,8 +103,57 @@ describe("UC-042 A12: the game's goal profile, source and attainment", () => {
         return new Response(JSON.stringify(toOtlp(summary(NAMED) as never)), { status: 200 });
       }),
     );
-    const goals = await fetchGoals();
-    expect(new URL(urls[0], "http://pi").searchParams.get("query.operationName")).toBe(GAME_SUMMARY_OPERATION);
+    const { goals } = await fetchGoal("game_abc");
+    const params = new URL(urls[0], "http://pi").searchParams;
+    expect(params.get("query.operationName")).toBe(GAME_SUMMARY_OPERATION);
+    expect(JSON.parse(params.get("query.attributes")!)).toEqual({ "game.id": "game_abc" });
     expect(goals).toHaveLength(1);
+  });
+
+  it("UC-042/A12 the goal poll searches the followed game, stops once its goal is known, restarts on a new game", async () => {
+    const games = new Map<string, JaegerTracesResponse>();
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const params = new URL(String(input), "http://pi").searchParams;
+        const id = (JSON.parse(params.get("query.attributes") ?? "{}") as Record<string, string>)["game.id"];
+        requests.push(id);
+        const body = games.get(id);
+        if (!body) return new Response(JSON.stringify({ error: { httpCode: 404, message: "No traces found" } }), { status: 404 });
+        return new Response(JSON.stringify(toOtlp(body as never)), { status: 200 });
+      }),
+    );
+    const store = new DecideStore();
+    const first = parseDecideTraces(structuredClone(actFixture) as unknown as JaegerTracesResponse);
+    store.merge(first.rows);
+    const gameA = first.current!.gameId;
+    let rendered = 0;
+    const run = createGoalRun(store, () => rendered++);
+
+    expect(await run()).toBe(GOAL_POLL_MS); // game A has no summary yet
+    expect(requests).toEqual([gameA]);
+    expect(rendered).toBe(0);
+
+    games.set(gameA, summary(NAMED, gameA));
+    await run();
+    expect(requests).toEqual([gameA, gameA]);
+    expect(rendered).toBe(1);
+    expect(store.feed().goal?.gameId).toBe(gameA);
+
+    await run();
+    await run();
+    expect(requests).toHaveLength(2); // goal known: no further search
+
+    // A newer game becomes the followed one: the poll starts again for it.
+    const next = structuredClone(actFixture) as unknown as JaegerTracesResponse;
+    for (const t of next.data!) for (const s of t.spans) {
+      s.startTime += 3_600_000_000;
+      for (const tag of s.tags ?? []) if (tag.key === "game.id") tag.value = "game_next";
+    }
+    store.merge(parseDecideTraces(next).rows);
+    await run();
+    expect(requests.at(-1)).toBe("game_next");
+    expect(requests).toHaveLength(3);
   });
 });

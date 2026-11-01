@@ -36,6 +36,7 @@ export * from "./agentAnchor.js";
 export * from "./agentDecide.js";
 export * from "./agentFlags.js";
 export * from "./agentGoal.js";
+export * from "./agentGoalPoll.js";
 export * from "./agentOverlay.js";
 export type { VmQueryResponse } from "./vm.js";
 export type { JaegerSpan, JaegerTag, JaegerTrace, JaegerTracesResponse, JaegerReference } from "./jaeger.js";

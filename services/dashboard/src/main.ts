@@ -25,7 +25,8 @@ import {
   fetchRollouts,
   needsFlagStateFallback,
   createDecideRun,
-  fetchGoals,
+  createGoalRun,
+  GOAL_POLL_MS,
   DECIDE_SEARCH_TIMEOUT_MS,
   FlagFallbackPacer,
   flagFallbackKey,
@@ -467,19 +468,13 @@ function startDecidePolling() {
 
 // The goal strip (#2498): the followed game's goal profile and attainment come from the
 // agent.game.summary span, which is not in the decide traces; a slow poller of its own.
-const GOAL_POLL_MS = 10_000;
-
 function startGoalPolling() {
   goalPoller = createPoller({
     baseMs: GOAL_POLL_MS,
     maxMs: 60_000,
     timeoutMs: DECIDE_TIMEOUT_MS,
     isActive: () => tabActive("agent"),
-    run: async (signal) => {
-      decideStore.mergeGoals(await fetchGoals(signal));
-      agentView.renderDecide(decideStore.feed());
-      return GOAL_POLL_MS;
-    },
+    run: createGoalRun(decideStore, () => agentView.renderDecide(decideStore.feed())),
     onError: (error) => console.warn("Goal summary poll failed (strip kept):", error),
   });
   goalPoller.poke();

@@ -741,6 +741,11 @@ export class DecideStore {
     this.goals.merge(goals);
   }
 
+  /** True when the summary goal of `gameId` is already held (#2498). */
+  hasGoal(gameId: string): boolean {
+    return this.goals.has(gameId);
+  }
+
   /** Next query start of `lane` (agent clock), null before its first decide. */
   queryStartMs(lane: string = DECIDE_LANE_ALL): number | null {
     return this.windows.get(lane)?.startMs() ?? null;
