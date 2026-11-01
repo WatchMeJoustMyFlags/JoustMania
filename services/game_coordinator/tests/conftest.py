@@ -89,6 +89,7 @@ class FakeInterventionGame:
         self.arm = arm
         self.revive_result = revive_result
         self.kill_result = kill_result
+        self.ending = False  # game_ending(): the outcome is latched / ENDING (UC-040 step 13, #2533)
         self.music_speed = SLOW_MUSIC_SPEED
         self.music_windows = resolve_music_windows({})
         self.init_music_windows = self.music_windows
@@ -112,6 +113,9 @@ class FakeInterventionGame:
 
     def get_game_name(self):
         return self._name
+
+    def game_ending(self):
+        return self.ending
 
     def apply_sensitivity_override(self, value):
         self.sensitivity_overrides.append(value)

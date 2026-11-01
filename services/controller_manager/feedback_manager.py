@@ -149,6 +149,15 @@ SHIELD_EFFECTS = frozenset(
 PULSE_PROOF_EFFECTS = frozenset(
     {controller_manager_pb2.GAME_EFFECT_IDENTIFY, controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY}
 )
+# Short overlays that never cut a running winner rainbow short: the agent cue and the shield help cue are
+# pulses, an agent effect can be a flash or a battery display (UC-020 BR-004, #2533).
+RAINBOW_YIELDING_EFFECTS = frozenset(
+    {
+        controller_manager_pb2.GAME_EFFECT_PULSE,
+        controller_manager_pb2.GAME_EFFECT_FLASH,
+        controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY,
+    }
+)
 
 
 class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
@@ -631,11 +640,20 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
         await self.play_effect_with_restore(serial, "flash", effect_color, effect_duration, effect_speed, restore_color)
 
     def _pulse_yields(self, serial: str, effect: int) -> bool:
-        """A PULSE that would take over a running identify or battery display (caller holds effect_lock)."""
-        if effect != controller_manager_pb2.GAME_EFFECT_PULSE:
-            return False
+        """An overlay that must not take over the running effect (caller holds effect_lock).
+
+        A PULSE yields to an identify or a battery display (UC-004 BR-005, UC-015 BR-015); a PULSE
+        a FLASH or a battery display yields to the winner rainbow (UC-020 BR-004, #2533).
+        """
         active = self.active_effects.get(serial)
-        return active is not None and active.effect_type in PULSE_PROOF_EFFECTS and not active.task.done()
+        if active is None or active.task.done():
+            return False
+        if effect == controller_manager_pb2.GAME_EFFECT_PULSE and active.effect_type in PULSE_PROOF_EFFECTS:
+            return True
+        return (
+            effect in RAINBOW_YIELDING_EFFECTS
+            and active.effect_type == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
+        )
 
     def _identify_running(self, serial: str) -> bool:
         active = self.active_effects.get(serial)
@@ -803,7 +821,10 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
                     if self._pulse_yields(target_serial, effect):
                         # UC-004 BR-005 / UC-015 BR-015 (#2105): a pulse never cuts short an identify
                         # or a battery display; the base colour still shows when that effect ends.
-                        logger.debug(f"Pulse for {target_serial} skipped: identify / battery display running")
+                        # UC-020 BR-004 (#2533): nor does a pulse, flash or battery display cut the rainbow short.
+                        logger.debug(
+                            f"Overlay for {target_serial} skipped: identify / battery / winner rainbow running"
+                        )
                         continue
                     if target_serial in self.active_effects:
                         self.active_effects[target_serial].effect_type = effect

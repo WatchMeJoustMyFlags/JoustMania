@@ -658,7 +658,7 @@ class TestUC030OneWriteInFlight:
 
         stream = GatedStream()
         players = {s: Player(serial=s, alive=True, color=(0, 255, 0)) for s in ("a", "b", "c", "d")}
-        game = type("Game", (), {"players": players, "gameplay_stream": stream})()
+        game = type("Game", (), {"players": players, "gameplay_stream": stream, "game_ending": lambda _self: False})()
         manager = InterventionManager(event_publisher=AsyncMock(), get_game=lambda: None)
         manager._user_client = None  # the cue is on by default
         spec = next(s for s in INTERVENTION_SPECS if s.type_id == "end_game")

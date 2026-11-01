@@ -477,11 +477,7 @@ class ShieldMixin:
 
     def _shield_grants_closed(self) -> bool:
         """True once the game is ending: outcome latched, force-ended, or ENDING / ENDED (UC-040 A42 step 3)."""
-        return (
-            self._latched_outcome is not None
-            or self.force_ended
-            or self.state in (_base.GameState.ENDING, _base.GameState.ENDED)
-        )
+        return self.game_ending()
 
     def _shield_limits(self) -> tuple[int, int]:
         """``(max shields per player per game, cooldown seconds)`` for the next grant (UC-040 BR-022).

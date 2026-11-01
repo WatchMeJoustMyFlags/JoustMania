@@ -324,15 +324,20 @@ func (r *ObjectiveRules) rankLocked(c gamecontext.GameContext, now time.Time, no
 
 	cands = applyBatteryPolicy(cands, c, pol, weights)
 	cands = applyChargePolicy(cands, noShield)
-	if r.appliedSource != nil {
-		cands = applyAppliedPolicy(cands, r.appliedSource(), c)
-	}
 	cands = r.applyVarianceCooldown(cands, now, pol)
+	ranked := scoreAndSort(cands, weights, fitEval)
+	// The applied filter runs on the RANKED list (#2487 review): an already-applied
+	// winner must still hold its key against lower-ranked rivals.
+	var applied map[string]string
+	if r.appliedSource != nil {
+		applied = r.appliedSource()
+	}
+	ranked = applyAppliedPolicy(ranked, applied, c)
 	var grants map[string]int
 	if r.grantSource != nil {
 		grants = r.grantSource()
 	}
-	return pickShieldCatchUp(scoreAndSort(cands, weights, fitEval), c, grants), weights, fitEval
+	return pickShieldCatchUp(ranked, c, grants), weights, fitEval
 }
 
 // chaosRoll draws R9's randomness: a roll in [0,1) and a random alive player,
@@ -394,25 +399,42 @@ func applyChargePolicy(cands []candidate, noShield map[string]bool) []candidate 
 }
 
 // applyAppliedPolicy is the rules' already-applied filter (UC-040 A35 step 4,
-// #2046): it drops a state or level candidate whose value equals the one the loop
-// last wrote for the same intervention and target (applied, from one ledger snapshot
-// per ranking), as the permission chain would block it already_applied. Like the
-// no-shield filter the candidate is not ranked, so a suppressed level does not take
-// an emission slot every second; another candidate may rank instead. A target that
-// left the game keeps its candidate (the chain drops that entry). nil or empty
-// applied keeps every candidate.
-func applyAppliedPolicy(cands []candidate, applied map[string]string, c gamecontext.GameContext) []candidate {
-	if len(applied) == 0 {
-		return cands
-	}
-	kept := cands[:0]
-	for _, cd := range cands {
-		d := cd.decision
-		if v, ok := applied[appliedKey(d)]; ok && idempotentInterventions[d.Intervention] &&
-			present(c, d.TargetSerial) && v == normalisedValue(d.Value) {
+// #2046; A52 step 2, BR-041, #2487). It walks the ranked list in order and keeps at
+// most one candidate per state or level key (intervention + target):
+//   - a candidate whose value equals the one the loop last wrote for its key (applied,
+//     from one ledger snapshot per ranking) is dropped, as the permission chain would
+//     block it already_applied; it still claims the key, so a lower-ranked rival with
+//     another value is dropped too. Without that claim two rules that want different
+//     values for one key (R1 1.3 and R5 1.0 on the tempo) would take turns: the
+//     applied one drops out, the rival writes, and the next ranking reverses it. The
+//     value now changes only when the ranking itself changes (weights, urgency);
+//   - a kept candidate claims its key as well, so one ranking never emits two
+//     different values for one key.
+//
+// Like the no-shield filter a dropped candidate is not emitted, so a suppressed
+// level does not take an emission slot every second; a candidate on another key may
+// rank instead. Kinds that are not idempotent (effects, shields, eliminations) are
+// never dropped here. A target that left the game keeps its candidate (the chain
+// drops that entry). nil or empty applied keeps every candidate whose key was not
+// claimed by a higher-ranked one.
+func applyAppliedPolicy(ranked []scoredCandidate, applied map[string]string, c gamecontext.GameContext) []scoredCandidate {
+	kept := ranked[:0]
+	claimed := map[string]bool{}
+	for _, sc := range ranked {
+		d := sc.decision
+		if !idempotentInterventions[d.Intervention] {
+			kept = append(kept, sc)
 			continue
 		}
-		kept = append(kept, cd)
+		key := appliedKey(d)
+		if claimed[key] {
+			continue
+		}
+		claimed[key] = true
+		if v, ok := applied[key]; ok && present(c, d.TargetSerial) && v == normalisedValue(d.Value) {
+			continue
+		}
+		kept = append(kept, sc)
 	}
 	return kept
 }

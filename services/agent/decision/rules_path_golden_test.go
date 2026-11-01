@@ -25,7 +25,11 @@ import (
 // #2487 changed it on purpose: R1 writes the fast tempo (Value 1.3) and its reason
 // says speed up, and R5's reason says what it writes (the 1.15 default); the four
 // applied endurance decisions and the two applied accelerate decisions change, no
-// outcome does.
+// outcome does. #2487 part 2 (PR #2539) changed it on purpose again: R5 writes the
+// slow tempo (Value 1, the lower bound) and its reason says slow the tempo; only
+// R5's two decisions change. Its review moved the rules' already-applied filter
+// after the ranking (BR-042): no golden byte changes (the harness wires no applied
+// source, and no fixture step ranks two values for one key).
 //
 // Regenerate (only for an intended behavior change): go test ./decision -run
 // TestRulesPathGolden -update-rules-golden

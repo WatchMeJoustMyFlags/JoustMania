@@ -62,7 +62,7 @@ func decideFixtures() []decideFixture {
 			}),
 		},
 		{
-			// R5 (speed up) and R6 (eliminate the least active) fire.
+			// R5 (slow down) and R6 (eliminate the least active) fire.
 			name: "accelerate",
 			cfg:  withWeights(map[string]float64{ObjectiveAccelerate: 1}),
 			ctx: gameCtx(100, nil, map[string]testPlayer{
