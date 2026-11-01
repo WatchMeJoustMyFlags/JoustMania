@@ -465,7 +465,8 @@ class TestFightClubKillGate:
         assert loser not in (game.current_defender, game.current_fighter)
         assert game.players[defender].score == 2
         assert [e["loser"] for e in events.get_events_of_type("round_end")] == [loser, loser]
-        assert _counted(game) == (dead_count + 2, order + 2)
+        # Two deaths, one elimination: the round loss is not one, leaving the rotation is (UC-041 BR-008, #2517).
+        assert _counted(game) == (dead_count + 2, order + 1)
         assert game.game_over is True
         assert game._latched_winner == defender
         _end_round_timer(game)
