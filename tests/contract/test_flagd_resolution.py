@@ -1412,6 +1412,11 @@ _BUDGET_VARIANTS_2518 = {
     "llm.max_requests_per_minute": ("interactive", 120, 6),
     "policy.max_interventions_per_minute": ("lively", 8, 2),
 }
+# The top tier for really aggressive play (#2518).
+_FRENZY_VARIANTS_2518 = {
+    "llm.max_requests_per_minute": ("frenzy", 600, 6),
+    "policy.max_interventions_per_minute": ("frenzy", 20, 2),
+}
 
 
 @pytest.mark.uc("UC-070", flow="A4", br=["BR-003"])
@@ -1420,7 +1425,10 @@ def test_budget_variants_2518_are_integers_and_defaults_unchanged(flag_dir):
     """Static: both flag files declare the new integer variants; the default stays."""
     root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
     flags = json.loads((root / "agent.json").read_text())["flags"]
-    for key, (variant, value, default) in _BUDGET_VARIANTS_2518.items():
+    for key, (variant, value, default) in [
+        *_BUDGET_VARIANTS_2518.items(),
+        *_FRENZY_VARIANTS_2518.items(),
+    ]:
         flag = flags[key]
         got = flag["variants"].get(variant)
         assert _type_ok("integer", got) and got == value, (
@@ -1435,15 +1443,17 @@ def test_budget_variants_2518_are_integers_and_defaults_unchanged(flag_dir):
 
 
 @pytest.mark.uc("UC-070", flow="A4", br=["BR-003"])
+@pytest.mark.parametrize("tier", ["interactive", "frenzy"])
 @pytest.mark.parametrize("resolver", ["rpc", "in_process"])
-def test_budget_variants_2518_resolve_as_overlay(flagd, resolver):
+def test_budget_variants_2518_resolve_as_overlay(flagd, resolver, tier):
     """On real flagd: each new variant, selected as a flag-service stack overlay
     renders it (defaultVariant substitution, flags.md §13), resolves with the
     agent's integer getter to its value."""
+    variants = _BUDGET_VARIANTS_2518 if tier == "interactive" else _FRENZY_VARIANTS_2518
     path = flagd.file("agent")
     original = fh.load(path)
     doc = json.loads(json.dumps(original))
-    for key, (variant, _value, _default) in _BUDGET_VARIANTS_2518.items():
+    for key, (variant, _value, _default) in variants.items():
         doc["flags"][key]["defaultVariant"] = variant
     fh.dump_in_place(path, doc)
     try:
@@ -1452,12 +1462,12 @@ def test_budget_variants_2518_resolve_as_overlay(flagd, resolver):
             def served() -> bool:
                 return all(
                     client.get_integer_value(key, -1, EvaluationContext()) == value
-                    for key, (_v, value, _d) in _BUDGET_VARIANTS_2518.items()
+                    for key, (_v, value, _d) in variants.items()
                 )
 
             assert fh.poll_until(served), {
                 key: client.get_integer_details(key, -1, EvaluationContext())
-                for key in _BUDGET_VARIANTS_2518
+                for key in variants
             }
     finally:
         fh.dump_in_place(path, original)

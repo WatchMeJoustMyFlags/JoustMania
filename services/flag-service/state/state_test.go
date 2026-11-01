@@ -217,6 +217,39 @@ func TestStackOverlay_SubstitutesDefaultVariant(t *testing.T) {
 		if res := f.put(WriteRequest{Set: "agent", Flag: "policy.max_interventions_per_minute", Value: raw("8")}); res.Variant != "lively" {
 			t.Fatalf("value 8 selected %q, want the declared lively", res.Variant)
 		}
+		// The top tier for really aggressive play, and the backstop's generous
+		// variant (120, above the 1 to 100 range) for several frenzy games.
+		for flag, want := range map[string]struct {
+			variant string
+			value   float64
+		}{
+			"llm.max_requests_per_minute":            {"frenzy", 600},
+			"policy.max_interventions_per_minute":    {"frenzy", 20},
+			"policy.coordinator_backstop_per_minute": {"generous", 120},
+		} {
+			f.put(WriteRequest{Set: "agent", Flag: flag, Variant: want.variant, Writer: "operator"})
+			if v, val := f.resolve(flag, nil); v != want.variant || val != want.value {
+				t.Fatalf("%s resolved %s=%v, want %s=%v", flag, v, val, want.variant, want.value)
+			}
+		}
+	})
+	// #2518: R4's danger-shield tuning is an operator overlay within its declared
+	// variants (it was read-only, 422 flag_read_only, before).
+	t.Run("UC-053/A1 shield danger ratio and samples are operator overlays (#2518)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.put(WriteRequest{Set: "agent", Flag: "policy.shield_danger_ratio", Variant: "early", Writer: "stage"})
+		if v, val := f.resolve("policy.shield_danger_ratio", nil); v != "early" || val != 0.75 {
+			t.Fatalf("policy.shield_danger_ratio resolved %s=%v, want early=0.75", v, val)
+		}
+		f.put(WriteRequest{Set: "agent", Flag: "policy.shield_danger_samples", Variant: "quick", Writer: "stage"})
+		if v, val := f.resolve("policy.shield_danger_samples", nil); v != "quick" || val != float64(2) {
+			t.Fatalf("policy.shield_danger_samples resolved %s=%v, want quick=2", v, val)
+		}
+		for flag, value := range map[string]string{"policy.shield_danger_ratio": "0.5", "policy.shield_danger_samples": "1"} {
+			if _, err := f.state.Put(WriteRequest{Set: "agent", Flag: flag, Value: raw(value)}); err == nil {
+				t.Fatalf("%s accepted %s, outside its declared variants", flag, value)
+			}
+		}
 	})
 }
 

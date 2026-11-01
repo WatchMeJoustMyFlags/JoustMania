@@ -19,6 +19,8 @@ import (
 const (
 	budgetVariantInteractive = 120
 	budgetVariantLively      = 8
+	budgetVariantFrenzyLLM   = 600
+	budgetVariantFrenzy      = 20
 )
 
 func readAgentFlagFile(t *testing.T, path string) map[string]map[string]any {
@@ -62,6 +64,12 @@ func TestBudgetVariants2518_DeclaredInBothFlagFiles(t *testing.T) {
 			if got := variant(keyMaxInterventionsPerMinute, "lively"); got != float64(budgetVariantLively) {
 				t.Errorf("%s lively = %v, want %d", keyMaxInterventionsPerMinute, got, budgetVariantLively)
 			}
+			if got := variant(keyLLMMaxRequestsPerMin, "frenzy"); got != float64(budgetVariantFrenzyLLM) {
+				t.Errorf("%s frenzy = %v, want %d", keyLLMMaxRequestsPerMin, got, budgetVariantFrenzyLLM)
+			}
+			if got := variant(keyMaxInterventionsPerMinute, "frenzy"); got != float64(budgetVariantFrenzy) {
+				t.Errorf("%s frenzy = %v, want %d", keyMaxInterventionsPerMinute, got, budgetVariantFrenzy)
+			}
 			if got := def(keyLLMMaxRequestsPerMin); got != float64(DefaultLLMMaxRequestsPerMinute) {
 				t.Errorf("%s default = %v, want %d (unchanged)", keyLLMMaxRequestsPerMin, got, DefaultLLMMaxRequestsPerMinute)
 			}
@@ -69,10 +77,14 @@ func TestBudgetVariants2518_DeclaredInBothFlagFiles(t *testing.T) {
 				t.Errorf("%s default = %v, want %d (unchanged)", keyMaxInterventionsPerMinute, got, DefaultMaxInterventionsPerMinute)
 			}
 			// The coordinator backstop stays the global flood ceiling: one game at
-			// the full lively budget is far below its shipped default.
+			// the full frenzy budget fits under its shipped default, and its
+			// generous variant holds several (flags.md §3).
 			backstop, _ := def("policy.coordinator_backstop_per_minute").(float64)
-			if float64(budgetVariantLively) >= backstop {
-				t.Errorf("lively %d is not below the coordinator backstop default %v", budgetVariantLively, backstop)
+			if float64(budgetVariantFrenzy) > backstop {
+				t.Errorf("frenzy %d is above the coordinator backstop default %v", budgetVariantFrenzy, backstop)
+			}
+			if generous, _ := variant("policy.coordinator_backstop_per_minute", "generous").(float64); generous < 3*float64(budgetVariantFrenzy) {
+				t.Errorf("backstop generous %v holds fewer than 3 frenzy games", generous)
 			}
 		})
 	}

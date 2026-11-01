@@ -135,8 +135,8 @@ T-1h `talk-stage.sh reset` (the reset clears a persisted model) and re-check the
 window): every remote decision (one slot per decision; a Jev act round's two
 HTTP calls count once) and every post-game Claude summary (retro). The cap is
 the `llm.max_requests_per_minute` flag (`conservative` 3, `default` 6,
-`aggressive` 12, `stage` 30, and the operator-only `interactive` 120 for a
-cheap backend such as Jev, #2518), capped by `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`
+`aggressive` 12, `stage` 30, and the operator-only `interactive` 120 and
+`frenzy` 600 for a cheap backend such as Jev, #2518), capped by `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`
 when that is set: the cap is `min(env, flag)`, so the env can only lower the
 flag, never raise it (#1788, `ceilBudget`, `services/agent/decision/llmbudget.go`). One game on a remote
 backend at `decision.min_interval_ms=3000` (plus `decision.min_gap_after_answer_ms`,
@@ -151,7 +151,12 @@ may run hotter (#2518): `./scripts/flags.sh set agent llm.max_requests_per_minut
 (120/min: at the shipped cadence the per-game cadence, not the budget, then limits
 the decisions) and `./scripts/flags.sh set agent policy.max_interventions_per_minute lively`
 (8 per game per minute, more acts reach the players; the shield caps and cooldown
-still bound shields). Both are operator choices the agent never writes (C-034); the
+still bound shields). For really aggressive play select `frenzy` on both flags (600
+calls and 20 acts per game per minute); with more than one game playing, also
+`./scripts/flags.sh set agent policy.coordinator_backstop_per_minute generous` (120),
+since three `frenzy` games fill the default backstop of 60. R4's danger shield can
+react sooner with `policy.shield_danger_ratio early` and `policy.shield_danger_samples quick`.
+All of these are operator choices the agent never writes (C-034); the
 pre-flight accepts them, and `talk-stage.sh reset` returns to `stage` and `aggressive`.
 
 ### The second vendor (optional beat 6b: fill in before T-24h or cut it)
