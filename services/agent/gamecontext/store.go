@@ -82,6 +82,13 @@ type Store struct {
 	elimOrder map[string]int
 	// disconnected marks serials whose connection dropped, for eviction.
 	disconnected map[string]bool
+	// retained holds the whole-game aggregates of the players evicted for silence
+	// while the game is active (UC-041 BR-007, #2513): in Fight Club and Tournament a
+	// player waiting for its fight exports no gauges (BR-006), so the TTL evicts it
+	// mid-game. They are listed as GameContext.Waiting, restored into the game-end
+	// snapshot, and moved back into the player when a signal recreates it. At most
+	// maxRetainedPlayers entries; reset at game start and on session-grace exit.
+	retained map[string]retainedPlayer
 
 	playerTTL    time.Duration
 	sessionGrace time.Duration
@@ -179,18 +186,25 @@ func NewStore(playerTTL, sessionGrace time.Duration, now func() time.Time) *Stor
 		playerHistory: make(map[string]*playerHistory),
 		elimOrder:     make(map[string]int),
 		disconnected:  make(map[string]bool),
+		retained:      make(map[string]retainedPlayer),
 		playerTTL:     playerTTL,
 		sessionGrace:  sessionGrace,
 		now:           now,
 	}
 }
 
-// player returns the PlayerSignals for serial, creating it if missing.
+// player returns the PlayerSignals for serial, creating it if missing. A player
+// recreated after a mid-game eviction starts from its retained whole-game
+// aggregates, until the coordinator's gauges replace them (UC-041 BR-007, #2513).
 // Caller must hold s.mu.
 func (s *Store) player(serial string) *PlayerSignals {
 	p := s.ctx.Players[serial]
 	if p == nil {
 		p = &PlayerSignals{Serial: serial}
+		if r, ok := s.retained[serial]; ok {
+			p.SkillLevel, p.PeakAccel, p.MovementVarianceAggregate = r.skill, r.peakAccel, r.varianceAggregate
+			delete(s.retained, serial)
+		}
 		s.ctx.Players[serial] = p
 	}
 	return p
@@ -223,6 +237,44 @@ func (s *Store) touchSessionAt(t time.Time) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// maxRetainedPlayers bounds Store.retained per game (UC-041 BR-007): a controller
+// roster is far smaller, so the cap only guards against a runaway serial stream.
+// Once full, a further evicted player is dropped as before the retention existed.
+const maxRetainedPlayers = 64
+
+// retainedPlayer is the part of an evicted player's PlayerSignals that is a
+// whole-game aggregate and so still true at game end (UC-041 BR-007, #2513).
+// Setters replace pointers and never mutate through them, so sharing them is safe.
+type retainedPlayer struct {
+	skill, peakAccel, varianceAggregate *float64
+}
+
+// retainLocked remembers p's whole-game aggregates on a mid-game eviction. Caller
+// holds s.mu.
+func (s *Store) retainLocked(p *PlayerSignals) {
+	if _, ok := s.retained[p.Serial]; !ok && len(s.retained) >= maxRetainedPlayers {
+		return
+	}
+	s.retained[p.Serial] = retainedPlayer{
+		skill:             p.SkillLevel,
+		peakAccel:         p.PeakAccel,
+		varianceAggregate: p.MovementVarianceAggregate,
+	}
+}
+
+// waitingLocked returns the retained serials, sorted, or nil. Caller holds s.mu.
+func (s *Store) waitingLocked() []string {
+	if len(s.retained) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.retained))
+	for serial := range s.retained {
+		out = append(out, serial)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // recordStateDelta appends a periodic state-delta entry to the rolling narrative
 // (#916), but ONLY when a tracked session aggregate (active player count or mean
@@ -394,7 +446,15 @@ func (s *Store) SetPlayerAlive(serial string, alive bool) {
 	if !alive {
 		p := s.ctx.Players[serial]
 		if p == nil {
-			return
+			// A remembered waiting player counted out mid-game (Fight Club takes a
+			// disconnected player out of the rotation, Tournament eliminates it) is
+			// recreated as a player that is not alive, so it leaves retained and is
+			// no longer waiting (UC-041 BR-007, #2513). Any other unknown serial
+			// stays ignored.
+			if _, ok := s.retained[serial]; !ok || !s.gameActiveLocked() {
+				return
+			}
+			p = s.player(serial)
 		}
 		p.activePreferred = true
 		p.Active = ptr(false)
@@ -666,6 +726,7 @@ func (s *Store) SetGameActive(active bool) {
 		s.durationAdvancedAt = time.Time{}
 		s.elapsedHighWater = 0
 		s.elimOrder = make(map[string]int)
+		s.retained = make(map[string]retainedPlayer)
 		s.endedAt = time.Time{}
 		s.gameEndAt = time.Time{}
 		s.ctx.EndReason = ""
@@ -737,6 +798,21 @@ func (s *Store) endGameLocked(gameEnd time.Time, reason string) *GameContext {
 		return nil
 	}
 	snap := s.snapshotLocked() // pre-reset state: SessionID + sequence intact
+	// The game-end consumers (experiment fitness, summary, retro) see every player
+	// of the game: a player evicted mid-game is restored from its retained whole-game
+	// aggregates, marked Waiting, with no alive state (UC-041 BR-007, #2513).
+	for serial, r := range s.retained {
+		if _, live := snap.Players[serial]; live {
+			continue
+		}
+		snap.Players[serial] = &PlayerSignals{
+			Serial:                    serial,
+			SkillLevel:                r.skill,
+			PeakAccel:                 r.peakAccel,
+			MovementVarianceAggregate: r.varianceAggregate,
+			Waiting:                   true,
+		}
+	}
 	return &snap
 }
 
@@ -1060,6 +1136,12 @@ func (s *Store) snapshotLocked() GameContext {
 	out := s.ctx
 	// Live elapsed time with the StartedAt fallback while the game is active (#1305).
 	out.Session.DurationSeconds = s.effectiveDurationLocked()
+	// Waiting players belong to the active game only: after the end (the grace
+	// window) a live snapshot lists none; the game-end snapshot carries them in
+	// Players instead (UC-041 BR-007, #2513).
+	if s.gameActiveLocked() {
+		out.Waiting = s.waitingLocked()
+	}
 	out.Players = make(map[string]*PlayerSignals, len(s.ctx.Players))
 	for serial, p := range s.ctx.Players {
 		cp := *p
@@ -1144,8 +1226,18 @@ func (s *Store) EvictStale() {
 	playerTTL := s.effectivePlayerTTL()
 	sessionGrace := s.effectiveSessionGrace()
 
+	// A player evicted for silence while its game is active keeps its whole-game
+	// aggregates (UC-041 BR-007, #2513); a post-game eviction does not. The disconnect
+	// check only guards the fallback partition: controller_connected carries no
+	// game_id, so a game partition never sees it. There a waiting player who
+	// disconnects leaves retained through its game_player_alive 0, which recreates it
+	// (SetPlayerAlive) as a live player that is not alive.
+	retain := s.gameActiveLocked()
 	for serial, p := range s.ctx.Players {
 		if s.disconnected[serial] || now.Sub(p.LastUpdate) > playerTTL {
+			if retain && !s.disconnected[serial] {
+				s.retainLocked(p)
+			}
 			delete(s.ctx.Players, serial)
 			delete(s.disconnected, serial)
 			delete(s.playerHistory, serial) // drop the evicted player's movement ring (#1082)
@@ -1165,6 +1257,7 @@ func (s *Store) EvictStale() {
 		s.ctx.GameplayPhaseSpanID = "" // ditto, the gameplay_phase span_id (#1195)
 		s.ctx.GameCycleSpanID = ""     // ditto, the game_cycle span_id (#1325)
 		s.elimOrder = make(map[string]int)
+		s.retained = make(map[string]retainedPlayer)
 		s.endedAt = time.Time{}
 		s.gameEndAt = time.Time{}
 		s.ctx.EndReason = ""
