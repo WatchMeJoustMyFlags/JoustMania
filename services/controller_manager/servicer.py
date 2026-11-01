@@ -48,6 +48,13 @@ logger = logging.getLogger(__name__)
 # claims the controller first (the coordinator reconnects and re-sends, #1837).
 STREAM_CLOSE_SHIELD_CLEANUP_DELAY_S = 7.0
 
+# A closing gameplay stream applies the commands it already received for at most this long (#2540).
+STREAM_CLOSE_DRAIN_TIMEOUT_S = 1.0
+# After the drain, the applying task gets this long to stop on its cancel before the close goes on.
+STREAM_CLOSE_CANCEL_GRACE_S = 0.1
+# Ends a gameplay stream's command queue: everything queued before it is applied first.
+_END_OF_CONTROLS = object()
+
 tracer = get_tracer(__name__)
 
 
@@ -621,22 +628,27 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
         requested_hz = current_hz  # the client's configured rate
         current_filter = None  # None = all controllers
 
-        # Background task to read client updates
-        async def read_client_updates():
+        # Commands read off the call, applied in arrival order by apply_client_updates (#2540).
+        # Reading eagerly takes every command off the call as it arrives, so a command already
+        # received is still applied when the client cancels the call (the game's stream close).
+        pending_controls: asyncio.Queue = asyncio.Queue()
+
+        async def apply_client_updates():
             nonlocal current_hz, requested_hz, current_filter
 
             try:
-                async for control_msg in request_iterator:
+                while (control_msg := await pending_controls.get()) is not _END_OF_CONTROLS:
                     config_hz, current_filter = await self._process_gameplay_control(
                         control_msg, subscriber_id, span, current_filter
                     )
                     if config_hz is not None:
                         requested_hz = current_hz = config_hz
             except Exception as e:
-                logger.error(f"[{subscriber_id}] Error reading client updates: {e}", exc_info=True)
+                logger.error(f"[{subscriber_id}] Error applying client updates: {e}", exc_info=True)
 
-        # Start background task to read client updates
-        update_task = asyncio.create_task(read_client_updates())
+        # Start background tasks to read and apply client updates
+        read_task = asyncio.create_task(self._read_gameplay_controls(request_iterator, pending_controls, subscriber_id))
+        apply_task = asyncio.create_task(apply_client_updates())
 
         logger.info(f"New gameplay subscriber: {subscriber_id}")
 
@@ -702,23 +714,64 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                     await context.abort(grpc.StatusCode.INTERNAL, f"gameplay stream frame error: {e}")
 
         finally:
-            # Cleanup: Cancel background task
-            update_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await update_task
+            # Cleanup: stop reading, then apply the commands already received (an end-of-game
+            # WINNER_RAINBOW or SHIELD 0 included) before the roster is released (#2540).
+            try:
+                read_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await read_task
+                await self._drain_gameplay_controls(apply_task, pending_controls, subscriber_id)
+            finally:
+                # Runs even when a second cancel interrupts the drain; that cancel goes on afterwards.
+                self._release_closed_gameplay_stream(subscriber_id)
 
-            # Snapshot BEFORE the release: it forgets the roster (#1837).
-            closed_roster = set(self._game_stream_serials.get(subscriber_id, ()))
-            self._release_game_stream(subscriber_id)
-            self._schedule_shield_cleanup(closed_roster)
+    def _release_closed_gameplay_stream(self, subscriber_id: str) -> None:
+        """Release a closed gameplay stream's roster, shield layers, pattern controllers and stream gauge."""
+        # Snapshot BEFORE the release: it forgets the roster (#1837).
+        closed_roster = set(self._game_stream_serials.get(subscriber_id, ()))
+        self._release_game_stream(subscriber_id)
+        self._schedule_shield_cleanup(closed_roster)
 
-            # A reconnecting game stream may claim this stream's pattern controllers.
-            self.backend.release_pattern_stream(subscriber_id)
+        # A reconnecting game stream may claim this stream's pattern controllers.
+        self.backend.release_pattern_stream(subscriber_id)
 
-            # Update stream metrics
-            metrics.active_streams.dec()
+        # Update stream metrics
+        metrics.active_streams.dec()
 
-            logger.info(f"Gameplay subscriber disconnected: {subscriber_id}")
+        logger.info(f"Gameplay subscriber disconnected: {subscriber_id}")
+
+    @staticmethod
+    async def _read_gameplay_controls(request_iterator, pending: asyncio.Queue, subscriber_id: str) -> None:
+        """Take every control message off the call as it arrives, so a close cannot drop a received one (#2540)."""
+        try:
+            async for control_msg in request_iterator:
+                pending.put_nowait(control_msg)
+        except Exception as e:
+            logger.error(f"[{subscriber_id}] Error reading client updates: {e}", exc_info=True)
+
+    @staticmethod
+    async def _drain_gameplay_controls(apply_task: asyncio.Task, pending: asyncio.Queue, subscriber_id: str) -> None:
+        """Let a closing gameplay stream apply the commands it already received, bounded (#2540).
+
+        No handler waits on an effect hold, so the drain is short; the bound only protects the
+        close from a hung backend write. A command not applied by then is dropped with a warning.
+        """
+        pending.put_nowait(_END_OF_CONTROLS)
+        try:
+            await asyncio.wait_for(asyncio.shield(apply_task), timeout=STREAM_CLOSE_DRAIN_TIMEOUT_S)
+        except TimeoutError:
+            logger.warning(
+                f"[{subscriber_id}] Stream close: {pending.qsize()} received commands not applied within "
+                f"{STREAM_CLOSE_DRAIN_TIMEOUT_S} s"
+            )
+        except asyncio.CancelledError:
+            pass  # the close itself was cancelled again: stop draining, the roster release still runs
+        finally:
+            apply_task.cancel()
+            # Bounded too: a command that swallows the cancel must not hold the roster release (#2540).
+            _done, still_running = await asyncio.wait({apply_task}, timeout=STREAM_CLOSE_CANCEL_GRACE_S)
+            if still_running:
+                logger.warning(f"[{subscriber_id}] Stream close: a command did not stop within the cancel grace")
 
     # NOTE: Internal feedback methods moved to feedback_manager.py
     # NOTE: Per-controller frame inputs are read in state_builder.py

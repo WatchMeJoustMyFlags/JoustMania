@@ -211,13 +211,13 @@ class TestBaseColorDuringEffect:
         feedback_manager.base_colors[serial] = (255, 255, 0)
 
         base_at_spawn = {}
-        orig = feedback_manager.play_effect_with_restore
+        orig = feedback_manager._effect_fade_out
 
         async def capture(s, *args, **kwargs):
             base_at_spawn["value"] = feedback_manager.base_colors.get(s)
             return await orig(s, *args, **kwargs)
 
-        with patch.object(feedback_manager, "play_effect_with_restore", side_effect=capture):
+        with patch.object(feedback_manager, "_effect_fade_out", side_effect=capture):
             await feedback_manager.handle_game_effect(
                 serial,
                 controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
@@ -354,7 +354,9 @@ class TestEffectCancellation:
             "Warning effect task should be cancelled or done after death effect starts"
         )
 
-        # The color should now be red (death effect), not white (warning)
+        # The color should now be red (death effect), not white (warning). The red hold runs as the
+        # effect task (#2540): let it take its first step.
+        await asyncio.sleep(0.01)
         current_color = mock_backend.get_current_color(serial)
         assert current_color == (255, 0, 0), (
             f"Expected red (255, 0, 0) from death effect, got {current_color}. "
@@ -435,14 +437,17 @@ class TestWarningAndDeathEffectTimings:
     @pytest.mark.uc("UC-030", flow="main", steps=[9])
     async def test_death_is_rumble_red_hold_then_fade_for_the_fixed_times(self, feedback_manager, recorded):
         """UC-030 step 9: 1000 ms rumble, 300 ms red hold, 700 ms fade."""
+        fade = AsyncMock()
+        feedback_manager._effect_fade_out = fade
         await feedback_manager._effect_player_death("test_ctrl")
+        # The red hold and the fade run as the controller's effect task (#2540).
+        await feedback_manager.active_effects["test_ctrl"].task
 
         recorded["vibration"].assert_awaited_once_with("test_ctrl", 255, 1000)
-        recorded["led"].assert_awaited_once_with("test_ctrl", Colors.Red.value)
+        assert recorded["led"].await_args_list[0].args == ("test_ctrl", Colors.Red.value)
+        assert recorded["led"].await_args_list[-1].args == ("test_ctrl", Colors.Black.value)  # the restore
         recorded["sleep"].assert_awaited_once_with(pytest.approx(0.3))
-        recorded["effect"].assert_awaited_once_with(
-            "test_ctrl", "fade_out", Colors.Red.value, 700, 1, Colors.Black.value
-        )
+        fade.assert_awaited_once_with("test_ctrl", Colors.Red.value, 700)
         assert feedback_manager.base_colors["test_ctrl"] == Colors.Black.value
 
 

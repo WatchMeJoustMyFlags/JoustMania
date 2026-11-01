@@ -11,6 +11,7 @@ Phase 57: Backend abstraction for platform independence.
 import asyncio
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from opentelemetry.context import Context
@@ -158,6 +159,9 @@ RAINBOW_YIELDING_EFFECTS = frozenset(
         controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY,
     }
 )
+# Effects that never cut a running death effect (red hold + fade) short (UC-030 step 9, #2540): the short
+# overlays as for the rainbow, and a warning, which the death supersedes (its 1 s rumble covers the haptics).
+DEATH_YIELDING_EFFECTS = RAINBOW_YIELDING_EFFECTS | {controller_manager_pb2.GAME_EFFECT_PLAYER_WARNING}
 
 
 class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
@@ -377,61 +381,91 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
             speed: Effect speed (1-10)
             restore_color: Color to restore to after effect (None = no restore)
         """
-        # Cancel any existing effect, preserving the effect_type if already set
-        # (handle_game_effect sets effect_type before calling handler)
-        current_effect_type = await self._take_over_effect(serial)
-
-        # Mark effect as active (polling skips LED refresh)
-        self.backend.set_effect_active(serial, True)
 
         # Create wrapper that restores color after effect
-        async def effect_with_restore():
-            try:
-                match effect_type:
-                    case "flash":
-                        await self._effect_flash(serial, color, duration_ms, speed)
-                    case "pulse":
-                        await self._effect_pulse(serial, color, duration_ms, speed)
-                    case "rainbow":
-                        await self._effect_rainbow(serial, duration_ms, speed)
-                    case "fade_out":
-                        await self._effect_fade_out(serial, color, duration_ms)
-                    case "fade_in":
-                        await self._effect_fade_in(serial, color, duration_ms)
-            except asyncio.CancelledError:
-                raise
-            finally:
-                # Remove from active_effects so new base colors can be applied immediately,
-                # unless another effect already owns the LED (#1430).
-                if await self._release_effect(serial):
-                    # Restore the current base colour, or hand the LED back to an
-                    # active agent shield (#1301, UC-040 BR-010).
-                    fallback = restore_color if isinstance(restore_color, tuple) else None
-                    await self._finish_effect(serial, bool(restore_color), fallback)
+        async def effect_body():
+            match effect_type:
+                case "flash":
+                    await self._effect_flash(serial, color, duration_ms, speed)
+                case "pulse":
+                    await self._effect_pulse(serial, color, duration_ms, speed)
+                case "rainbow":
+                    await self._effect_rainbow(serial, duration_ms, speed)
+                case "fade_out":
+                    await self._effect_fade_out(serial, color, duration_ms)
+                case "fade_in":
+                    await self._effect_fade_in(serial, color, duration_ms)
 
-        task = asyncio.create_task(effect_with_restore())
-        async with self.effect_lock:
-            self.active_effects[serial] = ActiveEffect(task=task, effect_type=current_effect_type)
+        # Replace any existing effect, preserving the effect_type if already set
+        # (handle_game_effect sets effect_type before calling handler)
+        await self._start_effect(serial, lambda: self._run_with_restore(serial, effect_body, restore_color))
 
-    async def _take_over_effect(self, serial: str) -> int:
-        """Cancel and await the running effect so a new one owns the LED.
+    async def _run_with_restore(
+        self, serial: str, body: Callable[[], Awaitable[None]], restore_color: tuple[int, int, int] | bool | None
+    ) -> None:
+        """Run an effect body as the controller's effect task, then restore its LED if it still owns it."""
+        try:
+            await body()
+        finally:
+            # Remove from active_effects so new base colors can be applied immediately,
+            # unless another effect already owns the LED (#1430).
+            if await self._release_effect(serial):
+                # Restore the current base colour, or hand the LED back to an
+                # active agent shield (#1301, UC-040 BR-010).
+                fallback = restore_color if isinstance(restore_color, tuple) else None
+                await self._finish_effect(serial, bool(restore_color), fallback)
 
-        Returns the effect_type of the replaced entry (handle_game_effect types
-        the entry before calling the handler), 0 when there was none.
+    async def _start_effect(
+        self, serial: str, make_task_body: Callable[[], Awaitable[None]], effect_type: int | None = None
+    ) -> asyncio.Task | None:
+        """Start an effect task as the controller's one LED owner, replacing the running effect (#2540).
+
+        The new effect claims the ``active_effects`` entry under the lock in the same step that
+        cancels the old one, then awaits the old task outside the lock. So there is no moment
+        without an owner in which an effect from the other stream could slip in (and be orphaned
+        by this one), and the overlay rules (``_pulse_yields``) see the new effect's type at once.
+        When a newer effect (or a cancel) replaces the claim while the old task ends, the newer
+        state wins: this effect is not started and None is returned.
+
+        ``effect_type`` None keeps the type handle_game_effect gave the entry.
         """
-        existing_task = None
-        effect_type = 0
+        claim = asyncio.get_running_loop().create_future()
         async with self.effect_lock:
-            active = self.active_effects.pop(serial, None)
-            if active is not None:
-                effect_type = active.effect_type
-                existing_task = active.task
-                existing_task.cancel()
-        # Await cancelled task outside lock to avoid deadlock with task's finally block
-        if existing_task:
-            with contextlib.suppress(asyncio.CancelledError):
-                await existing_task
-        return effect_type
+            active = self.active_effects.get(serial)
+            if effect_type is None:
+                effect_type = active.effect_type if active is not None else 0
+            self.active_effects[serial] = ActiveEffect(task=claim, effect_type=effect_type)
+            old_task = active.task if active is not None else None
+            if old_task is not None:
+                old_task.cancel()
+        # Mark effect as active (polling skips LED refresh)
+        self.backend.set_effect_active(serial, True)
+        try:
+            # Await the cancelled task outside the lock: its finally block takes the lock
+            if old_task is not None and old_task is not asyncio.current_task():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await old_task
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    # The CancelledError above was ours, not the old task's: do not swallow it.
+                    raise asyncio.CancelledError()
+            async with self.effect_lock:
+                entry = self.active_effects.get(serial)
+                if entry is None or entry.task is not claim:
+                    claim.cancel()
+                    return None
+                task = asyncio.create_task(make_task_body())
+                self.active_effects[serial] = ActiveEffect(task=task, effect_type=entry.effect_type)
+            return task
+        except BaseException:
+            # Cancelled before the effect started: a claim left behind would block the base colour
+            # and the polling LED refresh until the next effect (#2540).
+            entry = self.active_effects.get(serial)
+            if entry is not None and entry.task is claim:
+                del self.active_effects[serial]
+                self.backend.set_effect_active(serial, False)
+            claim.cancel()
+            raise
 
     async def _release_effect(self, serial: str) -> bool:
         """At an effect task's end: drop its entry if it still owns the LED.
@@ -486,14 +520,13 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
         with tracer.start_as_current_span("effect_player_death", context=trace_context) as span:
             span.set_attribute(CONTROLLER_SERIAL_ATTR, serial)
 
-            # Cancel any active effect (e.g., warning flash) and the agent shield
-            # immediately for a clean transition (#1301, UC-040 A17)
+            # End the agent shield immediately for a clean transition (#1301, UC-040 A17); the
+            # running effect (e.g. a warning flash) is replaced by the death effect task below.
             span.add_event("cancel_existing_effect")
             # The player is out from the first moment: a reconnect during the effect
             # restores off, never the game colour (UC-002 BR-008, #2471).
             self.base_colors[serial] = Colors.Black.value
             await self.end_shield_effect(serial, restore=False)
-            await self.cancel_effect(serial)
 
             # Long rumble (~1 s, UC-030 step 9): clearly different from the 200 ms warning. It runs on its
             # own stop timer, so the red hold, the fade and the end of the game do not cut it short.
@@ -503,19 +536,28 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
             if stop_timer is not None:
                 stop_timer.set_name(DEATH_RUMBLE_TASK_NAME)  # the swell and the charge pulses leave it alone
 
-            # Solid red briefly (default 300ms) then fade to black (default 700ms)
-            # This replaces the awkward slow blink (1Hz over 1500ms)
-            span.add_event("led_red")
-            await self._set_led_color(serial, Colors.Red.value)
-            await asyncio.sleep(red_hold_ms / 1000.0)
+            async def red_hold_then_fade():
+                # Solid red briefly (default 300ms, painted below) then fade to black (default 700ms)
+                await asyncio.sleep(red_hold_ms / 1000.0)
 
-            span.add_event("fade_to_black", {"duration_ms": fade_ms})
-            # Set base color to black BEFORE spawning the fade so a concurrent
-            # base_color command (e.g., menu lobby reset) that lands during the
-            # effect setup can't be clobbered afterwards — apply_base_color
-            # writes win, and the fade's restore picks up the latest value (#757).
-            self.base_colors[serial] = Colors.Black.value
-            await self.play_effect_with_restore(serial, "fade_out", Colors.Red.value, fade_ms, 1, Colors.Black.value)
+                # base_colors is already black (set above, before this task exists), so a base_color
+                # command that lands during the hold or the fade wins: apply_base_color writes win,
+                # and the restore below picks up the latest value (#757, #2540).
+                span.add_event("fade_to_black", {"duration_ms": fade_ms})
+                await self._effect_fade_out(serial, Colors.Red.value, fade_ms)
+
+            # The red hold and the fade run as the controller's effect task, so the command reader
+            # does not wait for them (#2540). The red is painted here, once the previous effect has
+            # ended, so a command right behind the death cannot cancel the task before it is shown;
+            # an overlay or a warning then yields to the running death (DEATH_YIELDING_EFFECTS).
+            death = await self._start_effect(
+                serial,
+                lambda: self._run_with_restore(serial, red_hold_then_fade, Colors.Black.value),
+                effect_type=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
+            )
+            if death is not None:
+                span.add_event("led_red")
+                await self._set_led_color(serial, Colors.Red.value)
 
     async def _effect_player_respawn(self, serial: str, **_kwargs) -> None:
         """White during spawn protection."""
@@ -557,12 +599,11 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
         # Use provided duration or default to 750ms per phase
         phase_duration_ms = duration_ms if duration_ms > 0 else 750
         # A running effect (e.g. an identify, UC-004) must not keep painting over the countdown.
-        await self._take_over_effect(serial)
-        task = asyncio.create_task(self._countdown_sequence(serial, restore_color, trace_context, phase_duration_ms))
-        async with self.effect_lock:
-            self.active_effects[serial] = ActiveEffect(
-                task=task, effect_type=controller_manager_pb2.GAME_EFFECT_COUNTDOWN
-            )
+        await self._start_effect(
+            serial,
+            lambda: self._countdown_sequence(serial, restore_color, trace_context, phase_duration_ms),
+            effect_type=controller_manager_pb2.GAME_EFFECT_COUNTDOWN,
+        )
 
     async def _effect_admin_enter(self, serial: str, **_kwargs) -> None:
         """White flash, then persistent white."""
@@ -577,16 +618,20 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
             await self.set_controller_color(serial, restore_color)
 
     async def _effect_low_battery(self, serial: str, restore_color: tuple | None, **_kwargs) -> None:
-        """Red flash 2x warning."""
-        for _ in range(2):
-            await self.set_controller_color(serial, Colors.Red.value)
-            await asyncio.sleep(0.15)
-            await self.set_controller_color(serial, Colors.Red20.value)
-            await asyncio.sleep(0.15)
-        async with self.effect_lock:
-            self.active_effects.pop(serial, None)
-        if restore_color:
-            await self.set_controller_color(serial, restore_color)
+        """Red flash 2x warning, as an effect task so the command reader does not wait for it (#2540)."""
+
+        async def flash_twice():
+            for _ in range(2):
+                await self.set_controller_color(serial, Colors.Red.value)
+                await asyncio.sleep(0.15)
+                await self.set_controller_color(serial, Colors.Red20.value)
+                await asyncio.sleep(0.15)
+
+        await self._start_effect(
+            serial,
+            lambda: self._run_with_restore(serial, flash_twice, restore_color),
+            effect_type=controller_manager_pb2.GAME_EFFECT_LOW_BATTERY,
+        )
 
     async def _effect_force_start_charge(self, serial: str, **_kwargs) -> None:
         """Fade from white to dim over 2s."""
@@ -643,13 +688,16 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
         """An overlay that must not take over the running effect (caller holds effect_lock).
 
         A PULSE yields to an identify or a battery display (UC-004 BR-005, UC-015 BR-015); a PULSE
-        a FLASH or a battery display yields to the winner rainbow (UC-020 BR-004, #2533).
+        a FLASH or a battery display yields to the winner rainbow (UC-020 BR-004, #2533), and these and a
+        warning yield to a running death effect (UC-030 step 9, #2540).
         """
         active = self.active_effects.get(serial)
         if active is None or active.task.done():
             return False
         if effect == controller_manager_pb2.GAME_EFFECT_PULSE and active.effect_type in PULSE_PROOF_EFFECTS:
             return True
+        if effect in DEATH_YIELDING_EFFECTS and active.effect_type == controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH:
+            return True  # UC-030 step 9 (#2540): the death red hold and fade are shown in full
         return (
             effect in RAINBOW_YIELDING_EFFECTS
             and active.effect_type == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
@@ -822,8 +870,9 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
                         # UC-004 BR-005 / UC-015 BR-015 (#2105): a pulse never cuts short an identify
                         # or a battery display; the base colour still shows when that effect ends.
                         # UC-020 BR-004 (#2533): nor does a pulse, flash or battery display cut the rainbow short.
+                        # UC-030 step 9 (#2540): nor do they, or a warning, cut the death effect short.
                         logger.debug(
-                            f"Overlay for {target_serial} skipped: identify / battery / winner rainbow running"
+                            f"Overlay for {target_serial} skipped: identify / battery / winner rainbow / death running"
                         )
                         continue
                     if target_serial in self.active_effects:
