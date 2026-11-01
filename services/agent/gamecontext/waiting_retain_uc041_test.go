@@ -16,7 +16,7 @@ const retainTTL = 5 * time.Second
 
 type retainClock struct{ t time.Time }
 
-func (c *retainClock) now() time.Time         { return c.t }
+func (c *retainClock) now() time.Time          { return c.t }
 func (c *retainClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 // seatPlayer gives serial an alive player with the three whole-game aggregates.
