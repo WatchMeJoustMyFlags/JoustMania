@@ -305,6 +305,8 @@ class TestUC030DeathIsShownInFull:
         behind the death: the red is painted at once and the death plays in full; the follow-up yields."""
         since = time.time()
         assert await dying.handle_game_effect(WINNER, pb.GAME_EFFECT_PLAYER_DEATH)
+        # The red is on the LED when the death command has been applied, before any later command.
+        assert dying.backend.frames(WINNER, since)[-1] == (255, 0, 0)
         await dying.handle_game_effect(WINNER, follow_up, color=MAGENTA)
 
         death = dying.active_effects[WINNER]
@@ -318,10 +320,17 @@ class TestUC030DeathIsShownInFull:
     @pytest.mark.asyncio
     @pytest.mark.uc("UC-030", steps=[9])
     async def test_the_death_still_gives_way_to_the_winner_rainbow(self, dying):
-        """UC-020 BR-004: only overlays and the warning yield; a lifecycle effect such as the rainbow takes over."""
+        """UC-020 BR-004: only overlays and the warning yield; a lifecycle effect such as the rainbow takes over.
+
+        The red was already shown when the death was applied (#2540), even though the rainbow right behind it
+        cancels the red hold before the death task's first step.
+        """
+        since = time.time()
         assert await dying.handle_game_effect(WINNER, pb.GAME_EFFECT_PLAYER_DEATH)
         assert await dying.handle_game_effect(WINNER, pb.GAME_EFFECT_WINNER_RAINBOW)
         assert dying.active_effects[WINNER].effect_type == pb.GAME_EFFECT_WINNER_RAINBOW
+        await asyncio.sleep(0.05)
+        assert dying.backend.frames(WINNER, since)[0] == (255, 0, 0)
 
 
 class TestLowBatteryDoesNotHoldTheReader:
