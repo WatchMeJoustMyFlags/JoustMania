@@ -21,10 +21,10 @@ import random
 import statistics
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import grpc
 from openfeature.evaluation_context import EvaluationContext
@@ -45,6 +45,7 @@ from lib.feature_flags import (
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import game_clock, metrics
+from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-exported: games/shields.py and the tests import them from base
     CHARGE_EXPIRY_MAX_SECONDS,
     DEFAULT_CHARGE_EXPIRY_SECONDS,
@@ -91,9 +92,6 @@ from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-ex
 )
 from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
 from services.game_coordinator.stream_writes import serialized_write
-
-if TYPE_CHECKING:
-    from services.game_coordinator.games.analytics import PlayerAnalytics
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
@@ -1274,6 +1272,63 @@ class BaseGameMode(ShieldMixin, ABC):
         if self.game_kind != GAME_KIND_SHADOW:
             metrics.set_players_alive(self.game_id, alive_count)
 
+    def _attach_player_analytics(self) -> None:
+        """Give every player a ``PlayerAnalytics`` tracker, in every mode (UC-041 step 4, #2358).
+
+        The tracker feeds the agent's per-player movement and skill inputs (the
+        ``game_player_*`` gauges, emitted by ``_record_player_analytics``) and the
+        end-of-game ``player_analytics`` summary. Skipped while ``analytics.enabled``
+        is off; a player the mode already gave a tracker keeps it.
+        """
+        config = self._runtime_config()
+        if not config.analytics.enabled:
+            return
+        game_start_time = game_clock.now()
+        for serial, player in self.players.items():
+            if player.analytics is None:
+                player.analytics = PlayerAnalytics.from_config(
+                    serial=serial,
+                    game_start_time=game_start_time,
+                    config=config.analytics,
+                )
+
+    @staticmethod
+    def _analytics_span_attributes(player: Player) -> dict:
+        """The ``analytics.*`` attributes for a player's end-of-game span event ({} without a tracker)."""
+        if player.analytics is None:
+            return {}
+        return {f"analytics.{key}": value for key, value in player.analytics.get_summary().items()}
+
+    def _player_analytics_extras(self, player: Player) -> dict:
+        """Mode fields added to a player's ``player_analytics`` summary (override per mode)."""
+        return {"survival_time_ms": player.analytics.total_time_ms}
+
+    async def _publish_analytics_summaries(self, winner_serials: Collection[str]) -> None:
+        """Publish one ``player_analytics`` summary per tracked player at game end (UC-041 step 4).
+
+        Also counts the analytics samples and near-death events. ``winner_serials``
+        are the players the mode declares winners (empty without a winner).
+        """
+        game_mode = self.get_game_name()
+        for serial, player in self.players.items():
+            if player.analytics is None:
+                continue
+            summary = player.analytics.get_summary()
+            summary["game_id"] = self.game_id
+            summary["winner"] = serial in winner_serials
+            summary.update(self._player_analytics_extras(player))
+
+            await self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
+
+            metrics.game_analytics_samples_total.labels(game_mode=game_mode).inc(player.analytics.sample_count)
+            metrics.near_death_events_total.labels(serial=serial, game_mode=game_mode).inc(
+                player.analytics.near_death_count
+            )
+            logger.info(
+                f"Player {serial} analytics: peak={summary['peak_accel']:.2f}g, "
+                f"playstyle={summary['playstyle']}, near_deaths={summary['near_death_count']}"
+            )
+
     async def _initialize_players(self):
         """Initialize players from StartGame RPC payload."""
         try:
@@ -1289,6 +1344,7 @@ class BaseGameMode(ShieldMixin, ABC):
 
             controllers = [ControllerStub(p.serial) for p in self.initial_players]
             await self._initialize_players_impl(controllers)
+            self._attach_player_analytics()
 
             # Set alive metric for all initialized players (Phase 75: filter dead from dashboard)
             for serial in self.players:

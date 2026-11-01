@@ -20,7 +20,6 @@ from opentelemetry import trace
 from lib.feature_flags import read_float_flag, read_object_flag
 from lib.types import GameEvent, Sound
 from services.game_coordinator import game_clock, metrics
-from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import (
     BaseGameMode,
     GameState,
@@ -28,7 +27,6 @@ from services.game_coordinator.games.base import (
     Player,
     resolve_non_negative_duration,
 )
-from services.game_coordinator.runtime_config import get_config_manager
 from services.game_coordinator.stream_writes import serialized_write
 
 tracer = trace.get_tracer(__name__)
@@ -198,25 +196,13 @@ class NonstopJoustGame(BaseGameMode):
         Args:
             controllers: List of controller protobuf messages from GetReadyControllers
         """
-        config = get_config_manager().get_config()
-        game_start_time = game_clock.now()
 
         for controller in controllers:
-            # Initialize analytics if enabled
-            analytics = None
-            if config.analytics.enabled:
-                analytics = PlayerAnalytics.from_config(
-                    serial=controller.serial,
-                    game_start_time=game_start_time,
-                    config=config.analytics,
-                )
-
             player = NonstopPlayer(
                 serial=controller.serial,
                 team=0,
                 alive=True,
                 color=(255, 255, 255),
-                analytics=analytics,
             )
             self.players[controller.serial] = player
             logger.debug(f"Added player: {controller.serial}")
@@ -718,16 +704,17 @@ class NonstopJoustGame(BaseGameMode):
                     "deaths": player.deaths,
                     "game_duration": game_clock.now() - self.start_time if self.start_time else 0,
                 }
-                if player.analytics is not None:
-                    for key, value in player.analytics.get_summary().items():
-                        final_attrs[f"analytics.{key}"] = value
+                final_attrs.update(self._analytics_span_attributes(player))
                 player.span.add_event("final_score", final_attrs)
         super()._close_all_player_spans()
+
+    def _player_analytics_extras(self, player: NonstopPlayer) -> dict:
+        """NonStop summaries carry the score, kills and deaths instead of the survival time."""
+        return {"score": player.score, "kills": player.kills, "deaths": player.deaths}
 
     async def _end_game_impl(self):
         """Handle game ending with scoring calculation."""
         from proto import controller_manager_pb2
-        from services.game_coordinator import metrics
 
         logger.info("Ending game...")
         self.state = GameState.ENDING
@@ -782,30 +769,7 @@ class NonstopJoustGame(BaseGameMode):
         # The player spans (with final_score) were closed at the end of gameplay_phase.
 
         # Publish analytics summaries for all players
-        for serial, player in self.players.items():
-            if player.analytics is not None:
-                summary = player.analytics.get_summary()
-                summary["game_id"] = self.game_id
-                summary["winner"] = serial == winner_serial
-                summary["score"] = player.score
-                summary["kills"] = player.kills
-                summary["deaths"] = player.deaths
-
-                # Publish player analytics event
-                await self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
-
-                # Update Prometheus metrics
-                metrics.game_analytics_samples_total.labels(game_mode=self.get_game_name()).inc(
-                    player.analytics.sample_count
-                )
-                metrics.near_death_events_total.labels(serial=serial, game_mode=self.get_game_name()).inc(
-                    player.analytics.near_death_count
-                )
-
-                logger.info(
-                    f"Player {serial} analytics: peak={summary['peak_accel']:.2f}g, "
-                    f"playstyle={summary['playstyle']}, near_deaths={summary['near_death_count']}"
-                )
+        await self._publish_analytics_summaries({winner_serial} if winner_serial else set())
 
         self.state = GameState.ENDED
         ended_payload = {

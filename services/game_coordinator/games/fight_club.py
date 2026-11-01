@@ -939,10 +939,14 @@ class FightClubGame(StreamedIntroGameMode):
                         "winner": is_winner,
                         "score": fc_player.score,
                         "final_rank": [s for s, _ in scores].index(serial) + 1,
+                        **self._analytics_span_attributes(player),
                     },
                 )
                 player.span.set_status(Status(StatusCode.OK))
                 player.span.end()
+
+        # Per-player analytics summaries for the agent (UC-041 step 4, #2358)
+        await self._publish_analytics_summaries({winner_serial} if winner_serial else set())
 
         self.state = self.state.__class__.ENDED
         ended_payload = {

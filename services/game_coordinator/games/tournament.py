@@ -1021,11 +1021,15 @@ class TournamentGame(StreamedIntroGameMode):
                         "is_champion": is_champion,
                         "wins": player.wins,
                         "final_round": player.round_number,
+                        **self._analytics_span_attributes(player),
                     },
                 )
                 player.span.set_status(Status(StatusCode.OK))
                 player.span.end()
                 player.span = None
+
+        # Per-player analytics summaries for the agent (UC-041 step 4, #2358)
+        await self._publish_analytics_summaries({champion_serial} if champion_serial else set())
 
         self.state = self.state.__class__.ENDED
         ended_payload = {
