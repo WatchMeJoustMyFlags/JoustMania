@@ -152,12 +152,18 @@ may run hotter (#2518): `./scripts/flags.sh set agent llm.max_requests_per_minut
 the decisions) and `./scripts/flags.sh set agent policy.max_interventions_per_minute lively`
 (8 per game per minute, more acts reach the players; the shield caps and cooldown
 still bound shields). For really aggressive play select `frenzy` on both flags (600
-calls and 20 acts per game per minute); with more than one game playing, also
+calls and 20 acts per game per minute); with three or more games playing, or other
+writers of interventions next to a `frenzy` game, also
 `./scripts/flags.sh set agent policy.coordinator_backstop_per_minute generous` (120),
-since three `frenzy` games fill the default backstop of 60. R4's danger shield can
+since three `frenzy` games fill the default backstop of 60 (weighted, all games). R4's danger shield can
 react sooner with `policy.shield_danger_ratio early` and `policy.shield_danger_samples quick`.
+Past the budget, the per-game cadence limits the decisions: `decision.min_interval_ms`
+(`fast` 1500, or any value from 100 ms; the pre-flight FAILs it off its baseline
+`default`) and `decision.min_gap_after_answer_ms off`.
 All of these are operator choices the agent never writes (C-034); the
-pre-flight accepts them, and `talk-stage.sh reset` returns to `stage` and `aggressive`.
+pre-flight accepts the budget variants. `talk-stage.sh reset` returns the budgets to
+`stage` and `aggressive` and clears every overlay written with `--writer stage`; an
+overlay under another writer stays until it is cleared or the flag service restarts.
 
 ### The second vendor (optional beat 6b: fill in before T-24h or cut it)
 

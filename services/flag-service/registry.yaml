@@ -66,6 +66,8 @@ flags:
   - {set: agent, key: decision.claude.base_url, kind: overlay, scope: [stack]}
   - {set: agent, key: decision.openai.base_url, kind: overlay, scope: [stack]}
   - {set: agent, key: decision.min_interval_ms, kind: overlay, scope: [stack], bounds: {range: [100, 60000], integer: true}}
+  # The per-game gap after an answer (#2123): operator-written (#2518), never by the agent (C-034).
+  - {set: agent, key: decision.min_gap_after_answer_ms, kind: overlay, scope: [stack]}
   - {set: agent, key: decision.openai.timeout_ms, kind: overlay, scope: [stack], bounds: {range: [100, 60000], integer: true}}
   - {set: agent, key: llm.max_requests_per_minute, kind: overlay, scope: [stack]}
   - {set: agent, key: llm.eligible_game_kinds, kind: overlay, scope: [stack]}

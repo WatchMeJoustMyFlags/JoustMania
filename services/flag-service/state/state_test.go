@@ -226,6 +226,8 @@ func TestStackOverlay_SubstitutesDefaultVariant(t *testing.T) {
 			"llm.max_requests_per_minute":            {"frenzy", 600},
 			"policy.max_interventions_per_minute":    {"frenzy", 20},
 			"policy.coordinator_backstop_per_minute": {"generous", 120},
+			// The next cadence knob on a fast backend: no gap after an answer.
+			"decision.min_gap_after_answer_ms": {"off", 0},
 		} {
 			f.put(WriteRequest{Set: "agent", Flag: flag, Variant: want.variant, Writer: "operator"})
 			if v, val := f.resolve(flag, nil); v != want.variant || val != want.value {
