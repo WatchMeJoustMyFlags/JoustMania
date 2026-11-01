@@ -76,7 +76,9 @@
       "variants": {
         "conservative": 1,
         "default": 2,
-        "aggressive": 4
+        "aggressive": 4,
+        "lively": 8,
+        "frenzy": 20
       },
       "defaultVariant": "default"
     },
@@ -96,6 +98,8 @@
         "default": 6,
         "aggressive": 12,
         "stage": 30,
+        "interactive": 120,
+        "frenzy": 600,
         "journey": 600
       },
       "defaultVariant": "default"

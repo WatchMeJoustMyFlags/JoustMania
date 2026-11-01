@@ -274,6 +274,23 @@ if fallback_on:
               "(./scripts/talk-stage.sh reset restores 'all', then fallback on)")
 
 
+# Budgets the pre-flight accepts at or above the baseline value (UC-070 BR-003, #2518).
+AT_LEAST = {"policy.max_interventions_per_minute"}
+# Above the highest operator tier `frenzy` (20) an intervention budget is most likely
+# a leftover test value (the registry admits 1 to 100): WARN, do not FAIL (#2518).
+INTERVENTION_BUDGET_WARN_ABOVE = 20
+# Operator knobs outside the checked baseline (#2518): reset returns them to
+# `default` (reset_also); the pre-flight WARNs while one is off it.
+WARN_OFF_DEFAULT = ("policy.shield_danger_ratio", "policy.shield_danger_samples", "decision.min_gap_after_answer_ms")
+
+
+def _at_least(flag, want):
+    variants = flag.get("variants", {})
+    have, base = variants.get(flag.get("defaultVariant")), variants.get(want)
+    numeric = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (have, base))
+    return numeric and have >= base
+
+
 def shown(flag):
     variant = flag.get("defaultVariant")
     return f"{variant} ({json.dumps(flag.get('variants', {}).get(variant))})"
@@ -287,11 +304,25 @@ for key, want in BASELINE.items():
         print(f"FAIL  {key}: state {flag.get('state')}")
     elif flag.get("defaultVariant") == want:
         print(f"PASS  {key} = {shown(flag)}")
+    elif key in AT_LEAST and _at_least(flag, want):
+        # A higher budget keeps the baseline's guarantee (a beat's act is not refused
+        # by the budget the previous beat spent, #1326), e.g. the operator-only
+        # `lively` for a cheap backend (#2518, UC-070 BR-003).
+        print(f"PASS  {key} = {shown(flag)}, at or above the stage baseline {want} (operator choice)")
+        value = flag.get("variants", {}).get(flag.get("defaultVariant"))
+        if key == "policy.max_interventions_per_minute" and value > INTERVENTION_BUDGET_WARN_ABOVE:
+            print(f"WARN  {key} = {shown(flag)} is above frenzy ({INTERVENTION_BUDGET_WARN_ABOVE}): "
+                  f"a leftover test value? ({RESET_HINT})")
     elif key == "interventions_allowed" and flag.get("defaultVariant") in ("none", "probe"):
         print(f"FAIL  {key} = {shown(flag)}: nothing can act on stage (left behind by an interrupted "
               f"permissions beat?), stage baseline is {want} ({RESET_HINT})")
     else:
         print(f"FAIL  {key} = {shown(flag)}, stage baseline is {want} ({RESET_HINT})")
+
+for key in WARN_OFF_DEFAULT:
+    flag = flags.get(key)
+    if flag is not None and flag.get("defaultVariant") != "default":
+        print(f"WARN  {key} = {shown(flag)}, not default: an operator knob left on? ({RESET_HINT})")
 
 # The audience must be able to perceive an act (UC-070 BR-004, #1301): the
 # resolved allow-list holds at least one perceptible intervention.
@@ -441,7 +472,11 @@ except Exception:
     if [[ "${budget_ceiling}" =~ ^[0-9]+$ && "${budget_ceiling}" -gt 0 && "${budget_ceiling}" -lt 30 ]]; then
       warn "AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_ceiling} caps the flag below the stage 30/min; only decision.min_interval_ms can relieve it live"
     elif [[ "${budget_value}" =~ ^[0-9]+$ && "${budget_value}" -ge 30 ]]; then
-      if [[ "${budget_ceiling}" =~ ^[0-9]+$ && "${budget_ceiling}" -gt 0 ]]; then
+      if [[ "${budget_ceiling}" =~ ^[0-9]+$ && "${budget_ceiling}" -gt 0 && "${budget_ceiling}" -lt "${budget_value}" ]]; then
+        # The cap is min(env, flag) (#1788): a higher operator variant such as
+        # interactive (#2518) is capped to the ceiling, so name the enforced value.
+        pass "LLM budget: llm.max_requests_per_minute = ${budget_variant} (${budget_value}/min) capped to ${budget_ceiling}/min by AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_ceiling}"
+      elif [[ "${budget_ceiling}" =~ ^[0-9]+$ && "${budget_ceiling}" -gt 0 ]]; then
         pass "LLM budget: llm.max_requests_per_minute = ${budget_variant} (${budget_value}/min) under the AGENT_LLM_MAX_REQUESTS_PER_MINUTE=${budget_ceiling} ceiling"
       else
         pass "LLM budget: llm.max_requests_per_minute = ${budget_variant} (${budget_value}/min; no env ceiling)"

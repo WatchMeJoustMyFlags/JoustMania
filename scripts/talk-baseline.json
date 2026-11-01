@@ -27,7 +27,10 @@
     "llm.max_requests_per_minute": "stage",
     "experiment.mock_archetypes": "all",
     "experiment_dynamic_enabled": "off",
-    "experiment_tick_seconds": "default"
+    "experiment_tick_seconds": "default",
+    "policy.shield_danger_ratio": "default",
+    "policy.shield_danger_samples": "default",
+    "decision.min_gap_after_answer_ms": "default"
   },
   "fallback": {
     "llm.eligible_game_kinds": "real_and_shadow",

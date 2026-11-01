@@ -183,6 +183,9 @@ func describePlayers(st decide.State) map[string]string {
 			if d := dangerPhrase(p); d != "" {
 				b.WriteString(" " + d)
 			}
+		case p.Waiting:
+			// A Fight Club or Tournament player between fights (UC-040 A49, BR-038, #2513).
+			b.WriteString(", waiting for its fight, still in the game.")
 		case p.EliminationOrder > 0:
 			b.WriteString(", eliminated (" + ordinal(p.EliminationOrder) + " out).")
 		default:

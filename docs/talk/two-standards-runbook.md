@@ -135,7 +135,8 @@ T-1h `talk-stage.sh reset` (the reset clears a persisted model) and re-check the
 window): every remote decision (one slot per decision; a Jev act round's two
 HTTP calls count once) and every post-game Claude summary (retro). The cap is
 the `llm.max_requests_per_minute` flag (`conservative` 3, `default` 6,
-`aggressive` 12, `stage` 30), capped by `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`
+`aggressive` 12, `stage` 30, and the operator-only `interactive` 120 and
+`frenzy` 600 for a cheap backend such as Jev, #2518), capped by `AGENT_LLM_MAX_REQUESTS_PER_MINUTE`
 when that is set: the cap is `min(env, flag)`, so the env can only lower the
 flag, never raise it (#1788, `ceilBudget`, `services/agent/decision/llmbudget.go`). One game on a remote
 backend at `decision.min_interval_ms=3000` (plus `decision.min_gap_after_answer_ms`,
@@ -145,7 +146,26 @@ warm Claude and 6 to 7 when Claude runs into the 8 s `patient` timeout, so the
 with `decide.fallback_reason=llm_budget_exhausted`, and the summary at game end
 finds the budget full. For the talk use the **`stage` variant** (30/min, a live
 flag flip, part of the baseline in section 6); leave the env unset or at 30 or
-more, since a lower env value caps `stage`.
+more, since a lower env value caps `stage`. On Jev, which is cheap, the operator
+may run hotter (#2518): `./scripts/flags.sh set agent llm.max_requests_per_minute interactive`
+(120/min: at the shipped cadence the per-game cadence, not the budget, then limits
+the decisions) and `./scripts/flags.sh set agent policy.max_interventions_per_minute lively`
+(8 per game per minute, more acts reach the players; the shield caps and cooldown
+still bound shields). For really aggressive play select `frenzy` on both flags (600
+calls and 20 acts per game per minute); with three or more games playing, or other
+writers of interventions next to a `frenzy` game, also
+`./scripts/flags.sh set agent policy.coordinator_backstop_per_minute generous` (120),
+since three `frenzy` games fill the default backstop of 60 (weighted, all games). R4's danger shield can
+react sooner with `./scripts/flags.sh set agent policy.shield_danger_ratio early --writer stage`
+and `./scripts/flags.sh set agent policy.shield_danger_samples quick --writer stage`.
+Past the budget, the per-game cadence limits the decisions: `decision.min_interval_ms`
+(`fast` 1500, or any value from 100 ms; the pre-flight FAILs it off its baseline
+`default`) and `./scripts/flags.sh set agent decision.min_gap_after_answer_ms off --writer stage`.
+All of these are operator choices the agent never writes (C-034); the
+pre-flight accepts the budget variants (it WARNs above `frenzy`) and WARNs while the danger
+ratio, the danger samples or the gap after an answer is off `default`. `talk-stage.sh reset`
+returns the budgets to `stage` and `aggressive`, those three knobs to `default`, and clears
+every overlay written with `--writer stage`.
 
 ### The second vendor (optional beat 6b: fill in before T-24h or cut it)
 
@@ -566,8 +586,9 @@ claude timeout `patient`, jev timeout `default`, `llm.eligible_game_kinds=real_o
 **`policy.max_interventions_per_minute=aggressive`** (4), `experiments_enabled=off`, `rollout_enabled=off`, plus `decision.jev.base_url`,
 `decision.openai.base_url` / `.model` / `.reasoning_effort` back to their
 shipped variants, `llm.max_requests_per_minute=stage` and
-`experiment.mock_archetypes=all` (it includes `calm_long`), `experiment_tick_seconds=default`
-and `experiment_dynamic_enabled=off` (this also turns the screen-only fallback off). The
+`experiment.mock_archetypes=all` (it includes `calm_long`), `experiment_tick_seconds=default`,
+`policy.shield_danger_ratio`, `policy.shield_danger_samples` and `decision.min_gap_after_answer_ms`
+at `default` (#2518) and `experiment_dynamic_enabled=off` (this also turns the screen-only fallback off). The
 agent's interventions need no reset: they belong to their game and the flag
 service drops them when the game ends (UC-053 BR-003). It is idempotent and does not care what a beat
 left behind, so it is also the recovery after an interrupted beat. It leaves
@@ -594,7 +615,8 @@ minute) stays far away. The shipped default stays 2.
 
 `talk-preflight.sh` checks exactly this baseline (`enabled=on`,
 `interventions_enabled=on`, `interventions_allowed=standard`,
-`policy.max_interventions_per_minute=aggressive`, FAIL naming
+`policy.max_interventions_per_minute=aggressive` or a higher variant (PASS naming it, WARN above
+`frenzy` 20, #2518), FAIL naming
 an interrupted permissions beat for `none` / `probe`,
 `rollout_enabled=off`, `experiments_enabled=off`, `decision.backend=rules`,
 both thresholds (`default` and Jev's `gate`), capture `on`, `min_interval_ms`

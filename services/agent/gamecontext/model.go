@@ -76,6 +76,14 @@ type PlayerSignals struct {
 	ShieldActive          *bool
 	ShieldTotals          map[string]float64
 
+	// Waiting marks a player of the game-end snapshot that was evicted for silence
+	// while the game was active and is restored from its remembered whole-game
+	// aggregates (SkillLevel, PeakAccel, MovementVarianceAggregate only; Active nil):
+	// a Fight Club or Tournament player waiting for its fight (UC-041 BR-007, #2513).
+	// Never set on a player of an in-game snapshot: those players are in
+	// GameContext.Waiting instead.
+	Waiting bool
+
 	// LastUpdate is the last time any signal for this player changed.
 	LastUpdate time.Time
 
@@ -254,6 +262,14 @@ type GameContext struct {
 	Session         SessionSignals
 	Players         map[string]*PlayerSignals
 	UpdatedAt       time.Time
+
+	// Waiting are the serials, sorted, of the players evicted for silence while the
+	// game is active and remembered until they are seen again or the game ends: in
+	// Fight Club and Tournament a player waiting for its fight exports no gauges
+	// (UC-041 BR-006, BR-007; UC-040 A49, BR-038; #2513). They are not in Players of
+	// an in-game snapshot, so no rule acts on them; the game-end snapshot adds them
+	// to Players with Waiting set. nil when there are none or the game is not active.
+	Waiting []string
 
 	// Timeline is a bounded, oldest-first slice of the partition's recent rolling
 	// narrative (#916): periodic state deltas, eliminations, and session phase

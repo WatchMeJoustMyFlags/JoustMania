@@ -137,6 +137,7 @@ func buildPlayers(c gamecontext.GameContext, ann Annotations) []PlayerState {
 			Shielded:         shielded[serial],
 			ShieldCharged:    alive && ann.Charged[serial],
 			ShieldLimited:    alive && ann.NoShield[serial] && !ann.Charged[serial],
+			Waiting:          p.Waiting && !alive,
 		}
 		if alive {
 			ps.SensitivityFactor = levelFactor(ann.Levels, "adjust_player_sensitivity", serial)
@@ -144,8 +145,27 @@ func buildPlayers(c gamecontext.GameContext, ann Annotations) []PlayerState {
 		}
 		out = append(out, ps)
 	}
+	// Players waiting for their fight, evicted from the context mid-game (UC-040 A49,
+	// BR-038, #2513): listed, not alive, with no readings.
+	for _, serial := range c.Waiting {
+		if c.Players[serial] != nil {
+			continue
+		}
+		out = append(out, PlayerState{Serial: serial, Waiting: true, EliminationOrder: elimOrder[serial]})
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Serial < out[j].Serial })
 	return out
+}
+
+// waitingCount is the number of players listed as waiting (UC-040 A49).
+func (s State) waitingCount() int {
+	n := 0
+	for _, p := range s.Players {
+		if p.Waiting {
+			n++
+		}
+	}
+	return n
 }
 
 func elapsedSeconds(c gamecontext.GameContext) float64 {
@@ -166,6 +186,10 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 
 	b.WriteString("session: alive=" + strconv.Itoa(len(st.AliveSerials())) +
 		" eliminated=" + strconv.Itoa(len(c.Session.EliminationSequence)))
+	// Written only with waiting players, so every other state keeps its narrative (#2513).
+	if n := st.waitingCount(); n > 0 {
+		b.WriteString(" waiting=" + strconv.Itoa(n))
+	}
 	writeOpt(&b, "tempo", c.Session.MusicTempo)
 	writeOpt(&b, "death_threshold", c.Session.DeathThreshold)
 	if st.MostHeadroom != "" {
@@ -181,7 +205,10 @@ func renderNarrative(c gamecontext.GameContext, st State) string {
 	ranked := st.RankedCount()
 	for _, p := range st.Players {
 		status := "alive"
-		if !p.Alive {
+		switch {
+		case p.Waiting:
+			status = "waiting"
+		case !p.Alive:
 			status = "out"
 			if p.EliminationOrder > 0 {
 				status = "eliminated#" + strconv.Itoa(p.EliminationOrder)
@@ -232,6 +259,10 @@ func digest(st State) string {
 			" threshold_margin=" + exact(p.ThresholdMargin) +
 			" danger=" + strconv.Quote(p.Danger) +
 			" shielded=" + strconv.FormatBool(p.Shielded))
+		// #2513: written only when set, so a state without waiting players keeps its digest.
+		if p.Waiting {
+			b.WriteString(" waiting=true")
+		}
 		// Written only when set, so a state without a charge keeps its digest.
 		if p.ShieldCharged {
 			b.WriteString(" shield_charged=true")
