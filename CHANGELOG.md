@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.12.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.11.0...joustmania-v0.12.0) (2026-11-01)
+
+
+### Features
+
+* **agent:** decision predictions scored against telemetry ([#2479](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2479)) ([#2485](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2485)) ([82f07a0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/82f07a01bdc1cd03c7f4ee4b05bf7af0e97702c8))
+* **agent:** decision.prompt_profile with a neutral lever wording ([#2467](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2467)) ([#2493](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2493)) ([5496852](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/5496852e4ac6d4f1102e4a02e4db5676663db77e))
+* **agent:** goal profiles over the shared characteristics ([#2479](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2479)) ([#2497](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2497)) ([55f7f39](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/55f7f39311563522c6c0bca4e52f7564f51130e5))
+* **agent:** jev goal criterion and report-only arm calibration ([#2498](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2498)) ([#2500](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2500)) ([3d22c40](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3d22c406dae55b4b50fcd0a04b821987c5e6dc65))
+* **agent:** model-stated predictions for claude/openai, opt-in ([#2479](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2479)) ([#2492](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2492)) ([af1fc97](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/af1fc9793c63fa429aff486c56e7a99a13e89e6d))
+* **agent:** predictions in the game summary, the retro and the dashboard ([#2479](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2479)) ([#2491](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2491)) ([3bf77e0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3bf77e07bfa3b52ed096be6fe463ddd6e96f7f58))
+* **ci:** arm and sweep modes for the review-gated merge flow ([#1809](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/1809)) ([#2489](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2489)) ([2a0f145](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2a0f145b3e17934e0bb9ec67a17e2e93149a1c37))
+* **dashboard:** goal strip, pin prediction wiring ([#2498](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2498)) ([#2499](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2499)) ([63fc84c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/63fc84ce1a327819c79961d58fcd25628a385443))
+* **flags:** group shield flags, payload rules and contract guards ([#2467](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2467)) ([#2476](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2476)) ([3febe1c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/3febe1cfacdcb94c13666bf15ca9f21f1cafcf2c))
+* **observability:** remove Loki ([#2059](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2059)) ([#2221](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2221)) ([7a6c326](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/7a6c32697127aa44bac0c23102cff89f6d341d84))
+* **shield:** a grace window after a shield ends ([#2464](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2464)) ([#2486](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2486)) ([5f22519](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/5f22519e7f504b054b05aaf29cdd005f713e8f17))
+* **shield:** hold rumble ramp and LED dimming against the activation energy ([#2463](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2463)) ([#2475](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2475)) ([17d15cc](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/17d15cc309ac2d6dde0875566fa4e735c6486147))
+
+
+### Bug Fixes
+
+* **ci:** bounded retry and timeouts for apt-get steps ([#2494](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2494)) ([#2496](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2496)) ([aea6a41](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/aea6a410233c01db3171c1506753970cfe1da0bd))
+* **ci:** merge-sweep posts the delivery comment when the merge auto-closed the issue ([#2508](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2508)) ([#2509](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2509)) ([5718020](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/571802039bb362ab8a1259f9637f1570720fcba6))
+* **controller-manager:** bound the StreamIO receive window so a lagging reader gets fresh input ([#2372](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2372)) ([#2502](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2502)) ([1fc68f8](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1fc68f8347ee815d1fb27846dc453a1c44363be3))
+* **controller-manager:** keep writes made during a disconnect, end leftover feedback, keep dead players off ([#2471](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2471)) ([#2477](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2477)) ([51e7a99](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/51e7a99410ddfdd2369fe08fd0b3e43796d5b93e))
+* **game-coordinator:** LED edge cases after a stream reopen ([#2484](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2484)) ([#2488](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2488)) ([d0d348c](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/d0d348cd78c4d82ab624e29b209e8dd926d6042a))
+* **python-hid:** latest-sample slot per controller instead of a 1024-sample queue ([#2503](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2503)) ([#2504](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2504)) ([264d7eb](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/264d7ebdda736f52979910ba4e193313747afde8))
+
+
+### Performance
+
+* **controller-manager:** cheaper 100 Hz button detector and 60 Hz frame build ([#2353](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2353)) ([#2507](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2507)) ([9399670](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/9399670dcdec7a22659b669cbc93f2a4d9a51555))
+
+
+### Refactoring
+
+* **game-coordinator:** pure shield refusal check, record trigger charge before feedback ([#2467](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2467)) ([#2490](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2490)) ([26e1f41](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/26e1f4126f6440a94eb7800ebfe9013fa23be3b1))
+
+
+### Documentation
+
+* **rust-hid:** make the try_lock comments describe the shared-handle locking ([#2374](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2374)) ([#2506](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2506)) ([c404fef](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/c404fef99f869aa904d3f1f6c960350d33fb3178))
+* **spec:** agent predictions, characteristics and goal profiles ([#2479](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2479)) ([#2482](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2482)) ([2bc4ade](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/2bc4ade43c5a72d822d7c4fd71bb53c7309fd289))
+* vision 'we enable; the agent invents' ([#2480](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2480)) ([#2481](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2481)) ([07b7de2](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/07b7de2d320d0e7e25ed425fbe980f61fa0bd8bd))
+
+
+### Tests
+
+* **integration:** start-time window for Jaeger find_traces ([#2501](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2501)) ([#2505](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2505)) ([a857c6a](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/a857c6a1bd6c8e87413097fffdc0ad6685822528))
+
 ## [0.11.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.10.0...joustmania-v0.11.0) (2026-10-31)
 
 
