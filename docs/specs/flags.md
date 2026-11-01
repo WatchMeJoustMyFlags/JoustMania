@@ -564,12 +564,12 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 
 | Key | Kind | Scope | Bounds | Persist | Today's writer |
 |---|---|---|---|---|---|
-| `interventions_allowed` | overlay | stack | declared variants (`none`, `probe`, `ambient`, `standard`, `full`, `shadow_experimental`) | **yes** (admin kill switch, FR-019) | menu admin, `talk-stage.sh permissions`; a persisted kill switch (applies even when the state file cannot be saved, #2368, above) |
+| `interventions_allowed` | overlay | stack | declared variants (`none`, `probe`, `ambient`, `standard`, `full`, `shadow_experimental`) | **yes** (admin kill switch, FR-019) | menu admin, `talk-stage.sh permissions`; a persisted kill switch (applies even when the state file cannot be saved, #2368, above); the run refuses to start over a persisted `none`, otherwise `agent-group-ab.sh` (writer `group-ab`, for the length of a run only: it snapshots the overlay with its writer and TTL and restores it only while the overlay is still its own, #2467 PR 6) |
 | `enabled` | overlay | stack | `on`, `off` | no | `agent-killswitch.sh`, `agent-dryrun-enable.sh`, `talk-stage.sh`; the operator pad through the menu (#2050, `agent_enabled_writer`): a writer with no `persist` field, because a write asking to persist is `400` (UC-015 BR-001) |
 | `interventions_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh`; the operator pad's resume through the menu (#2093, `agent_enabled_writer`, no `persist` field, so a restart returns to the fail-closed `off`; UC-015 BR-003). The pad's stop never writes it (BR-002) |
-| `experiments_enabled`, `experiment_dynamic_enabled` | overlay | stack | `on`, `off` | no | `agent-dryrun-enable.sh`, `talk-stage.sh` |
+| `experiments_enabled`, `experiment_dynamic_enabled` | overlay | stack | `on`, `off` | no | `agent-dryrun-enable.sh`, `talk-stage.sh`, `agent-group-ab.sh` (writer `group-ab`, for the length of a run only: it snapshots the overlay with its writer and TTL and restores it only while the overlay is still its own, #2467 PR 6) |
 | `rollout_enabled` | overlay | stack | `on`, `off` | no | `talk-stage.sh` |
-| `decision.backend` | overlay | stack | `rules`, `claude`, `openai`, `jev` | **yes** (the operator's backend choice survives a flag-service restart, C-018, #1682) | `agent-backend.sh` (persisted), `talk-stage.sh` |
+| `decision.backend` | overlay | stack | `rules`, `claude`, `openai`, `jev` | **yes** (the operator's backend choice survives a flag-service restart, C-018, #1682) | `agent-backend.sh` (persisted), `talk-stage.sh`, `agent-group-ab.sh` (writer `group-ab`, for the length of a run only: it snapshots the overlay with its writer and TTL and restores it only while the overlay is still its own, #2467 PR 6) |
 | `decision.act_confidence_threshold`, `decision.jev.act_confidence_threshold` | overlay | stack | declared variants | no | `agent-backend.sh`, `talk-stage.sh` |
 | `decision.capture_content` | overlay | stack | `on`, `off` | no | `agent-backend.sh` |
 | `decision.claude.model`, `decision.jev.model` | overlay | stack | declared variants | **yes** (selected together with the backend, #1682) | `agent-backend.sh` (persisted) |
@@ -580,7 +580,7 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `decision.min_interval_ms`, `decision.openai.timeout_ms` | overlay | stack | int 100 to 60000 | no | integration fixtures (`configure_agent`) |
 | `decision.min_gap_after_answer_ms` | overlay | stack | declared variants (`off` 0, `default` 1000, `slow` 3000) | no | operator (#2518); `talk-stage.sh reset` (`default`); never the agent (C-034) |
 | `llm.max_requests_per_minute` | overlay | stack | declared variants (incl. `stage` 30 and the operator-only `interactive` 120 and `frenzy` 600, #2518) | no | `talk-stage.sh`; operator (`interactive`, `frenzy`); never the agent (C-034) |
-| `llm.eligible_game_kinds` | overlay | stack | declared variants | no | `talk-stage.sh` (stage baseline, fallback beat) |
+| `llm.eligible_game_kinds` | overlay | stack | declared variants | no | `talk-stage.sh` (stage baseline, fallback beat), `agent-group-ab.sh` (writer `group-ab`, for the length of a run only: it snapshots the overlay with its writer and TTL and restores it only while the overlay is still its own, #2467 PR 6) |
 | `decision.claude.timeout_ms`, `decision.jev.timeout_ms` | overlay | stack | declared variants | no | `talk-stage.sh` (stage baseline) |
 | `decision.jev.base_url` | overlay | stack | declared variants (`default`, `blackhole`; `fake` in `ci/` only) | no | `talk-stage.sh` (the degrade beat), the service tier's `configure_agent(jev_fake=True)` (`ci/` `fake` variant) |
 | `experiment.mock_archetypes` | overlay | stack | declared variants | no | `talk-stage.sh` (stage baseline), `tests/service/test_tc011_shadow_experiment.py` |
@@ -590,10 +590,10 @@ it writes; the coordinator's re-check (decide-contract §11) is unchanged.
 | `policy.shield_cooldown_seconds` | overlay | stack | int 0 to 120 | no | operator; the service tier's `tests/service/test_shield_cap_backstop.py` (cooldown 0) |
 | `policy.shield_danger_ratio` | overlay | stack | declared variants (`early` 0.75, `default` 0.85, `late` 0.95) | no | operator (#2518, e.g. `early` on stage); `talk-stage.sh reset` (`default`); never the agent (C-034) |
 | `policy.shield_danger_samples` | overlay | stack | declared variants (`quick` 2, `default` 3, `patient` 5) | no | operator (#2518, e.g. `quick` on stage); `talk-stage.sh reset` (`default`); never the agent (C-034) |
-| `policy.group_grant.enabled`, `policy.group_grant.real_games` | overlay | stack | `on`, `off` | no | operator only; never the agent (C-034); no writer yet (#2467) |
+| `policy.group_grant.enabled`, `policy.group_grant.real_games` | overlay | stack | `on`, `off` | no | operator only; never the agent (C-034); `policy.group_grant.enabled` is written `on` by `agent-group-ab.sh` (writer `group-ab`, for the length of a run only: it snapshots the overlay with its writer and TTL and restores it only while the overlay is still its own, #2467 PR 6); `real_games` is never written by it, and the script refuses to start (and aborts a running game) unless it is `off` |
 | `policy.group_grant.max_per_game` | overlay | stack | int 0 to 3 | no | operator only; never the agent (C-034); no writer yet (#2467) |
 | `policy.group_grant.max_targets` | overlay | stack | int 2 to 6 | no | operator only; never the agent (C-034); no writer yet (#2467) |
-| `decision.prompt_profile` | overlay | stack | `v1`, `neutral` | no | operator only; never the agent (C-034); the experiment operator script (#2467 PR 6) switches it between runs and restores `v1` |
+| `decision.prompt_profile` | overlay | stack | `v1`, `neutral` | no | operator only; never the agent (C-034); the experiment operator script (#2467 PR 6) sets it per game (`v1` / `neutral`, writer `group-ab`) and afterwards restores the snapshot of the overlay it replaced (usually none, so the baseline `v1`), only while the overlay is still its own |
 | `fitness.accelerate.target_session_seconds` | overlay | stack | declared variants | no | validation harness |
 | `verdict_min_n`, `verdict_min_pairs`, `experiment_tick_seconds`, `experiment_max_games` | overlay | stack | int 1 to 1000 | no | `tests/service/test_tc011_shadow_experiment.py` |
 | `experiment_completed_grace_seconds` | overlay | stack | int 0 to 600 | no | operator (§15, #1810); also the telemetry-end wait for the runner outcome, floored at 18 s (UC-046 BR-016, #1405) |

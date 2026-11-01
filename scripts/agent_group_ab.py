@@ -5,8 +5,12 @@ Stdlib only. Subcommands:
 
   real-games                    stdin: GET /games of the flag service; prints the ids of
                                 the games that are not shadow games (unknown kind = real)
-  overlay                       stdin: GET /{set}/{flag}; prints "none", "variant:<name>"
-                                or "value:<json>" for the stack overlay
+  overlay                       stdin: GET /{set}/{flag}; prints the stack overlay as
+                                "<spec>\t<writer>\t<expires epoch>" (spec none, variant:<name> or
+                                value:<json>; "-" for an empty writer or no expiry)
+  admin-variant                 stdin: GET /{set}/{flag}; the persisted admin variant, or "-"
+  ttl-left EPOCH                seconds until EPOCH (0 when past)
+  verify-game ...               exit 0 when the game has a remote agent.decide span with the profile
   manifest-line ...             one JSON line for the run manifest
   report --manifest M (--jaeger-url U | --traces-file F) [--json]
                                 per arm: group and single grants, their timing in the
@@ -23,10 +27,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
+from datetime import datetime
 
 GROUP_ACTION = "grant_group_shield"
 SINGLE_ACTION = "grant_shield"
@@ -45,13 +51,39 @@ def real_games(doc: dict) -> list[str]:
     return out
 
 
+def _epoch(stamp: str | None) -> str:
+    """RFC 3339 -> epoch seconds (string); "-" when absent or unparsable."""
+    if not stamp:
+        return "-"
+    try:
+        return str(int(datetime.fromisoformat(stamp).timestamp()))
+    except ValueError:
+        return "-"
+
+
 def overlay(view: dict) -> str:
+    """The stack overlay as spec, writer and expiry (tab separated)."""
     ov = view.get("stack_overlay")
     if not ov:
-        return "none"
-    if ov.get("variant"):
-        return "variant:" + str(ov["variant"])
-    return "value:" + json.dumps(ov.get("value"))
+        return "none\t-\t-"
+    spec = (
+        "variant:" + str(ov["variant"])
+        if ov.get("variant")
+        else "value:" + json.dumps(ov.get("value"))
+    )
+    return f"{spec}\t{ov.get('writer') or '-'}\t{_epoch(ov.get('expires_at'))}"
+
+
+def admin_variant(view: dict) -> str:
+    ov = view.get("admin_value")
+    return str(ov.get("variant") or "-") if ov else "-"
+
+
+def ttl_left(epoch: str) -> int:
+    try:
+        return max(0, int(epoch) - int(time.time()))
+    except ValueError:
+        return 0
 
 
 # ---------------------------------------------------------------- OTLP spans
@@ -126,8 +158,13 @@ def analyse_game(entry: dict, spans: list[dict]) -> dict:
         return {"excluded": "profile_mismatch:" + ",".join(sorted(profiles))}
     starts = [s["start_ns"] for s in mine if s["start_ns"]]
     ends = [s["end_ns"] for s in mine if s["end_ns"]]
+    # The game window is the wall clock around the run when the manifest has it (the game, not
+    # the first decide); older manifests fall back to the span window.
     t0 = min(starts) if starts else 0
     span_ns = (max(ends) - t0) if ends and starts else 0
+    if entry.get("started_ns") and entry.get("ended_ns", 0) > entry["started_ns"]:
+        t0 = int(entry["started_ns"])
+        span_ns = int(entry["ended_ns"]) - t0
     grants = []
     for s in mine:
         if s["name"] != "agent.decision":
@@ -197,6 +234,30 @@ def summarise_arm(entries: list[dict], analysed: list[dict]) -> dict:
     }
 
 
+def paired_by_seed(entries: list[dict], analysed: dict[str, list[dict]]) -> dict:
+    """Applied group grants per seed and arm, and B minus A per seed (games kept in both arms).
+
+    The games are seed-matched, so the per-seed difference uses the design; the unpaired
+    totals do not.
+    """
+    per: dict[str, dict[str, int]] = {}
+    for arm, rows in analysed.items():
+        for e, a in rows:
+            if "grants" not in a:
+                continue
+            n = sum(
+                1 for g in a["grants"] if g["action"] == GROUP_ACTION and g["applied"]
+            )
+            per.setdefault(str(e["seed"]), {}).setdefault(arm, 0)
+            per[str(e["seed"])][arm] += n
+    diffs = {
+        seed: arms["B"] - arms["A"]
+        for seed, arms in per.items()
+        if "A" in arms and "B" in arms
+    }
+    return {"group_applied": per, "b_minus_a": diffs}
+
+
 def load_manifest(path: str) -> list[dict]:
     with open(path) as fh:
         return [json.loads(line) for line in fh if line.strip()]
@@ -217,6 +278,7 @@ def report(
     for e in entries:
         arms.setdefault(e["arm"], []).append(e)
     summary = {}
+    kept_rows: dict[str, list] = {}
     for arm in sorted(arms):
         analysed = []
         for e in arms[arm]:
@@ -230,10 +292,14 @@ def report(
         s = summarise_arm(arms[arm], analysed)
         s["profile"] = arms[arm][0]["profile"]
         summary[arm] = s
+        kept_rows[arm] = list(zip(arms[arm], analysed))
+    summary["paired_by_seed"] = paired_by_seed(entries, kept_rows)
     if as_json:
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
     for arm, s in summary.items():
+        if arm == "paired_by_seed":
+            continue
         print(
             f"arm {arm}  prompt_profile={s['profile']}  games={s['games']}  excluded={s['excluded'] or 'none'}"
         )
@@ -250,7 +316,31 @@ def report(
             f" {s['single_late']} in the last third, blocked {s['single_blocked'] or 'none'}"
         )
         print(f"  outcomes {s['outcomes']}  winner slots {s['winner_slots']}")
+    p = summary["paired_by_seed"]
+    print(
+        f"paired by seed: applied groups {p['group_applied']}, B minus A {p['b_minus_a']}"
+    )
+    print(
+        "note: a repeated refusal emits no span, so blocked counts here are first refusals only (repeats: agent_decisions_total)"
+    )
     return 0
+
+
+def verify_game(
+    jaeger_url: str | None, traces_file: str | None, game_id: str, profile: str
+) -> int:
+    """0 when a remote agent.decide span of the game carries the profile (the agent saw the game)."""
+    if traces_file:
+        with open(traces_file) as fh:
+            spans = flatten_spans(json.load(fh))
+    else:
+        spans = fetch_spans(jaeger_url or "", "agent.decide", game_id)
+    seen = {
+        s["attrs"].get("decide.prompt_profile")
+        for s in spans
+        if s["name"] == "agent.decide" and s["attrs"].get("game.id") == game_id
+    }
+    return 0 if profile in seen else 1
 
 
 def main() -> int:
@@ -258,9 +348,19 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("real-games")
     sub.add_parser("overlay")
+    sub.add_parser("admin-variant")
+    t = sub.add_parser("ttl-left")
+    t.add_argument("epoch")
+    v = sub.add_parser("verify-game")
+    v.add_argument("--game-id", required=True)
+    v.add_argument("--profile", required=True)
+    v.add_argument("--jaeger-url")
+    v.add_argument("--traces-file")
     m = sub.add_parser("manifest-line")
     for opt in ("arm", "profile", "seed", "rep", "archetype", "record-file"):
         m.add_argument("--" + opt, required=True)
+    m.add_argument("--started-ns", default="0")
+    m.add_argument("--ended-ns", default="0")
     r = sub.add_parser("report")
     r.add_argument("--manifest", required=True)
     r.add_argument("--jaeger-url")
@@ -273,6 +373,16 @@ def main() -> int:
     if args.cmd == "overlay":
         print(overlay(json.load(sys.stdin)))
         return 0
+    if args.cmd == "admin-variant":
+        print(admin_variant(json.load(sys.stdin)))
+        return 0
+    if args.cmd == "ttl-left":
+        print(ttl_left(args.epoch))
+        return 0
+    if args.cmd == "verify-game":
+        return verify_game(
+            args.jaeger_url, args.traces_file, args.game_id, args.profile
+        )
     if args.cmd == "manifest-line":
         with open(args.record_file) as fh:
             record = json.load(fh)
@@ -285,6 +395,8 @@ def main() -> int:
                     "rep": int(args.rep),
                     "archetype": args.archetype,
                     "game_id": record.get("game_id", ""),
+                    "started_ns": int(args.started_ns),
+                    "ended_ns": int(args.ended_ns),
                     "record": record,
                 },
                 sort_keys=True,

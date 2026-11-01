@@ -28,6 +28,7 @@ import argparse
 import json
 import re
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -95,6 +96,10 @@ class Fake:
                     "value": variants[ov["variant"]],
                     "writer": ov["writer"],
                 }
+                if ov.get("expires_at"):
+                    layers[name]["expires_at"] = time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(ov["expires_at"])
+                    )
         return {
             "flag": key,
             "mutable": (flag_set, key) in self.registry,
@@ -223,6 +228,8 @@ def make_handler(fake):
                 "value": value,
                 "writer": body.get("writer", ""),
             }
+            if body.get("ttl_seconds"):
+                entry["expires_at"] = time.time() + float(body["ttl_seconds"])
             with fake.lock:
                 if body.get("persist"):
                     # a persisted write replaces the stack overlay (state/write.go)
