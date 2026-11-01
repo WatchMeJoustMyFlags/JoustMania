@@ -7,7 +7,7 @@
 #   scripts/ci/local-gates.sh --plan       # print the selected gates, run nothing
 #   scripts/ci/local-gates.sh --print-cmd service-touched   # print one gate's command (tests)
 #
-# Always runs `make lint` (ruff + scripts/tests) and the spec lint gate.
+# Always runs `make lint` (ruff + scripts/tests), spec-refs-check and gofmt and the spec lint gate.
 # Everything else is selected from the changed files: the union of
 # `git diff --name-only $BASE...HEAD`, uncommitted changes and untracked files.
 # Except for the service tier, the mapping mirrors the `changes` job's path
@@ -270,7 +270,7 @@ printf '%s\n' "${files[@]}" >"$WORK/changed.txt"
 gate_cmd() {  # print the shell command for a gate
   local g="$1"
   case "$g" in
-    lint) echo "make lint" ;;
+    lint) echo "make lint && make spec-refs-check && scripts/ci/check-gofmt.sh" ;;
     spec-lint) echo "scripts/aiup/spec-lint-gate.sh" ;;
     spec-touched)
       local labels="${PR_LABELS-}"
