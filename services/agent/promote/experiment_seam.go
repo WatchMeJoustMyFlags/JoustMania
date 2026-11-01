@@ -131,6 +131,9 @@ func (a *ExperimentPromoter) Promote(ctx context.Context, view journal.CompactVi
 		Reasoning:        intent.Hypothesis,
 		FlagState:        flagState(intent),
 		RealDefaultValue: intent.ExperimentalValue,
+		// The objective of this experiment (not the per-flag resolver): the
+		// substrate validity bar is per objective (UC-043 A23).
+		Objective: intent.Objective,
 	}
 
 	// The registry only calls Promote on a CONCLUDED+promote verdict; synthesize the

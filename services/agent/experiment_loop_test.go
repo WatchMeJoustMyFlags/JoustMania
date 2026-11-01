@@ -192,6 +192,8 @@ func buildLoopForTestWithTracer(
 	// #1016: autonomous fails closed without a Watcher, so wire a non-degrading one
 	// (the safety net) for the real-default write path to be reachable in these tests.
 	base := promote.NewPromoter(github, nil, realDef, loopWatcher{}, nil, promote.RepoRef{}, nil, log)
+	// The substrate validity bar (UC-043 A23) admits the objectives these tests use.
+	base.SetSubstrateBar(map[string]bool{"balanced": true, "endurance": true})
 	promo := promote.NewExperimentPromoter(base, resolveConfig)
 
 	// Low min-N so a handful of conclusions reaches a conclusive verdict; effect

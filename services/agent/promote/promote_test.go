@@ -142,6 +142,7 @@ func testEvidence() Evidence {
 		Reasoning:        "longer grace reduces early eliminations",
 		FlagState:        "death_grace_period_ms: default=300, experimental=500",
 		RealDefaultValue: 500,
+		Objective:        "balanced",
 	}
 }
 
@@ -152,6 +153,8 @@ func promoterWithRecorder(t *testing.T, gh GitHubClient, git GitClient, realDef 
 	rec := tracetest.NewSpanRecorder()
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(rec))
 	p := NewPromoter(gh, git, realDef, w, rev, testRepo(), tp.Tracer("test"), discardLogger())
+	// The substrate validity bar (UC-043 A23) admits testEvidence's objective.
+	p.SetSubstrateBar(map[string]bool{"balanced": true})
 	return p, rec
 }
 

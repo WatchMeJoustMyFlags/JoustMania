@@ -12,7 +12,8 @@ fitness moves. This runbook covers two procedures:
 
 Together they are the evidence for the **validity bar** (UC-043 A23, FR-203). Until an objective
 meets the bar it is human-review-only: its verdicts may open an issue or PR but never change a real
-default autonomously. Enforcement in code is #2541. Autonomous promotion is off on every stack today
+default autonomously. The agent enforces it (#2541): an autonomous promotion is made only for an
+objective the operator attested (section 3). Autonomous promotion is off on every stack today
 (`AGENT_AUTONOMOUS_ENABLED` is unset).
 
 ## 1. Realism characterization
@@ -153,3 +154,48 @@ above 0). This three-value run is the smoke test before that study.
 **Safety.** The real-side values are ordinary host settings. The shadow side runs only with the
 agent's experiment gates on (`enabled`, `experiments_enabled`). Leave
 `AGENT_AUTONOMOUS_ENABLED` unset, so a promote verdict never changes a real default (UC-043 A4).
+
+## 3. Attesting an objective (UC-043 A23, #2541)
+
+No tool computes the bar: the operator judges the evidence and attests the objective. Attest only
+when, for that objective, all of these hold:
+
+- the realism characterization (section 1) over a window of the experiment's mode says `similar`
+  for every metric the objective's fitness reads;
+- the paired study (section 2, the formal K >= 8 version) shows at least 75 % sign agreement and a
+  Spearman rank correlation of at least 0.6 with the lower 95 % bound above 0;
+- all of that evidence was taken on the release you attest, with the archetypes that release's
+  flag files ship.
+
+**Precondition.** A pinned stage checkout (UC-060 BR-003), with the agent and the coordinator on
+the same release tag. Attest the coordinator's `service.version` as seen in traces. The flag files
+(and so the archetypes) are mounted from the checkout, not baked into the image, so the release
+binds the agent image and only by proxy the shadow drivers. A dev stack (`docker-compose.dev.yml`
+mounts source over the release image) or an agent recreated alone under another `IMAGE_TAG` breaks
+that proxy: do not attest there. Changing `experiment.mock_archetypes` by a stack overlay (for
+example `talk-stage.sh`) leaves the attestation standing; removing it is then your job.
+
+**Attest.** Add the entry to the agent's environment, the same way `AGENT_AUTONOMOUS_ENABLED` is
+supplied (an overlay, never the stock compose file, D-A6), then recreate the agent:
+
+```bash
+AGENT_AUTONOMOUS_VALIDATED_OBJECTIVES=balanced@0.14.0      # comma list: balanced@0.14.0,endurance@0.14.0
+docker compose up -d agent
+```
+
+The release must be the plain release tag `.env` pins (`IMAGE_TAG=0.14.0`): `latest`, `main`,
+`dev`, a sha or `v0.14.0` never count. Check the agent's startup log: one INFO line names the
+effective `service_version` and `validated_objectives`, and a WARN names each entry it ignored
+(unknown objective, wrong release, malformed, or a `SERVICE_VERSION` that is not a release). An
+upgrade puts every objective below the bar again until you attest it for the new release.
+
+**Revoke.** Three steps, by how fast and how far they reach:
+
+1. `scripts/flags.sh set agent code_improvement.mode issue` stops new autonomous writes at once
+   (read per promotion and per waiting hold-key write). It does not undo a write already applied.
+2. To undo an applied write: the kill switch (`enabled` off, UC-043 A1), which also aborts every
+   experiment and stops interventions, or delete that flag's `real` overlay by hand.
+3. Remove the entry from the environment and `docker compose up -d agent` to make it permanent.
+
+A blocked promotion is journaled `discarded` with the reason
+`substrate_not_validated objective=<objective>`; the experiment ends `discarded` (UC-043 A4).
