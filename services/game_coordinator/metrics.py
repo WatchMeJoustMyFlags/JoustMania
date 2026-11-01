@@ -222,7 +222,7 @@ shield_hold_activations_total = Counter(
     ["mode", "game_kind", "outcome"],
 )
 
-# Group shields the coordinator refused as a whole (UC-040 A47, BR-033, #2467): one per
+# Group shields the coordinator refused as a whole (UC-040 A48, BR-033, #2467): one per
 # refused group_shield event. reason = the suffix of the group_refused:<reason> block
 # reason (disabled, real_game, bad_set, target_gone, game_ending, cap_reached,
 # low_battery, or a per-target shield reason such as shield_cap_reached).

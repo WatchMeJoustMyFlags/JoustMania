@@ -1,5 +1,5 @@
 """
-UC-040 A46 / A47: a group shield event against a shadow game, end to end (#2467 PR 3).
+UC-040 A47 / A48: a group shield event against a shadow game, end to end (#2467 PR 3).
 
 The real stack on reserved mock controllers: a headless (shadow) FFA game with three
 players, the group-grant gate open through flag-service overlays (``enabled`` on,
@@ -14,10 +14,10 @@ What this proves today:
   ``grant_group_shield``, and keeps the global allow-list as the outer gate: no
   ``interventions_allowed`` variant names ``grant_group_shield`` yet (it arrives with
   the agent half, #2467 PR 4), so the group is blocked ``not_allowed`` and nobody is
-  shielded (UC-040 A47 step 4, A22).
+  shielded (UC-040 A48 step 4, A22).
 
 When PR 4 adds the ``standard_group`` / ``shadow_group`` variants, this test switches to
-that variant and asserts the three ``player_shielded`` events of A46.
+that variant and asserts the three ``player_shielded`` events of A47.
 ``interventions_allowed`` and the rate limiter are global, so this test runs alone.
 """
 
@@ -80,7 +80,7 @@ def _serve_group_gate(docker_compose, flag_service) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+@pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
 async def test_uc040_group_shield_event_reaches_the_coordinator_once(
     intervention_env,
     flag_service,

@@ -12,10 +12,8 @@ import logging
 
 from lib.types import Sound
 from services.game_coordinator import game_clock
-from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.base import Phase, Player
 from services.game_coordinator.games.teams_base import TEAM_COLORS, TeamsGameBase
-from services.game_coordinator.runtime_config import get_config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +128,6 @@ class RandomTeamsGame(TeamsGameBase):
         Args:
             controllers: List of controller protobuf messages from GetReadyControllers
         """
-        config = get_config_manager().get_config()
-        game_start_time = game_clock.now()
 
         # Sort serials before any RNG-driven team assignment consumes the order
         # (#1003 CRN alignment): a seed-matched pair shares the team-pool
@@ -150,21 +146,11 @@ class RandomTeamsGame(TeamsGameBase):
             team_num = team_assignments[controller.serial]
             team_color = self.team_colors[team_num]["rgb"]
 
-            # Initialize analytics if enabled
-            analytics = None
-            if config.analytics.enabled:
-                analytics = PlayerAnalytics.from_config(
-                    serial=controller.serial,
-                    game_start_time=game_start_time,
-                    config=config.analytics,
-                )
-
             player = Player(
                 serial=controller.serial,
                 team=team_num,
                 alive=True,
                 color=team_color,
-                analytics=analytics,
             )
             self.players[controller.serial] = player
             logger.debug(f"Added player: {controller.serial} to team {team_num} ({self.team_colors[team_num]['name']})")

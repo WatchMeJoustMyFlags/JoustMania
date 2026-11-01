@@ -1,7 +1,7 @@
 """
 A group shield: one event shields 2 to ``max_targets`` alive players, all or nothing (#2467 PR 3).
 
-UC-040 A46 (applied to every chosen player), A47 (refused as a whole), BR-033 (all or
+UC-040 A47 (applied to every chosen player), A48 (refused as a whole), BR-033 (all or
 nothing, the C-034 per-target bounds, the per-game backstop, shadow-first), BR-031 (one
 helped cue per covered player), BR-035 (each covered player gets the end grace of a
 single grant).
@@ -212,11 +212,11 @@ async def refused(g, serials=SERIALS, seconds=SECONDS, **kwargs):
 
 
 # --------------------------------------------------------------------------- #
-# A46: applied to every chosen player
+# A47: applied to every chosen player
 # --------------------------------------------------------------------------- #
 class TestUC040A46GroupApplied:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033", "BR-031"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033", "BR-031"])
     @pytest.mark.parametrize("mode", [INSTANT, TRIGGER, HOLD_MODE])
     async def test_every_target_is_shielded_with_one_cue_each(self, game, mode):
         set_mode(game, mode)
@@ -229,7 +229,7 @@ class TestUC040A46GroupApplied:
         assert game._agent_group_grants == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     async def test_trigger_sets_every_charge(self, game):
         set_mode(game, TRIGGER)
         await game.grant_group_shield(SERIALS, SECONDS)
@@ -238,7 +238,7 @@ class TestUC040A46GroupApplied:
             assert game.players[serial].grace_until <= T0  # not protected until activated (A30)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     async def test_hold_tops_up_every_pool(self, game):
         set_mode(game, HOLD_MODE)
         await game.grant_group_shield(SERIALS, 3.0)
@@ -247,7 +247,7 @@ class TestUC040A46GroupApplied:
         assert game._hold_granted_pending == set(SERIALS)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033", "BR-035"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033", "BR-035"])
     async def test_instant_group_arms_the_end_grace_per_target(self, game):
         """BR-035: a group behaves like N single grants for the shield end grace window."""
         set_mode(game, INSTANT)
@@ -258,7 +258,7 @@ class TestUC040A46GroupApplied:
             assert p.end_grace_until == pytest.approx(T0 + SECONDS + 0.75)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033", "BR-022"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033", "BR-022"])
     async def test_a_later_single_grant_sees_the_group_cooldown(self, game):
         """Each target counts as one shield, so a single grant right after is refused on the cooldown."""
         set_mode(game, INSTANT)
@@ -268,7 +268,7 @@ class TestUC040A46GroupApplied:
         assert exc.value.reason == "shield_cooldown"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     async def test_instant_kept_target_counts_as_success_and_is_not_counted(self, game):
         set_mode(game, INSTANT)
         game.players["p2"].invincible_until = T0 + 60.0  # admin baseline longer than the shield
@@ -280,7 +280,7 @@ class TestUC040A46GroupApplied:
         assert game._agent_group_grants == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     @pytest.mark.parametrize("cls", [FFAGame, SimpleTeamsGame, NonstopJoustGame])
     async def test_applies_in_every_mode(self, clock, limits, policy, cls):  # noqa: ARG002
         g = _make(cls, n=4)
@@ -290,7 +290,7 @@ class TestUC040A46GroupApplied:
         assert g.players["p4"].grace_until <= T0
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     async def test_no_frame_runs_between_the_first_check_and_the_last_commit(self, game):
         """Phases 0 to 2 have no await: a frame scheduled before the grant sees all or nothing."""
         set_mode(game, INSTANT)
@@ -310,7 +310,7 @@ class TestUC040A46GroupApplied:
 
 
 # --------------------------------------------------------------------------- #
-# A47: refused as a whole
+# A48: refused as a whole
 # --------------------------------------------------------------------------- #
 def _cap(g, serial):
     g._agent_shield_grants[serial] = 3
@@ -356,7 +356,7 @@ REFUSALS = [
 
 class TestUC040A47GroupRefusedAsAWhole:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     @pytest.mark.parametrize(("mode", "setup", "reason"), REFUSALS)
     async def test_last_target_refused_commits_nothing_for_the_first(self, game, mode, setup, reason):
         """All or nothing: every target is checked before the first one is written."""
@@ -371,7 +371,7 @@ class TestUC040A47GroupRefusedAsAWhole:
         assert game.gameplay_stream.writes == []
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_a_refusal_is_counted_by_reason(self, game):
         set_mode(game, INSTANT)
         _cap(game, "p2")
@@ -382,7 +382,7 @@ class TestUC040A47GroupRefusedAsAWhole:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_game_ending_refuses_the_whole_group(self, game):
         set_mode(game, INSTANT)
         game._latched_outcome = "winner"
@@ -391,7 +391,7 @@ class TestUC040A47GroupRefusedAsAWhole:
         assert snapshot(game) == before
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_low_battery_target_refuses_the_whole_group(self, game):
         set_mode(game, INSTANT)
         before = snapshot(game)
@@ -400,7 +400,7 @@ class TestUC040A47GroupRefusedAsAWhole:
         assert snapshot(game) == before
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     @pytest.mark.parametrize(
         ("serials", "seconds"),
         [
@@ -419,7 +419,7 @@ class TestUC040A47GroupRefusedAsAWhole:
         assert snapshot(game) == before
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_more_targets_than_max_targets_is_refused(self, clock, limits, policy):  # noqa: ARG002
         g = _make(n=5)
         set_mode(g, INSTANT)
@@ -427,7 +427,7 @@ class TestUC040A47GroupRefusedAsAWhole:
         assert (await refused(g, ["p1", "p2", "p3", "p4", "p5"])).reason == "group_refused:bad_set"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_unknown_serial_is_target_gone(self, game):
         set_mode(game, INSTANT)
         exc = await refused(game, ["p1", "ghost"])
@@ -439,7 +439,7 @@ class TestUC040A47GroupRefusedAsAWhole:
 # --------------------------------------------------------------------------- #
 class TestUC040BR033Gate:
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     @pytest.mark.parametrize("kind", ["primary", "real", "", "unknown"])
     async def test_a_game_other_than_shadow_is_refused_without_real_games(self, game, kind):
         set_mode(game, INSTANT)
@@ -449,7 +449,7 @@ class TestUC040BR033Gate:
         assert snapshot(game) == before
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     async def test_real_games_on_applies_in_a_real_game(self, game, policy):
         set_mode(game, INSTANT)
         game.game_kind = "primary"
@@ -458,7 +458,7 @@ class TestUC040BR033Gate:
         assert all(committed(game, s, INSTANT) for s in SERIALS)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     @pytest.mark.parametrize("kind", [GAME_KIND_SHADOW, "primary"])
     async def test_enabled_off_refuses_even_with_real_games_on(self, game, policy, kind):
         set_mode(game, INSTANT)
@@ -468,7 +468,7 @@ class TestUC040BR033Gate:
         assert (await refused(game)).reason == "group_refused:disabled"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_unreadable_flags_read_off(self, clock, limits):  # noqa: ARG002
         """No policy patch: the real reads fail in the unit test, so every flag reads its off default."""
         g = _make()
@@ -476,14 +476,14 @@ class TestUC040BR033Gate:
         assert (await refused(g)).reason == "group_refused:disabled"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_max_per_game_zero_allows_nothing(self, game, policy):
         set_mode(game, INSTANT)
         policy["policy.group_grant.max_per_game"] = 0
         assert (await refused(game)).reason == "group_refused:cap_reached"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_second_group_in_a_game_is_refused_cap_reached(self, game):
         """The per-game backstop: a new event seq does not reset it (the agent's restart would)."""
         set_mode(game, INSTANT)
@@ -494,7 +494,7 @@ class TestUC040BR033Gate:
         assert snapshot(game) == before
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     async def test_max_per_game_two_allows_a_second_group(self, game, policy):
         set_mode(game, INSTANT)
         game._shield_limits = lambda: (0, 0)
@@ -504,7 +504,7 @@ class TestUC040BR033Gate:
         assert game._agent_group_grants == 2
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_a_refused_group_does_not_use_the_backstop(self, game):
         set_mode(game, INSTANT)
         _cap(game, "p3")
@@ -553,7 +553,7 @@ def _published(events):
 
 
 class TestUC040A46GroupEvent:
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     def test_payload_round_trip(self):
         payload = _event_payload_string(GROUP_SPEC, {"serials": "p1,p2,p3", "seconds": "5"})
         assert _event_target_serials(GROUP_SPEC, payload) == SERIALS
@@ -561,14 +561,14 @@ class TestUC040A46GroupEvent:
         assert _edge_target_serial(GROUP_SPEC, payload) is None  # not player-targeted
         assert _event_group_seconds(_event_payload_string(GROUP_SPEC, {"serials": "p1,p2"})) is None
 
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     def test_spec_is_a_medium_one_shot_allowed_in_every_mode(self):
         assert GROUP_SPEC.type_id == "grant_group_shield"
         assert GROUP_SPEC.edge_triggered and not GROUP_SPEC.player_targeted
         assert all("grant_group_shield" not in deny for deny in MODE_CAPABILITY_DENY.values())
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A46", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
     async def test_dispatch_applies_once_and_records_one_intervention(self, game):
         set_mode(game, INSTANT)
         mgr, events = _manager(game, ["grant_group_shield"])
@@ -583,7 +583,7 @@ class TestUC040A46GroupEvent:
         assert published[0]["blocked"] == "false"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_refused_group_is_blocked_and_refunds_the_backstop(self, game):
         set_mode(game, INSTANT)
         _cap(game, "p3")
@@ -599,7 +599,7 @@ class TestUC040A46GroupEvent:
         assert mgr._rate_limiter.current_weight() == pytest.approx(0.0)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_not_in_the_allow_list_is_not_allowed(self, game):
         """No interventions_allowed variant names grant_group_shield yet (PR 4)."""
         set_mode(game, INSTANT)
@@ -612,7 +612,7 @@ class TestUC040A46GroupEvent:
         assert _published(events)[0]["block_reason"] == "not_allowed"
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_handler_passes_low_battery_serials(self, game):
         set_mode(game, INSTANT)
         mgr, _ = _manager(game, ["grant_group_shield"], battery={"p1": 80.0, "p2": 5.0, "p3": 90.0})
@@ -626,7 +626,7 @@ class TestUC040A46GroupEvent:
         assert not any(committed(game, s, INSTANT) for s in SERIALS)
 
     @pytest.mark.asyncio
-    @pytest.mark.uc("UC-040", flow="A47", br=["BR-033"])
+    @pytest.mark.uc("UC-040", flow="A48", br=["BR-033"])
     async def test_handler_with_disabled_gate_reads_disabled_for_a_malformed_payload(self, game, policy):
         set_mode(game, INSTANT)
         policy["policy.group_grant.enabled"] = False

@@ -115,7 +115,7 @@ HANDLER_FLAG_READS = {
         "targeting": [],
         "readers": "games/base.py _shield_limits <- grant_shield <- handle_shield_seconds (no targeting)",
     },
-    # Group shield gate and backstop (UC-040 A46, A47, BR-033, #2467): operator flags the
+    # Group shield gate and backstop (UC-040 A47, A48, BR-033, #2467): operator flags the
     # agent reads with an empty context, so no targeting at all, or the two sides could differ.
     ("agent", "policy.group_grant.enabled"): {
         "targeting": [],

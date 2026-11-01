@@ -324,7 +324,7 @@ async def handle_shield_seconds(ctx: InterventionContext, manager: InterventionM
 
 
 async def handle_group_shield(ctx: InterventionContext, manager: InterventionManager) -> None:
-    """Shield every player of a ``group_shield`` event, or nobody (UC-040 A46, A47, BR-033).
+    """Shield every player of a ``group_shield`` event, or nobody (UC-040 A47, A48, BR-033).
 
     The payload string is ``"<serials>|<seconds>"`` (``_event_payload_string``).
     The battery guard of a single grant applies per serial: the serials below

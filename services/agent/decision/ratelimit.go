@@ -96,7 +96,7 @@ const (
 	InterventionEliminatePlayer = "eliminate_player"
 	InterventionRevivePlayer    = "revive_player"
 	InterventionEndGame         = "end_game"
-	// InterventionGrantGroupShield (#2467, UC-040 A46, BR-033) shields 2 to 6
+	// InterventionGrantGroupShield (#2467, UC-040 A47, BR-033) shields 2 to 6
 	// players with one decision, all or nothing (Decision.TargetSerials). The
 	// writer posts it as the group_shield event; no interventions_allowed variant
 	// names it and nothing decides it until #2467 PR 4, so it is never written today.

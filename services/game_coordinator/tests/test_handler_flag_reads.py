@@ -64,7 +64,7 @@ DOMAINS = ("game", "user", "interventions", "agent", "system", "controller", "ob
 # Values that make the read path under test reachable (shield trigger mode).
 FLAG_VALUES = {
     "shield.activation": "trigger",
-    # The group shield's gate open, so its whole path runs (UC-040 A46, #2467).
+    # The group shield's gate open, so its whole path runs (UC-040 A47, #2467).
     "policy.group_grant.enabled": True,
     "policy.group_grant.real_games": True,
     "policy.group_grant.max_per_game": 1.0,

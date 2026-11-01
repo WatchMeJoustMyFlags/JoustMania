@@ -335,6 +335,12 @@ class FightClubGame(StreamedIntroGameMode):
         fighter.alive = True
         fighter.invincible_until = game_clock.now() + self._invincibility_duration
 
+        # Only the two combatants export game_player_* gauges (UC-041 BR-006)
+        for serial in self.queue:
+            self._stop_player_gauges(serial)
+        self._start_player_gauges(self.current_defender)
+        self._start_player_gauges(self.current_fighter)
+
         # Set round end time
         if not self.face_off_mode:
             self.round_end_time = game_clock.now() + self._round_duration
@@ -447,6 +453,11 @@ class FightClubGame(StreamedIntroGameMode):
             fighter.state = FightState.IN_LINE
             fighter.color = WAITING_COLOR
             self.queue.append(self.current_fighter)
+
+        # Both go back to waiting: no live gauges until they fight again (UC-041 BR-006)
+        for serial in (self.current_defender, self.current_fighter):
+            if serial:
+                self._stop_player_gauges(serial)
 
         self.current_defender = None
         self.current_fighter = None
@@ -814,11 +825,11 @@ class FightClubGame(StreamedIntroGameMode):
         # pause, so the next round's colours land after it (D-G32); the base kill
         # path skips its own trailing death effect (_sends_death_effect).
         await self._write_loser_death_effect(loser_serial)
-        # The base kill path zeroed the gauge; the re-queued loser is still playing.
-        # Skipped after a force end, which cleared the player analytics, once the
-        # game is decided, and for a loser who left (A4).
-        if self.running and not self._win_latched and loser.alive:
-            metrics.player_alive.labels(serial=loser_serial, game_id=self.game_id).set(1)
+        # The re-queued loser waits: it exports no live gauges (the base kill path's
+        # game_player_alive 0 included) until its next round (UC-041 BR-006). A loser
+        # who left (A4) keeps its 0.
+        if loser_serial in self.queue:
+            self._stop_player_gauges(loser_serial)
 
         # Play victory sound for round
         await self._play_sound(Sound.SFX_BEEP, priority=1)
@@ -939,10 +950,14 @@ class FightClubGame(StreamedIntroGameMode):
                         "winner": is_winner,
                         "score": fc_player.score,
                         "final_rank": [s for s, _ in scores].index(serial) + 1,
+                        **self._analytics_span_attributes(player),
                     },
                 )
                 player.span.set_status(Status(StatusCode.OK))
                 player.span.end()
+
+        # Per-player analytics summaries for the agent (UC-041 step 4, #2358)
+        await self._publish_analytics_summaries({winner_serial} if winner_serial else set())
 
         self.state = self.state.__class__.ENDED
         ended_payload = {

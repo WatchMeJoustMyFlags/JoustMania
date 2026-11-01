@@ -45,7 +45,7 @@ flags:
   - {set: interventions, key: controller_effect, kind: event, scope: [game], bounds: {payload: {serial: serial_or_empty, effect: "enum rumble|pulse|flash|show_battery"}}}
   - {set: interventions, key: audio_cue, kind: event, scope: [game], bounds: {payload: {sound: sound}}}
   - {set: interventions, key: end_game, kind: event, scope: [game], bounds: {payload: {}}}
-  # Group shield (#2467, UC-040 A46, BR-033): 2 to 6 distinct players of the game, 1 to 10 s.
+  # Group shield (#2467, UC-040 A47, BR-033): 2 to 6 distinct players of the game, 1 to 10 s.
   - {set: interventions, key: group_shield, kind: event, scope: [game], bounds: {payload: {serials: serial_set, seconds: "float 1 10"}}}
 
   # --- agent (flags.md §13.2) ---------------------------------------------------

@@ -15,5 +15,5 @@ class InterventionNotApplied(Exception):  # noqa: N818 - an outcome, not an erro
     def __init__(self, reason: str, detail: str = "", *, refused_serial: str = "") -> None:
         super().__init__(detail or reason)
         self.reason = reason
-        # The player whose check refused a group shield (UC-040 A47); "" otherwise.
+        # The player whose check refused a group shield (UC-040 A48); "" otherwise.
         self.refused_serial = refused_serial

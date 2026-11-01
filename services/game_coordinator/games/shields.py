@@ -95,7 +95,7 @@ SHIELD_REFUSED_GAME_ENDING = "game_ending"
 # A grant to a player who holds a shield charge (UC-040 A31, BR-020).
 SHIELD_REFUSED_ALREADY_CHARGED = "already_charged"
 
-# Group shield (UC-040 A46, A47, BR-033, #2467): one decision shields 2 to
+# Group shield (UC-040 A47, A48, BR-033, #2467): one decision shields 2 to
 # policy.group_grant.max_targets alive players, all or nothing. A refusal raises
 # InterventionNotApplied("group_refused:<reason>"); a per-target refusal uses the single
 # grant's reason (e.g. group_refused:shield_cap_reached) and names the refused serial.
@@ -272,7 +272,7 @@ class ShieldMixin:
         return hold, mode
 
     # ------------------------------------------------------------------ #
-    # Group shield (UC-040 A46, A47, BR-033; #2467)
+    # Group shield (UC-040 A47, A48, BR-033; #2467)
     # ------------------------------------------------------------------ #
     def _group_grant_policy(self) -> tuple[bool, bool, int, int]:
         """``(enabled, real_games, max_per_game, max_targets)`` read at the grant (BR-033).
@@ -294,7 +294,7 @@ class ShieldMixin:
         )
 
     def _refuse_group(self, reason: str, serial: str | None = None, detail: str = "") -> None:
-        """Count, log and raise a whole-group refusal (UC-040 A47); nothing is applied."""
+        """Count, log and raise a whole-group refusal (UC-040 A48); nothing is applied."""
         from services.game_coordinator.intervention_errors import InterventionNotApplied
 
         logger.info(
@@ -321,7 +321,7 @@ class ShieldMixin:
         raise InterventionNotApplied(GROUP_REFUSED_PREFIX + reason, detail or reason, refused_serial=serial or "")
 
     def _group_set_refusal(self, serials: list[str], seconds: float, max_targets: int) -> tuple[str, str | None] | None:
-        """The payload check of a group (A47): ``(reason, serial)`` or None; pure."""
+        """The payload check of a group (A48): ``(reason, serial)`` or None; pure."""
         if not math.isfinite(seconds) or not GROUP_MIN_SECONDS <= seconds <= GROUP_MAX_SECONDS:
             return GROUP_REFUSED_BAD_SET, None
         if len(serials) < GROUP_MIN_TARGETS or len(serials) > max_targets:
@@ -337,7 +337,7 @@ class ShieldMixin:
     async def grant_group_shield(
         self, serials: list[str], seconds: float, *, low_battery: frozenset[str] = frozenset()
     ) -> bool:
-        """Shield every player of ``serials`` for ``seconds``, or nobody (UC-040 A46, A47, BR-033).
+        """Shield every player of ``serials`` for ``seconds``, or nobody (UC-040 A47, A48, BR-033).
 
         One event, one game-loop turn. Phases 0 to 2 run without an await, so no
         frame, no other handler and no other grant can run between the first check

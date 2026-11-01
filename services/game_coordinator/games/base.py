@@ -21,10 +21,10 @@ import random
 import statistics
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import grpc
 from openfeature.evaluation_context import EvaluationContext
@@ -46,6 +46,7 @@ from lib.feature_flags import (
 from lib.telemetry import inject_trace_context
 from lib.types import GameEvent, Sensitivity, Sound
 from services.game_coordinator import game_clock, metrics
+from services.game_coordinator.games.analytics import PlayerAnalytics
 from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-exported: games/shields.py and the tests import them from base
     CHARGE_EXPIRY_MAX_SECONDS,
     DEFAULT_CHARGE_EXPIRY_SECONDS,
@@ -92,9 +93,6 @@ from services.game_coordinator.games.flag_snapshot import (  # noqa: F401  re-ex
 )
 from services.game_coordinator.runtime_config import GamePerformanceConfig, get_config_manager
 from services.game_coordinator.stream_writes import serialized_write
-
-if TYPE_CHECKING:
-    from services.game_coordinator.games.analytics import PlayerAnalytics
 
 tracer = trace.get_tracer(__name__)
 logger = logging.getLogger(__name__)
@@ -769,7 +767,7 @@ class BaseGameMode(ShieldMixin, ABC):
         # game starts fresh; keyed by serial, so a revive does not reset them.
         self._agent_shield_grants: dict[str, int] = {}
         self._agent_shield_last_end: dict[str, float] = {}
-        # Group shields applied in this game (UC-040 A46, BR-033): the coordinator's
+        # Group shields applied in this game (UC-040 A47, BR-033): the coordinator's
         # per-game backstop against policy.group_grant.max_per_game, so an agent
         # restart (which resets the agent's own count) cannot exceed it.
         self._agent_group_grants = 0
@@ -1279,6 +1277,63 @@ class BaseGameMode(ShieldMixin, ABC):
         if self.game_kind != GAME_KIND_SHADOW:
             metrics.set_players_alive(self.game_id, alive_count)
 
+    def _attach_player_analytics(self) -> None:
+        """Give every player a ``PlayerAnalytics`` tracker, in every mode (UC-041 step 4, #2358).
+
+        The tracker feeds the agent's per-player movement and skill inputs (the
+        ``game_player_*`` gauges, emitted by ``_record_player_analytics``) and the
+        end-of-game ``player_analytics`` summary. Skipped while ``analytics.enabled``
+        is off; a player the mode already gave a tracker keeps it.
+        """
+        config = self._runtime_config()
+        if not config.analytics.enabled:
+            return
+        game_start_time = game_clock.now()
+        for serial, player in self.players.items():
+            if player.analytics is None:
+                player.analytics = PlayerAnalytics.from_config(
+                    serial=serial,
+                    game_start_time=game_start_time,
+                    config=config.analytics,
+                )
+
+    @staticmethod
+    def _analytics_span_attributes(player: Player) -> dict:
+        """The ``analytics.*`` attributes for a player's end-of-game span event ({} without a tracker)."""
+        if player.analytics is None:
+            return {}
+        return {f"analytics.{key}": value for key, value in player.analytics.get_summary().items()}
+
+    def _player_analytics_extras(self, player: Player) -> dict:
+        """Mode fields added to a player's ``player_analytics`` summary (override per mode)."""
+        return {"survival_time_ms": player.analytics.total_time_ms}
+
+    async def _publish_analytics_summaries(self, winner_serials: Collection[str]) -> None:
+        """Publish one ``player_analytics`` summary per tracked player at game end (UC-041 step 4).
+
+        Also counts the analytics samples and near-death events. ``winner_serials``
+        are the players the mode declares winners (empty without a winner).
+        """
+        game_mode = self.get_game_name()
+        for serial, player in self.players.items():
+            if player.analytics is None:
+                continue
+            summary = player.analytics.get_summary()
+            summary["game_id"] = self.game_id
+            summary["winner"] = serial in winner_serials
+            summary.update(self._player_analytics_extras(player))
+
+            await self.event_publisher(GameEvent.PLAYER_ANALYTICS, summary)
+
+            metrics.game_analytics_samples_total.labels(game_mode=game_mode).inc(player.analytics.sample_count)
+            metrics.near_death_events_total.labels(serial=serial, game_mode=game_mode).inc(
+                player.analytics.near_death_count
+            )
+            logger.info(
+                f"Player {serial} analytics: peak={summary['peak_accel']:.2f}g, "
+                f"playstyle={summary['playstyle']}, near_deaths={summary['near_death_count']}"
+            )
+
     async def _initialize_players(self):
         """Initialize players from StartGame RPC payload."""
         try:
@@ -1294,6 +1349,7 @@ class BaseGameMode(ShieldMixin, ABC):
 
             controllers = [ControllerStub(p.serial) for p in self.initial_players]
             await self._initialize_players_impl(controllers)
+            self._attach_player_analytics()
 
             # Set alive metric for all initialized players (Phase 75: filter dead from dashboard)
             for serial in self.players:
@@ -2280,6 +2336,20 @@ class BaseGameMode(ShieldMixin, ABC):
 
         # Record to histogram for distribution analysis
         self._accel_distribution().observe(accel_mag)
+
+    def _stop_player_gauges(self, serial: str) -> None:
+        """Remove a player's ``game_player_*`` gauges while it waits for its next fight (UC-041 BR-006).
+
+        Fight Club and Tournament check only the two fighters, so a waiting player
+        gets no sampled frame and its gauges would re-export the last fight's values
+        (``game_player_alive`` 1 included) to the agent. The tracker keeps its samples
+        for the end-of-game summary; ``_start_player_gauges`` brings the series back.
+        """
+        metrics.clear_player_analytics(serial, self.game_id)
+
+    def _start_player_gauges(self, serial: str) -> None:
+        """Re-export ``game_player_alive`` 1 for a player seated to fight; its frames set the rest."""
+        metrics.player_alive.labels(serial=serial, game_id=self.game_id).set(1)
 
     def _process_health(self, player: Player, serial: str, controller_state) -> None:
         """Process controller health counters and manage degradation child spans.

@@ -62,7 +62,7 @@ const (
 	flagAudioCue                  = "audio_cue"
 	flagControllerEffect          = "controller_effect"
 	flagEndGame                   = "end_game"
-	flagGroupShield               = "group_shield" // #2467 (UC-040 A46, BR-033)
+	flagGroupShield               = "group_shield" // #2467 (UC-040 A47, BR-033)
 )
 
 // Neutral variant names per flag in interventions.json: the baseline value a

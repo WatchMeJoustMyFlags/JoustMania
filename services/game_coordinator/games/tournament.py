@@ -478,6 +478,13 @@ class TournamentGame(StreamedIntroGameMode):
         p1.invincible_until = invincible_until
         p2.invincible_until = invincible_until
 
+        # Only the two fighters export game_player_* gauges (UC-041 BR-006)
+        for serial, player in self.players.items():
+            if player.alive and player.tournament_state == TournamentState.WAITING:
+                self._stop_player_gauges(serial)
+        self._start_player_gauges(match.player1_serial)
+        self._start_player_gauges(match.player2_serial)
+
         # Create match span (inherits current active context: gameplay_phase)
         self.match_span = tracer.start_span(
             "tournament_match",
@@ -531,6 +538,8 @@ class TournamentGame(StreamedIntroGameMode):
         winner.wins += 1
         if winner.tournament_state == TournamentState.FIGHTING:
             winner.tournament_state = TournamentState.WAITING
+            # The winner waits for its next match: no live gauges until then (UC-041 BR-006)
+            self._stop_player_gauges(match.winner_serial)
         loser.tournament_state = TournamentState.ELIMINATED
         loser.alive = False
 
@@ -1021,11 +1030,15 @@ class TournamentGame(StreamedIntroGameMode):
                         "is_champion": is_champion,
                         "wins": player.wins,
                         "final_round": player.round_number,
+                        **self._analytics_span_attributes(player),
                     },
                 )
                 player.span.set_status(Status(StatusCode.OK))
                 player.span.end()
                 player.span = None
+
+        # Per-player analytics summaries for the agent (UC-041 step 4, #2358)
+        await self._publish_analytics_summaries({champion_serial} if champion_serial else set())
 
         self.state = self.state.__class__.ENDED
         ended_payload = {
