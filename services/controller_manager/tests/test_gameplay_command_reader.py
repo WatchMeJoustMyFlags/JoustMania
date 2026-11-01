@@ -107,11 +107,13 @@ async def game(servicer, monkeypatch):  # noqa: F811
 
     async def record_rainbow(serial, **kwargs):
         rainbows.append((serial, time.monotonic()))
+        stream.rainbow_in_game.append(servicer._in_game(serial))
         await play_rainbow(serial=serial, **kwargs)
 
     servicer.feedback_manager._effect_winner_rainbow = record_rainbow
     stream = _GameStream(servicer)
     stream.rainbows = rainbows
+    stream.rainbow_in_game = []
     yield stream
     if stream.task is not None and not stream.task.done():
         stream.task.cancel()
@@ -175,7 +177,31 @@ class TestUC020CommandReaderDoesNotWaitOnEffects:
         await game.close()  # while the base colour is still applying
 
         assert [serial for serial, _ in game.rainbows] == [WINNER]
-        assert game.svc._game_stream_serials == {}  # the roster is still released after the drain
+        # #2470 order: the drained command applies while the stream still holds its roster ...
+        assert game.rainbow_in_game == [True]
+        assert game.svc._game_stream_serials == {}  # ... and the roster is released after the drain
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", steps=[6], br=["BR-004"])
+    async def test_the_drain_is_bounded_even_when_a_command_ignores_its_cancel(self, game):
+        """#2540: the close goes on after about 1 s (drain bound plus cancel grace), whatever the command does."""
+
+        async def stubborn():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(3)  # swallows the cancel, like a cancel-unsafe await
+
+        apply_task = asyncio.create_task(stubborn())
+        await asyncio.sleep(0)
+        started = time.monotonic()
+        await game.svc._drain_gameplay_controls(apply_task, asyncio.Queue(), "gameplay_stream_test")
+        elapsed = time.monotonic() - started
+
+        bound = servicer_module.STREAM_CLOSE_DRAIN_TIMEOUT_S + servicer_module.STREAM_CLOSE_CANCEL_GRACE_S
+        assert elapsed < bound + 0.4, f"the drain took {elapsed:.2f} s"
+        apply_task.cancel()
+        await asyncio.gather(apply_task, return_exceptions=True)
 
 
 @pytest.fixture
@@ -258,3 +284,108 @@ class TestUC020EffectTakeOverHasNoGap:
         effect_tasks.discard(asyncio.current_task())
         assert effect_tasks == {owner}, "an effect task runs that no active_effects entry owns"
         assert manager.backend.frames(WINNER, 0.0)[-1] in (MAGENTA, (0, 0, 0))  # the newer flash paints
+
+
+class TestUC030DeathIsShownInFull:
+    @pytest.fixture
+    def dying(self, manager, monkeypatch):
+        monkeypatch.setattr(fm_module, "DEATH_RUMBLE_MS", 50)
+        monkeypatch.setattr(fm_module, "DEATH_RED_HOLD_MS", 150)
+        monkeypatch.setattr(fm_module, "DEATH_FADE_MS", 50)
+        return manager
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", steps=[9])
+    @pytest.mark.parametrize(
+        "follow_up",
+        [pb.GAME_EFFECT_PULSE, pb.GAME_EFFECT_FLASH, pb.GAME_EFFECT_SHOW_BATTERY, pb.GAME_EFFECT_PLAYER_WARNING],
+    )
+    async def test_an_effect_right_behind_the_death_does_not_hide_the_red(self, dying, follow_up):
+        """#2540: a Zombie conversion plus the agent cue (a pulse), or a warning on the next frame, right
+        behind the death: the red is painted at once and the death plays in full; the follow-up yields."""
+        since = time.time()
+        assert await dying.handle_game_effect(WINNER, pb.GAME_EFFECT_PLAYER_DEATH)
+        await dying.handle_game_effect(WINNER, follow_up, color=MAGENTA)
+
+        death = dying.active_effects[WINNER]
+        assert death.effect_type == pb.GAME_EFFECT_PLAYER_DEATH and not death.task.done()
+        await death.task
+        frames = dying.backend.frames(WINNER, since)
+        assert frames[0] == (255, 0, 0)
+        assert MAGENTA not in frames and (255, 255, 255) not in frames
+        assert frames[-1] == (0, 0, 0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-030", steps=[9])
+    async def test_the_death_still_gives_way_to_the_winner_rainbow(self, dying):
+        """UC-020 BR-004: only overlays and the warning yield; a lifecycle effect such as the rainbow takes over."""
+        assert await dying.handle_game_effect(WINNER, pb.GAME_EFFECT_PLAYER_DEATH)
+        assert await dying.handle_game_effect(WINNER, pb.GAME_EFFECT_WINNER_RAINBOW)
+        assert dying.active_effects[WINNER].effect_type == pb.GAME_EFFECT_WINNER_RAINBOW
+
+
+class TestLowBatteryDoesNotHoldTheReader:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", steps=[6], br=["BR-004"])
+    async def test_low_battery_returns_at_once_and_restores_the_base_colour(self, manager):
+        """#2540: the 600 ms low-battery flash runs as the effect task and restores the base colour."""
+        since = time.time()
+        started = time.monotonic()
+        assert await manager.handle_game_effect(WINNER, pb.GAME_EFFECT_LOW_BATTERY)
+        assert time.monotonic() - started < 0.3
+
+        await manager.active_effects[WINNER].task
+        frames = manager.backend.frames(WINNER, since)
+        assert (255, 0, 0) in frames
+        assert frames[-1] == (0, 200, 0)
+        assert WINNER not in manager.active_effects
+
+
+class TestStartEffectIsCancelSafe:
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", steps=[6], br=["BR-004"])
+    async def test_a_cancel_while_waiting_for_the_lock_leaves_no_claim(self, manager):
+        """#2540: a caller cancelled before its effect starts leaves no owner that would block the base colour."""
+        gate = asyncio.Event()
+        old = asyncio.create_task(_slow_to_cancel(gate))
+        manager.active_effects[WINNER] = ActiveEffect(task=old, effect_type=pb.GAME_EFFECT_FLASH)
+        await asyncio.sleep(0)
+        starter = asyncio.create_task(
+            manager.play_effect_with_restore(WINNER, "flash", (255, 255, 255), 500, 5, (0, 200, 0))
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        await manager.effect_lock.acquire()
+        gate.set()
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert old.done() and not starter.done()  # the starter now waits for the lock
+        starter.cancel()
+        manager.effect_lock.release()
+        with pytest.raises(asyncio.CancelledError):
+            await starter
+
+        assert WINNER not in manager.active_effects
+        assert manager.backend.effect_active[WINNER] is False
+        await manager.apply_base_color(WINNER, (1, 2, 3))
+        assert manager.backend.leds[-1][1:] == (WINNER, (1, 2, 3))
+
+    @pytest.mark.asyncio
+    @pytest.mark.uc("UC-020", steps=[6], br=["BR-004"])
+    async def test_a_cancel_while_the_old_effect_ends_is_not_swallowed(self, manager):
+        """#2540: the drain's cancel stops the command; it is not taken for the old effect's own cancel."""
+        gate = asyncio.Event()
+        old = asyncio.create_task(_slow_to_cancel(gate))
+        manager.active_effects[WINNER] = ActiveEffect(task=old, effect_type=pb.GAME_EFFECT_FLASH)
+        await asyncio.sleep(0)
+        starter = asyncio.create_task(
+            manager.play_effect_with_restore(WINNER, "flash", (255, 255, 255), 500, 5, (0, 200, 0))
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not starter.done()  # waiting for the old effect to end
+        starter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await starter
+
+        assert WINNER not in manager.active_effects

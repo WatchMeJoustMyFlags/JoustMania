@@ -50,6 +50,8 @@ STREAM_CLOSE_SHIELD_CLEANUP_DELAY_S = 7.0
 
 # A closing gameplay stream applies the commands it already received for at most this long (#2540).
 STREAM_CLOSE_DRAIN_TIMEOUT_S = 1.0
+# After the drain, the applying task gets this long to stop on its cancel before the close goes on.
+STREAM_CLOSE_CANCEL_GRACE_S = 0.1
 # Ends a gameplay stream's command queue: everything queued before it is applied first.
 _END_OF_CONTROLS = object()
 
@@ -757,11 +759,13 @@ class ControllerManagerServicer(controller_manager_pb2_grpc.ControllerManagerSer
                 f"{STREAM_CLOSE_DRAIN_TIMEOUT_S} s"
             )
         except asyncio.CancelledError:
-            pass  # the close itself was cancelled again: stop draining
+            pass  # the close itself was cancelled again: stop draining, the roster release still runs
         finally:
             apply_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await apply_task
+            # Bounded too: a command that swallows the cancel must not hold the roster release (#2540).
+            _done, still_running = await asyncio.wait({apply_task}, timeout=STREAM_CLOSE_CANCEL_GRACE_S)
+            if still_running:
+                logger.warning(f"[{subscriber_id}] Stream close: a command did not stop within the cancel grace")
 
     # NOTE: Internal feedback methods moved to feedback_manager.py
     # NOTE: Per-controller frame inputs are read in state_builder.py

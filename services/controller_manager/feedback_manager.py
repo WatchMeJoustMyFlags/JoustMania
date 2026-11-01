@@ -159,6 +159,9 @@ RAINBOW_YIELDING_EFFECTS = frozenset(
         controller_manager_pb2.GAME_EFFECT_SHOW_BATTERY,
     }
 )
+# Effects that never cut a running death effect (red hold + fade) short (UC-030 step 9, #2540): the short
+# overlays as for the rainbow, and a warning, which the death supersedes (its 1 s rumble covers the haptics).
+DEATH_YIELDING_EFFECTS = RAINBOW_YIELDING_EFFECTS | {controller_manager_pb2.GAME_EFFECT_PLAYER_WARNING}
 
 
 class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
@@ -437,18 +440,32 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
                 old_task.cancel()
         # Mark effect as active (polling skips LED refresh)
         self.backend.set_effect_active(serial, True)
-        # Await the cancelled task outside the lock: its finally block takes the lock
-        if old_task is not None and old_task is not asyncio.current_task():
-            with contextlib.suppress(asyncio.CancelledError):
-                await old_task
-        async with self.effect_lock:
+        try:
+            # Await the cancelled task outside the lock: its finally block takes the lock
+            if old_task is not None and old_task is not asyncio.current_task():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await old_task
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    # The CancelledError above was ours, not the old task's: do not swallow it.
+                    raise asyncio.CancelledError()
+            async with self.effect_lock:
+                entry = self.active_effects.get(serial)
+                if entry is None or entry.task is not claim:
+                    claim.cancel()
+                    return None
+                task = asyncio.create_task(make_task_body())
+                self.active_effects[serial] = ActiveEffect(task=task, effect_type=entry.effect_type)
+            return task
+        except BaseException:
+            # Cancelled before the effect started: a claim left behind would block the base colour
+            # and the polling LED refresh until the next effect (#2540).
             entry = self.active_effects.get(serial)
-            if entry is None or entry.task is not claim:
-                claim.cancel()
-                return None
-            task = asyncio.create_task(make_task_body())
-            self.active_effects[serial] = ActiveEffect(task=task, effect_type=entry.effect_type)
-        return task
+            if entry is not None and entry.task is claim:
+                del self.active_effects[serial]
+                self.backend.set_effect_active(serial, False)
+            claim.cancel()
+            raise
 
     async def _release_effect(self, serial: str) -> bool:
         """At an effect task's end: drop its entry if it still owns the LED.
@@ -520,9 +537,7 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
                 stop_timer.set_name(DEATH_RUMBLE_TASK_NAME)  # the swell and the charge pulses leave it alone
 
             async def red_hold_then_fade():
-                # Solid red briefly (default 300ms) then fade to black (default 700ms)
-                span.add_event("led_red")
-                await self._set_led_color(serial, Colors.Red.value)
+                # Solid red briefly (default 300ms, painted below) then fade to black (default 700ms)
                 await asyncio.sleep(red_hold_ms / 1000.0)
 
                 # base_colors is already black (set above, before this task exists), so a base_color
@@ -532,12 +547,17 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
                 await self._effect_fade_out(serial, Colors.Red.value, fade_ms)
 
             # The red hold and the fade run as the controller's effect task, so the command reader
-            # does not wait for them and a newer LED command replaces them (#2540).
-            await self._start_effect(
+            # does not wait for them (#2540). The red is painted here, once the previous effect has
+            # ended, so a command right behind the death cannot cancel the task before it is shown;
+            # an overlay or a warning then yields to the running death (DEATH_YIELDING_EFFECTS).
+            death = await self._start_effect(
                 serial,
                 lambda: self._run_with_restore(serial, red_hold_then_fade, Colors.Black.value),
                 effect_type=controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH,
             )
+            if death is not None:
+                span.add_event("led_red")
+                await self._set_led_color(serial, Colors.Red.value)
 
     async def _effect_player_respawn(self, serial: str, **_kwargs) -> None:
         """White during spawn protection."""
@@ -668,13 +688,16 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
         """An overlay that must not take over the running effect (caller holds effect_lock).
 
         A PULSE yields to an identify or a battery display (UC-004 BR-005, UC-015 BR-015); a PULSE
-        a FLASH or a battery display yields to the winner rainbow (UC-020 BR-004, #2533).
+        a FLASH or a battery display yields to the winner rainbow (UC-020 BR-004, #2533), and these and a
+        warning yield to a running death effect (UC-030 step 9, #2540).
         """
         active = self.active_effects.get(serial)
         if active is None or active.task.done():
             return False
         if effect == controller_manager_pb2.GAME_EFFECT_PULSE and active.effect_type in PULSE_PROOF_EFFECTS:
             return True
+        if effect in DEATH_YIELDING_EFFECTS and active.effect_type == controller_manager_pb2.GAME_EFFECT_PLAYER_DEATH:
+            return True  # UC-030 step 9 (#2540): the death red hold and fade are shown in full
         return (
             effect in RAINBOW_YIELDING_EFFECTS
             and active.effect_type == controller_manager_pb2.GAME_EFFECT_WINNER_RAINBOW
@@ -847,8 +870,9 @@ class FeedbackManager(ShieldEffectsMixin, ControllerEffectsBase):
                         # UC-004 BR-005 / UC-015 BR-015 (#2105): a pulse never cuts short an identify
                         # or a battery display; the base colour still shows when that effect ends.
                         # UC-020 BR-004 (#2533): nor does a pulse, flash or battery display cut the rainbow short.
+                        # UC-030 step 9 (#2540): nor do they, or a warning, cut the death effect short.
                         logger.debug(
-                            f"Overlay for {target_serial} skipped: identify / battery / winner rainbow running"
+                            f"Overlay for {target_serial} skipped: identify / battery / winner rainbow / death running"
                         )
                         continue
                     if target_serial in self.active_effects:
