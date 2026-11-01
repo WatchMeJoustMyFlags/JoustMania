@@ -72,7 +72,7 @@ func activePlayers(c gamecontext.GameContext) []*gamecontext.PlayerSignals {
 
 // readingsFresh reports whether the player's movement readings are live at the
 // context's UpdatedAt: R4d's signal (decide.FreshReadings), shared by R3, R4 and R8
-// before they read a per-player skill level or movement variance (UC-040 A48,
+// before they read a per-player skill level or movement variance (UC-040 A46,
 // BR-037, #2511). No readings, a frozen value or an unknown context time is not
 // fresh (fail closed).
 func readingsFresh(c gamecontext.GameContext, p *gamecontext.PlayerSignals) bool {
@@ -161,7 +161,7 @@ func balancedCandidates(c gamecontext.GameContext, fit FitnessThresholds) []cand
 	var out []candidate
 
 	// R3: skill gap. R3 and R4's elimination path read only the players whose
-	// movement readings are fresh (UC-040 A48, BR-037, #2511): a stalled or frozen
+	// movement readings are fresh (UC-040 A46, BR-037, #2511): a stalled or frozen
 	// player's skill gauge is re-exported with its last value, so it is neither a
 	// target nor part of the spread, the mean or the strongest player.
 	skilled := make([]*gamecontext.PlayerSignals, 0, len(active))

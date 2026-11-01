@@ -232,7 +232,7 @@ func TestDangerShield_EliminationPathUnchanged(t *testing.T) {
 		c.UpdatedAt = dangerNow
 		c.Session.DeathThreshold = fptr(dangerThreshold)
 		// Calm, fresh readings: the elimination path reads only fresh players
-		// (UC-040 A48, BR-037, #2511).
+		// (UC-040 A46, BR-037, #2511).
 		for _, serial := range []string{"WEAK", "MID", "STRONG"} {
 			withTrack(&c, serial, 0, 0.4, 0.5, 0.6)
 		}

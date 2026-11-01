@@ -9,7 +9,7 @@ import (
 
 // rules_freshness_uc040_test.go covers #2511: R3, R4's elimination path and R8 read a
 // player's skill level or movement variance only while that player's movement
-// readings are fresh, the R4d signal (decide.FreshReadings; UC-040 A48, BR-037).
+// readings are fresh, the R4d signal (decide.FreshReadings; UC-040 A46, BR-037).
 
 // freshNow is the fixtures' context time (UpdatedAt).
 var freshNow = time.Unix(90_000, 0)
@@ -82,27 +82,27 @@ func hasTarget(targets []string, serial string) bool {
 	return false
 }
 
-// UC: UC-040 A48 BR-037
+// UC: UC-040 A46 BR-037
 func TestRulesFreshness_R3(t *testing.T) {
 	players := map[string]testPlayer{
 		"LOW":  {skill: fptr(0.2), active: true},
 		"HIGH": {skill: fptr(0.9), active: true},
 	}
-	t.Run("UC-040/A48 R3 handicaps a fresh outlier", func(t *testing.T) {
+	t.Run("UC-040/A46 R3 handicaps a fresh outlier", func(t *testing.T) {
 		got := targetsOf(balancedCandidates(freshCtx(30, nil, players), defaultFit()), "R3")
 		if len(got) != 1 || got[0] != "HIGH" {
 			t.Fatalf("R3 targets = %v, want [HIGH]", got)
 		}
 	})
 	for _, k := range staleKinds {
-		t.Run("UC-040/A48 R3 skips a "+k.name+" outlier", func(t *testing.T) {
+		t.Run("UC-040/A46 R3 skips a "+k.name+" outlier", func(t *testing.T) {
 			c := freshCtx(30, nil, players)
 			setTrack(&c, "HIGH", k.s)
 			if got := targetsOf(balancedCandidates(c, defaultFit()), "R3"); len(got) != 0 {
 				t.Fatalf("R3 targets = %v, want none (HIGH is %s)", got, k.name)
 			}
 		})
-		t.Run("UC-040/A48 R3 skips the spread to a "+k.name+" low player", func(t *testing.T) {
+		t.Run("UC-040/A46 R3 skips the spread to a "+k.name+" low player", func(t *testing.T) {
 			c := freshCtx(30, nil, players)
 			setTrack(&c, "LOW", k.s)
 			if got := targetsOf(balancedCandidates(c, defaultFit()), "R3"); len(got) != 0 {
@@ -110,7 +110,7 @@ func TestRulesFreshness_R3(t *testing.T) {
 			}
 		})
 	}
-	t.Run("UC-040/A48 R3 fails closed with no context time", func(t *testing.T) {
+	t.Run("UC-040/A46 R3 fails closed with no context time", func(t *testing.T) {
 		c := freshCtx(30, nil, players)
 		c.UpdatedAt = time.Time{}
 		if got := targetsOf(balancedCandidates(c, defaultFit()), "R3"); len(got) != 0 {
@@ -119,21 +119,21 @@ func TestRulesFreshness_R3(t *testing.T) {
 	})
 }
 
-// UC: UC-040 A48 BR-037
+// UC: UC-040 A46 BR-037
 func TestRulesFreshness_R4(t *testing.T) {
 	players := map[string]testPlayer{
 		"WEAK":   {skill: fptr(0.2), active: true},
 		"MID":    {skill: fptr(0.5), active: true},
 		"STRONG": {skill: fptr(0.9), active: true},
 	}
-	t.Run("UC-040/A48 R4 shields a fresh struggling player", func(t *testing.T) {
+	t.Run("UC-040/A46 R4 shields a fresh struggling player", func(t *testing.T) {
 		got := targetsOf(balancedCandidates(freshCtx(30, []string{"GONE"}, players), defaultFit()), "R4")
 		if !hasTarget(got, "WEAK") {
 			t.Fatalf("R4 targets = %v, want WEAK among them", got)
 		}
 	})
 	for _, k := range staleKinds {
-		t.Run("UC-040/A48 R4 skips a "+k.name+" struggling player", func(t *testing.T) {
+		t.Run("UC-040/A46 R4 skips a "+k.name+" struggling player", func(t *testing.T) {
 			c := freshCtx(30, []string{"GONE"}, players)
 			setTrack(&c, "WEAK", k.s)
 			got := targetsOf(balancedCandidates(c, defaultFit()), "R4")
@@ -149,20 +149,20 @@ func TestRulesFreshness_R4(t *testing.T) {
 	}
 }
 
-// UC: UC-040 A48 BR-037
+// UC: UC-040 A46 BR-037
 func TestRulesFreshness_R8(t *testing.T) {
 	players := map[string]testPlayer{
 		"S": {variance: fptr(0.01), active: true},
 		"T": {variance: fptr(0.30), active: true},
 	}
-	t.Run("UC-040/A48 R8 nudges a fresh statue", func(t *testing.T) {
+	t.Run("UC-040/A46 R8 nudges a fresh statue", func(t *testing.T) {
 		got := targetsOf(chaosCandidates(freshCtx(20, nil, players), defaultPol(), 0, ""), "R8")
 		if len(got) != 1 || got[0] != "S" {
 			t.Fatalf("R8 targets = %v, want [S]", got)
 		}
 	})
 	for _, k := range staleKinds {
-		t.Run("UC-040/A48 R8 skips a "+k.name+" statue", func(t *testing.T) {
+		t.Run("UC-040/A46 R8 skips a "+k.name+" statue", func(t *testing.T) {
 			c := freshCtx(20, nil, players)
 			setTrack(&c, "S", k.s)
 			if got := targetsOf(chaosCandidates(c, defaultPol(), 0, ""), "R8"); len(got) != 0 {

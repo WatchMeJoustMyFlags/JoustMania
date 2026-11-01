@@ -211,10 +211,12 @@ const (
 // re-exported with its last value, so a frozen reading keeps arriving with a fresh
 // time: the reading is as old as the first sample of the newest run of identical
 // values (when the value was last new). R4d (SustainedDanger) and the rules that
-// read a player's skill level or movement variance (R3, R4, R8; UC-040 A48,
+// read a player's skill level or movement variance (R3, R4, R8; UC-040 A46,
 // BR-037, #2511) share this signal. Fail closed (false): no readings, a newest
-// reading after now (so a zero now against real readings), a frozen or old value,
-// a non-finite value.
+// reading after now (so a zero now against readings with a real time), a frozen
+// or old value, a non-finite value. A zero now against readings stamped at the
+// zero time passes (now - At = 0); production contexts never carry that pair, the
+// store stamps both from one clock read.
 func FreshReadings(samples []gamecontext.MovementSample, now time.Time) bool {
 	if len(samples) == 0 {
 		return false

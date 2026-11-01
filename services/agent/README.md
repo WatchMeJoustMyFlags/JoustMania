@@ -547,7 +547,7 @@ per second. The weighted per-minute budget is enforced downstream by the loop
 | R8 | chaos | movement variance ≈ 0 ("statue"), player with fresh readings | `send_controller_effect` |
 | R9 | chaos | periodic random nudge (injectable rng) | `send_controller_effect` |
 
-**Fresh readings (R3, R4, R8; UC-040 A48, BR-037, #2511).** The rules read a
+**Fresh readings (R3, R4, R8; UC-040 A46, BR-037, #2511).** The rules read a
 player's skill level or movement variance only while the player's movement track
 is live: the newest `game_player_accel_magnitude` reading is finite, not newer
 than the context's `UpdatedAt`, and was last new at most 3 s before it

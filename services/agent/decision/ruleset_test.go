@@ -18,9 +18,16 @@ type testPlayer struct {
 	active                    bool
 }
 
+// gameCtxNow is gameCtx's context time (UpdatedAt) and its players' reading time.
+var gameCtxNow = time.Unix(10_000, 0)
+
 func gameCtx(duration float64, elims []string, players map[string]testPlayer) gamecontext.GameContext {
 	c := gamecontext.GameContext{
 		SessionID: "s-1",
+		// A real context time, so the players' one reading is fresh through the
+		// freshness gate itself (now - At = 0 within 3 s), not through a zero
+		// time on both sides (UC-040 A46, BR-037, #2511).
+		UpdatedAt: gameCtxNow,
 		Players:   map[string]*gamecontext.PlayerSignals{},
 	}
 	c.Session.GameActive = bptr(true)
@@ -35,7 +42,7 @@ func gameCtx(duration float64, elims []string, players map[string]testPlayer) ga
 			MovementVariance:  tp.variance,
 			Active:            bptr(tp.active),
 			// One reading at the context's time, so R3, R4 and R8 see a fresh
-			// player (UC-040 A48, BR-037, #2511). A test that moves UpdatedAt
+			// player (UC-040 A46, BR-037, #2511). A test that moves UpdatedAt
 			// gives the players it needs fresh a track of its own.
 			History: []gamecontext.MovementSample{{At: c.UpdatedAt, Intensity: freshReading(tp.intensity)}},
 		}
