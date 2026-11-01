@@ -107,6 +107,10 @@ const (
 	// outcome.
 	AttrDecideBlocked     = "decide.blocked"
 	AttrDecideBlockReason = "decide.block_reason"
+	// AttrDecidePromptProfile is the normalized decision.prompt_profile a remote
+	// request was rendered with (v1 or neutral; #2467 PR 5, decide-contract.md §12).
+	// Absent on the rules path.
+	AttrDecidePromptProfile = "decide.prompt_profile"
 )
 
 // decide.outcome values.
@@ -155,6 +159,17 @@ type decideEngine interface {
 type actedRecorder interface {
 	RecordActed(Decision)
 }
+
+// PromptProfileSource returns the decision.prompt_profile of one game, normalized
+// (decide.NormalizePromptProfile). main.go wires flags.Flags.PromptProfile, which
+// reads it in the game's flag context and gives v1 on any error.
+type PromptProfileSource func(ctx context.Context, gameID string) string
+
+// SetPromptProfileSource injects the prompt-profile source of remote decide
+// requests (#2467 PR 5, UC-040 BR-036). nil (the default and every older test)
+// leaves Request.PromptProfile empty, which every backend renders as v1. Set at
+// construction, before the loop serves.
+func (l *Loop) SetPromptProfileSource(src PromptProfileSource) { l.promptProfile = src }
 
 // SetDecideRegistry injects the SHARED decision-backend registry (#1226). main.go
 // builds one and calls this on every per-game loop. A nil registry (the default)
@@ -617,6 +632,11 @@ func (l *Loop) runDecideRemote(root context.Context, fired flags.Snapshot, backe
 		start:     start,
 		stateAt:   c.UpdatedAt,
 	}
+	// The prompt profile is read per request in the game's flag context (#2467 PR 5);
+	// it changes only the wording a backend renders, never the questions or the state.
+	if l.promptProfile != nil {
+		rec.req.PromptProfile = decide.NormalizePromptProfile(l.promptProfile(root, c.SessionID))
+	}
 	// The prediction ask (#2479, UC-040 A45): only with decision.predictions.ask_model
 	// and decision.predictions_enabled on (fire-time flags) and a claude or openai
 	// backend; otherwise the request stays v1.
@@ -961,6 +981,9 @@ func (l *Loop) setDecideAttributes(span trace.Span, rec *decideRecord, c gamecon
 		if rec.blocked {
 			attrs = append(attrs, attribute.String(AttrDecideBlockReason, string(rec.blockReason)))
 		}
+	}
+	if rec.req.PromptProfile != "" {
+		attrs = append(attrs, attribute.String(AttrDecidePromptProfile, rec.req.PromptProfile))
 	}
 	attrs = append(attrs, predictionAttributes(rec)...)
 	attrs = append(attrs, droppedPredictionAttributes(rec)...)

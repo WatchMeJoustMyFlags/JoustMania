@@ -161,7 +161,7 @@ func (b *Backend) Decide(ctx context.Context, req decide.Request) (decide.Respon
 			iv = a
 		}
 	}
-	details := planDetails(req.State, iv, plan.details)
+	details := planDetails(req.State, req.PromptProfile, iv, plan.details)
 	var detailAnswers []decide.Answer
 	if len(details.ask.Questions) > 0 {
 		detailResp, err := b.call(ctx, StageDetails, details.ask, details.intervention)

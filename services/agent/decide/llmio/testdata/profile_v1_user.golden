@@ -1,0 +1,25 @@
+<game_state>
+alive_players: MOCK0001, MOCK0002
+game: id=game_abc kind=real mode=ffa elapsed=42.0s
+players:
+  MOCK0001 alive
+  MOCK0002 alive
+  MOCK0003 eliminated#1
+</game_state>
+
+<questions>
+- id: ffa.intervention
+  kind: choice
+  options: ["noop", "adjust_music_tempo", "grant_shield"]
+  text: Which intervention should the agent apply now? "noop" means do nothing.
+- id: ffa.target
+  kind: choice
+  options: ["none", "MOCK0001", "MOCK0002"]
+  text: Which alive player should the intervention target? "none" for a session-scoped intervention or noop.
+- id: ffa.magnitude
+  kind: score
+  range: [0, 1]
+  text: What value should the chosen intervention use? Answer on a 0..1 scale where 0 = the lowest listed value and 1 = the highest; it maps linearly onto the range below (in the intervention's own units). Ignored for interventions not listed.
+      adjust_music_tempo: lowest 1, highest 1.3 tempo (default 1.15)
+      grant_shield: lowest 3, highest 10 seconds, neutral 0 (default 5)
+</questions>

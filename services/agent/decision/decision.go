@@ -342,6 +342,9 @@ type Loop struct {
 	// the ledger inert.
 	charges          chargeLedger
 	shieldChargeMode ShieldChargeMode
+	// promptProfile is the decision.prompt_profile source of remote decide requests
+	// (#2467 PR 5, UC-040 BR-036); nil leaves Request.PromptProfile empty (v1).
+	promptProfile PromptProfileSource
 	// shieldSeconds is the grant_shield length source (UC-040 BR-029, #2395): the
 	// interventions/shield_seconds "default" variant, read per grant. nil (the golden
 	// harness, every older test) leaves the decision's value empty, so the writer and

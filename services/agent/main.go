@@ -793,6 +793,9 @@ func (c *components) newDecisionLoop(gameID string) *decision.Loop {
 	// UC-040 A31 step 1 (#1837): the per-loop shield-charge ledger reads the game's
 	// shield.activation / shield.charge_expiry_seconds from the read-only game domain.
 	loop.SetShieldChargeMode(c.agentFlags.ShieldCharge)
+	// UC-040 BR-036 (#2467 PR 5): remote decide requests carry the game's
+	// decision.prompt_profile (v1 on any read error).
+	loop.SetPromptProfileSource(c.agentFlags.PromptProfile)
 	// UC-040 BR-029 (#2395): a grant_shield without a value gets the
 	// interventions/shield_seconds "default" variant, read at use time through the
 	// flag service (fail closed: 5 s).
