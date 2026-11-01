@@ -198,6 +198,69 @@ func TestStackOverlay_SubstitutesDefaultVariant(t *testing.T) {
 			t.Fatalf("variant %q, want the declared aggressive (= 4)", res.Variant)
 		}
 	})
+	// #2518: the operator-only higher budgets for a cheap backend are within the
+	// bounds (declared variants / int 1 to 100), so the stage Pi sets them through
+	// the flag service, by variant name or by value.
+	t.Run("UC-053/A1 operator budget variants interactive and lively (#2518)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.put(WriteRequest{Set: "agent", Flag: "llm.max_requests_per_minute", Variant: "interactive", Writer: "operator"})
+		if v, val := f.resolve("llm.max_requests_per_minute", nil); v != "interactive" || val != float64(120) {
+			t.Fatalf("llm.max_requests_per_minute resolved %s=%v, want interactive=120", v, val)
+		}
+		f.put(WriteRequest{Set: "agent", Flag: "policy.max_interventions_per_minute", Variant: "lively", Writer: "operator"})
+		if v, val := f.resolve("policy.max_interventions_per_minute", nil); v != "lively" || val != float64(8) {
+			t.Fatalf("policy.max_interventions_per_minute resolved %s=%v, want lively=8", v, val)
+		}
+		if res := f.put(WriteRequest{Set: "agent", Flag: "llm.max_requests_per_minute", Value: raw("120")}); res.Variant != "interactive" {
+			t.Fatalf("value 120 selected %q, want the declared interactive", res.Variant)
+		}
+		if res := f.put(WriteRequest{Set: "agent", Flag: "policy.max_interventions_per_minute", Value: raw("8")}); res.Variant != "lively" {
+			t.Fatalf("value 8 selected %q, want the declared lively", res.Variant)
+		}
+		// The top tier for really aggressive play, and the backstop's generous
+		// variant (120, above the 1 to 100 range) for several frenzy games.
+		for flag, want := range map[string]struct {
+			variant string
+			value   float64
+		}{
+			"llm.max_requests_per_minute":            {"frenzy", 600},
+			"policy.max_interventions_per_minute":    {"frenzy", 20},
+			"policy.coordinator_backstop_per_minute": {"generous", 120},
+			// The next cadence knob on a fast backend: no gap after an answer.
+			"decision.min_gap_after_answer_ms": {"off", 0},
+		} {
+			f.put(WriteRequest{Set: "agent", Flag: flag, Variant: want.variant, Writer: "operator"})
+			if v, val := f.resolve(flag, nil); v != want.variant || val != want.value {
+				t.Fatalf("%s resolved %s=%v, want %s=%v", flag, v, val, want.variant, want.value)
+			}
+		}
+	})
+	// #2518: in the ci baseline both frenzy and the service-test journey variant
+	// are 600; frenzy is declared first, so a value write of 600 selects it.
+	t.Run("UC-053/A1 value 600 selects frenzy before journey (#2518)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		if res := f.put(WriteRequest{Set: "agent", Flag: "llm.max_requests_per_minute", Value: raw("600")}); res.Variant != "frenzy" {
+			t.Fatalf("value 600 selected %q, want frenzy (declared before journey)", res.Variant)
+		}
+	})
+	// #2518: R4's danger-shield tuning is an operator overlay within its declared
+	// variants (it was read-only, 422 flag_read_only, before).
+	t.Run("UC-053/A1 shield danger ratio and samples are operator overlays (#2518)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		f.put(WriteRequest{Set: "agent", Flag: "policy.shield_danger_ratio", Variant: "early", Writer: "stage"})
+		if v, val := f.resolve("policy.shield_danger_ratio", nil); v != "early" || val != 0.75 {
+			t.Fatalf("policy.shield_danger_ratio resolved %s=%v, want early=0.75", v, val)
+		}
+		f.put(WriteRequest{Set: "agent", Flag: "policy.shield_danger_samples", Variant: "quick", Writer: "stage"})
+		if v, val := f.resolve("policy.shield_danger_samples", nil); v != "quick" || val != float64(2) {
+			t.Fatalf("policy.shield_danger_samples resolved %s=%v, want quick=2", v, val)
+		}
+		for flag, value := range map[string]string{"policy.shield_danger_ratio": "0.5", "policy.shield_danger_samples": "1"} {
+			if _, err := f.state.Put(WriteRequest{Set: "agent", Flag: flag, Value: raw(value)}); err == nil {
+				t.Fatalf("%s accepted %s, outside its declared variants", flag, value)
+			}
+		}
+	})
 }
 
 // UC: UC-053 A5 BR-001 BR-002

@@ -73,6 +73,9 @@ drift interventions_allowed none
 drift enabled off
 drift decision.backend claude
 drift decision.jev.base_url blackhole
+drift policy.shield_danger_ratio early
+drift policy.shield_danger_samples quick
+drift decision.min_gap_after_answer_ms off
 out="$("${HELPER}" reset)"
 expect "reset: interventions_allowed back to standard" interventions_allowed standard
 expect "reset: kill switch back on" enabled on
@@ -80,6 +83,10 @@ expect "reset: interventions_enabled on" interventions_enabled on
 expect "reset: backend back to rules" decision.backend rules
 expect "reset: blackhole undone" decision.jev.base_url default
 expect "reset: budget stage" llm.max_requests_per_minute stage
+# UC: UC-070 A8 (#2518: operator knobs outside the checked baseline)
+expect "reset: danger ratio default" policy.shield_danger_ratio default
+expect "reset: danger samples default" policy.shield_danger_samples default
+expect "reset: gap after answer default" decision.min_gap_after_answer_ms default
 [[ "${out}" == *"reset  interventions_allowed: none -> standard"* ]] && ok "reset reports what it changed" || not_ok "reset reports what it changed: ${out}"
 [[ "${out}" == *"interventions: 0 game-scoped value(s) in 0 live game(s)"* ]] && ok "reset reports interventions as per game" || not_ok "reset reports interventions as per game: ${out}"
 if grep -q '^DELETE /agent?writer=stage' "${FAKE_FLAG_LOG}"; then ok "reset clears the stage overlays first"; else not_ok "reset clears the stage overlays first"; fi

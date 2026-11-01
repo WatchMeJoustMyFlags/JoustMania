@@ -143,9 +143,12 @@ flags = {
     "experiment.mock_archetypes": f({"all": "calm_long,slow_cascade,quick_cascade", "quick_cascade": "quick_cascade"}, "all"),
     "decision.openai.model": f({"unset": "", "vendor": "m"}, "unset"),
     "decision.openai.base_url": f({"default": "https://api.openai.com/v1"}, "default"),
-    "llm.max_requests_per_minute": f({"default": 6, "stage": 30}, "stage"),
+    "llm.max_requests_per_minute": f({"default": 6, "stage": 30, "interactive": 120}, "stage"),
     "inference.backend": f({"stub": "stub", "claude": "claude"}, "claude"),
-    "policy.max_interventions_per_minute": f({"conservative": 1, "default": 2, "aggressive": 4}, "aggressive"),
+    "policy.max_interventions_per_minute": f({"conservative": 1, "default": 2, "aggressive": 4, "lively": 8, "frenzy": 20, "leftover": 50}, "aggressive"),
+    "policy.shield_danger_ratio": f({"early": 0.75, "default": 0.85, "late": 0.95}, "default"),
+    "policy.shield_danger_samples": f({"quick": 2, "default": 3, "patient": 5}, "default"),
+    "decision.min_gap_after_answer_ms": f({"off": 0, "default": 1000, "slow": 3000}, "default"),
 }
 for key, variant in overrides.items():
     flags[key]["defaultVariant"] = variant
@@ -219,6 +222,33 @@ check "jev threshold inherit fails" "FAIL  decision.jev.act_confidence_threshold
 check "shipped intervention budget fails (#1326)" "FAIL  policy.max_interventions_per_minute = default (2), stage baseline is aggressive"
 check "unset env falls back to the stage flag" "PASS  LLM budget: llm.max_requests_per_minute = stage (30/min"
 if grep -qE '^(PUT|POST|DELETE) ' "${FAKE_FLAG_LOG}"; then not_ok "the pre-flight writes nothing"; else ok "the pre-flight writes nothing"; fi
+
+# --- operator-only higher budgets for a cheap backend (#2518, UC-070 BR-003) ---
+# UC: UC-070 BR-003
+fixture policy.max_interventions_per_minute=lively llm.max_requests_per_minute=interactive
+run_preflight
+check "higher intervention budget passes (#2518)" "PASS  policy.max_interventions_per_minute = lively (8), at or above the stage baseline aggressive"
+check "interactive budget without env ceiling passes (#2518)" "PASS  LLM budget: llm.max_requests_per_minute = interactive (120/min; no env ceiling)"
+if has "FAIL  policy.max_interventions_per_minute"; then not_ok "lively is not drift"; else ok "lively is not drift"; fi
+STUB_BUDGET=30 run_preflight
+check "env ceiling caps interactive and says so (#2518)" "PASS  LLM budget: llm.max_requests_per_minute = interactive (120/min) capped to 30/min by AGENT_LLM_MAX_REQUESTS_PER_MINUTE=30"
+if has "WARN  policy.shield_danger"; then not_ok "knobs at default do not warn"; else ok "knobs at default do not warn"; fi
+fixture policy.max_interventions_per_minute=conservative
+run_preflight
+check "lower intervention budget still fails" "FAIL  policy.max_interventions_per_minute = conservative (1), stage baseline is aggressive"
+fixture policy.max_interventions_per_minute=frenzy
+run_preflight
+check "frenzy passes (#2518)" "PASS  policy.max_interventions_per_minute = frenzy (20), at or above the stage baseline aggressive"
+if has "is above frenzy"; then not_ok "frenzy itself does not warn"; else ok "frenzy itself does not warn"; fi
+fixture policy.max_interventions_per_minute=leftover
+run_preflight
+check "budget above frenzy warns (#2518)" "WARN  policy.max_interventions_per_minute = leftover (50) is above frenzy (20): a leftover test value?"
+# Operator knobs outside the checked baseline WARN while off default (#2518).
+fixture policy.shield_danger_ratio=early policy.shield_danger_samples=quick decision.min_gap_after_answer_ms=off
+run_preflight
+check "danger ratio off default warns" "WARN  policy.shield_danger_ratio = early (0.75), not default"
+check "danger samples off default warns" "WARN  policy.shield_danger_samples = quick (2), not default"
+check "gap after answer off default warns" "WARN  decision.min_gap_after_answer_ms = off (0), not default"
 
 # --- budget, timeout, keys and summary backend ----------------------------
 fixture llm.max_requests_per_minute=default decision.claude.timeout_ms=default decision.jev.base_url=blackhole
