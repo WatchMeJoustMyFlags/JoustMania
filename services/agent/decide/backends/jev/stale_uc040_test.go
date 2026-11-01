@@ -44,8 +44,8 @@ func TestPlanDetails_ReadingsStale(t *testing.T) {
 		}
 	})
 	t.Run("UC-040/BR-039 another player lever still offers it", func(t *testing.T) {
-		if got, want := targetOptions(req, decide.IntvEliminatePlayer), []string{"MOCK0002", "MOCK0003", "MOCK0004"}; !reflect.DeepEqual(got, want) {
-			t.Errorf("eliminate_player target options = %v, want %v", got, want)
+		if got, want := targetOptions(req, decide.IntvSetPlayerHandicap), []string{"MOCK0002", "MOCK0003", "MOCK0004"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("set_player_handicap target options = %v, want %v", got, want)
 		}
 	})
 	t.Run("UC-040/A50 the stale player is described as stale", func(t *testing.T) {
@@ -88,7 +88,7 @@ func TestSplitStages_NoFreshPlayer(t *testing.T) {
 				t.Errorf("stage 1 offers %s with no fresh player: %v", iv, got)
 			}
 		}
-		if !contains(got, decide.IntvEliminatePlayer) || !contains(got, decide.IntvAdjustMusicTempo) {
+		if !contains(got, decide.IntvRevivePlayer) || !contains(got, decide.IntvAdjustMusicTempo) {
 			t.Errorf("stage 1 lost a lever that needs no fresh readings: %v", got)
 		}
 	})
