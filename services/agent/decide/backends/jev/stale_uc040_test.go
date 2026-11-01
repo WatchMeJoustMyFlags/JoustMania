@@ -98,6 +98,13 @@ func TestSplitStages_NoFreshPlayer(t *testing.T) {
 			t.Errorf("gated question = %+v, want the caller's options %v", g, req.Questions[0].Options)
 		}
 	})
+	t.Run("UC-040/BR-039 a fresh-readings lever that is the only one left is still offered", func(t *testing.T) {
+		req := allStale()
+		req.Questions = decide.FFAQuestions(req.State, []string{decide.IntvGrantShield})
+		if got := stage1Options(t, req); !reflect.DeepEqual(got, []string{decide.IntvGrantShield}) {
+			t.Errorf("stage 1 options = %v, want [grant_shield] (nothing but noop would be left)", got)
+		}
+	})
 	t.Run("UC-040/BR-039 one fresh alive player keeps the levers", func(t *testing.T) {
 		got := stage1Options(t, staleRequest())
 		for _, iv := range decide.FreshReadingsLevers() {
