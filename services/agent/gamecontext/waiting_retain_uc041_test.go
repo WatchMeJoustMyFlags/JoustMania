@@ -130,6 +130,27 @@ func TestWaitingRetain_FightClub(t *testing.T) {
 		}
 	})
 
+	t.Run("UC-041/BR-007 an alive 0 for a never-seen serial creates no player", func(t *testing.T) {
+		s, _, _ := fightClubStore(t)
+		s.SetPlayerAlive("Z", false)
+		snap := s.Snapshot()
+		if snap.Players["Z"] != nil {
+			t.Fatalf("Z = %+v, want no player for an unknown serial's alive 0", snap.Players["Z"])
+		}
+		if !reflect.DeepEqual(snap.Waiting, []string{"C", "D"}) {
+			t.Fatalf("Waiting = %v, want [C D] unchanged", snap.Waiting)
+		}
+	})
+
+	t.Run("UC-041/BR-007 an alive 0 during the grace window does not recreate a waiting player", func(t *testing.T) {
+		s, _, _ := fightClubStore(t)
+		s.SetGameActive(false) // inside the 15 s grace: retained still holds C and D
+		s.SetPlayerAlive("C", false)
+		if c := s.Snapshot().Players["C"]; c != nil {
+			t.Fatalf("C = %+v, want no player recreated after the game ended", c)
+		}
+	})
+
 	t.Run("UC-041/BR-007 a live snapshot after the game ended lists no waiting players", func(t *testing.T) {
 		s, _, _ := fightClubStore(t)
 		s.SetGameActive(false) // inside the 15 s grace: retained is not reset yet
