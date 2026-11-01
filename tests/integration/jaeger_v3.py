@@ -18,6 +18,7 @@ Stdlib only: ``tests/contract/test_jaeger_v3_reader.py`` loads it by path.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,18 +29,32 @@ COLD_START_TIME_MIN = "1970-01-01T00:00:00Z"
 SEARCH_TIME_MAX = "2100-01-01T00:00:00Z"
 
 
+def _rfc3339(epoch_s: float) -> str:
+    """UTC RFC 3339 for an epoch-seconds value, rounded down to the second."""
+    return datetime.fromtimestamp(int(epoch_s), tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
 def search_url(
     api_base: str,
     service: str,
     operation: str | None = None,
     attributes: dict[str, str] | None = None,
     limit: int = 20,
+    start_time_s: float | None = None,
 ) -> str:
-    """The v3 search URL under ``api_base`` (``.../jaeger/api``)."""
+    """The v3 search URL under ``api_base`` (``.../jaeger/api``).
+
+    ``start_time_s`` (epoch seconds) narrows ``query.startTimeMin`` so older traces
+    cannot fill the ``searchDepth`` window; ``None`` searches the whole store.
+    """
     params = {
         "query.serviceName": service,
         "query.searchDepth": str(limit),
-        "query.startTimeMin": COLD_START_TIME_MIN,
+        "query.startTimeMin": COLD_START_TIME_MIN
+        if start_time_s is None
+        else _rfc3339(start_time_s),
         "query.startTimeMax": SEARCH_TIME_MAX,
     }
     if operation:
@@ -179,11 +194,11 @@ def find_traces(
     attributes: dict[str, str] | None = None,
     limit: int = 20,
     timeout: float = 10,
+    start_time_s: float | None = None,
 ) -> list[dict]:
     """Search Jaeger (v3); legacy-shaped traces, ``[]`` when nothing matched."""
-    return legacy_traces(
-        get_json(search_url(api_base, service, operation, attributes, limit), timeout)
-    )
+    url = search_url(api_base, service, operation, attributes, limit, start_time_s)
+    return legacy_traces(get_json(url, timeout))
 
 
 def get_trace(api_base: str, trace_id: str, timeout: float = 10) -> dict:
