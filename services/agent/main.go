@@ -928,7 +928,7 @@ func (c *components) buildGameEnd() {
 	c.summaries.SetObserver(c.window)
 	// Calibration journal (UC-047 step 1, BR-009, #1055): one record per real game
 	// end on the agent-experiments volume, written off the ingest path.
-	c.gameJournal = newGameJournal(c.ctx, journal.DirFromEnv(), c.agentFlags, globalMeterProvider(), c.logger)
+	c.gameJournal = newGameJournal(journal.DirFromEnv(), c.agentFlags, globalMeterProvider(), c.logger)
 	slog.Info("Game narrative builder enabled (#928, M7-1)")
 	slog.Info("Rolling game context window enabled (#929, M7-2)", "retention_cap", gamewindow.RetentionCap)
 
@@ -1173,6 +1173,7 @@ func (c *components) buildPipeline(listenAddr, healthAddr string) *serverCompone
 		loops:            c.loops,
 		retro:            c.retro,
 		predictions:      c.predictions,
+		gameJournal:      c.gameJournal,
 		evictInterval:    c.lifecycleHolder.EvictInterval(),
 		evictIntervalSrc: c.lifecycleHolder.EvictInterval,
 		shadow:           shadow,

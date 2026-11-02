@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,9 +16,8 @@ import (
 // UC: UC-047 main step 1 BR-009
 func TestGameJournalWiring_RealGameEndReachesDisk(t *testing.T) {
 	root := t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	rec := newGameJournal(ctx, root, nil, metricnoopProvider(), slog.Default())
+	rec := newGameJournal(root, nil, metricnoopProvider(), slog.Default())
+	defer rec.Close(time.Second)
 	chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), nil, nil, nil, nil, nil, rec.OnGameEnd)
 
 	active := false

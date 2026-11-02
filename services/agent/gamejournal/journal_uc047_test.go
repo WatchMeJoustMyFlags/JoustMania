@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -65,16 +66,11 @@ func endedGame(id, kind string) gamecontext.GameContext {
 // runRecorder feeds games to a recorder over j and waits for its writer to drain.
 func runRecorder(t *testing.T, r *Recorder, games ...gamecontext.GameContext) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { r.Run(ctx); close(done) }()
+	go r.Run()
 	for _, g := range games {
 		r.OnGameEnd(g)
 	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
+	if !r.Close(5 * time.Second) {
 		t.Fatal("recorder did not drain")
 	}
 }
@@ -297,19 +293,43 @@ func TestRecorder_WriteErrorIsFailSoft(t *testing.T) {
 	})
 	t.Run("UC-047/BR-009 an unreadable file is never replaced", func(t *testing.T) {
 		root := t.TempDir()
-		path := filepath.Join(root, Dir, File)
-		if err := os.MkdirAll(path, 0o755); err != nil { // a directory where the file should be: unreadable as a file
+		j0, _, _ := Open(root, 0)
+		if err := j0.Append(BuildRecord(endedGame("game_old", gamecontext.GameKindReal), nil, gameEnd)); err != nil {
 			t.Fatal(err)
 		}
+		before, _ := os.ReadFile(j0.Path())
+		for _, readErr := range []error{os.ErrPermission, syscall.EIO} {
+			readFile = func(string) ([]byte, error) { return nil, readErr }
+			j, _, err := Open(root, 0)
+			readFile = os.ReadFile
+			if err == nil {
+				t.Fatalf("Open with a read error %v must report it", readErr)
+			}
+			if err := j.Append(BuildRecord(endedGame("game_new", gamecontext.GameKindReal), nil, gameEnd)); err == nil {
+				t.Fatalf("Append after a read error %v must refuse", readErr)
+			}
+			if after, _ := os.ReadFile(j0.Path()); string(after) != string(before) {
+				t.Fatalf("read error %v: the journal file was replaced", readErr)
+			}
+		}
+	})
+	t.Run("UC-047/BR-009 a newer schema_version is never dropped", func(t *testing.T) {
+		root := t.TempDir()
+		j0, _, _ := Open(root, 0)
+		_ = j0.Append(BuildRecord(endedGame("game_v1", gamecontext.GameKindReal), nil, gameEnd))
+		f, _ := os.OpenFile(j0.Path(), os.O_APPEND|os.O_WRONLY, 0o644)
+		_, _ = f.WriteString("{\"schema_version\":2,\"game_id\":\"game_v2\"}\n")
+		_ = f.Close()
+		before, _ := os.ReadFile(j0.Path())
 		j, _, err := Open(root, 0)
 		if err == nil {
-			t.Fatal("Open of an unreadable journal must report an error")
+			t.Fatal("Open of a newer schema must report it")
 		}
-		if err := j.Append(BuildRecord(endedGame("game_1", gamecontext.GameKindReal), nil, gameEnd)); err == nil {
-			t.Fatal("Append after an unreadable load must refuse, not replace the file")
+		if err := j.Append(BuildRecord(endedGame("game_new", gamecontext.GameKindReal), nil, gameEnd)); err == nil {
+			t.Fatal("Append over a newer schema must refuse")
 		}
-		if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
-			t.Fatalf("journal path was replaced: %v", err)
+		if after, _ := os.ReadFile(j0.Path()); string(after) != string(before) {
+			t.Fatal("the newer record was rewritten")
 		}
 	})
 	t.Run("UC-047/BR-009 invalid lines are skipped on load", func(t *testing.T) {
@@ -317,7 +337,7 @@ func TestRecorder_WriteErrorIsFailSoft(t *testing.T) {
 		j, _, _ := Open(root, 0)
 		_ = j.Append(BuildRecord(endedGame("game_ok", gamecontext.GameKindReal), nil, gameEnd))
 		f, _ := os.OpenFile(j.Path(), os.O_APPEND|os.O_WRONLY, 0o644)
-		_, _ = f.WriteString("{torn\n{\"schema_version\":99,\"game_id\":\"x\"}\n")
+		_, _ = f.WriteString("{torn\n{\"schema_version\":0,\"game_id\":\"x\"}\n")
 		_ = f.Close()
 		j2, rep, err := Open(root, 0)
 		if err != nil || rep.Records != 1 || rep.Skipped != 2 || len(j2.Records()) != 1 {
@@ -389,5 +409,50 @@ func TestBuildRecord_HistoryTruncatedAndMissingThreshold(t *testing.T) {
 	g.Session.DeathThreshold = nil
 	if rec := BuildRecord(g, nil, gameEnd); rec.Metrics.Activity != nil || rec.Metrics.Change != nil {
 		t.Errorf("activity/change without a threshold = %v/%v, want null", rec.Metrics.Activity, rec.Metrics.Change)
+	}
+}
+
+// UC: UC-047 BR-009
+func TestRecorder_CloseDrainsAndCountsLateGames(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	j, _, _ := Open(t.TempDir(), 0)
+	r := NewRecorder(j, nil, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)), nil)
+	// Queue before the writer starts: Close must still write them.
+	for i := 0; i < 3; i++ {
+		r.OnGameEnd(endedGame(fmt.Sprintf("game_%d", i), gamecontext.GameKindReal))
+	}
+	go r.Run()
+	if !r.Close(5 * time.Second) {
+		t.Fatal("Close did not drain")
+	}
+	if n := len(fileLines(t, j.Path())); n != 3 {
+		t.Fatalf("file has %d lines after Close, want 3", n)
+	}
+	r.OnGameEnd(endedGame("game_late", gamecontext.GameKindReal))
+	if got := failureCount(t, reader, ReasonShutdown); got != 1 {
+		t.Fatalf("%s{reason=shutdown} = %d, want 1", MetricWriteFailures, got)
+	}
+	if !r.Close(time.Second) {
+		t.Error("a second Close must return at once")
+	}
+	var nilRec *Recorder
+	if !nilRec.Close(time.Second) {
+		t.Error("Close on a nil recorder must be a no-op")
+	}
+}
+
+// UC: UC-047 BR-009
+func TestRecorder_CloseTimeoutCountsQueued(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	j, _, _ := Open(t.TempDir(), 0)
+	r := NewRecorder(j, nil, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)), nil)
+	r.OnGameEnd(endedGame("game_1", gamecontext.GameKindReal))
+	r.OnGameEnd(endedGame("game_2", gamecontext.GameKindReal))
+	// No writer runs: the wait gives up and the queued records count shutdown.
+	if r.Close(50 * time.Millisecond) {
+		t.Fatal("Close reported a drain without a writer")
+	}
+	if got := failureCount(t, reader, ReasonShutdown); got != 2 {
+		t.Fatalf("%s{reason=shutdown} = %d, want 2", MetricWriteFailures, got)
 	}
 }

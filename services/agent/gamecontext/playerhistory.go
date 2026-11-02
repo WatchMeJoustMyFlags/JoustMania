@@ -83,6 +83,12 @@ type playerHistory struct {
 	// than playerHistoryCap seconds still has its whole-game mean. A bucket is
 	// folded in when the next bucket opens; the open tail is added in stats().
 	closed GameMeans
+	// frozen is set at the player's elimination: frozenStats are the sums up to
+	// then, so seconds after the elimination (a coordinator that keeps exporting a
+	// dead player's gauges) never enter the whole-game means, as fieldMeasures
+	// leaves them out (UC-047 BR-009). The ring itself keeps recording.
+	frozen      bool
+	frozenStats GameMeans
 }
 
 // record appends or coalesces a sample. Within the same bucket-second it
@@ -149,8 +155,22 @@ func (m GameMeans) MeanVariance() (float64, bool) {
 	return m.VarianceSum / float64(m.VarianceSamples), true
 }
 
-// stats returns the whole-game sums: the closed buckets plus the open tail.
+// freeze stops the whole-game sums at their current value (the elimination).
+// Idempotent: a second call keeps the first value.
+func (h *playerHistory) freeze() {
+	if h.frozen {
+		return
+	}
+	h.frozenStats = h.stats()
+	h.frozen = true
+}
+
+// stats returns the whole-game sums: the closed buckets plus the open tail, or
+// the sums at the elimination once frozen.
 func (h *playerHistory) stats() GameMeans {
+	if h.frozen {
+		return h.frozenStats
+	}
 	out := h.closed
 	if h.size > 0 {
 		out.add(h.buf[(h.start+h.size-1)%playerHistoryCap])

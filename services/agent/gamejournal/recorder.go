@@ -3,6 +3,7 @@ package gamejournal
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -16,15 +17,17 @@ const meterName = "github.com/joustmania/agent/gamejournal"
 
 // MetricWriteFailures counts journal records that did not reach the disk, by
 // reason (telemetry.md §6): write (the durable write failed, or the journal
-// refuses writes after an unreadable file), queue_full (the writer was behind and
-// the record was dropped), load (an existing file was unreadable or had invalid
-// lines at startup).
+// refuses writes after an unreadable file or one with a newer schema),
+// queue_full (the writer was behind and the record was dropped), shutdown (a
+// game ended after Close, or a record was still queued when Close gave up),
+// load (an existing file was unreadable, newer, or had invalid lines at startup).
 const MetricWriteFailures = "agent_calibration_journal_write_failures_total"
 
 // Failure reasons of MetricWriteFailures.
 const (
 	ReasonWrite     = "write"
 	ReasonQueueFull = "queue_full"
+	ReasonShutdown  = "shutdown"
 	ReasonLoad      = "load"
 )
 
@@ -45,6 +48,12 @@ type Recorder struct {
 	log         *slog.Logger
 	now         func() time.Time
 	queue       chan Record
+
+	// mu guards closed and every send on queue, so no send races Close's close.
+	mu     sync.Mutex
+	closed bool
+	// done is closed when Run has written the last queued record.
+	done chan struct{}
 }
 
 // NewRecorder builds a recorder over j. testSession reads calibration.test_session
@@ -60,6 +69,7 @@ func NewRecorder(j *Journal, testSession func(context.Context) (bool, bool), mp 
 		log:         log,
 		now:         time.Now,
 		queue:       make(chan Record, queueSize),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -98,31 +108,55 @@ func (r *Recorder) OnGameEnd(gc gamecontext.GameContext) {
 		}
 	}
 	rec := BuildRecord(gc, mark, r.now())
-	select {
-	case r.queue <- rec:
-	default:
-		r.CountFailure(ReasonQueueFull)
-		r.log.Warn("agent.calibration.journal_write_failed", "game_id", rec.GameID, "reason", ReasonQueueFull)
+	reason := ""
+	r.mu.Lock()
+	if r.closed {
+		reason = ReasonShutdown
+	} else {
+		select {
+		case r.queue <- rec:
+		default:
+			reason = ReasonQueueFull
+		}
+	}
+	r.mu.Unlock()
+	if reason != "" {
+		r.CountFailure(reason)
+		r.log.Warn("agent.calibration.journal_write_failed", "game_id", rec.GameID, "reason", reason)
 	}
 }
 
-// Run writes queued records until ctx is done, then writes what is still queued
-// and returns.
-func (r *Recorder) Run(ctx context.Context) {
-	for {
-		select {
-		case rec := <-r.queue:
-			r.write(rec)
-		case <-ctx.Done():
-			for {
-				select {
-				case rec := <-r.queue:
-					r.write(rec)
-				default:
-					return
-				}
-			}
+// Run writes queued records until Close, then returns. Run it once.
+func (r *Recorder) Run() {
+	defer close(r.done)
+	for rec := range r.queue {
+		r.write(rec)
+	}
+}
+
+// Close stops the intake (a later game end counts shutdown) and waits up to
+// timeout for Run to write what is queued. It reports whether Run drained; when
+// it did not, the records still queued count shutdown. Call it once, after the
+// telemetry intake has stopped (server.go shutdown path).
+func (r *Recorder) Close(timeout time.Duration) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.Lock()
+	if !r.closed {
+		r.closed = true
+		close(r.queue)
+	}
+	r.mu.Unlock()
+	select {
+	case <-r.done:
+		return true
+	case <-time.After(timeout):
+		if n := len(r.queue); n > 0 {
+			r.failures.Add(context.Background(), int64(n), otelmetric.WithAttributes(attribute.String("reason", ReasonShutdown)))
 		}
+		r.log.Warn("agent.calibration.journal_write_failed", "reason", ReasonShutdown, "queued", len(r.queue))
+		return false
 	}
 }
 

@@ -43,6 +43,9 @@ type Journal struct {
 	rename func(oldpath, newpath string) error
 }
 
+// readFile is os.ReadFile; a test seam for an unreadable journal (EACCES, EIO).
+var readFile = os.ReadFile
+
 // LoadReport says what Open found in an existing file.
 type LoadReport struct {
 	Records int
@@ -52,9 +55,11 @@ type LoadReport struct {
 }
 
 // Open loads the journal at <root>/calibration/real_games.jsonl. A missing file
-// is an empty journal. An unreadable file returns an error and a journal that
-// refuses every write (so the file is never replaced by an empty one); invalid
-// lines are skipped and reported. max <= 0 uses DefaultMaxGames.
+// is an empty journal. An unreadable file, or one holding a record with a newer
+// schema_version than this binary knows (a downgrade), returns an error and a
+// journal that refuses every write, so the file is never replaced and no newer
+// record is dropped. Other invalid lines are skipped, reported, and dropped on
+// the next write. max <= 0 uses DefaultMaxGames.
 func Open(root string, max int) (*Journal, LoadReport, error) {
 	if max <= 0 {
 		max = DefaultMaxGames
@@ -66,7 +71,7 @@ func Open(root string, max int) (*Journal, LoadReport, error) {
 		rename: os.Rename,
 	}
 	var rep LoadReport
-	data, err := os.ReadFile(j.path)
+	data, err := readFile(j.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return j, rep, nil
@@ -80,6 +85,13 @@ func Open(root string, max int) (*Journal, LoadReport, error) {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
 			continue
+		}
+		var probe struct {
+			SchemaVersion int `json:"schema_version"`
+		}
+		if json.Unmarshal(line, &probe) == nil && probe.SchemaVersion > SchemaVersion {
+			j.broken = fmt.Errorf("calibration journal %q holds schema_version %d, newer than %d: refusing to rewrite it", j.path, probe.SchemaVersion, SchemaVersion)
+			return j, rep, j.broken
 		}
 		var r Record
 		if err := json.Unmarshal(line, &r); err != nil || r.SchemaVersion != SchemaVersion || r.GameID == "" || j.ids[r.GameID] {
