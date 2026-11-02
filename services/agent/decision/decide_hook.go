@@ -515,7 +515,9 @@ func (l *Loop) noteNoInterventions(c gamecontext.GameContext, skipping, experime
 // (decision.min_interval_ms from the previous admission and, #2123,
 // decision.min_gap_after_answer_ms from the previous call's end), and the GLOBAL
 // per-minute budget
-// llm.max_requests_per_minute shared with the post-game retro (the spend bound).
+// llm.max_requests_per_minute shared with the post-game retro (the spend bound),
+// tightened for claude and openai by their own decision.<backend>.
+// max_requests_per_minute cap (#2519).
 // Cadence and budget are charged only on admission, and only after the caller
 // won the inflight claim. It returns "" when admitted.
 func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c gamecontext.GameContext) string {
@@ -548,7 +550,16 @@ func (l *Loop) gateRemoteDecide(ctx context.Context, snapshot flags.Snapshot, c 
 		l.recordGated(ctx, DecideGateInterval)
 		return DecideGateInterval
 	}
-	if l.budget == nil || !l.budget.allow(t, l.budgetCap(snapshot.LLMGate.MaxRequestsPerMinute)) {
+	// #2519 FR-152 (c): a paid backend's own cap (decision.<backend>.
+	// max_requests_per_minute) tightens the global budget for its decide calls.
+	// One window, one critical section: the global total and the backend's
+	// count are checked and charged atomically.
+	requested := requestedBackend(snapshot)
+	backendCap := -1
+	if cfg, ok := snapshot.Decision.Remote(requested); ok && cfg.HasMaxRequestsPerMinute {
+		backendCap = max(cfg.MaxRequestsPerMinute, 0)
+	}
+	if l.budget == nil || !l.budget.allowBackend(t, l.budgetCap(snapshot.LLMGate.MaxRequestsPerMinute), requested, backendCap) {
 		l.recordGated(ctx, FallbackBudgetExhausted)
 		return FallbackBudgetExhausted
 	}

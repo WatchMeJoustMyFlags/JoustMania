@@ -261,6 +261,26 @@ func TestStackOverlay_SubstitutesDefaultVariant(t *testing.T) {
 			}
 		}
 	})
+	// #2519: the paid backends' own decide caps are operator overlays within their
+	// declared variants (without the registry row a write is 422 flag_read_only).
+	t.Run("UC-053/A1 per-backend decide caps are operator overlays (#2519)", func(t *testing.T) {
+		f := newFixture(t, fixtureOpts{})
+		for _, flag := range []string{"decision.claude.max_requests_per_minute", "decision.openai.max_requests_per_minute"} {
+			f.put(WriteRequest{Set: "agent", Flag: flag, Variant: "stage", Writer: "operator"})
+			if v, val := f.resolve(flag, nil); v != "stage" || val != float64(30) {
+				t.Fatalf("%s resolved %s=%v, want stage=30", flag, v, val)
+			}
+			f.put(WriteRequest{Set: "agent", Flag: flag, Variant: "inherit", Writer: "operator"})
+			if v, val := f.resolve(flag, nil); v != "inherit" || val != float64(-1) {
+				t.Fatalf("%s resolved %s=%v, want inherit=-1", flag, v, val)
+			}
+			if res := f.put(WriteRequest{Set: "agent", Flag: flag, Value: raw("-1")}); res.Variant != "inherit" {
+				t.Fatalf("%s value -1 selected %q, want the declared inherit", flag, res.Variant)
+			}
+			_, err := f.state.Put(WriteRequest{Set: "agent", Flag: flag, Value: raw("999")})
+			wantReason(t, err, http.StatusUnprocessableEntity, fserr.OutOfBounds)
+		}
+	})
 }
 
 // UC: UC-053 A5 BR-001 BR-002

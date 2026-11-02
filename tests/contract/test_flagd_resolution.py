@@ -1503,6 +1503,72 @@ def test_budget_variants_2518_resolve_as_overlay(flagd, resolver, tier):
 
 
 # --------------------------------------------------------------------------- #
+# 2d. Per-backend decide caps for the paid backends (#2519, flags.md §3)
+# --------------------------------------------------------------------------- #
+_BACKEND_CAP_KEYS_2519 = (
+    "decision.claude.max_requests_per_minute",
+    "decision.openai.max_requests_per_minute",
+)
+_BACKEND_CAP_VARIANTS_2519 = {
+    "inherit": -1,
+    "conservative": 3,
+    "default": 6,
+    "stage": 30,
+}
+# The base file caps the paid backends at stage; the ci file inherits the global
+# budget so the service-test journeys at `journey` 600 are not capped.
+_BACKEND_CAP_DEFAULT_2519 = {"base": "stage", "ci": "inherit"}
+
+
+@pytest.mark.uc("UC-070", br=["BR-003"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_backend_caps_2519_are_integers_with_the_shipped_default(flag_dir):
+    """Static: both flag files declare the two integer caps with the shipped default."""
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    flags = json.loads((root / "agent.json").read_text())["flags"]
+    for key in _BACKEND_CAP_KEYS_2519:
+        flag = flags[key]
+        assert flag["variants"] == _BACKEND_CAP_VARIANTS_2519, f"{flag_dir}/{key}"
+        assert all(_type_ok("integer", v) for v in flag["variants"].values())
+        assert flag["defaultVariant"] == _BACKEND_CAP_DEFAULT_2519[flag_dir], (
+            f"{flag_dir}/{key} defaultVariant"
+        )
+        assert "targeting" not in flag, (
+            f"{flag_dir}/{key}: an operator ceiling carries no targeting"
+        )
+
+
+@pytest.mark.uc("UC-070", br=["BR-003"])
+@pytest.mark.parametrize("variant", ["inherit", "stage"])
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_backend_caps_2519_resolve_as_overlay(flagd, resolver, variant):
+    """On real flagd: `inherit` (-1) and `stage` (30), selected as a flag-service
+    stack overlay renders it, resolve with the agent's integer getter."""
+    path = flagd.file("agent")
+    original = fh.load(path)
+    doc = json.loads(json.dumps(original))
+    for key in _BACKEND_CAP_KEYS_2519:
+        doc["flags"][key]["defaultVariant"] = variant
+    fh.dump_in_place(path, doc)
+    want = _BACKEND_CAP_VARIANTS_2519[variant]
+    try:
+        with _ready_client(flagd, "agent", resolver) as client:
+
+            def served() -> bool:
+                return all(
+                    client.get_integer_value(key, -99, EvaluationContext()) == want
+                    for key in _BACKEND_CAP_KEYS_2519
+                )
+
+            assert fh.poll_until(served), {
+                key: client.get_integer_details(key, -99, EvaluationContext())
+                for key in _BACKEND_CAP_KEYS_2519
+            }
+    finally:
+        fh.dump_in_place(path, original)
+
+
+# --------------------------------------------------------------------------- #
 # 3. windows preset ladder (from test_f6_flow.py)
 # --------------------------------------------------------------------------- #
 def test_windows_preset_ladder_resolves_against_live_flagd(flagd):

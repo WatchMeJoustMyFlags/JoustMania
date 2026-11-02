@@ -845,6 +845,26 @@
       },
       "defaultVariant": "latest"
     },
+    "decision.claude.max_requests_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "inherit": -1,
+        "conservative": 3,
+        "default": 6,
+        "stage": 30
+      },
+      "defaultVariant": "inherit"
+    },
+    "decision.openai.max_requests_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "inherit": -1,
+        "conservative": 3,
+        "default": 6,
+        "stage": 30
+      },
+      "defaultVariant": "inherit"
+    },
     "decision.jev.act_confidence_threshold": {
       "state": "ENABLED",
       "variants": {
