@@ -30,6 +30,8 @@ services:
     ports: []
   other:
     image: example/other:v1
+  templated:
+    image: example/t:${TAG:-latest}
 YML
 export WORK PATH="${WORK}/bin:${PATH}" PULL_RETRY_SLEEP=0 COMPOSE_FILE="${WORK}/compose.yml"
 
@@ -57,5 +59,11 @@ reset
 if FAIL_PULLS=0 "${PULL}" compose:nope >/dev/null 2>&1; then fail "unknown service should fail"; fi
 if FAIL_PULLS=0 "${PULL}" >/dev/null 2>&1; then fail "no args should fail"; fi
 [[ ! -e "${WORK}/calls" ]] || fail "must not pull on usage error"
+
+# An image with unresolved ${VAR} interpolation is rejected with a clear error, no pull.
+reset
+err="$(FAIL_PULLS=0 "${PULL}" compose:templated 2>&1 >/dev/null)" && fail "interpolated image should fail"
+grep -q 'unresolved interpolation' <<<"${err}" || fail "missing interpolation error"
+[[ ! -e "${WORK}/calls" ]] || fail "must not pull an unresolved image"
 
 echo "OK"

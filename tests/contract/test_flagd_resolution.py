@@ -926,6 +926,24 @@ def test_shield_limit_flags_carry_no_targeting(flag_dir):
     assert not failures, "\n".join(failures)
 
 
+# The calibration test-session mark (#1055, UC-047 BR-003, flags.md §3.3): the agent
+# reads it with an empty context at each real game end; the operator sets it as a stack
+# overlay. Targeting would give a game a mark the operator never set; it defaults off.
+@pytest.mark.uc("UC-047", br=["BR-003", "BR-009"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_calibration_test_session_flag_is_untargeted_bool_default_off(flag_dir):
+    """Static: calibration.test_session exists in agent.json, on/off bool variants, no targeting, default off."""
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    flags = json.loads((root / "agent.json").read_text())["flags"]
+    flag = flags.get("calibration.test_session")
+    assert flag is not None, f"{flag_dir}/agent.json has no calibration.test_session"
+    assert not flag.get("targeting"), (
+        f"{flag_dir}/agent.json calibration.test_session has targeting"
+    )
+    assert flag["variants"] == {"on": True, "off": False}, flag["variants"]
+    assert flag["defaultVariant"] == "off", flag["defaultVariant"]
+
+
 # The group-grant policy flags (#2467, UC-040 BR-033, flags.md §3): the agent reads them
 # with an empty context and the coordinator in the game's, so, like the shield limits,
 # any targeting could give the two sides different values.
@@ -1497,6 +1515,72 @@ def test_budget_variants_2518_resolve_as_overlay(flagd, resolver, tier):
             assert fh.poll_until(served), {
                 key: client.get_integer_details(key, -1, EvaluationContext())
                 for key in variants
+            }
+    finally:
+        fh.dump_in_place(path, original)
+
+
+# --------------------------------------------------------------------------- #
+# 2d. Per-backend decide caps for the paid backends (#2519, flags.md §3)
+# --------------------------------------------------------------------------- #
+_BACKEND_CAP_KEYS_2519 = (
+    "decision.claude.max_requests_per_minute",
+    "decision.openai.max_requests_per_minute",
+)
+_BACKEND_CAP_VARIANTS_2519 = {
+    "inherit": -1,
+    "conservative": 3,
+    "default": 6,
+    "stage": 30,
+}
+# The base file caps the paid backends at stage; the ci file inherits the global
+# budget so the service-test journeys at `journey` 600 are not capped.
+_BACKEND_CAP_DEFAULT_2519 = {"base": "stage", "ci": "inherit"}
+
+
+@pytest.mark.uc("UC-070", br=["BR-003"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_backend_caps_2519_are_integers_with_the_shipped_default(flag_dir):
+    """Static: both flag files declare the two integer caps with the shipped default."""
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    flags = json.loads((root / "agent.json").read_text())["flags"]
+    for key in _BACKEND_CAP_KEYS_2519:
+        flag = flags[key]
+        assert flag["variants"] == _BACKEND_CAP_VARIANTS_2519, f"{flag_dir}/{key}"
+        assert all(_type_ok("integer", v) for v in flag["variants"].values())
+        assert flag["defaultVariant"] == _BACKEND_CAP_DEFAULT_2519[flag_dir], (
+            f"{flag_dir}/{key} defaultVariant"
+        )
+        assert "targeting" not in flag, (
+            f"{flag_dir}/{key}: an operator ceiling carries no targeting"
+        )
+
+
+@pytest.mark.uc("UC-070", br=["BR-003"])
+@pytest.mark.parametrize("variant", ["inherit", "stage"])
+@pytest.mark.parametrize("resolver", ["rpc", "in_process"])
+def test_backend_caps_2519_resolve_as_overlay(flagd, resolver, variant):
+    """On real flagd: `inherit` (-1) and `stage` (30), selected as a flag-service
+    stack overlay renders it, resolve with the agent's integer getter."""
+    path = flagd.file("agent")
+    original = fh.load(path)
+    doc = json.loads(json.dumps(original))
+    for key in _BACKEND_CAP_KEYS_2519:
+        doc["flags"][key]["defaultVariant"] = variant
+    fh.dump_in_place(path, doc)
+    want = _BACKEND_CAP_VARIANTS_2519[variant]
+    try:
+        with _ready_client(flagd, "agent", resolver) as client:
+
+            def served() -> bool:
+                return all(
+                    client.get_integer_value(key, -99, EvaluationContext()) == want
+                    for key in _BACKEND_CAP_KEYS_2519
+                )
+
+            assert fh.poll_until(served), {
+                key: client.get_integer_details(key, -99, EvaluationContext())
+                for key in _BACKEND_CAP_KEYS_2519
             }
     finally:
         fh.dump_in_place(path, original)

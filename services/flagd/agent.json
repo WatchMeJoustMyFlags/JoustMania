@@ -401,6 +401,14 @@
       },
       "defaultVariant": "local"
     },
+    "calibration.test_session": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
     "experiments_enabled": {
       "state": "ENABLED",
       "variants": {
@@ -841,6 +849,26 @@
         "pinned": "jev-1.13.0"
       },
       "defaultVariant": "latest"
+    },
+    "decision.claude.max_requests_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "inherit": -1,
+        "conservative": 3,
+        "default": 6,
+        "stage": 30
+      },
+      "defaultVariant": "stage"
+    },
+    "decision.openai.max_requests_per_minute": {
+      "state": "ENABLED",
+      "variants": {
+        "inherit": -1,
+        "conservative": 3,
+        "default": 6,
+        "stage": 30
+      },
+      "defaultVariant": "stage"
     },
     "decision.jev.act_confidence_threshold": {
       "state": "ENABLED",

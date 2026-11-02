@@ -42,6 +42,8 @@ const (
 	keyDecisionJevModel                  = "decision.jev.model"
 	keyDecisionJevTimeoutMs              = "decision.jev.timeout_ms"
 	keyDecisionJevActConfidenceThreshold = "decision.jev.act_confidence_threshold"
+	keyDecisionClaudeMaxRequestsPerMin   = "decision.claude.max_requests_per_minute"
+	keyDecisionOpenAIMaxRequestsPerMin   = "decision.openai.max_requests_per_minute"
 )
 
 // Decision-backend names (the decision.backend variants).
@@ -140,6 +142,18 @@ const (
 	// covers the warm p95 with ~1.5s headroom; "patient" (8s) also covers cold
 	// calls, "tight" is the old 2.5s.
 	DefaultDecisionClaudeTimeoutMs = 5000
+	// DefaultDecisionClaudeMaxRequestsPerMinute and
+	// DefaultDecisionOpenAIMaxRequestsPerMinute are the paid backends' own decide
+	// caps (decision.<backend>.max_requests_per_minute, variant "stage", #2519).
+	// They only tighten llm.max_requests_per_minute (FR-152 (c)): with the global
+	// budget at "frenzy" (600, meant for the cheap jev backend) a switch to claude
+	// or openai still spends at most 30 decide calls a minute. At the global
+	// default 6 (also the lost-sync value) they never bind.
+	DefaultDecisionClaudeMaxRequestsPerMinute = 30
+	DefaultDecisionOpenAIMaxRequestsPerMinute = 30
+	// MaxRequestsPerMinuteInherit is the "inherit" variant of a per-backend decide
+	// cap: the backend has no cap of its own, only llm.max_requests_per_minute.
+	MaxRequestsPerMinuteInherit = -1
 )
 
 // RemoteBackendConfig is the flag-driven, non-secret part of one remote decision
@@ -166,6 +180,16 @@ type RemoteBackendConfig struct {
 	// the "inherit" sentinel, an out-of-range value or a backend without the flag
 	// (then DecisionBackend.ActThreshold returns the global threshold).
 	HasActConfidenceThreshold bool
+	// MaxRequestsPerMinute is the backend's own per-minute decide cap
+	// (decision.<backend>.max_requests_per_minute, #2519). It applies only when
+	// HasMaxRequestsPerMinute is true and only tightens the global
+	// llm.max_requests_per_minute (FR-152 (c)); 0 closes the backend. Only claude
+	// and openai have the flag; the zero value (jev, hand-built test snapshots)
+	// has no cap of its own.
+	MaxRequestsPerMinute int
+	// HasMaxRequestsPerMinute reports whether MaxRequestsPerMinute applies: false
+	// for the "inherit" sentinel and for a backend without the flag.
+	HasMaxRequestsPerMinute bool
 }
 
 // DecisionBackend is the decision-backend flag group (#1226).
@@ -283,6 +307,10 @@ func (f *Flags) DecisionBackend(ctx context.Context) DecisionBackend {
 	}
 	d.Jev.ActConfidenceThreshold, d.Jev.HasActConfidenceThreshold = f.backendActConfidenceThreshold(
 		ctx, keyDecisionJevActConfidenceThreshold, DefaultDecisionJevActConfidenceThreshold)
+	d.Claude.MaxRequestsPerMinute, d.Claude.HasMaxRequestsPerMinute = f.backendMaxRequestsPerMinute(
+		ctx, keyDecisionClaudeMaxRequestsPerMin, DefaultDecisionClaudeMaxRequestsPerMinute)
+	d.OpenAI.MaxRequestsPerMinute, d.OpenAI.HasMaxRequestsPerMinute = f.backendMaxRequestsPerMinute(
+		ctx, keyDecisionOpenAIMaxRequestsPerMin, DefaultDecisionOpenAIMaxRequestsPerMinute)
 	return d
 }
 
@@ -327,6 +355,23 @@ func (f *Flags) backendActConfidenceThreshold(ctx context.Context, key string, d
 		f.log.Warn("flags threshold outside [0,1], inheriting decision.act_confidence_threshold",
 			"key", key, "value", v)
 		return 0, false
+	}
+	return v, true
+}
+
+// backendMaxRequestsPerMinute reads a per-backend decide cap (#2519). The
+// "inherit" sentinel (MaxRequestsPerMinuteInherit) returns has=false: only the
+// global budget applies. Any other value is a cap; a negative one (a bad edit) is
+// clamped to 0, which closes the backend (fail closed, C-034). An evaluation error
+// (flagd down, flag undefined) yields def, mirroring the defaultVariant.
+func (f *Flags) backendMaxRequestsPerMinute(ctx context.Context, key string, def int) (int, bool) {
+	v := f.intFlag(ctx, key, def)
+	if v == MaxRequestsPerMinuteInherit {
+		return 0, false
+	}
+	if v < 0 {
+		f.log.Warn("flags per-backend LLM cap negative, closing the backend", "key", key, "value", v)
+		return 0, true
 	}
 	return v, true
 }

@@ -9,6 +9,8 @@ Part of [flags.md §12](../flags.md#12-ci-differences). A table with no rows mea
 | File | Key | Base default | `ci/` default |
 |---|---|---|---|
 | agent.json | `decision.capture_content` | `off` = false | `on` = true |
+| agent.json | `decision.claude.max_requests_per_minute` | `stage` = 30 | `inherit` = -1 |
+| agent.json | `decision.openai.max_requests_per_minute` | `stage` = 30 | `inherit` = -1 |
 | controller.json | `backend` | `rust` = "rust" | `mock` = "mock" |
 | game.json | `countdown_phase_duration_ms` | `normal` = 750 | `skip` = 0 |
 | game.json | `fight_club.min_rounds` | `ten` = 10 | `five` = 5 |

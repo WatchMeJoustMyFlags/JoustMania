@@ -59,7 +59,7 @@ func TestGameEndChain_ArmCalibration(t *testing.T) {
 			t.Errorf("ConcludeGame: %v", err)
 		}
 	}
-	chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), book.OnGameEnd, experimentHook, nil, nil, nil)
+	chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), book.OnGameEnd, experimentHook, nil, nil, nil, nil)
 	ended := running
 	inactive := false
 	ended.Session.GameActive = &inactive

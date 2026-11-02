@@ -73,6 +73,10 @@ flags:
   - {set: agent, key: decision.min_gap_after_answer_ms, kind: overlay, scope: [stack]}
   - {set: agent, key: decision.openai.timeout_ms, kind: overlay, scope: [stack], bounds: {range: [100, 60000], integer: true}}
   - {set: agent, key: llm.max_requests_per_minute, kind: overlay, scope: [stack]}
+  # The paid backends' own decide caps (#2519): tighten-only, operator-written,
+  # never by the agent (C-034); declared variants only.
+  - {set: agent, key: decision.claude.max_requests_per_minute, kind: overlay, scope: [stack]}
+  - {set: agent, key: decision.openai.max_requests_per_minute, kind: overlay, scope: [stack]}
   - {set: agent, key: llm.eligible_game_kinds, kind: overlay, scope: [stack]}
   - {set: agent, key: decision.claude.timeout_ms, kind: overlay, scope: [stack]}
   - {set: agent, key: decision.jev.timeout_ms, kind: overlay, scope: [stack]}

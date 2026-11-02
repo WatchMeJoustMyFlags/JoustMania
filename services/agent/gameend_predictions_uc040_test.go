@@ -32,7 +32,7 @@ func TestBuildGameEndChain_PredictionsScoredBeforeSummary(t *testing.T) {
 		return func(g gamecontext.GameContext) { seenAt[name] = len(book.Results(g.SessionID)) }
 	}
 	chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), book.OnGameEnd,
-		look("experiment"), look("retro"), look("summary"), look("proposer"))
+		look("experiment"), look("retro"), look("summary"), look("proposer"), nil)
 	end := c
 	end.EndReason = gamecontext.EndReasonZero
 	chain(end)

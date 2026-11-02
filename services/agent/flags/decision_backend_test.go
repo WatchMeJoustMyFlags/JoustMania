@@ -21,9 +21,11 @@ func defaultDecisionBackend() DecisionBackend {
 		MinGapAfterAnswer:      DefaultDecisionMinGapAfterAnswerMs * time.Millisecond,
 		MaxStateAge:            DefaultDecisionMaxStateAgeMs * time.Millisecond,
 		Claude: RemoteBackendConfig{BaseURL: DefaultDecisionClaudeBaseURL, Model: DefaultDecisionClaudeModel,
-			Timeout: DefaultDecisionClaudeTimeoutMs * time.Millisecond},
+			Timeout:              DefaultDecisionClaudeTimeoutMs * time.Millisecond,
+			MaxRequestsPerMinute: DefaultDecisionClaudeMaxRequestsPerMinute, HasMaxRequestsPerMinute: true},
 		OpenAI: RemoteBackendConfig{BaseURL: DefaultDecisionOpenAIBaseURL, Timeout: timeout,
-			ReasoningEffort: DefaultDecisionOpenAIReasoningEffort},
+			ReasoningEffort:      DefaultDecisionOpenAIReasoningEffort,
+			MaxRequestsPerMinute: DefaultDecisionOpenAIMaxRequestsPerMinute, HasMaxRequestsPerMinute: true},
 		Jev: RemoteBackendConfig{BaseURL: DefaultDecisionJevBaseURL, Model: DefaultDecisionJevModel, Timeout: timeout,
 			ActConfidenceThreshold: DefaultDecisionJevActConfidenceThreshold, HasActConfidenceThreshold: true},
 	}
@@ -76,12 +78,14 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 			keyDecisionJevModel:              "jev-1",
 		},
 		ints: map[string]int64{
-			keyDecisionClaudeTimeoutMs:     1500,
-			keyDecisionOpenAITimeoutMs:     5000,
-			keyDecisionJevTimeoutMs:        2000,
-			keyDecisionMinIntervalMs:       1500,
-			keyDecisionMinGapAfterAnswerMs: 3000,
-			keyDecisionMaxStateAgeMs:       6000,
+			keyDecisionClaudeTimeoutMs:         1500,
+			keyDecisionOpenAITimeoutMs:         5000,
+			keyDecisionJevTimeoutMs:            2000,
+			keyDecisionMinIntervalMs:           1500,
+			keyDecisionMinGapAfterAnswerMs:     3000,
+			keyDecisionMaxStateAgeMs:           6000,
+			keyDecisionClaudeMaxRequestsPerMin: 12,
+			keyDecisionOpenAIMaxRequestsPerMin: MaxRequestsPerMinuteInherit,
 		},
 		floats: map[string]float64{keyDecisionActConfidenceThreshold: 0.95, keyDecisionJevActConfidenceThreshold: 0.95},
 	}
@@ -93,7 +97,8 @@ func TestDecisionBackend_FlagdShape(t *testing.T) {
 		MinInterval:            1500 * time.Millisecond,
 		MinGapAfterAnswer:      3 * time.Second,
 		MaxStateAge:            6 * time.Second,
-		Claude:                 RemoteBackendConfig{BaseURL: "http://127.0.0.1:1", Model: "claude-sonnet-5-5", Timeout: 1500 * time.Millisecond},
+		Claude: RemoteBackendConfig{BaseURL: "http://127.0.0.1:1", Model: "claude-sonnet-5-5", Timeout: 1500 * time.Millisecond,
+			MaxRequestsPerMinute: 12, HasMaxRequestsPerMinute: true},
 		OpenAI: RemoteBackendConfig{BaseURL: "https://example.test/v1", Model: "gpt-x", Timeout: 5 * time.Second,
 			ReasoningEffort: "minimal"},
 		Jev: RemoteBackendConfig{BaseURL: "https://jev.test", Model: "jev-1", Timeout: 2 * time.Second,
@@ -176,6 +181,48 @@ func TestDecisionBackend_JevThreshold(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDecisionBackend_BackendMaxRequestsPerMinute: the paid backends' own decide
+// caps (#2519, FR-152 (c)). `inherit` has no cap of its own, `stage` is 30, a
+// missing flag or a flagd error is the Go default 30 (the base file's `stage`),
+// and 0 or a bad negative value is a cap of 0, which closes the backend. jev has
+// no flag and never a cap of its own.
+// UC: UC-070 BR-003
+// NFR: NFR-011
+func TestDecisionBackend_BackendMaxRequestsPerMinute(t *testing.T) {
+	cases := []struct {
+		name    string
+		ints    map[string]int64
+		errs    map[string]error
+		wantCap int
+		wantHas bool
+	}{
+		{"UC-070/BR-003 inherit sentinel has no cap", map[string]int64{keyDecisionClaudeMaxRequestsPerMin: -1, keyDecisionOpenAIMaxRequestsPerMin: -1}, nil, 0, false},
+		{"UC-070/BR-003 stage is 30", map[string]int64{keyDecisionClaudeMaxRequestsPerMin: 30, keyDecisionOpenAIMaxRequestsPerMin: 30}, nil, 30, true},
+		{"UC-070/BR-003 missing flag is the default 30", nil, nil, DefaultDecisionClaudeMaxRequestsPerMinute, true},
+		{"UC-070/BR-003 flagd error is the default 30", nil, map[string]error{
+			keyDecisionClaudeMaxRequestsPerMin: errors.New("flagd down"), keyDecisionOpenAIMaxRequestsPerMin: errors.New("flagd down")},
+			DefaultDecisionClaudeMaxRequestsPerMinute, true},
+		{"UC-070/BR-003 zero closes the backend", map[string]int64{keyDecisionClaudeMaxRequestsPerMin: 0, keyDecisionOpenAIMaxRequestsPerMin: 0}, nil, 0, true},
+		{"UC-070/BR-003 bad negative closes the backend", map[string]int64{keyDecisionClaudeMaxRequestsPerMin: -7, keyDecisionOpenAIMaxRequestsPerMin: -7}, nil, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := New(stubEvaluator{ints: tc.ints, errs: tc.errs}, nil).DecisionBackend(context.Background())
+			for name, cfg := range map[string]RemoteBackendConfig{DecisionBackendClaude: d.Claude, DecisionBackendOpenAI: d.OpenAI} {
+				if cfg.MaxRequestsPerMinute != tc.wantCap || cfg.HasMaxRequestsPerMinute != tc.wantHas {
+					t.Errorf("%s cap = %d,%v, want %d,%v", name, cfg.MaxRequestsPerMinute, cfg.HasMaxRequestsPerMinute, tc.wantCap, tc.wantHas)
+				}
+			}
+			if d.Jev.HasMaxRequestsPerMinute {
+				t.Errorf("jev has a cap of its own (%d), want none (global budget only)", d.Jev.MaxRequestsPerMinute)
+			}
+		})
+	}
+	if (DecisionBackend{}).Claude.HasMaxRequestsPerMinute {
+		t.Fatal("a zero-value snapshot must have no backend cap")
 	}
 }
 

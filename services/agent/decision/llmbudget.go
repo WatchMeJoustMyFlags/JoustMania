@@ -42,7 +42,16 @@ const llmBudgetWindow = time.Minute
 // the per-game Export handler goroutines all call allow on the one shared instance.
 type llmBudget struct {
 	mu      sync.Mutex
-	entries []time.Time
+	entries []llmBudgetEntry
+}
+
+// llmBudgetEntry is one admission in the window (#2519). backend is the decide
+// backend that was charged ("claude", "openai", "jev"), or "" for an untagged
+// charge (the post-game retro, the proposer's LLMAdmission). Every entry counts
+// toward the global total; only tagged entries count toward a backend cap.
+type llmBudgetEntry struct {
+	at      time.Time
+	backend string
 }
 
 // NewLLMBudget builds an empty global LLM request budget. The cap is NOT stored on
@@ -64,17 +73,41 @@ func NewLLMBudget() *llmBudget { return &llmBudget{} }
 // per-cycle flag value: lowering max_requests_per_minute immediately tightens the
 // next call without losing the window history.
 func (b *llmBudget) allow(now time.Time, maxPerMinute int) bool {
+	return b.allowBackend(now, maxPerMinute, "", -1)
+}
+
+// allowBackend is allow with a per-backend cap on top (#2519, FR-152 (c)): the
+// attempt is admitted only when the window holds fewer than globalCap entries in
+// total AND, when backendCap >= 0, fewer than backendCap entries tagged with
+// backend. Both checks and the charge happen under the one mutex on the one
+// window, so they are atomic. The backend cap can only tighten: it never admits a
+// call the global cap refuses. backendCap < 0 means no backend cap (inherit);
+// backendCap == 0 closes the backend (fail-closed reading of a zero cap). The flag
+// layer maps only the "inherit" sentinel (-1) to "no cap" and clamps any other
+// negative flag value to 0, so a typo closes the backend.
+func (b *llmBudget) allowBackend(now time.Time, globalCap int, backend string, backendCap int) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.prune(now)
-	if maxPerMinute <= 0 {
+	if globalCap <= 0 || len(b.entries) >= globalCap {
 		return false
 	}
-	if len(b.entries) >= maxPerMinute {
+	if backendCap >= 0 && b.countBackend(backend) >= backendCap {
 		return false
 	}
-	b.entries = append(b.entries, now)
+	b.entries = append(b.entries, llmBudgetEntry{at: now, backend: backend})
 	return true
+}
+
+// countBackend counts the window entries tagged with backend. Caller holds b.mu.
+func (b *llmBudget) countBackend(backend string) int {
+	n := 0
+	for _, e := range b.entries {
+		if e.backend == backend {
+			n++
+		}
+	}
+	return n
 }
 
 // prune drops admissions older than the trailing window ending at now. Caller
@@ -82,9 +115,9 @@ func (b *llmBudget) allow(now time.Time, maxPerMinute int) bool {
 func (b *llmBudget) prune(now time.Time) {
 	cutoff := now.Add(-llmBudgetWindow)
 	kept := b.entries[:0]
-	for _, at := range b.entries {
-		if at.After(cutoff) {
-			kept = append(kept, at)
+	for _, e := range b.entries {
+		if e.at.After(cutoff) {
+			kept = append(kept, e)
 		}
 	}
 	b.entries = kept

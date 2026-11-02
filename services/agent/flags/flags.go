@@ -116,7 +116,10 @@ const (
 	// (#1907) are comma-separated STRING flags read with StringValue, not list flags,
 	// so the flagd list-flag trap (a top-level JSON list read via get_object_value
 	// TYPE_MISMATCHes) does not apply; the declarer parses the string.
-	keyExperimentsEnabled          = "experiments_enabled"
+	keyExperimentsEnabled = "experiments_enabled"
+	// keyCalibrationTestSession is the operator's test-session mark (UC-047 BR-003,
+	// flags.md §3.3): human-owned, never agent-written (C-034).
+	keyCalibrationTestSession      = "calibration.test_session"
 	keyExperimentDynamicEnabled    = "experiment_dynamic_enabled"
 	keyExperimentTickSeconds       = "experiment_tick_seconds"
 	keyExperimentDynamicMaxConcur  = "experiment_dynamic_max_concurrent"
@@ -936,6 +939,20 @@ func (f *Flags) AgentEnabled(ctx context.Context) bool {
 // experiment loop always agree on whether experiments are on.
 func (f *Flags) ExperimentsEnabled(ctx context.Context) bool {
 	return f.boolFlag(ctx, keyExperimentsEnabled, false)
+}
+
+// CalibrationTestSession resolves the operator's test-session mark
+// `calibration.test_session` at use time (UC-047 BR-003, #1055). known is false
+// when the flag cannot be read (absent, wrong type or flagd unreachable): the
+// calibration journal then records the mark as unknown, and a later calibration
+// treats such a game as ineligible, never as a non-test game.
+func (f *Flags) CalibrationTestSession(ctx context.Context) (on, known bool) {
+	v, err := f.client.BooleanValue(ctx, keyCalibrationTestSession, false, openfeature.EvaluationContext{})
+	if err != nil {
+		f.log.Debug("flags calibration.test_session unreadable", "error", err)
+		return false, false
+	}
+	return v, true
 }
 
 // stringFlag resolves a string flag, falling back to def on any error.

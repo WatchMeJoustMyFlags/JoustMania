@@ -34,6 +34,10 @@ for arg in "$@"; do
       echo "no image for compose service '${arg#compose:}' in ${COMPOSE_FILE}" >&2
       exit 2
     fi
+    if [[ "${image}" == *'$'* ]]; then
+      echo "compose service '${arg#compose:}' image '${image}' has unresolved interpolation; pass the image explicitly" >&2
+      exit 2
+    fi
     images+=("${image}")
   else
     images+=("${arg}")
