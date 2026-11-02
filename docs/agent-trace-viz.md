@@ -225,7 +225,7 @@ live: 5 results** for `code_improvement.proposed`.
 Since #1270 a proposer span appears only when `enabled` and `experiments_enabled`
 are both on, and a model-backed proposal (`inference.backend=claude`) only
 follows a **real** game end within the shared LLM budget. A shadow-only run shows no
-proposals unless `llm.eligible_game_kinds` is `real_and_shadow`, which also widens
+proposals unless `llm.eligible_game_kinds` is `real_and_shadow` or `shadow_only`, which also widen
 decide and retro calls to shadow games.
 
 ---

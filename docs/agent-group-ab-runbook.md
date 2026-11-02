@@ -30,10 +30,14 @@ neutrally? We enable the capability and measure; no rule fires a group shield (U
   The agent image must include #2530 (the record check above).
 - The LLM budget is global. Cap the cost with `llm.max_requests_per_minute=stage` before the run.
 - The stack's agent container is stopped for the run (it would decide in the game too) and started again on exit.
-- **Verification.** After the first game the script checks that an `agent.decide` span of that game carries the
-  arm's `decide.prompt_profile`. If not, it stops: the throwaway agent saw nothing (the collector sends spans to
+- **Verification.** After the first game of each arm the script checks that an `agent.decide` span of that game
+  carries the arm's `decide.prompt_profile` (arm A's `v1` is also the flag default, so only the first B game proves
+  the arm value resolves). If not, it stops: the throwaway agent saw nothing (the collector sends spans to
   the `agent` network alias, which the one-off container does not have). Retry with `--use-aliases`; then the
   throwaway agent observes every game, real ones included, so keep the guard in mind. `--no-verify` skips the check.
+- **Early decide cycles.** Under `shadow_only` a game whose kind the agent does not know yet makes no remote call. A game
+  already known as shadow whose experiment id is not yet known is eligible and renders `v1`; the report excludes it
+  (`profile_mismatch`), so the arms stay uncontaminated.
 - **Restore.** The snapshot keeps each global flag's overlay with its writer and remaining TTL. On exit, error, SIGINT,
   SIGTERM or SIGHUP each flag is restored only while its overlay is still the `group-ab` one: an overlay another writer set
   during the run, or one an admin write cleared, is left as it is (and reported). The two arm values are cleared.

@@ -263,24 +263,37 @@ python3 - "${WORK}" <<'PY'
 import json, sys
 
 
-def doc(profile):
+def doc(*profiles):
+    spans = []
+    for profile in profiles:
+        spans.append(span(profile))
+    return {"result": {"resourceSpans": [{"scopeSpans": [{"spans": spans}]}]}}
+
+
+def span(profile):
     attrs = [
         {"key": "game.id", "value": {"stringValue": "gfix"}},
         {"key": "decide.prompt_profile", "value": {"stringValue": profile}},
     ]
-    sp = {"name": "agent.decide", "startTimeUnixNano": "1", "endTimeUnixNano": "2", "attributes": attrs}
-    return {"result": {"resourceSpans": [{"scopeSpans": [{"spans": [sp]}]}]}}
+    return {"name": "agent.decide", "startTimeUnixNano": "1", "endTimeUnixNano": "2", "attributes": attrs}
 
 
-json.dump(doc("v1"), open(sys.argv[1] + "/seen.json", "w"))
+json.dump(doc("v1", "neutral"), open(sys.argv[1] + "/seen.json", "w"))
+json.dump(doc("v1"), open(sys.argv[1] + "/only-v1.json", "w"))
 json.dump(doc("neutral"), open(sys.argv[1] + "/wrong.json", "w"))
 PY
 "${AB}" run --archetype slow_cascade --seeds 1 --reps 1 --traces-file "${WORK}/seen.json" --out "${WORK}/o8" >/dev/null 2>&1
-ok "verification passes when the arm's profile is on an agent.decide span" "$([[ "$(wc -l <"${WORK}/o8/manifest.jsonl")" == 2 ]] && echo 0 || echo 1)"
+ok "verification passes when each arm's profile is on an agent.decide span" "$([[ "$(wc -l <"${WORK}/o8/manifest.jsonl")" == 2 ]] && echo 0 || echo 1)"
 clear_all
 code=0
 AB_VERIFY_TRIES=2 AB_VERIFY_WAIT=0.1 "${AB}" run --archetype slow_cascade --seeds 1 --reps 1 --traces-file "${WORK}/wrong.json" --out "${WORK}/o9" >/dev/null 2>&1 || code=$?
 ok "verification stops the run when no span carries the profile (exit 3), flags restored" "$([[ ${code} == 3 && "$(wc -l <"${WORK}/o9/manifest.jsonl")" == 1 ]] && all_clear && echo 0 || echo 1)"
+clear_all
+# a lost arm-B value: arm A (the flag default v1) verifies, the first B game does not, and the run stops
+# after game 2 instead of after the whole budget
+code=0
+AB_VERIFY_TRIES=2 AB_VERIFY_WAIT=0.1 "${AB}" run --archetype slow_cascade --seeds 1,2 --reps 1 --traces-file "${WORK}/only-v1.json" --out "${WORK}/o9b" >/dev/null 2>&1 || code=$?
+ok "verification also checks the first B game: only v1 spans stop the run at game 2 (exit 3), flags restored" "$([[ ${code} == 3 && "$(wc -l <"${WORK}/o9b/manifest.jsonl")" == 2 ]] && all_clear && echo 0 || echo 1)"
 clear_all
 
 # 10. kill switch: a stack-scope none, an unreadable kill-switch read, a real game after the last game, SIGHUP.

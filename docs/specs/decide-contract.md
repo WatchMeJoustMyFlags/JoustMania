@@ -679,8 +679,8 @@ decisions fall back to rules (§7). Keep keys out of the tracked `.env`: export 
   `decision.min_gap_after_answer_ms` 1000 one game wants about 15 to 20 calls a minute against the default cap of 6, so at game end the retro and proposer usually find it
   full (`llm_budget_exhausted`). For retros or proposals in such a session use the `stage` cap
   (`llm.max_requests_per_minute` = 30) or `decision.backend=rules`.
-- **Shadow-only runs make no proposals** with the default `llm.eligible_game_kinds = real`. `real_and_shadow`
-  allows them but also lets shadow games use remote decide calls and retros.
+- **Shadow-only runs make no proposals** with the default `llm.eligible_game_kinds = real`. `real_and_shadow` and `shadow_only`
+  allow them; both also let shadow games use remote decide calls and retros.
 - On models that accept it (Opus 5.5, Opus 5, Sonnet 5.5, Fable 5.1) the client sends `fallbacks: "default"`
   (beta `server-side-fallback-2026-07-01`), so a policy refusal is re-run on a fallback model inside the same call.
 - Telemetry: every model call is one GenAI-semconv `chat {model}` CLIENT span (§12), nested under `agent.decide`

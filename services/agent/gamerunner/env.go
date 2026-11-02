@@ -81,6 +81,19 @@ func ExperimentFromEnv() (experimentID, arm string, err error) {
 	return experimentID, arm, nil
 }
 
+// BindExperimentFromEnv returns spec bound to the experiment arm named by the env
+// (ExperimentFromEnv). An unbound env returns spec unchanged; a half-set env returns
+// the error and the caller refuses the run. The one place main.go binds the one-shot
+// game, so a test can prove the binding reaches the start config (#2530).
+func BindExperimentFromEnv(spec Spec) (Spec, error) {
+	id, arm, err := ExperimentFromEnv()
+	if err != nil {
+		return spec, err
+	}
+	spec.ExperimentID, spec.Arm = id, arm
+	return spec, nil
+}
+
 func getEnv(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v

@@ -38,8 +38,8 @@
 #   3. stops the stack's agent container (it would decide in the one-shot game too; marker
 #      DIR/agent-was-running);
 #   4. runs the seed-matched games A,B,B,A per seed (reps 2); each game's replay record must carry
-#      the experiment id and arm; the first game is verified: its agent.decide spans must carry
-#      the arm's profile, or the run stops;
+#      the experiment id and arm; the first game of each arm is verified: its agent.decide spans must
+#      carry the arm's profile, or the run stops;
 #   5. on exit, error, SIGINT or SIGTERM: restores each flag (same writer, remaining TTL) only
 #      when its overlay is still the group-ab one, clears the arm values, removes group-ab-*
 #      containers and starts the agent.
@@ -260,6 +260,7 @@ run_game() {
 }
 
 # verify_first_game: did the agent that decides in the game answer with this arm's profile?
+# Called for the first game of each arm.
 # If not, every game would be excluded; stop before spending the budget.
 verify_first_game() {
   local arm="$1" seed="$2" rep="$3" profile gid i
@@ -274,7 +275,7 @@ verify_first_game() {
     fi
     sleep "${AB_VERIFY_WAIT:-3}"
   done
-  echo "agent-group-ab: the first game (${gid}) has no remote agent.decide span with prompt_profile=${profile}." >&2
+  echo "agent-group-ab: the first ${arm} game (${gid}) has no remote agent.decide span with prompt_profile=${profile}." >&2
   echo "  The throwaway agent saw nothing (the collector sends spans to the 'agent' network alias), or no" >&2
   echo "  remote backend answered. Retry with --use-aliases (then the throwaway agent observes EVERY game," >&2
   echo "  real ones too: the real-game guard polls /games every 3 s), or check the backend. --no-verify skips this." >&2
@@ -356,7 +357,7 @@ cmd_run() {
   done
 
   : >"${OUT}/manifest.jsonl"
-  local seed rep order arm first=1
+  local seed rep order arm verified=" "
   IFS=',' read -r -a seed_list <<<"${seeds}"
   for seed in "${seed_list[@]}"; do
     for ((rep = 1; rep <= reps; rep++)); do
@@ -364,8 +365,10 @@ cmd_run() {
       if ((rep % 2 == 1)); then order="A B"; else order="B A"; fi
       for arm in ${order}; do
         run_game "${arm}" "${seed}" "${rep}" "${archetype}" || exit $?
-        if ((first)); then
-          first=0
+        # the first game of EACH arm: arm A's profile is the flag default, so only the first B game
+        # proves the arm value resolves (a lost value would drop every B game after the whole budget)
+        if [[ "${verified}" != *" ${arm} "* ]]; then
+          verified+="${arm} "
           verify_first_game "${arm}" "${seed}" "${rep}" || exit $?
         fi
       done
