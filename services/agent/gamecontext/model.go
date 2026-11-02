@@ -65,6 +65,12 @@ type PlayerSignals struct {
 	// never as raw floats — via RenderSparkline / ComputeProximity / ClassifyActivity.
 	History []MovementSample
 
+	// Game holds the whole-game sums of the same 1 s buckets History samples, over
+	// every bucket of the game rather than the last PlayerHistoryCap (#1055, UC-047
+	// BR-009): the calibration journal's per-player mean intensity and variance.
+	// Zero until the first intensity sample; a snapshot copy like History.
+	Game GameMeans
+
 	// Hold-mode shield (#2096, UC-040 A37, UC-042 BR-007; nil / empty outside a hold
 	// game). Sources: game_player_shield_energy_seconds,
 	// game_player_shield_budget_remaining_seconds, game_player_shield_active and

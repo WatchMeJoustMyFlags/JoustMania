@@ -926,6 +926,24 @@ def test_shield_limit_flags_carry_no_targeting(flag_dir):
     assert not failures, "\n".join(failures)
 
 
+# The calibration test-session mark (#1055, UC-047 BR-003, flags.md §3.3): the agent
+# reads it with an empty context at each real game end; the operator sets it as a stack
+# overlay. Targeting would give a game a mark the operator never set; it defaults off.
+@pytest.mark.uc("UC-047", br=["BR-003", "BR-009"])
+@pytest.mark.parametrize("flag_dir", ["ci", "base"])
+def test_calibration_test_session_flag_is_untargeted_bool_default_off(flag_dir):
+    """Static: calibration.test_session exists in agent.json, on/off bool variants, no targeting, default off."""
+    root = fh.CI_FLAG_DIR if flag_dir == "ci" else fh.CI_FLAG_DIR.parent
+    flags = json.loads((root / "agent.json").read_text())["flags"]
+    flag = flags.get("calibration.test_session")
+    assert flag is not None, f"{flag_dir}/agent.json has no calibration.test_session"
+    assert not flag.get("targeting"), (
+        f"{flag_dir}/agent.json calibration.test_session has targeting"
+    )
+    assert flag["variants"] == {"on": True, "off": False}, flag["variants"]
+    assert flag["defaultVariant"] == "off", flag["defaultVariant"]
+
+
 # The group-grant policy flags (#2467, UC-040 BR-033, flags.md §3): the agent reads them
 # with an empty context and the coordinator in the game's, so, like the shield limits,
 # any targeting could give the two sides different values.

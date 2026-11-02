@@ -34,6 +34,10 @@ import (
 // per-player memory and the rendered sparkline width bounded to a constant.
 const playerHistoryCap = 32
 
+// PlayerHistoryCap is playerHistoryCap for consumers outside the package: a
+// History of this length may have dropped its oldest samples (#1055).
+const PlayerHistoryCap = playerHistoryCap
+
 // movementBucket is the dedupe granularity for per-player samples: at most one
 // sample per bucket-second per player (the value at bucket roll-over). This is
 // the linchpin of the memory bound — the raw signal arrives at up to 60Hz, so
@@ -73,6 +77,18 @@ type playerHistory struct {
 	// lastBucket is the bucket-second of the last APPENDED sample, so a within-
 	// bucket update overwrites the tail rather than appending a new entry.
 	lastBucket time.Time
+
+	// closed holds the whole-game sums of every bucket that is no longer the tail
+	// (#1055, UC-047 BR-009): unlike the ring it never evicts, so a game longer
+	// than playerHistoryCap seconds still has its whole-game mean. A bucket is
+	// folded in when the next bucket opens; the open tail is added in stats().
+	closed GameMeans
+	// frozen is set at the player's elimination: frozenStats are the sums up to
+	// then, so seconds after the elimination (a coordinator that keeps exporting a
+	// dead player's gauges) never enter the whole-game means, as fieldMeasures
+	// leaves them out (UC-047 BR-009). The ring itself keeps recording.
+	frozen      bool
+	frozenStats GameMeans
 }
 
 // record appends or coalesces a sample. Within the same bucket-second it
@@ -89,6 +105,9 @@ func (h *playerHistory) record(s MovementSample) {
 		h.buf[tail] = s
 		return
 	}
+	if h.size > 0 {
+		h.closed.add(h.buf[(h.start+h.size-1)%playerHistoryCap])
+	}
 	h.lastBucket = bucket
 	end := (h.start + h.size) % playerHistoryCap
 	h.buf[end] = s
@@ -97,6 +116,66 @@ func (h *playerHistory) record(s MovementSample) {
 	} else {
 		h.size++
 	}
+}
+
+// GameMeans is a player's whole-game sums over its 1 s buckets (the last value
+// of each bucket, as the ring keeps it): intensity, and variance where the bucket
+// carried one. Non-finite values are skipped (#1055).
+type GameMeans struct {
+	IntensitySum     float64
+	IntensitySamples int
+	VarianceSum      float64
+	VarianceSamples  int
+}
+
+func (m *GameMeans) add(s MovementSample) {
+	if !math.IsNaN(s.Intensity) && !math.IsInf(s.Intensity, 0) {
+		m.IntensitySum += s.Intensity
+		m.IntensitySamples++
+	}
+	if s.Variance != nil && !math.IsNaN(*s.Variance) && !math.IsInf(*s.Variance, 0) {
+		m.VarianceSum += *s.Variance
+		m.VarianceSamples++
+	}
+}
+
+// MeanIntensity is the whole-game mean intensity; false with no sample.
+func (m GameMeans) MeanIntensity() (float64, bool) {
+	if m.IntensitySamples == 0 {
+		return 0, false
+	}
+	return m.IntensitySum / float64(m.IntensitySamples), true
+}
+
+// MeanVariance is the whole-game mean movement variance; false with no sample.
+func (m GameMeans) MeanVariance() (float64, bool) {
+	if m.VarianceSamples == 0 {
+		return 0, false
+	}
+	return m.VarianceSum / float64(m.VarianceSamples), true
+}
+
+// freeze stops the whole-game sums at their current value (the elimination).
+// Idempotent: a second call keeps the first value.
+func (h *playerHistory) freeze() {
+	if h.frozen {
+		return
+	}
+	h.frozenStats = h.stats()
+	h.frozen = true
+}
+
+// stats returns the whole-game sums: the closed buckets plus the open tail, or
+// the sums at the elimination once frozen.
+func (h *playerHistory) stats() GameMeans {
+	if h.frozen {
+		return h.frozenStats
+	}
+	out := h.closed
+	if h.size > 0 {
+		out.add(h.buf[(h.start+h.size-1)%playerHistoryCap])
+	}
+	return out
 }
 
 // samples returns the live entries oldest-first as a fresh slice, safe to hand

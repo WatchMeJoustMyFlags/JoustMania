@@ -51,6 +51,10 @@ type serverComponents struct {
 	// bounded by the root context and joined on shutdown. May be nil (tests).
 	predictions interface{ Await() }
 
+	// gameJournal is the calibration journal writer (UC-047 BR-009, #1055), joined
+	// on shutdown with a bounded wait. May be nil (tests).
+	gameJournal interface{ Close(time.Duration) bool }
+
 	// evictInterval is the eviction ticker cadence. main() hot-reloads it from the
 	// lifecycle holder via evictIntervalSrc; tests pass a fixed value.
 	evictInterval time.Duration
@@ -179,6 +183,11 @@ func (c *serverComponents) run(ctx context.Context) error {
 		// which ctx bounds. GracefulStop above ended the OTLP intake, so no new game end
 		// arrives; Close also refuses a late one.
 		background.Close()
+		// Write the calibration journal's queued records (UC-047 BR-009, #1055): no
+		// game end arrives any more, so Close drains the writer, bounded.
+		if c.gameJournal != nil {
+			c.gameJournal.Close(gameJournalCloseTimeout)
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = healthServer.Shutdown(shutdownCtx)

@@ -203,6 +203,12 @@ func (s *Store) player(serial string) *PlayerSignals {
 		p = &PlayerSignals{Serial: serial}
 		if r, ok := s.retained[serial]; ok {
 			p.SkillLevel, p.PeakAccel, p.MovementVarianceAggregate = r.skill, r.peakAccel, r.varianceAggregate
+			// Continue the whole-game sums where the eviction left them (#1055).
+			h := &playerHistory{closed: r.game}
+			if s.isEliminatedLocked(serial) {
+				h.frozen, h.frozenStats = true, r.game
+			}
+			s.playerHistory[serial] = h
 			delete(s.retained, serial)
 		}
 		s.ctx.Players[serial] = p
@@ -248,6 +254,9 @@ const maxRetainedPlayers = 64
 // Setters replace pointers and never mutate through them, so sharing them is safe.
 type retainedPlayer struct {
 	skill, peakAccel, varianceAggregate *float64
+	// game is the whole-game sums of the evicted player's history (#1055): a
+	// player who comes back continues them, and the game-end restore reports them.
+	game GameMeans
 }
 
 // retainLocked remembers p's whole-game aggregates on a mid-game eviction. Caller
@@ -260,6 +269,11 @@ func (s *Store) retainLocked(p *PlayerSignals) {
 		skill:             p.SkillLevel,
 		peakAccel:         p.PeakAccel,
 		varianceAggregate: p.MovementVarianceAggregate,
+	}
+	if h := s.playerHistory[p.Serial]; h != nil {
+		r := s.retained[p.Serial]
+		r.game = h.stats()
+		s.retained[p.Serial] = r
 	}
 }
 
@@ -810,6 +824,7 @@ func (s *Store) endGameLocked(gameEnd time.Time, reason string) *GameContext {
 			SkillLevel:                r.skill,
 			PeakAccel:                 r.peakAccel,
 			MovementVarianceAggregate: r.varianceAggregate,
+			Game:                      r.game,
 			Waiting:                   true,
 		}
 	}
@@ -1100,6 +1115,17 @@ func (s *Store) RecordElimination(serial string) {
 	s.appendElimination(serial)
 }
 
+// isEliminatedLocked reports whether serial is in the elimination sequence.
+// Caller holds s.mu.
+func (s *Store) isEliminatedLocked(serial string) bool {
+	for _, existing := range s.ctx.Session.EliminationSequence {
+		if existing == serial {
+			return true
+		}
+	}
+	return false
+}
+
 // appendElimination appends serial to the elimination sequence unless already
 // present. Caller holds s.mu.
 func (s *Store) appendElimination(serial string) {
@@ -1109,6 +1135,13 @@ func (s *Store) appendElimination(serial string) {
 		}
 	}
 	s.ctx.Session.EliminationSequence = append(s.ctx.Session.EliminationSequence, serial)
+	// Stop the player's whole-game sums here (#1055, UC-047 BR-009).
+	h := s.playerHistory[serial]
+	if h == nil {
+		h = &playerHistory{}
+		s.playerHistory[serial] = h
+	}
+	h.freeze()
 	s.touchSession()
 	// Record the elimination in the rolling narrative with its 1-based order (#916),
 	// so the timeline carries WHEN each player dropped out, not just the final order.
@@ -1151,6 +1184,7 @@ func (s *Store) snapshotLocked() GameContext {
 		// guarantee Players / Timeline give.
 		if h := s.playerHistory[serial]; h != nil {
 			cp.History = h.samples()
+			cp.Game = h.stats()
 		}
 		out.Players[serial] = &cp
 	}

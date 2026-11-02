@@ -401,6 +401,14 @@
       },
       "defaultVariant": "local"
     },
+    "calibration.test_session": {
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "off"
+    },
     "experiments_enabled": {
       "state": "ENABLED",
       "variants": {

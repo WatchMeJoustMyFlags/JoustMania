@@ -77,14 +77,16 @@ func skipStaleGameEnd(fn func(gamecontext.GameContext)) func(gamecontext.GameCon
 // #1494, #2479): the stale counter, then the prediction book (second, so every
 // pending prediction of the game is scored before any consumer reads the game,
 // UC-040 A44), then the experiment conclusion hook (so it records fitness before
-// the retro reads it back), then the retro, the game summary and the proposer. A
-// stale end (UC-041 A4) is counted and reaches the prediction book (which scores
-// its pending predictions stale_end) and the experiment hook, which releases its
-// slot itself, but never the retro, the summary or the proposer. nil consumers
-// are skipped.
+// the retro reads it back), then the retro, the game summary, the proposer and
+// last the calibration journal (UC-047 step 1, BR-009, #1055). A stale end
+// (UC-041 A4) is counted and reaches the prediction book (which scores its
+// pending predictions stale_end) and the experiment hook, which releases its slot
+// itself, but never the retro, the summary, the proposer or the journal (a game
+// the agent did not journal is ineligible for calibration, UC-047 BR-003). nil
+// consumers are skipped.
 func buildGameEndChain(
 	staleEnds otelmetric.Int64Counter,
-	predictionsOnGameEnd, experimentOnGameEnd, retroOnGameEnd, summaryOnGameEnd, proposeOnGameEnd func(gamecontext.GameContext),
+	predictionsOnGameEnd, experimentOnGameEnd, retroOnGameEnd, summaryOnGameEnd, proposeOnGameEnd, journalOnGameEnd func(gamecontext.GameContext),
 ) func(gamecontext.GameContext) {
 	return chainGameEnd(
 		countStaleGameEnd(staleEnds),
@@ -93,6 +95,7 @@ func buildGameEndChain(
 		skipStaleGameEnd(retroOnGameEnd),
 		skipStaleGameEnd(summaryOnGameEnd),
 		skipStaleGameEnd(proposeOnGameEnd),
+		skipStaleGameEnd(journalOnGameEnd),
 	)
 }
 
