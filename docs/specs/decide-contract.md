@@ -483,7 +483,7 @@ allow-list, the budgets or the writer (UC-040 BR-034). Details: §14.3.
 | `backend_unavailable` | no API key / model / base URL (`Available()==false`) | rules, same cycle |
 | `async_not_wired` | no context provider (never in production) | rules, same cycle |
 | `llm_not_eligible` | game kind not in `llm.eligible_game_kinds` (default `real`) | rules, same cycle |
-| `llm_budget_exhausted` | global per-minute budget full | rules, same cycle |
+| `llm_budget_exhausted` | global per-minute budget full, or (claude, openai) the backend's own `decision.<backend>.max_requests_per_minute` cap full in the same window (#2519; the span's `decide.backend.requested` tells them apart) | rules, same cycle |
 | `timeout` | `decision.<backend>.timeout_ms` elapsed | rules on the **current** context when the call returns |
 | `invalid_answer` | parse / validate failure, refusal, max tokens, other stop reasons | rules on the current context |
 | `error` | anything else: transport, HTTP 4xx / 5xx **including 429**, error envelope | rules on the current context |
