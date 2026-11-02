@@ -187,4 +187,12 @@ func TestRemote_BackendCapGate(t *testing.T) {
 		h := newRemoteHarness(t, snap, newFakeDecideBackend(ffaAnswer("noop", 0.95, "", 0, "x")))
 		gated(t, h, snap)
 	})
+	// A negative cap that still claims to apply (a hand-built snapshot, or a future
+	// resolver change) closes the backend at the gate too: it never reads as
+	// "no cap" (fail closed, C-034).
+	t.Run("UC-040/A3 a negative claude cap with Has closes claude", func(t *testing.T) {
+		snap := backendCapSnapshot(600, -5)
+		h := newRemoteHarness(t, snap, newFakeDecideBackend(ffaAnswer("noop", 0.95, "", 0, "x")))
+		gated(t, h, snap)
+	})
 }

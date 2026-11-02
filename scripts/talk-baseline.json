@@ -25,6 +25,8 @@
     "decision.openai.model": "unset",
     "decision.openai.reasoning_effort": "auto",
     "llm.max_requests_per_minute": "stage",
+    "decision.claude.max_requests_per_minute": "stage",
+    "decision.openai.max_requests_per_minute": "stage",
     "experiment.mock_archetypes": "all",
     "experiment_dynamic_enabled": "off",
     "experiment_tick_seconds": "default",
