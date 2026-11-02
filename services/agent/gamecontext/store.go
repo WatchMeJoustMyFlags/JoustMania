@@ -1151,6 +1151,7 @@ func (s *Store) snapshotLocked() GameContext {
 		// guarantee Players / Timeline give.
 		if h := s.playerHistory[serial]; h != nil {
 			cp.History = h.samples()
+			cp.Game = h.stats()
 		}
 		out.Players[serial] = &cp
 	}

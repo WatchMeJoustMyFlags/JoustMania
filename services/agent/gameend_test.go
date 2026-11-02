@@ -216,7 +216,7 @@ func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 		}
 		counter := newGameEndStaleCounter(metricnoopProvider())
 		return buildGameEndChain(counter, record("predictions"),
-			record("experiment"), record("retro"), record("summary"), record("proposer")), seen
+			record("experiment"), record("retro"), record("summary"), record("proposer"), record("journal")), seen
 	}
 
 	t.Run("UC-041/A4 stale end reaches the prediction book and the experiment hook only", func(t *testing.T) {
@@ -228,7 +228,8 @@ func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 		if len(seen["experiment"]) != 1 {
 			t.Errorf("experiment hook saw %d stale ends, want 1 (it releases the slot itself)", len(seen["experiment"]))
 		}
-		for _, name := range []string{"retro", "summary", "proposer"} {
+		// UC: UC-047 BR-003 BR-009
+		for _, name := range []string{"retro", "summary", "proposer", "journal"} {
 			if len(seen[name]) != 0 {
 				t.Errorf("%s saw a stale end, want none", name)
 			}
@@ -236,15 +237,16 @@ func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 	})
 
 	// UC: UC-040 A44 BR-034
-	t.Run("UC-041/main step 7 UC-040/A44 consumers run in order: predictions, experiment, retro, summary, proposer", func(t *testing.T) {
+	// UC: UC-047 main step 1
+	t.Run("UC-041/main step 7 UC-040/A44 UC-047/main consumers run in order: predictions, experiment, retro, summary, proposer, journal", func(t *testing.T) {
 		var order []string
 		record := func(name string) func(gamecontext.GameContext) {
 			return func(gamecontext.GameContext) { order = append(order, name) }
 		}
 		chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), record("predictions"),
-			record("experiment"), record("retro"), record("summary"), record("proposer"))
+			record("experiment"), record("retro"), record("summary"), record("proposer"), record("journal"))
 		chain(gamecontext.GameContext{SessionID: "game_order", EndReason: gamecontext.EndReasonZero})
-		want := []string{"predictions", "experiment", "retro", "summary", "proposer"}
+		want := []string{"predictions", "experiment", "retro", "summary", "proposer", "journal"}
 		if strings.Join(order, ",") != strings.Join(want, ",") {
 			t.Fatalf("consumer order = %v, want %v", order, want)
 		}
@@ -254,7 +256,7 @@ func TestBuildGameEndChain_StaleEndReachesNoAnalysisConsumer(t *testing.T) {
 		t.Run("UC-041/A4 "+reason+" end reaches every consumer", func(t *testing.T) {
 			chain, seen := newChain()
 			chain(gamecontext.GameContext{SessionID: "game_" + reason, EndReason: reason})
-			for _, name := range []string{"experiment", "retro", "summary", "proposer"} {
+			for _, name := range []string{"experiment", "retro", "summary", "proposer", "journal"} {
 				if len(seen[name]) != 1 {
 					t.Errorf("%s saw %d %s ends, want 1", name, len(seen[name]), reason)
 				}

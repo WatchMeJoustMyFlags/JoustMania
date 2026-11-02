@@ -74,7 +74,7 @@ func TestGameEndChain_SummaryAndRetroSeePredictions(t *testing.T) {
 		t.Fatal("register failed")
 	}
 
-	chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), book.OnGameEnd, nil, retro.OnGameEnd, summaries.OnGameEnd, nil)
+	chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), book.OnGameEnd, nil, retro.OnGameEnd, summaries.OnGameEnd, nil, nil)
 	ended := running
 	inactive := false
 	ended.Session.GameActive = &inactive
@@ -117,7 +117,7 @@ func TestGameEndChain_SummaryAndRetroSeeGoal(t *testing.T) {
 	ended.Session.GameActive = &inactive
 	ended.Session.DurationSeconds = &dur
 	ended.EndReason = gamecontext.EndReasonZero
-	chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), book.OnGameEnd, nil, retro.OnGameEnd, summaries.OnGameEnd, nil)
+	chain := buildGameEndChain(newGameEndStaleCounter(metricnoopProvider()), book.OnGameEnd, nil, retro.OnGameEnd, summaries.OnGameEnd, nil, nil)
 	chain(ended)
 	retro.AwaitInflight()
 

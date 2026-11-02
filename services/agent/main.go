@@ -29,9 +29,11 @@ import (
 	"github.com/joustmania/agent/actions"
 	"github.com/joustmania/agent/decision"
 	"github.com/joustmania/agent/experiment"
+	"github.com/joustmania/agent/experiment/journal"
 	"github.com/joustmania/agent/flags"
 	"github.com/joustmania/agent/flagservice"
 	"github.com/joustmania/agent/gamecontext"
+	"github.com/joustmania/agent/gamejournal"
 	"github.com/joustmania/agent/gamerunner"
 	"github.com/joustmania/agent/gamesummary"
 	"github.com/joustmania/agent/gamewindow"
@@ -549,8 +551,10 @@ type components struct {
 	infraStore      *infracontext.Store
 	infraLoop       *decision.InfraLoop
 
-	retro            *decision.RetroCoordinator
-	summaries        *gamesummary.Coordinator
+	retro     *decision.RetroCoordinator
+	summaries *gamesummary.Coordinator
+	// gameJournal journals each real game end for calibration (UC-047, #1055).
+	gameJournal      *gamejournal.Recorder
 	proposalSink     *experiment.LateSink
 	proposerHold     *holdGate
 	proposals        *backgroundGroup
@@ -922,6 +926,9 @@ func (c *components) buildGameEnd() {
 	// its aggregates: a real game goes to the real-game window, a shadow game to its
 	// experiment's linked set (UC-042 BR-004, BR-005).
 	c.summaries.SetObserver(c.window)
+	// Calibration journal (UC-047 step 1, BR-009, #1055): one record per real game
+	// end on the agent-experiments volume, written off the ingest path.
+	c.gameJournal = newGameJournal(c.ctx, journal.DirFromEnv(), c.agentFlags, globalMeterProvider(), c.logger)
 	slog.Info("Game narrative builder enabled (#928, M7-1)")
 	slog.Info("Rolling game context window enabled (#929, M7-2)", "retention_cap", gamewindow.RetentionCap)
 
@@ -1219,7 +1226,7 @@ func (c *components) newStore(staleEnds otelmetric.Int64Counter) func(gameID str
 		// so its telemetry broke) is counted, kept out of experiments by
 		// expLoop.onGameEnd itself, and skipped by retro, summary and proposer.
 		s.OnGameEnd = buildGameEndChain(staleEnds, c.predictions.OnGameEnd,
-			experimentOnGameEnd, c.retro.OnGameEnd, c.summaries.OnGameEnd, c.proposeOnGameEnd)
+			experimentOnGameEnd, c.retro.OnGameEnd, c.summaries.OnGameEnd, c.proposeOnGameEnd, c.gameJournal.OnGameEnd)
 		return s
 	}
 }
