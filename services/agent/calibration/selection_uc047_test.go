@@ -79,8 +79,9 @@ func TestUC047_Eligible(t *testing.T) {
 		{"UC-047/BR-002 a game shorter than 10 s is excluded", func(r *gamejournal.Record) { r.DurationSeconds = fp(9.99) }, ReasonTooShort},
 		{"UC-047/BR-002 a missing duration is metrics_missing", func(r *gamejournal.Record) { r.DurationSeconds = nil }, ReasonMetricsMissing},
 		{"UC-047/BR-002 a non-finite duration is metrics_missing", func(r *gamejournal.Record) { r.DurationSeconds = fp(math.Inf(1)) }, ReasonMetricsMissing},
-		{"UC-047/BR-002 a player without a mean variance is metrics_missing", func(r *gamejournal.Record) { r.Players[2].MeanMovementVariance = nil }, ReasonMetricsMissing},
-		{"UC-047/BR-002 a NaN mean variance is metrics_missing", func(r *gamejournal.Record) { r.Players[0].MeanMovementVariance = fp(math.NaN()) }, ReasonMetricsMissing},
+		{"UC-047/BR-002 a missing elimination pace is metrics_missing", func(r *gamejournal.Record) { r.Metrics.EliminationPace = nil }, ReasonMetricsMissing},
+		{"UC-047/BR-002 a NaN elimination pace is metrics_missing", func(r *gamejournal.Record) { r.Metrics.EliminationPace = fp(math.NaN()) }, ReasonMetricsMissing},
+		{"UC-047/BR-002 a mover without a mean variance did not move", func(r *gamejournal.Record) { r.Players[1].MeanMovementVariance = nil }, ReasonTooFewMoved},
 		{"UC-047/BR-002 one mover is too few", func(r *gamejournal.Record) { r.Players[1].MeanMovementVariance = fp(0.0049) }, ReasonTooFewMoved},
 		{"UC-047/BR-002 no players is too few", func(r *gamejournal.Record) { r.Players = nil }, ReasonTooFewMoved},
 		{"UC-047/BR-002 one shaker at 10 times the second dominates", func(r *gamejournal.Record) { r.Players[0].MeanMovementVariance = fp(0.1) }, ReasonDominant},
@@ -103,6 +104,15 @@ func TestUC047_Eligible(t *testing.T) {
 	t.Run("UC-047/BR-002 just under 10 times the second does not dominate", func(t *testing.T) {
 		g := game("a")
 		g.Players[0].MeanMovementVariance = fp(0.0999)
+		if r, ok := Eligible(g); !ok {
+			t.Fatalf("eligible = false (%s), want true", r)
+		}
+	})
+
+	t.Run("UC-047/BR-002 a fast-death player without variance samples leaves the game eligible", func(t *testing.T) {
+		g := game("a")
+		g.Players = append(g.Players, gamejournal.Player{Eliminated: true})
+		g.Players[2].MeanMovementVariance = fp(math.NaN())
 		if r, ok := Eligible(g); !ok {
 			t.Fatalf("eligible = false (%s), want true", r)
 		}
@@ -239,16 +249,6 @@ func TestUC047_Bands(t *testing.T) {
 		sameIDs(t, b[BandLow], "x")
 		sameIDs(t, b[BandMiddle], "y")
 		sameIDs(t, b[BandHigh], "z")
-	})
-
-	t.Run("UC-047/BR-005 a missing pace metric is computed from the record", func(t *testing.T) {
-		slow := game("slow")
-		slow.Metrics.EliminationPace = nil
-		slow.Eliminations = 1 // 1 per 20 s = 3 per minute
-		fit := []gamejournal.Record{withPace("fast", 9), slow, withPace("mid", 5)}
-		b := Bands(fit)
-		sameIDs(t, b[BandLow], "slow")
-		sameIDs(t, b[BandHigh], "fast")
 	})
 
 	t.Run("UC-047/BR-005 the input is not reordered", func(t *testing.T) {

@@ -1,7 +1,6 @@
 package calibration
 
 import (
-	"math"
 	"sort"
 
 	"github.com/joustmania/agent/gamejournal"
@@ -84,14 +83,7 @@ func Bands(fit []gamejournal.Record) [BandCount][]gamejournal.Record {
 }
 
 // eliminationPace is the journal's elimination_pace (eliminations per game
-// minute), recomputed from the record when the metric is absent. An eligible
-// game always has a finite duration of at least MinDurationSeconds.
+// minute). Eligible guarantees it is finite (BR-002 metrics_missing).
 func eliminationPace(rec gamejournal.Record) float64 {
-	if finite(rec.Metrics.EliminationPace) {
-		return *rec.Metrics.EliminationPace
-	}
-	if finite(rec.DurationSeconds) && *rec.DurationSeconds > 0 {
-		return float64(rec.Eliminations) / (*rec.DurationSeconds / 60)
-	}
-	return math.Inf(1)
+	return *rec.Metrics.EliminationPace
 }

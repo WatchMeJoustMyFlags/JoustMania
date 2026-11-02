@@ -54,15 +54,19 @@ func Eligible(rec gamejournal.Record) (Reason, bool) {
 	if rec.TestSession == nil || *rec.TestSession {
 		return ReasonTestSession, false
 	}
-	if !finite(rec.DurationSeconds) {
+	// Game-level inputs: the duration (BR-002) and the elimination pace the
+	// bands sort by (BR-005).
+	if !finite(rec.DurationSeconds) || !finite(rec.Metrics.EliminationPace) {
 		return ReasonMetricsMissing, false
 	}
+	// A player without a finite mean variance (no 1 s variance sample, for
+	// example eliminated before the first one) did not move: left out of the
+	// mover count and of the dominance check, never a reason on its own.
 	variances := make([]float64, 0, len(rec.Players))
 	for _, p := range rec.Players {
-		if !finite(p.MeanMovementVariance) {
-			return ReasonMetricsMissing, false
+		if finite(p.MeanMovementVariance) {
+			variances = append(variances, *p.MeanMovementVariance)
 		}
-		variances = append(variances, *p.MeanMovementVariance)
 	}
 	if *rec.DurationSeconds < MinDurationSeconds {
 		return ReasonTooShort, false
