@@ -107,12 +107,18 @@ func parseDescriptionsMD(t *testing.T) map[string]string {
 
 // Every registry description is the same text as its row in the flags.md §13.3
 // description table, and every row of the experiment catalog has one, so the
-// spec and what the proposer shows cannot drift (#2345).
+// spec and what the proposer shows cannot drift (#2345). A described row of
+// another set (agent/decision.prompt_profile, #2530) is quoted in flags.md §13.2.
 //
 // UC: UC-042 BR-008
 func TestDescriptionsMatchFlagsMD(t *testing.T) {
 	t.Run("UC-042/BR-008 registry descriptions equal the flags.md §13.3 description table", func(t *testing.T) {
 		md := parseDescriptionsMD(t)
+		rawMD, err := os.ReadFile(filepath.Join(root(t), "..", "..", "docs", "specs", "flags.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		flagsMD := string(rawMD)
 		reg := loadReal(t, "")
 		seen := map[string]bool{}
 		for _, p := range reg.Policies() {
@@ -123,7 +129,11 @@ func TestDescriptionsMatchFlagsMD(t *testing.T) {
 				continue
 			}
 			if p.Set != "game" {
-				t.Errorf("%s/%s: the description table lists game flags only", p.Set, p.Key)
+				// Outside the experiment catalog (#2530): the §13.3 table lists game flags only,
+				// so the row's §13.2 entry quotes the description instead.
+				if !strings.Contains(flagsMD, "Description: \""+p.Description+"\"") {
+					t.Errorf("%s/%s: flags.md §13.2 does not quote its description %q", p.Set, p.Key, p.Description)
+				}
 				continue
 			}
 			seen[p.Key] = true

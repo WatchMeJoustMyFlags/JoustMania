@@ -11,7 +11,8 @@ Stdlib only. Subcommands:
   admin-variant                 stdin: GET /{set}/{flag}; the persisted admin variant, or "-"
   ttl-left EPOCH                seconds until EPOCH (0 when past)
   verify-game ...               exit 0 when the game has a remote agent.decide span with the profile
-  manifest-line ...             one JSON line for the run manifest
+  manifest-line ...             one JSON line for the run manifest; exit 3 when the record is not
+                                bound to --expect-experiment / --expect-arm (#2530)
   report --manifest M (--jaeger-url U | --traces-file F) [--json]
                                 per arm: group and single grants, their timing in the
                                 game, and the outcomes
@@ -359,6 +360,10 @@ def main() -> int:
     m = sub.add_parser("manifest-line")
     for opt in ("arm", "profile", "seed", "rep", "archetype", "record-file"):
         m.add_argument("--" + opt, required=True)
+    # #2530: the game must be bound to the run's experiment and this arm (the record says so),
+    # or the arm's prompt profile never reached it.
+    m.add_argument("--expect-experiment", required=True)
+    m.add_argument("--expect-arm", required=True)
     m.add_argument("--started-ns", default="0")
     m.add_argument("--ended-ns", default="0")
     r = sub.add_parser("report")
@@ -386,6 +391,15 @@ def main() -> int:
     if args.cmd == "manifest-line":
         with open(args.record_file) as fh:
             record = json.load(fh)
+        got = (record.get("experiment_id", ""), record.get("arm", ""))
+        if got != (args.expect_experiment, args.expect_arm):
+            print(
+                f"manifest-line: game {record.get('game_id', '?')} is bound to experiment {got[0] or '-'} "
+                f"arm {got[1] or '-'}, not {args.expect_experiment} arm {args.expect_arm}: the agent "
+                "image ignores SHADOW_GAME_EXPERIMENT_ID / SHADOW_GAME_ARM (older than #2530?); stopping",
+                file=sys.stderr,
+            )
+            return 3
         print(
             json.dumps(
                 {

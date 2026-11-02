@@ -21,7 +21,8 @@
 # persist: true = an admin setting a write MAY persist with "persist": true
 # description: one line in game terms, at most 120 characters; required on every row
 #          with scope experiment+arm (the experiment proposer shows it, #2345), optional
-#          elsewhere; the same text as the flags.md §13.3 description table
+#          elsewhere; for the game set the same text as the flags.md §13.3 description table,
+#          for another set quoted in the row's flags.md §13.2 entry (#2530)
 #
 # A declared variant name is always accepted (within a variants subset). Numeric
 # ranges match the readers' clamps (services/game_coordinator/interventions.py,
@@ -91,7 +92,9 @@ flags:
   - {set: agent, key: policy.group_grant.max_per_game, kind: overlay, scope: [stack], bounds: {range: [0, 3], integer: true}}
   - {set: agent, key: policy.group_grant.max_targets, kind: overlay, scope: [stack], bounds: {range: [2, 6], integer: true}}
   # decision.prompt_profile (#2467 PR 5, UC-040 BR-036): operator-written, never by the agent (C-034).
-  - {set: agent, key: decision.prompt_profile, kind: overlay, scope: [stack], bounds: {variants: ["v1", "neutral"]}}
+  # experiment+arm (#2530): scripts/agent-group-ab.sh writes one value per arm; the rung never
+  # matches a real game. Not in the experiment catalog (that is the game set only).
+  - {set: agent, key: decision.prompt_profile, kind: overlay, scope: [stack, experiment+arm], bounds: {variants: ["v1", "neutral"]}, description: "wording of the LLM decide prompt: v1 shipped, neutral levers by effect"}
   - {set: agent, key: fitness.accelerate.target_session_seconds, kind: overlay, scope: [stack]}
   - {set: agent, key: verdict_min_n, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}
   - {set: agent, key: verdict_min_pairs, kind: overlay, scope: [stack], bounds: {range: [1, 1000], integer: true}}

@@ -5,32 +5,48 @@ neutrally? We enable the capability and measure; no rule fires a group shield (U
 
 ## What the script guarantees (and what it does not)
 
-- **The flags are global.** The six flags it writes (`decision.prompt_profile`, `decision.backend`,
-  `interventions_allowed`, `llm.eligible_game_kinds`, `experiment_dynamic_enabled`, `policy.group_grant.enabled`)
-  are registered with stack scope only; none can be limited to shadow games. While a run is up, a real game sees
-  them too: the permissive `shadow_group` allow-list, the chosen backend, the neutral wording.
-- **Real games are protected by the guard, not by the scope.** The script refuses to start while the flag service
+- **Five flags are global.** `decision.backend`, `interventions_allowed` (`shadow_group`), `llm.eligible_game_kinds`,
+  `experiment_dynamic_enabled` and `policy.group_grant.enabled` are registered with stack scope only; none can be
+  limited to shadow games. While a run is up, a real game sees them too.
+- **The guard protects real games.** The script refuses to start while the flag service
   lists a game that is not a shadow game (an unknown kind counts as real), while `policy.group_grant.real_games` is
   not `off`, and when `interventions_allowed` is `none` (persisted, or a stack overlay: the kill switch) or unreadable. It checks
   again before every game, every 3 s during a game, while waiting for the first-game verification and after the last game, and aborts within one poll (container removed, flags restored, agent
-  started). A real game that starts in the seconds before a poll still sees the experiment flags. Run only when no
+  started). A real game that starts in the seconds before a poll still sees the five global flags. Run only when no
   real game will start.
+- **The prompt profile is per arm and never reaches a real game** (#2530). Each run has its own experiment id
+  (`group-ab-<epoch>-<pid>`, kept in `<out>/experiment`). The script writes `decision.prompt_profile` once per arm in
+  scope `experiment+arm` (arm `A` = `v1`, arm `B` = `neutral`) and starts every one-shot game bound to that experiment
+  and its arm (`SHADOW_GAME_EXPERIMENT_ID`, `SHADOW_GAME_ARM`). An arm value matches only a non-real game of that
+  experiment and arm. Each game's replay record must carry the experiment id and arm, or the run stops: an agent image
+  older than #2530 ignores the binding and would play both arms with `v1`.
+- **Real games make no remote LLM call during a run.** The script sets `llm.eligible_game_kinds=shadow_only`: shadow
+  games may call the backend, a real game decides on the rules path (`llm_not_eligible`). What a real game can still
+  see is the `shadow_group` allow-list and `policy.group_grant.enabled` (group shields stay refused there while
+  `real_games` is `off`).
+- **Flag service and agent version.** The `experiment+arm` scope of `decision.prompt_profile` and the `shadow_only`
+  variant come from the checkout (registry and baseline are mounted) and load in the pinned flag service after a
+  restart (`scripts/flags.sh restart`); without that restart the first write fails and the run stops and restores.
+  The agent image must include #2530 (the record check above).
 - The LLM budget is global. Cap the cost with `llm.max_requests_per_minute=stage` before the run.
 - The stack's agent container is stopped for the run (it would decide in the game too) and started again on exit.
 - **Verification.** After the first game the script checks that an `agent.decide` span of that game carries the
   arm's `decide.prompt_profile`. If not, it stops: the throwaway agent saw nothing (the collector sends spans to
   the `agent` network alias, which the one-off container does not have). Retry with `--use-aliases`; then the
   throwaway agent observes every game, real ones included, so keep the guard in mind. `--no-verify` skips the check.
-- **Restore.** The snapshot keeps each flag's overlay with its writer and remaining TTL. On exit, error, SIGINT,
+- **Restore.** The snapshot keeps each global flag's overlay with its writer and remaining TTL. On exit, error, SIGINT,
   SIGTERM or SIGHUP each flag is restored only while its overlay is still the `group-ab` one: an overlay another writer set
-  during the run, or one an admin write cleared, is left as it is (and reported). A run refuses to start when
+  during the run, or one an admin write cleared, is left as it is (and reported). The two arm values are cleared.
+  The restore reads and then writes, so an operator write in between can still be overwritten (a guarded stack write
+  is a possible follow-up of #2530). A run refuses to start when
   `snapshot.tsv` exists in its `--out`, or when a touched flag already carries a `group-ab` overlay.
 
 ### Manual recovery
 
 SIGKILL (or a lost terminal) skips the trap. Run `scripts/agent-group-ab.sh restore --out <dir>`: it restores the
-flags from `<dir>/snapshot.tsv`, removes leftover `group-ab-*` containers and starts the agent. It is safe to run
-twice. If the agent stays down, `docker compose start agent`; a reboot also starts it and drops the in-memory overlays.
+flags from `<dir>/snapshot.tsv`, clears the arm values of the experiment in `<dir>/experiment`, removes leftover `group-ab-*` containers and starts the agent. It is safe to run
+twice. If the agent stays down, `docker compose start agent`; a reboot also starts it and drops the in-memory overlays. Arm values left behind are dropped by the flag service 2 h after the experiment's
+last game or write (NFR-051).
 
 ## Run
 

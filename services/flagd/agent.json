@@ -87,7 +87,8 @@
       "variants": {
         "none": "",
         "real_only": "real",
-        "real_and_shadow": "real,shadow"
+        "real_and_shadow": "real,shadow",
+        "shadow_only": "shadow"
       },
       "defaultVariant": "real_only"
     },

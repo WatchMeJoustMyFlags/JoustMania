@@ -10,9 +10,12 @@
 #   scripts/flags.sh state                        GET /state (epoch, sync streams, live games)
 #   scripts/flags.sh get <set> [<flag>]           GET /<set>[/<flag>]
 #   scripts/flags.sh variant <set> <flag>         print the flag's effective default variant
-#   scripts/flags.sh set <set> <flag> <variant> [--writer W] [--ttl S] [--persist]
-#   scripts/flags.sh set-value <set> <flag> <json> [--writer W] [--ttl S] [--persist]
-#   scripts/flags.sh clear <set> <flag> [--persist] clear the stack overlay (or the persisted admin value)
+#   scripts/flags.sh set <set> <flag> <variant> [--writer W] [--ttl S] [--persist] [--experiment ID --arm ARM]
+#   scripts/flags.sh set-value <set> <flag> <json> [--writer W] [--ttl S] [--persist] [--experiment ID --arm ARM]
+#   scripts/flags.sh clear <set> <flag> [--persist] [--experiment ID --arm ARM]
+#                                                 clear the stack overlay (or the persisted admin value)
+#   --experiment ID --arm ARM (both or neither, #2530): the experiment+arm value instead of the stack
+#   overlay (scope {"experiment_id","arm"} in the PUT body, query parameters on DELETE)
 #   scripts/flags.sh reset <set> <writer>         clear every overlay that writer set in the set
 #
 # Env:
@@ -33,7 +36,7 @@ FLAGD_CONTAINER="${FLAGD_CONTAINER:-joustmania-flagd}"
 RESTART_TIMEOUT="${RESTART_TIMEOUT:-30}"
 
 usage() {
-  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -58,11 +61,11 @@ request() {
   rm -f "${out}"
 }
 
-# json_body KIND VALUE WRITER TTL PERSIST: builds a PUT body with python3 (safe quoting).
+# json_body KIND VALUE WRITER TTL PERSIST EXPERIMENT ARM: builds a PUT body with python3 (safe quoting).
 json_body() {
   python3 - "$@" <<'PY'
 import json, sys
-kind, value, writer, ttl, persist = sys.argv[1:6]
+kind, value, writer, ttl, persist, experiment, arm = sys.argv[1:8]
 body = {"writer": writer}
 if kind == "variant":
     body["variant"] = value
@@ -72,6 +75,8 @@ if ttl:
     body["ttl_seconds"] = float(ttl)
 if persist == "1":
     body["persist"] = True
+if experiment:
+    body["scope"] = {"experiment_id": experiment, "arm": arm}
 print(json.dumps(body))
 PY
 }
@@ -101,16 +106,25 @@ cmd_restart() {
 }
 
 parse_opts() {
-  WRITER="${FLAGS_WRITER}" TTL="" PERSIST=0
+  WRITER="${FLAGS_WRITER}" TTL="" PERSIST=0 EXPERIMENT="" ARM=""
   while (($#)); do
     case "$1" in
       --writer) WRITER="${2:?--writer needs a value}"; shift 2 ;;
       --ttl) TTL="${2:?--ttl needs seconds}"; shift 2 ;;
       --persist) PERSIST=1; shift ;;
+      --experiment) EXPERIMENT="${2:?--experiment needs an id}"; shift 2 ;;
+      --arm) ARM="${2:?--arm needs a value}"; shift 2 ;;
       *) echo "flags.sh: unknown option $1" >&2; exit 2 ;;
     esac
   done
+  if [[ -n "${EXPERIMENT}" && -z "${ARM}" || -z "${EXPERIMENT}" && -n "${ARM}" ]]; then
+    echo "flags.sh: --experiment and --arm go together" >&2
+    exit 2
+  fi
 }
+
+# urlencode S: S as a query parameter value.
+urlencode() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
 
 main() {
   (($#)) || usage
@@ -134,7 +148,7 @@ main() {
       parse_opts "$@"
       local kind=variant
       [[ "${cmd}" == set-value ]] && kind=value
-      request PUT "/${set}/${flag}" "$(json_body "${kind}" "${value}" "${WRITER}" "${TTL}" "${PERSIST}")"
+      request PUT "/${set}/${flag}" "$(json_body "${kind}" "${value}" "${WRITER}" "${TTL}" "${PERSIST}" "${EXPERIMENT}" "${ARM}")"
       ;;
     clear)
       (($# >= 2)) || usage
@@ -142,6 +156,9 @@ main() {
       shift 2
       parse_opts "$@"
       ((PERSIST)) && query="?persist=true"
+      if [[ -n "${EXPERIMENT}" ]]; then
+        query="${query:-?}${query:+&}experiment_id=$(urlencode "${EXPERIMENT}")&arm=$(urlencode "${ARM}")"
+      fi
       request DELETE "/${set}/${flag}${query}" >/dev/null
       ;;
     reset)

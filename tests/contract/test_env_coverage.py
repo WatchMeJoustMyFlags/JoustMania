@@ -99,6 +99,14 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "agent",
         "SHADOW_GAME_SENSITIVITY",
     ): "one-shot shadow runner only; empty or out of 0-4 = sensitivity 2",
+    (
+        "agent",
+        "SHADOW_GAME_EXPERIMENT_ID",
+    ): "one-shot shadow runner only (#2530); empty with SHADOW_GAME_ARM = an unbound game",
+    (
+        "agent",
+        "SHADOW_GAME_ARM",
+    ): "one-shot shadow runner only (#2530); empty with SHADOW_GAME_EXPERIMENT_ID = an unbound game",
     # ---- agent: code-improvement promotion (#1011), never on in the compose stack ----
     ("agent", "AGENT_CODE_IMPROVEMENT_ENABLED"): _OPT_IN_OFF,
     ("agent", "AGENT_AUTONOMOUS_ENABLED"): _OPT_IN_OFF,

@@ -12,6 +12,9 @@ undeclared variant fails here exactly as it would against the service:
     PUT    /{set}/{flag}          {"variant"|"value", "writer", "persist"}: 422 flag_read_only / out_of_bounds;
                                   "persist": true sets the persisted admin value and drops the stack overlay
     DELETE /{set}/{flag}          clear the stack overlay (?persist=true: the persisted admin value)
+                                  (?experiment_id=X&arm=Y: that arm value, #2530)
+    A PUT with "scope": {"experiment_id", "arm"} writes an arm value (registry scope experiment+arm, else
+    400); GET shows them as "experiments": {id: {arm: {variant, value, writer}}}.
     DELETE /{set}?writer=W        clear that writer's stack overlays (admin values stay)
 
 The persisted admin value is a layer under the stack overlay, as in the service.
@@ -48,6 +51,7 @@ def load_registry(path):
                     "persist": "persist: true" in line,
                     "free_string": "free_string: true" in line,
                     "range": "range:" in line,
+                    "scopes": [x.strip() for x in m.group(4).split(",")],
                 }
     return rows
 
@@ -68,6 +72,7 @@ class Fake:
         self.log_path = log_path
         self.overlays = {}  # (set, flag) -> stack overlay {"variant", "value", "writer"}
         self.admin = {}  # (set, flag) -> persisted admin value {"variant", "value", "writer"}
+        self.arms = {}  # (set, flag) -> {experiment_id: {arm: {"variant", "value", "writer"}}}
         self.games = games
         self.games_file = ""
         self.scope_values = scope_values
@@ -100,7 +105,7 @@ class Fake:
                     layers[name]["expires_at"] = time.strftime(
                         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(ov["expires_at"])
                     )
-        return {
+        out = {
             "flag": key,
             "mutable": (flag_set, key) in self.registry,
             "baseline_default": flag["defaultVariant"],
@@ -110,6 +115,9 @@ class Fake:
             "stack_overlay": layers.get("stack_overlay"),
             "admin_value": layers.get("admin_value"),
         }
+        if self.arms.get((flag_set, key)):
+            out["experiments"] = self.arms[(flag_set, key)]
+        return out
 
 
 def make_handler(fake):
@@ -194,6 +202,18 @@ def make_handler(fake):
                     422, "flag_read_only", f"{flag_set}/{key} is read-only baseline"
                 )
             body = json.loads(raw or "{}")
+            scope = body.get("scope") or {}
+            exp, arm = scope.get("experiment_id", ""), scope.get("arm", "")
+            if set(scope) - {"experiment_id", "arm"} or bool(exp) != bool(arm):
+                return self._err(
+                    400, "malformed", "the fake knows only stack and experiment+arm"
+                )
+            if exp and "experiment+arm" not in row["scopes"]:
+                return self._err(
+                    400,
+                    "malformed",
+                    f"the scope does not fit {key} (allowed: {row['scopes']})",
+                )
             if ("variant" in body) == ("value" in body):
                 return self._err(400, "malformed", "exactly one of variant and value")
             if body.get("persist") and not row["persist"]:
@@ -231,7 +251,11 @@ def make_handler(fake):
             if body.get("ttl_seconds"):
                 entry["expires_at"] = time.time() + float(body["ttl_seconds"])
             with fake.lock:
-                if body.get("persist"):
+                if exp:
+                    fake.arms.setdefault((flag_set, key), {}).setdefault(exp, {})[
+                        arm
+                    ] = entry
+                elif body.get("persist"):
                     # a persisted write replaces the stack overlay (state/write.go)
                     fake.admin[(flag_set, key)] = entry
                     fake.overlays.pop((flag_set, key), None)
@@ -268,6 +292,14 @@ def make_handler(fake):
                         del fake.overlays[k]
                     return self._send(204)
                 if len(parts) == 2 and parts[0] in fake.sets:
+                    exp = (query.get("experiment_id") or [""])[0]
+                    arm = (query.get("arm") or [""])[0]
+                    if exp or arm:
+                        by_arm = fake.arms.get(tuple(parts), {}).get(exp, {})
+                        by_arm.pop(arm, None)
+                        if not by_arm:
+                            fake.arms.get(tuple(parts), {}).pop(exp, None)
+                        return self._send(204)
                     if (query.get("persist") or [""])[0] == "true":
                         fake.admin.pop(tuple(parts), None)
                     else:

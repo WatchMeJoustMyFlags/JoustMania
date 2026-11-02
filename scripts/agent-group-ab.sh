@@ -9,12 +9,19 @@
 # The script never decides when a group shield is right; it only offers the lever and counts
 # what the model does.
 #
-# THE FLAGS ARE GLOBAL. Every flag below is registered with scope [stack] only
+# FIVE FLAGS ARE GLOBAL. decision.backend, interventions_allowed, llm.eligible_game_kinds,
+# experiment_dynamic_enabled and policy.group_grant.enabled are registered with scope [stack] only
 # (services/flag-service/registry.yaml), so none can be limited to shadow games. While a run is
-# up, real games see them too. The protection of real games is the guard, not the scope:
-# the script refuses to start, and polls every 3 s during each game, while a real game is live
-# or policy.group_grant.real_games is not off. On a violation it aborts within one poll (3 s) and restores.
-# A game that starts in the seconds before a poll sees the experiment flags.
+# up, real games see them too. THE GUARD PROTECTS REAL GAMES, not the scope: the script refuses to
+# start, and polls every 3 s during each game, while a real game is live or
+# policy.group_grant.real_games is not off. On a violation it aborts within one poll (3 s) and
+# restores. A game that starts in the seconds before a poll sees the five global flags.
+# THE PROMPT PROFILE IS PER ARM and never reaches a real game (#2530): each run has its own
+# experiment id (DIR/experiment); decision.prompt_profile is written once per arm in scope
+# experiment+arm (A v1, B neutral) and every game is bound to its arm (SHADOW_GAME_EXPERIMENT_ID,
+# SHADOW_GAME_ARM). A game whose replay record lacks the experiment id and arm stops the run (an
+# agent image that ignores the binding). REAL GAMES MAKE NO REMOTE LLM CALL during a run:
+# llm.eligible_game_kinds is written shadow_only.
 #
 # Usage:
 #   scripts/agent-group-ab.sh run --archetype <name> [--seeds 1,2,3] [--reps 2] [--backend jev] --out DIR
@@ -26,17 +33,18 @@
 #   1. refuses to start when a real game is live, real_games is not off, a persisted
 #      interventions_allowed=none (the admin kill switch) would be lifted, DIR/snapshot.tsv exists
 #      (a killed run) or a touched flag already carries a group-ab overlay;
-#   2. snapshots the stack overlay of the six flags it writes, with writer and expiry
-#      (DIR/snapshot.tsv): decision.prompt_profile, decision.backend, interventions_allowed,
-#      llm.eligible_game_kinds, experiment_dynamic_enabled, policy.group_grant.enabled;
+#   2. snapshots the stack overlay of the five global flags it writes, with writer and expiry
+#      (DIR/snapshot.tsv), then writes the two arm values of decision.prompt_profile;
 #   3. stops the stack's agent container (it would decide in the one-shot game too; marker
 #      DIR/agent-was-running);
-#   4. runs the seed-matched games A,B,B,A per seed (reps 2); the first game is verified: its
-#      agent.decide spans must carry the arm's profile, or the run stops;
+#   4. runs the seed-matched games A,B,B,A per seed (reps 2); each game's replay record must carry
+#      the experiment id and arm; the first game is verified: its agent.decide spans must carry
+#      the arm's profile, or the run stops;
 #   5. on exit, error, SIGINT or SIGTERM: restores each flag (same writer, remaining TTL) only
-#      when its overlay is still the group-ab one, removes group-ab-* containers and starts the agent.
+#      when its overlay is still the group-ab one, clears the arm values, removes group-ab-*
+#      containers and starts the agent.
 # SIGHUP (a lost terminal) restores like SIGTERM and exits 129.
-# SIGKILL skips the trap: run `restore --out DIR` (flags, containers, agent).
+# SIGKILL skips the trap: run `restore --out DIR` (flags, arm values, containers, agent).
 # Each finished game appends one line to DIR/manifest.jsonl.
 #
 # report: per arm, from Jaeger, only games whose remote agent.decide spans carry the arm's
@@ -62,16 +70,18 @@ COMPOSE="${COMPOSE:-docker compose}"
 AGENT_SERVICE="${AB_AGENT_SERVICE:-agent}"
 WRITER="group-ab"
 CONTAINER_PREFIX="group-ab-"
-# Flags the run writes; the snapshot and the restore cover exactly these.
-TOUCHED=(decision.prompt_profile decision.backend interventions_allowed llm.eligible_game_kinds
+# Stack flags the run writes; the snapshot and the restore cover exactly these.
+# decision.prompt_profile is not here: it is written per arm (experiment+arm), never at stack scope.
+TOUCHED=(decision.backend interventions_allowed llm.eligible_game_kinds
   experiment_dynamic_enabled policy.group_grant.enabled)
+PROFILE_FLAG=decision.prompt_profile
 
 usage() {
-  sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
-OUT="" CLEANUP_ARMED=0
+OUT="" CLEANUP_ARMED=0 EXP=""
 
 flag_view() { "${FLAGS_SH}" get agent "$1"; }
 tool() { python3 "${TOOL}" "$@"; }
@@ -153,9 +163,27 @@ restore_flags() {
   return "${rc}"
 }
 
-# recover DIR: flags back, leftover group-ab containers removed, the stack agent started again.
+# clear_arms DIR: delete the run's two arm values (idempotent: 204 when absent).
+clear_arms() {
+  local dir="$1" exp arm ok=1
+  [[ -s "${dir}/experiment" ]] || return 0
+  exp="$(cat "${dir}/experiment")"
+  for arm in A B; do
+    "${FLAGS_SH}" clear agent "${PROFILE_FLAG}" --experiment "${exp}" --arm "${arm}" || ok=0
+  done
+  if ((ok)); then
+    mv "${dir}/experiment" "${dir}/experiment.cleared"
+  else
+    echo "agent-group-ab: arm values of ${exp} not cleared; re-run: $0 restore --out ${dir}" >&2
+    return 3
+  fi
+}
+
+# recover DIR: flags back, arm values cleared, leftover group-ab containers removed, the stack
+# agent started again.
 recover() {
   local dir="$1" rc=0 id
+  clear_arms "${dir}" || rc=3
   if [[ -s "${dir}/snapshot.tsv" ]]; then
     if restore_flags "${dir}/snapshot.tsv"; then
       mv "${dir}/snapshot.tsv" "${dir}/snapshot.tsv.restored"
@@ -196,15 +224,12 @@ run_game() {
   local arm="$1" seed="$2" rep="$3" archetype="$4" profile name line="" deadline timeout rc=0 started ended tick=0
   profile="$(arm_profile "${arm}")"
   real_guard || return $?
-  "${FLAGS_SH}" set agent decision.prompt_profile "${profile}" --writer "${WRITER}" >/dev/null || {
-    echo "agent-group-ab: could not set decision.prompt_profile=${profile}; stopping" >&2
-    return 3
-  }
   name="${CONTAINER_PREFIX}$$-${arm}-${seed}-${rep}"
   started="$(date +%s%N)"
   # shellcheck disable=SC2086
   ${COMPOSE} run -d --no-deps ${ALIAS_ARGS} --name "${name}" -e AGENT_SHADOW_GAME=true -e SHADOW_GAME_MODE=JoustFFA \
-    -e "SHADOW_GAME_ARCHETYPE=${archetype}" -e "SHADOW_GAME_SEED=${seed}" "${AGENT_SERVICE}" >/dev/null || return 3
+    -e "SHADOW_GAME_ARCHETYPE=${archetype}" -e "SHADOW_GAME_SEED=${seed}" \
+    -e "SHADOW_GAME_EXPERIMENT_ID=${EXP}" -e "SHADOW_GAME_ARM=${arm}" "${AGENT_SERVICE}" >/dev/null || return 3
   timeout="$("${HERE}/pattern-replay-check.sh" --show-timeout)" || timeout=420
   deadline=$((SECONDS + timeout))
   while ((SECONDS < deadline)); do
@@ -230,7 +255,7 @@ run_game() {
   printf '%s\n' "${line#PATTERN_REPLAY_RECORD }" >"${OUT}/record.tmp" || return 3
   tool manifest-line --arm "${arm}" --profile "${profile}" --seed "${seed}" --rep "${rep}" \
     --archetype "${archetype}" --record-file "${OUT}/record.tmp" --started-ns "${started}" --ended-ns "${ended}" \
-    >>"${OUT}/manifest.jsonl" || return 3
+    --expect-experiment "${EXP}" --expect-arm "${arm}" >>"${OUT}/manifest.jsonl" || return 3
   echo "game ${arm} (${profile}) seed ${seed} rep ${rep}: done"
 }
 
@@ -280,10 +305,11 @@ cmd_run() {
     echo "agent-group-ab: ${OUT}/snapshot.tsv exists (a run was killed?); run: $0 restore --out ${OUT}" >&2
     exit 3
   fi
-  if [[ -s "${OUT}/manifest.jsonl" ]]; then
-    echo "agent-group-ab: ${OUT}/manifest.jsonl exists; use a new --out" >&2
+  if [[ -s "${OUT}/manifest.jsonl" || -e "${OUT}/experiment" ]]; then
+    echo "agent-group-ab: ${OUT} holds an earlier run (manifest.jsonl or experiment); use a new --out" >&2
     exit 3
   fi
+  EXP="group-ab-$(date +%s)-$$"
 
   real_guard || exit $?
   # A kill switch (interventions_allowed=none, persisted or a stack overlay) would be overridden by our
@@ -311,10 +337,23 @@ cmd_run() {
   local flagset
   flagset() { "${FLAGS_SH}" set agent "$1" "$2" --writer "${WRITER}" >/dev/null; }
   flagset experiment_dynamic_enabled off
-  flagset llm.eligible_game_kinds real_and_shadow
+  # shadow games may call the remote backend, real games stay rules-only (#2530)
+  flagset llm.eligible_game_kinds shadow_only
   flagset interventions_allowed shadow_group
   flagset policy.group_grant.enabled on
   flagset decision.backend "${backend}"
+
+  # The arm values: written once, after the stack flags; the experiment file first, so a restore
+  # can always clear them.
+  printf '%s\n' "${EXP}" >"${OUT}/experiment"
+  local a
+  for a in A B; do
+    "${FLAGS_SH}" set agent "${PROFILE_FLAG}" "$(arm_profile "${a}")" --experiment "${EXP}" --arm "${a}" \
+      --writer "${WRITER}" >/dev/null || {
+      echo "agent-group-ab: could not set ${PROFILE_FLAG} for arm ${a} of ${EXP}; stopping" >&2
+      exit 3
+    }
+  done
 
   : >"${OUT}/manifest.jsonl"
   local seed rep order arm first=1

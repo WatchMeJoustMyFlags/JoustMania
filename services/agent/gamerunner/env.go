@@ -1,6 +1,7 @@
 package gamerunner
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -20,6 +21,12 @@ const (
 	envEnabled     = "AGENT_SHADOW_GAME"
 	envMode        = "SHADOW_GAME_MODE"
 	envSensitivity = "SHADOW_GAME_SENSITIVITY"
+
+	// Experiment binding of the one-shot game (#2530), both or neither: an operator
+	// A/B script (scripts/agent-group-ab.sh) binds each game to its arm so arm values
+	// of that experiment resolve in it.
+	envExperimentID = "SHADOW_GAME_EXPERIMENT_ID"
+	envArm          = "SHADOW_GAME_ARM"
 
 	// Endpoint overrides (default to the docker-compose service addresses).
 	envCoordinatorAddr = "GAME_COORDINATOR_ADDR"
@@ -59,6 +66,19 @@ func SpecFromEnv(runID string) Spec {
 		GameName:    getEnv(envMode, defaultMode),
 		Sensitivity: sensitivity,
 	}
+}
+
+// ExperimentFromEnv reads the one-shot game's experiment binding (#2530):
+// SHADOW_GAME_EXPERIMENT_ID and SHADOW_GAME_ARM, both or neither. Neither gives
+// ("", "", nil), an unbound game as before; exactly one is an error, and the
+// caller refuses the run rather than start a game that silently ignores the arm.
+func ExperimentFromEnv() (experimentID, arm string, err error) {
+	experimentID = strings.TrimSpace(os.Getenv(envExperimentID))
+	arm = strings.TrimSpace(os.Getenv(envArm))
+	if (experimentID == "") != (arm == "") {
+		return "", "", errors.New(envExperimentID + " and " + envArm + " must be set together")
+	}
+	return experimentID, arm, nil
 }
 
 func getEnv(key, def string) string {

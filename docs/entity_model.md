@@ -665,8 +665,8 @@ The replay record of one finished pattern game (`services/agent/patterngame/trac
 | max_game_seconds | Safety cap of the game | Integer | 4 | Not Null, Min: 30, Max: 3600 |
 | seed | Shared seed of the pair (UC-046 BR-006) | Long | 19 | Not Null, Min: 0 |
 | flag_digest | Digest of the resolved flags that shape the game (UC-046 BR-011), or `unavailable` | String | 64 | Not Null |
-| experiment_id | Experiment, empty for a one-shot game | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) |
-| arm | Arm, empty for a one-shot game | String | 12 | Optional, Values: experimental, control |
+| experiment_id | Experiment; empty for a one-shot game unless `SHADOW_GAME_EXPERIMENT_ID` binds it (an operator experiment such as `group-ab-<epoch>-<pid>`, #2530) | String | 50 | Optional, Foreign Key (EXPERIMENT.experiment_id) for an agent experiment |
+| arm | Arm; empty for a one-shot game unless `SHADOW_GAME_ARM` binds it (#2530) | String | 12 | Optional, Values: experimental, control (agent experiment), any label for an operator arm (`A`, `B`) |
 | pair_index | Pair p; -1 for a one-shot game | Integer | 4 | Not Null, Min: -1 |
 | outcome | How the game ended | String | 11 | Not Null, Values: winner, tie, timeout, agent_ended, aborted, error |
 | censored | Right-censored at the cap or by the agent's `end_game` | Boolean | 1 | Not Null |
