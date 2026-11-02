@@ -959,6 +959,11 @@ jobs:
             services/flag-service/go.sum
             services/agent/go.sum
 
+      - name: Pre-pull docker images (bounded retries, #2551)
+        # The harness starts flagd (tests/service/harness/flag_plane.py); a registry TLS flake must not fail the job.
+        timeout-minutes: 5
+        run: scripts/ci/docker-pull-retry.sh compose:flagd
+
       # rust-hid's live flag test (tests/service/test_rust_hid_flag_live.py, #1713)
       # builds rust-hid: same toolchain and system packages as Rust Checks.
       - name: Install rust-hid build dependencies
