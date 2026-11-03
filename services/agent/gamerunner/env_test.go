@@ -2,6 +2,8 @@ package gamerunner
 
 import (
 	"testing"
+
+	gcpb "github.com/joustmania/agent/gen/game_coordinator"
 )
 
 func TestEnabled(t *testing.T) {
@@ -56,4 +58,78 @@ func TestSpecFromEnv_DefaultsAndGuards(t *testing.T) {
 	if spec.GameName != defaultMode {
 		t.Errorf("GameName = %q, want default %q", spec.GameName, defaultMode)
 	}
+}
+
+// UC: UC-040 BR-036
+// The one-shot runner's experiment binding (#2530): both env vars bind the game, neither
+// leaves it unbound, exactly one refuses the run.
+func TestExperimentFromEnv(t *testing.T) {
+	t.Run("UC-040/BR-036 both bind the game to the arm", func(t *testing.T) {
+		t.Setenv(envExperimentID, " group-ab-1-2 ")
+		t.Setenv(envArm, "B")
+		id, arm, err := ExperimentFromEnv()
+		if err != nil || id != "group-ab-1-2" || arm != "B" {
+			t.Fatalf("got %q %q %v", id, arm, err)
+		}
+	})
+	t.Run("UC-040/BR-036 neither leaves the game unbound", func(t *testing.T) {
+		t.Setenv(envExperimentID, "")
+		t.Setenv(envArm, "")
+		id, arm, err := ExperimentFromEnv()
+		if err != nil || id != "" || arm != "" {
+			t.Fatalf("got %q %q %v", id, arm, err)
+		}
+	})
+	for _, tc := range []struct{ name, id, arm string }{
+		{"UC-040/BR-036 an experiment id without an arm refuses", "group-ab-1-2", ""},
+		{"UC-040/BR-036 an arm without an experiment id refuses", "", "A"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(envExperimentID, tc.id)
+			t.Setenv(envArm, tc.arm)
+			if _, _, err := ExperimentFromEnv(); err == nil {
+				t.Fatal("want an error")
+			}
+		})
+	}
+	t.Run("UC-040/BR-036 a bound spec starts the game with origin AGENT and the ids", func(t *testing.T) {
+		spec := Spec{GameName: "JoustFFA", Sensitivity: 2, ExperimentID: "group-ab-1-2", Arm: "A"}
+		cfg := buildStartConfig(spec, []string{"a", "b"})
+		if cfg.Origin != gcpb.GameOrigin_GAME_ORIGIN_AGENT || cfg.ExperimentId != "group-ab-1-2" || cfg.Arm != "A" {
+			t.Fatalf("start config = %v", cfg)
+		}
+	})
+}
+
+// UC: UC-040 BR-036
+// BindExperimentFromEnv is what main.go calls: the env reaches the start config, and a
+// half-set env refuses the run (#2530).
+func TestBindExperimentFromEnv(t *testing.T) {
+	t.Run("UC-040/BR-036 both vars bind the spec and the start config", func(t *testing.T) {
+		t.Setenv(envExperimentID, "group-ab-1-2")
+		t.Setenv(envArm, "B")
+		spec, err := BindExperimentFromEnv(Spec{GameName: "JoustFFA"})
+		if err != nil || spec.ExperimentID != "group-ab-1-2" || spec.Arm != "B" {
+			t.Fatalf("spec = %+v, err = %v", spec, err)
+		}
+		cfg := buildStartConfig(spec, []string{"a", "b"})
+		if cfg.Origin != gcpb.GameOrigin_GAME_ORIGIN_AGENT || cfg.ExperimentId != "group-ab-1-2" || cfg.Arm != "B" {
+			t.Fatalf("start config = %v", cfg)
+		}
+	})
+	t.Run("UC-040/BR-036 neither var leaves the spec unbound", func(t *testing.T) {
+		t.Setenv(envExperimentID, "")
+		t.Setenv(envArm, "")
+		spec, err := BindExperimentFromEnv(Spec{GameName: "JoustFFA"})
+		if err != nil || spec.ExperimentID != "" || spec.Arm != "" {
+			t.Fatalf("spec = %+v, err = %v", spec, err)
+		}
+	})
+	t.Run("UC-040/BR-036 only one var set refuses the run", func(t *testing.T) {
+		t.Setenv(envExperimentID, "group-ab-1-2")
+		t.Setenv(envArm, "")
+		if _, err := BindExperimentFromEnv(Spec{GameName: "JoustFFA"}); err == nil {
+			t.Fatal("want an error")
+		}
+	})
 }

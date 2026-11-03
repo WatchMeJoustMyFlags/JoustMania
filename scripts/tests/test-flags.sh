@@ -6,6 +6,7 @@
 #   ./scripts/tests/test-flags.sh
 #
 # UC: UC-053 A1 A5
+# UC: UC-040 BR-036
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hermetic.sh"
 
@@ -71,6 +72,24 @@ last_request() { tail -n 1 "${STUB_LOG}"; }
 [[ "$(last_request)" == 'DELETE http://flags.test/flags/agent/interventions_allowed?persist=true ' ]] || fail "clear persist: $(last_request)"
 "${HELPER}" reset agent stage
 [[ "$(last_request)" == 'DELETE http://flags.test/flags/agent?writer=stage ' ]] || fail "reset: $(last_request)"
+
+# #2530: an experiment+arm value (both or neither)
+"${HELPER}" set agent decision.prompt_profile neutral --writer group-ab --experiment group-ab-1-2 --arm B >/dev/null
+[[ "$(last_request)" == 'PUT http://flags.test/flags/agent/decision.prompt_profile {"writer": "group-ab", "variant": "neutral", "scope": {"experiment_id": "group-ab-1-2", "arm": "B"}}' ]] \
+  || fail "set --experiment: $(last_request)"
+"${HELPER}" set-value agent decision.prompt_profile '"v1"' --experiment group-ab-1-2 --arm A >/dev/null
+[[ "$(last_request)" == *'"scope": {"experiment_id": "group-ab-1-2", "arm": "A"}'* ]] || fail "set-value --experiment: $(last_request)"
+"${HELPER}" clear agent decision.prompt_profile --experiment group-ab-1-2 --arm A
+[[ "$(last_request)" == 'DELETE http://flags.test/flags/agent/decision.prompt_profile?experiment_id=group-ab-1-2&arm=A ' ]] \
+  || fail "clear --experiment: $(last_request)"
+n="$(wc -l <"${STUB_LOG}")"
+set +e
+"${HELPER}" clear agent decision.prompt_profile --arm A 2>/dev/null
+[[ $? -eq 2 ]] || fail "--arm without --experiment must exit 2"
+"${HELPER}" set agent decision.prompt_profile v1 --experiment group-ab-1-2 2>/dev/null
+[[ $? -eq 2 ]] || fail "--experiment without --arm must exit 2"
+set -e
+[[ "$(wc -l <"${STUB_LOG}")" == "${n}" ]] || fail "a half experiment scope sent a request"
 
 # reads
 "${HELPER}" state >/dev/null

@@ -2,8 +2,10 @@
 # Self-contained tests for scripts/agent-group-ab.sh (#2467 PR 6): the real-game guard (start, between
 # games and polled during a game), snapshot and restore of every flag it writes (writer and TTL kept,
 # an operator change mid-run left alone), SIGTERM and SIGKILL + `restore --out`, the A,B,B,A order, the
-# first-game verification and the report's decide.prompt_profile filter. Fake flag service + stubbed
-# docker, no stack.
+# first-game verification and the report's decide.prompt_profile filter. #2530: the prompt profile is
+# written once per arm (experiment+arm, never stack), every game is bound to its arm, a record without
+# the binding stops the run, eligible kinds is shadow_only, and every exit clears the arm values.
+# Fake flag service + stubbed docker, no stack.
 #
 # UC: UC-040 A47 BR-033 BR-036
 set -euo pipefail
@@ -31,6 +33,22 @@ ov_writer() { ov "$1" | cut -f2; }
 ov_has_ttl() { [[ "$(ov "$1" | cut -f3)" != "-" ]]; }
 TOUCHED=(decision.prompt_profile decision.backend interventions_allowed llm.eligible_game_kinds
   experiment_dynamic_enabled policy.group_grant.enabled)
+# arms_json: the arm values of decision.prompt_profile as {"<exp>/<arm>": "<variant>"}.
+arms_json() {
+  "${FLAGS}" get agent decision.prompt_profile | python3 -c '
+import json, sys
+v = json.load(sys.stdin).get("experiments") or {}
+print(json.dumps({e + "/" + a: x["variant"] for e, arms in v.items() for a, x in arms.items()}, sort_keys=True))'
+}
+# arms_written: both arm values of one experiment are set (A v1, B neutral): the run has started.
+arms_written() {
+  arms_json | python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+exps = {k.split("/")[0] for k in v}
+sys.exit(0 if len(exps) == 1 and sorted(v.values()) == ["neutral", "v1"] else 1)'
+}
+no_arms() { [[ "$(arms_json)" == "{}" ]]; }
 clear_all() {
   local f
   for f in "${TOUCHED[@]}" policy.group_grant.real_games; do
@@ -44,7 +62,6 @@ wait_until() { # wait_until <seconds> <command...>
   for ((i = 0; i < n; i++)); do "$@" && return 0; sleep 0.1; done
   return 1
 }
-profile_is() { [[ "$(ov_spec decision.prompt_profile)" == "$1" ]]; }
 seed_operator_overlays() {
   "${FLAGS}" set agent interventions_allowed ambient --writer operator --ttl 3600 >/dev/null
   "${FLAGS}" set agent decision.backend claude --writer operator >/dev/null
@@ -69,17 +86,37 @@ all_clear() {
 AB_RUN=("${AB}" run --archetype slow_cascade --seeds 1 --reps 1 --no-verify)
 run_ab() { "${AB_RUN[@]}" "$@"; }
 
-# Stub docker: `compose ps` answers "running", `ps` lists a leftover container, `logs` prints a replay
-# record unless the "hang" file exists (then it waits a moment and prints nothing). Every call is logged.
+# Stub docker: `compose ps` answers "running", `ps` lists a leftover container, `compose run` keeps the
+# container's SHADOW_GAME_EXPERIMENT_ID / SHADOW_GAME_ARM, `logs` prints a replay record bound to them
+# (unbound when the "old-agent" file exists, as an agent image older than #2530) unless the "hang" file
+# exists (then it waits a moment and prints nothing). Every call is logged.
 cat >"${WORK}/bin/docker" <<SH
 #!/usr/bin/env bash
 echo "\$*" >>"${WORK}/docker.log"
 case "\$1" in
-  compose) [[ "\$2" == ps ]] && echo abc123 ;;
+  compose)
+    [[ "\$2" == ps ]] && echo abc123
+    if [[ "\$2" == run ]]; then
+      name="" exp="" arm=""
+      while ((\$#)); do
+        case "\$1" in
+          --name) name="\$2"; shift ;;
+          SHADOW_GAME_EXPERIMENT_ID=*) exp="\${1#*=}" ;;
+          SHADOW_GAME_ARM=*) arm="\${1#*=}" ;;
+        esac
+        shift
+      done
+      printf '%s %s\n' "\${exp}" "\${arm}" >"${WORK}/bind-\${name}"
+    fi ;;
   ps) echo cid1 ;;
   logs) if [[ -e "${WORK}/hang" ]]; then sleep 0.5; exit 0; fi
         if [[ -e "${WORK}/flip-on-b" && "\$2" == *-B-* ]]; then echo '[{"game_id":"r","game_kind":"real"}]' >"${WORK}/games.json"; fi
-        echo 'PATTERN_REPLAY_RECORD {"game_id":"gfix","outcome":"winner","winner_slot":1}' ;;
+        read -r exp arm <"${WORK}/bind-\$2" || true
+        if [[ -e "${WORK}/old-agent" ]]; then
+          echo 'PATTERN_REPLAY_RECORD {"game_id":"gfix","outcome":"winner","winner_slot":1}'
+        else
+          echo "PATTERN_REPLAY_RECORD {\"game_id\":\"gfix\",\"experiment_id\":\"\${exp}\",\"arm\":\"\${arm}\",\"outcome\":\"winner\",\"winner_slot\":1}"
+        fi ;;
 esac
 exit 0
 SH
@@ -117,6 +154,17 @@ ok "group lever on and shadow_group set during the run" "$(grep -q 'PUT.*policy.
 ok "experiment_dynamic_enabled was written off during the run" "$(grep 'PUT.*experiment_dynamic_enabled' "${FAKE_FLAG_LOG}" | grep -q '"variant": "off"' && echo 0 || echo 1)"
 ok "real_games never written by the run (only the test's own write)" "$([[ "$(grep -c 'PUT.*real_games' "${FAKE_FLAG_LOG}")" == 1 ]] && echo 0 || echo 1)"
 ok "seed passed to the one-shot runner" "$(grep -q 'SHADOW_GAME_SEED=7' "${WORK}/docker.log" && echo 0 || echo 1)"
+exp2="$(cat "${WORK}/o2/experiment.cleared" 2>/dev/null || true)"
+ok "the run's experiment id is kept (group-ab-<epoch>-<pid>)" "$([[ "${exp2}" =~ ^group-ab-[0-9]+-[0-9]+$ ]] && echo 0 || echo 1)"
+ok "decision.prompt_profile is never written at stack scope" "$(grep 'PUT /agent/decision.prompt_profile' "${FAKE_FLAG_LOG}" | grep -vq '"scope"' && echo 1 || echo 0)"
+ok "the two arm values are written once each (A v1, B neutral)" "$([[ "$(grep -c 'PUT /agent/decision.prompt_profile' "${FAKE_FLAG_LOG}")" == 2 ]] &&
+  grep 'PUT /agent/decision.prompt_profile' "${FAKE_FLAG_LOG}" | grep -q "\"variant\": \"v1\", \"scope\": {\"experiment_id\": \"${exp2}\", \"arm\": \"A\"}" &&
+  grep 'PUT /agent/decision.prompt_profile' "${FAKE_FLAG_LOG}" | grep -q "\"variant\": \"neutral\", \"scope\": {\"experiment_id\": \"${exp2}\", \"arm\": \"B\"}" && echo 0 || echo 1)"
+ok "both arm values are deleted at the end" "$(grep -q "DELETE /agent/decision.prompt_profile?experiment_id=${exp2}&arm=A" "${FAKE_FLAG_LOG}" &&
+  grep -q "DELETE /agent/decision.prompt_profile?experiment_id=${exp2}&arm=B" "${FAKE_FLAG_LOG}" && no_arms && echo 0 || echo 1)"
+ok "every game is bound to the experiment and its arm" "$([[ "$(grep 'compose run' "${WORK}/docker.log" | grep -c "SHADOW_GAME_EXPERIMENT_ID=${exp2}")" == 4 &&
+  "$(grep 'compose run' "${WORK}/docker.log" | grep -o 'SHADOW_GAME_ARM=[AB]' | tr -d '\n')" == SHADOW_GAME_ARM=ASHADOW_GAME_ARM=BSHADOW_GAME_ARM=BSHADOW_GAME_ARM=A ]] && echo 0 || echo 1)"
+ok "llm.eligible_game_kinds is written shadow_only (no remote call in a real game)" "$(grep 'PUT /agent/llm.eligible_game_kinds' "${FAKE_FLAG_LOG}" | grep -q '"variant": "shadow_only"' && echo 0 || echo 1)"
 clear_all
 
 # 3. SIGTERM mid-run restores the flags and the agent.
@@ -125,11 +173,11 @@ seed_operator_overlays
 : >"${WORK}/docker.log"
 "${AB_RUN[@]}" --out "${WORK}/o3" >/dev/null 2>&1 &
 pid=$!
-wait_until 20 profile_is variant:v1 || true
-ok "profile set during the run" "$(profile_is variant:v1 && echo 0 || echo 1)"
+wait_until 20 arms_written || true
+ok "arm values set during the run" "$(arms_written && echo 0 || echo 1)"
 kill -TERM "${pid}"
 wait "${pid}" 2>/dev/null || true
-ok "SIGTERM restored every overlay exactly" "$(operator_overlays_intact && echo 0 || echo 1)"
+ok "SIGTERM restored every overlay exactly and cleared the arm values" "$(operator_overlays_intact && no_arms && echo 0 || echo 1)"
 ok "SIGTERM started the agent again" "$(grep -q 'compose start agent' "${WORK}/docker.log" && echo 0 || echo 1)"
 clear_all
 
@@ -138,10 +186,10 @@ seed_operator_overlays
 : >"${WORK}/docker.log"
 "${AB_RUN[@]}" --out "${WORK}/o4" >/dev/null 2>&1 &
 pid=$!
-wait_until 20 profile_is variant:v1 || true
+wait_until 20 arms_written || true
 kill -KILL "${pid}"
 wait "${pid}" 2>/dev/null || true
-ok "SIGKILL left the experiment flags behind" "$([[ "$(ov_writer decision.prompt_profile)" == group-ab ]] && echo 0 || echo 1)"
+ok "SIGKILL left the experiment flags and arm values behind" "$([[ "$(ov_writer decision.backend)" == group-ab ]] && arms_written && echo 0 || echo 1)"
 code=0
 run_ab --out "${WORK}/o4" 2>/dev/null || code=$?
 ok "a second run over the same --out is refused" "$([[ ${code} == 3 ]] && echo 0 || echo 1)"
@@ -150,7 +198,7 @@ run_ab --out "${WORK}/o4b" 2>/dev/null || code=$?
 ok "a run over leftover group-ab overlays is refused, nothing more written" "$([[ ${code} == 3 && ! -e "${WORK}/o4b/snapshot.tsv" ]] && echo 0 || echo 1)"
 rm -f "${WORK}/hang"
 "${AB}" restore --out "${WORK}/o4" >/dev/null
-ok "restore --out puts every overlay back exactly" "$(operator_overlays_intact && echo 0 || echo 1)"
+ok "restore --out puts every overlay back exactly and clears the arm values" "$(operator_overlays_intact && no_arms && [[ -e "${WORK}/o4/experiment.cleared" && ! -e "${WORK}/o4/experiment" ]] && echo 0 || echo 1)"
 ok "restore --out removes group-ab containers and starts the agent" "$(grep -q 'rm -f cid1' "${WORK}/docker.log" && grep -q 'compose start agent' "${WORK}/docker.log" && echo 0 || echo 1)"
 code=0
 "${AB}" restore --out "${WORK}/o4" >/dev/null 2>&1 || code=$?
@@ -162,14 +210,14 @@ touch "${WORK}/hang"
 seed_operator_overlays
 "${AB_RUN[@]}" --out "${WORK}/o5" >/dev/null 2>&1 &
 pid=$!
-wait_until 20 profile_is variant:v1 || true
+wait_until 20 arms_written || true
 "${FLAGS}" set agent decision.backend openai --writer operator >/dev/null
 "${FLAGS}" clear agent experiment_dynamic_enabled >/dev/null
 kill -TERM "${pid}"
 wait "${pid}" 2>/dev/null || true
 ok "the operator's new overlay survives" "$([[ "$(ov_spec decision.backend)" == variant:openai && "$(ov_writer decision.backend)" == operator ]] && echo 0 || echo 1)"
 ok "an overlay the operator cleared stays cleared" "$([[ "$(ov_spec experiment_dynamic_enabled)" == none ]] && echo 0 || echo 1)"
-ok "the other flags are restored" "$([[ "$(ov_spec interventions_allowed)" == variant:ambient && "$(ov_spec decision.prompt_profile)" == none ]] && echo 0 || echo 1)"
+ok "the other flags are restored" "$([[ "$(ov_spec interventions_allowed)" == variant:ambient && "$(ov_spec decision.prompt_profile)" == none ]] && no_arms && echo 0 || echo 1)"
 clear_all
 
 # 6. a real game appearing DURING a game aborts it at once (polled), restores and exits 4.
@@ -179,7 +227,7 @@ echo '[{"game_id":"s","game_kind":"shadow"}]' >"${WORK}/games.json"
 seed_operator_overlays
 "${AB_RUN[@]}" --out "${WORK}/o6" >/dev/null 2>&1 &
 pid=$!
-wait_until 20 profile_is variant:v1 || true
+wait_until 20 grep -q 'compose run' "${WORK}/docker.log" || true
 echo '[{"game_id":"r","game_kind":"real"}]' >"${WORK}/games.json"
 code=0
 wait "${pid}" 2>/dev/null || code=$?
@@ -189,7 +237,7 @@ echo '[{"game_id":"s","game_kind":"shadow"}]' >"${WORK}/games.json"
 rm -f "${WORK}/hang"
 clear_all
 
-# 7. a failed profile write stops the run (no game with the previous arm's profile).
+# 7. a failed arm write stops the run before any game.
 cat >"${WORK}/failprofile.sh" <<SH
 #!/usr/bin/env bash
 [[ "\$*" == *"set agent decision.prompt_profile"* ]] && exit 1
@@ -198,7 +246,16 @@ SH
 chmod +x "${WORK}/failprofile.sh"
 code=0
 FLAGS_SH="${WORK}/failprofile.sh" run_ab --out "${WORK}/o7" >/dev/null 2>&1 || code=$?
-ok "a failed profile write stops the run (exit 3), flags restored" "$([[ ${code} == 3 ]] && all_clear && echo 0 || echo 1)"
+ok "a failed arm write stops the run (exit 3) before any game, flags restored" "$([[ ${code} == 3 && ! -s "${WORK}/o7/manifest.jsonl" ]] && all_clear && no_arms && echo 0 || echo 1)"
+clear_all
+
+# 7b. an agent image that ignores SHADOW_GAME_EXPERIMENT_ID / SHADOW_GAME_ARM (older than #2530): its record
+#     has no binding, so the arm's profile never reached the game; the run stops at the first game.
+touch "${WORK}/old-agent"
+code=0
+run_ab --out "${WORK}/o7b" 2>"${WORK}/err7b" || code=$?
+rm -f "${WORK}/old-agent"
+ok "a record without the experiment binding stops the run (exit 3), nothing in the manifest, flags restored" "$([[ ${code} == 3 && ! -s "${WORK}/o7b/manifest.jsonl" ]] && all_clear && no_arms && grep -q 'SHADOW_GAME_EXPERIMENT_ID' "${WORK}/err7b" && echo 0 || echo 1)"
 clear_all
 
 # 8. first-game verification: the arm's profile must show up on an agent.decide span of the game.
@@ -206,24 +263,37 @@ python3 - "${WORK}" <<'PY'
 import json, sys
 
 
-def doc(profile):
+def doc(*profiles):
+    spans = []
+    for profile in profiles:
+        spans.append(span(profile))
+    return {"result": {"resourceSpans": [{"scopeSpans": [{"spans": spans}]}]}}
+
+
+def span(profile):
     attrs = [
         {"key": "game.id", "value": {"stringValue": "gfix"}},
         {"key": "decide.prompt_profile", "value": {"stringValue": profile}},
     ]
-    sp = {"name": "agent.decide", "startTimeUnixNano": "1", "endTimeUnixNano": "2", "attributes": attrs}
-    return {"result": {"resourceSpans": [{"scopeSpans": [{"spans": [sp]}]}]}}
+    return {"name": "agent.decide", "startTimeUnixNano": "1", "endTimeUnixNano": "2", "attributes": attrs}
 
 
-json.dump(doc("v1"), open(sys.argv[1] + "/seen.json", "w"))
+json.dump(doc("v1", "neutral"), open(sys.argv[1] + "/seen.json", "w"))
+json.dump(doc("v1"), open(sys.argv[1] + "/only-v1.json", "w"))
 json.dump(doc("neutral"), open(sys.argv[1] + "/wrong.json", "w"))
 PY
 "${AB}" run --archetype slow_cascade --seeds 1 --reps 1 --traces-file "${WORK}/seen.json" --out "${WORK}/o8" >/dev/null 2>&1
-ok "verification passes when the arm's profile is on an agent.decide span" "$([[ "$(wc -l <"${WORK}/o8/manifest.jsonl")" == 2 ]] && echo 0 || echo 1)"
+ok "verification passes when each arm's profile is on an agent.decide span" "$([[ "$(wc -l <"${WORK}/o8/manifest.jsonl")" == 2 ]] && echo 0 || echo 1)"
 clear_all
 code=0
 AB_VERIFY_TRIES=2 AB_VERIFY_WAIT=0.1 "${AB}" run --archetype slow_cascade --seeds 1 --reps 1 --traces-file "${WORK}/wrong.json" --out "${WORK}/o9" >/dev/null 2>&1 || code=$?
 ok "verification stops the run when no span carries the profile (exit 3), flags restored" "$([[ ${code} == 3 && "$(wc -l <"${WORK}/o9/manifest.jsonl")" == 1 ]] && all_clear && echo 0 || echo 1)"
+clear_all
+# a lost arm-B value: arm A (the flag default v1) verifies, the first B game does not, and the run stops
+# after game 2 instead of after the whole budget
+code=0
+AB_VERIFY_TRIES=2 AB_VERIFY_WAIT=0.1 "${AB}" run --archetype slow_cascade --seeds 1,2 --reps 1 --traces-file "${WORK}/only-v1.json" --out "${WORK}/o9b" >/dev/null 2>&1 || code=$?
+ok "verification also checks the first B game: only v1 spans stop the run at game 2 (exit 3), flags restored" "$([[ ${code} == 3 && "$(wc -l <"${WORK}/o9b/manifest.jsonl")" == 2 ]] && all_clear && echo 0 || echo 1)"
 clear_all
 
 # 10. kill switch: a stack-scope none, an unreadable kill-switch read, a real game after the last game, SIGHUP.
@@ -255,7 +325,7 @@ seed_operator_overlays
 python3 -c 'import os, signal, sys; signal.signal(signal.SIGHUP, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])' \
   "${AB_RUN[@]}" --out "${WORK}/o14" >/dev/null 2>&1 &
 pid=$!
-wait_until 20 profile_is variant:v1 || true
+wait_until 20 arms_written || true
 kill -HUP "${pid}"
 code=0
 wait "${pid}" 2>/dev/null || code=$?

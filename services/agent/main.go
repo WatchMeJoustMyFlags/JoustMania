@@ -362,6 +362,12 @@ func runShadowGame(ctx context.Context, logger *slog.Logger, agentFlags *flags.F
 	runID := uuid.NewString()
 	cfg := gamerunner.ConfigFromEnv()
 	spec := gamerunner.SpecFromEnv(runID)
+	// #2530: an operator A/B run binds the game to its experiment arm (both or neither).
+	spec, err := gamerunner.BindExperimentFromEnv(spec)
+	if err != nil {
+		logger.Error("Shadow game refused", "run_id", runID, "reason", err.Error())
+		return
+	}
 	runner := gamerunner.New(cfg, logger)
 	// UC-046: SHADOW_GAME_ARCHETYPE (or experiment.mock_archetypes) makes this a
 	// pattern game; an invalid selection or mode refuses the run (A2, A13).

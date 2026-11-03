@@ -153,6 +153,8 @@ type replayRecordJSON struct {
 	ParamsDigest     string     `json:"params_digest"`
 	RngSeed          string     `json:"rng_seed"`
 	FlagDigest       string     `json:"flag_digest"`
+	ExperimentID     string     `json:"experiment_id,omitempty"` // #2530: set only for a bound one-shot game
+	Arm              string     `json:"arm,omitempty"`
 	Outcome          string     `json:"outcome"`
 	EliminationOrder []int      `json:"elimination_order"`
 	WinnerSlot       int        `json:"winner_slot"`
@@ -171,6 +173,8 @@ func logReplayRecord(logger *slog.Logger, rec patterngame.Record) {
 		ParamsDigest:     rec.Archetype.Digest,
 		RngSeed:          strconv.FormatUint(rec.Seed, 10),
 		FlagDigest:       rec.FlagDigest,
+		ExperimentID:     rec.ExperimentID,
+		Arm:              rec.Arm,
 		Outcome:          rec.Outcome,
 		EliminationOrder: nonNilInts(rec.EliminationOrder),
 		WinnerSlot:       rec.WinnerSlot,

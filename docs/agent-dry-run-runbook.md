@@ -99,7 +99,7 @@ real-default change.
    proposer asks Claude for an experiment at game end, but only while gates
    1 and 2 are on and only after a **real** game ends (#1270): a shadow-only dry
    run produces **no** proposals. To let shadow game ends trigger it, set
-   `llm.eligible_game_kinds` to `real_and_shadow`, which also enables remote
+   `llm.eligible_game_kinds` to `real_and_shadow` or `shadow_only`, which also enable remote
    decide calls and retros for shadow games. Proposals also share the
    `llm.max_requests_per_minute` budget (see `docs/specs/decide-contract.md` 10.1).
 
