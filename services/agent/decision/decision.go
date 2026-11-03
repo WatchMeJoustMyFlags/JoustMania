@@ -270,6 +270,8 @@ type Loop struct {
 	// groupInterventions counts group-shield decisions
 	// (agent_group_interventions_total, #2467 PR 6, UC-040 A47).
 	groupInterventions otelmetric.Int64Counter
+	// groupLog notes group-shield decisions for the game summary (#2529); nil = none.
+	groupLog *GroupLog
 
 	// evaluations counts EVERY eval cycle (agent_evaluations_total{signal,outcome},
 	// #1053), so signal arrival is observable even on idle cycles where no rule fires

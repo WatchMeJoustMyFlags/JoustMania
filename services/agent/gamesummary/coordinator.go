@@ -60,6 +60,11 @@ const (
 	attrPredictionsControls       = "summary.predictions.controls"
 	// summary.goal.* (UC-042 A12, #2479): set only when the game had a goal;
 	// attainment only when a term could be measured.
+	// Group-shield decisions of the game (#2529, UC-040 BR-033).
+	attrGroupApplied       = "summary.group.applied"
+	attrGroupNonRescue     = "summary.group.non_rescue"
+	attrGroupRescueRefused = "summary.group.rescue_refused"
+
 	attrGoalProfile    = "summary.goal.profile"
 	attrGoalSource     = "summary.goal.source"
 	attrGoalAttainment = "summary.goal.attainment"
@@ -122,6 +127,9 @@ type Coordinator struct {
 	// goal returns the game's goal attainment (the Book's lookup, #2479). Set once
 	// at construction via SetGoalLookup; nil = none.
 	goal func(gameID string) *Goal
+	// groups returns the game's noted group-shield decisions (#2529). Set once at
+	// construction via SetGroupLookup; nil = none.
+	groups func(gameID string) []GroupDecision
 
 	mu sync.Mutex
 	// claimed is the set of recently summarized game ids; claimedOrder is the LRU
@@ -162,6 +170,10 @@ func (c *Coordinator) SetPredictionLookup(f func(gameID string) []PredictionOutc
 // SetGoalLookup wires the goal-attainment lookup (#2479, UC-042 A12). The Book
 // scores a game's goal earlier in the game-end chain. Set during construction.
 func (c *Coordinator) SetGoalLookup(f func(gameID string) *Goal) { c.goal = f }
+
+// SetGroupLookup wires the lookup of a game's group-shield decisions (#2529, UC-040
+// BR-033). Set during construction, before the store fires OnGameEnd.
+func (c *Coordinator) SetGroupLookup(f func(gameID string) []GroupDecision) { c.groups = f }
 
 // SetExperimentParent wires the experiment ROOT-span SpanContext lookup seam (#1188):
 // a func returning the agent.experiment span's SpanContext for an experiment_id
@@ -232,6 +244,9 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 	if c.goal != nil {
 		opts.Goal = c.goal(gc.SessionID)
 	}
+	if c.groups != nil {
+		opts.GroupDecisions = c.groups(gc.SessionID)
+	}
 	summary := BuildSummary(gc, opts)
 
 	// Advance the M7-2 rolling context window (#929); skipped when no observer is wired.
@@ -258,6 +273,13 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 			attribute.Int(attrPredictionsUnscorable, n.Unscorable),
 			attribute.Int(attrPredictionsCounterfactual, n.Counterfactual),
 			attribute.Int(attrPredictionsControls, n.Controls),
+		)
+	}
+	if g := summary.GroupGrants; g != nil {
+		span.SetAttributes(
+			attribute.Int(attrGroupApplied, g.Applied),
+			attribute.Int(attrGroupNonRescue, g.NonRescue),
+			attribute.Int(attrGroupRescueRefused, g.RescueRefused),
 		)
 	}
 	goalProfile, goalAttainment := "", -1.0

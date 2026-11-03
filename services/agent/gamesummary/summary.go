@@ -130,6 +130,69 @@ type Summary struct {
 	// decide-contract.md §14.4); nil when the profile had no terms (the mixed
 	// objectives) or no goal lookup is wired. Additive, schema version unchanged.
 	Goal *Goal `json:"goal,omitempty"`
+	// GroupGrants counts the game's group-shield decisions and exports their
+	// rationale text blind (UC-040 A47, BR-033, #2529); nil when the game had none.
+	// Additive, schema version unchanged.
+	GroupGrants *GroupGrants `json:"group_grants,omitempty"`
+}
+
+// Outcomes of a GroupDecision, the same words as the decision package's
+// GroupOutcomeApplied / GroupOutcomeBlocked (repeated here: the decision package
+// does not import this one).
+const (
+	GroupOutcomeApplied = "applied"
+	GroupOutcomeBlocked = "blocked"
+)
+
+// GroupDecision is one group-shield decision as the decision loop noted it.
+type GroupDecision struct {
+	// Outcome is "applied", "blocked" or another word (failed, gated_off), which
+	// counts as neither.
+	Outcome string
+	// Rescue is true when at least one target was near_threshold at the decision.
+	Rescue bool
+	// Rationale is the backend's reason text; it never names an arm or a backend.
+	Rationale string
+}
+
+// GroupGrants is the group-shield part of a game summary.
+type GroupGrants struct {
+	// Applied and Blocked count the decisions by outcome.
+	Applied int `json:"applied"`
+	Blocked int `json:"blocked"`
+	// NonRescue counts applied groups none of whose targets was near_threshold;
+	// RescueRefused counts refused groups that covered such a target.
+	NonRescue     int `json:"non_rescue"`
+	RescueRefused int `json:"rescue_refused"`
+	// Rationales is the reason text of each group decision, in decision order, with
+	// no arm and no backend label: a blind export for rating creativity.
+	Rationales []string `json:"rationales,omitempty"`
+}
+
+// buildGroupGrants folds the noted group decisions; nil when there are none.
+func buildGroupGrants(decisions []GroupDecision) *GroupGrants {
+	if len(decisions) == 0 {
+		return nil
+	}
+	g := &GroupGrants{}
+	for _, d := range decisions {
+		switch d.Outcome {
+		case GroupOutcomeApplied:
+			g.Applied++
+			if !d.Rescue {
+				g.NonRescue++
+			}
+		case GroupOutcomeBlocked:
+			g.Blocked++
+			if d.Rescue {
+				g.RescueRefused++
+			}
+		}
+		if d.Rationale != "" {
+			g.Rationales = append(g.Rationales, d.Rationale)
+		}
+	}
+	return g
 }
 
 // Goal is a game's goal attainment: the profile, each term's band, measured value
@@ -309,6 +372,9 @@ type BuildOptions struct {
 	Predictions []PredictionOutcome
 	// Goal is the game's goal attainment (the Book's lookup, #2479); nil when none.
 	Goal *Goal
+	// GroupDecisions are the game's group-shield decisions (the decision loop's
+	// log, #2529); nil when none or no log is wired.
+	GroupDecisions []GroupDecision
 }
 
 // BuildSummary aggregates a game-end GameContext snapshot into a Summary (#928).
@@ -361,6 +427,7 @@ func BuildSummary(c gamecontext.GameContext, opts BuildOptions) Summary {
 		Predictions:          predictions,
 		PredictionTally:      TallyPredictions(predictions),
 		Goal:                 opts.Goal,
+		GroupGrants:          buildGroupGrants(opts.GroupDecisions),
 	}
 }
 

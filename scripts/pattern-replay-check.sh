@@ -10,8 +10,8 @@
 # Only games with replay_exact=true on both sides are compared.
 #
 # Usage:
-#   scripts/pattern-replay-check.sh <archetype> [seed]
-#   scripts/pattern-replay-check.sh --against <record.json>
+#   scripts/pattern-replay-check.sh [--use-aliases] <archetype> [seed]
+#   scripts/pattern-replay-check.sh [--use-aliases] --against <record.json>
 #   scripts/pattern-replay-check.sh --compare <record-a.json> <record-b.json>
 #   scripts/pattern-replay-check.sh --show-timeout
 #
@@ -27,6 +27,13 @@
 # PATTERN_REPLAY_RECORD line it prints, and removes the container. Needs the stack
 # up (`docker compose up -d`). For a decision comparison, keep interventions off or
 # stop the stack's own agent first so only the throwaway agent observes the game.
+#
+# --use-aliases passes `--use-aliases` to `docker compose run`, so the throwaway agent
+# carries the service's network alias (`agent`). The collector sends the stack's spans
+# to that alias; without it a one-off container observes nothing and its decision list
+# stays empty (same as scripts/agent-group-ab.sh, #2526 finding 1, #2529). With it the
+# throwaway agent observes EVERY game on the stack, real ones included, so stop the
+# stack's own agent first and keep interventions off for a real game.
 #
 # The image is whatever `docker compose` resolves for the service: the stack's IMAGE_TAG
 # or, when unset, the release pin in .env. Export IMAGE_TAG=<the running stack's tag> to
@@ -163,7 +170,9 @@ run_once() {
   local timeout
   timeout="$(replay_timeout)"
   local name="pattern-replay-$$-${tag}"
-  local args=(-e AGENT_SHADOW_GAME=true -e SHADOW_GAME_MODE=JoustFFA -e "SHADOW_GAME_ARCHETYPE=${archetype}")
+  local args=()
+  [[ "${USE_ALIASES:-0}" == 1 ]] && args+=(--use-aliases)
+  args+=(-e AGENT_SHADOW_GAME=true -e SHADOW_GAME_MODE=JoustFFA -e "SHADOW_GAME_ARCHETYPE=${archetype}")
   [[ -n "${seed}" ]] && args+=(-e "SHADOW_GAME_SEED=${seed}")
   # shellcheck disable=SC2086 # COMPOSE may hold two words ("docker compose")
   ${compose} run -d --no-deps --name "${name}" "${args[@]}" "${service}" >/dev/null
@@ -182,6 +191,11 @@ run_once() {
 }
 
 main() {
+  USE_ALIASES=0
+  if [[ "${1:-}" == "--use-aliases" ]]; then
+    USE_ALIASES=1
+    shift
+  fi
   if [[ "${1:-}" == "--show-timeout" ]]; then
     replay_timeout
     return

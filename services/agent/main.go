@@ -545,6 +545,7 @@ type components struct {
 	// shieldSeconds reads the grant_shield length for every loop (UC-040 BR-029).
 	shieldSeconds *actions.ShieldSecondsReader
 	llmBudget     llmBudgetShare
+	groupLog      *decision.GroupLog
 	tuning        *agentTuning
 	text          *textBackends
 	window        *gamewindow.Store
@@ -615,6 +616,7 @@ func newComponents(ctx context.Context, logger *slog.Logger, agentFlags *flags.F
 	c.sharedSink = actionSink(agentFlags, sharedWriter, logger)
 	c.shieldSeconds = actions.NewShieldSecondsReader(c.gameFlags, logger)
 	c.llmBudget = newLLMBudgetShare(agentFlags, logger)
+	c.groupLog = decision.NewGroupLog()
 	// Agent tuning (#1788, FR-150, C-035): model, effort, timeout, effect window and
 	// promotion timers resolve at use time from the agent flags; the compiled defaults
 	// (equal to the flag defaults) apply while a flag cannot be resolved (#1907).
@@ -776,6 +778,8 @@ func (c *components) newDecisionLoop(gameID string) *decision.Loop {
 	// min(AGENT_LLM_MAX_REQUESTS_PER_MINUTE, llm.max_requests_per_minute). 0 (unset)
 	// = no ceiling, the flag governs.
 	c.llmBudget.loop(loop)
+	// Group-shield decisions feed the game summary (#2529, UC-040 BR-033).
+	loop.SetGroupLog(c.groupLog)
 	// Async wiring for the remote decide path (#1226) and the effect sampler
 	// (#918): a remote decide call runs in its own goroutine and, when the answer
 	// lands, re-validates against this game's CURRENT context (fetched from the
@@ -927,6 +931,7 @@ func (c *components) buildGameEnd() {
 	// #2479: the prediction Book finalizes a game's results earlier in the game-end
 	// chain, so the summary and the retro read them from its lookup (UC-042 A12).
 	wirePredictionLookups(c.predictions, c.summaries, c.retro)
+	wireGroupLookup(c.groupLog, c.summaries)
 	// Advance the M7-2 rolling window on every game end (#929): the coordinator
 	// Records each freshly-built Summary into the shared window, which reduces a game to
 	// its aggregates: a real game goes to the real-game window, a shadow game to its

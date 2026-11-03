@@ -181,6 +181,18 @@ export function decisionTargetLabel(d: Pick<LinkedDecision, "targetSerial" | "ta
   return d.targetName || d.targetSerial;
 }
 
+/**
+ * The label of an ffa.target choice that names a group (UC-040 A47, BR-033, #2529):
+ * "Group: all" for group:all, "Group: all but one" for group:all_except:<serial>
+ * (the serial is not shown). null for any other choice, which keeps its raw text.
+ */
+export function groupTargetLabel(target: string): string | null {
+  if (target === "group:all") return "Group: all";
+  if (target.startsWith("group:all_except:")) return "Group: all but one";
+  if (target.startsWith("group:")) return "Group";
+  return null;
+}
+
 /** One agent.decide span, folded for the feed. */
 export interface DecideRow {
   traceId: string;
