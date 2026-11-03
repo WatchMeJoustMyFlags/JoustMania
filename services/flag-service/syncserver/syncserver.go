@@ -114,7 +114,7 @@ func (s *Server) now() time.Time {
 // every change. A slow stream skips intermediate versions (latest wins).
 func (s *Server) SyncFlags(req *syncv1.SyncFlagsRequest, stream grpc.ServerStreamingServer[syncv1.SyncFlagsResponse]) error {
 	ctx := stream.Context()
-	set, err := s.selector(ctx, req.GetSelector()) //nolint:staticcheck // SA1019: body fallback of the selector header
+	set, err := s.selector(ctx, req.GetSelector()) //nolint:staticcheck // SA1019: body fallback of the flagd-selector header
 	if err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ func (s *Server) send(ctx context.Context, stream grpc.ServerStreamingServer[syn
 // FetchAllFlags returns the current merged configuration, filtered like
 // SyncFlags.
 func (s *Server) FetchAllFlags(ctx context.Context, req *syncv1.FetchAllFlagsRequest) (*syncv1.FetchAllFlagsResponse, error) {
-	set, err := s.selector(ctx, req.GetSelector()) //nolint:staticcheck // SA1019: body fallback of the selector header
+	set, err := s.selector(ctx, req.GetSelector()) //nolint:staticcheck // SA1019: body fallback of the flagd-selector header
 	if err != nil {
 		return nil, err
 	}

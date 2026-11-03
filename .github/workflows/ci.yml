@@ -790,6 +790,14 @@ jobs:
       - name: gofmt (#2527)
         run: scripts/ci/check-gofmt.sh
 
+      # #2370: services/flag-service/.golangci.yml (staticcheck all checks,
+      # errorlint, gocritic, ...). Binary pinned; the action only installs and runs it.
+      - name: golangci-lint (#2370)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+          working-directory: services/flag-service
+
   # #2403: compose mounts the checkout's registry.yaml into the flag-service
   # image pinned by .env, and the released parser is strict. PR CI builds the
   # PR's own image, so only this job sees a field the release cannot parse.

@@ -207,7 +207,7 @@ func TestSyncFlags_Selectors(t *testing.T) {
 	})
 	t.Run("UC-053/main the body selector works when no header is sent", func(t *testing.T) {
 		req := &syncv1.FetchAllFlagsRequest{}
-		req.SetSelector("flagSetId=observability")
+		req.SetSelector("flagSetId=observability") //nolint:staticcheck // SA1019: body fallback of the flagd-selector header
 		resp, err := h.client.FetchAllFlags(context.Background(), req)
 		if err != nil {
 			t.Fatal(err)
@@ -215,10 +215,15 @@ func TestSyncFlags_Selectors(t *testing.T) {
 		if sets := flagSets(t, resp.GetFlagConfiguration()); len(sets) == 0 || sets["grpc_rpc_spans"] != "observability" {
 			t.Fatalf("sets %v", sets)
 		}
+		for key, set := range flagSets(t, resp.GetFlagConfiguration()) {
+			if set != "observability" {
+				t.Fatalf("%s from set %s: body selector did not narrow", key, set)
+			}
+		}
 	})
 	t.Run("UC-053/main an unknown selector key is INVALID_ARGUMENT and counted", func(t *testing.T) {
 		req := &syncv1.SyncFlagsRequest{}
-		req.SetSelector("source=/etc/flagd/system.json")
+		req.SetSelector("source=/etc/flagd/system.json") //nolint:staticcheck // SA1019: body fallback of the flagd-selector header
 		stream, err := h.client.SyncFlags(context.Background(), req)
 		if err == nil {
 			_, err = stream.Recv()
@@ -241,7 +246,7 @@ func TestSyncFlags_Selectors(t *testing.T) {
 		}
 	})
 	t.Run("UC-053/main GetMetadata is unimplemented", func(t *testing.T) {
-		_, err := h.client.GetMetadata(context.Background(), &syncv1.GetMetadataRequest{})
+		_, err := h.client.GetMetadata(context.Background(), &syncv1.GetMetadataRequest{}) //nolint:staticcheck // SA1019: the deprecated RPC is the case under test
 		if status.Code(err) != codes.Unimplemented {
 			t.Fatalf("got %v", err)
 		}
@@ -268,7 +273,7 @@ func TestParseSelector(t *testing.T) {
 		set string
 		ok  bool
 	}{
-		"": {"", true}, "flagSetId=agent": {"agent", true}, " flagSetId = game ": {"game", true},
+		"": {"", true}, "flagSetId=agent": {"agent", true}, " flagSetId = game ": {"game", true}, //nolint:gocritic // mapKey: the padded key is the case under test
 		"agent": {"", false}, "source=x": {"", false}, "flagSetId=": {"", false},
 	}
 	for in, want := range cases {
