@@ -620,7 +620,7 @@ The compact narrative of one finished game, built once per game at game end by a
 | speed_sparkline | Game-speed series as a sparkline | String | 100 | Optional |
 | dominance | Dominant-player detection: flag, serial, rule, margin | String | 200 | Not Null |
 | interventions | Interventions that fired with outcome and best-effort before/after effect, with target serials | String | 4000 | Not Null |
-| group_grants | The game's group-shield decisions, additive and omitted when the game had none (UC-040 A47, BR-033, #2529): `applied`, `blocked`, `non_rescue` (applied groups none of whose targets was `near_threshold` at the decision) and `rescue_refused` (refused groups that covered a `near_threshold` target), plus `rationales`, the backend's reason of each group decision as bare text, with no arm and no backend label (blind export for rating creativity). No serial | String | 2000 | Optional |
+| group_grants | The game's group-shield decisions, additive and omitted when the game had none (UC-040 A47, BR-033, #2529): `applied`, `blocked`, `non_rescue` (applied groups none of whose targets was `near_threshold` in the game context at the moment the decision landed) and `rescue_refused` (refused groups that covered a `near_threshold` target), plus `rationales`, the decider's own reason of each group decision as bare text (none for an answer without one), with no arm and no backend label (blind export for rating creativity). No serial | String | 2000 | Optional |
 
 **Constraints:** the per-controller fields (player_arcs, elimination_spread, dominance serial, intervention targets) are used only inside the one game (the retro of the game just played) and are dropped when the game is recorded in the window (UC-042 BR-004, C-009).
 

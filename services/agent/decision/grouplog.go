@@ -11,11 +11,20 @@ import (
 // maxGroupRationaleRunes bounds the reason text kept per group decision.
 const maxGroupRationaleRunes = 256
 
+// maxGroupLogGames bounds how many games the log keeps records for, and
+// maxGroupLogTaken how many taken game ids it remembers, so a record noted after
+// its game's summary took the log (or for a game that never gets a game end) cannot
+// grow the log without limit.
+const (
+	maxGroupLogGames = 8
+	maxGroupLogTaken = 64
+)
+
 // GroupRecord is one group-shield decision as the game summary counts it (UC-040
 // A47, BR-033, #2529). Outcome is GroupOutcomeApplied, GroupOutcomeBlocked or
 // another outcome (failed, gated_off), which the summary counts as neither. Rescue
-// is true when at least one target was near_threshold in the decide state at the
-// decision. Rationale is the backend's reason text only: no arm, no backend.
+// is true when at least one target was near_threshold in the context the decision
+// was recorded with (for a remote answer, the context at landing time). Rationale is the backend's reason text only: no arm, no backend.
 type GroupRecord struct {
 	Outcome   string
 	Rescue    bool
@@ -28,10 +37,15 @@ type GroupRecord struct {
 type GroupLog struct {
 	mu     sync.Mutex
 	byGame map[string][]GroupRecord
+	order  []string        // game ids of byGame, oldest first
+	taken  map[string]bool // game ids Take already returned
+	takenQ []string        // taken ids, oldest first
 }
 
 // NewGroupLog builds an empty log.
-func NewGroupLog() *GroupLog { return &GroupLog{byGame: make(map[string][]GroupRecord)} }
+func NewGroupLog() *GroupLog {
+	return &GroupLog{byGame: make(map[string][]GroupRecord), taken: make(map[string]bool)}
+}
 
 func (g *GroupLog) note(gameID string, r GroupRecord) {
 	if g == nil || gameID == "" {
@@ -39,6 +53,16 @@ func (g *GroupLog) note(gameID string, r GroupRecord) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.taken[gameID] {
+		return // the summary already took this game: nobody would read the record
+	}
+	if _, ok := g.byGame[gameID]; !ok {
+		g.order = append(g.order, gameID)
+		if len(g.order) > maxGroupLogGames {
+			delete(g.byGame, g.order[0])
+			g.order = g.order[1:]
+		}
+	}
 	g.byGame[gameID] = append(g.byGame[gameID], r)
 }
 
@@ -51,6 +75,20 @@ func (g *GroupLog) Take(gameID string) []GroupRecord {
 	defer g.mu.Unlock()
 	out := g.byGame[gameID]
 	delete(g.byGame, gameID)
+	for i, id := range g.order {
+		if id == gameID {
+			g.order = append(g.order[:i], g.order[i+1:]...)
+			break
+		}
+	}
+	if !g.taken[gameID] {
+		g.taken[gameID] = true
+		g.takenQ = append(g.takenQ, gameID)
+		if len(g.takenQ) > maxGroupLogTaken {
+			delete(g.taken, g.takenQ[0])
+			g.takenQ = g.takenQ[1:]
+		}
+	}
 	return out
 }
 
@@ -62,7 +100,10 @@ func (l *Loop) noteGroupDecision(c gamecontext.GameContext, d Decision, outcome 
 	if l.groupLog == nil {
 		return
 	}
-	rationale := strings.TrimSpace(d.Reason)
+	rationale := ""
+	if !d.ReasonSynthesized { // a synthesized "decided by <backend>" would unblind the export
+		rationale = strings.TrimSpace(d.Reason)
+	}
 	if r := []rune(rationale); len(r) > maxGroupRationaleRunes {
 		rationale = string(r[:maxGroupRationaleRunes])
 	}

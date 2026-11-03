@@ -34,7 +34,7 @@ import type {
   LinkedDecision,
   PredictionStrip,
 } from "../agent.js";
-import { confidenceBar, decisionTargetLabel, groupTargetLabel, jaegerTraceUrl } from "../agent.js";
+import { confidenceBar, decisionTargetLabel, groupTargetLabel, groupTargetShape, jaegerTraceUrl } from "../agent.js";
 import type { GameGoal } from "../agent.js";
 import { FLAG_STATE_NO_DATA } from "../degrade.js";
 
@@ -687,7 +687,7 @@ function decideRowHtml(row: DecideRow, isNew: boolean): SafeHtml {
     ? html`<span class="decide-answer">${row.intervention}${
         row.target && row.target !== "none"
           ? groupTargetLabel(row.target)
-            ? html` <span class="decide-arrow">→</span> <span class="decide-group-badge" title="${row.target}">${groupTargetLabel(row.target)}</span>`
+            ? html` <span class="decide-arrow">→</span> <span class="decide-group-badge" title="${groupTargetShape(row.target)}">${groupTargetLabel(row.target)}</span>`
             : html` <span class="decide-arrow">→</span> <span class="decide-target">${row.target}</span>`
           : ""
       }</span>`

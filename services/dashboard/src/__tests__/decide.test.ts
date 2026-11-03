@@ -19,6 +19,7 @@ import {
   confidenceBar,
   decisionTargetLabel,
   groupTargetLabel,
+  groupTargetShape,
   decideQueryStartMs,
   decideSearches,
   pollDecides,
@@ -656,6 +657,9 @@ describe("UC-040 A47: the Decisions row badges a group target (#2529)", () => {
   it("UC-040 A47: labels group choices and leaves others raw", () => {
     expect(groupTargetLabel("group:all")).toBe("Group: all");
     expect(groupTargetLabel("group:all_except:MOCK0003")).toBe("Group: all but one");
+    expect(groupTargetLabel("group:other")).toBe("Group");
+    expect(groupTargetShape("group:all_except:MOCK0003")).toBe("group:all_except");
+    expect(groupTargetShape("group:all")).toBe("group:all");
     expect(groupTargetLabel("MOCK0002")).toBeNull();
     expect(groupTargetLabel("none")).toBeNull();
   });
@@ -663,7 +667,8 @@ describe("UC-040 A47: the Decisions row badges a group target (#2529)", () => {
   it("UC-040 A47: renders a badge, not the raw choice string", () => {
     const row = only(rulesFixture);
     const html = renderDecideRow({ ...row, intervention: "grant_group_shield", target: "group:all_except:MOCK0003" });
-    expect(html).toContain('<span class="decide-group-badge" title="group:all_except:MOCK0003">Group: all but one</span>');
+    expect(html).toContain('<span class="decide-group-badge" title="group:all_except">Group: all but one</span>');
+    expect(html).not.toContain("MOCK0003");
     expect(html).not.toContain('<span class="decide-target">group:all_except');
     expect(renderDecideRow({ ...row, intervention: "grant_shield", target: "MOCK0002" })).toContain(
       '<span class="decide-target">MOCK0002</span>',

@@ -951,6 +951,7 @@ func mapAnswers(req decide.Request, resp decide.Response) (Decision, string, str
 	}
 	if d.Reason == "" {
 		d.Reason = "decided by " + resp.Backend
+		d.ReasonSynthesized = true
 	}
 	if m, ok := resp.Find(decide.QuestionFFAMagnitude); ok {
 		if v, ok := decide.ResolveMagnitude(iv.Choice, m.Score); ok {

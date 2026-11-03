@@ -70,6 +70,10 @@ type Decision struct {
 	Value string
 	// Reason is a human-readable explanation, recorded as decision.reason.
 	Reason string
+	// ReasonSynthesized is true when Reason is the loop's own fallback text
+	// ("decided by <backend>", a remote answer without a rationale) rather than text
+	// the decider wrote; the blind group export drops such a reason (UC-040 BR-033).
+	ReasonSynthesized bool
 	// ObjectiveServed names the session objective this decision serves
 	// (endurance/balanced/accelerate/chaos), recorded as
 	// decision.objective_served.

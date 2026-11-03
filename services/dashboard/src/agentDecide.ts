@@ -193,6 +193,14 @@ export function groupTargetLabel(target: string): string | null {
   return null;
 }
 
+/**
+ * The badge tooltip: the group choice without its excepted serial ("group:all",
+ * "group:all_except"), so the serial stays out of the UI (BR-033).
+ */
+export function groupTargetShape(target: string): string {
+  return target.split(":").slice(0, 2).join(":");
+}
+
 /** One agent.decide span, folded for the feed. */
 export interface DecideRow {
   traceId: string;

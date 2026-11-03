@@ -64,6 +64,11 @@ const (
 	attrGroupApplied       = "summary.group.applied"
 	attrGroupNonRescue     = "summary.group.non_rescue"
 	attrGroupRescueRefused = "summary.group.rescue_refused"
+	attrGroupBlocked       = "summary.group.blocked"
+	// eventGroupRationale is one span event per group decision's reason text; its
+	// attribute carries neither arm nor backend (the blind export, BR-033).
+	eventGroupRationale = "summary.group.rationale"
+	attrGroupReason     = "reason"
 
 	attrGoalProfile    = "summary.goal.profile"
 	attrGoalSource     = "summary.goal.source"
@@ -280,7 +285,15 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 			attribute.Int(attrGroupApplied, g.Applied),
 			attribute.Int(attrGroupNonRescue, g.NonRescue),
 			attribute.Int(attrGroupRescueRefused, g.RescueRefused),
+			attribute.Int(attrGroupBlocked, g.Blocked),
 		)
+		for _, r := range g.Rationales {
+			span.AddEvent(eventGroupRationale, trace.WithAttributes(attribute.String(attrGroupReason, r)))
+		}
+	}
+	var groupApplied, groupBlocked, groupNonRescue, groupRescueRefused int
+	if g := summary.GroupGrants; g != nil {
+		groupApplied, groupBlocked, groupNonRescue, groupRescueRefused = g.Applied, g.Blocked, g.NonRescue, g.RescueRefused
 	}
 	goalProfile, goalAttainment := "", -1.0
 	if g := summary.Goal; g != nil {
@@ -312,6 +325,10 @@ func (c *Coordinator) OnGameEnd(gc gamecontext.GameContext) {
 		"predictions_unscorable", CountPredictions(summary.Predictions).Unscorable,
 		"predictions_counterfactual", CountPredictions(summary.Predictions).Counterfactual,
 		"predictions_controls", CountPredictions(summary.Predictions).Controls,
+		"group_applied", groupApplied,
+		"group_blocked", groupBlocked,
+		"group_non_rescue", groupNonRescue,
+		"group_rescue_refused", groupRescueRefused,
 		"goal_profile", goalProfile,
 		"goal_attainment", goalAttainment)
 }
