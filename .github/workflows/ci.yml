@@ -822,7 +822,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.script_tests == 'true' || needs.changes.outputs.run_all_checks == 'true'
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -830,25 +830,9 @@ jobs:
         run: scripts/ci/check-hermetic-tests.sh
 
       - name: Run scripts/tests/*.sh
-        run: |
-          shopt -s nullglob
-          tests=(scripts/tests/test-*.sh)
-          if [[ ${#tests[@]} -eq 0 ]]; then
-            echo "::error::no script tests found under scripts/tests/"
-            exit 1
-          fi
-          status=0
-          for t in "${tests[@]}"; do
-            echo "::group::${t}"
-            if "${t}"; then
-              echo "::endgroup::"
-            else
-              echo "::endgroup::"
-              echo "::error file=${t}::${t} failed"
-              status=1
-            fi
-          done
-          exit "${status}"
+        # In parallel (#2564): the sequential run took ~5 min and hit the old 5 min timeout.
+        # Per-test output stays in its own ::group::; any failing test fails the job.
+        run: scripts/ci/run-script-tests.sh
 
   # Telemetry producer/consumer contract (#1357): static scan of Python/Go/Rust
   # metric and span producers vs the agent extractors, Grafana dashboards and
