@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.15.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.14.0...joustmania-v0.15.0) (2026-11-03)
+
+
+### Features
+
+* **agent:** enforce the substrate validity bar on autonomous promotion ([#2541](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2541)) ([#2555](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2555)) ([22a7402](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/22a7402ba135d1a5c9e7889367617d5dc605d615))
+* **agent:** journal each real game end for calibration ([#1055](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/1055)) ([#2558](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2558)) ([69210ea](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/69210ea1758aa04ea50cadbe0f374d4ddd80dbdc))
+* **agent:** per-arm prompt profile for the group A/B run ([#2530](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2530)) ([#2559](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2559)) ([1c2398d](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1c2398df12adcf134e9f8005c98086eef192de72))
+* **agent:** per-backend decide caps for the paid LLM backends ([#2519](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2519)) ([#2557](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2557)) ([28d3caf](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/28d3caf339ea20bd0a45dcaa8fea4be5df99bda8))
+
+
+### Bug Fixes
+
+* **agent:** no elimination measure is scored in a respawn mode ([#2532](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2532)) ([#2552](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2552)) ([e3bb8b3](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/e3bb8b3339a6a56694d5e6c81101b5724fa1ba07))
+* **controller-manager:** gameplay command reader does not block on effect holds ([#2540](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2540)) ([#2553](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2553)) ([6144d79](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6144d79dd1e6ea07d90e64c877a6de43d58668fb))
+* **deps:** bump pulldown-cmark to 0.13.6 for RUSTSEC-2026-0433 ([#2561](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2561)) ([93cd4a0](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/93cd4a06af3fb7237a6a4237da7348b0ae0f0f8a))
+* **observability:** unique service.instance.id for Go services and rust-hid ([#2546](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2546)) ([#2550](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2550)) ([25298ff](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/25298ff0a78e4b605b2c6a0fb51efb9850c83099))
+
+
+### Documentation
+
+* add SECURITY.md for responsible disclosure ([#488](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/488)) ([#2549](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2549)) ([6671ac8](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/6671ac8b400909db252d5543e8da5dff36e3f376))
+* **specs:** re-anchor drifted line references to symbols ([#2562](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2562)) ([#2563](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2563)) ([85a84af](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/85a84af58b64a96f2748d731fe990958064d739d))
+* **spec:** UC-047 recalibrate the shadow players from real games ([#1055](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/1055)) ([#2544](https://github.com/WatchMeJoustMyFlags/JoustMania/issues/2544)) ([1c39ef1](https://github.com/WatchMeJoustMyFlags/JoustMania/commit/1c39ef1b67465eb2a41e6b93ec4d2bb3c36fba3e))
+
 ## [0.14.0](https://github.com/WatchMeJoustMyFlags/JoustMania/compare/joustmania-v0.13.0...joustmania-v0.14.0) (2026-11-01)
 
 
