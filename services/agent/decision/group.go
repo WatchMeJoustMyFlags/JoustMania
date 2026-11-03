@@ -307,6 +307,7 @@ func (l *Loop) recordGroupIntervention(ctx context.Context, c gamecontext.GameCo
 	if len(d.TargetSerials) >= len(aliveSerials(c)) {
 		shape = "all"
 	}
+	l.noteGroupDecision(c, d, outcome)
 	l.groupInterventions.Add(ctx, 1, otelmetric.WithAttributes(
 		attribute.String("outcome", outcome),
 		attribute.String("reason", reason),

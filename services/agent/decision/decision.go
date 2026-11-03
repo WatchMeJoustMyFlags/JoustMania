@@ -70,6 +70,10 @@ type Decision struct {
 	Value string
 	// Reason is a human-readable explanation, recorded as decision.reason.
 	Reason string
+	// ReasonSynthesized is true when Reason is the loop's own fallback text
+	// ("decided by <backend>", a remote answer without a rationale) rather than text
+	// the decider wrote; the blind group export drops such a reason (UC-040 BR-033).
+	ReasonSynthesized bool `json:"-"`
 	// ObjectiveServed names the session objective this decision serves
 	// (endurance/balanced/accelerate/chaos), recorded as
 	// decision.objective_served.
@@ -270,6 +274,8 @@ type Loop struct {
 	// groupInterventions counts group-shield decisions
 	// (agent_group_interventions_total, #2467 PR 6, UC-040 A47).
 	groupInterventions otelmetric.Int64Counter
+	// groupLog notes group-shield decisions for the game summary (#2529); nil = none.
+	groupLog *GroupLog
 
 	// evaluations counts EVERY eval cycle (agent_evaluations_total{signal,outcome},
 	// #1053), so signal arrival is observable even on idle cycles where no rule fires

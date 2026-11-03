@@ -115,6 +115,19 @@ func wirePredictionLookups(book *prediction.Book, summaries *gamesummary.Coordin
 	retro.SetGoalLookup(book.SummaryGoal)
 }
 
+// wireGroupLookup hands the decision loops' group-shield log to the game summary
+// (#2529, UC-040 BR-033). The summary takes a game's records once, at game end.
+func wireGroupLookup(log *decision.GroupLog, summaries *gamesummary.Coordinator) {
+	summaries.SetGroupLookup(func(gameID string) []gamesummary.GroupDecision {
+		records := log.Take(gameID)
+		out := make([]gamesummary.GroupDecision, 0, len(records))
+		for _, r := range records {
+			out = append(out, gamesummary.GroupDecision{Outcome: r.Outcome, Rescue: r.Rescue, Rationale: r.Rationale})
+		}
+		return out
+	})
+}
+
 // wireArmCalibration hands each ended shadow game's prediction tally from the
 // Book to the experiment registry (UC-043 A21, BR-010, #2498). The Book runs
 // before the experiment hook in the game-end chain, so the game is still bound to

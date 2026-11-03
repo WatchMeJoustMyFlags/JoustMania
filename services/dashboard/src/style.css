@@ -1334,6 +1334,14 @@ body {
   color: #9ec9ff;
 }
 
+.decide-group-badge {
+  color: #9ec9ff;
+  border: 1px solid #9ec9ff;
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  font-size: 0.85rem;
+}
+
 .decide-outcome-reason {
   color: var(--text-secondary);
   font-size: 0.88rem;

@@ -99,6 +99,25 @@ if ! grep -q "SHADOW_GAME_ARCHETYPE=slow_cascade" "${WORK}/compose-args" || ! gr
   fails=$((fails + 1))
 fi
 
+# The one-off container joins the service's network aliases only with --use-aliases
+# (#2529, the collector reaches the agent by that alias): never by default.
+if grep -qx -- "--use-aliases" "${WORK}/compose-args"; then
+  echo "FAIL two runs: --use-aliases passed without being asked"
+  fails=$((fails + 1))
+fi
+: >"${WORK}/compose-args"
+expect "two runs with aliases" 0 "identical" -- env PATH="${WORK}/bin:${PATH}" "${CHECK}" --use-aliases slow_cascade 7
+if ! grep -qx -- "--use-aliases" "${WORK}/compose-args" || ! grep -q "SHADOW_GAME_SEED=7" "${WORK}/compose-args"; then
+  echo "FAIL --use-aliases: not passed to compose run (or the seed was lost)"
+  fails=$((fails + 1))
+fi
+: >"${WORK}/compose-args"
+expect "against with aliases" 0 "identical" -- env PATH="${WORK}/bin:${PATH}" "${CHECK}" --use-aliases --against "${WORK}/a.json"
+if ! grep -qx -- "--use-aliases" "${WORK}/compose-args"; then
+  echo "FAIL --use-aliases: not passed on --against"
+  fails=$((fails + 1))
+fi
+
 # --against: a journal pattern_game_ended line is replayed with its archetype and seed.
 cat >"${WORK}/journal.jsonl" <<'JSON'
 {"seq":1,"kind":"game_assigned","game_id":"g"}

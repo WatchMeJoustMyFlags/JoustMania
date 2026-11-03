@@ -181,6 +181,26 @@ export function decisionTargetLabel(d: Pick<LinkedDecision, "targetSerial" | "ta
   return d.targetName || d.targetSerial;
 }
 
+/**
+ * The label of an ffa.target choice that names a group (UC-040 A47, BR-033, #2529):
+ * "Group: all" for group:all, "Group: all but one" for group:all_except:<serial>
+ * (the serial is not shown). null for any other choice, which keeps its raw text.
+ */
+export function groupTargetLabel(target: string): string | null {
+  if (target === "group:all") return "Group: all";
+  if (target.startsWith("group:all_except:")) return "Group: all but one";
+  if (target.startsWith("group:")) return "Group";
+  return null;
+}
+
+/**
+ * The badge tooltip: the group choice without its excepted serial ("group:all",
+ * "group:all_except"), so the serial stays out of the UI (BR-033).
+ */
+export function groupTargetShape(target: string): string {
+  return target.split(":").slice(0, 2).join(":");
+}
+
 /** One agent.decide span, folded for the feed. */
 export interface DecideRow {
   traceId: string;
