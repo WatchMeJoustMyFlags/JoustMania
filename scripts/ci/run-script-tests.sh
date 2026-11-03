@@ -5,6 +5,9 @@
 # Each test's output goes to its own file and is printed as a ::group:: after it finishes,
 # so a failure keeps its full output. Every test runs to completion (no fail-fast kill, so
 # the whole list of failures is visible); the exit status is non-zero if any test failed.
+# Each test runs under `timeout -k 10 $SCRIPT_TEST_TIMEOUT` (default 300s); a timeout is a failure.
+# A live "done <name> rc=<rc> (<s>s)" line is printed as each test finishes, so a job-level kill
+# still shows which tests completed (and, by absence, which one hung).
 # JOBS overrides the parallelism (default: number of CPUs); SCRIPT_TESTS_DIR the test directory (for its own test).
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -23,9 +26,12 @@ jobs_n="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 run_one() {
   local t="$1" out="$2" start rc
   start=$SECONDS
-  "${t}" >"${out}/$(basename "${t}").log" 2>&1
+  local name; name="$(basename "${t}")"
+  timeout -k 10 "${SCRIPT_TEST_TIMEOUT:-300}" "${t}" >"${out}/${name}.log" 2>&1
   rc=$?
-  echo "${rc} $((SECONDS - start))" >"${out}/$(basename "${t}").rc"
+  [[ ${rc} -eq 124 ]] && echo "TIMEOUT: ${name} exceeded ${SCRIPT_TEST_TIMEOUT:-300}s" >>"${out}/${name}.log"
+  echo "${rc} $((SECONDS - start))" >"${out}/${name}.rc"
+  echo "done ${name} rc=${rc} ($((SECONDS - start))s)"
 }
 export -f run_one
 
@@ -40,7 +46,11 @@ for t in "${tests[@]}"; do
   cat "${out}/${name}.log"
   echo "::endgroup::"
   if [[ "${rc}" != 0 ]]; then
-    echo "::error file=${t}::${t} failed (exit ${rc})"
+    if [[ "${rc}" == 124 ]]; then
+      echo "::error file=${t}::${t} timed out after ${SCRIPT_TEST_TIMEOUT:-300}s"
+    else
+      echo "::error file=${t}::${t} failed (exit ${rc})"
+    fi
     status=1
   fi
 done
