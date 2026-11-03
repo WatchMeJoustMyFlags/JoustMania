@@ -1,4 +1,5 @@
-# golangci-lint v2 config for the flag service (#2370). Not run in CI yet:
+# golangci-lint v2 config for the flag service (#2370). CI runs it in the
+# Flag Service Tests job (.github/workflows/ci.yml, pinned binary); locally:
 # `golangci-lint run ./...` in services/flag-service.
 version: "2"
 linters:

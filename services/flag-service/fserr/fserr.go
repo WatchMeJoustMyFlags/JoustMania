@@ -45,7 +45,8 @@ func newf(status int, reason, format string, args ...any) *Error {
 	return &Error{Status: status, Reason: reason, Detail: fmt.Sprintf(format, args...)}
 }
 
-// Constructors, one per status class.
+// BadRequest is a 400 malformed. It and the constructors below build one
+// error per status class.
 func BadRequest(format string, args ...any) *Error {
 	return newf(http.StatusBadRequest, Malformed, format, args...)
 }

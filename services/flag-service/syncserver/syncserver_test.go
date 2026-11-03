@@ -23,6 +23,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/joustmania/flag-service/baseline"
 	"github.com/joustmania/flag-service/registry"
@@ -207,7 +209,7 @@ func TestSyncFlags_Selectors(t *testing.T) {
 	})
 	t.Run("UC-053/main the body selector works when no header is sent", func(t *testing.T) {
 		req := &syncv1.FetchAllFlagsRequest{}
-		req.SetSelector("flagSetId=observability")
+		setBodySelector(req, "flagSetId=observability")
 		resp, err := h.client.FetchAllFlags(context.Background(), req)
 		if err != nil {
 			t.Fatal(err)
@@ -218,7 +220,7 @@ func TestSyncFlags_Selectors(t *testing.T) {
 	})
 	t.Run("UC-053/main an unknown selector key is INVALID_ARGUMENT and counted", func(t *testing.T) {
 		req := &syncv1.SyncFlagsRequest{}
-		req.SetSelector("source=/etc/flagd/system.json")
+		setBodySelector(req, "source=/etc/flagd/system.json")
 		stream, err := h.client.SyncFlags(context.Background(), req)
 		if err == nil {
 			_, err = stream.Recv()
@@ -241,7 +243,7 @@ func TestSyncFlags_Selectors(t *testing.T) {
 		}
 	})
 	t.Run("UC-053/main GetMetadata is unimplemented", func(t *testing.T) {
-		_, err := h.client.GetMetadata(context.Background(), &syncv1.GetMetadataRequest{})
+		_, err := h.client.GetMetadata(context.Background(), &syncv1.GetMetadataRequest{}) //nolint:staticcheck // SA1019: the deprecated RPC is the case under test
 		if status.Code(err) != codes.Unimplemented {
 			t.Fatalf("got %v", err)
 		}
@@ -268,7 +270,7 @@ func TestParseSelector(t *testing.T) {
 		set string
 		ok  bool
 	}{
-		"": {"", true}, "flagSetId=agent": {"agent", true}, " flagSetId = game ": {"game", true},
+		"": {"", true}, "flagSetId=agent": {"agent", true}, " flagSetId = game ": {"game", true}, //nolint:gocritic // mapKey: the padded key is the case under test
 		"agent": {"", false}, "source=x": {"", false}, "flagSetId=": {"", false},
 	}
 	for in, want := range cases {
@@ -277,4 +279,42 @@ func TestParseSelector(t *testing.T) {
 			t.Errorf("parseSelector(%q) = %q,%v want %q,%v", in, set, ok, want.set, want.ok)
 		}
 	}
+}
+
+// TestBodySelector pins the body fallback read through protobuf reflection
+// (#2370, replaces the deprecated generated getter): both request types carry
+// the field, and a request without it reads as no selector. A flagd proto bump
+// that drops the field fails here instead of silently losing the fallback.
+//
+// UC: UC-053 main
+func TestBodySelector(t *testing.T) {
+	sync := &syncv1.SyncFlagsRequest{}
+	setBodySelector(sync, "flagSetId=system")
+	fetch := &syncv1.FetchAllFlagsRequest{}
+	setBodySelector(fetch, "flagSetId=observability")
+	// The generated getter is the reference the reflection read must match.
+	if got := sync.GetSelector(); got != "flagSetId=system" { //nolint:staticcheck // SA1019: reference for the reflection read
+		t.Fatalf("generated getter reads %q", got)
+	}
+	for name, c := range map[string]struct {
+		got, want string
+	}{
+		"UC-053/main sync request":  {bodySelector(sync), "flagSetId=system"},
+		"UC-053/main fetch request": {bodySelector(fetch), "flagSetId=observability"},
+		"UC-053/main empty request": {bodySelector(&syncv1.SyncFlagsRequest{}), ""},
+		"UC-053/main no such field": {bodySelector(&syncv1.SyncFlagsResponse{}), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if c.got != c.want {
+				t.Fatalf("bodySelector = %q, want %q", c.got, c.want)
+			}
+		})
+	}
+}
+
+// setBodySelector sets the deprecated body selector the way an old flagd
+// client sends it, through reflection like bodySelector reads it.
+func setBodySelector(req proto.Message, sel string) {
+	m := req.ProtoReflect()
+	m.Set(m.Descriptor().Fields().ByName(bodySelectorField), protoreflect.ValueOfString(sel))
 }

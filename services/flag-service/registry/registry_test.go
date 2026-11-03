@@ -17,7 +17,7 @@ import (
 	"github.com/joustmania/flag-service/fserr"
 )
 
-func root(t *testing.T) string {
+func root(t testing.TB) string {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(file), "..")
