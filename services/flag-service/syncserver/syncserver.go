@@ -23,8 +23,6 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/joustmania/flag-service/state"
 	"github.com/joustmania/flag-service/telemetry"
@@ -78,26 +76,9 @@ func parseSelector(raw string) (string, bool) {
 	return strings.TrimSpace(val), true
 }
 
-// bodySelectorField is the request body's selector field. flagd deprecated it
-// in favour of the flagd-selector header (SA1019 on the generated getter).
-const bodySelectorField protoreflect.Name = "selector"
-
-// bodySelector returns the selector a sync request carries in its body, or ""
-// when it has none. It reads the field by name through protobuf reflection
-// instead of the deprecated generated getter, so a flagd proto bump that drops
-// the field degrades to "no body selector" instead of breaking the build.
-func bodySelector(req proto.Message) string {
-	m := req.ProtoReflect()
-	fd := m.Descriptor().Fields().ByName(bodySelectorField)
-	if fd == nil || fd.Kind() != protoreflect.StringKind {
-		return ""
-	}
-	return m.Get(fd).String()
-}
-
 func (s *Server) selector(ctx context.Context, body string) (string, error) {
-	// body is the request's selector field: kept as the fallback for flagd
-	// versions that send no flagd-selector header, which wins.
+	// body is the deprecated request field (SA1019): kept as the fallback for
+	// flagd versions that send no flagd-selector header, which wins.
 	raw := body
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		if vals := md.Get(SelectorHeader); len(vals) > 0 && vals[0] != "" {
@@ -133,7 +114,7 @@ func (s *Server) now() time.Time {
 // every change. A slow stream skips intermediate versions (latest wins).
 func (s *Server) SyncFlags(req *syncv1.SyncFlagsRequest, stream grpc.ServerStreamingServer[syncv1.SyncFlagsResponse]) error {
 	ctx := stream.Context()
-	set, err := s.selector(ctx, bodySelector(req))
+	set, err := s.selector(ctx, req.GetSelector()) //nolint:staticcheck // SA1019: body fallback of the flagd-selector header
 	if err != nil {
 		return err
 	}
@@ -192,7 +173,7 @@ func (s *Server) send(ctx context.Context, stream grpc.ServerStreamingServer[syn
 // FetchAllFlags returns the current merged configuration, filtered like
 // SyncFlags.
 func (s *Server) FetchAllFlags(ctx context.Context, req *syncv1.FetchAllFlagsRequest) (*syncv1.FetchAllFlagsResponse, error) {
-	set, err := s.selector(ctx, bodySelector(req))
+	set, err := s.selector(ctx, req.GetSelector()) //nolint:staticcheck // SA1019: body fallback of the flagd-selector header
 	if err != nil {
 		return nil, err
 	}
