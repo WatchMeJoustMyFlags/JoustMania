@@ -73,7 +73,7 @@ type Decision struct {
 	// ReasonSynthesized is true when Reason is the loop's own fallback text
 	// ("decided by <backend>", a remote answer without a rationale) rather than text
 	// the decider wrote; the blind group export drops such a reason (UC-040 BR-033).
-	ReasonSynthesized bool
+	ReasonSynthesized bool `json:"-"`
 	// ObjectiveServed names the session objective this decision serves
 	// (endurance/balanced/accelerate/chaos), recorded as
 	// decision.objective_served.
