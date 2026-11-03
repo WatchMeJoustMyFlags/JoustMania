@@ -186,9 +186,9 @@ func TestPreconditionMatrix_Clear(t *testing.T) {
 		{name: "if_writer mismatch", setup: func(t *testing.T, f *fixture) { f.put(guardPut) }, clr: clearReq(ClearRequest{Set: "game", Flag: "shield.energy_budget_seconds", Scope: realSc, IfWriter: "other"}), status: 412, reason: fserr.WriterMismatch},
 		{name: "if_writer match", setup: func(t *testing.T, f *fixture) { f.put(guardPut) }, clr: clearReq(ClearRequest{Set: "game", Flag: "shield.energy_budget_seconds", Scope: realSc, IfWriter: "agent"}), cleared: 1},
 		{name: "if_writer with no overlay is an idempotent success", clr: clearReq(ClearRequest{Set: "game", Flag: "shield.energy_budget_seconds", Scope: realSc, IfWriter: "agent"})},
-		// DELETE has no id-length check and no game-live check today (answers pinned as they are)
-		{name: "long id is not refused", clr: clearReq(ClearRequest{Set: "game", Flag: "shield.energy_budget_seconds", Scope: Scope{ExperimentID: longID, Arm: "a"}})},
-		{name: "long writer is not refused", clr: clearReq(ClearRequest{Set: "game", Flag: "num_teams", Writer: longID})},
+		// DELETE refuses an over-long id like PUT (#2370); it has no game-live check (answers pinned as they are)
+		{name: "long id is refused like PUT", clr: clearReq(ClearRequest{Set: "game", Flag: "shield.energy_budget_seconds", Scope: Scope{ExperimentID: longID, Arm: "a"}}), status: 400, reason: fserr.Malformed},
+		{name: "long writer is refused like PUT", clr: clearReq(ClearRequest{Set: "game", Flag: "num_teams", Writer: longID}), status: 400, reason: fserr.Malformed},
 		{name: "game scope of a game that is not live is not refused", clr: clearReq(ClearRequest{Set: "interventions", Flag: "volume_override", Scope: Scope{GameID: "gx"}})},
 		{name: "game+serial scope with a serial not in the game is not refused", setup: func(t *testing.T, f *fixture) { f.register("g1", "c1", "S1") }, clr: clearReq(ClearRequest{Set: "interventions", Flag: "shield_seconds", Scope: Scope{GameID: "g1", Serial: "S9"}})},
 		{name: "game+serial flag with only a game id", clr: clearReq(ClearRequest{Set: "interventions", Flag: "shield_seconds", Scope: Scope{GameID: "g1"}}), status: 400, reason: fserr.Malformed},

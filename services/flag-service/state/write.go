@@ -510,17 +510,21 @@ func (s *State) Clear(req ClearRequest) (WriteResult, *fserr.Error) {
 // checkClearLocked runs every precondition of a Clear in this order (the first
 // failure answers; TestPreconditionMatrix_Clear pins each pair):
 //
-//	lookup 404/422 > scope fit 400 > served 409 > stream 503 > persist 400 >
+//	lookup 404/422 > ids 400 > scope fit 400 > served 409 > stream 503 > persist 400 >
 //	if_writer shape 400 > guarded revert 409 > if_writer 412
 //
-// Unlike Put there is no id-length check and no game-live check: clearing
-// what is not there is an idempotent 204. The 412 is last, under the lock of
+// Like Put it refuses an id or label over MaxIDLength with 400 (#2370); unlike
+// Put there is no game-live check: clearing what is not there is an
+// idempotent 204. The 412 is last, under the lock of
 // the clear, and evaluated only when the clear would otherwise succeed
 // (#1877, UC-043 A18, like HTTP If-Match, RFC 9110 §13.2.2): a missing
 // overlay is not a mismatch.
 func (s *State) checkClearLocked(req ClearRequest, res *WriteResult) (*flagState, *fserr.Error) {
 	f, err := s.lookupLocked(req.Set, req.Flag, res)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkIDs(req.Scope, req.Writer); err != nil {
 		return nil, err
 	}
 	scopeName := res.ScopeKey
