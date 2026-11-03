@@ -180,7 +180,7 @@ tooling only) still answers the Default.
 | Backend | Transport | Availability (else `backend_unavailable`) | Source |
 |---|---|---|---|
 | `rules` | in process | always | `decision/decide_rules.go` |
-| `claude` | Anthropic Messages API (official Go SDK), `POST {decision.claude.base_url}/v1/messages` (the SDK appends the path; the flag has no `/v1`), JSON-schema output; `max_tokens` 2048 where the model may think, 1024 where thinking is off (PR #1257); SDK retries 0 | `ANTHROPIC_API_KEY` + model | `services/agent/decide/backends/claude/claude.go:69-77,142,233,283-308` |
+| `claude` | Anthropic Messages API (official Go SDK), `POST {decision.claude.base_url}/v1/messages` (the SDK appends the path; the flag has no `/v1`), JSON-schema output; `max_tokens` 2048 where the model may think, 1024 where thinking is off (PR #1257); SDK retries 0 | `ANTHROPIC_API_KEY` + model | `services/agent/decide/backends/claude/claude.go:MaxTokens`, `services/agent/decide/backends/claude/claude.go:MaxTokensNoThinking`, `services/agent/decide/backends/claude/claude.go:newClient`, `services/agent/decide/backends/claude/claude.go:shapeFor`, `services/agent/decide/backends/claude/claude.go:Backend.params` |
 | `openai` | `POST {base_url}/chat/completions`, `response_format: json_schema` (`strict`); on a 400/422 whose body says the schema / format is unsupported, one retry with `json_object` in the same budget; the downgrade is remembered for that base URL + model for 10 minutes only if that retry succeeds (2xx) | `DECISION_OPENAI_API_KEY` + `decision.openai.model` + `decision.openai.base_url` | `services/agent/decide/backends/openai/openai.go:schemaDowngradeTTL`, `schemaUnsupportedBody`, `Backend.Available` |
 | `jev` | TypeSafe System One: `POST {decision.jev.base_url}/systemone`, `Authorization: Bearer`, typed body `{model, state, questions:{id:{type, instructions, criteria}}}`; plain HTTP, no retries on 429 / 529 | `JEV_API_KEY` only (base URL and model have defaults) | `services/agent/decide/backends/jev/wire.go:wirePath`, `services/agent/decide/backends/jev/jev.go:Backend.Decide`, `stages.go`, `services/agent/decide/backends/jev/jev.go:Backend.Available`, `decide/backends/jev/README.md` |
 
@@ -402,7 +402,7 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
 - **Rules:** softmax over ranked candidate scores with `noop` competing at
   `minScore` 0.10, temperature = `minScore`; `ffa.intervention` confidence is
   1 − p(noop) when an intervention is chosen, p(noop) when `noop` is chosen
-  (`services/agent/decision/decide_rules.go:21-42,147-229`).
+  (`services/agent/decision/decide_rules.go:rulesSoftmaxTemperature`, `services/agent/decision/decide_rules.go:answerFromRanked`, `services/agent/decision/decide_rules.go:softmax`).
 - **Rules path answers = the emitted decision (#1295).** In the decision loop the rules answers describe
   the decision the engine actually emitted this cycle (its first decision: intervention and target), from
   the same ranking. The `ffa.intervention` / `ffa.target` options of the rules-path request are the
@@ -433,7 +433,7 @@ decision repeats the verdict as `decide.blocked` / `decide.block_reason` (§6, #
 
 ## 6. Outcomes
 
-`decide.outcome` on the `agent.decide` span (`services/agent/decision/decide_hook.go:110-127`):
+`decide.outcome` on the `agent.decide` span (`services/agent/decision/decide_hook.go:AttrDecideOutcome`):
 
 | Outcome | Meaning |
 |---|---|
@@ -554,12 +554,12 @@ the kill switch `enabled` and the shared LLM budget (NFR-011).
 
 | Knob | Default | Scope | Source |
 |---|---|---|---|
-| `decision.claude.timeout_ms` | 5000 ms (variants fast 1500 / tight 2500 / default 5000 / patient 8000, PR #1257); the talk stage baseline runs `patient` (#2123, `scripts/talk-baseline.json`) | per call | `services/agent/flags/decision_backend.go:30,109-116,214` |
-| `decision.openai.timeout_ms` / `decision.jev.timeout_ms` | 2500 ms (variants 1500 / 2500 / 5000) | per call | `services/agent/flags/decision_backend.go:33,37,219,226` |
+| `decision.claude.timeout_ms` | 5000 ms (variants fast 1500 / tight 2500 / default 5000 / patient 8000, PR #1257); the talk stage baseline runs `patient` (#2123, `scripts/talk-baseline.json`) | per call | `services/agent/flags/decision_backend.go:keyDecisionClaudeTimeoutMs`, `services/agent/flags/decision_backend.go:DefaultDecisionClaudeTimeoutMs`, `services/agent/flags/decision_backend.go:Flags.timeoutMsFlag` |
+| `decision.openai.timeout_ms` / `decision.jev.timeout_ms` | 2500 ms (variants 1500 / 2500 / 5000) | per call | `services/agent/flags/decision_backend.go:keyDecisionOpenAITimeoutMs`, `services/agent/flags/decision_backend.go:keyDecisionJevTimeoutMs`, `services/agent/flags/decision_backend.go:DefaultDecisionTimeoutMs` |
 | `decision.min_interval_ms` | 3000 ms (1500 / 10000; 0 disables) | per game, from admission (the previous call's start) | `services/agent/flags/decision_backend.go:DefaultDecisionMinIntervalMs`, `services/agent/decision/decide_hook.go:gateRemoteDecide` |
 | `decision.min_gap_after_answer_ms` (#2123) | 1000 ms (off 0 / slow 3000) | per game, from when the previous call returned (an answer, a timeout or a failure), before the live flag re-read and any action write; set while the call still holds the in-flight slot, and a later discard does not move it. A call is admitted only when both this gap and `decision.min_interval_ms` have passed | `services/agent/flags/decision_backend.go:DefaultDecisionMinGapAfterAnswerMs`, `services/agent/decision/decide_hook.go:noteDecideEnded` |
 | `decision.max_state_age_ms` (#2123) | 10000 ms (off 0 / tight 6000) | per answer that would act, read live at landing: older fire-time state → `discarded/state_too_old` (§4.4). The default sits above the longest timeout (`patient` 8000 ms) so it only drops answers built on a state that was already stale at fire time | `services/agent/flags/decision_backend.go:DefaultDecisionMaxStateAgeMs`, `services/agent/decision/decide_hook.go:stateTooOld` |
-| `llm.max_requests_per_minute` | 6 (conservative 3 / aggressive 12 / `stage` 30, PR #1257 / operator-only `interactive` 120 and `frenzy` 600 for a cheap backend such as Jev, #2518: at the shipped cadence the per-game limits of NFR-012 bind first) | **global**, shared by in-game decisions, the retro and the proposer (PR #1284) | `services/agent/flags/flags.go:43`; `services/agent/decision/llmbudget.go:22-67` |
+| `llm.max_requests_per_minute` | 6 (conservative 3 / aggressive 12 / `stage` 30, PR #1257 / operator-only `interactive` 120 and `frenzy` 600 for a cheap backend such as Jev, #2518: at the shipped cadence the per-game limits of NFR-012 bind first) | **global**, shared by in-game decisions, the retro and the proposer (PR #1284) | `services/agent/flags/flags.go:43`; `services/agent/decision/llmbudget.go:ceilBudget`, `services/agent/decision/llmbudget.go:llmBudget` |
 | `AGENT_LLM_MAX_REQUESTS_PER_MINUTE` (env) | unset | read once at startup; a positive value is a ceiling: the cap is `min(env, flag)`, so a flag can only tighten it (#1788, C-034) | `services/agent/tuning.go:llmBudgetCeiling`, `services/agent/decision/llmbudget.go:ceilBudget` |
 | `llm.eligible_game_kinds` | `real` | which game kinds may call a remote backend; read by in-game decisions, the retro and the proposer | `services/agent/flags/flags.go:llmGate` |
 | `policy.max_interventions_per_minute` | 2, weighted (soft 0.5, medium 1, hard 2, unknown 1); admitted in rank order with a 1.0 reserve against nudges (§4.5, #1326); talk stage `aggressive` 4; operator-only `lively` 8 and `frenzy` 20 (#2518), still under the coordinator backstop (`frenzy` with up to 3 games at the default 60; select its `generous` 120 for more) and the per-player shield caps | per game | `decision/ratelimit.go`, `decision/budget.go` |
